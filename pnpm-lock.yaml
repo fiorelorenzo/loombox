@@ -71,7 +71,14 @@ importers:
 
   packages/shared: {}
 
-  packages/supervisor: {}
+  packages/supervisor:
+    dependencies:
+      '@loombox/providers-claude':
+        specifier: workspace:*
+        version: link:../providers/claude
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../providers/core
 
   tooling/eslint-config:
     dependencies:

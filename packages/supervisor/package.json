@@ -7,6 +7,10 @@
     ".": "./src/index.ts"
   },
   "types": "./src/index.ts",
+  "dependencies": {
+    "@loombox/providers-claude": "workspace:*",
+    "@loombox/providers-core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
