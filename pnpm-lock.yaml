@@ -45,7 +45,21 @@ importers:
 
   packages/crypto: {}
 
-  packages/node: {}
+  packages/node:
+    dependencies:
+      '@loombox/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../providers/core
+      '@loombox/supervisor':
+        specifier: workspace:*
+        version: link:../supervisor
+    devDependencies:
+      '@loombox/relay':
+        specifier: workspace:*
+        version: link:../relay
 
   packages/protocol:
     dependencies:
