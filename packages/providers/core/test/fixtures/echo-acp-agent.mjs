@@ -94,6 +94,9 @@ rl.on('line', (line) => {
   send({
     jsonrpc: '2.0',
     id: msg.id,
-    error: { code: -32601, message: `echo-acp-agent: method not implemented: ${String(msg.method)}` },
+    error: {
+      code: -32601,
+      message: `echo-acp-agent: method not implemented: ${String(msg.method)}`,
+    },
   });
 });
