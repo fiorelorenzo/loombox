@@ -1,0 +1,23 @@
+# Example systemd unit for the loombox v0 relay (transport-only Tailscale spike).
+# This is an EXAMPLE for the dev box; adjust User, WorkingDirectory, and the
+# HOST tailnet IP for your host. Install with:
+#   cp scripts/loombox-relay.service ~/.config/systemd/user/    (user unit)
+#   systemctl --user daemon-reload && systemctl --user enable --now loombox-relay
+# or place it under /etc/systemd/system for a system unit.
+[Unit]
+Description=loombox v0 relay (transport-only Tailscale spike)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/Progetti/loombox
+# Bind to this host's `tailscale ip -4` so only the tailnet can reach it.
+Environment=HOST=100.87.202.117
+Environment=PORT=8787
+ExecStart=/home/dev/Progetti/loombox/scripts/run-relay.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
