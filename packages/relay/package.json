@@ -12,5 +12,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.0.0",
+    "@loombox/protocol": "workspace:*",
+    "fastify": "^5.0.0"
   }
 }
