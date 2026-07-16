@@ -12,5 +12,13 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@loombox/protocol": "workspace:*",
+    "@loombox/providers-core": "workspace:*",
+    "@loombox/supervisor": "workspace:*"
+  },
+  "devDependencies": {
+    "@loombox/relay": "workspace:*"
   }
 }
