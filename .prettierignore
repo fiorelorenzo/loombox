@@ -1,0 +1,13 @@
+**/dist
+**/build
+**/.svelte-kit
+**/.output
+**/coverage
+**/node_modules
+pnpm-lock.yaml
+
+# Authoritative prose docs — kept verbatim, not reflowed by Prettier.
+SPEC.md
+AGENTS.md
+CLAUDE.md
+docs/

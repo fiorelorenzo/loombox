@@ -37,6 +37,32 @@ v0 → v3); each issue is an agent-executable task.
 - **Self-hosting is permanent and free.** A managed-cloud edition is a planned
   far-future convenience (SPEC §17), never a replacement.
 
+## Repository layout
+
+A pnpm monorepo (SPEC §10.1). See [AGENTS.md](AGENTS.md) for the build-convention
+layer and [CONTRIBUTING.md](CONTRIBUTING.md) for the dev flow and the clean-room rule.
+
+```
+apps/web              # the web-PWA client (SvelteKit; wrapped with Capacitor for apps/mobile)
+apps/mobile           # the mobile app (same PWA via Capacitor; later phase — placeholder)
+packages/protocol     # the versioned Zod wire schema (shared)
+packages/crypto       # E2E crypto primitives (shared)
+packages/node         # the orchestrator node daemon
+packages/supervisor   # the agent-supervisor (owns the ACP agent child process)
+packages/relay        # the self-hostable relay (Fastify + WS + Postgres + Redis + Better Auth)
+packages/providers/*  # layered ACP: core + claude / codex / generic (gemini reserved)
+packages/shared       # shared types and utilities
+tooling/              # shared dev config (eslint-config, ...)
+scripts/              # dev/ops scripts
+```
+
+Common commands: `pnpm install`, `pnpm -r typecheck`, `pnpm lint`, `pnpm test`,
+`pnpm format`. CI (`.github/workflows/ci.yml`) gates every PR on
+lint + format + typecheck + test + a license scan.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). loombox is greenfield and clean-room: design
+inspiration only, no vendored code, and **HAPI (AGPL-3.0) is never cloned into
+this workspace**. The full policy and the AGPL-contamination process gate live in
+[CONTRIBUTING.md](CONTRIBUTING.md#clean-room-rule-read-this-first).
