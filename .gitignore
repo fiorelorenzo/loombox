@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.output/
+.svelte-kit/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.turbo/
+.pnpm-store/
