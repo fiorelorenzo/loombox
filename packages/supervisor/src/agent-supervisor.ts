@@ -1,4 +1,4 @@
-import type { AcpProvider } from '@loombox/providers-core';
+import type { AcpChildProcess, AcpProvider } from '@loombox/providers-core';
 import { claudeProvider } from '@loombox/providers-claude';
 
 import { AgentSession } from './agent-session';
@@ -59,6 +59,11 @@ export class AgentSupervisor {
     this.providers.set(provider.id, provider);
   }
 
+  /** Looks up a registered provider by id — e.g. so a caller building an `ssh:` target's remote launch command (issue #80) can reuse the same `spawnConfig()` a `local` session would get, without duplicating provider registration. */
+  getProvider(providerId: string): AcpProvider | undefined {
+    return this.providers.get(providerId);
+  }
+
   /** Spawns a new agent via the given provider and holds it alive. */
   async start({
     workspacePath,
@@ -73,6 +78,35 @@ export class AgentSupervisor {
     const session = await AgentSession.spawn(provider, spawnConfig, workspacePath, {
       store: this.store,
     });
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  /**
+   * The `ssh:` target counterpart to {@link start} (issue #80): instead of
+   * this supervisor spawning the child itself, the caller hands in an
+   * already-constructed `AcpChildProcess` (`@loombox/node`'s
+   * `RemoteAgentChildProcess`, bridging a detached remote process). Every
+   * other guarantee `start()` gives a `local` session — persisted, resumable
+   * transcript, attention state, survives caller detach/re-attach — applies
+   * identically here, since `AgentSession.spawn()` doesn't distinguish
+   * between the two once it has a "child" to talk to.
+   */
+  async startWithChild({
+    workspacePath,
+    providerId = 'claude',
+    child,
+  }: {
+    workspacePath: string;
+    providerId?: string;
+    child: AcpChildProcess;
+  }): Promise<AgentSession> {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`AgentSupervisor: no provider registered for id "${providerId}"`);
+    }
+
+    const session = await AgentSession.spawn(provider, child, workspacePath, { store: this.store });
     this.sessions.set(session.id, session);
     return session;
   }

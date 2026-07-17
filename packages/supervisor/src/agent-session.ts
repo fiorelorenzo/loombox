@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 
 import { AcpClient } from '@loombox/providers-core';
 import type {
+  AcpChildProcess,
   AcpProvider,
   AcpSpawnConfig,
   AcpTranscriptUpdate,
@@ -107,14 +108,24 @@ export class AgentSession extends EventEmitter {
    * session via `session/new` rooted at `workspacePath` (SPEC.md §5.5, §5.6).
    * When `options.store` is given, also persists this session's metadata and
    * every subsequent update/turn/attention transition to disk (issue #77).
+   *
+   * `childOrSpawnConfig` accepts either a spawn recipe (the `local` target's
+   * path: `AcpClient` spawns the real child process itself) or an
+   * already-constructed `AcpChildProcess` (the `ssh:` target's path, issue
+   * #80: `@loombox/node`'s `RemoteAgentChildProcess` bridges a detached
+   * remote process into this exact shape, so everything below this line —
+   * persistence, attention state, the permission queue, ACP framing itself —
+   * is identical for a local and a remote session; only how the "child"'s
+   * stdio is actually backed differs, and that's `AcpClient`'s own existing
+   * seam, issue #48, not something this method needs to know about).
    */
   static async spawn(
     provider: AcpProvider,
-    spawnConfig: AcpSpawnConfig,
+    childOrSpawnConfig: AcpChildProcess | AcpSpawnConfig,
     workspacePath: string,
     options: AgentSessionSpawnOptions = {},
   ): Promise<AgentSession> {
-    const client = new AcpClient(spawnConfig);
+    const client = new AcpClient(childOrSpawnConfig);
     // Wrap and wire error/exit listeners onto `client` BEFORE awaiting the
     // handshake below: a child that fails to spawn or crashes mid-handshake
     // still has a listener in place, so the failure surfaces as this

@@ -17,9 +17,11 @@
     "@loombox/crypto": "workspace:*",
     "@loombox/protocol": "workspace:*",
     "@loombox/providers-core": "workspace:*",
-    "@loombox/supervisor": "workspace:*"
+    "@loombox/supervisor": "workspace:*",
+    "ssh2": "^1.16.0"
   },
   "devDependencies": {
-    "@loombox/relay": "workspace:*"
+    "@loombox/relay": "workspace:*",
+    "@types/ssh2": "^1.15.1"
   }
 }
