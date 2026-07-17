@@ -89,6 +89,17 @@ describe('AgentSupervisor', () => {
     await expect(supervisor.start({ workspacePath, providerId: 'nope' })).rejects.toThrow(/nope/);
   });
 
+  it("exposes the live session's config-option store (SPEC.md §7.24; issue #149) — empty for a provider that advertises none", async () => {
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
+    const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });
+    activeSessions.push(session);
+
+    // The echo fixture's `initialize` result carries no `configOptions`
+    // (packages/providers/core/test/fixtures/echo-acp-agent.mjs), so the
+    // store starts genuinely empty rather than throwing.
+    expect(session.configOptions.get(session.id)).toEqual([]);
+  });
+
   it('streams agent_message_chunk updates on prompt and buffers them in the transcript', async () => {
     const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
     const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });

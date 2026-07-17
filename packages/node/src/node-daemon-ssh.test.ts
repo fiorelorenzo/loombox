@@ -154,6 +154,57 @@ class TestPhone {
   }
 }
 
+/** One `session_update` envelope, decrypted, tagged with its wire `seq`. */
+interface DecryptedSessionEvent {
+  seq: number;
+  kind: string;
+  text?: string;
+  turnId?: string;
+  stopReason?: string;
+}
+
+/**
+ * Decrypts every `session_update` envelope seen so far for `sessionId` and
+ * returns only the ones whose inner `kind` is in `kinds`, seq-sorted. Polls
+ * until at least `count` match, or times out — needed now that `@loombox/
+ * node` also forwards `session_status`/`config_options`/`turn_started`/
+ * `turn_ended` lifecycle events over the exact same `session_update`
+ * envelope a transcript chunk rides (SPEC §7.13/§7.24/§8; issues
+ * #126/#128/#149), so a raw `type === 'session_update'` count is no longer
+ * the same thing as an `agent_message_chunk` count. Mirrors `node-daemon
+ * .test.ts`'s identical helper (kept local rather than shared, same as this
+ * file's other duplicated `TestPhone`/`phoneOpen`).
+ */
+async function waitForDecryptedKinds(
+  phone: TestPhone,
+  sessionId: string,
+  key: CryptoKey,
+  kinds: string[],
+  count: number,
+  timeoutMs = 10000,
+): Promise<DecryptedSessionEvent[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const candidates = phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 => m.type === 'session_update' && m.sessionId === sessionId,
+    );
+    const decrypted = await Promise.all(
+      candidates.map(async (m) => ({
+        seq: m.seq,
+        ...(await phoneOpen<Omit<DecryptedSessionEvent, 'seq'>>(sessionId, m.envelope, key)),
+      })),
+    );
+    const matched = decrypted.filter((d) => kinds.includes(d.kind)).sort((a, b) => a.seq - b.seq);
+    if (matched.length >= count) return matched;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `waitForDecryptedKinds: timed out waiting for ${count} of [${kinds.join(', ')}] (saw ${matched.length})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 let relay: StartedRelay;
 let remoteWorkspace: string;
 let node: NodeDaemon | undefined;
@@ -215,19 +266,8 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     await phone.waitFor((m) => m.type === 'session_announce');
 
     await node.promptSession(session.id, 'hi there');
-    const chunkMessages = (await phone.waitForCount(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-      2,
-    )) as SessionUpdateEnvelopeV1[];
-
-    const decryptedChunks = await Promise.all(
-      chunkMessages
-        .sort((a, b) => a.seq - b.seq)
-        .map((message) =>
-          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
-        ),
-    );
-    expect(decryptedChunks.map((update) => update.text).join('')).toBe('Hello world');
+    const chunks = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 2);
+    expect(chunks.map((update) => update.text).join('')).toBe('Hello world');
   });
 
   it('this node exiting does not kill the remote agent process, and a fresh runner reattaches to it (issue #80 acceptance)', async () => {

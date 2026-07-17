@@ -8,6 +8,7 @@ import type {
   AcpTranscriptUpdate,
   AcpTurnEnd,
   AcpUpdate,
+  ConfigOptionStore,
   PendingPermissionRequest,
   PermissionQueue,
   PermissionResolveResult,
@@ -199,6 +200,25 @@ export class AgentSession extends EventEmitter {
       );
     }
     return this.client.permissions;
+  }
+
+  /**
+   * This session's config-option state (`model`/`mode`/`thought_level`/...;
+   * SPEC.md §7.24; issue #149) — the same `ConfigOptionStore` `AcpClient`
+   * already seeds on `session/new`/`session/resume` and updates on both a
+   * user-driven `setConfigOption()` ack and an agent-initiated unprompted
+   * change, exposed here (unmodified) exactly like `permissions` above, so a
+   * caller (`@loombox/node`) can read the current catalog and subscribe to
+   * `'changed'` without reaching past this class into `AcpClient` itself.
+   * Only meaningful (and only available) on a live session.
+   */
+  get configOptions(): ConfigOptionStore {
+    if (!this.client) {
+      throw new Error(
+        `AgentSession: session "${this.sessionId}" has no live agent process (persisted/replay-only) — there is no config-option store to read.`,
+      );
+    }
+    return this.client.configOptions;
   }
 
   /** Submits a new prompt into this session and awaits the turn's response. Throws on a replay-only session (`isLive === false`): there is no child left to send it to (issue #78). */

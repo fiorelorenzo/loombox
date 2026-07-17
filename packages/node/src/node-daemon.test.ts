@@ -57,6 +57,29 @@ function echoProvider(): AcpProvider {
   };
 }
 
+// The same config-option fixture packages/providers/core's own #179/#180
+// tests exercise: advertises a two-category catalog at `initialize` and
+// pushes an unprompted `config_option_update` on the prompt text
+// "trigger-fallback" (see that fixture's own doc comment).
+const CONFIG_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'config-acp-agent.mjs',
+);
+
+function configProvider(): AcpProvider {
+  return {
+    id: 'test-config',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [CONFIG_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
 // -----------------------------------------------------------------------
 // Test-only crypto helpers standing in for a phone/PWA client. These are
 // deliberately NOT calls into this package's own `session-keys.ts`/
@@ -220,6 +243,58 @@ function waitForConnected(node: NodeDaemon): Promise<void> {
   return new Promise((resolve) => node.once('connected', resolve));
 }
 
+/** One `session_update` envelope, decrypted, tagged with its wire `seq`. */
+interface DecryptedSessionEvent {
+  seq: number;
+  kind: string;
+  text?: string;
+  turnId?: string;
+  stopReason?: string;
+  status?: string;
+  options?: unknown[];
+}
+
+/**
+ * Decrypts every `session_update` envelope seen so far for `sessionId` and
+ * returns only the ones whose inner `kind` is in `kinds`, seq-sorted. Polls
+ * until at least `count` match, or times out. Now that `@loombox/node` also
+ * forwards `session_status`/`config_options`/`turn_started`/`turn_ended`
+ * lifecycle events over the exact same `session_update` envelope a
+ * transcript chunk rides (SPEC §7.13/§7.24/§8; issues #126/#128/#149), a raw
+ * `type === 'session_update'` count is no longer the same thing as an
+ * `agent_message_chunk` count — this is the robust replacement used
+ * throughout this file wherever a test cares about one specific kind.
+ */
+async function waitForDecryptedKinds(
+  phone: TestPhone,
+  sessionId: string,
+  key: CryptoKey,
+  kinds: string[],
+  count: number,
+  timeoutMs = 10000,
+): Promise<DecryptedSessionEvent[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const candidates = phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 => m.type === 'session_update' && m.sessionId === sessionId,
+    );
+    const decrypted = await Promise.all(
+      candidates.map(async (m) => ({
+        seq: m.seq,
+        ...(await phoneOpen<Omit<DecryptedSessionEvent, 'seq'>>(sessionId, m.envelope, key)),
+      })),
+    );
+    const matched = decrypted.filter((d) => kinds.includes(d.kind)).sort((a, b) => a.seq - b.seq);
+    if (matched.length >= count) return matched;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `waitForDecryptedKinds: timed out waiting for ${count} of [${kinds.join(', ')}] (saw ${matched.length})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 /** Polls `session_list_request` until `sessionId` shows up (client-initiated `session_create` has no direct ack). */
 async function waitForSessionInList(
   phone: TestPhone,
@@ -341,28 +416,129 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     // node's direct API) streams to it live, as ciphertext it can decrypt.
     await node.promptSession(session.id, 'hi there');
 
-    const chunkMessages = (await phone.waitForCount(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-      2,
-    )) as SessionUpdateEnvelopeV1[];
+    // The turn's session_update envelopes now carry more than transcript
+    // chunks: a turn_started, the two agent_message_chunk updates, and a
+    // turn_ended settle the turn deterministically (SPEC §7.24; issue #128) —
+    // waiting for turn_ended proves every earlier envelope in this turn's
+    // sendQueue has already been sent, since they share one ordered chain.
+    const [turnEnded] = await waitForDecryptedKinds(phone, session.id, key, ['turn_ended'], 1);
+    expect(turnEnded).toMatchObject({ stopReason: 'end_turn' });
+    expect(turnEnded!.turnId).toBeTruthy();
+
+    const [turnStarted] = await waitForDecryptedKinds(phone, session.id, key, ['turn_started'], 1);
+    expect(turnStarted!.turnId).toBe(turnEnded!.turnId);
+    expect(turnStarted!.seq).toBeLessThan(turnEnded!.seq);
+
+    const chunks = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 2);
 
     // The relay never carried plaintext: the raw frame has only an opaque
     // envelope, no 'kind'/'text' fields sitting next to it.
-    for (const message of chunkMessages) {
+    const allUpdates = phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 =>
+        m.type === 'session_update' && m.sessionId === session.id,
+    );
+    for (const message of allUpdates) {
       expect(message).not.toHaveProperty('text');
       expect(message).not.toHaveProperty('kind');
       assertOpaque(message.envelope, ['Hello', 'world']);
     }
 
-    const decryptedChunks = await Promise.all(
-      chunkMessages
-        .sort((a, b) => a.seq - b.seq)
-        .map((message) =>
-          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
-        ),
+    expect(chunks.map((update) => update.text).join('')).toBe('Hello world');
+  });
+
+  it('forwards the session-status snapshot, the config-option catalog, and an agent-initiated unprompted fallback as encrypted session_update events (SPEC §7.13/§7.24, §8; issues #126/#149)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config-wire';
+
+    node = createNode({
+      relayUrl: relay.url,
+      nodeId: 'node-config',
+      deviceId: 'device-node-config',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-config' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-config',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+    // The initial session_status/config_options snapshot is forwarded at
+    // session-creation time (`wireAgentSession`), before this phone
+    // subscribed — backfill it via the existing resync mechanism, exactly
+    // like a client that opens a session it didn't just create would.
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      sinceSeq: 0,
+    });
+
+    const [initialStatus] = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['session_status'],
+      1,
     );
-    expect(decryptedChunks.every((update) => update.kind === 'agent_message_chunk')).toBe(true);
-    expect(decryptedChunks.map((update) => update.text).join('')).toBe('Hello world');
+    expect(initialStatus).toMatchObject({ kind: 'session_status', status: 'awaiting_input' });
+
+    const [initialCatalog] = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['config_options'],
+      1,
+    );
+    expect(initialCatalog!.options).toEqual([
+      {
+        category: 'model',
+        current: 'sonnet',
+        choices: [
+          { id: 'sonnet', name: 'Sonnet' },
+          { id: 'haiku', name: 'Haiku' },
+        ],
+      },
+      {
+        category: 'mode',
+        current: 'default',
+        choices: [
+          { id: 'default', name: 'Default' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    ]);
+
+    // The agent changes its own config mid-turn, unprompted — this must land
+    // as the distinct 'config_option_update' wire kind, not 'config_options'
+    // (issue #149's "two missing acceptance bullets": the unprompted push).
+    await node.promptSession(session.id, 'trigger-fallback');
+    const [fallback] = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['config_option_update'],
+      1,
+    );
+    const fallbackOptions = fallback!.options as { category: string; current: string }[];
+    expect(fallbackOptions.find((o) => o.category === 'model')?.current).toBe('haiku');
+
+    // The relay never carried plaintext for any of the above.
+    for (const message of phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 =>
+        m.type === 'session_update' && m.sessionId === session.id,
+    )) {
+      assertOpaque(message.envelope, ['sonnet', 'haiku', 'awaiting_input']);
+    }
   });
 
   it("delivers a phone's encrypted prompt_inject to the owning session, producing a new turn of ciphertext updates", async () => {
@@ -402,18 +578,8 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       envelope,
     });
 
-    const chunkMessages = (await phone.waitForCount(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-      2,
-    )) as SessionUpdateEnvelopeV1[];
-    const decryptedChunks = await Promise.all(
-      chunkMessages
-        .sort((a, b) => a.seq - b.seq)
-        .map((message) =>
-          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
-        ),
-    );
-    expect(decryptedChunks.map((update) => update.text).join('')).toBe('Hello world');
+    const chunks = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 2);
+    expect(chunks.map((update) => update.text).join('')).toBe('Hello world');
   });
 
   it('creates a session from a client session_create, routed via the target the node announced, and the resulting session is fully usable', async () => {
@@ -503,11 +669,13 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     await phone.waitFor((m) => m.type === 'session_announce');
 
     await node.promptSession(session.id, 'first turn');
-    const firstTurnChunks = (await phone.waitForCount(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-      2,
-    )) as SessionUpdateEnvelopeV1[];
-    const lastSeenSeq = Math.max(...firstTurnChunks.map((m) => m.seq));
+    // turn_ended is deterministically the LAST envelope this node sends for
+    // a turn (SPEC §7.24; issue #128): waiting for it proves every earlier
+    // envelope of "first turn" (turn_started, status transitions, both
+    // chunks) has already been queued/sent, so its seq is a safe resync
+    // watermark for "everything up to and including first turn".
+    const [firstTurnEnded] = await waitForDecryptedKinds(phone, session.id, key, ['turn_ended'], 1);
+    const lastSeenSeq = firstTurnEnded!.seq;
 
     // The phone drops (network loss) without unsubscribing.
     phone.close();
@@ -534,20 +702,25 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       sinceSeq: lastSeenSeq,
     });
 
-    const replayed = (await phoneB.waitForCount(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-      2,
-    )) as SessionUpdateEnvelopeV1[];
+    // Wait for the second turn's own turn_ended to arrive via the replay,
+    // proving that full turn (not just its chunks) was resynced.
+    await waitForDecryptedKinds(phoneB, session.id, key, ['turn_ended'], 1);
+
+    const replayed = phoneB.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 =>
+        m.type === 'session_update' && m.sessionId === session.id,
+    );
+    expect(replayed.length).toBeGreaterThan(0);
     expect(replayed.every((m) => m.seq > lastSeenSeq)).toBe(true);
 
-    const decryptedReplay = await Promise.all(
-      replayed
-        .sort((a, b) => a.seq - b.seq)
-        .map((message) =>
-          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
-        ),
+    const replayedChunks = await waitForDecryptedKinds(
+      phoneB,
+      session.id,
+      key,
+      ['agent_message_chunk'],
+      2,
     );
-    expect(decryptedReplay.map((update) => update.text).join('')).toBe('Hello world');
+    expect(replayedChunks.map((update) => update.text).join('')).toBe('Hello world');
     for (const message of replayed) {
       assertOpaque(message.envelope, ['Hello', 'world']);
     }
@@ -606,10 +779,7 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       envelope,
     });
 
-    const chunkMessage = (await phone.waitFor(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-    )) as SessionUpdateEnvelopeV1;
-    const decrypted = await phoneOpen<{ kind: string }>(session.id, chunkMessage.envelope, key);
-    expect(decrypted.kind).toBe('agent_message_chunk');
+    const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
+    expect(chunk!.kind).toBe('agent_message_chunk');
   });
 });

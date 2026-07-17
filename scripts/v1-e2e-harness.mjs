@@ -201,6 +201,35 @@ class Phone {
     }
   }
 
+  /**
+   * Decrypts every `session_update` envelope seen so far for `sessionId` and
+   * returns only the ones whose inner `kind` is in `kinds`. Polls until at
+   * least `count` match, or times out (returning whatever it has). Needed
+   * now that `@loombox/node` also forwards `session_status`/`config_options`/
+   * `turn_started`/`turn_ended` lifecycle events over the exact same
+   * `session_update` envelope a transcript chunk rides (SPEC §7.13/§7.24/§8;
+   * issues #126/#128/#149) — a raw message count is no longer the same thing
+   * as an `agent_message_chunk` count.
+   */
+  async waitForDecryptedKinds(sessionId, key, kinds, count, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const candidates = this.messages.filter(
+        (m) => m.type === 'session_update' && m.sessionId === sessionId,
+      );
+      const decrypted = await Promise.all(
+        candidates.map(async (m) => ({
+          seq: m.seq,
+          ...(await phoneOpen(sessionId, m.envelope, key)),
+        })),
+      );
+      const matched = decrypted.filter((d) => kinds.includes(d.kind)).sort((a, b) => a.seq - b.seq);
+      if (matched.length >= count) return matched;
+      if (Date.now() > deadline) return matched;
+      await sleep(20);
+    }
+  }
+
   close() {
     this.socket.close();
   }
@@ -293,20 +322,16 @@ async function main() {
   // B. operator-side activity the phone did not initiate streams to it live, as ciphertext.
   const before = phone.count((m) => m.type === 'session_update' && m.sessionId === session.id);
   await node.promptSession(session.id, 'operator: summarize the repo');
-  const liveChunks = await phone.waitForCount(
-    (m) => m.type === 'session_update' && m.sessionId === session.id,
-    before + 2,
-  );
-  const liveDecrypted = await Promise.all(
-    liveChunks
-      .slice(before)
-      .sort((a, b) => a.seq - b.seq)
-      .map((m) => phoneOpen(session.id, m.envelope, sessionKey)),
+  const liveChunks = await phone.waitForDecryptedKinds(
+    session.id,
+    sessionKey,
+    ['agent_message_chunk'],
+    2,
   );
   record(
     'B. phone sees live output it did not initiate, and can decrypt it',
-    liveDecrypted.length >= 2 && liveDecrypted.every((u) => u.kind === 'agent_message_chunk'),
-    `decrypted: ${JSON.stringify(liveDecrypted.map((u) => u.text))}`,
+    liveChunks.length >= 2 && liveChunks.every((u) => u.kind === 'agent_message_chunk'),
+    `decrypted: ${JSON.stringify(liveChunks.map((u) => u.text))}`,
   );
 
   // C. a prompt the phone injects over the relay, itself encrypted, produces a NEW agent turn.

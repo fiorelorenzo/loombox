@@ -4,6 +4,7 @@
   import type {
     AcpConfigOption,
     AcpPermissionOption,
+    AcpSessionStatus,
     PermissionQueueState,
     TranscriptState,
   } from '@loombox/providers-core';
@@ -66,6 +67,40 @@
   // `SvelteMap` (not a plain `Map` wrapped in `$state`) so `.set()` itself
   // triggers reactivity instead of requiring a clone-and-reassign dance.
   const planCollapsedBySession = new SvelteMap<string, boolean>();
+
+  // Live per-session status badge for the session list (SPEC §7.13/§7.24;
+  // issue #126 "list updates live as session status changes"). Every
+  // currently-listed session gets its own `RelayClient.statusFor`
+  // subscription — not only the selected one, since the badge must be
+  // visible for every session in the list, not just the one currently open.
+  const sessionStatuses = new SvelteMap<string, AcpSessionStatus | undefined>();
+  const sessionStatusUnsubscribers = new SvelteMap<string, () => void>();
+
+  /** (Re)syncs `sessionStatuses`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
+  function syncSessionStatusSubscriptions(list: ClientSessionMeta[]): void {
+    if (!client) return;
+    const activeClient = client;
+    const currentIds = new Set(list.map((session) => session.id));
+    for (const [id, unsubscribe] of sessionStatusUnsubscribers) {
+      if (currentIds.has(id)) continue;
+      unsubscribe();
+      sessionStatusUnsubscribers.delete(id);
+      sessionStatuses.delete(id);
+    }
+    for (const session of list) {
+      if (sessionStatusUnsubscribers.has(session.id)) continue;
+      const unsubscribe = activeClient
+        .statusFor(session.id)
+        .subscribe((value) => sessionStatuses.set(session.id, value));
+      sessionStatusUnsubscribers.set(session.id, unsubscribe);
+    }
+  }
+
+  function clearSessionStatusSubscriptions(): void {
+    for (const unsubscribe of sessionStatusUnsubscribers.values()) unsubscribe();
+    sessionStatusUnsubscribers.clear();
+    sessionStatuses.clear();
+  }
 
   // Persists an operator-edited relay URL as soon as it changes (not just on
   // submit) so it survives the full-page reload a real OAuth redirect does —
@@ -148,6 +183,7 @@
     unsubscribeStatus = client.status.subscribe((value) => (status = value));
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
+      syncSessionStatusSubscriptions(value);
       if (!selectedSessionId && value[0]) selectSession(value[0].id);
     });
     client.connect();
@@ -161,6 +197,7 @@
     unsubscribeConfigOptions?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
+    clearSessionStatusSubscriptions();
     client?.close();
     client = undefined;
     status = 'idle';
@@ -335,7 +372,18 @@
                   class:selected={session.id === selectedSessionId}
                   onclick={() => selectSession(session.id)}
                 >
-                  <strong>{session.title}</strong>
+                  <span class="session-title-row">
+                    <strong>{session.title}</strong>
+                    {#if sessionStatuses.get(session.id)}
+                      <span
+                        class="status-badge"
+                        data-status={sessionStatuses.get(session.id)}
+                        data-testid="session-status-badge"
+                      >
+                        {sessionStatuses.get(session.id)}
+                      </span>
+                    {/if}
+                  </span>
                   <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
                 </button>
               </li>
@@ -522,6 +570,49 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .session-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .session-title-row strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Session-status badge (SPEC §7.13/§7.24; issue #126) — a neutral default,
+     overridden per status so a glance at the list shows what needs attention. */
+  .status-badge {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(127, 127, 127, 0.2);
+    opacity: 0.85;
+  }
+
+  .status-badge[data-status='working'] {
+    background: rgba(79, 70, 229, 0.25);
+  }
+
+  .status-badge[data-status='permission_required'] {
+    background: rgba(217, 119, 6, 0.3);
+  }
+
+  .status-badge[data-status='error'] {
+    background: rgba(229, 72, 77, 0.3);
+  }
+
+  .status-badge[data-status='exited'] {
+    background: rgba(127, 127, 127, 0.35);
   }
 
   .transcript {

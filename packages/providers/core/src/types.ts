@@ -275,6 +275,80 @@ export type AcpTranscriptUpdate =
   AcpMessageChunkUpdate | AcpToolCallUpdate | AcpPlanUpdate | AcpUsageUpdate;
 
 /* -------------------------------------------------------------------------
+ * v1: session-lifecycle wire events (SPEC.md §7.13's attention states, §7.24's
+ * status badge / model-mode-effort bar / turn-settling bullets, §8's
+ * relay-blind boundary; issues #126/#128/#149). Unlike the `AcpTranscriptUpdate`
+ * kinds above (raw ACP `session/update` passthrough), these five are
+ * loombox's own invention, synthesized at `@loombox/node` from the
+ * supervisor's `AgentSession` attention/turn-lifecycle state and sealed into
+ * the *same* `session_update` encrypted envelope a transcript chunk already
+ * rides — never a new clear relay message. Mirrored field-for-field (not
+ * imported) from `@loombox/protocol`'s `session-events.ts`, the same
+ * mirrored-not-shared pattern already used elsewhere across the encryption
+ * boundary in this codebase; see that module's doc comment for the full
+ * rationale (this package has zero workspace dependencies by design).
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The session-status vocabulary. Deliberately identical to `@loombox/
+ * supervisor`'s already-shipped `AttentionStatus` (`transcript-store.ts`)
+ * rather than a second taxonomy for the same concept — that status is
+ * exactly what `AgentSession` already computes and what the node forwards
+ * here unchanged.
+ */
+export type AcpSessionStatus =
+  'working' | 'awaiting_input' | 'permission_required' | 'error' | 'exited';
+
+/** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). */
+export interface AcpSessionStatusEvent {
+  kind: 'session_status';
+  status: AcpSessionStatus;
+  updatedAt: string;
+}
+
+/** The session's complete config-option catalog, pushed as a full wholesale replacement (SPEC.md §7.24; issue #149). */
+export interface AcpConfigOptionsEvent {
+  kind: 'config_options';
+  options: AcpConfigOption[];
+}
+
+/** Same shape as {@link AcpConfigOptionsEvent}, for the distinct *unprompted* case — the agent changed its own config without the user asking (SPEC.md §7.24; issue #149's "two missing acceptance bullets"). */
+export interface AcpConfigOptionUpdateEvent {
+  kind: 'config_option_update';
+  options: AcpConfigOption[];
+}
+
+/** A new turn began (SPEC.md §7.24's turn-lifecycle bullet; issue #128). */
+export interface AcpTurnStartedEvent {
+  kind: 'turn_started';
+  turnId: string;
+}
+
+/** A turn settled, deterministically (SPEC.md §7.24; issue #128's idle-timeout gap) — `stopReason` carries ACP's own `session/prompt` response field verbatim when the agent supplied one. */
+export interface AcpTurnEndedEvent {
+  kind: 'turn_ended';
+  turnId: string | undefined;
+  stopReason: string | undefined;
+}
+
+/** The full set of session-lifecycle payloads (SPEC.md §7.13/§7.24), discriminated on `kind`. */
+export type AcpSessionLifecycleEvent =
+  | AcpSessionStatusEvent
+  | AcpConfigOptionsEvent
+  | AcpConfigOptionUpdateEvent
+  | AcpTurnStartedEvent
+  | AcpTurnEndedEvent;
+
+/**
+ * Everything that can travel inside one `session_update` encrypted envelope
+ * (SPEC.md §7.24/§8) — every ACP transcript-reducer update kind, plus
+ * loombox's own session-lifecycle signals. This is the type `@loombox/node`
+ * seals and `apps/web`'s `relay-client.ts` opens; `reduceSessionEvent`
+ * (`transcript.ts`) is the reducer over this wider union.
+ */
+export type AcpSessionWireEvent = AcpTranscriptUpdate | AcpSessionLifecycleEvent;
+
+/* -------------------------------------------------------------------------
  * v1: image hand-off content blocks (SPEC.md §7.25 "Hand off to the agent";
  * issues #157/#159). Both are real ACP baseline `ContentBlock` variants, not
  * loombox inventions: `image` carries inline base64 bytes, `resource_link`
