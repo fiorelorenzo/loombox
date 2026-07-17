@@ -91,20 +91,36 @@ export interface RelayClientOptions {
    * This account's Account Master Key (SPEC §8, §16): every session key this
    * client derives (`@loombox/crypto`'s `deriveSessionKey`) comes from this
    * one 256-bit secret via its key tree — the exact same derivation the node
-   * uses, so this client decrypts precisely what the node encrypted. Real
-   * AMK-on-device delivery is the pairing/escrow flow (#113/#114/#115); a
-   * caller injects it directly here until that lands.
+   * uses, so this client decrypts precisely what the node encrypted.
+   * `RelayClient` itself stays storage-agnostic and just takes the bytes; a
+   * caller generates/persists it on-device via `amk-store.ts`'s
+   * `loadOrCreateAmk` (single-device custody, this wave) rather than typing
+   * it in by hand. Multi-device recovery-code escrow/QR pairing (#113/#114/
+   * #115) is a later wave, layered on top without changing this option.
    */
   amk: Uint8Array;
   /**
-   * The account this client's sessions are scoped under. Also doubles as the
-   * `authToken` sent in `initialize` unless `authToken` is given explicitly:
-   * the relay's auth stub (`deriveAccountIdStub`, TODO #121) treats the raw
-   * bearer token as the account id verbatim, matching `@loombox/node`'s
-   * `NodeDaemonOptions.accountId` contract.
+   * The account this client's sessions are scoped under — Better Auth's
+   * `user.id` (SPEC §8), which a caller resolves via `auth-store.ts`'s
+   * `AuthStore` (`StoredAuthSession.accountId`) rather than typing in by
+   * hand. Also doubles as the `authToken` sent in `initialize` unless
+   * `authToken` is given explicitly: the relay's dev/hermetic-test stub
+   * (`deriveAccountIdStub`) treats the raw bearer token as the account id
+   * verbatim, matching `@loombox/node`'s `NodeDaemonOptions.accountId`
+   * contract; a real deployment (Better Auth configured on the relay) always
+   * passes a real bearer as `authToken` alongside this.
    */
   accountId: string;
-  /** Opaque Better Auth bearer token (SPEC §8); defaults to `accountId` (see above). */
+  /**
+   * The WS handshake's `authToken` (SPEC §8): a real Better Auth bearer
+   * token (`auth-store.ts`'s `AuthStore`, `StoredAuthSession.token`) once
+   * the relay has Better Auth configured, which the relay resolves to an
+   * account via `resolveAccountIdViaBetterAuth` — the same account this
+   * option's sibling `accountId` must already equal, or this client would
+   * derive session keys under one account while the relay scopes/routes
+   * under another. Defaults to `accountId` (the relay's dev/hermetic-test
+   * stub mode, see above) when omitted.
+   */
   authToken?: string;
   /** This client's stable device identity, sent in the `initialize` handshake; generated if omitted. */
   deviceId?: string;
@@ -125,9 +141,20 @@ function generateId(prefix: string): string {
   return `${prefix}_${unique}`;
 }
 
+/**
+ * `Buffer`-free on purpose: `Buffer` is a Node builtin Vite does not
+ * polyfill for the browser build, so `Buffer.from(...)` here would throw
+ * the moment a real browser called `connect()` without an explicit
+ * `devicePublicKey` (this constructed a placeholder unconditionally,
+ * so every real page load hit it) — `btoa`/`atob` are globals in the
+ * browser, jsdom, and Node 22 alike, so this runs identically everywhere
+ * this module does (mirrors `amk-store.ts`'s identical fix/rationale).
+ */
 function randomBase64(byteLength = 32): string {
   const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
-  return Buffer.from(bytes).toString('base64');
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function errorMessage(error: unknown): string {

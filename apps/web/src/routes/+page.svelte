@@ -11,6 +11,8 @@
   import { APP_NAME, APP_TAGLINE } from '$lib/constants';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { RelayClient, type ClientSessionMeta, type ConnectionStatus } from '$lib/relay-client';
+  import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
+  import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -18,19 +20,33 @@
   import PlanCard from '$lib/components/PlanCard.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
 
-  // Disposable v1 relay (SPEC §12): no auth, no default deployment, so the
-  // operator points the PWA at whatever host/port the relay printed
-  // (loopback here; a phone on the tailnet types the tailnet URL).
+  // Disposable v1 relay (SPEC §12): no default deployment, so the operator
+  // points the PWA at whatever host/port the relay printed (loopback here;
+  // a phone on the tailnet types the tailnet URL). Better Auth's routes
+  // (`/api/auth/*`, SPEC §8) live on that same relay, on the http(s)
+  // counterpart of this ws(s) URL.
   const DEFAULT_RELAY_URL = 'ws://127.0.0.1:8787/ws';
+  const RELAY_URL_STORAGE_KEY = 'loombox:relay-url';
+
+  /** `ws(s)://host:port/ws` -> `http(s)://host:port` — Better Auth is mounted on the relay's own Fastify server, not a separate host. */
+  function relayHttpBaseUrl(wsUrl: string): string {
+    return wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
+  }
 
   let relayUrl = $state(DEFAULT_RELAY_URL);
-  // The account this client's sessions are scoped under and its Account
-  // Master Key (SPEC §8, §16). Real AMK-on-device delivery is the
-  // pairing/escrow flow (out of scope here, see relay-client.ts's doc
-  // comment) — this v1 client core takes both directly from the operator so
-  // the encrypted loop is exercisable without that flow existing yet.
-  let accountId = $state('dev-account');
-  let amkBase64 = $state('');
+
+  // Real Better Auth login (SPEC §8): GitHub OAuth only, no manually-typed
+  // account id. `authStore`/`amkStorage` are only ever constructed client-
+  // side (onMount below) — this file is also rendered SSR by
+  // `routes/page.test.ts`, where `window`/`localStorage` don't exist.
+  let authStore: AuthStore | undefined;
+  let amkStorage: ReturnType<typeof createLocalStorageAmkStorage> | undefined;
+  let authSession = $state<StoredAuthSession | undefined>(undefined);
+  // Distinguishes "haven't checked yet" from "checked, not signed in" so the
+  // sign-in gate doesn't flash before `restoreSession()` resolves.
+  let authChecked = $state(false);
+  let authError = $state<string | undefined>(undefined);
+
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
@@ -45,7 +61,14 @@
   // triggers reactivity instead of requiring a clone-and-reassign dance.
   const planCollapsedBySession = new SvelteMap<string, boolean>();
 
-  const canConnect = $derived(status === 'idle' || status === 'closed' || status === 'error');
+  // Persists an operator-edited relay URL as soon as it changes (not just on
+  // submit) so it survives the full-page reload a real OAuth redirect does —
+  // see `onMount`'s restore of the same key. `$effect` is client/DOM-only in
+  // Svelte 5 (never runs during `routes/page.test.ts`'s SSR render).
+  $effect(() => {
+    localStorage.setItem(RELAY_URL_STORAGE_KEY, relayUrl);
+  });
+
   const planCollapsed = $derived(
     selectedSessionId ? (planCollapsedBySession.get(selectedSessionId) ?? false) : false,
   );
@@ -87,22 +110,23 @@
       .subscribe((value) => (configOptions = value));
   }
 
-  function connect(): void {
-    if (typeof window === 'undefined' || client) return;
-    // A plain `crypto.getRandomValues` fallback (not `@loombox/crypto`'s
-    // `generateAmk`, which pulls in `node:crypto`'s `createHmac` transitively
-    // via key-tree.ts — Vite externalizes that for the browser build, so
-    // calling it client-side would throw) when the operator leaves the AMK
-    // field blank. Real AMK-on-device delivery is the pairing/escrow flow
-    // (out of scope here, see relay-client.ts's doc comment).
-    const amk = amkBase64.trim()
-      ? new Uint8Array(
-          atob(amkBase64.trim())
-            .split('')
-            .map((c) => c.charCodeAt(0)),
-        )
-      : crypto.getRandomValues(new Uint8Array(32));
-    client = new RelayClient({ relayUrl, amk, accountId });
+  /**
+   * Connects the relay's WS session once this device has both halves of
+   * real v1 auth (SPEC §8): a Better Auth bearer token (the WS handshake's
+   * `authToken` — no longer a stub) and this device's own persisted AMK
+   * (`amk-store.ts`'s `loadOrCreateAmk`, generated once and reused, not
+   * injected). Both come from `session`/`amkStorage`, never from a form
+   * field.
+   */
+  function connect(session: StoredAuthSession): void {
+    if (typeof window === 'undefined' || client || !amkStorage) return;
+    const amk = loadOrCreateAmk(session.accountId, amkStorage);
+    client = new RelayClient({
+      relayUrl,
+      amk,
+      accountId: session.accountId,
+      authToken: session.token,
+    });
     unsubscribeStatus = client.status.subscribe((value) => (status = value));
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
@@ -125,6 +149,26 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+  }
+
+  function ensureAuthStore(): AuthStore {
+    authStore ??= new AuthStore({ relayBaseUrl: relayHttpBaseUrl(relayUrl) });
+    return authStore;
+  }
+
+  /** SPEC §8: login is Google/GitHub OAuth only — this starts the real browser redirect to the relay's Better Auth. */
+  async function signInWithGithub(): Promise<void> {
+    authError = undefined;
+    try {
+      await ensureAuthStore().signInWithGithub(window.location.href);
+    } catch (error) {
+      authError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function signOut(): Promise<void> {
+    disconnect();
+    await authStore?.signOut();
   }
 
   function submitPrompt(event: Event): void {
@@ -164,7 +208,43 @@
   }
 
   onMount(() => {
-    return () => disconnect();
+    amkStorage = createLocalStorageAmkStorage();
+
+    // Restores an operator-customized relay URL before constructing
+    // `authStore` against it, so a self-hoster who edits this field, then
+    // signs in (a full-page OAuth redirect that reloads this component from
+    // scratch on return), lands back on the SAME relay's session rather than
+    // silently falling back to `DEFAULT_RELAY_URL`.
+    const persistedRelayUrl = localStorage.getItem(RELAY_URL_STORAGE_KEY);
+    if (persistedRelayUrl) relayUrl = persistedRelayUrl;
+
+    const store = ensureAuthStore();
+
+    const unsubscribeAuthSession = store.session.subscribe((value) => {
+      authSession = value;
+      if (value) {
+        connect(value);
+      } else {
+        disconnect();
+      }
+    });
+
+    // Picks up a session this device already had (a stored bearer token) or
+    // just received (this is the page Better Auth's OAuth callback
+    // redirected back to) before showing the sign-in gate.
+    store
+      .restoreSession()
+      .catch((error: unknown) => {
+        authError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => {
+        authChecked = true;
+      });
+
+    return () => {
+      unsubscribeAuthSession();
+      disconnect();
+    };
   });
 </script>
 
@@ -174,102 +254,116 @@
     <p>{APP_TAGLINE}</p>
   </header>
 
-  <section class="connection">
-    <label for="relay-url">Relay URL</label>
-    <input id="relay-url" type="text" bind:value={relayUrl} disabled={!canConnect} />
-    <label for="account-id">Account</label>
-    <input id="account-id" type="text" bind:value={accountId} disabled={!canConnect} />
-    <label for="amk">AMK (base64, blank = generate)</label>
-    <input id="amk" type="text" bind:value={amkBase64} disabled={!canConnect} />
-    {#if canConnect}
-      <button type="button" onclick={connect}>Connect</button>
-    {:else}
-      <button type="button" onclick={disconnect}>Disconnect</button>
-    {/if}
-    <span class="status" data-status={status}>status: {status}</span>
-  </section>
-
-  <div class="cockpit">
-    <aside class="sessions">
-      <h2>Sessions</h2>
-      {#if sessions.length === 0}
-        <p class="empty">No sessions yet.</p>
-      {:else}
-        <ul>
-          {#each sessions as session (session.id)}
-            <li>
-              <button
-                type="button"
-                class="session"
-                class:selected={session.id === selectedSessionId}
-                onclick={() => selectSession(session.id)}
-              >
-                <strong>{session.title}</strong>
-                <small>{session.provider} · {session.projectPath}</small>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </aside>
-
-    <section class="transcript">
-      {#if !selectedSessionId}
-        <p class="empty">Select a session to view its live transcript.</p>
-      {:else}
-        <div class="transcript-toolbar">
-          <ConfigBar
-            options={configOptions}
-            usage={transcript?.usage}
-            cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-            onChange={changeConfigOption}
-          />
-          <CopyButton
-            text={transcript ? exportTranscriptText(transcript) : ''}
-            label="Export transcript"
-            copyFn={exportTranscript}
-          />
-        </div>
-
-        <ol class="items">
-          {#each transcript?.items ?? [] as item (item.id)}
-            <li>
-              {#if item.type === 'message'}
-                <MessageItem {item} />
-              {:else}
-                <ToolCallRow {item} awaitingPermission={permissionHead?.toolCall.id === item.id} />
-              {/if}
-            </li>
-          {/each}
-        </ol>
-
-        {#if transcript && transcript.plan.length > 0}
-          <PlanCard
-            entries={transcript.plan}
-            collapsed={planCollapsed}
-            onToggle={togglePlanCollapsed}
-          />
-        {/if}
-
-        <PermissionQueueBar
-          sessionId={selectedSessionId}
-          queue={permissionQueue}
-          onResolve={resolvePermission}
-          onStop={stopSession}
-        />
-
-        <form class="composer" onsubmit={submitPrompt}>
-          <input
-            type="text"
-            bind:value={draft}
-            placeholder="Send a follow-up prompt…"
-            aria-label="Follow-up prompt"
-          />
-          <button type="submit" disabled={draft.trim() === ''}>Send</button>
-        </form>
+  {#if !authChecked}
+    <section class="connection">
+      <p class="empty">Checking session…</p>
+    </section>
+  {:else if !authSession}
+    <section class="connection sign-in">
+      <label for="relay-url">Relay URL</label>
+      <input id="relay-url" type="text" bind:value={relayUrl} />
+      <button type="button" onclick={signInWithGithub}>Sign in with GitHub</button>
+      {#if authError}
+        <p class="error" role="alert">{authError}</p>
       {/if}
     </section>
-  </div>
+  {:else}
+    <section class="connection">
+      <span class="account">{authSession.accountId}</span>
+      <span class="status" data-status={status}>status: {status}</span>
+      <button type="button" onclick={signOut}>Sign out</button>
+      {#if authError}
+        <p class="error" role="alert">{authError}</p>
+      {/if}
+    </section>
+
+    <div class="cockpit">
+      <aside class="sessions">
+        <h2>Sessions</h2>
+        {#if status === 'connecting' || status === 'idle'}
+          <p class="empty">Loading sessions…</p>
+        {:else if sessions.length === 0}
+          <p class="empty">No sessions yet.</p>
+        {:else}
+          <ul>
+            {#each sessions as session (session.id)}
+              <li>
+                <button
+                  type="button"
+                  class="session"
+                  class:selected={session.id === selectedSessionId}
+                  onclick={() => selectSession(session.id)}
+                >
+                  <strong>{session.title}</strong>
+                  <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </aside>
+
+      <section class="transcript">
+        {#if !selectedSessionId}
+          <p class="empty">Select a session to view its live transcript.</p>
+        {:else}
+          <div class="transcript-toolbar">
+            <ConfigBar
+              options={configOptions}
+              usage={transcript?.usage}
+              cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+              onChange={changeConfigOption}
+            />
+            <CopyButton
+              text={transcript ? exportTranscriptText(transcript) : ''}
+              label="Export transcript"
+              copyFn={exportTranscript}
+            />
+          </div>
+
+          <ol class="items">
+            {#each transcript?.items ?? [] as item (item.id)}
+              <li>
+                {#if item.type === 'message'}
+                  <MessageItem {item} />
+                {:else}
+                  <ToolCallRow
+                    {item}
+                    awaitingPermission={permissionHead?.toolCall.id === item.id}
+                  />
+                {/if}
+              </li>
+            {/each}
+          </ol>
+
+          {#if transcript && transcript.plan.length > 0}
+            <PlanCard
+              entries={transcript.plan}
+              collapsed={planCollapsed}
+              onToggle={togglePlanCollapsed}
+            />
+          {/if}
+
+          <PermissionQueueBar
+            sessionId={selectedSessionId}
+            queue={permissionQueue}
+            onResolve={resolvePermission}
+            onStop={stopSession}
+          />
+
+          <form class="composer" onsubmit={submitPrompt}>
+            <input
+              type="text"
+              bind:value={draft}
+              placeholder="Send a follow-up prompt…"
+              aria-label="Follow-up prompt"
+            />
+            <button type="submit" disabled={draft.trim() === ''}>Send</button>
+          </form>
+        {/if}
+      </section>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -314,6 +408,19 @@
   .status {
     opacity: 0.7;
     font-size: 0.85rem;
+  }
+
+  .account {
+    font-family: monospace;
+    font-size: 0.85rem;
+    opacity: 0.8;
+  }
+
+  .error {
+    color: #e5484d;
+    margin: 0;
+    font-size: 0.85rem;
+    width: 100%;
   }
 
   .cockpit {
