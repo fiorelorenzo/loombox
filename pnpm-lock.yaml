@@ -11,12 +11,18 @@ importers:
       '@changesets/cli':
         specifier: ^2.27.9
         version: 2.31.1(@types/node@22.20.1)
+      '@loombox/crypto':
+        specifier: workspace:*
+        version: link:packages/crypto
       '@loombox/eslint-config':
         specifier: workspace:*
         version: link:tooling/eslint-config
       '@loombox/node':
         specifier: workspace:*
         version: link:packages/node
+      '@loombox/protocol':
+        specifier: workspace:*
+        version: link:packages/protocol
       '@loombox/relay':
         specifier: workspace:*
         version: link:packages/relay
@@ -106,6 +112,9 @@ importers:
 
   packages/node:
     dependencies:
+      '@loombox/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@loombox/protocol':
         specifier: workspace:*
         version: link:../protocol

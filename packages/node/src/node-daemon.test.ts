@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import type { webcrypto } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,17 +9,29 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
 import {
-  PROTOCOL_VERSION,
-  type SessionAnnounce,
-  type SessionUpdateEnvelope,
-  type WireMessage,
+  PROTOCOL_V1,
+  type EncryptedEnvelope,
+  type SessionAnnounceV1,
+  type SessionListV1,
+  type SessionUpdateEnvelopeV1,
+  type SessionWithPrivateEnvelope,
+  type WireMessageV1,
 } from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
 import { AgentSupervisor } from '@loombox/supervisor';
+import {
+  decryptEnvelope,
+  deriveKeyTree,
+  encryptEnvelope,
+  generateAmk,
+  importAesGcmKey,
+} from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from './node-daemon';
 
 const execFileAsync = promisify(execFile);
+
+type CryptoKey = webcrypto.CryptoKey;
 
 // Reuses the same hermetic fixture agent packages/providers/core,
 // packages/providers/claude and packages/supervisor already exercise their
@@ -44,49 +57,151 @@ function echoProvider(): AcpProvider {
   };
 }
 
-/** A minimal PWA-like client over the global WebSocket, used only by this test. */
-class TestClient {
-  readonly messages: WireMessage[] = [];
+// -----------------------------------------------------------------------
+// Test-only crypto helpers standing in for a phone/PWA client. These are
+// deliberately NOT calls into this package's own `session-keys.ts`/
+// `crypto-envelope.ts` — they reimplement the same *documented* v1
+// derivation contract (session-keys.ts's doc comment: path
+// `['session', accountId, sessionId]`) directly against `@loombox/crypto`'s
+// primitives, so a passing test proves two independent parties interoperate,
+// not just that this package agrees with itself.
+// -----------------------------------------------------------------------
+
+function toBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function fromBase64(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, 'base64'));
+}
+
+function randomBase64(byteLength = 32): string {
+  return toBase64(crypto.getRandomValues(new Uint8Array(byteLength)));
+}
+
+async function derivePhoneSessionKey(
+  amk: Uint8Array,
+  accountId: string,
+  sessionId: string,
+): Promise<CryptoKey> {
+  const node = deriveKeyTree(amk, ['session', accountId, sessionId]);
+  return importAesGcmKey(node.key);
+}
+
+async function phoneSeal(
+  sessionId: string,
+  value: unknown,
+  key: CryptoKey,
+): Promise<EncryptedEnvelope> {
+  const plaintext = new TextEncoder().encode(JSON.stringify(value));
+  const envelope = await encryptEnvelope(sessionId, plaintext, key);
+  return {
+    resourceId: envelope.resourceId,
+    iv: toBase64(envelope.iv),
+    ciphertext: toBase64(envelope.ciphertext),
+    alg: 'AES-256-GCM',
+  };
+}
+
+async function phoneOpen<T>(
+  sessionId: string,
+  wire: EncryptedEnvelope,
+  key: CryptoKey,
+): Promise<T> {
+  const envelope = {
+    resourceId: wire.resourceId,
+    iv: fromBase64(wire.iv),
+    ciphertext: fromBase64(wire.ciphertext),
+  };
+  const plaintext = await decryptEnvelope(sessionId, envelope, key);
+  return JSON.parse(new TextDecoder().decode(plaintext)) as T;
+}
+
+/** Asserts a wire envelope's ciphertext bytes contain none of `plainSubstrings` verbatim — the relay-sees-only-ciphertext assertion. */
+function assertOpaque(wire: EncryptedEnvelope, plainSubstrings: string[]): void {
+  const raw = Buffer.from(wire.ciphertext, 'base64').toString('latin1');
+  for (const needle of plainSubstrings) {
+    expect(raw.includes(needle)).toBe(false);
+  }
+}
+
+/** A minimal encrypted-PWA-like client over the global WebSocket, speaking the v1 handshake. */
+class TestPhone {
+  readonly messages: WireMessageV1[] = [];
   private readonly socket: WebSocket;
   readonly ready: Promise<void>;
 
-  constructor(url: string, clientId: string) {
+  constructor(url: string, opts: { deviceId: string; devicePublicKey: string; authToken: string }) {
     this.socket = new WebSocket(url);
-    this.ready = new Promise((resolve) => {
+    this.ready = new Promise((resolve, reject) => {
+      let settled = false;
       this.socket.addEventListener('open', () => {
         this.socket.send(
-          JSON.stringify({ type: 'client_hello', protocolVersion: PROTOCOL_VERSION, clientId }),
+          JSON.stringify({
+            type: 'initialize',
+            protocolVersion: PROTOCOL_V1,
+            role: 'client',
+            authToken: opts.authToken,
+            deviceId: opts.deviceId,
+            devicePublicKey: opts.devicePublicKey,
+          }),
         );
       });
       this.socket.addEventListener('message', (event) => {
-        this.messages.push(JSON.parse(String(event.data)) as WireMessage);
-        resolve();
+        const parsed = JSON.parse(String(event.data)) as { type?: string };
+        if (!settled && parsed.type === 'initialize_result') {
+          settled = true;
+          resolve();
+          return;
+        }
+        this.messages.push(parsed as WireMessageV1);
+      });
+      this.socket.addEventListener('error', () => {
+        if (!settled) reject(new Error(`TestPhone: cannot reach ${url}`));
       });
     });
   }
 
-  send(message: WireMessage): void {
+  send(message: WireMessageV1): void {
     this.socket.send(JSON.stringify(message));
   }
 
   /** Waits until a message matching `predicate` has arrived (checking history first), or times out. */
   async waitFor(
-    predicate: (message: WireMessage) => boolean,
+    predicate: (message: WireMessageV1) => boolean,
     timeoutMs = 3000,
-  ): Promise<WireMessage> {
+  ): Promise<WireMessageV1> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const found = this.messages.find(predicate);
       if (found) return found;
       if (Date.now() > deadline) {
-        throw new Error('TestClient: timed out waiting for a matching message');
+        throw new Error('TestPhone: timed out waiting for a matching message');
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
 
-  /** Counts messages matching `predicate` seen so far. */
-  count(predicate: (message: WireMessage) => boolean): number {
+  /** Waits until at least `count` messages match `predicate`. */
+  async waitForCount(
+    predicate: (message: WireMessageV1) => boolean,
+    count: number,
+    timeoutMs = 3000,
+  ): Promise<WireMessageV1[]> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const found = this.messages.filter(predicate);
+      if (found.length >= count) return found;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `TestPhone: timed out waiting for ${count} matching messages (saw ${found.length})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  count(predicate: (message: WireMessageV1) => boolean): number {
     return this.messages.filter(predicate).length;
   }
 
@@ -100,10 +215,37 @@ class TestClient {
   }
 }
 
+/** Waits until `node` has completed the relay handshake at least once. */
+function waitForConnected(node: NodeDaemon): Promise<void> {
+  return new Promise((resolve) => node.once('connected', resolve));
+}
+
+/** Polls `session_list_request` until `sessionId` shows up (client-initiated `session_create` has no direct ack). */
+async function waitForSessionInList(
+  phone: TestPhone,
+  sessionId: string,
+  timeoutMs = 5000,
+): Promise<SessionWithPrivateEnvelope> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const list = [...phone.messages]
+      .reverse()
+      .find((m): m is SessionListV1 => m.type === 'session_list');
+    const entry = list?.sessions.find((s) => s.session.id === sessionId);
+    if (entry) return entry;
+    if (Date.now() > deadline) {
+      throw new Error(`waitForSessionInList: timed out waiting for session ${sessionId}`);
+    }
+  }
+}
+
 let relay: StartedRelay;
 let projectPath: string;
 let node: NodeDaemon | undefined;
-let client: TestClient | undefined;
+let phone: TestPhone | undefined;
+let phoneB: TestPhone | undefined;
 
 beforeEach(async () => {
   relay = await startRelay();
@@ -126,162 +268,348 @@ beforeEach(async () => {
 
 afterEach(async () => {
   node?.close();
-  client?.close();
+  phone?.close();
+  phoneB?.close();
   node = undefined;
-  client = undefined;
+  phone = undefined;
+  phoneB = undefined;
   await rm(projectPath, { recursive: true, force: true });
   await relay.close();
 });
 
-// TODO(v1 Wave C, node v1): these exercise the v0 relay wire, which #321
-// (relay v1) superseded. Rewrite against the protocol v1 wire when NodeDaemon
-// migrates to it, then un-skip.
-describe.skip('NodeDaemon', () => {
-  it('registers with the relay, announces a created session, and pumps agent updates to a connected client', async () => {
+describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
+  it('announces a session with clear routing metadata and an encrypted title/path envelope, and pumps agent updates as ciphertext a resumed client can decrypt', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-announce-and-pump';
+
     node = createNode({
       relayUrl: relay.url,
       nodeId: 'node-1',
+      deviceId: 'device-node-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
 
-    client = new TestClient(relay.url, 'client-1');
-    await client.ready;
+    const session = await node.createSession({
+      projectPath,
+      provider: 'test-echo',
+      title: 'my session',
+    });
 
-    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
 
-    const announceMsg = await client.waitFor((m) => m.type === 'session_announce');
-    const announce = announceMsg as SessionAnnounce;
-    expect(announce.session.id).toBe(session.id);
-    expect(announce.session.nodeId).toBe('node-1');
-    expect(announce.session.target).toBe('local');
-    expect(announce.session.provider).toBe('test-echo');
+    // A. the phone observes the running session without having started it,
+    // via the account-scoped snapshot — and the snapshot's clear metadata
+    // carries no title/projectPath (SPEC §8's metadata boundary).
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const listMsg = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    const entry = listMsg.sessions.find((s) => s.session.id === session.id);
+    expect(entry).toBeDefined();
+    expect(entry?.session).not.toHaveProperty('title');
+    expect(entry?.session).not.toHaveProperty('projectPath');
+    expect(entry?.session.nodeId).toBe('node-1');
+    expect(entry?.session.targetId).toBe('local');
+    expect(entry?.session.accountId).toBe(accountId);
+    expect(entry?.session.provider).toBe('test-echo');
 
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string }>(
+      session.id,
+      entry!.privateEnvelope,
+      key,
+    );
+    expect(decryptedMeta).toEqual({ title: 'my session', projectPath: session.projectPath });
+    // The relay only ever carried this ciphertext: the title/path are not recoverable from it.
+    assertOpaque(entry!.privateEnvelope, ['my session', session.projectPath]);
+
+    // Subscribe (session_resume) so this client starts receiving live fan-out.
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    const announce = (await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+    )) as SessionAnnounceV1;
+    expect(announce.session).not.toHaveProperty('title');
+
+    // B. output the phone did not initiate (an operator-side prompt via the
+    // node's direct API) streams to it live, as ciphertext it can decrypt.
     await node.promptSession(session.id, 'hi there');
 
-    const updateMsg = await client.waitFor((m) => {
-      if (m.type !== 'session_update') return false;
-      const { sessionId, update } = m as SessionUpdateEnvelope;
-      return (
-        sessionId === session.id &&
-        update.kind === 'agent_message_chunk' &&
-        update.text === 'Hello world'
-      );
-    });
-    const update = updateMsg as SessionUpdateEnvelope;
-    expect(update.update).toEqual({
-      kind: 'agent_message_chunk',
-      messageId: 'msg_agent_1',
-      text: 'Hello world',
-    });
+    const chunkMessages = (await phone.waitForCount(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+      2,
+    )) as SessionUpdateEnvelopeV1[];
 
-    const turnEnd = await client.waitFor(
-      (m) =>
-        m.type === 'session_update' &&
-        (m as SessionUpdateEnvelope).sessionId === session.id &&
-        (m as SessionUpdateEnvelope).update.kind === 'agent_turn_end',
+    // The relay never carried plaintext: the raw frame has only an opaque
+    // envelope, no 'kind'/'text' fields sitting next to it.
+    for (const message of chunkMessages) {
+      expect(message).not.toHaveProperty('text');
+      expect(message).not.toHaveProperty('kind');
+      assertOpaque(message.envelope, ['Hello', 'world']);
+    }
+
+    const decryptedChunks = await Promise.all(
+      chunkMessages
+        .sort((a, b) => a.seq - b.seq)
+        .map((message) =>
+          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
+        ),
     );
-    expect((turnEnd as SessionUpdateEnvelope).update).toEqual({
-      kind: 'agent_turn_end',
-      messageId: 'msg_agent_1',
-    });
+    expect(decryptedChunks.every((update) => update.kind === 'agent_message_chunk')).toBe(true);
+    expect(decryptedChunks.map((update) => update.text).join('')).toBe('Hello world');
   });
 
-  it('delivers a client prompt_inject to the owning session, producing a new turn of updates', async () => {
+  it("delivers a phone's encrypted prompt_inject to the owning session, producing a new turn of ciphertext updates", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-prompt-inject';
+
     node = createNode({
       relayUrl: relay.url,
       nodeId: 'node-2',
+      deviceId: 'device-node-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
 
-    client = new TestClient(relay.url, 'client-2');
-    await client.ready;
-
     const session = await node.createSession({ projectPath, provider: 'test-echo' });
-    await client.waitFor((m) => m.type === 'session_announce');
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
 
-    client.send({
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const envelope = await phoneSeal(session.id, { text: 'go do the thing' }, key);
+    assertOpaque(envelope, ['go do the thing']);
+    phone.send({
       type: 'prompt_inject',
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: PROTOCOL_V1,
       sessionId: session.id,
       promptId: 'prompt-1',
-      text: 'go do the thing',
+      envelope,
     });
 
-    const update = (await client.waitFor(
-      (m) =>
-        m.type === 'session_update' &&
-        (m as SessionUpdateEnvelope).sessionId === session.id &&
-        (m as SessionUpdateEnvelope).update.kind === 'agent_message_chunk',
-    )) as SessionUpdateEnvelope;
-    expect(update.update).toMatchObject({ kind: 'agent_message_chunk', text: 'Hello' });
+    const chunkMessages = (await phone.waitForCount(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+      2,
+    )) as SessionUpdateEnvelopeV1[];
+    const decryptedChunks = await Promise.all(
+      chunkMessages
+        .sort((a, b) => a.seq - b.seq)
+        .map((message) =>
+          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
+        ),
+    );
+    expect(decryptedChunks.map((update) => update.text).join('')).toBe('Hello world');
   });
 
-  it('ignores a prompt_inject for a session this node does not own, without crashing', async () => {
+  it('creates a session from a client session_create, routed via the target the node announced, and the resulting session is fully usable', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-create';
+
     node = createNode({
       relayUrl: relay.url,
       nodeId: 'node-3',
+      deviceId: 'device-node-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
+    await waitForConnected(node); // ensures target_announce landed before session_create routing needs it
 
-    client = new TestClient(relay.url, 'client-3');
-    await client.ready;
+    const sessionId = 'sess-from-client-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'client session', projectPath },
+      key,
+    );
 
-    client.send({
-      type: 'prompt_inject',
-      protocolVersion: PROTOCOL_VERSION,
-      sessionId: 'sess_unknown',
-      promptId: 'prompt-x',
-      text: 'hello?',
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-echo',
+      privateEnvelope,
     });
 
-    // The node stays responsive: a real session created afterward still announces fine.
-    const session = await node.createSession({ projectPath, provider: 'test-echo' });
-    const announce = (await client.waitFor(
-      (m) => m.type === 'session_announce',
-    )) as SessionAnnounce;
-    expect(announce.session.id).toBe(session.id);
+    const entry = await waitForSessionInList(phone, sessionId);
+    expect(entry.session.nodeId).toBe('node-3');
+    expect(entry.session.provider).toBe('test-echo');
+    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string }>(
+      sessionId,
+      entry.privateEnvelope,
+      key,
+    );
+    expect(decryptedMeta).toEqual({ title: 'client session', projectPath });
+
+    // The session is a real, working one: prompting it directly produces output.
+    await node.promptSession(sessionId, 'hi');
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+    await phone.waitFor((m) => m.type === 'session_announce');
+    await phone.waitForCount(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === sessionId,
+      1,
+    );
   });
 
-  it('reconnects after the relay connection drops and re-announces its sessions, without a process restart', async () => {
+  it('resyncs a client after it drops: the relay replays buffered ciphertext for the seq range it missed', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resync';
+
     node = createNode({
       relayUrl: relay.url,
       nodeId: 'node-4',
+      deviceId: 'device-node-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await node.promptSession(session.id, 'first turn');
+    const firstTurnChunks = (await phone.waitForCount(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+      2,
+    )) as SessionUpdateEnvelopeV1[];
+    const lastSeenSeq = Math.max(...firstTurnChunks.map((m) => m.seq));
+
+    // The phone drops (network loss) without unsubscribing.
+    phone.close();
+
+    // The node keeps working while the phone is gone; the relay still
+    // buffers these encrypted updates in its per-session resync ring even
+    // though nobody is currently subscribed to receive them live.
+    await node.promptSession(session.id, 'second turn, while the phone was offline');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // The phone reconnects and resyncs from where it left off.
+    phoneB = new TestPhone(relay.url, {
+      deviceId: 'device-phone-4', // same device identity reconnecting
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phoneB.ready;
+    phoneB.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phoneB.waitFor((m) => m.type === 'session_announce');
+    phoneB.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      sinceSeq: lastSeenSeq,
+    });
+
+    const replayed = (await phoneB.waitForCount(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+      2,
+    )) as SessionUpdateEnvelopeV1[];
+    expect(replayed.every((m) => m.seq > lastSeenSeq)).toBe(true);
+
+    const decryptedReplay = await Promise.all(
+      replayed
+        .sort((a, b) => a.seq - b.seq)
+        .map((message) =>
+          phoneOpen<{ kind: string; text: string }>(session.id, message.envelope, key),
+        ),
+    );
+    expect(decryptedReplay.map((update) => update.text).join('')).toBe('Hello world');
+    for (const message of replayed) {
+      assertOpaque(message.envelope, ['Hello', 'world']);
+    }
+  });
+
+  it('reconnects after the relay connection drops and re-announces its targets and sessions, without a process restart', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-reconnect';
+
+    node = createNode({
+      relayUrl: relay.url,
+      nodeId: 'node-5',
+      deviceId: 'device-node-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
       reconnect: { initialBackoffMs: 20, maxBackoffMs: 200 },
     });
 
-    client = new TestClient(relay.url, 'client-4');
-    await client.ready;
-
     const session = await node.createSession({ projectPath, provider: 'test-echo' });
-    await client.waitFor((m) => m.type === 'session_announce');
-    expect(client.count((m) => m.type === 'session_announce')).toBe(1);
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
 
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+    expect(phone.count((m) => m.type === 'session_announce')).toBe(1);
+
+    // The relay's session/target STORE survives a node disconnect (it is a
+    // ciphertext store, not connection-scoped state) — only the *routing*
+    // entry mapping this node's id to a live connection is cleared when its
+    // socket drops. So the real, observable effect of "reconnect
+    // re-announces" in v1 is that ROUTING to this node works again after a
+    // drop, not an unsolicited push to an already-subscribed client (the
+    // relay never fans a node's `session_announce`/`target_announce` out to
+    // clients at all — a client only ever receives one via its own
+    // `session_resume`/`session_list_request`). Prove routing is restored by
+    // driving a fresh client-initiated `prompt_inject` through the relay
+    // after the drop and confirming it still reaches the agent.
+    const connectedAgain = new Promise<void>((resolve) => node!.once('connected', resolve));
     node.simulateRelayDrop();
+    await connectedAgain;
 
-    // Wait for the reconnect to happen and the session to be re-announced.
-    const deadline = Date.now() + 3000;
-    while (client.count((m) => m.type === 'session_announce') < 2) {
-      if (Date.now() > deadline) {
-        throw new Error('timed out waiting for the node to reconnect and re-announce');
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    const envelope = await phoneSeal(session.id, { text: 'after reconnect' }, key);
+    phone.send({
+      type: 'prompt_inject',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: 'prompt-after-reconnect',
+      envelope,
+    });
 
-    const announces = client.messages.filter(
-      (m): m is SessionAnnounce => m.type === 'session_announce',
-    );
-    expect(announces).toHaveLength(2);
-    expect(announces[1]?.session.id).toBe(session.id);
-
-    // The reconnected node can still pump updates end to end.
-    await node.promptSession(session.id, 'after reconnect');
-    const update = (await client.waitFor(
-      (m) =>
-        m.type === 'session_update' &&
-        (m as SessionUpdateEnvelope).sessionId === session.id &&
-        (m as SessionUpdateEnvelope).update.kind === 'agent_message_chunk',
-    )) as SessionUpdateEnvelope;
-    expect(update.update).toMatchObject({ kind: 'agent_message_chunk' });
+    const chunkMessage = (await phone.waitFor(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+    )) as SessionUpdateEnvelopeV1;
+    const decrypted = await phoneOpen<{ kind: string }>(session.id, chunkMessage.envelope, key);
+    expect(decrypted.kind).toBe('agent_message_chunk');
   });
 });

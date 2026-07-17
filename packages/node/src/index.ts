@@ -12,3 +12,9 @@ export { RelayConnection } from './relay-connection';
 
 export type { CreateNodeSessionOptions, NodeDaemonOptions } from './node-daemon';
 export { createNode, NodeDaemon } from './node-daemon';
+
+export type { SshTargetConfig } from './target';
+export { DEFAULT_LOCAL_TARGET } from './target';
+
+export { envelopeFromWire, envelopeToWire, openJson, sealJson } from './crypto-envelope';
+export { deriveSessionKey } from './session-keys';

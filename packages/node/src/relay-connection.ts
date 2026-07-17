@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 
-import { PROTOCOL_VERSION, safeParseWireMessage, type WireMessage } from '@loombox/protocol';
+import {
+  PROTOCOL_V1,
+  initializeResult,
+  safeParseWireMessageV1,
+  type Initialize,
+  type WireMessageV1,
+} from '@loombox/protocol';
 
 /**
  * The subset of the WHATWG `WebSocket` interface this module relies on, kept
@@ -27,9 +33,16 @@ const DEFAULT_MAX_BACKOFF_MS = 10_000;
 export interface RelayConnectionOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
   relayUrl: string;
-  /** This node's stable identity, sent as the first frame's `nodeId`. */
-  nodeId: string;
-  nodeName?: string;
+  /** This node's stable device identity, sent in the `initialize` handshake. */
+  deviceId: string;
+  /**
+   * This device's ECDH P-256 identity public key, base64-encoded raw form
+   * (SPEC §8). Real per-node keypair generation/persistence is issue #64;
+   * `NodeDaemon`'s caller supplies this directly until that lands.
+   */
+  devicePublicKey: string;
+  /** Opaque Better Auth bearer token (SPEC §8); the relay validates only its shape today (TODO #121). */
+  authToken: string;
   /** Delay before the first reconnect attempt (default 250ms). */
   initialBackoffMs?: number;
   /** Cap on the reconnect delay after repeated failures (default 10s). */
@@ -39,19 +52,23 @@ export interface RelayConnectionOptions {
 }
 
 /**
- * Owns one outbound WebSocket connection from this node to the relay
+ * Owns one outbound WebSocket connection from this node to the v1 relay
  * (SPEC.md §5.1: "Connects outbound to the relay and registers as an E2E
- * device"). Sends `node_hello` as the first frame on every (re)connect, and
- * reconnects with capped exponential backoff whenever the socket drops,
- * without requiring a process restart.
+ * device"; issue #65). Sends `initialize` (role `'node'`) as the first frame
+ * on every (re)connect, awaits the relay's `initialize_result` before
+ * considering the connection usable, and reconnects with capped exponential
+ * backoff whenever the socket drops, without requiring a process restart.
  *
  * Emits:
- * - `'open'` once a fresh socket has sent its `node_hello` (including on
- *   every reconnect) — the composing daemon uses this to re-announce any
- *   sessions the relay would otherwise have dropped (relay behavior: a
- *   node's sessions are removed from the registry when its socket closes).
- * - `'message'` with every valid inbound {@link WireMessage}.
+ * - `'open'` once a fresh socket has completed the `initialize` handshake
+ *   (including on every reconnect) — the composing `NodeDaemon` uses this to
+ *   re-announce its targets and sessions, which the relay drops from its
+ *   registry the moment a node's socket closes.
+ * - `'message'` with every valid inbound {@link WireMessageV1} (excluding the
+ *   handshake's own `initialize_result`, consumed internally).
  * - `'close'` whenever the underlying socket closes (before a reconnect is scheduled).
+ * - `'error'` when the relay rejects the handshake (e.g. `update_required` for
+ *   a version mismatch, SPEC.md §10/#108) — surfaced rather than failing silently.
  */
 export class RelayConnection extends EventEmitter {
   private readonly options: RelayConnectionOptions;
@@ -60,6 +77,10 @@ export class RelayConnection extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private backoffMs: number;
   private userClosed = false;
+  private awaitingInitializeResult = false;
+
+  /** The protocol version the relay actually negotiated on the current/last connection, once known. */
+  negotiatedVersion: number | undefined;
 
   constructor(options: RelayConnectionOptions) {
     super();
@@ -82,8 +103,8 @@ export class RelayConnection extends EventEmitter {
     this.open();
   }
 
-  /** Sends a wire message if the socket is currently open; silently drops it otherwise. */
-  send(message: WireMessage): void {
+  /** Sends a v1 wire message if the socket is currently open; silently drops it otherwise. */
+  send(message: WireMessageV1): void {
     if (this.socket && this.socket.readyState === WS_OPEN) {
       this.socket.send(JSON.stringify(message));
     }
@@ -113,21 +134,46 @@ export class RelayConnection extends EventEmitter {
   private open(): void {
     const socket = new this.WebSocketCtor(this.options.relayUrl);
     this.socket = socket;
+    this.awaitingInitializeResult = true;
 
     socket.addEventListener('open', () => {
       this.backoffMs = this.options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
-      this.send({
-        type: 'node_hello',
-        protocolVersion: PROTOCOL_VERSION,
-        nodeId: this.options.nodeId,
-        nodeName: this.options.nodeName,
-      });
-      this.emit('open');
+      const initialize: Initialize = {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'node',
+        authToken: this.options.authToken,
+        deviceId: this.options.deviceId,
+        devicePublicKey: this.options.devicePublicKey,
+      };
+      socket.send(JSON.stringify(initialize));
     });
 
     socket.addEventListener('message', (event: { data: unknown }) => {
-      const message = this.parseInbound(event.data);
-      if (message) this.emit('message', message);
+      const parsed = this.parseRaw(event.data);
+      if (parsed === undefined) return;
+
+      if (this.awaitingInitializeResult) {
+        this.awaitingInitializeResult = false;
+        const result = initializeResult.safeParse(parsed);
+        if (result.success) {
+          this.negotiatedVersion = result.data.negotiatedVersion;
+          this.emit('open');
+        } else {
+          // The relay rejects an incompatible/invalid handshake with an
+          // `update_required` notice (or an unparseable frame) then closes
+          // the socket (#108) — surface it rather than hanging silently.
+          // The 'close' handler below still runs and schedules a reconnect.
+          this.emit(
+            'error',
+            new Error(`RelayConnection: handshake rejected by relay: ${JSON.stringify(parsed)}`),
+          );
+        }
+        return;
+      }
+
+      const message = safeParseWireMessageV1(parsed);
+      if (message.success) this.emit('message', message.data);
     });
 
     socket.addEventListener('close', () => {
@@ -138,8 +184,8 @@ export class RelayConnection extends EventEmitter {
 
     // The 'close' event always follows 'error' for the global WebSocket
     // client, so reconnect scheduling lives in the 'close' handler only;
-    // this listener exists purely so an error never becomes an unhandled
-    // event.
+    // this listener exists purely so a transport-level error never becomes
+    // an unhandled event.
     socket.addEventListener('error', () => {});
   }
 
@@ -157,14 +203,11 @@ export class RelayConnection extends EventEmitter {
     }, delay);
   }
 
-  private parseInbound(data: unknown): WireMessage | undefined {
-    let parsed: unknown;
+  private parseRaw(data: unknown): unknown {
     try {
-      parsed = JSON.parse(String(data));
+      return JSON.parse(String(data));
     } catch {
       return undefined;
     }
-    const result = safeParseWireMessage(parsed);
-    return result.success ? result.data : undefined;
   }
 }
