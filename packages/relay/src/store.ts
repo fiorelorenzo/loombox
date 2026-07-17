@@ -1,14 +1,31 @@
 import type { EncryptedEnvelope, SessionMetaPublic, TargetDescriptor } from '@loombox/protocol';
 
 /**
- * In-memory relay stores (SPEC §16 relay stack; `docs/v1-plan.md` Wave B).
- * The relay is a blind router (issue #315 decision 1): every store here holds
- * only routing metadata and opaque ciphertext, never plaintext. Each store is
- * a small interface so a Postgres-backed implementation (device registry #112,
- * blob store #99, session resync ring #98/#254) can slot in later without
- * touching `relay.ts`'s wiring — that swap is Wave B.2, gated on Better Auth
- * (#121) landing first so `accountId` stops being a stub.
+ * In-memory and Postgres-backed relay stores (SPEC §16 relay stack;
+ * `docs/v1-plan.md` Wave B, Wave B.2a). The relay is a blind router (issue
+ * #315 decision 1): every store here holds only routing metadata and opaque
+ * ciphertext, never plaintext. Each store is a small interface so a
+ * Postgres-backed implementation (device registry #112, blob store #99,
+ * session resync ring #98/#254 — see `store-postgres.ts`) slots in behind
+ * the same interface `relay.ts` already calls.
+ *
+ * `DeviceStore`/`SessionStore`/`BlobStore` methods return {@link Awaitable}
+ * rather than a bare value: the in-memory implementation below still
+ * returns plain, synchronous values (so its callers, including this
+ * package's own tests that read straight off a `RelayStore` instance right
+ * after triggering an action, keep working unchanged), but a genuine
+ * Postgres implementation is inescapably asynchronous — real network I/O
+ * has no synchronous form in Node. `relay.ts` awaits every store call
+ * uniformly, which is a no-op (a same-tick microtask) for the in-memory
+ * store and real I/O for the Postgres one; both satisfy the same contract.
+ * `TargetStore` is the one exception and stays fully synchronous: targets
+ * are live routing state a node re-announces on every reconnect, so there
+ * is nothing to persist across a relay restart (see `store-postgres.ts`'s
+ * doc comment).
  */
+
+/** A value a store method may return either synchronously or via a Promise — see the module doc comment above. */
+export type Awaitable<T> = T | Promise<T>;
 
 /** A registered device's identity (SPEC §8). Never holds the AMK or a recovery code. */
 export interface DeviceRecord {
@@ -23,11 +40,13 @@ export interface DeviceRecord {
 
 export interface DeviceStore {
   /** Registers a new device or refreshes an existing one's label/last-seen. */
-  upsert(record: Omit<DeviceRecord, 'registeredAt' | 'lastSeenAt' | 'status'>): DeviceRecord;
-  get(deviceId: string): DeviceRecord | undefined;
-  touch(deviceId: string): void;
-  revoke(deviceId: string): void;
-  rotate(deviceId: string, newDevicePublicKey: string): void;
+  upsert(
+    record: Omit<DeviceRecord, 'registeredAt' | 'lastSeenAt' | 'status'>,
+  ): Awaitable<DeviceRecord>;
+  get(deviceId: string): Awaitable<DeviceRecord | undefined>;
+  touch(deviceId: string): Awaitable<void>;
+  revoke(deviceId: string): Awaitable<void>;
+  rotate(deviceId: string, newDevicePublicKey: string): Awaitable<void>;
 }
 
 /** One node's currently-announced execution targets (SPEC §5.2), keyed by nodeId. */
@@ -59,20 +78,20 @@ export interface ResyncResult {
 }
 
 export interface SessionStore {
-  announce(record: SessionRecord): void;
-  get(sessionId: string): SessionRecord | undefined;
+  announce(record: SessionRecord): Awaitable<void>;
+  get(sessionId: string): Awaitable<SessionRecord | undefined>;
   /** Account-scoped listing (SPEC §8's OAuth-alone listing) — never returns another account's sessions. */
-  listForAccount(accountId: string): readonly SessionRecord[];
+  listForAccount(accountId: string): Awaitable<readonly SessionRecord[]>;
   /** Assigns the next monotonic seq for a session's update stream, creating the counter on first use. */
-  nextSeq(sessionId: string): number;
-  pushRingEntry(sessionId: string, entry: RingEntry): void;
-  getEntriesSince(sessionId: string, sinceSeq: number): ResyncResult;
+  nextSeq(sessionId: string): Awaitable<number>;
+  pushRingEntry(sessionId: string, entry: RingEntry): Awaitable<void>;
+  getEntriesSince(sessionId: string, sinceSeq: number): Awaitable<ResyncResult>;
 }
 
 /** Opaque encrypted-blob store (#99), addressed by a caller-supplied opaque key (relay composes `sessionId:ref`). */
 export interface BlobStore {
-  upload(key: string, envelope: EncryptedEnvelope): void;
-  download(key: string): EncryptedEnvelope | undefined;
+  upload(key: string, envelope: EncryptedEnvelope): Awaitable<void>;
+  download(key: string): Awaitable<EncryptedEnvelope | undefined>;
 }
 
 export interface RelayStore {
@@ -89,7 +108,48 @@ export interface RelayStoreOptions {
 
 const DEFAULT_RING_BUFFER_SIZE = 200;
 
-function createDeviceStore(): DeviceStore {
+/**
+ * The in-memory store's concrete, fully-synchronous sub-store shapes —
+ * narrower than the public `DeviceStore`/`SessionStore`/`BlobStore`
+ * contracts (which allow `Awaitable`, to also fit the Postgres
+ * implementation), so a caller holding a `SyncRelayStore` directly — this
+ * package's own tests construct one via `createInMemoryRelayStore()` and
+ * read its return values straight off, without awaiting, right after
+ * triggering an action — keeps that synchronous chaining working. Each is
+ * still structurally assignable to its wider public counterpart wherever
+ * that's expected (e.g. `CreateRelayOptions.store: RelayStore`).
+ */
+interface SyncDeviceStore extends DeviceStore {
+  upsert(record: Omit<DeviceRecord, 'registeredAt' | 'lastSeenAt' | 'status'>): DeviceRecord;
+  get(deviceId: string): DeviceRecord | undefined;
+  touch(deviceId: string): void;
+  revoke(deviceId: string): void;
+  rotate(deviceId: string, newDevicePublicKey: string): void;
+}
+
+interface SyncSessionStore extends SessionStore {
+  announce(record: SessionRecord): void;
+  get(sessionId: string): SessionRecord | undefined;
+  listForAccount(accountId: string): readonly SessionRecord[];
+  nextSeq(sessionId: string): number;
+  pushRingEntry(sessionId: string, entry: RingEntry): void;
+  getEntriesSince(sessionId: string, sinceSeq: number): ResyncResult;
+}
+
+interface SyncBlobStore extends BlobStore {
+  upload(key: string, envelope: EncryptedEnvelope): void;
+  download(key: string): EncryptedEnvelope | undefined;
+}
+
+/** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
+export interface SyncRelayStore extends RelayStore {
+  devices: SyncDeviceStore;
+  targets: TargetStore;
+  sessions: SyncSessionStore;
+  blobs: SyncBlobStore;
+}
+
+function createDeviceStore(): SyncDeviceStore {
   const devices = new Map<string, DeviceRecord>();
   return {
     upsert(input) {
@@ -121,7 +181,11 @@ function createDeviceStore(): DeviceStore {
   };
 }
 
-function createTargetStore(): TargetStore {
+/**
+ * Always in-memory, even inside a Postgres-backed `RelayStore` — see the
+ * module doc comment above for why targets are never persisted.
+ */
+export function createTargetStore(): TargetStore {
   const byNode = new Map<string, TargetDescriptor[]>();
   const nodeByTarget = new Map<string, string>();
   return {
@@ -151,7 +215,7 @@ interface SessionRing {
   lastEvictedSeq?: number;
 }
 
-function createSessionStore(ringBufferSize: number): SessionStore {
+function createSessionStore(ringBufferSize: number): SyncSessionStore {
   const sessions = new Map<string, SessionRecord>();
   const seqCounters = new Map<string, number>();
   const rings = new Map<string, SessionRing>();
@@ -203,7 +267,7 @@ function createSessionStore(ringBufferSize: number): SessionStore {
   };
 }
 
-function createBlobStore(): BlobStore {
+function createBlobStore(): SyncBlobStore {
   const blobs = new Map<string, EncryptedEnvelope>();
   return {
     upload(key, envelope) {
@@ -216,7 +280,7 @@ function createBlobStore(): BlobStore {
 }
 
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
-export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): RelayStore {
+export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   return {
     devices: createDeviceStore(),
     targets: createTargetStore(),

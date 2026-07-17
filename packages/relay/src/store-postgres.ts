@@ -1,0 +1,329 @@
+import type { EncryptedEnvelope, SessionMetaPublic } from '@loombox/protocol';
+
+import type { PgLike } from './pg-client';
+import {
+  createTargetStore,
+  type BlobStore,
+  type DeviceRecord,
+  type DeviceStore,
+  type RelayStore,
+  type RelayStoreOptions,
+  type ResyncResult,
+  type RingEntry,
+  type SessionRecord,
+  type SessionStore,
+} from './store';
+
+/**
+ * Postgres-backed `RelayStore` (#96 schema, #112 device registry, #99 blob
+ * store, session store + resync ring persistence). Implements the exact
+ * `DeviceStore`/`SessionStore`/`BlobStore` interfaces `store.ts` declares —
+ * see that file's module doc comment for why their methods return
+ * `Awaitable<T>` rather than a bare value. `TargetStore` is not persisted
+ * here (still `createTargetStore()`, in-memory) for the same reason.
+ *
+ * Takes a `PgLike` rather than importing `pg`'s `Pool` type directly, so the
+ * hermetic test suite (`store-postgres.test.ts`) can hand it a `pg-mem`
+ * in-memory Postgres instead of a real one — both satisfy the same
+ * structural `{ query(text, params) }` shape.
+ */
+export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {}): RelayStore {
+  return {
+    devices: createPostgresDeviceStore(pg),
+    targets: createTargetStore(),
+    sessions: createPostgresSessionStore(pg, opts.ringBufferSize ?? 200),
+    blobs: createPostgresBlobStore(pg),
+  };
+}
+
+function rowToDevice(row: {
+  device_id: string;
+  device_public_key: string;
+  label: string | null;
+  account_id: string;
+  status: string;
+  registered_at: string | number;
+  last_seen_at: string | number;
+}): DeviceRecord {
+  return {
+    deviceId: row.device_id,
+    devicePublicKey: row.device_public_key,
+    label: row.label ?? undefined,
+    accountId: row.account_id,
+    status: row.status === 'revoked' ? 'revoked' : 'active',
+    registeredAt: Number(row.registered_at),
+    lastSeenAt: Number(row.last_seen_at),
+  };
+}
+
+function createPostgresDeviceStore(pg: PgLike): DeviceStore {
+  async function get(deviceId: string): Promise<DeviceRecord | undefined> {
+    const { rows } = await pg.query(`SELECT * FROM devices WHERE device_id = $1`, [deviceId]);
+    const row = rows[0] as Parameters<typeof rowToDevice>[0] | undefined;
+    return row ? rowToDevice(row) : undefined;
+  }
+
+  return {
+    async upsert(input) {
+      const now = Date.now();
+      const { rows: existingRows } = await pg.query<{ registered_at: string | number }>(
+        `SELECT registered_at FROM devices WHERE device_id = $1`,
+        [input.deviceId],
+      );
+      const registeredAt = existingRows[0] ? Number(existingRows[0].registered_at) : now;
+
+      await pg.query(
+        `INSERT INTO devices (device_id, device_public_key, label, account_id, status, registered_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, COALESCE((SELECT status FROM devices WHERE device_id = $1), 'active'), $5, $6)
+         ON CONFLICT (device_id) DO UPDATE SET
+           device_public_key = EXCLUDED.device_public_key,
+           label = EXCLUDED.label,
+           account_id = EXCLUDED.account_id,
+           last_seen_at = EXCLUDED.last_seen_at`,
+        [
+          input.deviceId,
+          input.devicePublicKey,
+          input.label ?? null,
+          input.accountId,
+          registeredAt,
+          now,
+        ],
+      );
+      const record = await get(input.deviceId);
+      // The row we just wrote always exists; this is only unreachable if the driver misbehaves.
+      if (!record)
+        throw new Error(`postgres device store: upsert of ${input.deviceId} did not persist`);
+      return record;
+    },
+    get,
+    async touch(deviceId) {
+      await pg.query(`UPDATE devices SET last_seen_at = $2 WHERE device_id = $1`, [
+        deviceId,
+        Date.now(),
+      ]);
+    },
+    async revoke(deviceId) {
+      await pg.query(`UPDATE devices SET status = 'revoked' WHERE device_id = $1`, [deviceId]);
+    },
+    async rotate(deviceId, newDevicePublicKey) {
+      await pg.query(`UPDATE devices SET device_public_key = $2 WHERE device_id = $1`, [
+        deviceId,
+        newDevicePublicKey,
+      ]);
+    },
+  };
+}
+
+function envelopeColumns(envelope: EncryptedEnvelope): [string, string, string, string] {
+  return [envelope.resourceId, envelope.iv, envelope.ciphertext, envelope.alg];
+}
+
+function rowToEnvelope(row: {
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
+}): EncryptedEnvelope {
+  return {
+    resourceId: row.envelope_resource_id,
+    iv: row.envelope_iv,
+    ciphertext: row.envelope_ciphertext,
+    alg: row.envelope_alg as EncryptedEnvelope['alg'],
+  };
+}
+
+function rowToSessionMeta(row: {
+  session_id: string;
+  node_id: string;
+  target_id: string;
+  account_id: string;
+  provider: string;
+  created_at: string | number;
+}): SessionMetaPublic {
+  return {
+    id: row.session_id,
+    nodeId: row.node_id,
+    targetId: row.target_id,
+    accountId: row.account_id,
+    provider: row.provider,
+    createdAt: Number(row.created_at),
+  };
+}
+
+interface SessionRow {
+  session_id: string;
+  node_id: string;
+  target_id: string;
+  account_id: string;
+  provider: string;
+  created_at: string | number;
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
+}
+
+function rowToSessionRecord(row: SessionRow): SessionRecord {
+  return { meta: rowToSessionMeta(row), privateEnvelope: rowToEnvelope(row) };
+}
+
+function createPostgresSessionStore(pg: PgLike, defaultCapacity: number): SessionStore {
+  return {
+    async announce(record) {
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(record.privateEnvelope);
+      await pg.query(
+        `INSERT INTO sessions (session_id, node_id, target_id, account_id, provider, created_at, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (session_id) DO UPDATE SET
+           node_id = EXCLUDED.node_id,
+           target_id = EXCLUDED.target_id,
+           account_id = EXCLUDED.account_id,
+           provider = EXCLUDED.provider,
+           envelope_resource_id = EXCLUDED.envelope_resource_id,
+           envelope_iv = EXCLUDED.envelope_iv,
+           envelope_ciphertext = EXCLUDED.envelope_ciphertext,
+           envelope_alg = EXCLUDED.envelope_alg`,
+        [
+          record.meta.id,
+          record.meta.nodeId,
+          record.meta.targetId,
+          record.meta.accountId,
+          record.meta.provider,
+          record.meta.createdAt,
+          resourceId,
+          iv,
+          ciphertext,
+          alg,
+        ],
+      );
+    },
+    async get(sessionId) {
+      const { rows } = await pg.query<SessionRow>(`SELECT * FROM sessions WHERE session_id = $1`, [
+        sessionId,
+      ]);
+      return rows[0] ? rowToSessionRecord(rows[0]) : undefined;
+    },
+    async listForAccount(accountId) {
+      const { rows } = await pg.query<SessionRow>(`SELECT * FROM sessions WHERE account_id = $1`, [
+        accountId,
+      ]);
+      return rows.map(rowToSessionRecord);
+    },
+    async nextSeq(sessionId) {
+      const { rows } = await pg.query<{ seq: number }>(
+        `SELECT seq FROM session_seq_counters WHERE session_id = $1`,
+        [sessionId],
+      );
+      const next = (rows[0]?.seq ?? 0) + 1;
+      if (rows.length > 0) {
+        await pg.query(`UPDATE session_seq_counters SET seq = $2 WHERE session_id = $1`, [
+          sessionId,
+          next,
+        ]);
+      } else {
+        await pg.query(`INSERT INTO session_seq_counters (session_id, seq) VALUES ($1, $2)`, [
+          sessionId,
+          next,
+        ]);
+      }
+      return next;
+    },
+    async pushRingEntry(sessionId, entry) {
+      const { rows: ringRows } = await pg.query<{
+        capacity: number;
+        last_evicted_seq: number | null;
+      }>(`SELECT capacity, last_evicted_seq FROM session_rings WHERE session_id = $1`, [sessionId]);
+      const capacity = ringRows[0]?.capacity ?? defaultCapacity;
+      if (ringRows.length === 0) {
+        await pg.query(
+          `INSERT INTO session_rings (session_id, capacity, last_evicted_seq) VALUES ($1, $2, NULL)`,
+          [sessionId, capacity],
+        );
+      }
+
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(entry.envelope);
+      await pg.query(
+        `INSERT INTO session_ring_entries (session_id, seq, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [sessionId, entry.seq, resourceId, iv, ciphertext, alg],
+      );
+
+      const { rows: countRows } = await pg.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM session_ring_entries WHERE session_id = $1`,
+        [sessionId],
+      );
+      let overflow = Number(countRows[0]?.count ?? 0) - capacity;
+      let lastEvicted: number | undefined;
+      while (overflow > 0) {
+        const { rows: oldestRows } = await pg.query<{ seq: number }>(
+          `SELECT seq FROM session_ring_entries WHERE session_id = $1 ORDER BY seq ASC LIMIT 1`,
+          [sessionId],
+        );
+        const oldest = oldestRows[0];
+        if (!oldest) break;
+        await pg.query(`DELETE FROM session_ring_entries WHERE session_id = $1 AND seq = $2`, [
+          sessionId,
+          oldest.seq,
+        ]);
+        lastEvicted = oldest.seq;
+        overflow -= 1;
+      }
+      if (lastEvicted !== undefined) {
+        await pg.query(`UPDATE session_rings SET last_evicted_seq = $2 WHERE session_id = $1`, [
+          sessionId,
+          lastEvicted,
+        ]);
+      }
+    },
+    async getEntriesSince(sessionId, sinceSeq): Promise<ResyncResult> {
+      const { rows: ringRows } = await pg.query<{ last_evicted_seq: number | null }>(
+        `SELECT last_evicted_seq FROM session_rings WHERE session_id = $1`,
+        [sessionId],
+      );
+      const lastEvictedSeq = ringRows[0]?.last_evicted_seq ?? undefined;
+
+      const { rows: entryRows } = await pg.query<{
+        seq: number;
+        envelope_resource_id: string;
+        envelope_iv: string;
+        envelope_ciphertext: string;
+        envelope_alg: string;
+      }>(`SELECT * FROM session_ring_entries WHERE session_id = $1 AND seq > $2 ORDER BY seq ASC`, [
+        sessionId,
+        sinceSeq,
+      ]);
+      const entries: RingEntry[] = entryRows.map((row) => ({
+        seq: row.seq,
+        envelope: rowToEnvelope(row),
+      }));
+
+      if (lastEvictedSeq !== undefined && sinceSeq < lastEvictedSeq) {
+        return { entries, droppedFromSeq: sinceSeq + 1, droppedToSeq: lastEvictedSeq };
+      }
+      return { entries };
+    },
+  };
+}
+
+function createPostgresBlobStore(pg: PgLike): BlobStore {
+  return {
+    async upload(key, envelope) {
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(envelope);
+      await pg.query(
+        `INSERT INTO blobs (blob_key, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (blob_key) DO UPDATE SET
+           envelope_resource_id = EXCLUDED.envelope_resource_id,
+           envelope_iv = EXCLUDED.envelope_iv,
+           envelope_ciphertext = EXCLUDED.envelope_ciphertext,
+           envelope_alg = EXCLUDED.envelope_alg`,
+        [key, resourceId, iv, ciphertext, alg],
+      );
+    },
+    async download(key) {
+      const { rows } = await pg.query(`SELECT * FROM blobs WHERE blob_key = $1`, [key]);
+      const row = rows[0] as Parameters<typeof rowToEnvelope>[0] | undefined;
+      return row ? rowToEnvelope(row) : undefined;
+    },
+  };
+}
