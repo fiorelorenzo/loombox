@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { Pool } from 'pg';
 
-import { createRelayAuth, type RelayAuth } from './auth';
+import { createRelayAuth, migrateBetterAuth, type RelayAuth } from './auth';
 import { runMigrations } from './migrate';
 import { startRelay } from './relay';
 import { createPostgresRelayStore } from './store-postgres';
@@ -61,6 +61,10 @@ export async function start(): Promise<StartedRelayHandle> {
             }
           : undefined,
     });
+    // Better Auth's tables are separate from the relay's own and are not
+    // created lazily on Postgres, so apply its schema on boot too (otherwise
+    // the first login 500s on a missing `verification` relation).
+    await migrateBetterAuth(auth);
   }
 
   const { url, close } = await startRelay({ host, port, logger: true, store, auth });

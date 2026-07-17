@@ -110,6 +110,21 @@ export function mountBetterAuth(app: FastifyInstance, auth: RelayAuth): void {
 }
 
 /**
+ * Applies Better Auth's own schema (its `user` / `session` / `account` /
+ * `verification` tables) to the configured database. Better Auth does not
+ * create these lazily on Postgres, so the relay runs this on boot alongside
+ * its own migrations (see `main.ts`), which is what makes a fresh
+ * `docker compose up` reach a working login rather than 500ing on a missing
+ * `verification` relation. This is the exact call the hermetic auth tests use
+ * to set up their sqlite schema, so prod and tests share one migration path.
+ */
+export async function migrateBetterAuth(auth: RelayAuth): Promise<void> {
+  const { getMigrations } = await import('better-auth/db/migration');
+  const { runMigrations } = await getMigrations(auth.options);
+  await runMigrations();
+}
+
+/**
  * Resolves an `Authorization: Bearer` token (the relay WS handshake's
  * `authToken`, SPEC §8) against Better Auth's session store, returning the
  * account it belongs to — or `undefined` for a missing/invalid/expired

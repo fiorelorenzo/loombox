@@ -6,6 +6,7 @@ import {
   BETTER_AUTH_ROUTE_PREFIX,
   createRelayAuth,
   deriveAccountIdStub,
+  migrateBetterAuth,
   mountBetterAuth,
   resolveAccountIdViaBetterAuth,
   type RelayAuth,
@@ -29,9 +30,9 @@ async function buildTestAuth(
     enableEmailPasswordForTests: true,
     ...overrides,
   });
-  const { getMigrations } = await import('better-auth/db/migration');
-  const { runMigrations } = await getMigrations(auth.options);
-  await runMigrations();
+  // Exercise the exact production boot migration path (main.ts calls this too),
+  // so the tests would catch a regression where Better Auth's schema is not set up.
+  await migrateBetterAuth(auth);
   return auth;
 }
 
@@ -161,5 +162,36 @@ describe('resolveAccountIdViaBetterAuth — the Bearer resolver (#121, #122)', (
 describe('deriveAccountIdStub — the zero-config dev/hermetic-test fallback', () => {
   it('is a pass-through, not real authentication (documented, deliberate)', () => {
     expect(deriveAccountIdStub('anything')).toBe('anything');
+  });
+});
+
+describe('migrateBetterAuth — boot-time schema setup (#119)', () => {
+  it('creates Better Auth tables so login works; without it the store 500s on a missing relation', async () => {
+    const database = new Database(':memory:');
+    const auth = createRelayAuth({
+      database,
+      baseURL: 'http://127.0.0.1:0',
+      secret: 'hermetic-test-secret-hermetic-test-secret',
+      enableEmailPasswordForTests: true,
+    });
+
+    // Before migrating, Better Auth's own tables do not exist: any operation
+    // that touches them fails (this is exactly the prod deploy regression —
+    // "relation \"verification\" does not exist").
+    await expect(
+      auth.api.signUpEmail({
+        body: { email: 'pre@example.com', password: 'correct horse battery staple', name: 'pre' },
+        asResponse: true,
+      }),
+    ).rejects.toThrow();
+
+    await migrateBetterAuth(auth);
+
+    // After migrating, the same call succeeds and issues a session token.
+    const response = await auth.api.signUpEmail({
+      body: { email: 'post@example.com', password: 'correct horse battery staple', name: 'post' },
+      asResponse: true,
+    });
+    expect(response.headers.get('set-auth-token')).toBeTruthy();
   });
 });
