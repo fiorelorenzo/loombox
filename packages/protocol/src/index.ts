@@ -1,9 +1,16 @@
 import { z } from 'zod';
+import { schemasV1 } from './v1/index';
 
 /**
  * The wire-protocol version, negotiated once per connection following ACP's
  * `initialize` handshake pattern (SPEC §10, §16). Bump on any
  * backwards-incompatible change to the schemas below.
+ *
+ * This is v0. **v1 lives alongside it, additively, in `./v1/` (re-exported
+ * below)** — every export in this file stays untouched; v1 introduces its
+ * own `PROTOCOL_V1`, its own message families, and its own `wireMessageV1`
+ * union rather than extending this one, per the migration plan in
+ * `docs/v1-plan.md` (v0 is disposable and removed once downstream migrates).
  */
 export const PROTOCOL_VERSION = 0;
 
@@ -130,8 +137,8 @@ export function safeParseWireMessage(data: unknown): z.SafeParseReturnType<unkno
   return wireMessage.safeParse(data);
 }
 
-/** Registry of the wire schemas, for introspection/tooling. */
-export const schemas = {
+/** Registry of the v0 wire schemas, for introspection/tooling. */
+const schemasV0 = {
   baseMessage,
   sessionMeta,
   sessionUpdate,
@@ -143,3 +150,18 @@ export const schemas = {
   promptInject,
   wireMessage,
 } as const;
+
+/**
+ * Registry of every wire schema, v0 and v1 together, for introspection/
+ * tooling. Additive: v0's shape here is unchanged, v1's schemas are merged
+ * in under their own names (see `./v1/index.ts`'s `schemasV1`).
+ */
+export const schemas = {
+  ...schemasV0,
+  ...schemasV1,
+} as const;
+
+// Re-export the full v1 wire contract (SPEC §10, §16; `docs/v1-plan.md`;
+// issue #315) alongside the v0 schema above. See the module docstring in
+// `./v1/index.ts` for the message-family list.
+export * from './v1/index';
