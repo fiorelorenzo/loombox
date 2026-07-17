@@ -54,11 +54,111 @@ export interface AcpAgentInfo {
   version: string;
 }
 
+/**
+ * ACP's own `promptCapabilities` sub-object (SPEC.md §7.25 "image content in
+ * an ACP prompt is a base64 content block"). All optional: absence means off,
+ * not an error (issue #180's "missing optional field" acceptance).
+ */
+export interface AcpPromptCapabilities {
+  image?: boolean;
+  audio?: boolean;
+  embeddedContext?: boolean;
+}
+
+/**
+ * The full set of optional affordances an agent may advertise at
+ * `initialize` time (SPEC.md §5.5: "image/audio attach, an MCP-server
+ * picker, additional-directories, session delete"). Every field optional,
+ * on the same "absent = off" rule.
+ */
+export interface AcpAgentCapabilities {
+  loadSession?: boolean;
+  promptCapabilities?: AcpPromptCapabilities;
+  mcpServerPicker?: boolean;
+  additionalDirectories?: boolean;
+  sessionDelete?: boolean;
+  requestPermission?: boolean;
+  plans?: boolean;
+}
+
 export interface AcpInitializeResult {
   protocolVersion: number;
-  agentCapabilities?: Record<string, unknown>;
+  agentCapabilities?: AcpAgentCapabilities;
   agentInfo?: AcpAgentInfo;
   authMethods?: unknown[];
+  /**
+   * The agent's advertised config-option catalog (model / mode / reasoning
+   * effort / any future category), the source of truth per SPEC.md §7.24's
+   * "Model, mode & reasoning effort" bullet. Seeds each session's own
+   * `ConfigOptionStore` entry as it's created (issue #179's Notes: "ACP's
+   * own `initialize` response is the source of the option list").
+   */
+  configOptions?: AcpConfigOption[];
+}
+
+/* -------------------------------------------------------------------------
+ * v1: session lifecycle (SPEC.md §5.5 "session/new/session/resume + replay
+ * ... session/list, and cancellation"; §7.22 "resume-on-reopen"; issue #176).
+ * ---------------------------------------------------------------------- */
+
+/** One entry of ACP `session/list`'s result — the sessions this agent process still holds. */
+export interface AcpSessionSummary {
+  sessionId: string;
+  cwd?: string;
+  title?: string;
+}
+
+/* -------------------------------------------------------------------------
+ * v1: session/request_permission (SPEC.md §7.24 "Tool-call permissions";
+ * §5.5 "core owns ... session/request_permission"; issue #178). Modeled on
+ * the same `toolCall`/`options` shape a real ACP `RequestPermissionRequest`
+ * carries (issue #178's acceptance: "expose the request's raw `toolCall`
+ * (a `ToolCallUpdate`: title, rawInput, content, locations)").
+ * ---------------------------------------------------------------------- */
+
+/** The vocabulary ACP's own `options[]`/`kind` field uses (SPEC.md §7.24). */
+export type AcpPermissionOptionKind =
+  'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+
+export interface AcpPermissionOption {
+  optionId: string;
+  name: string;
+  kind: AcpPermissionOptionKind;
+}
+
+/** The agent -> client `session/request_permission` request params. */
+export interface AcpRequestPermissionParams {
+  sessionId: string;
+  toolCall: AcpToolCallUpdate;
+  options: AcpPermissionOption[];
+}
+
+/** The two outcomes a `session/request_permission` response can carry, per §7.3's "no longer applies" rule. */
+export type AcpPermissionOutcome =
+  { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' };
+
+/* -------------------------------------------------------------------------
+ * v1: config-option state (model / mode / reasoning effort; SPEC.md §7.24
+ * "Model, mode & reasoning effort"; issue #179). One `AcpConfigOption` per
+ * category; `category` is an open string (not a closed union) so an
+ * unrecognized/future non-underscore-prefixed category survives untouched
+ * rather than being dropped, per the issue's acceptance criteria. Provider/
+ * agent choice itself is not modeled here at all — deliberately: an
+ * `AcpClient` wraps exactly one already-spawned provider process, and the
+ * API surface has no method that reassigns it, which is what makes it
+ * "immutable once a session object exists" at the type/API level rather
+ * than by convention (issue #179's last acceptance bullet).
+ * ---------------------------------------------------------------------- */
+
+export interface AcpConfigOptionChoice {
+  id: string;
+  name: string;
+}
+
+export interface AcpConfigOption {
+  category: string;
+  current: string | undefined;
+  choices: AcpConfigOptionChoice[];
 }
 
 /**
@@ -136,6 +236,8 @@ export interface AcpToolCallUpdate {
   rawInput?: unknown;
   content?: unknown;
   parentToolCallId?: string;
+  /** File/line locations the tool call touches; rendered on a permission card's request (SPEC.md §7.24, issue #178). */
+  locations?: unknown;
 }
 
 export type AcpPlanEntryStatus = 'pending' | 'in_progress' | 'completed';
