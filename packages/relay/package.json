@@ -13,11 +13,20 @@
     "lint": "eslint src",
     "test": "vitest run",
     "start": "tsx src/main.ts",
-    "dev": "tsx watch src/main.ts"
+    "dev": "tsx watch src/main.ts",
+    "migrate": "tsx src/migrate-cli.ts"
   },
   "dependencies": {
     "@fastify/websocket": "^11.0.0",
     "@loombox/protocol": "workspace:*",
-    "fastify": "^5.0.0"
+    "better-auth": "^1.6.23",
+    "fastify": "^5.0.0",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/pg": "^8.20.0",
+    "better-sqlite3": "^12.11.1",
+    "pg-mem": "^3.0.14"
   }
 }

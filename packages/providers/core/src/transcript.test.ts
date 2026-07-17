@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTranscriptState, reduceTranscript } from './transcript';
+import { ancestorChainForToolCall, createTranscriptState, reduceTranscript } from './transcript';
 import type { TranscriptState, TranscriptToolCallItem } from './transcript';
 import type {
   AcpMessageChunkUpdate,
@@ -255,6 +255,41 @@ describe('reduceTranscript: usage_update', () => {
 
     // Subagent cost still folds into the cumulative figure regardless of attribution (SPEC.md §7.9).
     expect(state.cumulativeCostUsd).toBeCloseTo(0.03);
+  });
+});
+
+describe('ancestorChainForToolCall', () => {
+  function seedNested(): TranscriptState {
+    let state = createTranscriptState();
+    const root: AcpToolCallUpdate = { kind: 'tool_call', id: 'root' };
+    const mid: AcpToolCallUpdate = { kind: 'tool_call', id: 'mid', parentToolCallId: 'root' };
+    const leaf: AcpToolCallUpdate = { kind: 'tool_call', id: 'leaf', parentToolCallId: 'mid' };
+    state = reduceTranscript(state, root);
+    state = reduceTranscript(state, mid);
+    state = reduceTranscript(state, leaf);
+    return state;
+  }
+
+  it('returns the ancestor chain nearest-first for a nested tool call', () => {
+    const state = seedNested();
+    expect(ancestorChainForToolCall(state.items, 'leaf')).toEqual(['mid', 'root']);
+  });
+
+  it('returns [] for a root-level tool call with no parent', () => {
+    const state = seedNested();
+    expect(ancestorChainForToolCall(state.items, 'root')).toEqual([]);
+  });
+
+  it('returns [] for an unknown tool call id (v1 no-op: no bespoke provider populates parentToolCallId yet)', () => {
+    const state = seedNested();
+    expect(ancestorChainForToolCall(state.items, 'never-existed')).toEqual([]);
+  });
+
+  it('never throws on a cyclic chain (defensive against malformed data)', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'a', parentToolCallId: 'b' });
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'b', parentToolCallId: 'a' });
+    expect(ancestorChainForToolCall(state.items, 'a')).toEqual(['b']);
   });
 });
 

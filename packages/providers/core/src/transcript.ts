@@ -207,3 +207,40 @@ export function reduceTranscript(
       return reduceUsage(state, update);
   }
 }
+
+/**
+ * The tool-call id chain from `toolCallId`'s immediate parent up to its
+ * root ancestor (nearest first), walking `parentToolCallId` links (SPEC.md
+ * §5.5's `enrich()`-promoted nested/subagent marker). A UI's permission-queue
+ * nested-visibility rule (SPEC.md §7.24: "a pending request nested inside a
+ * collapsed ancestor auto-expands that ancestor chain") uses this to know
+ * which group ids to force open for a given head request.
+ *
+ * `toolCallId` itself is never included. Returns `[]` for an unknown id, a
+ * root-level call (no `parentToolCallId`), or a broken/cyclic chain once a
+ * link no longer resolves to a known item — this never throws. v1 has no
+ * bespoke provider that populates `parentToolCallId` yet (§7.24: "ships in
+ * v2"), so this is a real no-op today and only exercised once a provider's
+ * `enrich()` hook starts promoting one.
+ */
+export function ancestorChainForToolCall(
+  items: readonly TranscriptItem[],
+  toolCallId: string,
+): string[] {
+  const byId = new Map<string, TranscriptToolCallItem>();
+  for (const item of items) {
+    if (item.type === 'tool_call') byId.set(item.id, item);
+  }
+
+  const chain: string[] = [];
+  const visited = new Set<string>([toolCallId]);
+  let current = byId.get(toolCallId)?.parentToolCallId;
+
+  while (current !== undefined && !visited.has(current)) {
+    chain.push(current);
+    visited.add(current);
+    current = byId.get(current)?.parentToolCallId;
+  }
+
+  return chain;
+}

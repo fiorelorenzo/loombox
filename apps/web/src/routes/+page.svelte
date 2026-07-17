@@ -1,8 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { TranscriptItem, TranscriptState } from '@loombox/providers-core';
+  import { SvelteMap } from 'svelte/reactivity';
+  import type {
+    AcpConfigOption,
+    AcpPermissionOption,
+    PermissionQueueState,
+    TranscriptState,
+  } from '@loombox/providers-core';
+  import { createPermissionQueueState, headPermissionRequest } from '@loombox/providers-core';
   import { APP_NAME, APP_TAGLINE } from '$lib/constants';
+  import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { RelayClient, type ClientSessionMeta, type ConnectionStatus } from '$lib/relay-client';
+  import ConfigBar from '$lib/components/ConfigBar.svelte';
+  import CopyButton from '$lib/components/CopyButton.svelte';
+  import MessageItem from '$lib/components/MessageItem.svelte';
+  import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
+  import PlanCard from '$lib/components/PlanCard.svelte';
+  import ToolCallRow from '$lib/components/ToolCallRow.svelte';
 
   // Disposable v1 relay (SPEC §12): no auth, no default deployment, so the
   // operator points the PWA at whatever host/port the relay printed
@@ -21,41 +35,56 @@
   let sessions = $state<ClientSessionMeta[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
   let transcript = $state<TranscriptState | undefined>(undefined);
+  let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
+  let configOptions = $state<AcpConfigOption[]>([]);
   let draft = $state('');
+  // A plan's collapse state persists per session for as long as this tab
+  // stays open (SPEC §7.24 "remembers collapse state during the session"),
+  // keyed by session id so switching sessions and back preserves it.
+  // `SvelteMap` (not a plain `Map` wrapped in `$state`) so `.set()` itself
+  // triggers reactivity instead of requiring a clone-and-reassign dance.
+  const planCollapsedBySession = new SvelteMap<string, boolean>();
 
   const canConnect = $derived(status === 'idle' || status === 'closed' || status === 'error');
+  const planCollapsed = $derived(
+    selectedSessionId ? (planCollapsedBySession.get(selectedSessionId) ?? false) : false,
+  );
+  const permissionHead = $derived(
+    selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
+  );
 
-  // All logic (the WS connection, the E2E-encrypted session list, the
-  // transcript decrypt+reduce, the composer's send path) lives in
-  // $lib/relay-client.ts, unit-tested there against a real in-process relay
-  // plus a fake independently-keyed node — no browser. This component just
-  // renders that module's stores and wires the composer's submit to it
-  // (SPEC §5.4, §7.3). Transcript rendering here is deliberately a plain
-  // append-only log (v0-equivalent scope): tool-call widgets, diffs, and the
-  // plan sidebar are Wave D.2, not this client core.
+  // Most logic (the WS connection, the E2E-encrypted session list, the
+  // transcript decrypt+reduce, the permission queue, config options, and the
+  // composer's send path) lives in $lib/relay-client.ts, unit-tested there
+  // against a real in-process relay plus a fake independently-keyed node —
+  // no browser. This component renders that module's stores through the
+  // Wave D.2 widget set ($lib/components/*): tier-1/tier-2 tool-call
+  // widgets, the diff viewer, the inline plan card, the permission FIFO
+  // queue bar, and the config bar, each unit-tested on its own against fixed
+  // fixtures rather than through this page.
   let client: RelayClient | undefined;
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
   let unsubscribeTranscript: (() => void) | undefined;
-
-  function itemText(item: TranscriptItem): string {
-    if (item.type === 'message') return item.text;
-    return `[${item.toolKind ?? 'tool'}] ${item.title ?? item.id} (${item.status ?? 'pending'})`;
-  }
-
-  function itemRole(item: TranscriptItem): string {
-    if (item.type === 'tool_call') return 'tool';
-    if (item.kind === 'user_message_chunk') return 'user';
-    if (item.kind === 'agent_thought_chunk') return 'thought';
-    return 'agent';
-  }
+  let unsubscribePermissionQueue: (() => void) | undefined;
+  let unsubscribeConfigOptions: (() => void) | undefined;
 
   function selectSession(id: string): void {
     selectedSessionId = id;
     unsubscribeTranscript?.();
+    unsubscribePermissionQueue?.();
+    unsubscribeConfigOptions?.();
     transcript = undefined;
+    permissionQueue = createPermissionQueueState();
+    configOptions = [];
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
+    unsubscribePermissionQueue = client
+      .permissionQueueFor(id)
+      .subscribe((value) => (permissionQueue = value));
+    unsubscribeConfigOptions = client
+      .configOptionsFor(id)
+      .subscribe((value) => (configOptions = value));
   }
 
   function connect(): void {
@@ -86,12 +115,16 @@
     unsubscribeStatus?.();
     unsubscribeSessions?.();
     unsubscribeTranscript?.();
+    unsubscribePermissionQueue?.();
+    unsubscribeConfigOptions?.();
     client?.close();
     client = undefined;
     status = 'idle';
     sessions = [];
     selectedSessionId = undefined;
     transcript = undefined;
+    permissionQueue = createPermissionQueueState();
+    configOptions = [];
   }
 
   function submitPrompt(event: Event): void {
@@ -100,6 +133,34 @@
     if (!client || !selectedSessionId || text === '') return;
     client.sendPrompt(selectedSessionId, text);
     draft = '';
+  }
+
+  function togglePlanCollapsed(): void {
+    if (!selectedSessionId) return;
+    planCollapsedBySession.set(
+      selectedSessionId,
+      !(planCollapsedBySession.get(selectedSessionId) ?? false),
+    );
+  }
+
+  function resolvePermission(requestId: string, option: AcpPermissionOption): void {
+    if (!client || !selectedSessionId) return;
+    client.resolvePermission(selectedSessionId, requestId, option);
+  }
+
+  function stopSession(): void {
+    if (!client || !selectedSessionId) return;
+    client.cancelPermissionRequests(selectedSessionId);
+  }
+
+  function changeConfigOption(category: string, optionId: string): void {
+    if (!client || !selectedSessionId) return;
+    client.setConfigOption(selectedSessionId, category, optionId);
+  }
+
+  async function exportTranscript(): Promise<void> {
+    if (!transcript) return;
+    await copyToClipboard(exportTranscriptText(transcript));
   }
 
   onMount(() => {
@@ -156,14 +217,46 @@
       {#if !selectedSessionId}
         <p class="empty">Select a session to view its live transcript.</p>
       {:else}
-        <ol>
+        <div class="transcript-toolbar">
+          <ConfigBar
+            options={configOptions}
+            usage={transcript?.usage}
+            cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+            onChange={changeConfigOption}
+          />
+          <CopyButton
+            text={transcript ? exportTranscriptText(transcript) : ''}
+            label="Export transcript"
+            copyFn={exportTranscript}
+          />
+        </div>
+
+        <ol class="items">
           {#each transcript?.items ?? [] as item (item.id)}
-            <li class={itemRole(item)}>
-              <span class="role">{itemRole(item)}</span>
-              <span class="text">{itemText(item)}</span>
+            <li>
+              {#if item.type === 'message'}
+                <MessageItem {item} />
+              {:else}
+                <ToolCallRow {item} awaitingPermission={permissionHead?.toolCall.id === item.id} />
+              {/if}
             </li>
           {/each}
         </ol>
+
+        {#if transcript && transcript.plan.length > 0}
+          <PlanCard
+            entries={transcript.plan}
+            collapsed={planCollapsed}
+            onToggle={togglePlanCollapsed}
+          />
+        {/if}
+
+        <PermissionQueueBar
+          sessionId={selectedSessionId}
+          queue={permissionQueue}
+          onResolve={resolvePermission}
+          onStop={stopSession}
+        />
 
         <form class="composer" onsubmit={submitPrompt}>
           <input
@@ -279,10 +372,19 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    gap: 0.75rem;
+    gap: 0.6rem;
   }
 
-  .transcript ol {
+  .transcript-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+    padding-bottom: 0.4rem;
+  }
+
+  .items {
     flex: 1;
     overflow-y: auto;
     list-style: none;
@@ -291,32 +393,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-  }
-
-  .transcript li {
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    background: rgba(127, 127, 127, 0.1);
-  }
-
-  .transcript li.user {
-    align-self: flex-end;
-    background: rgba(79, 70, 229, 0.15);
-  }
-
-  .transcript li.tool {
-    background: rgba(234, 179, 8, 0.15);
-  }
-
-  .transcript .role {
-    display: block;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    opacity: 0.6;
-  }
-
-  .transcript .text {
-    white-space: pre-wrap;
   }
 
   .composer {

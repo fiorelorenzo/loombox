@@ -29,7 +29,7 @@ export type {
   AcpTranscriptUpdate,
   AcpUsageUpdate,
 } from './types';
-export { createTranscriptState, reduceTranscript } from './transcript';
+export { ancestorChainForToolCall, createTranscriptState, reduceTranscript } from './transcript';
 export type {
   TranscriptItem,
   TranscriptMessageItem,
@@ -61,6 +61,22 @@ export type {
   AcpPermissionOutcome,
   AcpRequestPermissionParams,
 } from './types';
+
+// v1: the pure, EventEmitter-free core `PermissionQueue` delegates to
+// (Wave D.2, issue #144/#145/#146/#147) — a consumer that cannot safely
+// extend `node:events` (a browser bundle) uses these functions directly to
+// build its own reactive queue store over the exact same FIFO/nested-
+// visibility/cancel-all rules, instead of re-implementing them.
+export {
+  cancelAllPermissionRequests,
+  createPermissionQueueState,
+  enqueuePermissionRequest,
+  headPermissionRequest,
+  isPermissionRequestActionable,
+  listPermissionRequests,
+  resolvePermissionRequest,
+} from './permission-queue-state';
+export type { PermissionQueueState } from './permission-queue-state';
 
 // v1: config-option (model/mode/reasoning-effort) state (SPEC.md §7.24;
 // issue #179).

@@ -2,9 +2,17 @@ import type { webcrypto } from 'node:crypto';
 import { writable, type Readable, type Writable } from 'svelte/store';
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
+  cancelAllPermissionRequests,
+  createPermissionQueueState,
   createTranscriptState,
+  enqueuePermissionRequest,
   reduceTranscript,
+  resolvePermissionRequest,
+  type AcpConfigOption,
+  type AcpPermissionOption,
+  type AcpToolCallUpdate,
   type AcpTranscriptUpdate,
+  type PermissionQueueState,
   type TranscriptState,
 } from '@loombox/providers-core';
 import {
@@ -13,6 +21,7 @@ import {
   safeParseWireMessageV1,
   type EncryptedEnvelope,
   type Initialize,
+  type PermissionRequest,
   type SessionAnnounceV1,
   type SessionListV1,
   type SessionMetaPublic,
@@ -55,6 +64,21 @@ interface SessionPrivateMeta {
 /** The plaintext a `prompt_inject` envelope decrypts to, mirrored from `@loombox/node`'s `PromptPayload`. */
 interface PromptPayload {
   text: string;
+}
+
+/**
+ * The plaintext a `permission_request` envelope decrypts to (SPEC §7.24;
+ * `packages/protocol/src/v1/steering.ts`'s doc comment: "the permission
+ * request's `ToolCallUpdate` ... travel[s] as an opaque `encryptedEnvelope`").
+ * Mirrors ACP's own `AcpRequestPermissionParams` minus `sessionId` (already
+ * on the envelope's routing fields). No node in this repo emits
+ * `permission_request` yet (Wave D.2 is rendering-only, SCOPE forbids
+ * touching `packages/node`); this type documents the payload this client is
+ * ready to decrypt the moment one does.
+ */
+interface PermissionRequestPayload {
+  toolCall: AcpToolCallUpdate;
+  options: AcpPermissionOption[];
 }
 
 /** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
@@ -157,6 +181,8 @@ export class RelayClient {
   private readonly statusStore: Writable<ConnectionStatus>;
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
+  private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
+  private readonly configOptions = new Map<string, Writable<AcpConfigOption[]>>();
   private readonly subscribed = new Set<string>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   private socket: WebSocketLike | undefined;
@@ -258,6 +284,101 @@ export class RelayClient {
   }
 
   /**
+   * The session-scoped permission FIFO queue store (SPEC §7.24, issues
+   * #144/#145/#146/#147) — the single client-side source of truth a
+   * session's permission-card UI and (once it exists) the cross-project
+   * attention inbox (#145) both render from. Backed by
+   * `@loombox/providers-core`'s pure `permission-queue-state.ts` functions
+   * rather than its `EventEmitter`-based `PermissionQueue` class: that class
+   * extends `node:events`, which externalizes to an empty stub in a
+   * client-side Vite build (`class X extends EventEmitter {}` then throws at
+   * module-evaluation time — confirmed empirically while building this PR),
+   * so this store re-derives the exact same FIFO/nested-visibility/cancel-
+   * all rules through the shared pure functions instead of re-implementing
+   * them.
+   */
+  permissionQueueFor(sessionId: string): Readable<PermissionQueueState> {
+    const store = this.permissionQueueStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return store;
+  }
+
+  /**
+   * Resolves a pending permission request with the user's chosen option:
+   * updates the local queue optimistically (so the UI reflects it before any
+   * round trip) and sends the clear (unencrypted routing) `permission_response`
+   * carrying ACP's own `option.kind` vocabulary as `decision` — the wire
+   * schema has no raw `optionId` field (`packages/protocol/src/v1/steering.ts`).
+   */
+  resolvePermission(sessionId: string, requestId: string, option: AcpPermissionOption): void {
+    const store = this.permissionQueueStoreFor(sessionId);
+    store.update(
+      (state) =>
+        resolvePermissionRequest(state, requestId, {
+          outcome: 'selected',
+          optionId: option.optionId,
+        }).state,
+    );
+    this.send({
+      type: 'permission_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      decision: option.kind,
+    });
+  }
+
+  /**
+   * A session-level Stop (SPEC §7.24 "Multi-request ordering"): every open
+   * permission request for this session resolves as cancelled immediately,
+   * optimistically, so no card's spinner survives past the press. There is
+   * no v1 wire message for the ACP-level turn interrupt itself yet
+   * (out of this PR's protocol-touching scope) — this only clears the
+   * permission queue's own state, which is what issue #147's acceptance
+   * criteria are actually about.
+   */
+  cancelPermissionRequests(sessionId: string): void {
+    const store = this.permissionQueueStoreFor(sessionId);
+    store.update((state) => cancelAllPermissionRequests(state, sessionId).state);
+  }
+
+  /**
+   * The session's negotiated ACP config-option list (SPEC §7.24 "Model, mode
+   * & reasoning effort", issue #149) — `model`/`model_config`/`thought_level`/
+   * `mode`/any future category, always the complete current set. Starts `[]`:
+   * v1's wire protocol has no node -> client push for this yet (only the
+   * client -> node `config_option` selection message exists,
+   * `packages/protocol/src/v1/steering.ts`), a real gap tracked in this PR's
+   * blockers rather than worked around by touching the protocol.
+   */
+  configOptionsFor(sessionId: string): Readable<AcpConfigOption[]> {
+    const store = this.configOptionStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return store;
+  }
+
+  /**
+   * Picks a config option in the given category: updates the local list
+   * optimistically (replacing that category's `current`) and sends the
+   * `config_option` wire message so the owning node can act on it.
+   */
+  setConfigOption(sessionId: string, category: string, optionId: string): void {
+    const store = this.configOptionStoreFor(sessionId);
+    store.update((options) =>
+      options.map((option) =>
+        option.category === category ? { ...option, current: optionId } : option,
+      ),
+    );
+    this.send({
+      type: 'config_option',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      category,
+      optionId,
+    });
+  }
+
+  /**
    * Seals the composer's text into a `prompt_inject` envelope (SPEC §7.3)
    * and sends it. Optimistically reduces the user's own turn into the local
    * transcript first (the relay/node never echo `prompt_inject` back as a
@@ -317,6 +438,24 @@ export class RelayClient {
     return store;
   }
 
+  private permissionQueueStoreFor(sessionId: string): Writable<PermissionQueueState> {
+    let store = this.permissionQueues.get(sessionId);
+    if (!store) {
+      store = writable<PermissionQueueState>(createPermissionQueueState());
+      this.permissionQueues.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private configOptionStoreFor(sessionId: string): Writable<AcpConfigOption[]> {
+    let store = this.configOptions.get(sessionId);
+    if (!store) {
+      store = writable<AcpConfigOption[]>([]);
+      this.configOptions.set(sessionId, store);
+    }
+    return store;
+  }
+
   private applyUpdate(sessionId: string, update: AcpTranscriptUpdate): void {
     const store = this.transcriptStoreFor(sessionId);
     store.update((state) => reduceTranscript(state, update));
@@ -332,6 +471,9 @@ export class RelayClient {
         return;
       case 'session_update':
         this.handleSessionUpdate(message);
+        return;
+      case 'permission_request':
+        this.handlePermissionRequest(message);
         return;
       default:
         return;
@@ -386,6 +528,35 @@ export class RelayClient {
       .catch((error: unknown) => {
         console.warn(
           `RelayClient: failed to decrypt session_update for ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /**
+   * A node asks (via the relay) this client to resolve a tool-call
+   * permission request (SPEC §7.24's FIFO queue). Decrypts the envelope and
+   * enqueues it onto that session's `PermissionQueueState` store, oldest
+   * first — the queue store's own arrival order *is* the FIFO order,
+   * matching `PermissionQueue.enqueue`'s contract (`permission-queue.ts`).
+   */
+  private handlePermissionRequest(message: PermissionRequest): void {
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<PermissionRequestPayload>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        const store = this.permissionQueueStoreFor(message.sessionId);
+        store.update(
+          (state) =>
+            enqueuePermissionRequest(state, {
+              requestId: message.requestId,
+              sessionId: message.sessionId,
+              toolCall: payload.toolCall,
+              options: payload.options,
+            }).state,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt permission_request for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
   }

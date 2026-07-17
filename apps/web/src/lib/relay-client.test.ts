@@ -11,7 +11,9 @@ import {
 import { createTranscriptState, reduceTranscript } from '@loombox/providers-core';
 import {
   PROTOCOL_V1,
+  type ConfigOption,
   type EncryptedEnvelope,
+  type PermissionResponse,
   type PromptInjectV1,
   type SessionMetaPublic,
   type WireMessageV1,
@@ -421,6 +423,179 @@ describe('RelayClient', () => {
     // The relay only ever carried ciphertext.
     const raw = Buffer.from(routed.envelope.ciphertext, 'base64').toString('latin1');
     expect(raw.includes('do the thing')).toBe(false);
+  });
+
+  it('decrypts a live permission_request and enqueues it onto permissionQueueFor, FIFO', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permission';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_permission', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-6' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const queue = client.permissionQueueFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const options = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' as const },
+    ];
+    const envelope = await nodeSeal(
+      session.id,
+      { toolCall: { kind: 'tool_call', id: 'tc1', title: 'Edit foo.ts' }, options },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-1',
+      envelope,
+    });
+
+    const state = await waitForStore(queue, (value) => value.byId.size > 0);
+    const pending = state.byId.get('req-1');
+    expect(pending?.toolCall).toEqual({ kind: 'tool_call', id: 'tc1', title: 'Edit foo.ts' });
+    expect(pending?.options).toEqual(options);
+    expect([...(state.bySession.get(session.id) ?? [])].map((r) => r.requestId)).toEqual(['req-1']);
+  });
+
+  it('resolvePermission removes the request locally and sends a clear permission_response with the option kind', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resolve';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resolve', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-7' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queue = client.permissionQueueFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const option = { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const };
+    const envelope = await nodeSeal(
+      session.id,
+      { toolCall: { kind: 'tool_call', id: 'tc1' }, options: [option] },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-2',
+      envelope,
+    });
+    await waitForStore(queue, (value) => value.byId.size > 0);
+
+    client.resolvePermission(session.id, 'req-2', option);
+
+    expect(get(queue).byId.size).toBe(0);
+    const response = (await node.waitFor(
+      (m) => m.type === 'permission_response',
+    )) as PermissionResponse;
+    expect(response).toMatchObject({
+      sessionId: session.id,
+      requestId: 'req-2',
+      decision: 'allow_once',
+    });
+  });
+
+  it('cancelPermissionRequests optimistically clears every open request for a session (Stop)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-cancel';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-6',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_cancel', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-8' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queue = client.permissionQueueFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    for (const requestId of ['req-a', 'req-b', 'req-c']) {
+      const envelope = await nodeSeal(
+        session.id,
+        { toolCall: { kind: 'tool_call', id: requestId }, options: [] },
+        key,
+      );
+      node.send({
+        type: 'permission_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        requestId,
+        envelope,
+      });
+    }
+    await waitForStore(queue, (value) => value.byId.size === 3);
+
+    client.cancelPermissionRequests(session.id);
+
+    expect(get(queue).byId.size).toBe(0);
+  });
+
+  it('setConfigOption updates the local list optimistically and sends the clear config_option message', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-7',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_config', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-9' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    client.setConfigOption(session.id, 'model', 'opus');
+
+    const options = get(client.configOptionsFor(session.id));
+    expect(options).toEqual([]);
+
+    const sent = (await node.waitFor((m) => m.type === 'config_option')) as ConfigOption;
+    expect(sent).toMatchObject({ sessionId: session.id, category: 'model', optionId: 'opus' });
   });
 
   it('does not send a wire frame while the socket is not yet open, but still updates local transcript state', () => {
