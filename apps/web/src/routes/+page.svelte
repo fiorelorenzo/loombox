@@ -13,6 +13,8 @@
   import { RelayClient, type ClientSessionMeta, type ConnectionStatus } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
+  import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
+  import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -53,6 +55,7 @@
   let transcript = $state<TranscriptState | undefined>(undefined);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
+  let attachments = $state<ComposerAttachment[]>([]);
   let draft = $state('');
   // A plan's collapse state persists per session for as long as this tab
   // stays open (SPEC §7.24 "remembers collapse state during the session"),
@@ -75,6 +78,8 @@
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
   );
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
+  const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
 
   // Most logic (the WS connection, the E2E-encrypted session list, the
   // transcript decrypt+reduce, the permission queue, config options, and the
@@ -91,15 +96,18 @@
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
+  let unsubscribeAttachments: (() => void) | undefined;
 
   function selectSession(id: string): void {
     selectedSessionId = id;
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeAttachments?.();
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    attachments = [];
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client
@@ -108,6 +116,7 @@
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
       .subscribe((value) => (configOptions = value));
+    unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
   }
 
   /**
@@ -141,6 +150,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeAttachments?.();
     client?.close();
     client = undefined;
     status = 'idle';
@@ -149,6 +159,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    attachments = [];
   }
 
   function ensureAuthStore(): AuthStore {
@@ -174,9 +185,28 @@
   function submitPrompt(event: Event): void {
     event.preventDefault();
     const text = draft.trim();
-    if (!client || !selectedSessionId || text === '') return;
-    client.sendPrompt(selectedSessionId, text);
+    if (!client || !selectedSessionId || text === '' || sendDisabled) return;
+    const attachmentIds = attachments.map((a) => a.id);
+    client.sendPrompt(selectedSessionId, text, attachmentIds);
     draft = '';
+  }
+
+  /** Wired to `AttachmentBar`'s `onFiles` (paste/drop/pick, SPEC §7.25) — attaches each picked file to the current session, starting its encrypt+upload immediately. */
+  function attachFiles(files: File[]): void {
+    if (!client || !selectedSessionId) return;
+    for (const file of files) {
+      client.attachFile(selectedSessionId, file);
+    }
+  }
+
+  function retryAttachment(id: string): void {
+    if (!client || !selectedSessionId) return;
+    client.retryAttachment(selectedSessionId, id);
+  }
+
+  function removeAttachment(id: string): void {
+    if (!client || !selectedSessionId) return;
+    client.removeAttachment(selectedSessionId, id);
   }
 
   function togglePlanCollapsed(): void {
@@ -352,13 +382,21 @@
           />
 
           <form class="composer" onsubmit={submitPrompt}>
-            <input
-              type="text"
-              bind:value={draft}
-              placeholder="Send a follow-up prompt…"
-              aria-label="Follow-up prompt"
+            <AttachmentBar
+              {attachments}
+              onFiles={attachFiles}
+              onRetry={retryAttachment}
+              onRemove={removeAttachment}
             />
-            <button type="submit" disabled={draft.trim() === ''}>Send</button>
+            <div class="composer-row">
+              <input
+                type="text"
+                bind:value={draft}
+                placeholder="Send a follow-up prompt…"
+                aria-label="Follow-up prompt"
+              />
+              <button type="submit" disabled={sendDisabled}>Send</button>
+            </div>
           </form>
         {/if}
       </section>
@@ -504,10 +542,16 @@
 
   .composer {
     display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .composer-row {
+    display: flex;
     gap: 0.5rem;
   }
 
-  .composer input {
+  .composer-row input {
     flex: 1;
   }
 

@@ -12,6 +12,7 @@ import {
 import { createTranscriptState, reduceTranscript } from '@loombox/providers-core';
 import {
   PROTOCOL_V1,
+  type BlobDownloadResponse,
   type ConfigOption,
   type EncryptedEnvelope,
   type PermissionResponse,
@@ -21,9 +22,19 @@ import {
 } from '@loombox/protocol';
 import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '@loombox/relay';
 
-import { RelayClient, type ClientSessionMeta } from './relay-client';
+import {
+  RelayClient,
+  type ClientSessionMeta,
+  type WebSocketConstructor,
+  type WebSocketLike,
+} from './relay-client';
 import { AuthStore, createInMemoryAuthStorage } from './auth-store';
 import { createInMemoryAmkStorage, loadOrCreateAmk } from './amk-store';
+import {
+  MAX_ATTACHMENTS_PER_PROMPT,
+  attachmentResourceId,
+  hasBlockingAttachments,
+} from './attachments';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -197,6 +208,126 @@ function makeSessionMeta(overrides: Partial<SessionMetaPublic> = {}): SessionMet
     provider: 'claude',
     createdAt: Date.now(),
     ...overrides,
+  };
+}
+
+// -----------------------------------------------------------------------
+// Attachment test fixtures (SPEC §7.25; issues #151/#152/#153/#155).
+// -----------------------------------------------------------------------
+
+/**
+ * A real PNG's magic-byte signature plus filler "pixel" bytes — sniffs as an
+ * actual PNG, not a fake. Explicitly typed `Uint8Array<ArrayBuffer>` (not
+ * the bare `Uint8Array` alias, which defaults to `Uint8Array<ArrayBufferLike>`)
+ * so the result is directly usable as a `File`/`Blob` part without a cast.
+ */
+function realPngBytes(fillerByte = 0x01, totalLength = 64): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(totalLength).fill(fillerByte);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  return bytes;
+}
+
+/** A minimal ISOBMFF `ftyp` box declaring the `heic` major brand — real HEIC magic bytes. */
+function realHeicBytes(): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(32);
+  const encoder = new TextEncoder();
+  bytes.set([0x00, 0x00, 0x00, 0x18], 0);
+  bytes.set(encoder.encode('ftyp'), 4);
+  bytes.set(encoder.encode('heic'), 8);
+  return bytes;
+}
+
+/** Not any recognized image format, however it's named/declared. */
+function notAnImageBytes(): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(new TextEncoder().encode('%PDF-1.4 definitely not an image'));
+}
+
+/**
+ * Decrypts a raw (non-JSON) attachment blob envelope under the given
+ * session key, bound to the same `attachmentResourceId` AAD the relay's
+ * blob store keys by and `@loombox/node`'s `AttachmentResolver` decrypts
+ * against — the peer side of an attachment round trip, reimplemented here
+ * (not imported from `@loombox/node`, which this package must not depend
+ * on) directly against the lower-level `@loombox/crypto` primitives, same
+ * spirit as this file's `nodeSeal`/`nodeOpen` helpers above.
+ */
+async function nodeOpenAttachment(
+  sessionId: string,
+  ref: string,
+  wire: EncryptedEnvelope,
+  key: CryptoKey,
+): Promise<Uint8Array> {
+  const envelope = {
+    resourceId: wire.resourceId,
+    iv: fromBase64(wire.iv),
+    ciphertext: fromBase64(wire.ciphertext),
+  };
+  return decryptEnvelope(attachmentResourceId(sessionId, ref), envelope, key);
+}
+
+/**
+ * A `WebSocketConstructor` (real class, so `new`-able like the global
+ * `WebSocket` `RelayClient` normally uses) wrapping a real WebSocket that
+ * throws synchronously on `send()` for the first `failUntilAttempt`
+ * outbound `blob_upload` frames, then behaves normally — simulates a
+ * transient send failure (SPEC §7.25's "Upload failure & retry") without
+ * ever actually dropping the connection, isolating a manual-retry test
+ * from the separate connection-drop/reconnect path. `counter` is shared by
+ * reference so it persists across the multiple socket instances the same
+ * `RelayClient` creates on successive `connect()` calls.
+ */
+function flakyBlobUploadSocketCtor(counter: {
+  attempts: number;
+  failUntilAttempt: number;
+}): WebSocketConstructor {
+  return class FlakyBlobUploadSocket implements WebSocketLike {
+    private readonly real: WebSocketLike;
+
+    constructor(url: string) {
+      this.real = new WebSocket(url) as unknown as WebSocketLike;
+    }
+
+    get readyState(): number {
+      return this.real.readyState;
+    }
+
+    send(data: string): void {
+      if (typeof data === 'string' && data.includes('"blob_upload"')) {
+        counter.attempts += 1;
+        if (counter.attempts <= counter.failUntilAttempt) {
+          throw new Error(`FlakyBlobUploadSocket: simulated failure #${counter.attempts}`);
+        }
+      }
+      this.real.send(data);
+    }
+
+    close(): void {
+      this.real.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      switch (type) {
+        case 'open':
+          this.real.addEventListener('open', listener as () => void);
+          return;
+        case 'message':
+          this.real.addEventListener('message', listener as (event: { data: unknown }) => void);
+          return;
+        case 'close':
+          this.real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          this.real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
   };
 }
 
@@ -622,6 +753,439 @@ describe('RelayClient', () => {
         text: 'hello?',
       },
     ]);
+  });
+});
+
+describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', () => {
+  it("attachFile validates real image bytes, encrypts+uploads via blob_upload, and a peer (the node, exactly the executing host's own #156 download path) decrypts the exact original bytes (#151, #153)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attach';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-attach',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_attach', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-attach' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const pngBytes = realPngBytes();
+    const file = new File([pngBytes], 'photo.png', { type: 'image/png' });
+
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, file);
+
+    // Instant local state, before any network round trip.
+    expect(get(attachments)).toEqual([
+      expect.objectContaining({ id: attachmentId, name: 'photo.png', status: 'uploading' }),
+    ]);
+
+    const uploaded = await waitForStore(
+      attachments,
+      (list) => list.find((a) => a.id === attachmentId)?.status === 'uploaded',
+    );
+    const entry = uploaded.find((a) => a.id === attachmentId)!;
+    expect(entry.mimeType).toBe('image/png');
+    // Instant local preview (SPEC §7.25), no network round trip involved.
+    expect(entry.previewUrl).toMatch(/^blob:/);
+    expect(entry.error).toBeUndefined();
+
+    // The relay only ever received/stored ciphertext under blob_upload — a
+    // peer (here: the node, exactly `@loombox/node`'s `AttachmentResolver`
+    // path for #156) fetches it by ref and decrypts it back to the exact
+    // original bytes.
+    node.send({
+      type: 'blob_download',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      ref: attachmentId,
+    });
+    const response = (await node.waitFor(
+      (m) => m.type === 'blob_download_response',
+    )) as BlobDownloadResponse;
+    const decryptedBytes = await nodeOpenAttachment(
+      session.id,
+      attachmentId,
+      response.envelope,
+      key,
+    );
+    expect(decryptedBytes).toEqual(pngBytes);
+
+    // The relay never saw the plaintext bytes.
+    const raw = Buffer.from(response.envelope.ciphertext, 'base64');
+    expect(raw.includes(Buffer.from('PNG'))).toBe(false);
+  });
+
+  it('attachFile rejects a HEIC file client-side with a clear convert-and-re-upload message, before any upload attempt (#152)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-heic';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-heic',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_heic', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-heic' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const file = new File([realHeicBytes()], 'photo.heic', { type: 'image/heic' });
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, file);
+
+    const list = await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'rejected',
+    );
+    const entry = list.find((a) => a.id === attachmentId)!;
+    expect(entry.error).toMatch(/heic\/heif/i);
+    expect(entry.error).toMatch(/convert/i);
+    expect(entry.error).toMatch(/re-upload/i);
+    // A rejected attachment never blocks sending.
+    expect(hasBlockingAttachments(list)).toBe(false);
+
+    // Never uploaded: the relay has nothing stored under this ref.
+    node.send({
+      type: 'blob_download',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      ref: attachmentId,
+    });
+    await expect(node.waitFor((m) => m.type === 'blob_download_response', 200)).rejects.toThrow(
+      /timed out/,
+    );
+  });
+
+  it('attachFile rejects a spoofed file by its real sniffed bytes, ignoring its declared mimeType/extension (#151)', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-spoof',
+      deviceId: 'client-spoof',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    // Declares itself as a PNG (name + mimeType) but its actual bytes are not an image.
+    const file = new File([notAnImageBytes()], 'totally-a-photo.png', { type: 'image/png' });
+    const attachments = client.attachmentsFor('sess_spoof');
+    const attachmentId = client.attachFile('sess_spoof', file);
+
+    const list = await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'rejected',
+    );
+    expect(list.find((a) => a.id === attachmentId)?.error).toMatch(/unsupported image type/i);
+  });
+
+  it('sendPrompt embeds only a fully-uploaded attachment as a PromptAttachmentRef the node decrypts, and clears it from the composer (#153)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-send-attach';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-send-attach',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_send_attach', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-send-attach',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const file = new File([realPngBytes()], 'photo.png', { type: 'image/png' });
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, file);
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'uploaded',
+    );
+
+    client.sendPrompt(session.id, 'here is a photo', [attachmentId]);
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    const decrypted = await nodeOpen<{
+      text: string;
+      attachments?: { ref: string; mimeType: string; name?: string }[];
+    }>(session.id, routed.envelope, key);
+    expect(decrypted).toEqual({
+      text: 'here is a photo',
+      attachments: [{ ref: attachmentId, mimeType: 'image/png', name: 'photo.png' }],
+    });
+
+    // Sent attachments are cleared from the composer's pending list — they now belong to the sent prompt.
+    expect(get(attachments)).toEqual([]);
+  });
+
+  it('sendPrompt never references a still-uploading attachment — a broken ref must never reach the agent (SPEC §7.25)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-broken-ref';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-broken-ref',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_broken_ref', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-broken-ref',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const file = new File([realPngBytes()], 'photo.png', { type: 'image/png' });
+    // sendPrompt is called immediately, synchronously after attachFile —
+    // before the async validate/encrypt/upload pipeline has had a chance
+    // to run a single microtask, so the attachment is still 'uploading'.
+    const attachmentId = client.attachFile(session.id, file);
+    client.sendPrompt(session.id, 'quick, before it finishes', [attachmentId]);
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    const decrypted = await nodeOpen<{ text: string; attachments?: unknown }>(
+      session.id,
+      routed.envelope,
+      key,
+    );
+    expect(decrypted).toEqual({ text: 'quick, before it finishes' });
+  });
+
+  it('retryAttachment re-uploads a failed attachment using its cached bytes, without re-reading the file (#155 manual retry)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-manual-retry';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-manual-retry',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_manual_retry', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // Fails exactly the FIRST blob_upload send (the initial attach attempt),
+    // succeeds on every subsequent one (the manual retry) — the connection
+    // itself is never dropped, isolating this from the reconnect path below.
+    const counter = { attempts: 0, failUntilAttempt: 1 };
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-manual-retry',
+      webSocketImpl: flakyBlobUploadSocketCtor(counter),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const bytes = realPngBytes();
+    const file = new File([bytes], 'photo.png', { type: 'image/png' });
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, file);
+
+    const failed = await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'failed',
+    );
+    expect(failed.find((a) => a.id === attachmentId)?.error).toMatch(/upload failed/i);
+    expect(counter.attempts).toBe(1);
+
+    client.retryAttachment(session.id, attachmentId);
+
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'uploaded',
+    );
+    expect(counter.attempts).toBe(2);
+
+    // The retry uploaded the SAME bytes originally read, without asking for the file again.
+    node.send({
+      type: 'blob_download',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      ref: attachmentId,
+    });
+    const response = (await node.waitFor(
+      (m) => m.type === 'blob_download_response',
+    )) as BlobDownloadResponse;
+    const decryptedBytes = await nodeOpenAttachment(
+      session.id,
+      attachmentId,
+      response.envelope,
+      key,
+    );
+    expect(decryptedBytes).toEqual(bytes);
+  });
+
+  it('a connection-dropped upload failure gets exactly one automatic retry on reconnect, never a second one (#155)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-auto-retry';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-auto-retry',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_auto_retry', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // The reconnect's own automatic retry attempt (the 2nd blob_upload send
+    // overall) also fails, so `autoRetried` must be the only thing stopping
+    // a 3rd, 4th, ... attempt on further reconnects — proving "exactly
+    // once" rather than "retries until it works".
+    const counter = { attempts: 0, failUntilAttempt: 2 };
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-auto-retry',
+      webSocketImpl: flakyBlobUploadSocketCtor(counter),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const file = new File([realPngBytes()], 'photo.png', { type: 'image/png' });
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, file);
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'failed',
+    );
+    expect(counter.attempts).toBe(1);
+
+    // Drop and reconnect — `connect()` alone is a no-op while a socket is
+    // already open, so an actual connection drop (`close()`) is what makes
+    // the next `connect()` reach a fresh `initialize_result`, matching what
+    // a real dropped-and-recovered phone connection looks like from
+    // RelayClient's point of view. The automatic retry fires — and, per
+    // this test's setup, fails again too.
+    client.close();
+    await waitForStore(client.status, (status) => status === 'closed');
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'failed',
+    );
+    expect(counter.attempts).toBe(2);
+
+    // A second drop+reconnect must NOT retry a third time — the one
+    // automatic retry has already been used.
+    client.close();
+    await waitForStore(client.status, (status) => status === 'closed');
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    // Give any (incorrect) further auto-retry a moment to fire before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(counter.attempts).toBe(2);
+    expect(get(attachments).find((a) => a.id === attachmentId)?.status).toBe('failed');
+
+    // The manual retry control still works after the automatic one is spent.
+    client.retryAttachment(session.id, attachmentId);
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'uploaded',
+    );
+    expect(counter.attempts).toBe(3);
+  });
+
+  it('rejects the 21st image attached to the same prompt with a clear over-limit message (SPEC §7.25 default cap)', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-too-many',
+      deviceId: 'client-too-many',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const attachments = client.attachmentsFor('sess_too_many');
+    const ids: string[] = [];
+    for (let i = 0; i < MAX_ATTACHMENTS_PER_PROMPT; i++) {
+      const file = new File([realPngBytes(i + 1)], `photo-${i}.png`, { type: 'image/png' });
+      ids.push(client.attachFile('sess_too_many', file));
+    }
+    await waitForStore(
+      attachments,
+      (value) => value.filter((a) => a.status === 'uploaded').length === MAX_ATTACHMENTS_PER_PROMPT,
+    );
+
+    const oneTooMany = new File([realPngBytes(99)], 'photo-extra.png', { type: 'image/png' });
+    const extraId = client.attachFile('sess_too_many', oneTooMany);
+    const list = get(attachments);
+    const extraEntry = list.find((a) => a.id === extraId)!;
+    expect(extraEntry.status).toBe('rejected');
+    expect(extraEntry.error).toMatch(/up to 20 images/i);
+  });
+
+  it('removeAttachment drops a rejected/failed attachment from the composer', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-remove',
+      deviceId: 'client-remove',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const file = new File([realHeicBytes()], 'photo.heic', { type: 'image/heic' });
+    const attachments = client.attachmentsFor('sess_remove');
+    const attachmentId = client.attachFile('sess_remove', file);
+    await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'rejected',
+    );
+
+    client.removeAttachment('sess_remove', attachmentId);
+    expect(get(attachments)).toEqual([]);
   });
 });
 
