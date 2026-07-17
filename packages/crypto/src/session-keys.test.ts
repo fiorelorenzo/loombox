@@ -8,7 +8,8 @@ describe('deriveSessionKey', () => {
     const amk = crypto.getRandomValues(new Uint8Array(32));
 
     const key = await deriveSessionKey(amk, 'acct-1', 'sess-1');
-    const expected = await importAesGcmKey(deriveKeyTree(amk, ['session', 'acct-1', 'sess-1']).key);
+    const expectedNode = await deriveKeyTree(amk, ['session', 'acct-1', 'sess-1']);
+    const expected = await importAesGcmKey(expectedNode.key);
 
     // WebCrypto keys are non-extractable/opaque, so prove equivalence by
     // sealing under one and opening under the other (round-trips iff the

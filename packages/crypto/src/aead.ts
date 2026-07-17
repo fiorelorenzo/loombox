@@ -4,9 +4,7 @@
  * binding ciphertext to a resource id, and key-wrap call sites binding
  * ciphertext to a device id.
  */
-import type { webcrypto } from 'node:crypto';
-
-type CryptoKey = webcrypto.CryptoKey;
+import type { CryptoKey } from './webcrypto-types';
 
 const AES_GCM_KEY_LENGTH_BITS = 256;
 export const AES_GCM_IV_BYTES = 12; // 96-bit IV, the WebCrypto/NIST-recommended size.

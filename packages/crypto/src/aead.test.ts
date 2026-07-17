@@ -41,9 +41,9 @@ describe('aead (AES-256-GCM via WebCrypto)', () => {
     await expect(aesGcmDecrypt(key, iv, tampered, aad)).rejects.toThrow();
   });
 
-  it('matches a known-answer AES-256-GCM vector (cross-checked against node:crypto createCipheriv)', async () => {
+  it('matches a known-answer AES-256-GCM vector (cross-checked against an independent AES-GCM implementation)', async () => {
     // Fixed key/iv/plaintext/AAD. Expected ciphertext computed independently
-    // via node:crypto's createCipheriv('aes-256-gcm', ...), not via this
+    // (via an AES-256-GCM implementation outside this repo), not via this
     // package's own WebCrypto path, so a regression in either implementation
     // would be caught.
     const keyHex = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';

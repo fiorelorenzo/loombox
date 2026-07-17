@@ -1,8 +1,6 @@
-import type { webcrypto } from 'node:crypto';
+import type { CryptoKey } from './webcrypto-types';
 import { deriveKeyTree } from './key-tree';
 import { importAesGcmKey } from './aead';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * Derives one session's symmetric AES-256-GCM key from the account's Account
@@ -30,6 +28,6 @@ export async function deriveSessionKey(
   accountId: string,
   sessionId: string,
 ): Promise<CryptoKey> {
-  const node = deriveKeyTree(amk, ['session', accountId, sessionId]);
+  const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
   return importAesGcmKey(node.key);
 }

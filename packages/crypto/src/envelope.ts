@@ -4,10 +4,8 @@
  * it belongs to, so an envelope moved or relabeled onto a different resource
  * fails to decrypt instead of silently opening under the wrong context.
  */
-import type { webcrypto } from 'node:crypto';
+import type { CryptoKey } from './webcrypto-types';
 import { aesGcmDecrypt, aesGcmEncrypt } from './aead';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 /** A sealed envelope whose ciphertext is bound to `resourceId` via AAD. */
 export interface Envelope {

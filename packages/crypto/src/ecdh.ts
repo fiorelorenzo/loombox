@@ -5,9 +5,7 @@
  * One curve only: P-256. Do not blend in Happy's X25519/tweetnacl — see the
  * package README for the recorded decision.
  */
-import type { webcrypto } from 'node:crypto';
-
-type CryptoKey = webcrypto.CryptoKey;
+import type { CryptoKey } from './webcrypto-types';
 
 const ECDH_ALGORITHM = { name: 'ECDH', namedCurve: 'P-256' } as const;
 
