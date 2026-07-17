@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PROTOCOL_V1,
   PROTOCOL_VERSION,
   baseMessage,
   clientHello,
+  negotiateVersion,
   nodeHello,
   parseWireMessage,
+  parseWireMessageV1,
   promptInject,
   safeParseWireMessage,
+  schemas,
   sessionAnnounce,
   sessionList,
   sessionMeta,
   sessionUpdate,
   sessionUpdateEnvelope,
   wireMessage,
+  wireMessageV1,
 } from './index';
 
 const validSessionMeta = {
@@ -293,5 +298,43 @@ describe('safeParseWireMessage', () => {
   it('returns a failure result for garbage input, without throwing', () => {
     const result = safeParseWireMessage({ nope: true });
     expect(result.success).toBe(false);
+  });
+});
+
+// v1 lives alongside v0, additively, re-exported from this same root module
+// (issues #106/#107/#109; docs/v1-plan.md). These checks only confirm the
+// root barrel wires v1 through correctly; the full v1 behavioral suite lives
+// in `./v1/*.test.ts`.
+describe('v1 additive re-export from the package root', () => {
+  it('keeps v0 PROTOCOL_VERSION and v1 PROTOCOL_V1 both exported and distinct', () => {
+    expect(PROTOCOL_VERSION).toBe(0);
+    expect(PROTOCOL_V1).toBe(1);
+  });
+
+  it('exposes the pure negotiateVersion helper from the root', () => {
+    expect(negotiateVersion([0, 1], [0])).toBe(0);
+    expect(negotiateVersion([0, 1], [0, 1])).toBe(1);
+    expect(negotiateVersion([2], [3])).toBeNull();
+  });
+
+  it('routes a v1 message through wireMessageV1 and parseWireMessageV1', () => {
+    const payload = {
+      type: 'presence',
+      protocolVersion: PROTOCOL_V1,
+      deviceId: 'device-1',
+      online: true,
+    };
+    expect(wireMessageV1.parse(payload)).toEqual(payload);
+    const parsed = parseWireMessageV1(payload);
+    expect(parsed.type).toBe('presence');
+  });
+
+  it('merges v0 and v1 schemas into one registry without dropping either', () => {
+    // v0 entries survive untouched.
+    expect(schemas.wireMessage).toBe(wireMessage);
+    expect(schemas.sessionMeta).toBe(sessionMeta);
+    // v1 entries are present alongside them.
+    expect(schemas.wireMessageV1).toBe(wireMessageV1);
+    expect('sessionMetaPublic' in schemas).toBe(true);
   });
 });
