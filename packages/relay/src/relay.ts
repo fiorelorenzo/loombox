@@ -1,156 +1,518 @@
 import fastifyWebsocket, { type WebSocket as WsWebSocket } from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
-  PROTOCOL_VERSION,
-  safeParseWireMessage,
-  type SessionMeta,
-  type WireMessage,
+  PROTOCOL_V1,
+  initialize,
+  negotiateVersion,
+  safeParseWireMessageV1,
+  type BlobDownloadResponse,
+  type InitializeResult,
+  type ResyncMarker,
+  type SessionAnnounceV1,
+  type SessionListV1,
+  type SessionUpdateEnvelopeV1,
+  type WireMessageV1,
 } from '@loombox/protocol';
+
+import { deriveAccountIdStub } from './auth';
+import { BoundedClientOutbox, type OutboxItem } from './outbox';
+import { createInMemoryRelayStore, type RelayStore } from './store';
 
 /** Path the WS route is mounted on; both nodes and clients connect here. */
 export const RELAY_WS_PATH = '/ws';
 
-interface NodeConnection {
+/**
+ * Protocol versions this relay build understands. v1 only for now — the v0
+ * relay this supersedes is superseded, not bridged; a v0-only peer fails
+ * negotiation and is closed with an "update required" notice (#108).
+ */
+const RELAY_SUPPORTED_VERSIONS = [PROTOCOL_V1] as const;
+
+/** What this relay build can do, echoed back in `initializeResult` (#108). Purely informational today. */
+const RELAY_CAPABILITIES = [
+  'devices',
+  'targets',
+  'sessions',
+  'blobs',
+  'resync',
+  'presence',
+] as const;
+
+interface BaseConnection {
+  socket: WsWebSocket;
+  deviceId: string;
+  accountId: string;
+}
+
+interface NodeConnection extends BaseConnection {
   kind: 'node';
-  nodeId: string;
-  socket: WsWebSocket;
-  /** Session ids this node has announced, so we can drop them on disconnect. */
-  sessionIds: Set<string>;
+  /** nodeId(s) this connection has announced as, via `target_announce`/`session_announce`. */
+  nodeIds: Set<string>;
 }
 
-interface ClientConnection {
+interface ClientConnection extends BaseConnection {
   kind: 'client';
-  clientId: string;
-  socket: WsWebSocket;
+  subscriptions: Set<string>;
+  outbox: BoundedClientOutbox;
 }
 
-interface SessionEntry {
-  meta: SessionMeta;
-  node: NodeConnection;
-}
+type Connection = NodeConnection | ClientConnection;
 
-/** In-memory, per-instance relay state. Never shared across `createRelay()` calls. */
-interface RelayRegistry {
+interface Registry {
   nodes: Set<NodeConnection>;
   clients: Set<ClientConnection>;
-  sessions: Map<string, SessionEntry>;
+  /** Live routing target for a nodeId — only ever the most recently connected owner. */
+  nodeConnectionsByNodeId: Map<string, NodeConnection>;
 }
 
-function createRegistry(): RelayRegistry {
-  return { nodes: new Set(), clients: new Set(), sessions: new Map() };
+function createRegistry(): Registry {
+  return { nodes: new Set(), clients: new Set(), nodeConnectionsByNodeId: new Map() };
 }
 
-function sendMessage(socket: WsWebSocket, message: WireMessage): void {
+function sendJson(socket: WsWebSocket, message: unknown): void {
   if (socket.readyState === socket.OPEN) {
     socket.send(JSON.stringify(message));
   }
 }
 
-function broadcastToClients(registry: RelayRegistry, message: WireMessage): void {
-  for (const client of registry.clients) {
-    sendMessage(client.socket, message);
-  }
+export interface CreateRelayOptions {
+  logger?: boolean;
+  /** Injectable for tests/Postgres swap; defaults to a fresh in-memory store per relay instance. */
+  store?: RelayStore;
+  /** Bounded per-client output-queue depth for `session_update` fan-out (SPEC §7.16, #98/#254). */
+  maxClientQueueDepth?: number;
 }
 
-function sendSessionListSnapshot(registry: RelayRegistry, socket: WsWebSocket): void {
-  sendMessage(socket, {
-    type: 'session_list',
-    protocolVersion: PROTOCOL_VERSION,
-    sessions: Array.from(registry.sessions.values()).map((entry) => entry.meta),
-  });
-}
-
-/** Removes a node and every session it owns from the registry. */
-function dropNode(registry: RelayRegistry, node: NodeConnection): void {
-  registry.nodes.delete(node);
-  for (const sessionId of node.sessionIds) {
-    registry.sessions.delete(sessionId);
-  }
-}
-
-function dropClient(registry: RelayRegistry, client: ClientConnection): void {
-  registry.clients.delete(client);
-}
+const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
 
 /**
- * Builds the Fastify instance for the v0 relay: an in-memory, transport-only
- * WS fan-out between agent nodes and PWA clients (SPEC §5.3, §8's
- * "transport-only fallback", §16 relay stack minus Postgres/Redis for v0).
+ * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
+ * WS fan-out between agent nodes and PWA clients (SPEC §5.3, §8, §16;
+ * issue #315's locked v1 architecture). The relay never decrypts — every
+ * session/resource payload it stores or forwards is an opaque
+ * `EncryptedEnvelope`; it only ever indexes clear routing metadata
+ * (`SessionMetaPublic`: id, nodeId, targetId, accountId, provider, seq).
  * Does not call `listen`; see {@link startRelay} for that.
  */
-export function createRelay(opts: { logger?: boolean } = {}): FastifyInstance {
+export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
   const registry = createRegistry();
+  const store = opts.store ?? createInMemoryRelayStore();
+  const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
+
+  /** Direct, unbounded send — used for control/reply traffic that must never be dropped. */
+  function sendDirect(connection: Connection, message: WireMessageV1): void {
+    sendJson(connection.socket, message);
+  }
+
+  function fanOutSessionUpdate(sessionId: string, item: OutboxItem): void {
+    for (const client of registry.clients) {
+      if (!client.subscriptions.has(sessionId)) continue;
+      client.outbox.enqueue(item);
+    }
+  }
+
+  /** Direct fan-out (no bounded queue) for lower-volume session-scoped control traffic (permission requests, blob refs, ...). */
+  function fanOutDirect(sessionId: string, message: WireMessageV1): void {
+    for (const client of registry.clients) {
+      if (client.subscriptions.has(sessionId)) sendDirect(client, message);
+    }
+  }
+
+  function routeToOwningNode(sessionId: string, message: WireMessageV1): void {
+    const record = store.sessions.get(sessionId);
+    if (!record) {
+      app.log.warn({ sessionId }, 'relay: message for unknown session');
+      return;
+    }
+    const nodeConnection = registry.nodeConnectionsByNodeId.get(record.meta.nodeId);
+    if (!nodeConnection) {
+      app.log.warn({ sessionId, nodeId: record.meta.nodeId }, 'relay: owning node not connected');
+      return;
+    }
+    sendDirect(nodeConnection, message);
+  }
+
+  /** Closes every live connection registered under `deviceId`/`accountId`, e.g. on revoke (#112). */
+  function closeConnectionsForDevice(deviceId: string, accountId: string): void {
+    for (const node of registry.nodes) {
+      if (node.deviceId === deviceId && node.accountId === accountId) {
+        node.socket.close(4403, 'device revoked');
+      }
+    }
+    for (const client of registry.clients) {
+      if (client.deviceId === deviceId && client.accountId === accountId) {
+        client.socket.close(4403, 'device revoked');
+      }
+    }
+  }
+
+  function handleInitialize(socket: WsWebSocket, raw: string): Connection | undefined {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      app.log.warn('relay: dropped a non-JSON first frame');
+      socket.close(4400, 'invalid frame');
+      return undefined;
+    }
+
+    const candidate =
+      typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    if (candidate.type !== 'initialize') {
+      app.log.warn({ type: candidate.type }, 'relay: first frame was not initialize');
+      socket.close(4401, 'first frame must be initialize');
+      return undefined;
+    }
+
+    const remoteVersion = candidate.protocolVersion;
+    const negotiated = negotiateVersion(
+      RELAY_SUPPORTED_VERSIONS,
+      typeof remoteVersion === 'number' ? [remoteVersion] : [],
+    );
+    if (negotiated === null) {
+      // #108: never silently drop an incompatible peer — tell it, then close.
+      sendJson(socket, {
+        type: 'update_required',
+        message: `relay supports protocol version(s) ${RELAY_SUPPORTED_VERSIONS.join(', ')}`,
+      });
+      socket.close(4400, 'update required');
+      return undefined;
+    }
+
+    const result = initialize.safeParse(parsed);
+    if (!result.success) {
+      app.log.warn({ issues: result.error.issues }, 'relay: invalid initialize payload');
+      socket.close(4400, 'invalid initialize payload');
+      return undefined;
+    }
+    const message = result.data;
+
+    // TODO(#121): validate message.authToken against Better Auth instead of stubbing it.
+    const accountId = deriveAccountIdStub(message.authToken);
+
+    const existingDevice = store.devices.get(message.deviceId);
+    if (existingDevice?.status === 'revoked') {
+      socket.close(4403, 'device revoked');
+      return undefined;
+    }
+    if (existingDevice && existingDevice.accountId !== accountId) {
+      app.log.warn({ deviceId: message.deviceId }, 'relay: deviceId reused under another account');
+      socket.close(4403, 'device/account mismatch');
+      return undefined;
+    }
+    store.devices.upsert({
+      deviceId: message.deviceId,
+      devicePublicKey: message.devicePublicKey,
+      accountId,
+    });
+
+    const connection: Connection =
+      message.role === 'node'
+        ? { kind: 'node', socket, deviceId: message.deviceId, accountId, nodeIds: new Set() }
+        : {
+            kind: 'client',
+            socket,
+            deviceId: message.deviceId,
+            accountId,
+            subscriptions: new Set(),
+            outbox: new BoundedClientOutbox((item, done) => {
+              sendJson(socket, item);
+              done();
+            }, maxClientQueueDepth),
+          };
+
+    if (connection.kind === 'node') registry.nodes.add(connection);
+    else registry.clients.add(connection);
+
+    const initResult: InitializeResult = {
+      type: 'initialize_result',
+      protocolVersion: PROTOCOL_V1,
+      negotiatedVersion: negotiated,
+      capabilities: [...RELAY_CAPABILITIES],
+    };
+    sendDirect(connection, initResult);
+    return connection;
+  }
+
+  function handleDeviceMessage(connection: Connection, message: WireMessageV1): boolean {
+    switch (message.type) {
+      case 'device_register':
+        store.devices.upsert({
+          deviceId: message.deviceId,
+          devicePublicKey: message.devicePublicKey,
+          label: message.label,
+          accountId: connection.accountId,
+        });
+        return true;
+      case 'device_revoke': {
+        const device = store.devices.get(message.deviceId);
+        if (!device || device.accountId !== connection.accountId) {
+          app.log.warn({ deviceId: message.deviceId }, 'relay: revoke for unknown/foreign device');
+          return true;
+        }
+        store.devices.revoke(message.deviceId);
+        closeConnectionsForDevice(message.deviceId, connection.accountId);
+        return true;
+      }
+      case 'device_rotate': {
+        const device = store.devices.get(message.deviceId);
+        if (!device || device.accountId !== connection.accountId) {
+          app.log.warn({ deviceId: message.deviceId }, 'relay: rotate for unknown/foreign device');
+          return true;
+        }
+        store.devices.rotate(message.deviceId, message.newDevicePublicKey);
+        return true;
+      }
+      case 'amk_escrow':
+      case 'new_device_bootstrap_request':
+      case 'new_device_bootstrap_response':
+      case 'qr_pairing_request':
+      case 'qr_pairing_response':
+        // Deliberately deferred to #113/#114/#115 (AMK escrow + QR pairing) — not in this PR's scope.
+        app.log.warn({ type: message.type }, 'relay: device-pairing message not yet implemented');
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function handleNodeMessage(connection: NodeConnection, message: WireMessageV1): void {
+    if (handleDeviceMessage(connection, message)) return;
+
+    switch (message.type) {
+      case 'target_announce': {
+        store.targets.announce(message.nodeId, message.targets);
+        connection.nodeIds.add(message.nodeId);
+        registry.nodeConnectionsByNodeId.set(message.nodeId, connection);
+        return;
+      }
+      case 'session_announce': {
+        if (message.session.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.session.id },
+            'relay: session_announce account mismatch',
+          );
+          return;
+        }
+        store.sessions.announce({
+          meta: message.session,
+          privateEnvelope: message.privateEnvelope,
+        });
+        connection.nodeIds.add(message.session.nodeId);
+        registry.nodeConnectionsByNodeId.set(message.session.nodeId, connection);
+        return;
+      }
+      case 'session_update': {
+        const record = store.sessions.get(message.sessionId);
+        if (!record) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: session_update for unknown session',
+          );
+          return;
+        }
+        const seq = store.sessions.nextSeq(message.sessionId);
+        const finalized: SessionUpdateEnvelopeV1 = { ...message, seq };
+        store.sessions.pushRingEntry(message.sessionId, { seq, envelope: message.envelope });
+        fanOutSessionUpdate(message.sessionId, finalized);
+        return;
+      }
+      case 'permission_request':
+      case 'blob_ref':
+        fanOutDirect(message.sessionId, message);
+        return;
+      default:
+        app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
+    }
+  }
+
+  function handleClientMessage(connection: ClientConnection, message: WireMessageV1): void {
+    if (handleDeviceMessage(connection, message)) return;
+
+    switch (message.type) {
+      case 'session_list_request': {
+        const sessions = store.sessions.listForAccount(connection.accountId).map((record) => ({
+          session: record.meta,
+          privateEnvelope: record.privateEnvelope,
+        }));
+        const response: SessionListV1 = {
+          type: 'session_list',
+          protocolVersion: PROTOCOL_V1,
+          sessions,
+        };
+        sendDirect(connection, response);
+        return;
+      }
+      case 'session_resume': {
+        const record = store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: resume for unknown/foreign session',
+          );
+          return;
+        }
+        connection.subscriptions.add(message.sessionId);
+        const announce: SessionAnnounceV1 = {
+          type: 'session_announce',
+          protocolVersion: PROTOCOL_V1,
+          session: record.meta,
+          privateEnvelope: record.privateEnvelope,
+        };
+        sendDirect(connection, announce);
+        return;
+      }
+      case 'session_create': {
+        const nodeId = store.targets.findNodeForTarget(message.targetId);
+        const nodeConnection = nodeId ? registry.nodeConnectionsByNodeId.get(nodeId) : undefined;
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { targetId: message.targetId },
+            'relay: session_create for unknown/foreign target',
+          );
+          return;
+        }
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'prompt_inject':
+      case 'permission_response':
+      case 'config_option':
+        routeToOwningNode(message.sessionId, message);
+        return;
+      case 'blob_upload': {
+        const record = store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: blob_upload for unknown/foreign session',
+          );
+          return;
+        }
+        store.blobs.upload(`${message.sessionId}:${message.ref}`, message.envelope);
+        return;
+      }
+      case 'blob_download': {
+        const record = store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: blob_download for unknown/foreign session',
+          );
+          return;
+        }
+        const envelope = store.blobs.download(`${message.sessionId}:${message.ref}`);
+        if (!envelope) {
+          app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
+          return;
+        }
+        const response: BlobDownloadResponse = {
+          type: 'blob_download_response',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: message.sessionId,
+          ref: message.ref,
+          envelope,
+        };
+        sendDirect(connection, response);
+        return;
+      }
+      case 'resync_request': {
+        const record = store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: resync for unknown/foreign session',
+          );
+          return;
+        }
+        const result = store.sessions.getEntriesSince(message.sessionId, message.sinceSeq);
+        if (result.droppedFromSeq !== undefined && result.droppedToSeq !== undefined) {
+          const marker: ResyncMarker = {
+            type: 'resync_marker',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: message.sessionId,
+            fromSeq: result.droppedFromSeq,
+            toSeq: result.droppedToSeq,
+            dropped: true,
+          };
+          sendDirect(connection, marker);
+        }
+        for (const entry of result.entries) {
+          const replay: SessionUpdateEnvelopeV1 = {
+            type: 'session_update',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: message.sessionId,
+            seq: entry.seq,
+            envelope: entry.envelope,
+          };
+          sendDirect(connection, replay);
+        }
+        return;
+      }
+      case 'presence': {
+        for (const node of registry.nodes) {
+          if (node.accountId === connection.accountId) sendDirect(node, message);
+        }
+        for (const client of registry.clients) {
+          if (client !== connection && client.accountId === connection.accountId) {
+            sendDirect(client, message);
+          }
+        }
+        return;
+      }
+      default:
+        app.log.warn({ type: message.type }, 'relay: unexpected message from a client connection');
+    }
+  }
+
+  function dropConnection(connection: Connection): void {
+    if (connection.kind === 'node') {
+      registry.nodes.delete(connection);
+      for (const nodeId of connection.nodeIds) {
+        if (registry.nodeConnectionsByNodeId.get(nodeId) === connection) {
+          registry.nodeConnectionsByNodeId.delete(nodeId);
+        }
+      }
+    } else {
+      registry.clients.delete(connection);
+    }
+  }
 
   app.register(fastifyWebsocket);
 
   app.register(async (instance) => {
     instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket) => {
-      let connection: NodeConnection | ClientConnection | undefined;
+      let connection: Connection | undefined;
 
       socket.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+        const text = raw.toString();
+
+        if (!connection) {
+          connection = handleInitialize(socket, text);
+          return;
+        }
+
         let parsed: unknown;
         try {
-          parsed = JSON.parse(raw.toString());
+          parsed = JSON.parse(text);
         } catch {
           app.log.warn('relay: dropped a non-JSON frame');
           return;
         }
-
-        const result = safeParseWireMessage(parsed);
+        const result = safeParseWireMessageV1(parsed);
         if (!result.success) {
           app.log.warn({ issues: result.error.issues }, 'relay: dropped an invalid wire frame');
           return;
         }
         const message = result.data;
 
-        if (!connection) {
-          if (message.type === 'node_hello') {
-            connection = { kind: 'node', nodeId: message.nodeId, socket, sessionIds: new Set() };
-            registry.nodes.add(connection);
-          } else if (message.type === 'client_hello') {
-            connection = { kind: 'client', clientId: message.clientId, socket };
-            registry.clients.add(connection);
-            sendSessionListSnapshot(registry, socket);
-          } else {
-            app.log.warn({ type: message.type }, 'relay: first frame was not a hello');
-          }
-          return;
-        }
-
-        if (connection.kind === 'node') {
-          if (message.type === 'session_announce') {
-            const entry: SessionEntry = { meta: message.session, node: connection };
-            registry.sessions.set(message.session.id, entry);
-            connection.sessionIds.add(message.session.id);
-            broadcastToClients(registry, message);
-          } else if (message.type === 'session_update') {
-            broadcastToClients(registry, message);
-          }
-          return;
-        }
-
-        // connection.kind === 'client'
-        if (message.type === 'prompt_inject') {
-          const entry = registry.sessions.get(message.sessionId);
-          if (entry) {
-            sendMessage(entry.node.socket, message);
-          } else {
-            app.log.warn(
-              { sessionId: message.sessionId },
-              'relay: prompt_inject for unknown session',
-            );
-          }
-        }
+        if (connection.kind === 'node') handleNodeMessage(connection, message);
+        else handleClientMessage(connection, message);
       });
 
       socket.on('close', () => {
-        if (!connection) return;
-        if (connection.kind === 'node') {
-          dropNode(registry, connection);
-        } else {
-          dropClient(registry, connection);
-        }
+        if (connection) dropConnection(connection);
       });
     });
   });
@@ -158,12 +520,11 @@ export function createRelay(opts: { logger?: boolean } = {}): FastifyInstance {
   return app;
 }
 
-export interface StartRelayOptions {
+export interface StartRelayOptions extends CreateRelayOptions {
   /** Defaults to 127.0.0.1 — never bind a public interface without an explicit opt-in. */
   host?: string;
   /** Defaults to an ephemeral port (0) when omitted. */
   port?: number;
-  logger?: boolean;
 }
 
 export interface StartedRelay {
@@ -176,7 +537,7 @@ export interface StartedRelay {
 export async function startRelay(opts: StartRelayOptions = {}): Promise<StartedRelay> {
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 0;
-  const app = createRelay({ logger: opts.logger });
+  const app = createRelay(opts);
 
   await app.listen({ host, port });
 

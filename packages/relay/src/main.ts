@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { startRelay } from './relay';
 
 /**
- * Runnable entry point for the v0 relay (SPEC §9's "relay on prodbox").
+ * Runnable entry point for the v1 relay (SPEC §9's "relay on prodbox").
  * Reads HOST/PORT from the environment; defaults to a loopback bind so the
  * deploy step must opt in explicitly to a public interface.
  */
