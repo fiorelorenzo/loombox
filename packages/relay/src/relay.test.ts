@@ -601,6 +601,52 @@ describe('relay v1', () => {
       expect(response.envelope).toEqual(blobEnvelope);
     });
 
+    it('serves blob_download to the executing host (node role) so it can fetch a client-uploaded attachment (#156)', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_blob_node', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // A client uploads the attachment ciphertext.
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const blobEnvelope = fakeEnvelope('opaque-attachment', 'blob');
+      send(client, {
+        type: 'blob_upload',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_blob_node',
+        ref: 'att_1',
+        envelope: blobEnvelope,
+      } satisfies BlobUpload);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // The executing host (node role) fetches it back.
+      send(node, {
+        type: 'blob_download',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_blob_node',
+        ref: 'att_1',
+      });
+      const response = (await nextMessage(node)) as unknown as BlobDownloadResponse;
+      expect(response.type).toBe('blob_download_response');
+      expect(response.envelope).toEqual(blobEnvelope);
+    });
+
     it('does not respond to a download for an unknown ref', async () => {
       const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
       closers.push(close);

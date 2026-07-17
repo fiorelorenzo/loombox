@@ -381,6 +381,37 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
+  // Serving an opaque blob back to the requester. Used by BOTH a client
+  // (fetching an attachment the executing host produced) and a node/executing
+  // host (fetching an attachment a client uploaded — #156): the relay stays
+  // blind, it only matches the ciphertext blob to the requester's own account.
+  async function handleBlobDownload(
+    connection: Connection,
+    message: Extract<WireMessageV1, { type: 'blob_download' }>,
+  ): Promise<void> {
+    const record = await store.sessions.get(message.sessionId);
+    if (!record || record.meta.accountId !== connection.accountId) {
+      app.log.warn(
+        { sessionId: message.sessionId },
+        'relay: blob_download for unknown/foreign session',
+      );
+      return;
+    }
+    const envelope = await store.blobs.download(`${message.sessionId}:${message.ref}`);
+    if (!envelope) {
+      app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
+      return;
+    }
+    const response: BlobDownloadResponse = {
+      type: 'blob_download_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: message.sessionId,
+      ref: message.ref,
+      envelope,
+    };
+    sendDirect(connection, response);
+  }
+
   async function handleNodeMessage(
     connection: NodeConnection,
     message: WireMessageV1,
@@ -450,6 +481,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'permission_request':
       case 'blob_ref':
         fanOutDirect(message.sessionId, message);
+        return;
+      case 'blob_download':
+        // The executing host fetching an attachment blob a client uploaded (#156).
+        await handleBlobDownload(connection, message);
         return;
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
@@ -547,30 +582,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         );
         return;
       }
-      case 'blob_download': {
-        const record = await store.sessions.get(message.sessionId);
-        if (!record || record.meta.accountId !== connection.accountId) {
-          app.log.warn(
-            { sessionId: message.sessionId },
-            'relay: blob_download for unknown/foreign session',
-          );
-          return;
-        }
-        const envelope = await store.blobs.download(`${message.sessionId}:${message.ref}`);
-        if (!envelope) {
-          app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
-          return;
-        }
-        const response: BlobDownloadResponse = {
-          type: 'blob_download_response',
-          protocolVersion: PROTOCOL_V1,
-          sessionId: message.sessionId,
-          ref: message.ref,
-          envelope,
-        };
-        sendDirect(connection, response);
+      case 'blob_download':
+        await handleBlobDownload(connection, message);
         return;
-      }
       case 'resync_request': {
         const record = await store.sessions.get(message.sessionId);
         if (!record || record.meta.accountId !== connection.accountId) {
