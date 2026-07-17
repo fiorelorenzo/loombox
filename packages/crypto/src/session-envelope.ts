@@ -1,8 +1,6 @@
-import type { webcrypto } from 'node:crypto';
 import type { EncryptedEnvelope } from '@loombox/protocol';
+import type { CryptoKey } from './webcrypto-types';
 import { decryptEnvelope, encryptEnvelope, type Envelope } from './envelope';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * The bridge between this package's `Envelope` (raw `Uint8Array` iv/

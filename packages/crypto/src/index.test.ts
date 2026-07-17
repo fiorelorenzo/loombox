@@ -24,7 +24,7 @@ describe('@loombox/crypto public API', () => {
 
   it('supports the end-to-end flow: derive a session key from the AMK and seal a resource', async () => {
     const amk = generateAmk();
-    const sessionNode = deriveKeyTree(amk, ['session', 'session-1']);
+    const sessionNode = await deriveKeyTree(amk, ['session', 'session-1']);
     const key = await importAesGcmKey(sessionNode.key);
 
     const plaintext = new TextEncoder().encode('agent turn output');

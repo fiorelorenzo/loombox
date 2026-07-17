@@ -105,7 +105,7 @@ function randomBase64(byteLength = 32) {
 // independent party holding only the AMK, actually interoperates with the
 // node rather than merely agreeing with itself.
 async function derivePhoneSessionKey(amk, accountId, sessionId) {
-  const node = deriveKeyTree(amk, ['session', accountId, sessionId]);
+  const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
   return importAesGcmKey(node.key);
 }
 

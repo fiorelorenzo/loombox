@@ -165,7 +165,7 @@ async function computeVerificationCode(
  * separation, on top of the AAD binding `envelope.ts` already applies.
  */
 async function derivePairingAeadKey(sharedSecret: Uint8Array, pairingCode: string) {
-  const { key } = deriveChild(
+  const { key } = await deriveChild(
     sharedSecret,
     new TextEncoder().encode(`loombox-pairing-v1:${pairingCode}`),
   );

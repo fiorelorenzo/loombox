@@ -51,7 +51,7 @@ async function deriveNodeSessionKey(
   accountId: string,
   sessionId: string,
 ): Promise<CryptoKey> {
-  const node = deriveKeyTree(amk, ['session', accountId, sessionId]);
+  const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
   return importAesGcmKey(node.key);
 }
 
