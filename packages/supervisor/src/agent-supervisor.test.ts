@@ -50,21 +50,27 @@ function crashProvider(): AcpProvider {
 }
 
 let workspacePath: string;
+let stateDir: string;
 let activeSessions: AgentSession[];
 
 beforeEach(async () => {
   workspacePath = await mkdtemp(path.join(tmpdir(), 'loombox-supervisor-test-'));
+  // Every AgentSupervisor test below persists to disk the moment start() is
+  // called (issue #77); always inject an os.mkdtemp() state dir here so
+  // these tests never touch the real ~/.loombox/supervisor.
+  stateDir = await mkdtemp(path.join(tmpdir(), 'loombox-supervisor-state-test-'));
   activeSessions = [];
 });
 
 afterEach(async () => {
   for (const session of activeSessions) session.close();
   await rm(workspacePath, { recursive: true, force: true });
+  await rm(stateDir, { recursive: true, force: true });
 });
 
 describe('AgentSupervisor', () => {
   it('spawns an agent, completes the ACP handshake, and opens a session', async () => {
-    const supervisor = new AgentSupervisor({ providers: [echoProvider()] });
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
 
     const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });
     activeSessions.push(session);
@@ -75,13 +81,13 @@ describe('AgentSupervisor', () => {
   });
 
   it('rejects starting with an unregistered provider id', async () => {
-    const supervisor = new AgentSupervisor({ providers: [echoProvider()] });
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
 
     await expect(supervisor.start({ workspacePath, providerId: 'nope' })).rejects.toThrow(/nope/);
   });
 
   it('streams agent_message_chunk updates on prompt and buffers them in the transcript', async () => {
-    const supervisor = new AgentSupervisor({ providers: [echoProvider()] });
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
     const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });
     activeSessions.push(session);
 
@@ -101,7 +107,7 @@ describe('AgentSupervisor', () => {
   });
 
   it('keeps the agent alive across a caller detach + re-attach, with the buffered transcript letting the new caller catch up', async () => {
-    const supervisor = new AgentSupervisor({ providers: [echoProvider()] });
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
     const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });
     activeSessions.push(session);
 
@@ -136,7 +142,7 @@ describe('AgentSupervisor', () => {
   });
 
   it('emits a single terminal exit event, not a hang, when the child crashes unexpectedly', async () => {
-    const supervisor = new AgentSupervisor({ providers: [crashProvider()] });
+    const supervisor = new AgentSupervisor({ providers: [crashProvider()], stateDir });
     const session = await supervisor.start({ workspacePath, providerId: 'test-crash' });
     activeSessions.push(session);
 
