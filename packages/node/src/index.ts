@@ -10,8 +10,22 @@ export type {
 } from './relay-connection';
 export { RelayConnection } from './relay-connection';
 
-export type { CreateNodeSessionOptions, NodeDaemonOptions } from './node-daemon';
+export type {
+  CreateNodeSessionOptions,
+  NodeDaemonOptions,
+  PromptAttachmentRef,
+  ResolvedAttachment,
+} from './node-daemon';
 export { createNode, NodeDaemon } from './node-daemon';
+
+// v1: attachment fetch-and-decrypt on the executing host over the existing
+// node<->supervisor control channel (SPEC §7.25; issue #156).
+export type { BlobSource, RelayBlobSourceOptions, RelayLike } from './attachments';
+export { AttachmentResolver, RelayBlobSource, attachmentResourceId } from './attachments';
+
+// v1: node identity keypair generation + persistence (SPEC §5.1, §8, §16; issue #64).
+export type { NodeIdentity, NodeIdentityStoreOptions } from './identity';
+export { NodeIdentityStore } from './identity';
 
 export type { SshTargetConfig } from './target';
 export { DEFAULT_LOCAL_TARGET } from './target';

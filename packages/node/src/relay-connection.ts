@@ -37,8 +37,9 @@ export interface RelayConnectionOptions {
   deviceId: string;
   /**
    * This device's ECDH P-256 identity public key, base64-encoded raw form
-   * (SPEC §8). Real per-node keypair generation/persistence is issue #64;
-   * `NodeDaemon`'s caller supplies this directly until that lands.
+   * (SPEC §8). See `NodeDaemonOptions.devicePublicKey`'s doc comment
+   * (`node-daemon.ts`) for where this comes from (`./identity.ts`'s
+   * `NodeIdentityStore`, issue #64).
    */
   devicePublicKey: string;
   /** Opaque Better Auth bearer token (SPEC §8); the relay validates only its shape today (TODO #121). */

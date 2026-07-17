@@ -192,4 +192,71 @@ describe('AgentSupervisor', () => {
     expect(exits).toEqual([1]);
     expect(errors).toEqual([]);
   });
+
+  it('resolves an attachment ref via the injected AttachmentChannel (issue #156), never opening a connection of its own', async () => {
+    const calls: Array<{ sessionId: string; ref: string }> = [];
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const supervisor = new AgentSupervisor({
+      stateDir,
+      attachmentChannel: {
+        resolveAttachment: async (sessionId: string, ref: string) => {
+          calls.push({ sessionId, ref });
+          return bytes;
+        },
+      },
+    });
+
+    const resolved = await supervisor.resolveAttachment('sess-1', 'ref-abc');
+
+    expect(resolved).toEqual(bytes);
+    expect(calls).toEqual([{ sessionId: 'sess-1', ref: 'ref-abc' }]);
+  });
+
+  it('rejects resolveAttachment with a clear error when no AttachmentChannel is configured', async () => {
+    const supervisor = new AgentSupervisor({ stateDir });
+
+    await expect(supervisor.resolveAttachment('sess-1', 'ref-abc')).rejects.toThrow(
+      /no attachment channel configured/i,
+    );
+  });
+
+  it('setAttachmentChannel() wires (or replaces) the channel after construction', async () => {
+    const supervisor = new AgentSupervisor({ stateDir });
+
+    await expect(supervisor.resolveAttachment('sess-1', 'ref-abc')).rejects.toThrow(
+      /no attachment channel configured/i,
+    );
+
+    supervisor.setAttachmentChannel({
+      resolveAttachment: async (sessionId: string, ref: string) =>
+        new TextEncoder().encode(`${sessionId}:${ref}`),
+    });
+
+    await expect(supervisor.resolveAttachment('sess-1', 'ref-abc')).resolves.toEqual(
+      new TextEncoder().encode('sess-1:ref-abc'),
+    );
+
+    // A later call replaces, rather than stacking behind, the previous one.
+    supervisor.setAttachmentChannel({
+      resolveAttachment: async () => new TextEncoder().encode('replaced'),
+    });
+    await expect(supervisor.resolveAttachment('sess-1', 'ref-abc')).resolves.toEqual(
+      new TextEncoder().encode('replaced'),
+    );
+  });
+
+  it('propagates a rejected AttachmentChannel lookup (e.g. blob not found or failed to decrypt) rather than swallowing it', async () => {
+    const supervisor = new AgentSupervisor({
+      stateDir,
+      attachmentChannel: {
+        resolveAttachment: async () => {
+          throw new Error('boom: blob not found');
+        },
+      },
+    });
+
+    await expect(supervisor.resolveAttachment('sess-1', 'ref-missing')).rejects.toThrow(
+      /boom: blob not found/,
+    );
+  });
 });
