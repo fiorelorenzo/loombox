@@ -1,27 +1,24 @@
 import { EventEmitter } from 'node:events';
 
-import type { AcpPermissionOption, AcpPermissionOutcome, AcpToolCallUpdate } from './types';
+import {
+  cancelAllPermissionRequests,
+  createPermissionQueueState,
+  enqueuePermissionRequest,
+  headPermissionRequest,
+  isPermissionRequestActionable,
+  listPermissionRequests,
+  resolvePermissionRequest,
+  type EnqueuePermissionRequestInput,
+  type PendingPermissionRequest,
+  type PermissionQueueState,
+} from './permission-queue-state';
+import type { AcpPermissionOutcome } from './types';
 
-export interface PendingPermissionRequest {
-  readonly requestId: string;
-  readonly sessionId: string;
-  readonly toolCall: AcpToolCallUpdate;
-  readonly options: AcpPermissionOption[];
-  /** Copied off `toolCall.parentToolCallId`: a UI layer uses this to force open a collapsed ancestor group (SPEC.md §7.24). */
-  readonly parentToolCallId: string | undefined;
-  readonly enqueuedAt: number;
-}
-
-export interface EnqueuePermissionRequestInput {
-  requestId: string;
-  sessionId: string;
-  toolCall: AcpToolCallUpdate;
-  options: AcpPermissionOption[];
-}
-
-export type PermissionResolveResult =
-  | { status: 'resolved'; requestId: string; sessionId: string; outcome: AcpPermissionOutcome }
-  | { status: 'stale'; requestId: string };
+export type {
+  EnqueuePermissionRequestInput,
+  PendingPermissionRequest,
+  PermissionResolveResult,
+} from './permission-queue-state';
 
 /**
  * The per-session `session/request_permission` FIFO queue state machine
@@ -31,41 +28,35 @@ export type PermissionResolveResult =
  * `enqueue()` and resolves them via `resolve()`/`cancelAll()`; every
  * subscriber sees the same queue, so "resolving a request from any
  * subscriber removes it everywhere" falls straight out of there being one
- * shared `Map`, not a per-subscriber copy.
+ * shared state, not a per-subscriber copy.
+ *
+ * The FIFO/nested-visibility/cancel-all rules themselves live in
+ * `permission-queue-state.ts` as plain, `EventEmitter`-free functions — this
+ * class is a thin `EventEmitter` wrapper around that pure state so a
+ * Node-side caller keeps the familiar event-driven API. A browser client
+ * that cannot safely extend `node:events` (it externalizes to an empty stub
+ * in a client-side Vite build) consumes the pure functions directly instead
+ * (see `apps/web/src/lib/relay-client.ts`'s `permissionQueueFor`).
  */
 export class PermissionQueue extends EventEmitter {
-  private readonly queues = new Map<string, PendingPermissionRequest[]>();
-  private readonly byId = new Map<string, PendingPermissionRequest>();
+  private state: PermissionQueueState = createPermissionQueueState();
 
   /** Enqueues an incoming request in arrival order. Emits `'enqueued'`. */
   enqueue(input: EnqueuePermissionRequestInput): PendingPermissionRequest {
-    if (this.byId.has(input.requestId)) {
-      throw new Error(`PermissionQueue: duplicate request id "${input.requestId}"`);
-    }
-    const request: PendingPermissionRequest = {
-      requestId: input.requestId,
-      sessionId: input.sessionId,
-      toolCall: input.toolCall,
-      options: input.options,
-      parentToolCallId: input.toolCall.parentToolCallId,
-      enqueuedAt: Date.now(),
-    };
-    const list = this.queues.get(input.sessionId) ?? [];
-    list.push(request);
-    this.queues.set(input.sessionId, list);
-    this.byId.set(request.requestId, request);
+    const { state, request } = enqueuePermissionRequest(this.state, input);
+    this.state = state;
     this.emit('enqueued', request);
     return request;
   }
 
   /** Every pending request for a session, oldest first (FIFO arrival order). */
   list(sessionId: string): PendingPermissionRequest[] {
-    return [...(this.queues.get(sessionId) ?? [])];
+    return listPermissionRequests(this.state, sessionId);
   }
 
   /** The session's current FIFO head, if any. */
   head(sessionId: string): PendingPermissionRequest | undefined {
-    return this.queues.get(sessionId)?.[0];
+    return headPermissionRequest(this.state, sessionId);
   }
 
   /**
@@ -77,9 +68,7 @@ export class PermissionQueue extends EventEmitter {
    * actionable.
    */
   isActionable(requestId: string): boolean {
-    const request = this.byId.get(requestId);
-    if (!request) return false;
-    return this.head(request.sessionId)?.requestId === requestId;
+    return isPermissionRequestActionable(this.state, requestId);
   }
 
   /**
@@ -90,19 +79,10 @@ export class PermissionQueue extends EventEmitter {
    * `'resolved'` so every subscriber (any UI surface, the attention inbox)
    * observes the same resolution exactly once.
    */
-  resolve(requestId: string, outcome: AcpPermissionOutcome): PermissionResolveResult {
-    const request = this.byId.get(requestId);
-    if (!request) {
-      return { status: 'stale', requestId };
-    }
-    this.remove(request);
-    const result: PermissionResolveResult = {
-      status: 'resolved',
-      requestId,
-      sessionId: request.sessionId,
-      outcome,
-    };
-    this.emit('resolved', result);
+  resolve(requestId: string, outcome: AcpPermissionOutcome) {
+    const { state, result } = resolvePermissionRequest(this.state, requestId, outcome);
+    this.state = state;
+    if (result.status === 'resolved') this.emit('resolved', result);
     return result;
   }
 
@@ -112,21 +92,10 @@ export class PermissionQueue extends EventEmitter {
    * agent's own follow-up update — a spinner must never dangle past the
    * moment Stop was pressed (SPEC.md §7.24's "Multi-request ordering").
    */
-  cancelAll(sessionId: string): PermissionResolveResult[] {
-    return this.list(sessionId).map((request) =>
-      this.resolve(request.requestId, { outcome: 'cancelled' }),
-    );
-  }
-
-  private remove(request: PendingPermissionRequest): void {
-    this.byId.delete(request.requestId);
-    const list = this.queues.get(request.sessionId);
-    if (!list) return;
-    const next = list.filter((item) => item.requestId !== request.requestId);
-    if (next.length > 0) {
-      this.queues.set(request.sessionId, next);
-    } else {
-      this.queues.delete(request.sessionId);
-    }
+  cancelAll(sessionId: string) {
+    const { state, results } = cancelAllPermissionRequests(this.state, sessionId);
+    this.state = state;
+    for (const result of results) this.emit('resolved', result);
+    return results;
   }
 }

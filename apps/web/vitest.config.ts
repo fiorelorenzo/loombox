@@ -16,6 +16,13 @@ export default defineConfig({
     alias: {
       $lib: `${root}src/lib`,
     },
+    // Component tests opt into `// @vitest-environment jsdom` per-file (see
+    // e.g. CopyButton.test.ts); when they do, vite-plugin-svelte must also
+    // compile Svelte components in their client (DOM) form rather than SSR
+    // — otherwise `mount()` throws "not available on the server" even
+    // though the test *is* running in jsdom. Gated on `VITEST` so this
+    // never affects the real `vite build`.
+    conditions: process.env.VITEST ? ['browser'] : undefined,
   },
   test: {
     environment: 'node',

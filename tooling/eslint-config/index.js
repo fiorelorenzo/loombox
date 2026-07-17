@@ -47,6 +47,16 @@ export default tseslint.config(
         extraFileExtensions: ['.svelte'],
       },
     },
+    rules: {
+      // `...tseslint.configs.recommended` above already turns base `no-undef`
+      // off for `**/*.ts`/`**/*.tsx` (ambient/lib globals like DOM types are
+      // svelte-check's job, per this file's top comment), but that config's
+      // `files` glob never matches `.svelte`, so its `<script>` blocks kept
+      // the plain `eslint:recommended` `no-undef: error` and flagged every
+      // real DOM type (`KeyboardEvent`, `HTMLElement`, ...) as an unresolved
+      // global. Same rationale, applied consistently to `.svelte` files too.
+      'no-undef': 'off',
+    },
   },
   prettier,
   ...svelte.configs['flat/prettier'],
