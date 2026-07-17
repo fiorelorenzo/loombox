@@ -76,6 +76,9 @@ export class AgentSession extends EventEmitter {
   /** The v1 update stream (SPEC.md §7.24's reducer input shape), mirrored to disk as it arrives; the in-memory cache over `store`'s on-disk log. */
   private readonly transcriptUpdates: AcpTranscriptUpdate[] = [];
   private terminalEmitted = false;
+  /** Set by close(): stops any further on-disk persistence, so a late child
+   * 'exit' event can't write into a session state dir a caller is tearing down. */
+  private closed = false;
   private sessionId: string | undefined;
   private attentionState: AttentionState;
 
@@ -215,6 +218,7 @@ export class AgentSession extends EventEmitter {
 
   /** Deliberately terminates the underlying agent process. A no-op on a replay-only session (`isLive === false`): there is nothing to close. */
   close(): void {
+    this.closed = true;
     this.client?.close();
   }
 
@@ -233,13 +237,13 @@ export class AgentSession extends EventEmitter {
       (payload: { sessionId: string; update: AcpTranscriptUpdate }) => {
         if (payload.sessionId !== this.sessionId) return;
         this.transcriptUpdates.push(payload.update);
-        this.store?.appendTranscriptUpdate(this.sessionId, payload.update);
+        if (!this.closed) this.store?.appendTranscriptUpdate(this.sessionId, payload.update);
         this.emit('transcript_update', payload.update);
       },
     );
 
     client.on('turn_end', (turnEnd: AcpTurnEnd) => {
-      if (this.sessionId) this.store?.appendTurnEnd(this.sessionId, turnEnd);
+      if (this.sessionId && !this.closed) this.store?.appendTurnEnd(this.sessionId, turnEnd);
       // A turn only ends once any permission it needed was already resolved,
       // so it's always safe to fall back to idle here.
       this.setAttention('awaiting_input', turnEnd);
@@ -273,7 +277,7 @@ export class AgentSession extends EventEmitter {
   private setAttention(status: AttentionStatus, detail?: unknown): void {
     const state: AttentionState = { status, updatedAt: new Date().toISOString(), detail };
     this.attentionState = state;
-    if (this.sessionId) this.store?.appendAttention(this.sessionId, state);
+    if (this.sessionId && !this.closed) this.store?.appendAttention(this.sessionId, state);
     // Emitted unconditionally: whether anyone is listening right now is
     // irrelevant to whether this state transition happened (SPEC.md §5.6's
     // "emits events independently of any connected client"; issue #79). The

@@ -64,8 +64,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   for (const session of activeSessions) session.close();
-  await rm(workspacePath, { recursive: true, force: true });
-  await rm(stateDir, { recursive: true, force: true });
+  // maxRetries covers the rare ENOTEMPTY if a child's late 'exit' write races
+  // the cleanup (close() already guards persistence, this is belt-and-suspenders).
+  await rm(workspacePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 describe('AgentSupervisor', () => {
