@@ -14,12 +14,14 @@
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
+  import type { QueuedPrompt } from '$lib/outbox';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
+  import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
 
   // Disposable v1 relay (SPEC §12): no default deployment, so the operator
@@ -56,6 +58,7 @@
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   let attachments = $state<ComposerAttachment[]>([]);
+  let queuedPrompts = $state<QueuedPrompt[]>([]);
   let draft = $state('');
   // A plan's collapse state persists per session for as long as this tab
   // stays open (SPEC §7.24 "remembers collapse state during the session"),
@@ -97,6 +100,7 @@
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
+  let unsubscribeQueuedPrompts: (() => void) | undefined;
 
   function selectSession(id: string): void {
     selectedSessionId = id;
@@ -104,10 +108,12 @@
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
     unsubscribeAttachments?.();
+    unsubscribeQueuedPrompts?.();
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
+    queuedPrompts = [];
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client
@@ -117,6 +123,9 @@
       .configOptionsFor(id)
       .subscribe((value) => (configOptions = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
+    unsubscribeQueuedPrompts = client
+      .queuedPromptsFor(id)
+      .subscribe((value) => (queuedPrompts = value));
   }
 
   /**
@@ -151,6 +160,7 @@
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
     unsubscribeAttachments?.();
+    unsubscribeQueuedPrompts?.();
     client?.close();
     client = undefined;
     status = 'idle';
@@ -160,6 +170,7 @@
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
+    queuedPrompts = [];
   }
 
   function ensureAuthStore(): AuthStore {
@@ -373,6 +384,8 @@
               onToggle={togglePlanCollapsed}
             />
           {/if}
+
+          <QueuedPromptBar prompts={queuedPrompts} />
 
           <PermissionQueueBar
             sessionId={selectedSessionId}

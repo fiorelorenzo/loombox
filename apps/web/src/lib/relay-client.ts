@@ -41,6 +41,7 @@ import {
   type AttachableFile,
   type ComposerAttachment,
 } from './attachments';
+import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -171,7 +172,32 @@ export interface RelayClientOptions {
   devicePublicKey?: string;
   /** WebSocket constructor override; defaults to the global `WebSocket`. Tests inject a fake. */
   webSocketImpl?: WebSocketConstructor;
+  /**
+   * Persistence for the offline/mid-turn composer outbox (SPEC §7.3, §7.24;
+   * issues #128/#130). Defaults to `createDefaultOutboxStorage(accountId)`
+   * (IndexedDB when available, in-memory otherwise, see `outbox.ts`); tests
+   * inject an isolated one so different accounts/instances in the same test
+   * process never share a database.
+   */
+  outboxStorage?: OutboxStorage;
+  /**
+   * How long (ms) a session must go without any inbound `session_update`
+   * (or an outbound prompt this client just sent) before its turn is
+   * considered settled and the next queued prompt, if any, is flushed
+   * (issue #128). ACP v1's wire has no explicit turn-end/`stopReason`
+   * signal reaching this client (`@loombox/node`'s `node-daemon.ts`:
+   * "`AcpTranscriptUpdate` has no wire slot for turn-end/error/exit
+   * notifications ... those stay node-local observability for now") — this
+   * idle-quiet heuristic is the best signal available without a protocol
+   * change, and is deliberately generous by default so a real agent's
+   * natural pauses between tokens/tool calls don't trip a premature flush.
+   * Defaults to 1500ms; tests override it to a few ms to stay fast.
+   */
+  turnIdleMs?: number;
 }
+
+/** Default for {@link RelayClientOptions.turnIdleMs}. */
+const DEFAULT_TURN_IDLE_MS = 1500;
 
 function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
@@ -260,13 +286,13 @@ function safeRevokeObjectUrl(url: string): void {
  * `reduceTranscript` — the same pure reducer the transcript's real source of
  * truth. `sendPrompt` seals the composer's text into a `prompt_inject`
  * envelope and, since the relay never echoes it back, optimistically reduces
- * the user's own turn into the local transcript so it shows immediately.
- *
- * v1's client core is deliberately minimal, matching this PR's scope (not
- * Wave D.2's rich transcript UX): **online only** (no reconnect-with-backoff,
- * no offline composer outbox) and a **plain append-only transcript render**
- * — tool-call widgets, diff viewers, the plan sidebar, and the
- * permission-queue UI are all out of scope here.
+ * the user's own turn into the local transcript so it shows immediately —
+ * unless a turn is already considered in flight for that session, or there
+ * is no open connection, in which case it queues locally and persists to
+ * the IndexedDB-backed offline outbox instead (SPEC §7.3, §7.24; issues
+ * #128/#130), flushed in order once the turn settles or the connection
+ * comes back. This client still does not itself auto-reconnect with backoff
+ * (a caller decides when to call `connect()` again).
  *
  * All state is exposed as plain `svelte/store` readables (the `subscribe`
  * contract), which has no DOM dependency, so this whole module is unit
@@ -295,6 +321,13 @@ export class RelayClient {
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
+  /** The composer outbox's persistence (issues #128/#130); see `RelayClientOptions.outboxStorage`'s doc comment. */
+  private readonly outboxStorage: OutboxStorage;
+  private readonly turnIdleMs: number;
+  /** A session's currently queued-but-not-yet-flushed prompts, oldest first (issues #128/#130). */
+  private readonly queuedPrompts = new Map<string, Writable<QueuedPrompt[]>>();
+  /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
+  private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
   private awaitingInitializeResult = false;
 
@@ -305,6 +338,8 @@ export class RelayClient {
     this.authToken = options.authToken ?? options.accountId;
     this.deviceId = options.deviceId ?? generateId('device');
     this.devicePublicKey = options.devicePublicKey ?? randomBase64();
+    this.outboxStorage = options.outboxStorage ?? createDefaultOutboxStorage(this.accountId);
+    this.turnIdleMs = options.turnIdleMs ?? DEFAULT_TURN_IDLE_MS;
 
     const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
     if (!ctor) {
@@ -316,6 +351,14 @@ export class RelayClient {
     this.sessionsStore = writable<ClientSessionMeta[]>([]);
     this.status = this.statusStore;
     this.sessions = this.sessionsStore;
+
+    // Reloads whatever this account's outbox already had persisted (issue
+    // #130's "outbox survives a full page reload") — fire-and-forget since
+    // the constructor can't be async; `queuedPromptsFor` simply starts empty
+    // and fills in once this resolves. Also opportunistically flushes each
+    // session it finds, in case `connect()`/the socket is already open by
+    // the time this resolves (see `flushOutboxOnReconnect`'s doc comment).
+    void this.hydrateOutbox();
   }
 
   /** Opens the connection (no-op if already connecting/open) and sends `initialize` once open. */
@@ -356,6 +399,12 @@ export class RelayClient {
           // very first connect too, since no attachment can be in a
           // 'failed' state before any upload has ever been attempted.
           this.retryFailedAttachmentsOnReconnect();
+          // Issue #130: flush whatever this account's outbox is still
+          // holding (composed offline, or hydrated from a prior page load)
+          // now that the connection is back — harmless on the very first
+          // connect too, since nothing can be queued before any prompt has
+          // ever been sent.
+          this.flushOutboxOnReconnect();
         } else {
           this.statusStore.set('error');
         }
@@ -370,6 +419,14 @@ export class RelayClient {
       this.socket = undefined;
       this.awaitingInitializeResult = false;
       this.statusStore.set('closed');
+      // The connection is gone, so this client has no way left to observe
+      // whether a turn it thought was active actually settled — clearing
+      // every pending idle timer treats every session as "unknown, assume
+      // ready" rather than gating the local queue on a timer that will
+      // never fire again. `flushOutboxOnReconnect` re-attempts each session
+      // once the socket reopens, so nothing queued is lost, only its
+      // in-flight "settled" bookkeeping resets.
+      this.clearAllTurnTimers();
     });
 
     // 'close' always follows 'error' for the WHATWG WebSocket, so status is
@@ -726,38 +783,200 @@ export class RelayClient {
   }
 
   /**
+   * The composer's currently queued-but-unsent prompts for one session, in
+   * flush order (oldest first) — SPEC §7.24's "shown in the transcript in a
+   * pending 'queued' state" (issue #128) and SPEC §7.3's "a follow-up
+   * prompt composed offline queues ... shown as pending in the composer/
+   * transcript" (issue #130). Starts empty; hydrated asynchronously from
+   * `outboxStorage` (survives a reload) and updated by every
+   * {@link sendPrompt} call this session queues rather than sends
+   * immediately. Like `attachmentsFor`, this never itself subscribes
+   * anything on the relay.
+   */
+  queuedPromptsFor(sessionId: string): Readable<QueuedPrompt[]> {
+    return this.queuedPromptStoreFor(sessionId);
+  }
+
+  /**
    * Seals the composer's text (and any uploaded attachment refs, SPEC
-   * §7.25) into a `prompt_inject` envelope (SPEC §7.3) and sends it.
-   * Optimistically reduces the user's own turn into the local transcript
-   * first (the relay/node never echo `prompt_inject` back as a
-   * `session_update`, so without this the user's own message would never
-   * appear). Returns the generated `promptId` synchronously; the
-   * encrypt-and-send itself is asynchronous (WebCrypto), and a failure is
-   * logged rather than thrown, matching `@loombox/node`'s
-   * `encryptAndSendUpdate` error-handling style. Referenced attachments are
-   * cleared from the composer's pending list once the send goes out, since
-   * they now belong to this sent prompt, not a future one.
+   * §7.25) into a `prompt_inject` envelope (SPEC §7.3) and sends it — or, if
+   * this session already has a turn considered in flight (issue #128) or
+   * there is currently no open connection (issue #130), queues it instead:
+   * appended to that session's {@link queuedPromptsFor} list and persisted
+   * to the offline outbox, to be flushed in order once the turn settles or
+   * the connection comes back (`flushNext`/`flushOutboxOnReconnect`).
+   * Always returns the generated `promptId` synchronously, whichever path
+   * was taken; referenced attachments are cleared from the composer's
+   * pending list either way, since they now belong to this prompt (sent or
+   * queued), not a future one.
    */
   sendPrompt(sessionId: string, text: string, attachmentIds: string[] = []): string {
-    const promptId = generateId('prompt');
-    this.applyUpdate(sessionId, {
-      kind: 'user_message_chunk',
-      turnId: promptId,
-      messageId: promptId,
-      text,
-    });
-
     const attachments = this.resolveUploadedAttachmentRefs(sessionId, attachmentIds);
+    const item: QueuedPrompt = {
+      id: generateId('prompt'),
+      sessionId,
+      text,
+      attachments,
+      queuedAt: Date.now(),
+    };
 
-    this.encryptAndSendPrompt(sessionId, promptId, text, attachments).catch((error: unknown) => {
-      console.warn(
-        `RelayClient: failed to encrypt/send prompt_inject for session ${sessionId}: ${errorMessage(error)}`,
-      );
-    });
+    const alreadyQueued = get(this.queuedPromptStoreFor(sessionId)).length > 0;
+    const turnActive = this.turnTimers.has(sessionId);
+    if (alreadyQueued || turnActive || !this.isSocketOpen()) {
+      this.enqueuePrompt(item);
+    } else {
+      this.dispatchPrompt(item);
+    }
 
     if (attachmentIds.length > 0) this.clearAttachments(sessionId, attachmentIds);
 
-    return promptId;
+    return item.id;
+  }
+
+  /**
+   * Actually sends a prompt (immediate `sendPrompt`, or one just dequeued
+   * by `flushNext`/`flushOutboxOnReconnect`): the optimistic local
+   * transcript update, the real encrypt-and-send, marking this session's
+   * turn active again (so a prompt queued right behind this one waits its
+   * own turn), and — idempotently, a no-op if `item` was never queued —
+   * removing it from the local queue and the persisted outbox.
+   */
+  private dispatchPrompt(item: QueuedPrompt): void {
+    this.removeFromQueue(item.sessionId, item.id);
+    this.applyUpdate(item.sessionId, {
+      kind: 'user_message_chunk',
+      turnId: item.id,
+      messageId: item.id,
+      text: item.text,
+    });
+    this.encryptAndSendPrompt(item.sessionId, item.id, item.text, item.attachments).catch(
+      (error: unknown) => {
+        console.warn(
+          `RelayClient: failed to encrypt/send prompt_inject for session ${item.sessionId}: ${errorMessage(error)}`,
+        );
+      },
+    );
+    this.markTurnActive(item.sessionId);
+  }
+
+  /** Appends to the local queue and persists to the outbox (fire-and-forget; a persistence failure is logged, not thrown — mirrors this class's other best-effort wire/storage writes). */
+  private enqueuePrompt(item: QueuedPrompt): void {
+    this.queuedPromptStoreFor(item.sessionId).update((list) => [...list, item]);
+    this.outboxStorage.put(item).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: failed to persist queued prompt ${item.id} to the offline outbox: ${errorMessage(error)}`,
+      );
+    });
+  }
+
+  /** Removes `id` from the local queue and the persisted outbox — a no-op (including no outbox write) if `id` was never queued, so dispatching a fresh, never-queued prompt never touches storage. */
+  private removeFromQueue(sessionId: string, id: string): void {
+    const store = this.queuedPromptStoreFor(sessionId);
+    if (!get(store).some((p) => p.id === id)) return;
+    store.update((list) => list.filter((p) => p.id !== id));
+    this.outboxStorage.delete(id).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: failed to remove flushed prompt ${id} from the offline outbox: ${errorMessage(error)}`,
+      );
+    });
+  }
+
+  /**
+   * (Re)starts this session's `turnIdleMs` idle timer — called both when
+   * this client sends a prompt and whenever a `session_update` arrives for
+   * this session (including one triggered by another device's prompt on
+   * the same session), since either is equally good evidence a turn is
+   * still active. `turnTimers.has(sessionId)` is this class's sole "is a
+   * turn in flight" signal (issue #128's heuristic; see
+   * `RelayClientOptions.turnIdleMs`'s doc comment for why no better one is
+   * available without a protocol change).
+   */
+  private markTurnActive(sessionId: string): void {
+    const existing = this.turnTimers.get(sessionId);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(() => this.onTurnSettled(sessionId), this.turnIdleMs);
+    this.turnTimers.set(sessionId, timer);
+  }
+
+  private onTurnSettled(sessionId: string): void {
+    this.turnTimers.delete(sessionId);
+    this.flushNext(sessionId);
+  }
+
+  private clearAllTurnTimers(): void {
+    for (const timer of this.turnTimers.values()) clearTimeout(timer);
+    this.turnTimers.clear();
+  }
+
+  /** Dispatches this session's oldest queued prompt, if any, the connection is open, and no turn is currently considered active for it — otherwise a no-op (the queue is left exactly as it was, to be retried by the next settle/reconnect). */
+  private flushNext(sessionId: string): void {
+    if (this.turnTimers.has(sessionId)) return;
+    if (!this.isSocketOpen()) return;
+    const next = get(this.queuedPromptStoreFor(sessionId))[0];
+    if (!next) return;
+    this.dispatchPrompt(next);
+  }
+
+  /**
+   * Issue #130's "on reconnect, queued prompts send in order automatically":
+   * runs on every successful `initialize_result` (including the very first
+   * connect, where it is a no-op since nothing can be queued before any
+   * prompt has ever been sent). Attempts every session this client
+   * currently knows has queued prompts — `flushNext` itself is the
+   * exactly-once gate (a prompt already dispatched is no longer in the
+   * queue, so a second reconnect finds nothing left to resend for it).
+   */
+  private flushOutboxOnReconnect(): void {
+    for (const sessionId of this.queuedPrompts.keys()) {
+      this.flushNext(sessionId);
+    }
+  }
+
+  /**
+   * Loads whatever this account's outbox already had persisted — from a
+   * prior page load, or a previous `RelayClient` instance in the same
+   * process — into the local per-session queue stores (issue #130's
+   * "outbox survives a full page reload"). Runs once, fired from the
+   * constructor; also opportunistically flushes each session it populates,
+   * in case the socket is already open by the time this (inherently async)
+   * read resolves — `connect()` is typically called right after
+   * construction, so `flushOutboxOnReconnect`'s own `initialize_result`-
+   * triggered pass can race ahead of this one and find the queue still
+   * empty otherwise.
+   */
+  private async hydrateOutbox(): Promise<void> {
+    try {
+      const persisted = await this.outboxStorage.list();
+      const bySession = new Map<string, QueuedPrompt[]>();
+      for (const item of persisted) {
+        const list = bySession.get(item.sessionId) ?? [];
+        list.push(item);
+        bySession.set(item.sessionId, list);
+      }
+      for (const [sessionId, items] of bySession) {
+        this.queuedPromptStoreFor(sessionId).update((existing) => {
+          const knownIds = new Set(existing.map((p) => p.id));
+          const merged = [...existing, ...items.filter((p) => !knownIds.has(p.id))];
+          return merged.sort((a, b) => a.queuedAt - b.queuedAt);
+        });
+        this.flushNext(sessionId);
+      }
+    } catch (error) {
+      console.warn(`RelayClient: failed to hydrate the offline outbox: ${errorMessage(error)}`);
+    }
+  }
+
+  private queuedPromptStoreFor(sessionId: string): Writable<QueuedPrompt[]> {
+    let store = this.queuedPrompts.get(sessionId);
+    if (!store) {
+      store = writable<QueuedPrompt[]>([]);
+      this.queuedPrompts.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private isSocketOpen(): boolean {
+    return this.socket !== undefined && this.socket.readyState === WS_OPEN;
   }
 
   private async encryptAndSendPrompt(
@@ -879,7 +1098,14 @@ export class RelayClient {
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
     this.getSessionKey(message.sessionId)
       .then((key) => openJson<AcpTranscriptUpdate>(message.sessionId, message.envelope, key))
-      .then((update) => this.applyUpdate(message.sessionId, update))
+      .then((update) => {
+        this.applyUpdate(message.sessionId, update);
+        // Any live activity on this session — this client's own turn, or
+        // another device's — is evidence a turn is still in flight (issue
+        // #128's mid-turn-queueing heuristic; see `markTurnActive`'s doc
+        // comment).
+        this.markTurnActive(message.sessionId);
+      })
       .catch((error: unknown) => {
         console.warn(
           `RelayClient: failed to decrypt session_update for ${message.sessionId}: ${errorMessage(error)}`,
