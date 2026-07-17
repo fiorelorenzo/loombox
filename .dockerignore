@@ -1,0 +1,23 @@
+# Keep the Docker build context small and free of local/secret cruft. The
+# relay image needs the workspace sources + root manifests + lockfile only.
+**/node_modules
+**/dist
+**/.svelte-kit
+**/build
+.git
+.github
+.claude
+.emdash
+.changeset
+**/*.log
+**/coverage
+**/.turbo
+# never ship local env files into an image layer
+**/.env
+**/.env.*
+!**/.env.example
+deploy/relay/.env
+# docs/tests-only heavy dirs are fine to include (tsx runs from source), but
+# these are pure noise for a server image:
+**/.DS_Store
+scratchpad
