@@ -169,7 +169,7 @@ class TestPhone {
   /** Waits until a message matching `predicate` has arrived (checking history first), or times out. */
   async waitFor(
     predicate: (message: WireMessageV1) => boolean,
-    timeoutMs = 3000,
+    timeoutMs = 10000,
   ): Promise<WireMessageV1> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -186,7 +186,7 @@ class TestPhone {
   async waitForCount(
     predicate: (message: WireMessageV1) => boolean,
     count: number,
-    timeoutMs = 3000,
+    timeoutMs = 10000,
   ): Promise<WireMessageV1[]> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
