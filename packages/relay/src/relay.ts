@@ -539,6 +539,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
+  // Liveness endpoint for external uptime monitoring (#100). Deliberately a
+  // plain 200 that does not touch Postgres: it answers "the relay process is
+  // up and serving HTTP", which is what a probe like Caddy/UptimeRobot wants.
+  // A DB-dependent readiness check would flap the whole site down on a brief
+  // Postgres blip, so that stays out of the liveness path.
+  app.get('/health', async () => ({ status: 'ok' }));
+
   app.register(fastifyWebsocket);
 
   app.register(async (instance) => {

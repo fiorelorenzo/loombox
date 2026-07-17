@@ -1,0 +1,11 @@
+# loombox relay - Caddy site block for prodbox's /etc/caddy/Caddyfile.
+# Caddy terminates TLS (auto Let's Encrypt) and reverse-proxies to the
+# loopback-published relay container. reverse_proxy passes WebSocket upgrades
+# through automatically, which the relay's /ws endpoint needs.
+#
+# Requires: DNS A record relay.loombox.dev -> prodbox public IP (DNS-only /
+# grey cloud so Caddy, not Cloudflare, manages the cert), and 80/443 open (UFW).
+
+relay.loombox.dev {
+	reverse_proxy 127.0.0.1:5185
+}

@@ -1,0 +1,56 @@
+# loombox relay - prodbox deployment (#105).
+#
+# Modeled on the operator's pitchbox compose pattern: the app binds to a
+# loopback-published port and host Caddy fronts it with TLS. Postgres holds only
+# routing metadata + opaque ciphertext (the relay is a blind router, #315).
+#
+# Run from this directory (deploy/relay/) so `.env` is picked up:
+#   docker compose up -d --build
+# The relay self-migrates on boot; there is no separate migrate step.
+#
+# .env (chmod 600, never committed) must define: POSTGRES_PASSWORD,
+# BETTER_AUTH_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET. See .env.example.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loombox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: loombox
+    volumes:
+      - loombox-pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U loombox -d loombox']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  relay:
+    build:
+      # context is the repo root so pnpm can resolve the workspace
+      context: ../..
+      dockerfile: packages/relay/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_URL: postgresql://loombox:${POSTGRES_PASSWORD}@postgres:5432/loombox
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-https://relay.loombox.dev}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID in .env}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET in .env}
+      # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are optional; omit to disable Google login.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    ports:
+      # loopback-only publish; host Caddy reverse-proxies to this (prodbox
+      # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).
+      - '127.0.0.1:5185:8787'
+    restart: unless-stopped
+
+volumes:
+  loombox-pg-data:
