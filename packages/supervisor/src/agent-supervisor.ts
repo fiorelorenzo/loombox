@@ -1,6 +1,7 @@
 import type { AcpChildProcess, AcpProvider } from '@loombox/providers-core';
 import { claudeProvider } from '@loombox/providers-claude';
 
+import type { AttachmentChannel } from './attachment-channel';
 import { AgentSession } from './agent-session';
 import { TranscriptStore } from './transcript-store';
 
@@ -22,6 +23,15 @@ export interface AgentSupervisorOptions {
    * writes to the real state dir the moment `start()` is called.
    */
   stateDir?: string;
+  /**
+   * The control channel this supervisor uses to resolve an attachment ref
+   * into decrypted bytes (SPEC §7.25; issue #156) — see
+   * `attachment-channel.ts`'s doc comment. Left `undefined` when nothing
+   * needs attachments (e.g. every test fixture above); `resolveAttachment()`
+   * throws a clear error if called with none configured, rather than
+   * failing silently.
+   */
+  attachmentChannel?: AttachmentChannel;
 }
 
 /**
@@ -46,12 +56,14 @@ export class AgentSupervisor {
   private readonly providers = new Map<string, AcpProvider>();
   private readonly sessions = new Map<string, AgentSession>();
   private readonly store: TranscriptStore;
+  private attachmentChannel: AttachmentChannel | undefined;
 
   constructor(options: AgentSupervisorOptions = {}) {
     for (const provider of options.providers ?? [claudeProvider]) {
       this.providers.set(provider.id, provider);
     }
     this.store = new TranscriptStore({ stateDir: options.stateDir });
+    this.attachmentChannel = options.attachmentChannel;
   }
 
   /** Registers (or replaces) a provider adapter under its own id. */
@@ -153,5 +165,36 @@ export class AgentSupervisor {
   stop(sessionId: string): void {
     this.sessions.get(sessionId)?.close();
     this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Resolves an attachment ref into decrypted plaintext bytes via this
+   * supervisor's injected `AttachmentChannel` (SPEC §7.25 "Deliver to the
+   * executing host"; issue #156) — never by this supervisor opening its own
+   * connection to the relay. Identical for a session on a `local` or an
+   * `ssh:` target: attachment resolution never touches the execution target
+   * at all, only the channel.
+   */
+  async resolveAttachment(sessionId: string, ref: string): Promise<Uint8Array> {
+    if (!this.attachmentChannel) {
+      throw new Error(
+        `AgentSupervisor: no attachment channel configured; cannot resolve attachment ref "${ref}" for session ${sessionId} (issue #156)`,
+      );
+    }
+    return this.attachmentChannel.resolveAttachment(sessionId, ref);
+  }
+
+  /**
+   * Sets (or replaces) this supervisor's `AttachmentChannel` after
+   * construction. Exists because the real implementation (`@loombox/node`'s
+   * `NodeDaemon`, the only thing holding the account's AMK + the relay
+   * connection) is often only fully constructible *after* an `AgentSupervisor`
+   * instance already exists — including one a caller injected of their own
+   * (e.g. to register a fixture provider) rather than one this class built
+   * itself — so `NodeDaemon` calls this rather than requiring the channel up
+   * front in the constructor.
+   */
+  setAttachmentChannel(channel: AttachmentChannel): void {
+    this.attachmentChannel = channel;
   }
 }
