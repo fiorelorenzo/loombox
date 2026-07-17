@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { ancestorChainForToolCall, createTranscriptState, reduceTranscript } from './transcript';
+import {
+  ancestorChainForToolCall,
+  createTranscriptState,
+  reduceSessionEvent,
+  reduceTranscript,
+} from './transcript';
 import type { TranscriptState, TranscriptToolCallItem } from './transcript';
 import type {
+  AcpConfigOption,
   AcpMessageChunkUpdate,
   AcpPlanUpdate,
   AcpToolCallUpdate,
@@ -16,6 +22,11 @@ describe('createTranscriptState', () => {
       plan: [],
       usage: undefined,
       cumulativeCostUsd: 0,
+      status: undefined,
+      statusUpdatedAt: undefined,
+      configOptions: [],
+      turnActive: false,
+      lastStopReason: undefined,
     });
   });
 });
@@ -293,6 +304,137 @@ describe('ancestorChainForToolCall', () => {
   });
 });
 
+describe('reduceSessionEvent: session_status', () => {
+  it('records the pushed status and its timestamp', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'awaiting_input',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+    });
+    expect(state.status).toBe('awaiting_input');
+    expect(state.statusUpdatedAt).toBe('2026-07-16T00:00:00.000Z');
+  });
+
+  it('the latest status event wins, replacing an earlier one', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'working',
+      updatedAt: 't1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'permission_required',
+      updatedAt: 't2',
+    });
+    expect(state.status).toBe('permission_required');
+    expect(state.statusUpdatedAt).toBe('t2');
+  });
+});
+
+describe('reduceSessionEvent: config_options / config_option_update', () => {
+  const catalog: AcpConfigOption[] = [
+    { category: 'model', current: 'sonnet', choices: [{ id: 'sonnet', name: 'Sonnet' }] },
+  ];
+
+  it('config_options replaces the whole catalog wholesale', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'config_options',
+      options: catalog,
+    });
+    expect(state.configOptions).toEqual(catalog);
+  });
+
+  it('config_option_update (the unprompted variant) also replaces the whole catalog wholesale, never patching in place', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'config_options',
+      options: catalog,
+    });
+    const fallback: AcpConfigOption[] = [
+      { category: 'model', current: 'haiku', choices: [{ id: 'haiku', name: 'Haiku' }] },
+    ];
+    state = reduceSessionEvent(state, { kind: 'config_option_update', options: fallback });
+    expect(state.configOptions).toEqual(fallback);
+  });
+
+  it('does not mutate the option objects passed in (defensive clone)', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'config_options',
+      options: catalog,
+    });
+    state.configOptions[0]!.choices.push({ id: 'opus', name: 'Opus' });
+    expect(catalog[0]!.choices).toHaveLength(1);
+  });
+});
+
+describe('reduceSessionEvent: turn_started / turn_ended', () => {
+  it('turn_started flips turnActive on', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'turn_started',
+      turnId: 'turn:1',
+    });
+    expect(state.turnActive).toBe(true);
+  });
+
+  it('turn_ended flips turnActive off and records the stopReason', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'turn_started',
+      turnId: 'turn:1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'turn_ended',
+      turnId: 'turn:1',
+      stopReason: 'end_turn',
+    });
+    expect(state.turnActive).toBe(false);
+    expect(state.lastStopReason).toBe('end_turn');
+  });
+
+  it('turn_ended with no stopReason still settles the turn', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'turn_started',
+      turnId: 'turn:1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'turn_ended',
+      turnId: undefined,
+      stopReason: undefined,
+    });
+    expect(state.turnActive).toBe(false);
+    expect(state.lastStopReason).toBeUndefined();
+  });
+});
+
+describe('reduceSessionEvent: delegates every AcpTranscriptUpdate kind unchanged to reduceTranscript', () => {
+  it('agent_message_chunk still reduces into a transcript item', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'agent_message_chunk',
+      turnId: 't1',
+      messageId: 'm1',
+      text: 'Hello',
+    });
+    expect(state.items).toEqual([
+      {
+        type: 'message',
+        id: 't1::agent_message_chunk::m1',
+        kind: 'agent_message_chunk',
+        turnId: 't1',
+        messageId: 'm1',
+        text: 'Hello',
+      },
+    ]);
+  });
+
+  it('a lifecycle event never touches the transcript items/plan/usage fields', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'plan_update',
+      entries: [{ content: 'x', status: 'pending' }],
+    });
+    state = reduceSessionEvent(state, { kind: 'turn_started', turnId: 'turn:1' });
+    expect(state.plan).toEqual([{ content: 'x', status: 'pending' }]);
+  });
+});
+
 // A type-level smoke check that TranscriptState is exported with the shape
 // the reducer promises (compile-time only, no runtime assertion needed).
 function _typeCheck(state: TranscriptState): void {
@@ -300,5 +442,10 @@ function _typeCheck(state: TranscriptState): void {
   void state.plan;
   void state.usage;
   void state.cumulativeCostUsd;
+  void state.status;
+  void state.statusUpdatedAt;
+  void state.configOptions;
+  void state.turnActive;
+  void state.lastStopReason;
 }
 void _typeCheck;

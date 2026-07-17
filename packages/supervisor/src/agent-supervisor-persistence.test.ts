@@ -184,6 +184,10 @@ describe('AgentSupervisor — attach/resume across disconnects (issue #78)', () 
     expect(reloadedSession?.getAttentionState().status).toBe('awaiting_input');
 
     await expect(reloadedSession?.prompt('anything')).rejects.toThrow(/no live agent process/);
+    // A replay-only session has no client behind it, so its config-option
+    // store is unreadable too (mirrors the `permissions` getter's own guard;
+    // issue #149's node -> client config_options push).
+    expect(() => reloadedSession?.configOptions).toThrow(/no live agent process/);
 
     // Reloading again (idempotent from the caller's point of view) must not
     // duplicate an already-tracked session.

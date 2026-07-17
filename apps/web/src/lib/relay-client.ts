@@ -1,5 +1,5 @@
 import type { webcrypto } from 'node:crypto';
-import { get, writable, type Readable, type Writable } from 'svelte/store';
+import { derived, get, writable, type Readable, type Writable } from 'svelte/store';
 import {
   deriveSessionKey,
   encryptEnvelope,
@@ -12,12 +12,13 @@ import {
   createPermissionQueueState,
   createTranscriptState,
   enqueuePermissionRequest,
-  reduceTranscript,
+  reduceSessionEvent,
   resolvePermissionRequest,
   type AcpConfigOption,
   type AcpPermissionOption,
+  type AcpSessionStatus,
+  type AcpSessionWireEvent,
   type AcpToolCallUpdate,
-  type AcpTranscriptUpdate,
   type PermissionQueueState,
   type TranscriptState,
 } from '@loombox/providers-core';
@@ -184,14 +185,15 @@ export interface RelayClientOptions {
    * How long (ms) a session must go without any inbound `session_update`
    * (or an outbound prompt this client just sent) before its turn is
    * considered settled and the next queued prompt, if any, is flushed
-   * (issue #128). ACP v1's wire has no explicit turn-end/`stopReason`
-   * signal reaching this client (`@loombox/node`'s `node-daemon.ts`:
-   * "`AcpTranscriptUpdate` has no wire slot for turn-end/error/exit
-   * notifications ... those stay node-local observability for now") — this
-   * idle-quiet heuristic is the best signal available without a protocol
-   * change, and is deliberately generous by default so a real agent's
-   * natural pauses between tokens/tool calls don't trip a premature flush.
-   * Defaults to 1500ms; tests override it to a few ms to stay fast.
+   * (issue #128). This is now only the FALLBACK path: a `turn_ended`
+   * lifecycle event (SPEC §7.24; `@loombox/node`'s `node-daemon.ts` forwards
+   * one deterministically once the agent's turn actually settles) flushes
+   * immediately and resets this timer, so the idle-quiet heuristic below
+   * only ever fires for an older node that doesn't yet emit `turn_ended`, or
+   * a race where it's lost. Deliberately generous by default so a real
+   * agent's natural pauses between tokens/tool calls don't trip a premature
+   * flush on that fallback path. Defaults to 1500ms; tests override it to a
+   * few ms to stay fast.
    */
   turnIdleMs?: number;
 }
@@ -283,8 +285,14 @@ function safeRevokeObjectUrl(url: string): void {
  * For a session the UI selects, `transcriptFor` subscribes to its live
  * updates (`session_resume`) and decrypts + reduces every inbound
  * `session_update` envelope through `@loombox/providers-core`'s
- * `reduceTranscript` — the same pure reducer the transcript's real source of
- * truth. `sendPrompt` seals the composer's text into a `prompt_inject`
+ * `reduceSessionEvent` — the same pure reducer this codebase's real source
+ * of truth uses, additive to the transcript-only `reduceTranscript`: the
+ * same `TranscriptState` also carries the session's live `status`
+ * (SPEC §7.13/§7.24; issue #126), its `configOptions` catalog (issue #149,
+ * `configOptionsFor` below just reads that field), and `turnActive`/
+ * `lastStopReason` (issue #128) — one reduced state per session, not
+ * several parallel stores that could drift out of sync. `sendPrompt` seals
+ * the composer's text into a `prompt_inject`
  * envelope and, since the relay never echoes it back, optimistically reduces
  * the user's own turn into the local transcript so it shows immediately —
  * unless a turn is already considered in flight for that session, or there
@@ -315,7 +323,6 @@ export class RelayClient {
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
-  private readonly configOptions = new Map<string, Writable<AcpConfigOption[]>>();
   private readonly subscribed = new Set<string>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
@@ -456,6 +463,18 @@ export class RelayClient {
   }
 
   /**
+   * This session's live status (SPEC §7.13/§7.24; issue #126's status
+   * badge) — `undefined` until the node's `session_status` snapshot arrives.
+   * Derived from the same reduced `TranscriptState` `transcriptFor` exposes,
+   * not a separate store (see this class's own doc comment).
+   */
+  statusFor(sessionId: string): Readable<AcpSessionStatus | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.status);
+  }
+
+  /**
    * The session-scoped permission FIFO queue store (SPEC §7.24, issues
    * #144/#145/#146/#147) — the single client-side source of truth a
    * session's permission-card UI and (once it exists) the cross-project
@@ -517,30 +536,35 @@ export class RelayClient {
   /**
    * The session's negotiated ACP config-option list (SPEC §7.24 "Model, mode
    * & reasoning effort", issue #149) — `model`/`model_config`/`thought_level`/
-   * `mode`/any future category, always the complete current set. Starts `[]`:
-   * v1's wire protocol has no node -> client push for this yet (only the
-   * client -> node `config_option` selection message exists,
-   * `packages/protocol/src/v1/steering.ts`), a real gap tracked in this PR's
-   * blockers rather than worked around by touching the protocol.
+   * `mode`/any future category, always the complete current set. Backed by
+   * the same reduced `TranscriptState` `transcriptFor` exposes (its
+   * `configOptions` field, populated by the node's `config_options`/
+   * `config_option_update` session-lifecycle events — see this class's own
+   * doc comment), not a separate parallel store, so the two can never drift.
+   * Starts `[]` until the first push arrives (a node running against an
+   * agent that advertises no config options at all, or a subscription that
+   * hasn't received one yet).
    */
   configOptionsFor(sessionId: string): Readable<AcpConfigOption[]> {
-    const store = this.configOptionStoreFor(sessionId);
+    const transcript = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
-    return store;
+    return derived(transcript, (state) => state.configOptions);
   }
 
   /**
    * Picks a config option in the given category: updates the local list
-   * optimistically (replacing that category's `current`) and sends the
+   * optimistically (replacing that category's `current`, in the same
+   * reduced `TranscriptState` `configOptionsFor` reads) and sends the
    * `config_option` wire message so the owning node can act on it.
    */
   setConfigOption(sessionId: string, category: string, optionId: string): void {
-    const store = this.configOptionStoreFor(sessionId);
-    store.update((options) =>
-      options.map((option) =>
+    const store = this.transcriptStoreFor(sessionId);
+    store.update((state) => ({
+      ...state,
+      configOptions: state.configOptions.map((option) =>
         option.category === category ? { ...option, current: optionId } : option,
       ),
-    );
+    }));
     this.send({
       type: 'config_option',
       protocolVersion: PROTOCOL_V1,
@@ -882,14 +906,15 @@ export class RelayClient {
   }
 
   /**
-   * (Re)starts this session's `turnIdleMs` idle timer — called both when
-   * this client sends a prompt and whenever a `session_update` arrives for
-   * this session (including one triggered by another device's prompt on
-   * the same session), since either is equally good evidence a turn is
-   * still active. `turnTimers.has(sessionId)` is this class's sole "is a
-   * turn in flight" signal (issue #128's heuristic; see
-   * `RelayClientOptions.turnIdleMs`'s doc comment for why no better one is
-   * available without a protocol change).
+   * (Re)starts this session's `turnIdleMs` idle-timeout FALLBACK timer —
+   * called both when this client sends a prompt and whenever any
+   * `session_update` arrives for this session other than a `turn_ended`
+   * (including one triggered by another device's prompt on the same
+   * session), since either is equally good evidence a turn is still active.
+   * `turnTimers.has(sessionId)` is this class's "is a turn in flight" signal
+   * for the fallback path (issue #128's original heuristic); the primary
+   * path is {@link settleTurnNow}, called on the real `turn_ended` event
+   * instead — see `RelayClientOptions.turnIdleMs`'s doc comment.
    */
   private markTurnActive(sessionId: string): void {
     const existing = this.turnTimers.get(sessionId);
@@ -899,6 +924,20 @@ export class RelayClient {
   }
 
   private onTurnSettled(sessionId: string): void {
+    this.turnTimers.delete(sessionId);
+    this.flushNext(sessionId);
+  }
+
+  /**
+   * Settles a turn deterministically, right now, on this session's real
+   * `turn_ended` event (SPEC §7.24; issue #128) — clears the idle-timeout
+   * fallback timer (it would otherwise still fire later and redundantly call
+   * `flushNext`, which is harmless but pointless) and flushes the next
+   * queued prompt immediately instead of waiting out `turnIdleMs`.
+   */
+  private settleTurnNow(sessionId: string): void {
+    const existing = this.turnTimers.get(sessionId);
+    if (existing !== undefined) clearTimeout(existing);
     this.turnTimers.delete(sessionId);
     this.flushNext(sessionId);
   }
@@ -1021,18 +1060,9 @@ export class RelayClient {
     return store;
   }
 
-  private configOptionStoreFor(sessionId: string): Writable<AcpConfigOption[]> {
-    let store = this.configOptions.get(sessionId);
-    if (!store) {
-      store = writable<AcpConfigOption[]>([]);
-      this.configOptions.set(sessionId, store);
-    }
-    return store;
-  }
-
-  private applyUpdate(sessionId: string, update: AcpTranscriptUpdate): void {
+  private applyUpdate(sessionId: string, event: AcpSessionWireEvent): void {
     const store = this.transcriptStoreFor(sessionId);
-    store.update((state) => reduceTranscript(state, update));
+    store.update((state) => reduceSessionEvent(state, event));
   }
 
   private handleInbound(message: WireMessageV1): void {
@@ -1097,14 +1127,20 @@ export class RelayClient {
 
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
     this.getSessionKey(message.sessionId)
-      .then((key) => openJson<AcpTranscriptUpdate>(message.sessionId, message.envelope, key))
-      .then((update) => {
-        this.applyUpdate(message.sessionId, update);
-        // Any live activity on this session — this client's own turn, or
-        // another device's — is evidence a turn is still in flight (issue
-        // #128's mid-turn-queueing heuristic; see `markTurnActive`'s doc
-        // comment).
-        this.markTurnActive(message.sessionId);
+      .then((key) => openJson<AcpSessionWireEvent>(message.sessionId, message.envelope, key))
+      .then((event) => {
+        this.applyUpdate(message.sessionId, event);
+        if (event.kind === 'turn_ended') {
+          // The deterministic signal (SPEC §7.24; issue #128): settle and
+          // flush right now instead of waiting out the idle-timeout fallback.
+          this.settleTurnNow(message.sessionId);
+        } else {
+          // Any other live activity on this session — this client's own
+          // turn, or another device's — is evidence a turn is still in
+          // flight (issue #128's idle-timeout fallback; see
+          // `markTurnActive`'s doc comment).
+          this.markTurnActive(message.sessionId);
+        }
       })
       .catch((error: unknown) => {
         console.warn(

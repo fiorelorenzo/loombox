@@ -68,6 +68,31 @@ export type { SessionUpdateEnvelopeV1 } from './transcript';
 export { sessionUpdateEnvelopeV1 } from './transcript';
 
 export type {
+  AcpConfigOptionChoiceV1,
+  AcpConfigOptionV1,
+  ConfigOptionsEventV1,
+  ConfigOptionUpdateEventV1,
+  SessionLifecycleEventV1,
+  SessionStatusEventV1,
+  SessionStatusV1,
+  TurnEndedEventV1,
+  TurnStartedEventV1,
+} from './session-events';
+export {
+  acpConfigOptionChoiceV1,
+  acpConfigOptionV1,
+  configOptionsEventV1,
+  configOptionUpdateEventV1,
+  parseSessionLifecycleEventV1,
+  safeParseSessionLifecycleEventV1,
+  sessionLifecycleEventV1,
+  sessionStatusEventV1,
+  sessionStatusV1,
+  turnEndedEventV1,
+  turnStartedEventV1,
+} from './session-events';
+
+export type {
   ConfigOption,
   PermissionDecision,
   PermissionRequest,
@@ -116,6 +141,17 @@ import {
 } from './sessions';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import {
+  acpConfigOptionChoiceV1,
+  acpConfigOptionV1,
+  configOptionsEventV1,
+  configOptionUpdateEventV1,
+  sessionLifecycleEventV1,
+  sessionStatusEventV1,
+  sessionStatusV1,
+  turnEndedEventV1,
+  turnStartedEventV1,
+} from './session-events';
+import {
   configOption,
   permissionDecision,
   permissionRequest,
@@ -155,6 +191,15 @@ export const schemasV1 = {
   sessionListRequest,
   sessionListV1,
   sessionUpdateEnvelopeV1,
+  acpConfigOptionChoiceV1,
+  acpConfigOptionV1,
+  sessionStatusV1,
+  sessionStatusEventV1,
+  configOptionsEventV1,
+  configOptionUpdateEventV1,
+  turnStartedEventV1,
+  turnEndedEventV1,
+  sessionLifecycleEventV1,
   promptInjectV1,
   permissionDecision,
   permissionRequest,

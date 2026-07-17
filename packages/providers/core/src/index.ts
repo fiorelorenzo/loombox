@@ -29,7 +29,12 @@ export type {
   AcpTranscriptUpdate,
   AcpUsageUpdate,
 } from './types';
-export { ancestorChainForToolCall, createTranscriptState, reduceTranscript } from './transcript';
+export {
+  ancestorChainForToolCall,
+  createTranscriptState,
+  reduceSessionEvent,
+  reduceTranscript,
+} from './transcript';
 export type {
   TranscriptItem,
   TranscriptMessageItem,
@@ -37,6 +42,21 @@ export type {
   TranscriptToolCallItem,
   UsageRecord,
 } from './transcript';
+
+// v1: session-lifecycle wire events — status badge / config-options push /
+// turn-started-ended (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149).
+// Additive to the transcript-reducer exports above; `reduceSessionEvent` is
+// the reducer entry point over this wider union.
+export type {
+  AcpConfigOptionsEvent,
+  AcpConfigOptionUpdateEvent,
+  AcpSessionLifecycleEvent,
+  AcpSessionStatus,
+  AcpSessionStatusEvent,
+  AcpSessionWireEvent,
+  AcpTurnEndedEvent,
+  AcpTurnStartedEvent,
+} from './types';
 
 // v1: session lifecycle (issue #176) — resume/list/cancel + replay live on
 // AcpClient itself; the types below are the wire/domain shapes they use.

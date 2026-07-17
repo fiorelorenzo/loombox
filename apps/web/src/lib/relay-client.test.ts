@@ -1211,6 +1211,213 @@ describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', (
   });
 });
 
+describe('RelayClient: session-lifecycle wire events (SPEC §7.13/§7.24/§8; issues #126/#128/#149)', () => {
+  it('decrypts a session_status event into transcriptFor/statusFor, replacing an earlier status on the next transition', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-status';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-status',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_status', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-status' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const status = client.statusFor(session.id);
+    const transcript = client.transcriptFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const workingEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'session_status', status: 'working', updatedAt: 't1' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: workingEnvelope,
+    });
+    await waitForStore(status, (value) => value === 'working');
+    expect(get(transcript).status).toBe('working');
+    expect(get(transcript).statusUpdatedAt).toBe('t1');
+
+    const permissionEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'session_status', status: 'permission_required', updatedAt: 't2' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: permissionEnvelope,
+    });
+    await waitForStore(status, (value) => value === 'permission_required');
+  });
+
+  it('decrypts config_options / config_option_update into configOptionsFor, always replacing the whole catalog wholesale', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config-wire';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-config-wire',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_config_wire', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-config-wire',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const options = client.configOptionsFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const catalog = [
+      { category: 'model', current: 'sonnet', choices: [{ id: 'sonnet', name: 'Sonnet' }] },
+    ];
+    const catalogEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'config_options', options: catalog },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: catalogEnvelope,
+    });
+    await waitForStore(options, (value) => value.length > 0);
+    expect(get(options)).toEqual(catalog);
+
+    // An unprompted config_option_update (e.g. an automatic cheaper-model
+    // fallback) fully replaces the catalog too — never a per-category patch
+    // (issue #149's "two missing acceptance bullets").
+    const fallback = [
+      { category: 'model', current: 'haiku', choices: [{ id: 'haiku', name: 'Haiku' }] },
+    ];
+    const fallbackEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'config_option_update', options: fallback },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: fallbackEnvelope,
+    });
+    await waitForStore(options, (value) => value[0]?.current === 'haiku');
+    expect(get(options)).toEqual(fallback);
+  });
+
+  it('flushes a queued prompt immediately on turn_ended, without waiting out the idle-timeout fallback', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-turn-ended';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-turn-ended',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_turn_ended', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-turn-ended',
+      outboxStorage: createInMemoryOutboxStorage(),
+      // Deliberately much longer than this test's own timeout budget: if the
+      // queued prompt below only flushed via the idle-timeout fallback, this
+      // test would time out rather than pass — proving turn_ended is what
+      // actually flushed it, not the fallback.
+      turnIdleMs: 60000,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const transcript = client.transcriptFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const firstId = client.sendPrompt(session.id, 'first prompt');
+    const firstRouted = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    expect(firstRouted.promptId).toBe(firstId);
+
+    const queued = client.queuedPromptsFor(session.id);
+    const secondId = client.sendPrompt(session.id, 'second, queued');
+    expect(get(queued)).toEqual([expect.objectContaining({ id: secondId, sessionId: session.id })]);
+
+    const turnStartedEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'turn_started', turnId: 'turn-1' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: turnStartedEnvelope,
+    });
+    await waitForStore(transcript, (value) => value.turnActive === true);
+
+    const turnEndedEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'turn_ended', turnId: 'turn-1', stopReason: 'end_turn' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: turnEndedEnvelope,
+    });
+
+    await waitForStore(transcript, (value) => value.turnActive === false);
+    expect(get(transcript).lastStopReason).toBe('end_turn');
+
+    const secondRouted = (await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).promptId === secondId,
+    )) as PromptInjectV1;
+    expect(secondRouted.sessionId).toBe(session.id);
+    await waitForStore(queued, (value) => value.length === 0);
+  });
+});
+
 describe('RelayClient: mid-turn composer queueing (issue #128)', () => {
   it("queues a follow-up submitted while this session's own turn is still active, then flushes it once idle, preserving order", async () => {
     const amk = generateAmk();

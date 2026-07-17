@@ -2,8 +2,13 @@ import { randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename } from 'node:path';
 
-import type { AcpTranscriptUpdate } from '@loombox/providers-core';
-import { AgentSupervisor, type AgentSession } from '@loombox/supervisor';
+import type {
+  AcpSessionWireEvent,
+  AcpTranscriptUpdate,
+  AcpTurnEnd,
+  ConfigOptionChangeEvent,
+} from '@loombox/providers-core';
+import { AgentSupervisor, type AgentSession, type AttentionState } from '@loombox/supervisor';
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
@@ -184,6 +189,16 @@ interface SessionBridge {
    */
   sendQueue: Promise<void>;
   /**
+   * This bridge's own turn-id namespace for the `turn_started`/`turn_ended`
+   * wire signals (SPEC §7.24; issue #128) — set right before this node hands
+   * a prompt to `agentSession.prompt()` and echoed back on the matching
+   * `turn_ended` once `AgentSession`'s `'turn_end'` fires. Independent of
+   * `AcpClient`'s own internal turn-id counter (a different layer's private
+   * bookkeeping, not exposed) — this is loombox's own wire-facing id, purely
+   * for a client to correlate a session's `turn_started`/`turn_ended` pair.
+   */
+  currentTurnId?: string;
+  /**
    * Set only for an `ssh:` target's session (issue #80): the local bridge
    * object polling the remote run. `close()` must reach this directly
    * (rather than going through `AgentSupervisor.stop()`, which always kills)
@@ -362,7 +377,24 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no session with id ${sessionId}`);
     }
     await this.assertStillLeaseholder(bridge);
+    this.beginTurn(bridge);
     await bridge.agentSession.prompt(text);
+  }
+
+  /**
+   * Synthesizes and forwards this turn's `turn_started` wire signal (SPEC
+   * §7.24; issue #128), right before handing the prompt to
+   * `agentSession.prompt()` — regardless of which device's composer (or a
+   * node-direct `promptSession()` call) originated it, so every subscribed
+   * client can flip its own "turn in flight" state deterministically. Records
+   * the generated turn id on the bridge so the matching `turn_ended` (fired
+   * from `agentSession`'s own `'turn_end'` event, wired in
+   * {@link wireAgentSession}) can echo it back.
+   */
+  private beginTurn(bridge: SessionBridge): void {
+    const turnId = `turn_${randomUUID()}`;
+    bridge.currentTurnId = turnId;
+    this.forwardSessionEvent(bridge.session.id, { kind: 'turn_started', turnId });
   }
 
   /**
@@ -525,19 +557,59 @@ export class NodeDaemon extends EventEmitter {
     };
     this.bridges.set(session.id, bridge);
     this.wireAgentSession(bridge);
+    // The relay drops a session_update for a session it hasn't seen a
+    // session_announce for yet (`relay.ts`'s "unknown session" guard) — so
+    // announce MUST land first. `wireAgentSession` only registers listeners
+    // above (no send happens synchronously), and `forwardInitialSessionState`
+    // below — which does send — runs only once announce has actually gone
+    // out.
     await this.announce(bridge);
+    this.forwardInitialSessionState(bridge);
 
     return session;
   }
 
   private wireAgentSession(bridge: SessionBridge): void {
     bridge.agentSession.on('transcript_update', (update: AcpTranscriptUpdate) => {
-      this.forwardUpdate(bridge.session.id, update);
+      this.forwardSessionEvent(bridge.session.id, update);
     });
-    // `AcpTranscriptUpdate` has no wire slot for turn-end/error/exit
-    // notifications (v1's session_update envelope carries only the ACP
-    // transcript-reducer's own update kinds — SPEC §7.24) — those stay
-    // node-local observability for now, logged rather than silently dropped.
+
+    // v1: session_status / config_options / turn_ended (SPEC §7.13/§7.24/§8;
+    // issues #126/#128/#149) — additive to the transcript_update path above,
+    // riding the exact same session_update envelope + sendQueue ordering.
+    bridge.agentSession.on('attention', (state: AttentionState) => {
+      this.forwardSessionEvent(bridge.session.id, {
+        kind: 'session_status',
+        status: state.status,
+        updatedAt: state.updatedAt,
+      });
+    });
+
+    bridge.agentSession.on('turn_end', (turnEnd: AcpTurnEnd) => {
+      this.forwardSessionEvent(bridge.session.id, {
+        kind: 'turn_ended',
+        turnId: bridge.currentTurnId,
+        stopReason: turnEnd.stopReason,
+      });
+    });
+
+    bridge.agentSession.configOptions.on('changed', (event: ConfigOptionChangeEvent) => {
+      // `ConfigOptionChangeEvent.sessionId` is the ACP-level session id
+      // (`AgentSession.id`/`AcpClient`'s own key), NOT this bridge's
+      // loombox-level `session.id` (a separate, node-generated id) — compare
+      // against the right one, or a same-process sibling AgentSession's
+      // config change (a different ACP session id, sharing nothing but this
+      // process) could otherwise be misrouted onto this bridge.
+      if (event.sessionId !== bridge.agentSession.id) return;
+      this.forwardSessionEvent(bridge.session.id, {
+        kind: event.unprompted ? 'config_option_update' : 'config_options',
+        options: event.options,
+      });
+    });
+
+    // Error/exit stay node-local observability (the session's terminal
+    // status already reaches the wire via the 'attention' handler above,
+    // which fires 'error'/'exited' too — see AgentSession.handleTerminal()).
     bridge.agentSession.on('error', (error: Error) => {
       console.warn(`NodeDaemon: session ${bridge.session.id} agent error: ${error.message}`);
     });
@@ -548,13 +620,43 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
-  /** Encrypts and pumps one transcript update to the relay, preserving arrival order (see `SessionBridge.sendQueue`'s doc comment). */
-  private forwardUpdate(sessionId: string, update: AcpTranscriptUpdate): void {
+  /**
+   * Forwards this session's CURRENT status/config-option snapshot (SPEC
+   * §7.13/§7.24; issues #126/#149), once, right after `announce()` — the
+   * `'attention'`/config `'changed'` listeners `wireAgentSession` just
+   * registered only fire on a *future* transition, but by the time this
+   * bridge exists `AgentSession.spawn()`/`AcpClient.newSession()` have
+   * already set the session's initial `awaiting_input` attention and seeded
+   * its config-option catalog, so that snapshot is sent explicitly here
+   * instead of only ever reaching a client that happens to be subscribed for
+   * the next real transition. Must run after `announce()`, not before: the
+   * relay drops a `session_update` for a session it hasn't seen a
+   * `session_announce` for yet.
+   */
+  private forwardInitialSessionState(bridge: SessionBridge): void {
+    const attention = bridge.agentSession.getAttentionState();
+    this.forwardSessionEvent(bridge.session.id, {
+      kind: 'session_status',
+      status: attention.status,
+      updatedAt: attention.updatedAt,
+    });
+
+    // Keyed by the ACP-level session id (`bridge.agentSession.id`), not this
+    // bridge's loombox-level `session.id` — same distinction as the
+    // 'changed' listener above.
+    const options = bridge.agentSession.configOptions.get(bridge.agentSession.id);
+    if (options.length > 0) {
+      this.forwardSessionEvent(bridge.session.id, { kind: 'config_options', options });
+    }
+  }
+
+  /** Encrypts and pumps one session-lifecycle/transcript event to the relay, preserving arrival order (see `SessionBridge.sendQueue`'s doc comment). */
+  private forwardSessionEvent(sessionId: string, event: AcpSessionWireEvent): void {
     const bridge = this.bridges.get(sessionId);
     if (!bridge) return;
 
     bridge.sendQueue = bridge.sendQueue
-      .then(() => this.encryptAndSendUpdate(bridge, update))
+      .then(() => this.encryptAndSendUpdate(bridge, event))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(
@@ -565,10 +667,10 @@ export class NodeDaemon extends EventEmitter {
 
   private async encryptAndSendUpdate(
     bridge: SessionBridge,
-    update: AcpTranscriptUpdate,
+    event: AcpSessionWireEvent,
   ): Promise<void> {
     const key = await this.getSessionKey(bridge.session.id);
-    const envelope = await sealJson(bridge.session.id, update, key);
+    const envelope = await sealJson(bridge.session.id, event, key);
     bridge.seq += 1;
     this.relay.send({
       type: 'session_update',
@@ -715,6 +817,7 @@ export class NodeDaemon extends EventEmitter {
       };
       this.emit('attachment_resolved', resolved);
     }
+    this.beginTurn(bridge);
     await bridge.agentSession.prompt(payload.text);
   }
 

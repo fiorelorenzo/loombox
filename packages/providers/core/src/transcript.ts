@@ -1,9 +1,12 @@
 import type {
+  AcpConfigOption,
   AcpDiff,
   AcpMessageChunkKind,
   AcpMessageChunkUpdate,
   AcpPlanEntry,
   AcpPlanUpdate,
+  AcpSessionStatus,
+  AcpSessionWireEvent,
   AcpToolCallStatus,
   AcpToolCallUpdate,
   AcpToolKind,
@@ -76,11 +79,31 @@ export interface TranscriptState {
   usage: UsageRecord | undefined;
   /** Running total of every `usage_update.costUsd` seen, regardless of subagent attribution (SPEC.md §7.9). */
   cumulativeCostUsd: number;
+  /** This session's latest pushed status, if any `session_status` event has arrived yet (SPEC.md §7.13/§7.24; issue #126). */
+  status: AcpSessionStatus | undefined;
+  /** The ISO timestamp of `status`'s own transition, mirrored from the pushing `session_status` event. */
+  statusUpdatedAt: string | undefined;
+  /** This session's complete, negotiated config-option catalog (SPEC.md §7.24; issue #149) — always the full current set, replaced wholesale by a `config_options`/`config_option_update` event, never patched per-category. `[]` until the first push arrives. */
+  configOptions: AcpConfigOption[];
+  /** True between a `turn_started` and its matching `turn_ended` (SPEC.md §7.24; issue #128) — the deterministic replacement for a client-side idle-timeout guess. */
+  turnActive: boolean;
+  /** The `stopReason` of the most recently settled turn, if any `turn_ended` event carried one. */
+  lastStopReason: string | undefined;
 }
 
 /** The empty starting state for a session's transcript. */
 export function createTranscriptState(): TranscriptState {
-  return { items: [], plan: [], usage: undefined, cumulativeCostUsd: 0 };
+  return {
+    items: [],
+    plan: [],
+    usage: undefined,
+    cumulativeCostUsd: 0,
+    status: undefined,
+    statusUpdatedAt: undefined,
+    configOptions: [],
+    turnActive: false,
+    lastStopReason: undefined,
+  };
 }
 
 function messageItemId(kind: AcpMessageChunkKind, turnId: string, messageId: string): string {
@@ -205,6 +228,44 @@ export function reduceTranscript(
       return reducePlan(state, update);
     case 'usage_update':
       return reduceUsage(state, update);
+  }
+}
+
+/**
+ * Reduce one {@link AcpSessionWireEvent} into a new `TranscriptState` — the
+ * wider reducer entry point for everything that can travel inside a
+ * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149),
+ * additive to {@link reduceTranscript}: every ACP transcript-reducer update
+ * kind delegates straight through to it unchanged, and the five
+ * session-lifecycle kinds are folded into the new `status`/`configOptions`/
+ * `turnActive`/`lastStopReason` fields instead. Never mutates `state`, same
+ * contract as `reduceTranscript`.
+ */
+export function reduceSessionEvent(
+  state: TranscriptState,
+  event: AcpSessionWireEvent,
+): TranscriptState {
+  switch (event.kind) {
+    case 'user_message_chunk':
+    case 'agent_message_chunk':
+    case 'agent_thought_chunk':
+    case 'tool_call':
+    case 'tool_call_update':
+    case 'plan_update':
+    case 'usage_update':
+      return reduceTranscript(state, event);
+    case 'session_status':
+      return { ...state, status: event.status, statusUpdatedAt: event.updatedAt };
+    case 'config_options':
+    case 'config_option_update':
+      return {
+        ...state,
+        configOptions: event.options.map((option) => ({ ...option, choices: [...option.choices] })),
+      };
+    case 'turn_started':
+      return { ...state, turnActive: true };
+    case 'turn_ended':
+      return { ...state, turnActive: false, lastStopReason: event.stopReason };
   }
 }
 
