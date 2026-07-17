@@ -1,11 +1,12 @@
 import type { webcrypto } from 'node:crypto';
-import { deriveKeyTree, importAesGcmKey } from '@loombox/crypto';
+import { deriveKeyTree } from './key-tree';
+import { importAesGcmKey } from './aead';
 
 type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * Derives one session's symmetric AES-256-GCM key from the account's Account
- * Master Key via `@loombox/crypto`'s HMAC-SHA512 key tree (SPEC §8, §16).
+ * Master Key via this package's HMAC-SHA512 key tree (SPEC §8, §16).
  *
  * Documented derivation path: `['session', accountId, sessionId]`.
  * - The `'session'` segment namespaces this resource-key family so it can
@@ -15,12 +16,14 @@ type CryptoKey = webcrypto.CryptoKey;
  *   so two sessions never share a key even though every session on the
  *   account is derived from the same one AMK.
  *
- * This is the whole point of a key tree (`packages/crypto/src/key-tree.ts`'s
- * doc comment): any device holding the account's AMK derives this exact key
- * with no other device online and no relay round trip — the node derives it
- * here to encrypt outgoing session updates and decrypt inbound prompts; a
- * client (PWA/phone) derives the identical key independently, from the same
- * AMK and the same path, to decrypt/encrypt on its side.
+ * This is the whole point of a key tree (`key-tree.ts`'s doc comment): any
+ * device holding the account's AMK derives this exact key with no other
+ * device online and no relay round trip. Lives in `@loombox/crypto` (not
+ * `@loombox/node`) precisely so both a node (encrypting outgoing session
+ * updates, decrypting inbound prompts) and a client/PWA (decrypting session
+ * updates, encrypting outgoing prompts) import the identical implementation
+ * rather than two copies that could drift apart — the whole point of the
+ * shared-crypto move is that both sides provably derive the same key.
  */
 export async function deriveSessionKey(
   amk: Uint8Array,

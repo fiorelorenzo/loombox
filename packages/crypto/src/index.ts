@@ -55,3 +55,12 @@ export {
   generatePairingCode,
   unwrapPairedAmk,
 } from './pairing';
+
+/**
+ * Session-scoped key derivation + the crypto<->wire envelope bridge (SPEC
+ * §8, §16). Shared here (rather than living node-local) so a node and a
+ * client/PWA derive/seal/open with the exact same implementation — see
+ * `session-keys.ts`/`session-envelope.ts`'s doc comments.
+ */
+export { deriveSessionKey } from './session-keys';
+export { envelopeFromWire, envelopeToWire, openJson, sealJson } from './session-envelope';

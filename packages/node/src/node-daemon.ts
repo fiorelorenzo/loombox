@@ -4,6 +4,7 @@ import { basename } from 'node:path';
 
 import type { AcpTranscriptUpdate } from '@loombox/providers-core';
 import { AgentSupervisor, type AgentSession } from '@loombox/supervisor';
+import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
   type PromptInjectV1,
@@ -13,10 +14,8 @@ import {
   type WireMessageV1,
 } from '@loombox/protocol';
 
-import { openJson, sealJson } from './crypto-envelope';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { SessionManager, type Session } from './session-manager';
-import { deriveSessionKey } from './session-keys';
 import { DEFAULT_LOCAL_TARGET } from './target';
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -46,10 +45,10 @@ export interface NodeDaemonOptions {
   accountId: string;
   /**
    * This account's Account Master Key (SPEC §8, §16): every session key this
-   * node derives (`deriveSessionKey`) comes from this one 256-bit secret via
-   * `@loombox/crypto`'s key tree. Real AMK distribution is the device-pairing
-   * flow (#113/#114/#115, out of scope here); injected directly until this
-   * node has its own pairing bootstrap.
+   * node derives (`@loombox/crypto`'s `deriveSessionKey`) comes from this one
+   * 256-bit secret via its key tree. Real AMK distribution is the
+   * device-pairing flow (#113/#114/#115, out of scope here); injected
+   * directly until this node has its own pairing bootstrap.
    */
   amk: Uint8Array;
   /** Execution targets this node exposes (SPEC §5.2); defaults to just the `local` target. */

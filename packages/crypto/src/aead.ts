@@ -25,7 +25,12 @@ export async function importAesGcmKey(rawKey: Uint8Array): Promise<CryptoKey> {
   }
   return crypto.subtle.importKey(
     'raw',
-    rawKey,
+    // The cast is a type-only workaround for a known friction point between
+    // @types/node's `Uint8Array<ArrayBufferLike>` and lib.dom.d.ts's WebCrypto
+    // methods, which require the narrower `Uint8Array<ArrayBuffer>`, when a
+    // consumer's tsconfig includes both (e.g. apps/web's browser + Node types
+    // combo) — no runtime effect, WebCrypto accepts any `ArrayBufferView`.
+    rawKey as Uint8Array<ArrayBuffer>,
     { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH_BITS },
     true,
     ['encrypt', 'decrypt'],
@@ -44,9 +49,14 @@ export async function aesGcmEncrypt(
   iv: Uint8Array = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_BYTES)),
 ): Promise<AesGcmSealed> {
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: aad, tagLength: AES_GCM_TAG_BITS },
+    {
+      name: 'AES-GCM',
+      iv: iv as Uint8Array<ArrayBuffer>,
+      additionalData: aad as Uint8Array<ArrayBuffer>,
+      tagLength: AES_GCM_TAG_BITS,
+    },
     key,
-    plaintext,
+    plaintext as Uint8Array<ArrayBuffer>,
   );
   return { iv, ciphertext: new Uint8Array(ciphertext) };
 }
@@ -64,9 +74,14 @@ export async function aesGcmDecrypt(
   aad: Uint8Array,
 ): Promise<Uint8Array> {
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv, additionalData: aad, tagLength: AES_GCM_TAG_BITS },
+    {
+      name: 'AES-GCM',
+      iv: iv as Uint8Array<ArrayBuffer>,
+      additionalData: aad as Uint8Array<ArrayBuffer>,
+      tagLength: AES_GCM_TAG_BITS,
+    },
     key,
-    ciphertext,
+    ciphertext as Uint8Array<ArrayBuffer>,
   );
   return new Uint8Array(plaintext);
 }

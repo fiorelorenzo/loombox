@@ -145,7 +145,12 @@ async function computeVerificationCode(
   const [first, second] =
     compareBytes(publicKeyA, publicKeyB) <= 0 ? [publicKeyA, publicKeyB] : [publicKeyB, publicKeyA];
   const material = concatBytes(first, second, sharedSecret);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+  // The cast is a type-only workaround for @types/node vs lib.dom.d.ts's
+  // WebCrypto friction (see aead.ts's `importAesGcmKey` doc comment); no
+  // runtime effect.
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', material as Uint8Array<ArrayBuffer>),
+  );
   const view = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
   const code = view.getUint32(0, false) % 1_000_000;
   return code.toString(10).padStart(6, '0');

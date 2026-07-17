@@ -13,7 +13,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@loombox/crypto": "workspace:*",
     "@loombox/protocol": "workspace:*",
+    "@loombox/providers-core": "workspace:*",
     "@sveltejs/adapter-node": "^5.5.7"
   },
   "devDependencies": {

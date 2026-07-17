@@ -16,5 +16,13 @@ export { createNode, NodeDaemon } from './node-daemon';
 export type { SshTargetConfig } from './target';
 export { DEFAULT_LOCAL_TARGET } from './target';
 
-export { envelopeFromWire, envelopeToWire, openJson, sealJson } from './crypto-envelope';
-export { deriveSessionKey } from './session-keys';
+// Moved into @loombox/crypto so a node and a client/PWA share one seal/open/
+// derive implementation (SPEC §8, §16); re-exported here for callers that
+// previously imported these from @loombox/node.
+export {
+  deriveSessionKey,
+  envelopeFromWire,
+  envelopeToWire,
+  openJson,
+  sealJson,
+} from '@loombox/crypto';

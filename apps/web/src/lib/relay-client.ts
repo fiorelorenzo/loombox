@@ -1,11 +1,26 @@
+import type { webcrypto } from 'node:crypto';
 import { writable, type Readable, type Writable } from 'svelte/store';
+import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
-  PROTOCOL_VERSION,
-  safeParseWireMessage,
-  type SessionMeta,
-  type SessionUpdate,
-  type WireMessage,
+  createTranscriptState,
+  reduceTranscript,
+  type AcpTranscriptUpdate,
+  type TranscriptState,
+} from '@loombox/providers-core';
+import {
+  PROTOCOL_V1,
+  initializeResult,
+  safeParseWireMessageV1,
+  type EncryptedEnvelope,
+  type Initialize,
+  type SessionAnnounceV1,
+  type SessionListV1,
+  type SessionMetaPublic,
+  type SessionUpdateEnvelopeV1,
+  type WireMessageV1,
 } from '@loombox/protocol';
+
+type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * The subset of the WHATWG `WebSocket` interface this module relies on, kept
@@ -28,29 +43,54 @@ export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
 const WS_OPEN = 1;
 
-/** Connection lifecycle exposed to the UI. v0 does not auto-reconnect (that's v1; see the class docstring). */
+/** Connection lifecycle exposed to the UI. v1 does not auto-reconnect (mirrors v0; see the class docstring). */
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
-/**
- * One append-only entry in a session's transcript. v0 renders a **plain
- * log** only: text chunks accumulated by `messageId`, plus a `done` flag set
- * by `agent_turn_end`. Tool-call widgets, thinking blocks, and diffs are
- * explicitly v1 (SPEC §7.24, §16).
- */
-export interface TranscriptEntry {
-  /** The ACP `messageId` this entry accumulates chunks for. */
-  id: string;
-  role: 'user' | 'agent' | 'error';
-  text: string;
-  /** Set once an `agent_turn_end` for this `messageId` has been observed. */
-  done: boolean;
+/** The plaintext a session's private envelope decrypts to (SPEC §8's metadata boundary), mirrored from `@loombox/node`'s `SessionPrivateMeta`. */
+interface SessionPrivateMeta {
+  title: string;
+  projectPath: string;
 }
+
+/** The plaintext a `prompt_inject` envelope decrypts to, mirrored from `@loombox/node`'s `PromptPayload`. */
+interface PromptPayload {
+  text: string;
+}
+
+/** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
+export type ClientSessionMeta = SessionMetaPublic & SessionPrivateMeta;
 
 export interface RelayClientOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
   relayUrl: string;
-  /** This client's identity, sent as `client_hello`'s `clientId`; generated if omitted. */
-  clientId?: string;
+  /**
+   * This account's Account Master Key (SPEC §8, §16): every session key this
+   * client derives (`@loombox/crypto`'s `deriveSessionKey`) comes from this
+   * one 256-bit secret via its key tree — the exact same derivation the node
+   * uses, so this client decrypts precisely what the node encrypted. Real
+   * AMK-on-device delivery is the pairing/escrow flow (#113/#114/#115); a
+   * caller injects it directly here until that lands.
+   */
+  amk: Uint8Array;
+  /**
+   * The account this client's sessions are scoped under. Also doubles as the
+   * `authToken` sent in `initialize` unless `authToken` is given explicitly:
+   * the relay's auth stub (`deriveAccountIdStub`, TODO #121) treats the raw
+   * bearer token as the account id verbatim, matching `@loombox/node`'s
+   * `NodeDaemonOptions.accountId` contract.
+   */
+  accountId: string;
+  /** Opaque Better Auth bearer token (SPEC §8); defaults to `accountId` (see above). */
+  authToken?: string;
+  /** This client's stable device identity, sent in the `initialize` handshake; generated if omitted. */
+  deviceId?: string;
+  /**
+   * This device's ECDH P-256 identity public key, base64-encoded raw form
+   * (SPEC §8). Real per-device keypair generation/persistence is the pairing
+   * flow (out of scope here, mirrors `@loombox/node`'s `devicePublicKey`
+   * option); a random placeholder is generated if omitted.
+   */
+  devicePublicKey?: string;
   /** WebSocket constructor override; defaults to the global `WebSocket`. Tests inject a fake. */
   webSocketImpl?: WebSocketConstructor;
 }
@@ -61,88 +101,74 @@ function generateId(prefix: string): string {
   return `${prefix}_${unique}`;
 }
 
-/**
- * Applies one `SessionUpdate` to a transcript array and returns the new
- * array (pure, so it's trivial to unit test on its own). This is the
- * append-by-`messageId` reducer SPEC §5.5/§16 describes, restricted to the
- * plain-log subset v0 needs: `agent_message_chunk`/`user_message_chunk`
- * append text onto the entry with that `messageId` (creating it on first
- * sight), `agent_turn_end` marks it done, `error` appends a standalone entry.
- */
-export function reduceTranscript(
-  entries: readonly TranscriptEntry[],
-  update: SessionUpdate,
-): TranscriptEntry[] {
-  switch (update.kind) {
-    case 'agent_message_chunk':
-    case 'user_message_chunk': {
-      const role = update.kind === 'agent_message_chunk' ? 'agent' : 'user';
-      const index = entries.findIndex((entry) => entry.id === update.messageId);
-      if (index === -1) {
-        return [...entries, { id: update.messageId, role, text: update.text, done: false }];
-      }
-      const existing = entries[index]!;
-      const next = [...entries];
-      next[index] = { ...existing, text: existing.text + update.text };
-      return next;
-    }
-    case 'agent_turn_end': {
-      const index = entries.findIndex((entry) => entry.id === update.messageId);
-      if (index === -1) return [...entries];
-      const existing = entries[index]!;
-      const next = [...entries];
-      next[index] = { ...existing, done: true };
-      return next;
-    }
-    case 'error':
-      return [
-        ...entries,
-        { id: generateId('err'), role: 'error', text: update.message, done: true },
-      ];
-    default:
-      return [...entries];
-  }
+function randomBase64(byteLength = 32): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return Buffer.from(bytes).toString('base64');
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
- * Owns one outbound WebSocket connection from the PWA to the relay (SPEC
- * §5.4 "list sessions ... view live output", §7.3 "send follow-up
- * prompts"): sends `client_hello`, keeps a reactive session list fed by the
- * relay's `session_list` snapshot plus subsequent `session_announce`es, and
- * reduces each session's `session_update` stream into a plain append-only
- * transcript (v0 scope; SPEC §16 defers tool-call widgets/thinking/diffs to
- * v1). `sendPrompt` forwards a `prompt_inject` for the composer (§7.3) and,
- * since the relay never echoes it back, optimistically appends the user's
- * own turn locally so it shows immediately.
+ * Owns one outbound WebSocket connection from the PWA to the v1 relay (SPEC
+ * §5.4 "list sessions ... view live output", §7.3 "send follow-up prompts",
+ * §8/§16's E2E-encrypted wire; `docs/v1-plan.md`; issue #315). Sends
+ * `initialize` (role `'client'`) as the first frame, requests the
+ * account-scoped session snapshot once handshaken, and keeps a reactive
+ * session list fed by that `session_list` snapshot plus subsequent
+ * `session_announce`es (the relay's reply to this client's own
+ * `session_resume` calls) — **decrypting** each session's private envelope
+ * under its derived session key (`@loombox/crypto`'s `deriveSessionKey`,
+ * the identical derivation `@loombox/node` uses) to recover `title`/
+ * `projectPath`, which the relay itself never sees in the clear.
  *
- * v0 is deliberately minimal: **online only** (no reconnect-with-backoff,
- * no offline composer outbox — both v1) and **one in-flight prompt per
- * session** (`busyFor` flips true on send, false on that session's next
- * `agent_turn_end`/`error`), per the v0 acceptance in SPEC §12.
+ * For a session the UI selects, `transcriptFor` subscribes to its live
+ * updates (`session_resume`) and decrypts + reduces every inbound
+ * `session_update` envelope through `@loombox/providers-core`'s
+ * `reduceTranscript` — the same pure reducer the transcript's real source of
+ * truth. `sendPrompt` seals the composer's text into a `prompt_inject`
+ * envelope and, since the relay never echoes it back, optimistically reduces
+ * the user's own turn into the local transcript so it shows immediately.
+ *
+ * v1's client core is deliberately minimal, matching this PR's scope (not
+ * Wave D.2's rich transcript UX): **online only** (no reconnect-with-backoff,
+ * no offline composer outbox) and a **plain append-only transcript render**
+ * — tool-call widgets, diff viewers, the plan sidebar, and the
+ * permission-queue UI are all out of scope here.
  *
  * All state is exposed as plain `svelte/store` readables (the `subscribe`
  * contract), which has no DOM dependency, so this whole module is unit
- * tested here against a real in-process `@loombox/relay` with no browser and
- * no jsdom. The full browser/phone confirmation is issue #54 (human-gated),
- * see scripts/v0-e2e-harness.mjs for the equivalent headless proof on the
- * node side.
+ * tested here against a real in-process `@loombox/relay` plus a fake,
+ * independently-keyed "node" over the global `WebSocket` — no browser, no
+ * jsdom.
  */
 export class RelayClient {
-  readonly clientId: string;
   readonly status: Readable<ConnectionStatus>;
-  readonly sessions: Readable<SessionMeta[]>;
+  readonly sessions: Readable<ClientSessionMeta[]>;
 
   private readonly options: RelayClientOptions;
+  private readonly amk: Uint8Array;
+  private readonly accountId: string;
+  private readonly authToken: string;
+  private readonly deviceId: string;
+  private readonly devicePublicKey: string;
   private readonly WebSocketCtor: WebSocketConstructor;
   private readonly statusStore: Writable<ConnectionStatus>;
-  private readonly sessionsStore: Writable<SessionMeta[]>;
-  private readonly transcripts = new Map<string, Writable<TranscriptEntry[]>>();
-  private readonly busy = new Map<string, Writable<boolean>>();
+  private readonly sessionsStore: Writable<ClientSessionMeta[]>;
+  private readonly transcripts = new Map<string, Writable<TranscriptState>>();
+  private readonly subscribed = new Set<string>();
+  private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   private socket: WebSocketLike | undefined;
+  private awaitingInitializeResult = false;
 
   constructor(options: RelayClientOptions) {
     this.options = options;
-    this.clientId = options.clientId ?? generateId('client');
+    this.amk = options.amk;
+    this.accountId = options.accountId;
+    this.authToken = options.authToken ?? options.accountId;
+    this.deviceId = options.deviceId ?? generateId('device');
+    this.devicePublicKey = options.devicePublicKey ?? randomBase64();
 
     const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
     if (!ctor) {
@@ -151,35 +177,57 @@ export class RelayClient {
     this.WebSocketCtor = ctor;
 
     this.statusStore = writable<ConnectionStatus>('idle');
-    this.sessionsStore = writable<SessionMeta[]>([]);
+    this.sessionsStore = writable<ClientSessionMeta[]>([]);
     this.status = this.statusStore;
     this.sessions = this.sessionsStore;
   }
 
-  /** Opens the connection (no-op if already connecting/open) and sends `client_hello` once open. */
+  /** Opens the connection (no-op if already connecting/open) and sends `initialize` once open. */
   connect(): void {
     if (this.socket) return;
     this.statusStore.set('connecting');
 
     const socket = new this.WebSocketCtor(this.options.relayUrl);
     this.socket = socket;
+    this.awaitingInitializeResult = true;
 
     socket.addEventListener('open', () => {
-      this.send({
-        type: 'client_hello',
-        protocolVersion: PROTOCOL_VERSION,
-        clientId: this.clientId,
-      });
-      this.statusStore.set('open');
+      const initialize: Initialize = {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'client',
+        authToken: this.authToken,
+        deviceId: this.deviceId,
+        devicePublicKey: this.devicePublicKey,
+      };
+      socket.send(JSON.stringify(initialize));
     });
 
     socket.addEventListener('message', (event: { data: unknown }) => {
-      const message = this.parseInbound(event.data);
-      if (message) this.handleInbound(message);
+      const parsed = this.parseRaw(event.data);
+      if (parsed === undefined) return;
+
+      if (this.awaitingInitializeResult) {
+        this.awaitingInitializeResult = false;
+        const result = initializeResult.safeParse(parsed);
+        if (result.success) {
+          this.statusStore.set('open');
+          // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
+          // every session already announced by a node this account owns.
+          this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+        } else {
+          this.statusStore.set('error');
+        }
+        return;
+      }
+
+      const message = safeParseWireMessageV1(parsed);
+      if (message.success) this.handleInbound(message.data);
     });
 
     socket.addEventListener('close', () => {
       this.socket = undefined;
+      this.awaitingInitializeResult = false;
       this.statusStore.set('closed');
     });
 
@@ -191,107 +239,186 @@ export class RelayClient {
     });
   }
 
-  /** Deliberately closes the connection. v0 does not auto-reconnect (v1). */
+  /** Deliberately closes the connection. v1's client core does not auto-reconnect (Wave D.2/later). */
   close(): void {
     this.socket?.close();
     this.socket = undefined;
   }
 
-  /** The append-only transcript store for one session; created empty on first access. */
-  transcriptFor(sessionId: string): Readable<TranscriptEntry[]> {
-    return this.transcriptStoreFor(sessionId);
-  }
-
-  /** Whether a prompt is currently in flight for one session (v0: at most one at a time). */
-  busyFor(sessionId: string): Readable<boolean> {
-    return this.busyStoreFor(sessionId);
+  /**
+   * The append-only transcript store for one session (created empty on
+   * first access) — subscribing (`session_resume`) this connection to that
+   * session's live `session_update` fan-out the first time it's requested,
+   * per the relay's subscription model (`packages/relay/src/relay.ts`).
+   */
+  transcriptFor(sessionId: string): Readable<TranscriptState> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return store;
   }
 
   /**
-   * Sends a follow-up prompt for `sessionId` (SPEC §7.3, the composer).
-   * Marks the session busy until its next `agent_turn_end`/`error` update,
-   * and optimistically appends the user's own turn to the transcript first
-   * (the relay/node never echo `prompt_inject` back as a `user_message_chunk`,
-   * so without this the user's own message would never appear). Returns the
-   * generated `promptId`.
+   * Seals the composer's text into a `prompt_inject` envelope (SPEC §7.3)
+   * and sends it. Optimistically reduces the user's own turn into the local
+   * transcript first (the relay/node never echo `prompt_inject` back as a
+   * `session_update`, so without this the user's own message would never
+   * appear). Returns the generated `promptId` synchronously; the
+   * encrypt-and-send itself is asynchronous (WebCrypto), and a failure is
+   * logged rather than thrown, matching `@loombox/node`'s
+   * `encryptAndSendUpdate` error-handling style.
    */
   sendPrompt(sessionId: string, text: string): string {
     const promptId = generateId('prompt');
-    this.applyUpdate(sessionId, { kind: 'user_message_chunk', messageId: promptId, text });
-    this.busyStoreFor(sessionId).set(true);
-    this.send({
-      type: 'prompt_inject',
-      protocolVersion: PROTOCOL_VERSION,
-      sessionId,
-      promptId,
+    this.applyUpdate(sessionId, {
+      kind: 'user_message_chunk',
+      turnId: promptId,
+      messageId: promptId,
       text,
     });
+
+    this.encryptAndSendPrompt(sessionId, promptId, text).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: failed to encrypt/send prompt_inject for session ${sessionId}: ${errorMessage(error)}`,
+      );
+    });
+
     return promptId;
   }
 
-  private transcriptStoreFor(sessionId: string): Writable<TranscriptEntry[]> {
+  private async encryptAndSendPrompt(
+    sessionId: string,
+    promptId: string,
+    text: string,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: PromptPayload = { text };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.send({
+      type: 'prompt_inject',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      promptId,
+      envelope,
+    });
+  }
+
+  private ensureSubscribed(sessionId: string): void {
+    if (this.subscribed.has(sessionId)) return;
+    this.subscribed.add(sessionId);
+    this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+  }
+
+  private transcriptStoreFor(sessionId: string): Writable<TranscriptState> {
     let store = this.transcripts.get(sessionId);
     if (!store) {
-      store = writable<TranscriptEntry[]>([]);
+      store = writable<TranscriptState>(createTranscriptState());
       this.transcripts.set(sessionId, store);
     }
     return store;
   }
 
-  private busyStoreFor(sessionId: string): Writable<boolean> {
-    let store = this.busy.get(sessionId);
-    if (!store) {
-      store = writable(false);
-      this.busy.set(sessionId, store);
-    }
-    return store;
-  }
-
-  private applyUpdate(sessionId: string, update: SessionUpdate): void {
+  private applyUpdate(sessionId: string, update: AcpTranscriptUpdate): void {
     const store = this.transcriptStoreFor(sessionId);
-    store.update((entries) => reduceTranscript(entries, update));
-
-    if (update.kind === 'agent_turn_end' || update.kind === 'error') {
-      this.busyStoreFor(sessionId).set(false);
-    }
+    store.update((state) => reduceTranscript(state, update));
   }
 
-  private handleInbound(message: WireMessage): void {
+  private handleInbound(message: WireMessageV1): void {
     switch (message.type) {
       case 'session_list':
-        this.sessionsStore.set(message.sessions);
+        this.handleSessionList(message);
         return;
       case 'session_announce':
-        this.sessionsStore.update((sessions) => {
-          const index = sessions.findIndex((session) => session.id === message.session.id);
-          if (index === -1) return [...sessions, message.session];
-          const next = [...sessions];
-          next[index] = message.session;
-          return next;
-        });
+        this.handleSessionAnnounce(message);
         return;
       case 'session_update':
-        this.applyUpdate(message.sessionId, message.update);
+        this.handleSessionUpdate(message);
         return;
       default:
         return;
     }
   }
 
-  private send(message: WireMessage): void {
+  private handleSessionList(message: SessionListV1): void {
+    Promise.all(
+      message.sessions.map((entry) =>
+        this.decryptSessionMeta(entry.session, entry.privateEnvelope).catch((error: unknown) => {
+          console.warn(
+            `RelayClient: failed to decrypt session ${entry.session.id}: ${errorMessage(error)}`,
+          );
+          return undefined;
+        }),
+      ),
+    )
+      .then((results) => {
+        const sessions = results.filter(
+          (session): session is ClientSessionMeta => session !== undefined,
+        );
+        this.sessionsStore.set(sessions);
+      })
+      .catch(() => {
+        // Every per-session decrypt already caught its own error above;
+        // Promise.all itself cannot reject here.
+      });
+  }
+
+  private handleSessionAnnounce(message: SessionAnnounceV1): void {
+    this.decryptSessionMeta(message.session, message.privateEnvelope)
+      .then((session) => {
+        this.sessionsStore.update((sessions) => {
+          const index = sessions.findIndex((existing) => existing.id === session.id);
+          if (index === -1) return [...sessions, session];
+          const next = [...sessions];
+          next[index] = session;
+          return next;
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt session_announce for ${message.session.id}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<AcpTranscriptUpdate>(message.sessionId, message.envelope, key))
+      .then((update) => this.applyUpdate(message.sessionId, update))
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt session_update for ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  private async decryptSessionMeta(
+    session: SessionMetaPublic,
+    privateEnvelope: EncryptedEnvelope,
+  ): Promise<ClientSessionMeta> {
+    const key = await this.getSessionKey(session.id);
+    const privateMeta = await openJson<SessionPrivateMeta>(session.id, privateEnvelope, key);
+    return { ...session, ...privateMeta };
+  }
+
+  private getSessionKey(sessionId: string): Promise<CryptoKey> {
+    let key = this.sessionKeys.get(sessionId);
+    if (!key) {
+      key = deriveSessionKey(this.amk, this.accountId, sessionId);
+      this.sessionKeys.set(sessionId, key);
+    }
+    return key;
+  }
+
+  private send(message: WireMessageV1): void {
     if (this.socket && this.socket.readyState === WS_OPEN) {
       this.socket.send(JSON.stringify(message));
     }
   }
 
-  private parseInbound(data: unknown): WireMessage | undefined {
-    let parsed: unknown;
+  private parseRaw(data: unknown): unknown {
     try {
-      parsed = JSON.parse(String(data));
+      return JSON.parse(String(data));
     } catch {
       return undefined;
     }
-    const result = safeParseWireMessage(parsed);
-    return result.success ? result.data : undefined;
   }
 }

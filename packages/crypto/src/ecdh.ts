@@ -37,7 +37,10 @@ export async function exportPublicKeyRaw(publicKey: CryptoKey): Promise<Uint8Arr
 
 /** Imports a public key previously exported via {@link exportPublicKeyRaw}. */
 export async function importPublicKeyRaw(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', raw, ECDH_ALGORITHM, true, []);
+  // The cast is a type-only workaround for a known friction point between
+  // @types/node's `Uint8Array<ArrayBufferLike>` and lib.dom.d.ts's WebCrypto
+  // methods (see aead.ts's `importAesGcmKey` doc comment); no runtime effect.
+  return crypto.subtle.importKey('raw', raw as Uint8Array<ArrayBuffer>, ECDH_ALGORITHM, true, []);
 }
 
 /**

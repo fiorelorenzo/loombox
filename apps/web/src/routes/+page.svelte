@@ -1,49 +1,79 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { SessionMeta } from '@loombox/protocol';
+  import type { TranscriptItem, TranscriptState } from '@loombox/providers-core';
   import { APP_NAME, APP_TAGLINE } from '$lib/constants';
-  import { RelayClient, type ConnectionStatus, type TranscriptEntry } from '$lib/relay-client';
+  import { RelayClient, type ClientSessionMeta, type ConnectionStatus } from '$lib/relay-client';
 
-  // Disposable v0 relay (SPEC §12): no auth, no default deployment, so the
-  // operator points the PWA at whatever host/port `scripts/run-relay.sh`
-  // printed (loopback here; a phone on the tailnet types the tailnet URL).
+  // Disposable v1 relay (SPEC §12): no auth, no default deployment, so the
+  // operator points the PWA at whatever host/port the relay printed
+  // (loopback here; a phone on the tailnet types the tailnet URL).
   const DEFAULT_RELAY_URL = 'ws://127.0.0.1:8787/ws';
 
   let relayUrl = $state(DEFAULT_RELAY_URL);
+  // The account this client's sessions are scoped under and its Account
+  // Master Key (SPEC §8, §16). Real AMK-on-device delivery is the
+  // pairing/escrow flow (out of scope here, see relay-client.ts's doc
+  // comment) — this v1 client core takes both directly from the operator so
+  // the encrypted loop is exercisable without that flow existing yet.
+  let accountId = $state('dev-account');
+  let amkBase64 = $state('');
   let status = $state<ConnectionStatus>('idle');
-  let sessions = $state<SessionMeta[]>([]);
+  let sessions = $state<ClientSessionMeta[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
-  let transcript = $state<TranscriptEntry[]>([]);
-  let busy = $state(false);
+  let transcript = $state<TranscriptState | undefined>(undefined);
   let draft = $state('');
 
   const canConnect = $derived(status === 'idle' || status === 'closed' || status === 'error');
 
-  // All logic (the WS connection, the session list, the transcript reducer,
-  // the composer's send path) lives in $lib/relay-client.ts, unit-tested
-  // there against a real in-process relay with no browser. This component
-  // just renders that module's stores and wires the composer's submit to it
-  // (SPEC §5.4, §7.3).
+  // All logic (the WS connection, the E2E-encrypted session list, the
+  // transcript decrypt+reduce, the composer's send path) lives in
+  // $lib/relay-client.ts, unit-tested there against a real in-process relay
+  // plus a fake independently-keyed node — no browser. This component just
+  // renders that module's stores and wires the composer's submit to it
+  // (SPEC §5.4, §7.3). Transcript rendering here is deliberately a plain
+  // append-only log (v0-equivalent scope): tool-call widgets, diffs, and the
+  // plan sidebar are Wave D.2, not this client core.
   let client: RelayClient | undefined;
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
   let unsubscribeTranscript: (() => void) | undefined;
-  let unsubscribeBusy: (() => void) | undefined;
+
+  function itemText(item: TranscriptItem): string {
+    if (item.type === 'message') return item.text;
+    return `[${item.toolKind ?? 'tool'}] ${item.title ?? item.id} (${item.status ?? 'pending'})`;
+  }
+
+  function itemRole(item: TranscriptItem): string {
+    if (item.type === 'tool_call') return 'tool';
+    if (item.kind === 'user_message_chunk') return 'user';
+    if (item.kind === 'agent_thought_chunk') return 'thought';
+    return 'agent';
+  }
 
   function selectSession(id: string): void {
     selectedSessionId = id;
     unsubscribeTranscript?.();
-    unsubscribeBusy?.();
-    transcript = [];
-    busy = false;
+    transcript = undefined;
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
-    unsubscribeBusy = client.busyFor(id).subscribe((value) => (busy = value));
   }
 
   function connect(): void {
     if (typeof window === 'undefined' || client) return;
-    client = new RelayClient({ relayUrl });
+    // A plain `crypto.getRandomValues` fallback (not `@loombox/crypto`'s
+    // `generateAmk`, which pulls in `node:crypto`'s `createHmac` transitively
+    // via key-tree.ts — Vite externalizes that for the browser build, so
+    // calling it client-side would throw) when the operator leaves the AMK
+    // field blank. Real AMK-on-device delivery is the pairing/escrow flow
+    // (out of scope here, see relay-client.ts's doc comment).
+    const amk = amkBase64.trim()
+      ? new Uint8Array(
+          atob(amkBase64.trim())
+            .split('')
+            .map((c) => c.charCodeAt(0)),
+        )
+      : crypto.getRandomValues(new Uint8Array(32));
+    client = new RelayClient({ relayUrl, amk, accountId });
     unsubscribeStatus = client.status.subscribe((value) => (status = value));
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
@@ -56,20 +86,18 @@
     unsubscribeStatus?.();
     unsubscribeSessions?.();
     unsubscribeTranscript?.();
-    unsubscribeBusy?.();
     client?.close();
     client = undefined;
     status = 'idle';
     sessions = [];
     selectedSessionId = undefined;
-    transcript = [];
-    busy = false;
+    transcript = undefined;
   }
 
   function submitPrompt(event: Event): void {
     event.preventDefault();
     const text = draft.trim();
-    if (!client || !selectedSessionId || busy || text === '') return;
+    if (!client || !selectedSessionId || text === '') return;
     client.sendPrompt(selectedSessionId, text);
     draft = '';
   }
@@ -88,6 +116,10 @@
   <section class="connection">
     <label for="relay-url">Relay URL</label>
     <input id="relay-url" type="text" bind:value={relayUrl} disabled={!canConnect} />
+    <label for="account-id">Account</label>
+    <input id="account-id" type="text" bind:value={accountId} disabled={!canConnect} />
+    <label for="amk">AMK (base64, blank = generate)</label>
+    <input id="amk" type="text" bind:value={amkBase64} disabled={!canConnect} />
     {#if canConnect}
       <button type="button" onclick={connect}>Connect</button>
     {:else}
@@ -111,7 +143,7 @@
                 class:selected={session.id === selectedSessionId}
                 onclick={() => selectSession(session.id)}
               >
-                <strong>{session.title ?? session.id}</strong>
+                <strong>{session.title}</strong>
                 <small>{session.provider} · {session.projectPath}</small>
               </button>
             </li>
@@ -125,13 +157,10 @@
         <p class="empty">Select a session to view its live transcript.</p>
       {:else}
         <ol>
-          {#each transcript as entry (entry.id)}
-            <li class={entry.role}>
-              <span class="role">{entry.role}</span>
-              <span class="text">{entry.text}</span>
-              {#if !entry.done && entry.role !== 'user'}
-                <span class="streaming" aria-label="streaming">…</span>
-              {/if}
+          {#each transcript?.items ?? [] as item (item.id)}
+            <li class={itemRole(item)}>
+              <span class="role">{itemRole(item)}</span>
+              <span class="text">{itemText(item)}</span>
             </li>
           {/each}
         </ol>
@@ -141,10 +170,9 @@
             type="text"
             bind:value={draft}
             placeholder="Send a follow-up prompt…"
-            disabled={busy}
             aria-label="Follow-up prompt"
           />
-          <button type="submit" disabled={busy || draft.trim() === ''}>Send</button>
+          <button type="submit" disabled={draft.trim() === ''}>Send</button>
         </form>
       {/if}
     </section>
@@ -276,8 +304,8 @@
     background: rgba(79, 70, 229, 0.15);
   }
 
-  .transcript li.error {
-    background: rgba(220, 38, 38, 0.15);
+  .transcript li.tool {
+    background: rgba(234, 179, 8, 0.15);
   }
 
   .transcript .role {
