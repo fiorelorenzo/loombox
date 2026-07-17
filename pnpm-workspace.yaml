@@ -7,8 +7,15 @@ onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
 allowBuilds:
+  # Both are optional native addons ssh2 uses only for hardware-accelerated
+  # crypto detection; ssh2 falls back to its pure-JS path without them
+  # (verified: `require('ssh2')` loads and connects fine with these unbuilt),
+  # so skipping their build scripts keeps the supply-chain policy
+  # conservative (no arbitrary install-time scripts run) at no functional cost.
+  cpu-features: false
   better-sqlite3: true
   esbuild: true
+  ssh2: false
 minimumReleaseAgeExclude:
   - svelte-check@4.7.3
   - vite@8.1.5

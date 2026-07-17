@@ -1,4 +1,4 @@
-import type { webcrypto } from 'node:crypto';
+import { randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename } from 'node:path';
 
@@ -16,7 +16,12 @@ import {
 
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { SessionManager, type Session } from './session-manager';
-import { DEFAULT_LOCAL_TARGET } from './target';
+import { DEFAULT_LOCAL_TARGET, type SshTargetConfig } from './target';
+import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
+import { RemoteProcessRunner } from './ssh/remote-process-runner';
+import { shQuote, type RemoteTransport } from './ssh/remote-transport';
+import { SessionLeaseManager } from './ssh/session-lease';
+import { Ssh2Transport } from './ssh/ssh2-transport';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -53,6 +58,24 @@ export interface NodeDaemonOptions {
   amk: Uint8Array;
   /** Execution targets this node exposes (SPEC §5.2); defaults to just the `local` target. */
   targets?: TargetDescriptor[];
+  /**
+   * Connection recipes for this node's `ssh:` targets (issue #80), keyed by
+   * matching `TargetDescriptor.id` in `targets`. A target announced with
+   * `kind: 'ssh'` but no matching entry here fails session creation with a
+   * clear error rather than silently falling back to anything.
+   */
+  sshTargets?: SshTargetConfig[];
+  /** Builds the `RemoteTransport` for a given `ssh:` target; defaults to a real `Ssh2Transport`. Tests inject a `LocalProcessTransport`/`FakeTransport` factory instead. */
+  sshTransportFactory?: (config: SshTargetConfig) => RemoteTransport;
+  /**
+   * Session ownership leasing across nodes (issue #82). Defaults to a fresh
+   * in-memory manager, correct for a single-node deployment and for tests;
+   * a multi-node deployment shares one `SessionLeaseManager` backed by a
+   * distributed `LeaseStore` (e.g. relay-hosted) across every node instance.
+   */
+  leaseManager?: SessionLeaseManager;
+  /** Poll interval (ms) for a `RemoteAgentChildProcess` bridge on an `ssh:` target session; defaults to 150ms. Tests lower this to speed up polling-based assertions. */
+  remoteChildPollIntervalMs?: number;
   /** Injected for tests; defaults to a fresh instance. */
   sessionManager?: SessionManager;
   /** Injected for tests (e.g. to register a fixture provider); defaults to a fresh instance. */
@@ -97,6 +120,14 @@ interface SessionBridge {
    * relay — out of the order their updates actually happened in.
    */
   sendQueue: Promise<void>;
+  /**
+   * Set only for an `ssh:` target's session (issue #80): the local bridge
+   * object polling the remote run. `close()` must reach this directly
+   * (rather than going through `AgentSupervisor.stop()`, which always kills)
+   * so this node exiting stops *this local bridge* without terminating the
+   * still-running remote agent process.
+   */
+  remoteChild?: RemoteAgentChildProcess;
 }
 
 /**
@@ -131,6 +162,16 @@ export class NodeDaemon extends EventEmitter {
   private readonly bridges = new Map<string, SessionBridge>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
 
+  private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
+  private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
+  private readonly leaseManager: SessionLeaseManager;
+  private readonly remoteChildPollIntervalMs: number | undefined;
+  /** One pooled `RemoteTransport` + `RemoteProcessRunner` per `ssh:` target id, reused across every session on that target rather than reconnecting per session (SPEC §5.2/§7.23's "pooled ... SSH transport"). */
+  private readonly remoteConnections = new Map<
+    string,
+    { transport: RemoteTransport; runner: RemoteProcessRunner }
+  >();
+
   constructor(options: NodeDaemonOptions) {
     super();
     this.nodeId = options.nodeId;
@@ -139,6 +180,23 @@ export class NodeDaemon extends EventEmitter {
     this.targets = options.targets ?? [DEFAULT_LOCAL_TARGET];
     this.sessionManager = options.sessionManager ?? new SessionManager();
     this.supervisor = options.supervisor ?? new AgentSupervisor();
+    for (const config of options.sshTargets ?? []) {
+      this.sshTargetConfigs.set(config.id, config);
+    }
+    this.sshTransportFactory =
+      options.sshTransportFactory ??
+      ((config) =>
+        new Ssh2Transport({
+          host: config.host,
+          port: config.port,
+          username: config.user ?? 'root',
+          privateKeyPath: config.privateKeyPath,
+          passphrase: config.passphrase,
+          password: config.password,
+          agent: config.agent,
+        }));
+    this.leaseManager = options.leaseManager ?? new SessionLeaseManager();
+    this.remoteChildPollIntervalMs = options.remoteChildPollIntervalMs;
     this.relay = new RelayConnection({
       relayUrl: options.relayUrl,
       deviceId: options.deviceId,
@@ -170,12 +228,24 @@ export class NodeDaemon extends EventEmitter {
     this.relay.connect();
   }
 
-  /** Closes the relay connection (no further reconnect attempts follow) and stops every session's agent process. */
+  /**
+   * Closes the relay connection (no further reconnect attempts follow) and
+   * stops every session's agent process — except an `ssh:` target session's
+   * remote agent, which this node deliberately does *not* terminate: it
+   * detaches this node's local bridge only, leaving the setsid/tmux-detached
+   * remote process running (issue #80's "the driving node exiting entirely
+   * does not kill the remote agent process").
+   */
   close(): void {
-    for (const sessionId of this.bridges.keys()) {
+    for (const [sessionId, bridge] of this.bridges) {
+      bridge.remoteChild?.detachLocal();
       this.supervisor.stop(sessionId);
     }
     this.bridges.clear();
+    for (const { transport } of this.remoteConnections.values()) {
+      transport.close().catch(() => {});
+    }
+    this.remoteConnections.clear();
     this.relay.close();
   }
 
@@ -206,7 +276,25 @@ export class NodeDaemon extends EventEmitter {
     if (!bridge) {
       throw new Error(`NodeDaemon: no session with id ${sessionId}`);
     }
+    await this.assertStillLeaseholder(bridge);
     await bridge.agentSession.prompt(text);
+  }
+
+  /**
+   * Enforces issue #82's "only the current leaseholder node may send
+   * prompts/control to a session's supervisor" for an `ssh:` target session
+   * (identified by `bridge.remoteChild` being set — a `local` session has no
+   * cross-node contention to guard against, since no other node can reach
+   * this machine's own child process). A no-op for a `local` bridge.
+   */
+  private async assertStillLeaseholder(bridge: SessionBridge): Promise<void> {
+    if (!bridge.remoteChild) return;
+    const stillHeld = await this.leaseManager.isLeaseholder(bridge.session.id, this.nodeId);
+    if (!stillHeld) {
+      throw new Error(
+        `NodeDaemon: lost the ownership lease for session ${bridge.session.id}; refusing to drive it further (issue #82)`,
+      );
+    }
   }
 
   private async createSessionInternal(opts: {
@@ -221,10 +309,7 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no target with id "${opts.targetId}"`);
     }
     if (target.kind === 'ssh') {
-      // TODO(#80): ssh: target transport + remote supervisor deploy-and-detach.
-      throw new Error(
-        `NodeDaemon: ssh: targets are not implemented yet (target "${target.id}", see #80)`,
-      );
+      return this.createSshSessionInternal(target.id, opts);
     }
 
     const session = await this.sessionManager.createSession({
@@ -237,6 +322,106 @@ export class NodeDaemon extends EventEmitter {
       providerId: opts.provider,
     });
 
+    return this.finishSessionCreation(session, agentSession, opts);
+  }
+
+  /**
+   * The `ssh:` target path (issue #80): acquires this session's ownership
+   * lease (#82), deploys-and-launches the provider's agent detached on the
+   * remote host via the pooled `RemoteProcessRunner` for this target — with
+   * a tmux/screen fallback when the native mechanism isn't available (#81)
+   * — bridges it into an `AcpChildProcess` (`RemoteAgentChildProcess`), and
+   * hands that to `AgentSupervisor.startWithChild()`. From here on this
+   * session is driven through `AgentSession`/`AgentSupervisor` exactly like
+   * a `local` one: {@link finishSessionCreation} is the same shared tail
+   * both paths use to wire transcript forwarding and announce to the relay.
+   */
+  private async createSshSessionInternal(
+    targetId: string,
+    opts: { sessionId?: string; projectPath: string; provider: string; title: string },
+  ): Promise<Session> {
+    const sessionId = opts.sessionId ?? randomUUID();
+
+    const lease = await this.leaseManager.acquire(sessionId, this.nodeId);
+    if (!lease.granted) {
+      throw new Error(
+        `NodeDaemon: cannot create session ${sessionId} on ssh: target "${targetId}": ` +
+          `lease already held by node "${lease.heldBy}" (expires ${new Date(lease.expiresAt).toISOString()})`,
+      );
+    }
+
+    const provider = this.supervisor.getProvider(opts.provider);
+    if (!provider) {
+      throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
+    }
+
+    const runner = await this.getRemoteRunner(targetId);
+    const spawnConfig = provider.spawnConfig({ cwd: opts.projectPath });
+    const command = [spawnConfig.command, ...(spawnConfig.args ?? [])].map(shQuote).join(' ');
+
+    const { mode, usedFallback, handle } = await runner.launchWithFallback(sessionId, command);
+    if (usedFallback) {
+      console.warn(
+        `NodeDaemon: ssh target "${targetId}" has no setsid+mkfifo available; session ${sessionId} launched under the ${mode} fallback (#81)`,
+      );
+    }
+
+    const remoteChild = new RemoteAgentChildProcess(runner, handle, {
+      pollIntervalMs: this.remoteChildPollIntervalMs,
+    });
+    remoteChild.start();
+
+    const agentSession = await this.supervisor.startWithChild({
+      workspacePath: opts.projectPath,
+      providerId: opts.provider,
+      child: asAcpChildProcess(remoteChild),
+    });
+
+    // No per-session remote git worktree in this wave (see target.ts's doc
+    // comment): the session runs directly in `projectPath` on the remote
+    // host, so `worktreePath` mirrors it and `branch` is genuinely N/A.
+    const session: Session = {
+      id: sessionId,
+      projectPath: opts.projectPath,
+      worktreePath: opts.projectPath,
+      target: 'ssh',
+      provider: opts.provider,
+      branch: '',
+      createdAt: Date.now(),
+    };
+
+    return this.finishSessionCreation(
+      session,
+      agentSession,
+      { targetId, title: opts.title },
+      remoteChild,
+    );
+  }
+
+  /** Gets (or opens) the pooled `RemoteTransport`/`RemoteProcessRunner` for an `ssh:` target, reused across every session on it. */
+  private async getRemoteRunner(targetId: string): Promise<RemoteProcessRunner> {
+    const existing = this.remoteConnections.get(targetId);
+    if (existing) return existing.runner;
+
+    const config = this.sshTargetConfigs.get(targetId);
+    if (!config) {
+      throw new Error(
+        `NodeDaemon: no ssh target config for target "${targetId}" (pass it via NodeDaemonOptions.sshTargets)`,
+      );
+    }
+    const transport = this.sshTransportFactory(config);
+    await transport.connect();
+    const runner = new RemoteProcessRunner(transport);
+    this.remoteConnections.set(targetId, { transport, runner });
+    return runner;
+  }
+
+  private async finishSessionCreation(
+    session: Session,
+    agentSession: AgentSession,
+    opts: { targetId: string; title: string },
+    remoteChild?: RemoteAgentChildProcess,
+  ): Promise<Session> {
     const bridge: SessionBridge = {
       session,
       agentSession,
@@ -244,6 +429,7 @@ export class NodeDaemon extends EventEmitter {
       title: opts.title,
       seq: 0,
       sendQueue: Promise.resolve(),
+      remoteChild,
     };
     this.bridges.set(session.id, bridge);
     this.wireAgentSession(bridge);
@@ -394,7 +580,8 @@ export class NodeDaemon extends EventEmitter {
     const bridge = this.bridges.get(message.sessionId);
     if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
 
-    this.decryptPromptInject(message)
+    this.assertStillLeaseholder(bridge)
+      .then(() => this.decryptPromptInject(message))
       .then((payload) => bridge.agentSession.prompt(payload.text))
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);

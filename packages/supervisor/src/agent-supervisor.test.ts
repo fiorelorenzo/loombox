@@ -1,10 +1,11 @@
+import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { AcpProvider, AcpUpdate } from '@loombox/providers-core';
+import type { AcpChildProcess, AcpProvider, AcpUpdate } from '@loombox/providers-core';
 
 import { AgentSupervisor } from './agent-supervisor';
 import type { AgentSession } from './agent-session';
@@ -141,6 +142,37 @@ describe('AgentSupervisor', () => {
     expect(firstCallerUpdates).toHaveLength(2);
     // The transcript keeps accumulating across the whole session lifetime.
     expect(session.getTranscript()).toHaveLength(4);
+  });
+
+  it('startWithChild() gives an already-constructed AcpChildProcess (the ssh: target shape, issue #80) the exact same handshake/persistence/attention guarantees as start()', async () => {
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
+
+    // Stands in for `@loombox/node`'s `RemoteAgentChildProcess`: any object
+    // satisfying `AcpChildProcess` works, proving `startWithChild()` doesn't
+    // care how the child's stdio is actually backed. A plain local spawn is
+    // the simplest such stand-in that doesn't require this package to depend
+    // on @loombox/node's ssh machinery just to test this seam.
+    const child = spawn(process.execPath, [ECHO_FIXTURE], {
+      cwd: workspacePath,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }) as AcpChildProcess;
+
+    const session = await supervisor.startWithChild({
+      workspacePath,
+      providerId: 'test-echo',
+      child,
+    });
+    activeSessions.push(session);
+
+    expect(session.id).toMatch(/^sess_test_/);
+    expect(session.isLive).toBe(true);
+    expect(supervisor.get(session.id)).toBe(session);
+
+    await session.prompt('hi there');
+    expect(session.getTranscript()).toEqual([
+      { kind: 'agent_message_chunk', messageId: 'msg_agent_1', text: 'Hello' },
+      { kind: 'agent_message_chunk', messageId: 'msg_agent_1', text: 'Hello world' },
+    ]);
   });
 
   it('emits a single terminal exit event, not a hang, when the child crashes unexpectedly', async () => {

@@ -8,14 +8,21 @@ const execFileAsync = promisify(execFile);
 
 /**
  * A running (or paused) agent working inside one workspace derived from a
- * project (SPEC §6). v0 only supports the `local` execution target: the
- * agent runs on the same machine as the node, in an isolated git worktree.
+ * project (SPEC §6). `SessionManager` itself (below) only ever constructs
+ * `target: 'local'` sessions, each in an isolated git worktree; `target`
+ * also allows `'ssh'` so `NodeDaemon` can return the same shape for an
+ * `ssh:` target's session (issue #80) without a second parallel type. An
+ * `ssh:` session's `worktreePath` equals its `projectPath` (no per-session
+ * remote git worktree is created in this wave — see `NodeDaemon`'s ssh
+ * session-creation path) and `branch` is `''` (no remote branch management
+ * either); both are genuinely N/A for `ssh:`, not lies, just the honest
+ * shape of "nothing to report here yet".
  */
 export interface Session {
   id: string;
   projectPath: string;
   worktreePath: string;
-  target: 'local';
+  target: 'local' | 'ssh';
   provider: string;
   branch: string;
   createdAt: number;
