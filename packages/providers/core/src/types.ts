@@ -273,3 +273,31 @@ export interface AcpUsageUpdate {
 /** The full v1 update surface the transcript reducer consumes (SPEC.md §7.24/§5.5). */
 export type AcpTranscriptUpdate =
   AcpMessageChunkUpdate | AcpToolCallUpdate | AcpPlanUpdate | AcpUsageUpdate;
+
+/* -------------------------------------------------------------------------
+ * v1: image hand-off content blocks (SPEC.md §7.25 "Hand off to the agent";
+ * issues #157/#159). Both are real ACP baseline `ContentBlock` variants, not
+ * loombox inventions: `image` carries inline base64 bytes, `resource_link`
+ * points at a resource the agent reads itself (here, a supervisor-owned temp
+ * file). Modeled as their own named types (rather than left folded into the
+ * catch-all `AcpContentBlock` union) because both adapter packages build and
+ * assert on them directly.
+ * ---------------------------------------------------------------------- */
+
+/** ACP baseline `ContentBlock::Image` — inline base64 bytes, no filesystem round-trip (SPEC.md §7.25). */
+export interface AcpImageContentBlock {
+  type: 'image';
+  /** Base64-encoded image bytes. */
+  data: string;
+  /** Always the server-side *sniffed* mime type, never a client-declared one (SPEC.md §7.25). */
+  mimeType: string;
+}
+
+/** ACP baseline `ContentBlock::ResourceLink` — a reference to a resource the agent reads itself (SPEC.md §7.25). */
+export interface AcpResourceLinkContentBlock {
+  type: 'resource_link';
+  uri: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+}

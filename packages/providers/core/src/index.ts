@@ -88,3 +88,9 @@ export type { AcpConfigOption, AcpConfigOptionChoice } from './types';
 // (SPEC.md §5.5; issue #181).
 export { ProviderRegistry, RESERVED_PROVIDER_IDS } from './provider-registry';
 export type { AcpProviderModule } from './provider-registry';
+
+// v1: image hand-off content blocks + shared magic-byte sniffing (SPEC.md
+// §7.25; issues #157/#159).
+export { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
+export type { SniffedImageMimeType } from './image';
+export type { AcpImageContentBlock, AcpResourceLinkContentBlock } from './types';

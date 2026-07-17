@@ -181,7 +181,11 @@ importers:
 
   packages/providers/gemini: {}
 
-  packages/providers/generic: {}
+  packages/providers/generic:
+    dependencies:
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/relay:
     dependencies:
