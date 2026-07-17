@@ -1,4 +1,5 @@
 import type { webcrypto } from 'node:crypto';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
@@ -18,9 +19,11 @@ import {
   type SessionMetaPublic,
   type WireMessageV1,
 } from '@loombox/protocol';
-import { startRelay, type StartedRelay } from '@loombox/relay';
+import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '@loombox/relay';
 
 import { RelayClient, type ClientSessionMeta } from './relay-client';
+import { AuthStore, createInMemoryAuthStorage } from './auth-store';
+import { createInMemoryAmkStorage, loadOrCreateAmk } from './amk-store';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -619,5 +622,155 @@ describe('RelayClient', () => {
         text: 'hello?',
       },
     ]);
+  });
+});
+
+/**
+ * Applies Better Auth's own schema to a hermetic sqlite database — the same
+ * call `packages/relay/src/auth.ts`'s `migrateBetterAuth` makes
+ * (`better-auth/db/migration`), inlined rather than imported because it
+ * isn't part of `@loombox/relay`'s public `index.ts` export surface and
+ * this PR does not touch `packages/relay` to add it (mirrors
+ * `auth-store.test.ts`'s identical helper/rationale).
+ */
+async function migrateBetterAuth(auth: RelayAuth): Promise<void> {
+  const { getMigrations } = await import('better-auth/db/migration');
+  const { runMigrations } = await getMigrations(auth.options);
+  await runMigrations();
+}
+
+/** `ws://host:port/ws` -> `http://host:port` (Better Auth's routes live on the same Fastify instance). */
+function httpBaseUrl(wsUrl: string): string {
+  return wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
+}
+
+describe('RelayClient wired to a real Better Auth account (issue #126, the real-auth wave)', () => {
+  let authedRelay: StartedRelay | undefined;
+
+  afterEach(async () => {
+    await authedRelay?.close();
+    authedRelay = undefined;
+  });
+
+  it('an AuthStore-issued bearer token authenticates the WS handshake, the relay resolves it to the SAME accountId as the client, and a persisted (not injected) AMK decrypts the account-scoped session list', async () => {
+    // A relay configured with a REAL Better Auth instance (hermetic:
+    // in-memory sqlite + the email-password test escape hatch), unlike
+    // every other test in this file, which uses `startRelay()`'s default
+    // `deriveAccountIdStub`. This is the actual production wiring
+    // (`main.ts` supplies `resolveAccountIdViaBetterAuth` the same way once
+    // `DATABASE_URL` is set), exercised end to end here.
+    const database = new Database(':memory:');
+    const auth = createRelayAuth({
+      database,
+      baseURL: 'http://127.0.0.1:0',
+      secret: 'hermetic-test-secret-hermetic-test-secret',
+      enableEmailPasswordForTests: true,
+    });
+    await migrateBetterAuth(auth);
+    authedRelay = await startRelay({ auth });
+
+    // 1. The client obtains a real bearer token + its accountId from the
+    // relay's own Better Auth over real HTTP — no injected/stubbed token.
+    const authStore = new AuthStore({
+      relayBaseUrl: httpBaseUrl(authedRelay.url),
+      storage: createInMemoryAuthStorage(),
+    });
+    const session = await authStore.signUpWithEmailPassword(
+      'client-auth-wave@example.com',
+      'correct horse battery staple',
+    );
+    expect(session.token).toBeTruthy();
+    expect(session.accountId).toBeTruthy();
+
+    // 2. The client generates + persists its own AMK on-device (not
+    // injected via options) — a second lookup for the same account returns
+    // the identical key, proving persistence rather than a fresh random
+    // value each call.
+    const amkStorage = createInMemoryAmkStorage();
+    const amk = loadOrCreateAmk(session.accountId, amkStorage);
+    expect(loadOrCreateAmk(session.accountId, amkStorage)).toEqual(amk);
+
+    // A node, independently, announces a session under that SAME accountId
+    // (as the relay's real Better Auth resolved it) — proving the node and
+    // this client, which never coordinated directly, agree on the account.
+    // The relay's real resolver (not the dev stub every other test in this
+    // file relies on) applies to node connections too, so the node
+    // authenticates with its OWN real bearer token — a second "device"
+    // signing in as the same self-hosting operator, exactly SPEC §8's model.
+    const nodeAuthStore = new AuthStore({
+      relayBaseUrl: httpBaseUrl(authedRelay.url),
+      storage: createInMemoryAuthStorage(),
+    });
+    // Same underlying account, a second "device" signing back in — Better
+    // Auth issues its own distinct session/bearer, but resolves to the same
+    // accountId (see `auth-store.test.ts`'s equivalent client-only test).
+    const nodeSession = await nodeAuthStore.signInWithEmailPassword(
+      'client-auth-wave@example.com',
+      'correct horse battery staple',
+    );
+    expect(nodeSession.accountId).toBe(session.accountId);
+
+    node = new FakeNode(authedRelay.url, {
+      deviceId: 'node-real-auth',
+      devicePublicKey: randomBase64(),
+      authToken: nodeSession.token,
+    });
+    await node.ready;
+
+    const sessionMeta = makeSessionMeta({ id: 'sess_real_auth', accountId: session.accountId });
+    const key = await deriveNodeSessionKey(amk, session.accountId, sessionMeta.id);
+    const privateEnvelope = await nodeSeal(
+      sessionMeta.id,
+      { title: 'wired for real', projectPath: '/proj' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionMeta,
+      privateEnvelope,
+    });
+
+    // 3. The client connects using the REAL bearer token as the WS
+    // handshake's authToken (not accountId doubling as a stub) and the
+    // persisted AMK (not one handed in via options for this test to share).
+    client = new RelayClient({
+      relayUrl: authedRelay.url,
+      amk,
+      accountId: session.accountId,
+      authToken: session.token,
+      deviceId: 'client-real-auth',
+    });
+    client.connect();
+
+    await waitForStore(client.status, (status) => status === 'open');
+    const sessions = (await waitForStore(
+      client.sessions,
+      (value) => value.length > 0,
+    )) as ClientSessionMeta[];
+    expect(sessions).toEqual([{ ...sessionMeta, title: 'wired for real', projectPath: '/proj' }]);
+  });
+
+  it('rejects the WS handshake outright when authToken is not a valid Better Auth bearer', async () => {
+    const database = new Database(':memory:');
+    const auth = createRelayAuth({
+      database,
+      baseURL: 'http://127.0.0.1:0',
+      secret: 'hermetic-test-secret-hermetic-test-secret',
+      enableEmailPasswordForTests: true,
+    });
+    await migrateBetterAuth(auth);
+    authedRelay = await startRelay({ auth });
+
+    client = new RelayClient({
+      relayUrl: authedRelay.url,
+      amk: generateAmk(),
+      accountId: 'whatever-this-is-ignored-by-the-real-resolver',
+      authToken: 'not-a-real-bearer-token',
+      deviceId: 'client-rejected',
+    });
+    client.connect();
+
+    await waitForStore(client.status, (status) => status === 'error' || status === 'closed');
   });
 });

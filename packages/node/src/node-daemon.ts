@@ -14,6 +14,7 @@ import {
   type WireMessageV1,
 } from '@loombox/protocol';
 
+import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { SessionManager, type Session } from './session-manager';
 import { DEFAULT_LOCAL_TARGET, type SshTargetConfig } from './target';
@@ -34,8 +35,12 @@ export interface NodeDaemonOptions {
   deviceId: string;
   /**
    * This device's ECDH P-256 identity public key, base64-encoded raw form.
-   * Real per-node keypair generation/persistence is issue #64; a caller
-   * supplies this directly until that lands.
+   * Generate/persist/reload this from `./identity.ts`'s `NodeIdentityStore`
+   * (issue #64: `await new NodeIdentityStore().loadOrCreate()`, then pass
+   * `identity.publicKeyBase64` here) — `NodeDaemon` itself still just takes
+   * the value directly rather than owning identity bootstrap, so a caller
+   * (or a future in-process device-pairing flow) controls exactly when a
+   * fresh keypair is generated versus reloaded.
    */
   devicePublicKey: string;
   /** Opaque Better Auth bearer token (SPEC §8). */
@@ -78,8 +83,20 @@ export interface NodeDaemonOptions {
   remoteChildPollIntervalMs?: number;
   /** Injected for tests; defaults to a fresh instance. */
   sessionManager?: SessionManager;
-  /** Injected for tests (e.g. to register a fixture provider); defaults to a fresh instance. */
+  /**
+   * Injected for tests (e.g. to register a fixture provider); defaults to a
+   * fresh instance. When left default, `NodeDaemon` wires its own
+   * `resolveAttachment` in as that instance's `AttachmentChannel` (issue
+   * #156); an explicitly-injected `supervisor` keeps whatever channel (or
+   * none) the caller already configured on it.
+   */
   supervisor?: AgentSupervisor;
+  /**
+   * Fetches attachment blob ciphertext by ref (SPEC §7.25; issue #156).
+   * Defaults to a `RelayBlobSource` over this node's own relay connection —
+   * never a new one. Tests inject a fake with no relay/WebSocket involved.
+   */
+  blobSource?: BlobSource;
   /** WebSocket constructor override for tests; defaults to the global WebSocket. */
   webSocketImpl?: WebSocketConstructor;
   reconnect?: { initialBackoffMs?: number; maxBackoffMs?: number };
@@ -102,9 +119,46 @@ interface SessionPrivateMeta {
   projectPath: string;
 }
 
+/**
+ * An attachment ref carried inside a `prompt_inject` envelope's plaintext
+ * (SPEC §7.25) — the minimal fields this node needs to fetch and decrypt the
+ * blob itself: `ref` (addresses the blob on the relay) plus enough metadata
+ * for a future ACP hand-off to build the right content-block kind. Kept
+ * self-contained inside `PromptPayload` (this node's own private envelope
+ * convention, not a `packages/protocol` schema — see `PromptPayload`'s doc
+ * comment) rather than depending on the separate `blob_ref` side-channel
+ * message (issue #154, not yet implemented), so this issue's scope doesn't
+ * block on that one landing first.
+ */
+export interface PromptAttachmentRef {
+  ref: string;
+  mimeType: string;
+  name?: string;
+}
+
 /** The plaintext a `prompt_inject` envelope decrypts to. */
 interface PromptPayload {
   text: string;
+  /** Attachments this turn references (SPEC §7.25); omitted/empty for a plain text prompt. */
+  attachments?: PromptAttachmentRef[];
+}
+
+/**
+ * Emitted once per attachment after {@link NodeDaemon.resolveAttachment}
+ * fetches and decrypts it while handling an inbound `prompt_inject` (SPEC
+ * §7.25 "Deliver to the executing host"; issue #156) — the plaintext bytes
+ * made available on this host. Handing these to the agent as an ACP content
+ * block ("Hand off to the agent", the next SPEC §7.25 bullet) is a separate,
+ * provider-adapted concern out of this issue's scope: `AgentSession.prompt()`
+ * is text-only in v1. This event is this wave's observable seam for that
+ * future wiring (and for tests) rather than a silent no-op.
+ */
+export interface ResolvedAttachment {
+  sessionId: string;
+  ref: string;
+  mimeType: string;
+  name: string | undefined;
+  bytes: Uint8Array;
 }
 
 interface SessionBridge {
@@ -157,8 +211,9 @@ export class NodeDaemon extends EventEmitter {
   private readonly amk: Uint8Array;
   private readonly targets: TargetDescriptor[];
   private readonly sessionManager: SessionManager;
-  private readonly supervisor: AgentSupervisor;
   private readonly relay: RelayConnection;
+  private readonly attachmentResolver: AttachmentResolver;
+  private readonly supervisor: AgentSupervisor;
   private readonly bridges = new Map<string, SessionBridge>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
 
@@ -179,7 +234,33 @@ export class NodeDaemon extends EventEmitter {
     this.amk = options.amk;
     this.targets = options.targets ?? [DEFAULT_LOCAL_TARGET];
     this.sessionManager = options.sessionManager ?? new SessionManager();
+    this.relay = new RelayConnection({
+      relayUrl: options.relayUrl,
+      deviceId: options.deviceId,
+      devicePublicKey: options.devicePublicKey,
+      authToken: options.authToken,
+      webSocketImpl: options.webSocketImpl,
+      initialBackoffMs: options.reconnect?.initialBackoffMs,
+      maxBackoffMs: options.reconnect?.maxBackoffMs,
+    });
+    // Built off `this.relay` (constructed just above) rather than a new
+    // connection — issue #156's "no new direct supervisor-to-relay
+    // connection". `options.blobSource` lets a test fake the transport with
+    // no relay/WebSocket involved at all.
+    this.attachmentResolver = new AttachmentResolver(
+      options.blobSource ?? new RelayBlobSource(this.relay),
+    );
     this.supervisor = options.supervisor ?? new AgentSupervisor();
+    // Always wired in, whether `this.supervisor` was just built above or
+    // injected by a caller (e.g. to register a fixture provider): this node
+    // is the only thing holding the account's AMK and the relay connection
+    // an `AttachmentChannel` implementation actually needs (SPEC §8), so it
+    // is always the authority for how *its* supervisor resolves an
+    // attachment ref, never something a caller supplies its own competing
+    // implementation of via `AgentSupervisorOptions.attachmentChannel`.
+    this.supervisor.setAttachmentChannel({
+      resolveAttachment: (sessionId, ref) => this.resolveAttachment(sessionId, ref),
+    });
     for (const config of options.sshTargets ?? []) {
       this.sshTargetConfigs.set(config.id, config);
     }
@@ -197,15 +278,6 @@ export class NodeDaemon extends EventEmitter {
         }));
     this.leaseManager = options.leaseManager ?? new SessionLeaseManager();
     this.remoteChildPollIntervalMs = options.remoteChildPollIntervalMs;
-    this.relay = new RelayConnection({
-      relayUrl: options.relayUrl,
-      deviceId: options.deviceId,
-      devicePublicKey: options.devicePublicKey,
-      authToken: options.authToken,
-      webSocketImpl: options.webSocketImpl,
-      initialBackoffMs: options.reconnect?.initialBackoffMs,
-      maxBackoffMs: options.reconnect?.maxBackoffMs,
-    });
 
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
@@ -539,8 +611,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       default:
         // Every other v1 message type (permission_response, config_option,
-        // presence, blob_*, ...) is out of this wave's scope; ignore rather
-        // than crash on a message this node doesn't yet act on.
+        // presence, blob_ref, ...) is out of this wave's scope; ignore
+        // rather than crash on a message this node doesn't yet act on.
+        // `blob_download_response` also lands here and is likewise ignored
+        // by this switch — it's consumed separately, by the `AttachmentResolver`'s
+        // own listener on this same relay connection (`RelayBlobSource`,
+        // issue #156), not routed through `handleInbound`.
         return;
     }
   }
@@ -582,7 +658,7 @@ export class NodeDaemon extends EventEmitter {
 
     this.assertStillLeaseholder(bridge)
       .then(() => this.decryptPromptInject(message))
-      .then((payload) => bridge.agentSession.prompt(payload.text))
+      .then((payload) => this.deliverPrompt(bridge, payload))
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
@@ -594,6 +670,46 @@ export class NodeDaemon extends EventEmitter {
   private async decryptPromptInject(message: PromptInjectV1): Promise<PromptPayload> {
     const key = await this.getSessionKey(message.sessionId);
     return openJson<PromptPayload>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves every attachment this prompt references (SPEC §7.25; issue
+   * #156) before delivering the prompt text to the agent, so a fetch/decrypt
+   * failure surfaces as this prompt failing (caught by `handlePromptInject`'s
+   * caller) rather than the agent being prompted without an attachment it
+   * was supposed to see. Runs through `this.supervisor.resolveAttachment()`
+   * — the injected `AttachmentChannel` path (SPEC §7.25 "the existing
+   * node↔supervisor control channel") — identically whether `bridge` is a
+   * `local` or an `ssh:` target session: resolution never touches the
+   * execution target at all.
+   */
+  private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
+    for (const attachment of payload.attachments ?? []) {
+      const bytes = await this.supervisor.resolveAttachment(bridge.session.id, attachment.ref);
+      const resolved: ResolvedAttachment = {
+        sessionId: bridge.session.id,
+        ref: attachment.ref,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+        bytes,
+      };
+      this.emit('attachment_resolved', resolved);
+    }
+    await bridge.agentSession.prompt(payload.text);
+  }
+
+  /**
+   * This node's concrete `AttachmentChannel` implementation (SPEC §7.25;
+   * issue #156): fetches the blob's ciphertext over this node's *existing*
+   * relay connection (`this.attachmentResolver`, built off `this.relay` in
+   * the constructor — never a new connection) and decrypts it under this
+   * session's derived key, which only this node holds (SPEC §8's AMK). This
+   * is the method a default-constructed `this.supervisor` is handed as its
+   * `attachmentChannel.resolveAttachment`.
+   */
+  private async resolveAttachment(sessionId: string, ref: string): Promise<Uint8Array> {
+    const key = await this.getSessionKey(sessionId);
+    return this.attachmentResolver.resolve(sessionId, ref, key);
   }
 
   private getSessionKey(sessionId: string): Promise<CryptoKey> {
