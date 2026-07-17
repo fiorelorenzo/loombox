@@ -14,9 +14,26 @@ import {
   type WireMessageV1,
 } from '@loombox/protocol';
 
-import { deriveAccountIdStub } from './auth';
+import {
+  deriveAccountIdStub,
+  mountBetterAuth,
+  resolveAccountIdViaBetterAuth,
+  type RelayAuth,
+} from './auth';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
 import { createInMemoryRelayStore, type RelayStore } from './store';
+
+/**
+ * Resolves the WS handshake's `authToken` to an `accountId`, or `undefined`
+ * to reject the connection (#121). May return synchronously or via a
+ * Promise — see `store.ts`'s `Awaitable` doc comment for why. Defaults to
+ * {@link deriveAccountIdStub} (dev/hermetic mode); `main.ts` supplies
+ * `resolveAccountIdViaBetterAuth` bound to a real Better Auth instance once
+ * `DATABASE_URL` is configured.
+ */
+export type AccountResolver = (
+  authToken: string,
+) => string | undefined | Promise<string | undefined>;
 
 /** Path the WS route is mounted on; both nodes and clients connect here. */
 export const RELAY_WS_PATH = '/ws';
@@ -81,6 +98,22 @@ export interface CreateRelayOptions {
   store?: RelayStore;
   /** Bounded per-client output-queue depth for `session_update` fan-out (SPEC §7.16, #98/#254). */
   maxClientQueueDepth?: number;
+  /**
+   * How the WS handshake's `authToken` resolves to an `accountId` (#121).
+   * Defaults to {@link deriveAccountIdStub} — every existing hermetic test in
+   * this package, and `scripts/v1-e2e-harness.mjs`, rely on that default
+   * (any non-empty token accepted as its own account) and construct
+   * `startRelay()`/`createRelay()` without this option.
+   */
+  resolveAccountId?: AccountResolver;
+  /**
+   * A Better Auth instance to mount at `/api/auth/*` on this Fastify
+   * instance (#119). When supplied and `resolveAccountId` is not
+   * explicitly given, the resolver defaults to validating bearer tokens
+   * against this instance instead of the dev stub — see `main.ts` for the
+   * production wiring.
+   */
+  auth?: RelayAuth;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -99,6 +132,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const registry = createRegistry();
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
+  const resolveAccountId: AccountResolver =
+    opts.resolveAccountId ??
+    (opts.auth
+      ? (authToken) => resolveAccountIdViaBetterAuth(opts.auth as RelayAuth, authToken)
+      : deriveAccountIdStub);
+
+  if (opts.auth) mountBetterAuth(app, opts.auth);
 
   /** Direct, unbounded send — used for control/reply traffic that must never be dropped. */
   function sendDirect(connection: Connection, message: WireMessageV1): void {
@@ -119,8 +159,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
-  function routeToOwningNode(sessionId: string, message: WireMessageV1): void {
-    const record = store.sessions.get(sessionId);
+  async function routeToOwningNode(sessionId: string, message: WireMessageV1): Promise<void> {
+    const record = await store.sessions.get(sessionId);
     if (!record) {
       app.log.warn({ sessionId }, 'relay: message for unknown session');
       return;
@@ -147,7 +187,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
-  function handleInitialize(socket: WsWebSocket, raw: string): Connection | undefined {
+  async function handleInitialize(
+    socket: WsWebSocket,
+    raw: string,
+  ): Promise<Connection | undefined> {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
@@ -188,10 +231,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     const message = result.data;
 
-    // TODO(#121): validate message.authToken against Better Auth instead of stubbing it.
-    const accountId = deriveAccountIdStub(message.authToken);
+    // #121: validate the bearer authToken (Better Auth-backed in production,
+    // the dev/hermetic stub otherwise — see `resolveAccountId`'s construction
+    // above) and reject/close on an invalid or absent token.
+    const accountId = await resolveAccountId(message.authToken);
+    if (!accountId) {
+      app.log.warn('relay: rejected initialize with an invalid/absent auth token');
+      socket.close(4401, 'invalid or missing auth token');
+      return undefined;
+    }
 
-    const existingDevice = store.devices.get(message.deviceId);
+    const existingDevice = await store.devices.get(message.deviceId);
     if (existingDevice?.status === 'revoked') {
       socket.close(4403, 'device revoked');
       return undefined;
@@ -201,7 +251,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       socket.close(4403, 'device/account mismatch');
       return undefined;
     }
-    store.devices.upsert({
+    await store.devices.upsert({
       deviceId: message.deviceId,
       devicePublicKey: message.devicePublicKey,
       accountId,
@@ -235,10 +285,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     return connection;
   }
 
-  function handleDeviceMessage(connection: Connection, message: WireMessageV1): boolean {
+  async function handleDeviceMessage(
+    connection: Connection,
+    message: WireMessageV1,
+  ): Promise<boolean> {
     switch (message.type) {
       case 'device_register':
-        store.devices.upsert({
+        await store.devices.upsert({
           deviceId: message.deviceId,
           devicePublicKey: message.devicePublicKey,
           label: message.label,
@@ -246,22 +299,22 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         });
         return true;
       case 'device_revoke': {
-        const device = store.devices.get(message.deviceId);
+        const device = await store.devices.get(message.deviceId);
         if (!device || device.accountId !== connection.accountId) {
           app.log.warn({ deviceId: message.deviceId }, 'relay: revoke for unknown/foreign device');
           return true;
         }
-        store.devices.revoke(message.deviceId);
+        await store.devices.revoke(message.deviceId);
         closeConnectionsForDevice(message.deviceId, connection.accountId);
         return true;
       }
       case 'device_rotate': {
-        const device = store.devices.get(message.deviceId);
+        const device = await store.devices.get(message.deviceId);
         if (!device || device.accountId !== connection.accountId) {
           app.log.warn({ deviceId: message.deviceId }, 'relay: rotate for unknown/foreign device');
           return true;
         }
-        store.devices.rotate(message.deviceId, message.newDevicePublicKey);
+        await store.devices.rotate(message.deviceId, message.newDevicePublicKey);
         return true;
       }
       case 'amk_escrow':
@@ -277,8 +330,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
-  function handleNodeMessage(connection: NodeConnection, message: WireMessageV1): void {
-    if (handleDeviceMessage(connection, message)) return;
+  async function handleNodeMessage(
+    connection: NodeConnection,
+    message: WireMessageV1,
+  ): Promise<void> {
+    if (await handleDeviceMessage(connection, message)) return;
 
     switch (message.type) {
       case 'target_announce': {
@@ -295,7 +351,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        store.sessions.announce({
+        await store.sessions.announce({
           meta: message.session,
           privateEnvelope: message.privateEnvelope,
         });
@@ -304,7 +360,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       case 'session_update': {
-        const record = store.sessions.get(message.sessionId);
+        const record = await store.sessions.get(message.sessionId);
         if (!record) {
           app.log.warn(
             { sessionId: message.sessionId },
@@ -312,9 +368,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        const seq = store.sessions.nextSeq(message.sessionId);
+        const seq = await store.sessions.nextSeq(message.sessionId);
         const finalized: SessionUpdateEnvelopeV1 = { ...message, seq };
-        store.sessions.pushRingEntry(message.sessionId, { seq, envelope: message.envelope });
+        await store.sessions.pushRingEntry(message.sessionId, { seq, envelope: message.envelope });
         fanOutSessionUpdate(message.sessionId, finalized);
         return;
       }
@@ -327,12 +383,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
-  function handleClientMessage(connection: ClientConnection, message: WireMessageV1): void {
-    if (handleDeviceMessage(connection, message)) return;
+  async function handleClientMessage(
+    connection: ClientConnection,
+    message: WireMessageV1,
+  ): Promise<void> {
+    if (await handleDeviceMessage(connection, message)) return;
 
     switch (message.type) {
       case 'session_list_request': {
-        const sessions = store.sessions.listForAccount(connection.accountId).map((record) => ({
+        const records = await store.sessions.listForAccount(connection.accountId);
+        const sessions = records.map((record) => ({
           session: record.meta,
           privateEnvelope: record.privateEnvelope,
         }));
@@ -345,7 +405,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       case 'session_resume': {
-        const record = store.sessions.get(message.sessionId);
+        const record = await store.sessions.get(message.sessionId);
         if (!record || record.meta.accountId !== connection.accountId) {
           app.log.warn(
             { sessionId: message.sessionId },
@@ -379,10 +439,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'prompt_inject':
       case 'permission_response':
       case 'config_option':
-        routeToOwningNode(message.sessionId, message);
+        await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {
-        const record = store.sessions.get(message.sessionId);
+        const record = await store.sessions.get(message.sessionId);
         if (!record || record.meta.accountId !== connection.accountId) {
           app.log.warn(
             { sessionId: message.sessionId },
@@ -390,11 +450,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        store.blobs.upload(`${message.sessionId}:${message.ref}`, message.envelope);
+        await store.blobs.upload(`${message.sessionId}:${message.ref}`, message.envelope);
         return;
       }
       case 'blob_download': {
-        const record = store.sessions.get(message.sessionId);
+        const record = await store.sessions.get(message.sessionId);
         if (!record || record.meta.accountId !== connection.accountId) {
           app.log.warn(
             { sessionId: message.sessionId },
@@ -402,7 +462,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        const envelope = store.blobs.download(`${message.sessionId}:${message.ref}`);
+        const envelope = await store.blobs.download(`${message.sessionId}:${message.ref}`);
         if (!envelope) {
           app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
           return;
@@ -418,7 +478,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       case 'resync_request': {
-        const record = store.sessions.get(message.sessionId);
+        const record = await store.sessions.get(message.sessionId);
         if (!record || record.meta.accountId !== connection.accountId) {
           app.log.warn(
             { sessionId: message.sessionId },
@@ -426,7 +486,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        const result = store.sessions.getEntriesSince(message.sessionId, message.sinceSeq);
+        const result = await store.sessions.getEntriesSince(message.sessionId, message.sinceSeq);
         if (result.droppedFromSeq !== undefined && result.droppedToSeq !== undefined) {
           const marker: ResyncMarker = {
             type: 'resync_marker',
@@ -484,12 +544,19 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   app.register(async (instance) => {
     instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket) => {
       let connection: Connection | undefined;
+      // Every store call is now awaited (the Postgres swap makes that
+      // unavoidable — see `store.ts`'s `Awaitable` doc comment), so a frame
+      // handler is no longer guaranteed to run to completion before the next
+      // 'message' event fires. Chaining each frame onto this socket's own
+      // promise processes them strictly one at a time, in arrival order —
+      // preserving the seq/backpressure ordering guarantees the resync and
+      // drop-oldest tests (and real clients) depend on — while still letting
+      // different sockets' frames interleave freely.
+      let processing: Promise<void> = Promise.resolve();
 
-      socket.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
-        const text = raw.toString();
-
+      async function processFrame(text: string): Promise<void> {
         if (!connection) {
-          connection = handleInitialize(socket, text);
+          connection = await handleInitialize(socket, text);
           return;
         }
 
@@ -507,8 +574,21 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         const message = result.data;
 
-        if (connection.kind === 'node') handleNodeMessage(connection, message);
-        else handleClientMessage(connection, message);
+        if (connection.kind === 'node') await handleNodeMessage(connection, message);
+        else await handleClientMessage(connection, message);
+      }
+
+      socket.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+        const text = raw.toString();
+        // `processing` is always fully settled (its own `.catch` below
+        // absorbs any failure) by the time the next frame chains onto it, so
+        // this `.then` always runs — a prior frame's error never blocks or
+        // skips a later one.
+        processing = processing
+          .then(() => processFrame(text))
+          .catch((error: unknown) => {
+            app.log.error({ error }, 'relay: error processing frame');
+          });
       });
 
       socket.on('close', () => {
