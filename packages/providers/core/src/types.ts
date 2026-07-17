@@ -301,3 +301,65 @@ export interface AcpResourceLinkContentBlock {
   mimeType?: string;
   size?: number;
 }
+
+/* -------------------------------------------------------------------------
+ * v1: configured MCP servers, fed into `session/new` (SPEC.md §7.7 "configured
+ * MCP servers feed the actual agent session"; §5.5 "session/new is a
+ * core-owned ACP method"; issue #190). Grounded in the real ACP schema
+ * (agentclientprotocol.com/protocol/schema)'s `McpServer` union: every
+ * agent must support the `stdio` variant, `http`/`sse` are optional and
+ * gated on the agent's own `initialize`-time `mcpCapabilities`. Modeled here
+ * as its own named type (not folded into `AcpContentBlock`'s catch-all
+ * pattern) because `AcpClient.newSession` validates and shapes it directly.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One `name`/`value` pair — an env var for a `stdio` server, or an HTTP
+ * header for `http`/`sse` (same shape ACP uses for both). `value: undefined`
+ * marks a variable that names a required secret whose per-server grant
+ * (issue #189, out of scope in this package) hasn't resolved yet — the
+ * caller assembling this config is expected to leave it unresolved rather
+ * than omit the variable entirely, so `AcpClient.newSession` can tell "this
+ * server needs a secret it doesn't have" apart from "this server has no such
+ * variable at all" and fail session creation with a clear, actionable error
+ * instead of starting the agent silently without it (SPEC.md §7.7).
+ */
+export interface AcpMcpKeyValue {
+  name: string;
+  value: string | undefined;
+}
+
+/** The ACP `McpServer::Stdio` variant — the transport every agent must support. */
+export interface AcpMcpStdioServerConfig {
+  type?: 'stdio';
+  name: string;
+  command: string;
+  args: string[];
+  env?: AcpMcpKeyValue[];
+}
+
+/** The ACP `McpServer::Http` variant — gated on the agent's `mcpCapabilities.http`. */
+export interface AcpMcpHttpServerConfig {
+  type: 'http';
+  name: string;
+  url: string;
+  headers?: AcpMcpKeyValue[];
+}
+
+/** The ACP `McpServer::Sse` variant — gated on the agent's `mcpCapabilities.sse`. */
+export interface AcpMcpSseServerConfig {
+  type: 'sse';
+  name: string;
+  url: string;
+  headers?: AcpMcpKeyValue[];
+}
+
+/**
+ * The effective, enabled MCP server set a caller (the project/global MCP
+ * config surface, issue #187, out of scope here) hands to `AcpClient.
+ * newSession` for one session — provider/adapter-supplied config, not a new
+ * loombox wire message: it rides entirely inside the existing ACP `session/
+ * new` call this client already makes.
+ */
+export type AcpMcpServerConfig =
+  AcpMcpStdioServerConfig | AcpMcpHttpServerConfig | AcpMcpSseServerConfig;

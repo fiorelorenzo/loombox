@@ -178,7 +178,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/providers/codex: {}
+  packages/providers/codex:
+    dependencies:
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/providers/core: {}
 
