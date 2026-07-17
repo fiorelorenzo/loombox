@@ -1,7 +1,7 @@
 export const PACKAGE_NAME = '@loombox/providers-core';
 
-export { AcpClient } from './client';
-export type { AcpChildProcess, AcpClientOptions } from './client';
+export { AcpClient, McpServerSecretMissingError } from './client';
+export type { AcpChildProcess, AcpClientOptions, NewSessionOptions } from './client';
 export type {
   AcpAgentInfo,
   AcpContentBlock,
@@ -94,3 +94,13 @@ export type { AcpProviderModule } from './provider-registry';
 export { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
 export type { SniffedImageMimeType } from './image';
 export type { AcpImageContentBlock, AcpResourceLinkContentBlock } from './types';
+
+// v1: configured MCP servers fed into `session/new` (SPEC.md §7.7; issue
+// #190).
+export type {
+  AcpMcpHttpServerConfig,
+  AcpMcpKeyValue,
+  AcpMcpServerConfig,
+  AcpMcpSseServerConfig,
+  AcpMcpStdioServerConfig,
+} from './types';

@@ -18,6 +18,7 @@ import type {
   AcpConfigOption,
   AcpDiff,
   AcpInitializeResult,
+  AcpMcpServerConfig,
   AcpPermissionOptionKind,
   AcpPlanEntry,
   AcpSessionSummary,
@@ -129,6 +130,55 @@ interface SessionState {
 
 /** The ACP protocol version this client negotiates (ACP v1 baseline, SPEC.md §16). */
 const PROTOCOL_VERSION = 1;
+
+/** Options accepted by `AcpClient.newSession` (issue #190). */
+export interface NewSessionOptions {
+  /**
+   * The effective, enabled MCP server set for this session (SPEC.md §7.7).
+   * Provider/adapter-supplied config, resolved (secrets included) by the
+   * caller before reaching this client — never a new loombox wire message,
+   * it rides entirely inside the existing ACP `session/new` call. Defaults
+   * to an empty list, matching this client's pre-#190 behavior.
+   */
+  mcpServers?: AcpMcpServerConfig[];
+}
+
+/**
+ * Thrown by `AcpClient.newSession` when a configured MCP server declares an
+ * env var (`stdio`) or header (`http`/`sse`) whose per-server secret grant
+ * (issue #189) hasn't resolved yet (`value: undefined`) — session creation
+ * fails up front with this clear, actionable error instead of starting the
+ * agent silently without the secret it asked for (SPEC.md §7.7's second
+ * acceptance bullet). No `session/new` request is ever sent in this case.
+ */
+export class McpServerSecretMissingError extends Error {
+  constructor(
+    readonly serverName: string,
+    readonly variableName: string,
+  ) {
+    super(
+      `AcpClient.newSession: MCP server "${serverName}" is missing a required secret grant ` +
+        `for "${variableName}" — grant it before starting a session.`,
+    );
+    this.name = 'McpServerSecretMissingError';
+  }
+}
+
+/**
+ * Every `stdio` env var / `http`/`sse` header across a configured MCP server
+ * set must have a resolved (non-`undefined`) value before this client will
+ * open a session with it (see `McpServerSecretMissingError`).
+ */
+function assertMcpServersResolved(servers: readonly AcpMcpServerConfig[]): void {
+  for (const server of servers) {
+    const pairs = server.type === 'http' || server.type === 'sse' ? server.headers : server.env;
+    for (const pair of pairs ?? []) {
+      if (pair.value === undefined) {
+        throw new McpServerSecretMissingError(server.name, pair.name);
+      }
+    }
+  }
+}
 
 function isSpawnConfig(value: AcpChildProcess | AcpSpawnConfig): value is AcpSpawnConfig {
   return typeof (value as AcpSpawnConfig).command === 'string';
@@ -275,11 +325,24 @@ export class AcpClient extends EventEmitter {
     return result;
   }
 
-  /** ACP `session/new`: opens a session rooted at `cwd`, returns its sessionId. */
-  async newSession(cwd: string): Promise<string> {
+  /**
+   * ACP `session/new`: opens a session rooted at `cwd`, returns its
+   * sessionId. `opts.mcpServers` (issue #190; SPEC.md §7.7) is the caller's
+   * already-resolved, effective MCP server set for this session — validated
+   * (see `McpServerSecretMissingError`) and passed through verbatim as
+   * `session/new`'s own `mcpServers` field; defaults to `[]`, matching this
+   * client's pre-#190 behavior for a caller that doesn't configure any.
+   * Scoped entirely to this one call: two sessions on the same client may
+   * carry different MCP server sets with no effect on each other, and
+   * changing what a later session gets never touches a session already open.
+   */
+  async newSession(cwd: string, opts: NewSessionOptions = {}): Promise<string> {
+    const mcpServers = opts.mcpServers ?? [];
+    assertMcpServersResolved(mcpServers);
+
     const result = await this.sendRequest<{ sessionId: string }>('session/new', {
       cwd,
-      mcpServers: [],
+      mcpServers,
     });
     this.ensureSession(result.sessionId);
     this.configOptionStore.setAll(result.sessionId, this.lastConfigCatalog, { unprompted: false });
