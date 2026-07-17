@@ -1,6 +1,12 @@
 import type { webcrypto } from 'node:crypto';
-import { writable, type Readable, type Writable } from 'svelte/store';
-import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
+import { get, writable, type Readable, type Writable } from 'svelte/store';
+import {
+  deriveSessionKey,
+  encryptEnvelope,
+  envelopeToWire,
+  openJson,
+  sealJson,
+} from '@loombox/crypto';
 import {
   cancelAllPermissionRequests,
   createPermissionQueueState,
@@ -28,6 +34,13 @@ import {
   type SessionUpdateEnvelopeV1,
   type WireMessageV1,
 } from '@loombox/protocol';
+import {
+  MAX_ATTACHMENTS_PER_PROMPT,
+  attachmentResourceId,
+  validateAttachmentBytes,
+  type AttachableFile,
+  type ComposerAttachment,
+} from './attachments';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -61,9 +74,34 @@ interface SessionPrivateMeta {
   projectPath: string;
 }
 
+/**
+ * An attachment ref carried inside a `prompt_inject` envelope's plaintext
+ * (SPEC §7.25), mirrored field-for-field from `@loombox/node`'s
+ * `PromptAttachmentRef` (`packages/node/src/node-daemon.ts`) — the node
+ * decrypts this same plaintext shape, so the field names/optionality here
+ * must match exactly.
+ */
+interface PromptAttachmentRef {
+  ref: string;
+  mimeType: string;
+  name?: string;
+}
+
 /** The plaintext a `prompt_inject` envelope decrypts to, mirrored from `@loombox/node`'s `PromptPayload`. */
 interface PromptPayload {
   text: string;
+  /** Attachments this turn references (SPEC §7.25); omitted for a plain text prompt. */
+  attachments?: PromptAttachmentRef[];
+}
+
+/** One attachment's cached plaintext bytes, kept only long enough to (re)encrypt-and-upload without asking the user to re-pick the file (issue #155's retry). */
+interface CachedAttachment {
+  sessionId: string;
+  bytes: Uint8Array;
+  mimeType: string;
+  name: string;
+  /** Set once this attachment has had its one automatic reconnect-triggered retry (issue #155's "auto-retries once on reconnect"), so it is never retried a second time unattended. */
+  autoRetried: boolean;
 }
 
 /**
@@ -162,6 +200,48 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * Seals raw attachment bytes (not JSON, unlike `sealJson`) under the
+ * session key, bound to `attachmentResourceId(sessionId, ref)` — the exact
+ * AAD the relay's blob store keys by and `@loombox/node`'s
+ * `AttachmentResolver` decrypts against (see `attachments.ts`'s doc
+ * comment), so this client's upload and the node's later download+decrypt
+ * agree on the binding without this package depending on `@loombox/node`.
+ */
+async function sealAttachmentEnvelope(
+  sessionId: string,
+  ref: string,
+  bytes: Uint8Array,
+  key: CryptoKey,
+): Promise<EncryptedEnvelope> {
+  const envelope = await encryptEnvelope(attachmentResourceId(sessionId, ref), bytes, key);
+  return envelopeToWire(envelope);
+}
+
+/**
+ * `URL.createObjectURL` for the instant local attachment preview (SPEC
+ * §7.25). Guarded rather than assumed: real browsers and Node 22 (the
+ * hermetic tests below) both have it, but nothing here should throw for an
+ * environment that doesn't (e.g. an older jsdom in a component test) — a
+ * missing preview is a cosmetic gap, not a broken upload.
+ */
+function safeCreateObjectUrl(file: AttachableFile): string | undefined {
+  try {
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return undefined;
+    return URL.createObjectURL(file as unknown as Blob);
+  } catch {
+    return undefined;
+  }
+}
+
+function safeRevokeObjectUrl(url: string): void {
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    // best-effort cleanup only
+  }
+}
+
+/**
  * Owns one outbound WebSocket connection from the PWA to the v1 relay (SPEC
  * §5.4 "list sessions ... view live output", §7.3 "send follow-up prompts",
  * §8/§16's E2E-encrypted wire; `docs/v1-plan.md`; issue #315). Sends
@@ -212,6 +292,9 @@ export class RelayClient {
   private readonly configOptions = new Map<string, Writable<AcpConfigOption[]>>();
   private readonly subscribed = new Set<string>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
+  private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
+  /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
+  private readonly attachmentBytesById = new Map<string, CachedAttachment>();
   private socket: WebSocketLike | undefined;
   private awaitingInitializeResult = false;
 
@@ -268,6 +351,11 @@ export class RelayClient {
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
           this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+          // Issue #155: a dropped connection mid-upload gets exactly one
+          // automatic retry once the connection is back — harmless on the
+          // very first connect too, since no attachment can be in a
+          // 'failed' state before any upload has ever been attempted.
+          this.retryFailedAttachmentsOnReconnect();
         } else {
           this.statusStore.set('error');
         }
@@ -406,16 +494,251 @@ export class RelayClient {
   }
 
   /**
-   * Seals the composer's text into a `prompt_inject` envelope (SPEC §7.3)
-   * and sends it. Optimistically reduces the user's own turn into the local
-   * transcript first (the relay/node never echo `prompt_inject` back as a
+   * The composer's pending attachment list for one session (SPEC §7.25;
+   * issues #151/#153/#155) — every image currently attached, uploading,
+   * uploaded, failed, or rejected, in attach order. Starts empty; populated
+   * only by {@link attachFile}. Unlike `transcriptFor`/`permissionQueueFor`/
+   * `configOptionsFor`, this never subscribes anything on the relay — it is
+   * pure client-local composer state, no wire traffic until a file is
+   * actually attached.
+   */
+  attachmentsFor(sessionId: string): Readable<ComposerAttachment[]> {
+    return this.attachmentStoreFor(sessionId);
+  }
+
+  /**
+   * Attaches an image to the given session's next prompt (SPEC §7.25;
+   * issues #151/#152/#153): validates the file's sniffed magic bytes and
+   * size synchronously-fast-pathed where possible, rejecting an oversized,
+   * unsupported, or HEIC/HEIF file with a clear message before any upload
+   * is attempted; otherwise starts the encrypt-and-upload the moment this
+   * is called, not deferred until send. Returns the generated attachment id
+   * synchronously (also the blob's opaque `ref` on the wire) so the caller
+   * can render it immediately; the read/validate/encrypt/upload pipeline
+   * itself is asynchronous.
+   */
+  attachFile(sessionId: string, file: AttachableFile): string {
+    const id = generateId('att');
+    const existing = get(this.attachmentStoreFor(sessionId));
+    const activeCount = existing.filter((a) => a.status !== 'rejected').length;
+
+    if (activeCount >= MAX_ATTACHMENTS_PER_PROMPT) {
+      this.pushAttachment(sessionId, {
+        id,
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        previewUrl: undefined,
+        status: 'rejected',
+        error: `You can attach up to ${MAX_ATTACHMENTS_PER_PROMPT} images per prompt.`,
+      });
+      return id;
+    }
+
+    this.pushAttachment(sessionId, {
+      id,
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      previewUrl: undefined,
+      status: 'uploading',
+      error: undefined,
+    });
+
+    this.processAttachment(sessionId, id, file).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: failed to process attachment ${id} for session ${sessionId}: ${errorMessage(error)}`,
+      );
+      this.updateAttachment(sessionId, id, {
+        status: 'failed',
+        error: `Upload failed: ${errorMessage(error)}`,
+      });
+    });
+
+    return id;
+  }
+
+  /**
+   * Retries a `'failed'` attachment's upload (issue #155's manual retry
+   * control) using the same plaintext bytes already read/validated on the
+   * first attempt — the user never has to re-pick the file. A no-op if this
+   * attachment's bytes were never cached (e.g. it was `'rejected'`, which
+   * has nothing to retry).
+   */
+  retryAttachment(sessionId: string, id: string): void {
+    if (!this.attachmentBytesById.has(id)) return;
+    this.uploadAttachment(sessionId, id).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: retry failed for attachment ${id} in session ${sessionId}: ${errorMessage(error)}`,
+      );
+    });
+  }
+
+  /** Removes an attachment from the composer (a rejected file, or one the user no longer wants to send) and revokes its preview object URL. */
+  removeAttachment(sessionId: string, id: string): void {
+    this.clearAttachments(sessionId, [id]);
+  }
+
+  private async processAttachment(
+    sessionId: string,
+    id: string,
+    file: AttachableFile,
+  ): Promise<void> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const validation = validateAttachmentBytes(bytes);
+    if (!validation.ok) {
+      this.updateAttachment(sessionId, id, { status: 'rejected', error: validation.message });
+      return;
+    }
+
+    this.attachmentBytesById.set(id, {
+      sessionId,
+      bytes,
+      mimeType: validation.mimeType,
+      name: file.name,
+      autoRetried: false,
+    });
+    this.updateAttachment(sessionId, id, {
+      mimeType: validation.mimeType,
+      previewUrl: safeCreateObjectUrl(file),
+      error: undefined,
+    });
+
+    await this.uploadAttachment(sessionId, id);
+  }
+
+  /**
+   * Encrypts this attachment's cached bytes under the session's derived key
+   * (SPEC §7.25: "the same per-device E2E scheme as everything else") and
+   * uploads the ciphertext via the existing `blob_upload` wire message —
+   * the relay only ever receives/stores this opaque envelope, addressed by
+   * `id` as its `ref`. `'uploaded'` here means the encrypt-and-send round
+   * trip to an open socket completed (there is no server-side upload ack in
+   * v1's wire protocol, matching every other outbound message in this
+   * class, e.g. `prompt_inject`); a socket that isn't open, or an
+   * encryption failure, marks the attachment `'failed'` instead so issue
+   * #155's retry control has something to act on.
+   */
+  private async uploadAttachment(sessionId: string, id: string): Promise<void> {
+    const cached = this.attachmentBytesById.get(id);
+    if (!cached) return;
+
+    this.updateAttachment(sessionId, id, { status: 'uploading', error: undefined });
+    try {
+      if (!this.socket || this.socket.readyState !== WS_OPEN) {
+        throw new Error('not connected to the relay');
+      }
+      const key = await this.getSessionKey(sessionId);
+      const envelope = await sealAttachmentEnvelope(sessionId, id, cached.bytes, key);
+      this.send({
+        type: 'blob_upload',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        ref: id,
+        envelope,
+      });
+      this.updateAttachment(sessionId, id, { status: 'uploaded', error: undefined });
+    } catch (error) {
+      this.updateAttachment(sessionId, id, {
+        status: 'failed',
+        error: `Upload failed: ${errorMessage(error)}`,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Issue #155's "a dropped connection mid-upload... auto-retries once on
+   * reconnect": runs on every successful `initialize_result` (including the
+   * very first connect, where it is a no-op since nothing can be `'failed'`
+   * yet). Marks each retried attachment `autoRetried` first so a second
+   * reconnect — or a retry that itself fails again — never retries it a
+   * second time unattended; the manual retry control remains available
+   * regardless.
+   */
+  private retryFailedAttachmentsOnReconnect(): void {
+    for (const [id, cached] of this.attachmentBytesById) {
+      if (cached.autoRetried) continue;
+      const store = this.attachments.get(cached.sessionId);
+      const current = store ? get(store).find((a) => a.id === id) : undefined;
+      if (current?.status !== 'failed') continue;
+      cached.autoRetried = true;
+      this.retryAttachment(cached.sessionId, id);
+    }
+  }
+
+  private attachmentStoreFor(sessionId: string): Writable<ComposerAttachment[]> {
+    let store = this.attachments.get(sessionId);
+    if (!store) {
+      store = writable<ComposerAttachment[]>([]);
+      this.attachments.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private pushAttachment(sessionId: string, attachment: ComposerAttachment): void {
+    this.attachmentStoreFor(sessionId).update((list) => [...list, attachment]);
+  }
+
+  private updateAttachment(
+    sessionId: string,
+    id: string,
+    patch: Partial<Omit<ComposerAttachment, 'id'>>,
+  ): void {
+    this.attachmentStoreFor(sessionId).update((list) =>
+      list.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+    );
+  }
+
+  private clearAttachments(sessionId: string, ids: string[]): void {
+    const idSet = new Set(ids);
+    this.attachmentStoreFor(sessionId).update((list) =>
+      list.filter((a) => {
+        if (!idSet.has(a.id)) return true;
+        if (a.previewUrl) safeRevokeObjectUrl(a.previewUrl);
+        this.attachmentBytesById.delete(a.id);
+        return false;
+      }),
+    );
+  }
+
+  /**
+   * Resolves attachment ids to the `PromptAttachmentRef`s actually sent
+   * with a prompt — only ever an attachment whose upload has itself
+   * completed. SPEC §7.25: "The file event for that attachment is only
+   * ever sent once the blob upload has confirmed — a broken ref must never
+   * reach the agent," so a `'uploading'`/`'failed'`/`'rejected'` id (issue
+   * #155's send-gate should already prevent this from being reachable, but
+   * this is the actual enforcement) is silently dropped rather than sent.
+   */
+  private resolveUploadedAttachmentRefs(
+    sessionId: string,
+    attachmentIds: string[],
+  ): PromptAttachmentRef[] {
+    const current = get(this.attachmentStoreFor(sessionId));
+    const refs: PromptAttachmentRef[] = [];
+    for (const id of attachmentIds) {
+      const attachment = current.find((a) => a.id === id);
+      if (attachment?.status !== 'uploaded') continue;
+      refs.push({ ref: attachment.id, mimeType: attachment.mimeType, name: attachment.name });
+    }
+    return refs;
+  }
+
+  /**
+   * Seals the composer's text (and any uploaded attachment refs, SPEC
+   * §7.25) into a `prompt_inject` envelope (SPEC §7.3) and sends it.
+   * Optimistically reduces the user's own turn into the local transcript
+   * first (the relay/node never echo `prompt_inject` back as a
    * `session_update`, so without this the user's own message would never
    * appear). Returns the generated `promptId` synchronously; the
    * encrypt-and-send itself is asynchronous (WebCrypto), and a failure is
    * logged rather than thrown, matching `@loombox/node`'s
-   * `encryptAndSendUpdate` error-handling style.
+   * `encryptAndSendUpdate` error-handling style. Referenced attachments are
+   * cleared from the composer's pending list once the send goes out, since
+   * they now belong to this sent prompt, not a future one.
    */
-  sendPrompt(sessionId: string, text: string): string {
+  sendPrompt(sessionId: string, text: string, attachmentIds: string[] = []): string {
     const promptId = generateId('prompt');
     this.applyUpdate(sessionId, {
       kind: 'user_message_chunk',
@@ -424,11 +747,15 @@ export class RelayClient {
       text,
     });
 
-    this.encryptAndSendPrompt(sessionId, promptId, text).catch((error: unknown) => {
+    const attachments = this.resolveUploadedAttachmentRefs(sessionId, attachmentIds);
+
+    this.encryptAndSendPrompt(sessionId, promptId, text, attachments).catch((error: unknown) => {
       console.warn(
         `RelayClient: failed to encrypt/send prompt_inject for session ${sessionId}: ${errorMessage(error)}`,
       );
     });
+
+    if (attachmentIds.length > 0) this.clearAttachments(sessionId, attachmentIds);
 
     return promptId;
   }
@@ -437,9 +764,10 @@ export class RelayClient {
     sessionId: string,
     promptId: string,
     text: string,
+    attachments: PromptAttachmentRef[],
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
-    const payload: PromptPayload = { text };
+    const payload: PromptPayload = attachments.length > 0 ? { text, attachments } : { text };
     const envelope = await sealJson(sessionId, payload, key);
     this.send({
       type: 'prompt_inject',
