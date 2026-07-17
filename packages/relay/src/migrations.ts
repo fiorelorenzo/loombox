@@ -94,4 +94,30 @@ export const migrations: readonly Migration[] = [
     `,
     down: `DROP TABLE IF EXISTS blobs;`,
   },
+  {
+    // #101 (per-account storage quota) + #102 (TTL retention pruning). Both
+    // new columns are deliberately nullable, with no backfill of existing
+    // rows: this relay is already deployed live with real blobs, so
+    // defaulting `account_id` to '' or `created_at` to 0 would either
+    // silently misattribute pre-migration usage or make every existing blob
+    // instantly "infinitely old" and eligible for deletion the moment the
+    // retention CLI (#102) first runs against the migrated database. Instead
+    // `store.ts`/`prune.ts` treat a NULL `account_id` as "counts toward no
+    // one's quota" and a NULL `created_at` as "unknown age, never
+    // TTL-pruned" — every row written from this migration forward always
+    // populates both, so the safety gap only ever covers pre-migration data.
+    id: '0004_blob_quota_retention',
+    up: `
+      ALTER TABLE blobs ADD COLUMN account_id TEXT;
+      ALTER TABLE blobs ADD COLUMN created_at BIGINT;
+      CREATE INDEX blobs_account_id_idx ON blobs (account_id);
+      CREATE INDEX blobs_created_at_idx ON blobs (created_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS blobs_created_at_idx;
+      DROP INDEX IF EXISTS blobs_account_id_idx;
+      ALTER TABLE blobs DROP COLUMN IF EXISTS created_at;
+      ALTER TABLE blobs DROP COLUMN IF EXISTS account_id;
+    `,
+  },
 ];

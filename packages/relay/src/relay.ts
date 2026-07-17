@@ -1,3 +1,4 @@
+import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyWebsocket, { type WebSocket as WsWebSocket } from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
@@ -21,7 +22,7 @@ import {
   type RelayAuth,
 } from './auth';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
-import { createInMemoryRelayStore, type RelayStore } from './store';
+import { createInMemoryRelayStore, envelopeByteSize, type RelayStore } from './store';
 
 /**
  * Resolves the WS handshake's `authToken` to an `accountId`, or `undefined`
@@ -114,9 +115,41 @@ export interface CreateRelayOptions {
    * production wiring.
    */
   auth?: RelayAuth;
+  /**
+   * Per-IP abuse protection for the public relay endpoint (#101, SPEC §8's
+   * "public-relay abuse limits"): caps requests per IP per window across
+   * every HTTP/upgrade route this Fastify instance serves — the WS upgrade
+   * (`/ws`), and Better Auth's own routes when mounted — except `/health`,
+   * which stays exempt (see that route's own comment). Defaults to
+   * {@link DEFAULT_RATE_LIMIT_MAX}/{@link DEFAULT_RATE_LIMIT_WINDOW_MS}.
+   */
+  rateLimit?: {
+    /** Max requests per IP per window. */
+    max?: number;
+    /** Window length — a number of milliseconds, or `@fastify/rate-limit`'s own duration-string format (e.g. `'1 minute'`). */
+    timeWindow?: number | string;
+  };
+  /**
+   * Per-account total ciphertext-storage budget in bytes — blobs plus
+   * buffered resync-ring entries, the same two write paths #102's retention
+   * CLI reclaims from (#101, SPEC §8's "storage-exhaustion cap"). A write
+   * that would push the account over this is rejected (see
+   * `envelopeByteSize`/the `blob_upload`/`session_update` handlers below);
+   * it is never enforced retroactively here — see `prune.ts` for the
+   * reclaim-what's-already-over-budget path. Defaults to
+   * {@link DEFAULT_MAX_ACCOUNT_STORAGE_BYTES}.
+   */
+  maxAccountStorageBytes?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
+
+/** Sane default for {@link CreateRelayOptions.rateLimit}'s `max` — generous enough for a single self-hoster's own devices reconnecting in a burst, tight enough to blunt a public-endpoint scan/enrollment flood (#101). */
+export const DEFAULT_RATE_LIMIT_MAX = 120;
+/** Sane default for {@link CreateRelayOptions.rateLimit}'s `timeWindow` (#101). */
+export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
+/** Sane default for {@link CreateRelayOptions.maxAccountStorageBytes} — 50 MiB (#101). */
+export const DEFAULT_MAX_ACCOUNT_STORAGE_BYTES = 50 * 1024 * 1024;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -132,13 +165,31 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const registry = createRegistry();
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
+  const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
   const resolveAccountId: AccountResolver =
     opts.resolveAccountId ??
     (opts.auth
       ? (authToken) => resolveAccountIdViaBetterAuth(opts.auth as RelayAuth, authToken)
       : deriveAccountIdStub);
 
+  // #101: registered before any route, so its `onRequest` hook covers every
+  // HTTP/upgrade request this instance serves (all Fastify hooks run ahead
+  // of the WS upgrade — the `/ws` route below is no exception). `/health`
+  // opts back out individually (see that route), since it's meant for an
+  // external uptime prober hitting it far more often than any real device
+  // would ever legitimately reconnect.
+  app.register(fastifyRateLimit, {
+    max: opts.rateLimit?.max ?? DEFAULT_RATE_LIMIT_MAX,
+    timeWindow: opts.rateLimit?.timeWindow ?? DEFAULT_RATE_LIMIT_WINDOW_MS,
+  });
+
   if (opts.auth) mountBetterAuth(app, opts.auth);
+
+  /** Current usage + incoming write, checked against `maxAccountStorageBytes` before any blob/ring-entry write (#101). */
+  async function hasQuotaFor(accountId: string, incomingBytes: number): Promise<boolean> {
+    const used = await store.quota.getUsageBytes(accountId);
+    return used + incomingBytes <= maxAccountStorageBytes;
+  }
 
   /** Direct, unbounded send — used for control/reply traffic that must never be dropped. */
   function sendDirect(connection: Connection, message: WireMessageV1): void {
@@ -370,7 +421,29 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         const seq = await store.sessions.nextSeq(message.sessionId);
         const finalized: SessionUpdateEnvelopeV1 = { ...message, seq };
-        await store.sessions.pushRingEntry(message.sessionId, { seq, envelope: message.envelope });
+        // #101: an over-quota account still gets its update fanned out live
+        // (the relay's real-time delivery promise isn't gated on storage
+        // headroom) — only the resync-ring *durability* of this update is
+        // skipped, and the node is told so, since a client that reconnects
+        // and asks to resync past this seq will not get it replayed.
+        if (await hasQuotaFor(record.meta.accountId, envelopeByteSize(message.envelope))) {
+          await store.sessions.pushRingEntry(
+            message.sessionId,
+            { seq, envelope: message.envelope },
+            record.meta.accountId,
+          );
+        } else {
+          app.log.warn(
+            { accountId: record.meta.accountId, sessionId: message.sessionId, seq },
+            'relay: ring entry not buffered for resync, account storage quota exceeded',
+          );
+          sendJson(connection.socket, {
+            type: 'quota_exceeded',
+            scope: 'session_update',
+            sessionId: message.sessionId,
+            seq,
+          });
+        }
         fanOutSessionUpdate(message.sessionId, finalized);
         return;
       }
@@ -450,7 +523,28 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        await store.blobs.upload(`${message.sessionId}:${message.ref}`, message.envelope);
+        // #101: reject rather than partially accept — the upload is simply
+        // not stored, and the client is told exactly why (out-of-band,
+        // same as `update_required` above — not a `WireMessageV1`, the
+        // protocol isn't changed by adding this).
+        if (!(await hasQuotaFor(connection.accountId, envelopeByteSize(message.envelope)))) {
+          app.log.warn(
+            { accountId: connection.accountId, sessionId: message.sessionId, ref: message.ref },
+            'relay: blob_upload rejected, account storage quota exceeded',
+          );
+          sendJson(connection.socket, {
+            type: 'quota_exceeded',
+            scope: 'blob_upload',
+            sessionId: message.sessionId,
+            ref: message.ref,
+          });
+          return;
+        }
+        await store.blobs.upload(
+          `${message.sessionId}:${message.ref}`,
+          message.envelope,
+          connection.accountId,
+        );
         return;
       }
       case 'blob_download': {
@@ -544,7 +638,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   // up and serving HTTP", which is what a probe like Caddy/UptimeRobot wants.
   // A DB-dependent readiness check would flap the whole site down on a brief
   // Postgres blip, so that stays out of the liveness path.
-  app.get('/health', async () => ({ status: 'ok' }));
+  app.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok' }));
 
   app.register(fastifyWebsocket);
 

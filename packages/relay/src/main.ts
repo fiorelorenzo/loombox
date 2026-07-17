@@ -22,10 +22,27 @@ import type { RelayStore } from './store';
  * never a crash); otherwise it falls back to the in-memory store and the
  * dev/hermetic auth stub, exactly as before — the shape this package's own
  * hermetic tests and `scripts/v1-e2e-harness.mjs` rely on.
+ *
+ * Abuse limits (#101) are config-only, always on: `RELAY_RATE_LIMIT_MAX` /
+ * `RELAY_RATE_LIMIT_WINDOW_MS` (per-IP) and
+ * `RELAY_ACCOUNT_STORAGE_QUOTA_BYTES` (per-account) fall back to
+ * `relay.ts`'s own sane defaults when unset. `prune-cli.ts` (#102) reads
+ * the same `RELAY_ACCOUNT_STORAGE_QUOTA_BYTES` for its size-cap reclaim
+ * pass, so setting it once here keeps the write-time reject and the
+ * scheduled reclaim in agreement.
  */
 export async function start(): Promise<StartedRelayHandle> {
   const host = process.env.HOST ?? '127.0.0.1';
   const port = process.env.PORT ? Number(process.env.PORT) : 8787;
+  const rateLimitMax = process.env.RELAY_RATE_LIMIT_MAX
+    ? Number(process.env.RELAY_RATE_LIMIT_MAX)
+    : undefined;
+  const rateLimitWindowMs = process.env.RELAY_RATE_LIMIT_WINDOW_MS
+    ? Number(process.env.RELAY_RATE_LIMIT_WINDOW_MS)
+    : undefined;
+  const maxAccountStorageBytes = process.env.RELAY_ACCOUNT_STORAGE_QUOTA_BYTES
+    ? Number(process.env.RELAY_ACCOUNT_STORAGE_QUOTA_BYTES)
+    : undefined;
 
   const databaseUrl = process.env.DATABASE_URL;
   let store: RelayStore | undefined;
@@ -67,7 +84,15 @@ export async function start(): Promise<StartedRelayHandle> {
     await migrateBetterAuth(auth);
   }
 
-  const { url, close } = await startRelay({ host, port, logger: true, store, auth });
+  const { url, close } = await startRelay({
+    host,
+    port,
+    logger: true,
+    store,
+    auth,
+    rateLimit: { max: rateLimitMax, timeWindow: rateLimitWindowMs },
+    maxAccountStorageBytes,
+  });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,
   );

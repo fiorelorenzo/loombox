@@ -142,7 +142,7 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
   it('round-trips an uploaded ciphertext blob byte-for-byte by opaque ref', async () => {
     const store = await makeStore();
     const envelope = fakeEnvelope('totally-opaque', 'blob');
-    await store.blobs.upload('sess_a:ref_1', envelope);
+    await store.blobs.upload('sess_a:ref_1', envelope, 'acct_1');
     const downloaded = await store.blobs.download('sess_a:ref_1');
     expect(downloaded).toEqual(envelope);
     expect(await store.blobs.download('sess_a:ref_missing')).toBeUndefined();
@@ -162,7 +162,11 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     const store = await makeStore(3);
     const envelopes = Array.from({ length: 5 }, (_, i) => fakeEnvelope(`chunk-${i + 1}`));
     for (let i = 0; i < envelopes.length; i++) {
-      await store.sessions.pushRingEntry('sess_ring', { seq: i + 1, envelope: envelopes[i] });
+      await store.sessions.pushRingEntry(
+        'sess_ring',
+        { seq: i + 1, envelope: envelopes[i] },
+        'acct_1',
+      );
     }
 
     const result = await store.sessions.getEntriesSince('sess_ring', 0);
