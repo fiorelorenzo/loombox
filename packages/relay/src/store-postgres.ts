@@ -3,13 +3,17 @@ import type { EncryptedEnvelope, SessionMetaPublic } from '@loombox/protocol';
 import type { PgLike } from './pg-client';
 import {
   createTargetStore,
+  envelopeByteSize,
+  type BlobRetentionMeta,
   type BlobStore,
   type DeviceRecord,
   type DeviceStore,
+  type QuotaStore,
   type RelayStore,
   type RelayStoreOptions,
   type ResyncResult,
   type RingEntry,
+  type RingEntryRetentionMeta,
   type SessionRecord,
   type SessionStore,
 } from './store';
@@ -33,6 +37,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     targets: createTargetStore(),
     sessions: createPostgresSessionStore(pg, opts.ringBufferSize ?? 200),
     blobs: createPostgresBlobStore(pg),
+    quota: createPostgresQuotaStore(pg),
   };
 }
 
@@ -209,6 +214,16 @@ function createPostgresSessionStore(pg: PgLike, defaultCapacity: number): Sessio
       ]);
       return rows.map(rowToSessionRecord);
     },
+    async listAllMeta() {
+      const { rows } = await pg.query<SessionRow>(`SELECT * FROM sessions`);
+      return rows.map(rowToSessionMeta);
+    },
+    async deleteSession(sessionId) {
+      await pg.query(`DELETE FROM session_ring_entries WHERE session_id = $1`, [sessionId]);
+      await pg.query(`DELETE FROM session_rings WHERE session_id = $1`, [sessionId]);
+      await pg.query(`DELETE FROM session_seq_counters WHERE session_id = $1`, [sessionId]);
+      await pg.query(`DELETE FROM sessions WHERE session_id = $1`, [sessionId]);
+    },
     async nextSeq(sessionId) {
       const { rows } = await pg.query<{ seq: number }>(
         `SELECT seq FROM session_seq_counters WHERE session_id = $1`,
@@ -228,7 +243,13 @@ function createPostgresSessionStore(pg: PgLike, defaultCapacity: number): Sessio
       }
       return next;
     },
-    async pushRingEntry(sessionId, entry) {
+    // `accountId` is unused here: usage/retention queries below join
+    // `session_ring_entries` to `sessions.account_id` instead of
+    // denormalizing the account onto every ring-entry row (the in-memory
+    // store, which has no such join available, tracks it directly — see
+    // `store.ts`'s `StoredRingEntry`). Kept as a parameter so both
+    // implementations satisfy the exact same `SessionStore` signature.
+    async pushRingEntry(sessionId, entry, _accountId) {
       const { rows: ringRows } = await pg.query<{
         capacity: number;
         last_evicted_seq: number | null;
@@ -302,28 +323,144 @@ function createPostgresSessionStore(pg: PgLike, defaultCapacity: number): Sessio
       }
       return { entries };
     },
+    async listRingEntriesForRetention() {
+      const { rows } = await pg.query<{
+        session_id: string;
+        seq: number;
+        account_id: string;
+        envelope_resource_id: string;
+        envelope_iv: string;
+        envelope_ciphertext: string;
+        envelope_alg: string;
+      }>(
+        `SELECT sre.session_id, sre.seq, s.account_id,
+                sre.envelope_resource_id, sre.envelope_iv, sre.envelope_ciphertext, sre.envelope_alg
+         FROM session_ring_entries sre
+         JOIN sessions s ON s.session_id = sre.session_id`,
+      );
+      return rows.map((row): RingEntryRetentionMeta => ({
+        sessionId: row.session_id,
+        accountId: row.account_id,
+        seq: row.seq,
+        bytes: envelopeByteSize(rowToEnvelope(row)),
+      }));
+    },
+    async pruneRingEntriesThrough(sessionId, throughSeq) {
+      const { rows: toDelete } = await pg.query<{ seq: number }>(
+        `SELECT seq FROM session_ring_entries WHERE session_id = $1 AND seq <= $2`,
+        [sessionId, throughSeq],
+      );
+      if (toDelete.length === 0) return 0;
+
+      await pg.query(`DELETE FROM session_ring_entries WHERE session_id = $1 AND seq <= $2`, [
+        sessionId,
+        throughSeq,
+      ]);
+
+      const maxDeletedSeq = Math.max(...toDelete.map((row) => row.seq));
+      const { rows: ringRows } = await pg.query<{ last_evicted_seq: number | null }>(
+        `SELECT last_evicted_seq FROM session_rings WHERE session_id = $1`,
+        [sessionId],
+      );
+      const currentLastEvicted = ringRows[0]?.last_evicted_seq ?? undefined;
+      const nextLastEvicted =
+        currentLastEvicted === undefined
+          ? maxDeletedSeq
+          : Math.max(currentLastEvicted, maxDeletedSeq);
+      await pg.query(`UPDATE session_rings SET last_evicted_seq = $2 WHERE session_id = $1`, [
+        sessionId,
+        nextLastEvicted,
+      ]);
+      return toDelete.length;
+    },
   };
+}
+
+interface BlobRow {
+  blob_key: string;
+  account_id: string | null;
+  created_at: string | number | null;
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
 }
 
 function createPostgresBlobStore(pg: PgLike): BlobStore {
   return {
-    async upload(key, envelope) {
+    async upload(key, envelope, accountId) {
       const [resourceId, iv, ciphertext, alg] = envelopeColumns(envelope);
       await pg.query(
-        `INSERT INTO blobs (blob_key, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg)
-         VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO blobs (blob_key, account_id, created_at, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (blob_key) DO UPDATE SET
+           account_id = EXCLUDED.account_id,
+           created_at = EXCLUDED.created_at,
            envelope_resource_id = EXCLUDED.envelope_resource_id,
            envelope_iv = EXCLUDED.envelope_iv,
            envelope_ciphertext = EXCLUDED.envelope_ciphertext,
            envelope_alg = EXCLUDED.envelope_alg`,
-        [key, resourceId, iv, ciphertext, alg],
+        [key, accountId, Date.now(), resourceId, iv, ciphertext, alg],
       );
     },
     async download(key) {
       const { rows } = await pg.query(`SELECT * FROM blobs WHERE blob_key = $1`, [key]);
       const row = rows[0] as Parameters<typeof rowToEnvelope>[0] | undefined;
       return row ? rowToEnvelope(row) : undefined;
+    },
+    async listForRetention() {
+      const { rows } = await pg.query<BlobRow>(`SELECT * FROM blobs`);
+      return rows.map((row): BlobRetentionMeta => ({
+        key: row.blob_key,
+        // A NULL `account_id` (pre-#101-migration row) is charged to no
+        // one — see `migrations.ts`'s `0004_blob_quota_retention` comment.
+        accountId: row.account_id ?? '',
+        bytes: envelopeByteSize(rowToEnvelope(row)),
+        createdAt: row.created_at === null ? undefined : Number(row.created_at),
+      }));
+    },
+    async delete(key) {
+      await pg.query(`DELETE FROM blobs WHERE blob_key = $1`, [key]);
+    },
+  };
+}
+
+function createPostgresQuotaStore(pg: PgLike): QuotaStore {
+  return {
+    async getUsageBytes(accountId) {
+      const { rows: blobRows } = await pg.query<{
+        envelope_resource_id: string;
+        envelope_iv: string;
+        envelope_ciphertext: string;
+        envelope_alg: string;
+      }>(
+        `SELECT envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg
+         FROM blobs WHERE account_id = $1`,
+        [accountId],
+      );
+      const blobBytes = blobRows.reduce(
+        (sum, row) => sum + envelopeByteSize(rowToEnvelope(row)),
+        0,
+      );
+
+      const { rows: ringRows } = await pg.query<{
+        envelope_resource_id: string;
+        envelope_iv: string;
+        envelope_ciphertext: string;
+        envelope_alg: string;
+      }>(
+        `SELECT sre.envelope_resource_id, sre.envelope_iv, sre.envelope_ciphertext, sre.envelope_alg
+         FROM session_ring_entries sre
+         JOIN sessions s ON s.session_id = sre.session_id
+         WHERE s.account_id = $1`,
+        [accountId],
+      );
+      const ringBytes = ringRows.reduce(
+        (sum, row) => sum + envelopeByteSize(rowToEnvelope(row)),
+        0,
+      );
+
+      return blobBytes + ringBytes;
     },
   };
 }

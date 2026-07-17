@@ -14,9 +14,11 @@
     "test": "vitest run",
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
-    "migrate": "tsx src/migrate-cli.ts"
+    "migrate": "tsx src/migrate-cli.ts",
+    "prune": "tsx src/prune-cli.ts"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.1.0",
     "@fastify/websocket": "^11.0.0",
     "@loombox/protocol": "workspace:*",
     "better-auth": "^1.6.23",
