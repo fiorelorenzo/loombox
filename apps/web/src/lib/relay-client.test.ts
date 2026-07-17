@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import type { webcrypto } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -35,6 +36,12 @@ import {
   attachmentResourceId,
   hasBlockingAttachments,
 } from './attachments';
+import {
+  createIndexedDbOutboxStorage,
+  createInMemoryOutboxStorage,
+  type OutboxStorage,
+  type QueuedPrompt,
+} from './outbox';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -195,6 +202,21 @@ async function waitForStoreChange<T>(
     const value = get(store);
     if (value !== previous) return value;
     if (Date.now() > deadline) throw new Error('waitForStoreChange: timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Polls `storage.list()` (a real, possibly-async read, unlike `waitForStore`'s synchronous `get()`) until `predicate` holds — used to wait for a fire-and-forget IndexedDB write to actually land before the next step depends on it. */
+async function waitForOutbox(
+  storage: OutboxStorage,
+  predicate: (list: QueuedPrompt[]) => boolean,
+  timeoutMs = 3000,
+): Promise<QueuedPrompt[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const list = await storage.list();
+    if (predicate(list)) return list;
+    if (Date.now() > deadline) throw new Error('waitForOutbox: timed out');
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -732,26 +754,26 @@ describe('RelayClient', () => {
     expect(sent).toMatchObject({ sessionId: session.id, category: 'model', optionId: 'opus' });
   });
 
-  it('does not send a wire frame while the socket is not yet open, but still updates local transcript state', () => {
+  it('does not send a wire frame while the socket is not yet open, but queues the prompt for the offline outbox instead of faking a sent transcript entry (issue #130)', () => {
     const amk = generateAmk();
     client = new RelayClient({
       relayUrl: relay.url,
       amk,
       accountId: 'acct-offline',
       deviceId: 'client-5',
+      outboxStorage: createInMemoryOutboxStorage(),
     });
-    // sendPrompt before connect(): should not throw, and should still update local state.
+    // sendPrompt before connect(): should not throw, and should not send a
+    // wire frame — instead it queues locally (issue #130's offline
+    // composer outbox), NOT an optimistic "sent" transcript entry, since
+    // this prompt hasn't actually reached the node yet.
     const promptId = client.sendPrompt('sess_never_connected', 'hello?');
     const transcript = client.transcriptFor('sess_never_connected');
-    expect(get(transcript).items).toEqual([
-      {
-        type: 'message',
-        id: `${promptId}::user_message_chunk::${promptId}`,
-        kind: 'user_message_chunk',
-        turnId: promptId,
-        messageId: promptId,
-        text: 'hello?',
-      },
+    expect(get(transcript).items).toEqual([]);
+
+    const queued = client.queuedPromptsFor('sess_never_connected');
+    expect(get(queued)).toEqual([
+      expect.objectContaining({ id: promptId, sessionId: 'sess_never_connected', text: 'hello?' }),
     ]);
   });
 });
@@ -1186,6 +1208,233 @@ describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', (
 
     client.removeAttachment('sess_remove', attachmentId);
     expect(get(attachments)).toEqual([]);
+  });
+});
+
+describe('RelayClient: mid-turn composer queueing (issue #128)', () => {
+  it("queues a follow-up submitted while this session's own turn is still active, then flushes it once idle, preserving order", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-midturn';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-midturn',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_midturn', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-midturn',
+      outboxStorage: createInMemoryOutboxStorage(),
+      turnIdleMs: 80,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const queued = client.queuedPromptsFor(session.id);
+
+    const firstId = client.sendPrompt(session.id, 'first prompt');
+    const firstRouted = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    expect(firstRouted.promptId).toBe(firstId);
+
+    // Submitted immediately after, while the first turn is still considered
+    // in flight — must queue, not interrupt (SPEC §7.24's mid-turn composer
+    // state bullet).
+    const secondId = client.sendPrompt(session.id, 'second, queued');
+    expect(get(queued)).toEqual([
+      expect.objectContaining({ id: secondId, sessionId: session.id, text: 'second, queued' }),
+    ]);
+    expect(node.messages.filter((m) => m.type === 'prompt_inject')).toHaveLength(1);
+
+    // Once the turn goes idle (no further activity), the queued prompt
+    // flushes on its own, in order.
+    const secondRouted = (await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).promptId === secondId,
+    )) as PromptInjectV1;
+    expect(secondRouted.sessionId).toBe(session.id);
+    await waitForStore(queued, (value) => value.length === 0);
+  });
+
+  it('an inbound session_update alone (e.g. another device mid-turn on the same session) also holds the local queue open', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-midturn-remote';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-midturn-remote',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_midturn_remote', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-midturn-remote',
+      outboxStorage: createInMemoryOutboxStorage(),
+      turnIdleMs: 80,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const transcript = client.transcriptFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const chunkEnvelope = await nodeSeal(
+      session.id,
+      {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-remote',
+        messageId: 'msg-remote',
+        text: 'from another device',
+      },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: chunkEnvelope,
+    });
+    await waitForStore(transcript, (value) => value.items.length > 0);
+
+    const queued = client.queuedPromptsFor(session.id);
+    const promptId = client.sendPrompt(session.id, "queued behind another device's turn");
+    expect(get(queued)).toEqual([expect.objectContaining({ id: promptId, sessionId: session.id })]);
+    expect(node.messages.filter((m) => m.type === 'prompt_inject')).toHaveLength(0);
+
+    await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).promptId === promptId,
+    );
+    await waitForStore(queued, (value) => value.length === 0);
+  });
+});
+
+describe('RelayClient: offline composer outbox (issue #130)', () => {
+  it('a prompt composed with no relay connection is queued and persisted to IndexedDB, then flushes automatically once connected', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-offline-outbox';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-offline-outbox',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_offline_outbox', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // Composed before `connect()` is ever called — no relay connection
+    // exists yet. Uses the DEFAULT (IndexedDB-backed, via the
+    // `fake-indexeddb` polyfill this test file installs) outbox storage, to
+    // exercise the real production persistence path end to end.
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-offline-outbox',
+    });
+    const promptId = client.sendPrompt(session.id, 'composed offline');
+
+    const queued = client.queuedPromptsFor(session.id);
+    expect(get(queued)).toEqual([
+      expect.objectContaining({ id: promptId, sessionId: session.id, text: 'composed offline' }),
+    ]);
+
+    // Actually persisted, not just held in memory — a fresh storage handle
+    // for the SAME account already sees it before this client even connects.
+    const outboxStorage = createIndexedDbOutboxStorage(accountId);
+    await waitForOutbox(outboxStorage, (list) => list.length > 0);
+
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    expect(routed.promptId).toBe(promptId);
+    const decrypted = await nodeOpen<{ text: string }>(session.id, routed.envelope, key);
+    expect(decrypted).toEqual({ text: 'composed offline' });
+
+    await waitForStore(queued, (value) => value.length === 0);
+    await waitForOutbox(outboxStorage, (list) => list.length === 0);
+  });
+
+  it('a queued prompt persisted to IndexedDB survives a simulated reload (a fresh RelayClient for the same account) and is flushed exactly once on reconnect', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-reload-outbox';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-reload-outbox',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_reload_outbox', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // "Before the reload": composes offline and is torn down without ever
+    // having connected — nothing was ever actually sent, only persisted.
+    const before = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-before-reload',
+    });
+    const promptId = before.sendPrompt(session.id, 'survive the reload');
+    const outboxStorage = createIndexedDbOutboxStorage(accountId);
+    await waitForOutbox(outboxStorage, (list) => list.length > 0);
+    before.close();
+
+    // "After the reload": a brand-new RelayClient instance for the SAME
+    // account — nothing shared with `before` except the same IndexedDB
+    // database this account's outbox lives in.
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-after-reload',
+    });
+    await waitForStore(client.queuedPromptsFor(session.id), (value) => value.length > 0);
+
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    expect(routed.promptId).toBe(promptId);
+    await waitForStore(client.queuedPromptsFor(session.id), (value) => value.length === 0);
+    expect(node.messages.filter((m) => m.type === 'prompt_inject')).toHaveLength(1);
+
+    // A second reconnect must NOT resend it — exactly once, mirroring
+    // issue #155's attachment auto-retry "exactly once" guarantee.
+    client.close();
+    await waitForStore(client.status, (status) => status === 'closed');
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(node.messages.filter((m) => m.type === 'prompt_inject')).toHaveLength(1);
+
+    await waitForOutbox(outboxStorage, (list) => list.length === 0);
   });
 });
 
