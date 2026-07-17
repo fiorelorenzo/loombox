@@ -26,6 +26,16 @@ export interface CreateSessionOptions {
   projectPath: string;
   /** Provider id (e.g. 'claude', 'codex'); opaque to the session manager. */
   provider: string;
+  /**
+   * Use this id instead of generating a fresh `randomUUID()` (v1,
+   * `@loombox/node`'s `NodeDaemon`: a client-initiated `session_create`
+   * already picked the session id itself, since it must derive that
+   * session's E2E key and seal the private envelope *before* the node has
+   * said anything back — SPEC §8's key-tree design, where any device holding
+   * the AMK derives a resource's key with no coordination). Omit for the v0
+   * behavior of generating a fresh id.
+   */
+  id?: string;
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -73,10 +83,14 @@ async function assertIsGitRepo(projectPath: string): Promise<void> {
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
 
-  async createSession({ projectPath, provider }: CreateSessionOptions): Promise<Session> {
+  async createSession({
+    projectPath,
+    provider,
+    id: givenId,
+  }: CreateSessionOptions): Promise<Session> {
     await assertIsGitRepo(projectPath);
 
-    const id = randomUUID();
+    const id = givenId ?? randomUUID();
     const branch = `loombox/session-${id}`;
     const worktreePath = join(projectPath, '.loombox', 'worktrees', id);
 

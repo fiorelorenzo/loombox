@@ -1,4 +1,11 @@
 /**
+ * SUPERSEDED: this targets the v0 wire (`PROTOCOL_VERSION = 0`,
+ * `node_hello`/`client_hello`, plaintext `session_update`), which the v1
+ * relay (#321) no longer speaks at all (it only negotiates `PROTOCOL_V1`) —
+ * so this harness no longer runs successfully against the current relay.
+ * Kept in place for reference only. `pnpm e2e:v1` (`v1-e2e-harness.mjs`) is
+ * the current, protocol-v1, fully E2E-encrypted harness.
+ *
  * loombox v0 end-to-end validation harness (issue #54).
  *
  * The v0 acceptance (SPEC §12) is: "from a phone on the tailnet, observe a

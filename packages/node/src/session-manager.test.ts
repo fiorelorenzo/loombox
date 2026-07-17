@@ -120,4 +120,16 @@ describe('SessionManager', () => {
   it('rejects removeSession for an unknown id', async () => {
     await expect(manager.removeSession('unknown-id')).rejects.toThrow(/no session/i);
   });
+
+  it('uses a caller-supplied id instead of generating one, when given', async () => {
+    const session = await manager.createSession({
+      projectPath: repoPath,
+      provider: 'claude',
+      id: 'explicit-session-id',
+    });
+
+    expect(session.id).toBe('explicit-session-id');
+    expect(session.branch).toBe('loombox/session-explicit-session-id');
+    expect(manager.getSession('explicit-session-id')).toEqual(session);
+  });
 });

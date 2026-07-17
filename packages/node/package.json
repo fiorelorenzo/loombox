@@ -14,6 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@loombox/crypto": "workspace:*",
     "@loombox/protocol": "workspace:*",
     "@loombox/providers-core": "workspace:*",
     "@loombox/supervisor": "workspace:*"

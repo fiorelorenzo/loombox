@@ -21,12 +21,15 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish",
-    "e2e:v0": "tsx scripts/v0-e2e-harness.mjs"
+    "e2e:v0": "tsx scripts/v0-e2e-harness.mjs",
+    "e2e:v1": "tsx scripts/v1-e2e-harness.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.9",
+    "@loombox/crypto": "workspace:*",
     "@loombox/eslint-config": "workspace:*",
     "@loombox/node": "workspace:*",
+    "@loombox/protocol": "workspace:*",
     "@loombox/relay": "workspace:*",
     "@loombox/supervisor": "workspace:*",
     "@types/node": "^22.8.0",
