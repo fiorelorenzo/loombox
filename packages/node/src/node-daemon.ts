@@ -23,6 +23,8 @@ import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
 import { SessionLeaseManager } from './ssh/session-lease';
 import { Ssh2Transport } from './ssh/ssh2-transport';
+import { SshTransportPool } from './ssh/ssh-transport-pool';
+import type { ReconnectingTransportOptions } from './ssh/reconnecting-transport';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -81,6 +83,13 @@ export interface NodeDaemonOptions {
   leaseManager?: SessionLeaseManager;
   /** Poll interval (ms) for a `RemoteAgentChildProcess` bridge on an `ssh:` target session; defaults to 150ms. Tests lower this to speed up polling-based assertions. */
   remoteChildPollIntervalMs?: number;
+  /**
+   * Reconnect tuning (backoff, retry classification) for this node's pooled
+   * `ssh:` target connections (issue #71). Applies to every target; tests
+   * lower the backoff/attempt budget to keep drop-and-reconnect assertions
+   * fast. Defaults to `SshTransportPool`'s own (production-sane) defaults.
+   */
+  sshReconnect?: ReconnectingTransportOptions;
   /** Injected for tests; defaults to a fresh instance. */
   sessionManager?: SessionManager;
   /**
@@ -221,11 +230,16 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
   private readonly remoteChildPollIntervalMs: number | undefined;
-  /** One pooled `RemoteTransport` + `RemoteProcessRunner` per `ssh:` target id, reused across every session on that target rather than reconnecting per session (SPEC §5.2/§7.23's "pooled ... SSH transport"). */
-  private readonly remoteConnections = new Map<
-    string,
-    { transport: RemoteTransport; runner: RemoteProcessRunner }
-  >();
+  /**
+   * One pooled, auto-reconnecting `RemoteTransport` per `ssh:` target id,
+   * reused across every session on that target rather than reconnecting per
+   * session (SPEC §5.2/§7.23's "pooled ... SSH transport"; issue #71's
+   * mid-session reconnect-with-backoff lives inside `SshTransportPool`
+   * itself, so nothing here has to know a drop ever happened).
+   */
+  private readonly sshTransportPool: SshTransportPool;
+  /** One `RemoteProcessRunner` per `ssh:` target id, wrapping that target's pooled transport — kept separate from the pool since a runner also caches its resolved remote base directory (`RemoteProcessRunner.resolveBaseDir`), which should outlive any individual reconnect. */
+  private readonly remoteRunners = new Map<string, RemoteProcessRunner>();
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -278,6 +292,7 @@ export class NodeDaemon extends EventEmitter {
         }));
     this.leaseManager = options.leaseManager ?? new SessionLeaseManager();
     this.remoteChildPollIntervalMs = options.remoteChildPollIntervalMs;
+    this.sshTransportPool = new SshTransportPool({ reconnect: options.sshReconnect });
 
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
@@ -314,10 +329,8 @@ export class NodeDaemon extends EventEmitter {
       this.supervisor.stop(sessionId);
     }
     this.bridges.clear();
-    for (const { transport } of this.remoteConnections.values()) {
-      transport.close().catch(() => {});
-    }
-    this.remoteConnections.clear();
+    this.remoteRunners.clear();
+    this.sshTransportPool.closeAll().catch(() => {});
     this.relay.close();
   }
 
@@ -470,10 +483,16 @@ export class NodeDaemon extends EventEmitter {
     );
   }
 
-  /** Gets (or opens) the pooled `RemoteTransport`/`RemoteProcessRunner` for an `ssh:` target, reused across every session on it. */
+  /**
+   * Gets (or opens) the pooled, auto-reconnecting `RemoteProcessRunner` for
+   * an `ssh:` target, reused across every session on it. The transport
+   * itself comes from `sshTransportPool`, so a mid-session drop on one
+   * session's connection is invisible to every other session sharing this
+   * same target (issue #71) — this method never sees the drop at all.
+   */
   private async getRemoteRunner(targetId: string): Promise<RemoteProcessRunner> {
-    const existing = this.remoteConnections.get(targetId);
-    if (existing) return existing.runner;
+    const existing = this.remoteRunners.get(targetId);
+    if (existing) return existing;
 
     const config = this.sshTargetConfigs.get(targetId);
     if (!config) {
@@ -481,10 +500,11 @@ export class NodeDaemon extends EventEmitter {
         `NodeDaemon: no ssh target config for target "${targetId}" (pass it via NodeDaemonOptions.sshTargets)`,
       );
     }
-    const transport = this.sshTransportFactory(config);
-    await transport.connect();
+    const transport = await this.sshTransportPool.get(targetId, () =>
+      this.sshTransportFactory(config),
+    );
     const runner = new RemoteProcessRunner(transport);
-    this.remoteConnections.set(targetId, { transport, runner });
+    this.remoteRunners.set(targetId, runner);
     return runner;
   }
 
