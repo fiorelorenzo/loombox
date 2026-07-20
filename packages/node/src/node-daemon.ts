@@ -241,6 +241,7 @@ export class NodeDaemon extends EventEmitter {
   private readonly attachmentResolver: AttachmentResolver;
   private readonly supervisor: AgentSupervisor;
   private readonly bridges = new Map<string, SessionBridge>();
+  private _connected = false;
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
 
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
@@ -325,8 +326,12 @@ export class NodeDaemon extends EventEmitter {
     // moment that node's socket closes, so every fresh 'open' (including
     // reconnects) must re-announce everything this node still holds.
     this.relay.on('open', () => {
+      this._connected = true;
       this.reannounceAll();
       this.emit('connected');
+    });
+    this.relay.on('close', () => {
+      this._connected = false;
     });
     this.relay.on('message', (message: WireMessageV1) => this.handleInbound(message));
     // A rejected handshake (#108's "update required") is surfaced as an
@@ -335,6 +340,22 @@ export class NodeDaemon extends EventEmitter {
     this.relay.on('error', (error: Error) => {
       console.warn(`NodeDaemon(${this.nodeId}): relay connection error: ${error.message}`);
     });
+  }
+
+  /** True once the relay handshake has completed; false again after a disconnect. */
+  get isConnected(): boolean {
+    return this._connected;
+  }
+
+  /**
+   * Resolves as soon as this node is connected to the relay: immediately if it
+   * already is, otherwise on the next `'connected'` event. Callers (and tests)
+   * must use this rather than a bare `once('connected')`, which races when the
+   * handshake completes before the listener is attached.
+   */
+  whenConnected(): Promise<void> {
+    if (this._connected) return Promise.resolve();
+    return new Promise((resolve) => this.once('connected', resolve));
   }
 
   /** Opens the outbound connection to the relay. */
