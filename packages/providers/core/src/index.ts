@@ -124,3 +124,30 @@ export type {
   AcpMcpSseServerConfig,
   AcpMcpStdioServerConfig,
 } from './types';
+
+// v1: the MCP server configuration data model — parser/validator for a raw
+// user config into the typed `McpServerConfig` list, the required-secrets
+// declaration, and the global-plus-project-overrides merge algorithm
+// (SPEC.md §7.7; issue #187).
+export {
+  McpServerConfigError,
+  parseMcpServerConfig,
+  parseMcpServerConfigList,
+  requiredSecrets,
+  requiredSecretsForList,
+  resolveEffectiveMcpServers,
+} from './mcp-config';
+export type {
+  McpHttpServerConfig,
+  McpServerConfig,
+  McpServerConfigRecord,
+  McpServerVarDecl,
+  McpSseServerConfig,
+  McpStdioServerConfig,
+} from './mcp-config';
+
+// v1: the per-server MCP secret grant model — grant/revoke ACL plus the
+// resolver that turns a declared `McpServerConfig` list into the
+// `AcpMcpServerConfig` list `AcpClient.newSession` consumes, failing fast
+// on an ungranted/missing secret (SPEC.md §7.7, §7.17; issue #189).
+export { McpSecretGrantStore, resolveMcpServerConfigs } from './mcp-secret-grants';
