@@ -4,6 +4,8 @@ import type { PgLike } from './pg-client';
 import {
   createTargetStore,
   envelopeByteSize,
+  type AmkRotationPending,
+  type AmkRotationStore,
   type BlobRetentionMeta,
   type BlobStore,
   type DeviceRecord,
@@ -44,6 +46,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     blobs: createPostgresBlobStore(pg),
     quota: createPostgresQuotaStore(pg),
     escrow: createPostgresEscrowStore(pg),
+    amkRotation: createPostgresAmkRotationStore(pg),
     pushSubscriptions: createPostgresPushSubscriptionStore(pg),
     vapidKeys: createPostgresVapidKeyStore(pg),
   };
@@ -451,6 +454,88 @@ function createPostgresEscrowStore(pg: PgLike): EscrowStore {
         [accountId],
       );
       return rows[0]?.wrapped_amk;
+    },
+  };
+}
+
+interface AmkRotationPendingRow {
+  epoch: number;
+  from_device_id: string;
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
+}
+
+function rowToAmkRotationPending(row: AmkRotationPendingRow): AmkRotationPending {
+  return {
+    epoch: Number(row.epoch),
+    fromDeviceId: row.from_device_id,
+    envelope: rowToEnvelope(row),
+  };
+}
+
+function createPostgresAmkRotationStore(pg: PgLike): AmkRotationStore {
+  return {
+    async getCurrentEpoch(accountId) {
+      const { rows } = await pg.query<{ epoch: number }>(
+        `SELECT epoch FROM amk_epochs WHERE account_id = $1`,
+        [accountId],
+      );
+      return rows[0] ? Number(rows[0].epoch) : 0;
+    },
+    async advanceEpoch(accountId, newEpoch) {
+      // Read-then-write: matches this store's other single-account counters
+      // (no heavier transactional locking elsewhere in this package either).
+      // A concurrent double-revoke race on the same account is a known,
+      // accepted v1 limitation — see `store.ts`'s `AmkRotationStore` doc
+      // comment.
+      const { rows } = await pg.query<{ epoch: number }>(
+        `SELECT epoch FROM amk_epochs WHERE account_id = $1`,
+        [accountId],
+      );
+      const current = rows[0] ? Number(rows[0].epoch) : 0;
+      if (newEpoch !== current + 1) return false;
+      await pg.query(
+        `INSERT INTO amk_epochs (account_id, epoch) VALUES ($1, $2)
+         ON CONFLICT (account_id) DO UPDATE SET epoch = EXCLUDED.epoch`,
+        [accountId, newEpoch],
+      );
+      return true;
+    },
+    async putPending(accountId, deviceId, pending) {
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(pending.envelope);
+      await pg.query(
+        `INSERT INTO amk_rotation_pending (account_id, device_id, epoch, from_device_id, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (account_id, device_id) DO UPDATE SET
+           epoch = EXCLUDED.epoch,
+           from_device_id = EXCLUDED.from_device_id,
+           envelope_resource_id = EXCLUDED.envelope_resource_id,
+           envelope_iv = EXCLUDED.envelope_iv,
+           envelope_ciphertext = EXCLUDED.envelope_ciphertext,
+           envelope_alg = EXCLUDED.envelope_alg,
+           created_at = EXCLUDED.created_at`,
+        [
+          accountId,
+          deviceId,
+          pending.epoch,
+          pending.fromDeviceId,
+          resourceId,
+          iv,
+          ciphertext,
+          alg,
+          Date.now(),
+        ],
+      );
+    },
+    async getPending(accountId, deviceId) {
+      const { rows } = await pg.query<AmkRotationPendingRow>(
+        `SELECT epoch, from_device_id, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg
+         FROM amk_rotation_pending WHERE account_id = $1 AND device_id = $2`,
+        [accountId, deviceId],
+      );
+      return rows[0] ? rowToAmkRotationPending(rows[0]) : undefined;
     },
   };
 }

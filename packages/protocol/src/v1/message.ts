@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 import { fsListRequest, fsListResponse } from './fs';
 import {
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   amkEscrow,
   deviceRegister,
   deviceRevoke,
@@ -32,6 +34,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   deviceRevoke,
   deviceRotate,
   amkEscrow,
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   newDeviceBootstrapRequest,
   newDeviceBootstrapResponse,
   qrPairingRequest,
