@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SessionManager } from './session-manager';
+import { InvalidSessionTransitionError, SessionManager } from './session-manager';
 
 const execFileAsync = promisify(execFile);
 
@@ -131,5 +131,101 @@ describe('SessionManager', () => {
     expect(session.id).toBe('explicit-session-id');
     expect(session.branch).toBe('loombox/session-explicit-session-id');
     expect(manager.getSession('explicit-session-id')).toEqual(session);
+  });
+
+  it('records the owning node id and target id, and defaults targetId to "local"', async () => {
+    const withNode = await manager.createSession({
+      projectPath: repoPath,
+      provider: 'claude',
+      nodeId: 'node-1',
+    });
+    expect(withNode.nodeId).toBe('node-1');
+    expect(withNode.targetId).toBe('local');
+
+    const withTarget = await manager.createSession({
+      projectPath: repoPath,
+      provider: 'claude',
+      nodeId: 'node-1',
+      targetId: 'devbox',
+    });
+    expect(withTarget.targetId).toBe('devbox');
+
+    const bare = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+    expect(bare.nodeId).toBeUndefined();
+    expect(bare.targetId).toBe('local');
+  });
+
+  describe('lifecycle', () => {
+    it('starts a fresh session in the "running" state', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      expect(session.state).toBe('running');
+    });
+
+    it('accepts the valid running -> paused -> running -> ended transitions', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const paused = manager.pauseSession(session.id);
+      expect(paused.state).toBe('paused');
+      expect(paused).toBe(session); // mutated in place, same record
+
+      const resumed = manager.resumeSession(session.id);
+      expect(resumed.state).toBe('running');
+
+      const ended = manager.endSession(session.id);
+      expect(ended.state).toBe('ended');
+    });
+
+    it('also allows ending directly from "running" (no pause required)', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      const ended = manager.endSession(session.id);
+      expect(ended.state).toBe('ended');
+    });
+
+    it('rejects pausing a session that is already paused', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      manager.pauseSession(session.id);
+
+      expect(() => manager.pauseSession(session.id)).toThrow(InvalidSessionTransitionError);
+      expect(session.state).toBe('paused'); // unchanged by the rejected attempt
+    });
+
+    it('rejects resuming a session that was never paused', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      expect(() => manager.resumeSession(session.id)).toThrow(InvalidSessionTransitionError);
+      expect(session.state).toBe('running');
+    });
+
+    it('rejects every transition once a session has ended', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      manager.endSession(session.id);
+
+      expect(() => manager.pauseSession(session.id)).toThrow(InvalidSessionTransitionError);
+      expect(() => manager.resumeSession(session.id)).toThrow(InvalidSessionTransitionError);
+      expect(() => manager.endSession(session.id)).toThrow(InvalidSessionTransitionError);
+      expect(session.state).toBe('ended');
+    });
+
+    it('throws a descriptive error naming the session, its state, and the rejected action', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      try {
+        manager.resumeSession(session.id);
+        expect.unreachable('resumeSession should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidSessionTransitionError);
+        const transitionError = error as InvalidSessionTransitionError;
+        expect(transitionError.sessionId).toBe(session.id);
+        expect(transitionError.from).toBe('running');
+        expect(transitionError.action).toBe('resume');
+        expect(transitionError.message).toContain(session.id);
+      }
+    });
+
+    it('rejects a lifecycle transition on an unknown session id', () => {
+      expect(() => manager.pauseSession('does-not-exist')).toThrow(/no session/i);
+      expect(() => manager.resumeSession('does-not-exist')).toThrow(/no session/i);
+      expect(() => manager.endSession('does-not-exist')).toThrow(/no session/i);
+    });
   });
 });

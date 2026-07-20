@@ -20,9 +20,11 @@ import {
 } from '@loombox/protocol';
 
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { LocalExecutionTarget } from './local-execution-target';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { SessionManager, type Session } from './session-manager';
-import { DEFAULT_LOCAL_TARGET, type SshTargetConfig } from './target';
+import { SshExecutionTarget } from './ssh-execution-target';
+import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
@@ -255,6 +257,16 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTransportPool: SshTransportPool;
   /** One `RemoteProcessRunner` per `ssh:` target id, wrapping that target's pooled transport — kept separate from the pool since a runner also caches its resolved remote base directory (`RemoteProcessRunner.resolveBaseDir`), which should outlive any individual reconnect. */
   private readonly remoteRunners = new Map<string, RemoteProcessRunner>();
+  /**
+   * One {@link LocalExecutionTarget}, shared by every caller (it's stateless
+   * besides a `kind` tag), and one {@link SshExecutionTarget} per `ssh:`
+   * target id, wrapping that target's pooled transport (issue #69) — the
+   * unified exec/filesystem seam a future editor/terminal drives through,
+   * built without opening any connection beyond what session creation
+   * already needs.
+   */
+  private readonly localExecutionTarget = new LocalExecutionTarget();
+  private readonly sshExecutionTargets = new Map<string, SshExecutionTarget>();
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -345,6 +357,7 @@ export class NodeDaemon extends EventEmitter {
     }
     this.bridges.clear();
     this.remoteRunners.clear();
+    this.sshExecutionTargets.clear();
     this.sshTransportPool.closeAll().catch(() => {});
     this.relay.close();
   }
@@ -433,6 +446,8 @@ export class NodeDaemon extends EventEmitter {
       id: opts.sessionId,
       projectPath: opts.projectPath,
       provider: opts.provider,
+      nodeId: this.nodeId,
+      targetId: opts.targetId,
     });
     const agentSession = await this.supervisor.start({
       workspacePath: session.worktreePath,
@@ -505,6 +520,9 @@ export class NodeDaemon extends EventEmitter {
       provider: opts.provider,
       branch: '',
       createdAt: Date.now(),
+      state: 'running',
+      nodeId: this.nodeId,
+      targetId,
     };
 
     return this.finishSessionCreation(
@@ -526,18 +544,47 @@ export class NodeDaemon extends EventEmitter {
     const existing = this.remoteRunners.get(targetId);
     if (existing) return existing;
 
+    const transport = await this.getSshTransport(targetId);
+    const runner = new RemoteProcessRunner(transport);
+    this.remoteRunners.set(targetId, runner);
+    return runner;
+  }
+
+  /** Gets (opening on first use) this `ssh:` target's pooled, reconnecting transport — shared by {@link getRemoteRunner} and {@link getExecutionTarget} so neither opens a second connection for the same target id. */
+  private async getSshTransport(targetId: string): Promise<RemoteTransport> {
     const config = this.sshTargetConfigs.get(targetId);
     if (!config) {
       throw new Error(
         `NodeDaemon: no ssh target config for target "${targetId}" (pass it via NodeDaemonOptions.sshTargets)`,
       );
     }
-    const transport = await this.sshTransportPool.get(targetId, () =>
-      this.sshTransportFactory(config),
-    );
-    const runner = new RemoteProcessRunner(transport);
-    this.remoteRunners.set(targetId, runner);
-    return runner;
+    return this.sshTransportPool.get(targetId, () => this.sshTransportFactory(config));
+  }
+
+  /**
+   * Returns the {@link ExecutionTarget} for one of this node's target ids
+   * (issue #69) — the unified exec/filesystem seam a future editor/terminal
+   * drives through, shared by `local` and `ssh:` alike. For an `ssh:` target
+   * this reuses the same pooled transport session creation already relies on
+   * (see {@link getSshTransport}) rather than opening a second connection.
+   * Throws if `targetId` doesn't name one of this node's declared targets.
+   */
+  async getExecutionTarget(targetId: string): Promise<ExecutionTarget> {
+    const target = this.targets.find((candidate) => candidate.id === targetId);
+    if (!target) {
+      throw new Error(`NodeDaemon: no target with id "${targetId}"`);
+    }
+    if (target.kind === 'local') {
+      return this.localExecutionTarget;
+    }
+
+    const existing = this.sshExecutionTargets.get(targetId);
+    if (existing) return existing;
+
+    const transport = await this.getSshTransport(targetId);
+    const executionTarget = new SshExecutionTarget(transport);
+    this.sshExecutionTargets.set(targetId, executionTarget);
+    return executionTarget;
   }
 
   private async finishSessionCreation(
