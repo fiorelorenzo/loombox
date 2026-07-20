@@ -206,6 +206,43 @@ async function waitForStoreChange<T>(
   }
 }
 
+/**
+ * Waits for `count` real changes on a store, counted off its `subscribe`
+ * callback's own push notifications rather than polling `get()` — polling
+ * can coalesce two rapid-fire changes into a single observed jump (missing
+ * the intermediate value entirely), which `waitForStoreChange` called twice
+ * in a row is vulnerable to when two independent `session_resume` round
+ * trips (e.g. two sessions subscribed back-to-back) can each complete and
+ * notify within the same polling tick. Every svelte store's `subscribe`
+ * fires synchronously once with its current value on subscribe, which does
+ * not count as a change.
+ */
+async function waitForNotificationCount(
+  store: { subscribe: (run: (value: unknown) => void) => () => void },
+  count: number,
+  timeoutMs = 3000,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let seen = 0;
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error('waitForNotificationCount: timed out'));
+    }, timeoutMs);
+    // `count` is always > 0 for every caller below, so the synchronous
+    // "current value" callback `subscribe` fires during this very call
+    // (seen becomes 1, never > count here) never reads `unsubscribe` before
+    // this assignment completes — no TDZ hazard from the self-reference.
+    const unsubscribe = store.subscribe(() => {
+      seen += 1;
+      if (seen > count) {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
+
 /** Polls `storage.list()` (a real, possibly-async read, unlike `waitForStore`'s synchronous `get()`) until `predicate` holds — used to wait for a fire-and-forget IndexedDB write to actually land before the next step depends on it. */
 async function waitForOutbox(
   storage: OutboxStorage,
@@ -1792,5 +1829,150 @@ describe('RelayClient wired to a real Better Auth account (issue #126, the real-
     client.connect();
 
     await waitForStore(client.status, (status) => status === 'error' || status === 'closed');
+  });
+});
+
+describe('RelayClient: cross-project attention inbox (SPEC §7.13; issues #167/#168/#169)', () => {
+  it('aggregates a pending permission request and an awaiting_input session across sessions, sorted oldest-waiting first, and stays consistent with the session-scoped queue', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const sessionA = makeSessionMeta({ id: 'sess_inbox_a', accountId });
+    const sessionB = makeSessionMeta({ id: 'sess_inbox_b', accountId });
+    const keyA = await deriveNodeSessionKey(amk, accountId, sessionA.id);
+    const keyB = await deriveNodeSessionKey(amk, accountId, sessionB.id);
+    const privateA = await nodeSeal(
+      sessionA.id,
+      { title: 'Fix the bug', projectPath: '/proj-a' },
+      keyA,
+    );
+    const privateB = await nodeSeal(
+      sessionB.id,
+      { title: 'Add feature', projectPath: '/proj-b' },
+      keyB,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionA,
+      privateEnvelope: privateA,
+    });
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionB,
+      privateEnvelope: privateB,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-inbox' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 2);
+
+    // Calling attentionInbox() subscribes BOTH sessions even though neither
+    // has been opened via transcriptFor/permissionQueueFor — the whole
+    // point of a cross-session view. Wait for both subscription-confirming
+    // session_announce replies before the node emits anything, so neither
+    // event races ahead of the relay actually registering the subscription
+    // (waitForNotificationCount, not two chained waitForStoreChange calls,
+    // since the latter can miss the first of two rapid-fire changes).
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 2);
+
+    const options = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' as const },
+    ];
+    const permissionEnvelope = await nodeSeal(
+      sessionA.id,
+      { toolCall: { kind: 'tool_call', id: 'tc-a', title: 'Run tests' }, options },
+      keyA,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      requestId: 'req-inbox-a',
+      envelope: permissionEnvelope,
+    });
+
+    // Session B transitions to awaiting_input with a deliberately EARLIER
+    // timestamp than session A's permission request (sent second on the
+    // wire) — an oldest-first sort must still put B ahead of A.
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    const statusEnvelope = await nodeSeal(
+      sessionB.id,
+      { kind: 'session_status', status: 'awaiting_input', updatedAt: earlier },
+      keyB,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      seq: 1,
+      envelope: statusEnvelope,
+    });
+
+    const items = await waitForStore(inbox, (value) => value.length === 2);
+    expect(items.map((item) => item.kind)).toEqual(['awaiting_input', 'permission']);
+    expect(items[0]).toMatchObject({
+      sessionId: sessionB.id,
+      sessionTitle: 'Add feature',
+      projectPath: '/proj-b',
+    });
+    expect(items[1]).toMatchObject({
+      sessionId: sessionA.id,
+      sessionTitle: 'Fix the bug',
+      projectPath: '/proj-a',
+      permission: expect.objectContaining({ requestId: 'req-inbox-a' }),
+    });
+
+    // The session view's own queue for A carries the exact same pending
+    // request — subscribing here mirrors what the UI does when the user
+    // opens that session directly (issue #169's single source of truth).
+    const queueA = client.permissionQueueFor(sessionA.id);
+    expect(get(queueA).byId.has('req-inbox-a')).toBe(true);
+
+    // Approving from the inbox (the exact RelayClient call the inbox
+    // component's approve button makes) resolves it in the session's own
+    // queue too, and the item disappears from the inbox.
+    client.resolvePermission(sessionA.id, 'req-inbox-a', options[0]);
+    expect(get(queueA).byId.has('req-inbox-a')).toBe(false);
+    const afterApprove = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterApprove[0]?.sessionId).toBe(sessionB.id);
+
+    // "Resolved elsewhere": a second permission request on B, cancelled via
+    // the session-level Stop control (not through the inbox at all), must
+    // also vanish from the inbox — proving the inbox holds no separate copy
+    // of queue state it could fall out of sync with.
+    const secondPermissionEnvelope = await nodeSeal(
+      sessionB.id,
+      { toolCall: { kind: 'tool_call', id: 'tc-b' }, options: [options[0]] },
+      keyB,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      requestId: 'req-inbox-b',
+      envelope: secondPermissionEnvelope,
+    });
+    await waitForStore(inbox, (value) => value.some((item) => item.kind === 'permission'));
+
+    client.cancelPermissionRequests(sessionB.id);
+    const final = await waitForStore(
+      inbox,
+      (value) => !value.some((item) => item.kind === 'permission'),
+    );
+    expect(
+      final.some((item) => item.sessionId === sessionB.id && item.kind === 'awaiting_input'),
+    ).toBe(true);
   });
 });

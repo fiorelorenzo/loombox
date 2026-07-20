@@ -12,6 +12,7 @@ import {
   createPermissionQueueState,
   createTranscriptState,
   enqueuePermissionRequest,
+  headPermissionRequest,
   reduceSessionEvent,
   resolvePermissionRequest,
   type AcpConfigOption,
@@ -19,6 +20,7 @@ import {
   type AcpSessionStatus,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
+  type PendingPermissionRequest,
   type PermissionQueueState,
   type TranscriptState,
 } from '@loombox/providers-core';
@@ -123,6 +125,39 @@ interface PermissionRequestPayload {
 
 /** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
 export type ClientSessionMeta = SessionMetaPublic & SessionPrivateMeta;
+
+/**
+ * One row of the cross-project attention inbox (SPEC §7.13; issues
+ * #167/#168/#169): either a session's actionable FIFO-head permission
+ * request, or a session whose live status is `awaiting_input` — the two
+ * "needs the user now" classes this v1 slice covers (session outcomes/CI/
+ * review-request classes from the full §7.13 scope are later work, not
+ * implemented here). See {@link RelayClient.attentionInbox}'s doc comment
+ * for why a session with a queue of several pending requests only ever
+ * contributes its head as one item.
+ */
+export interface AttentionInboxItem {
+  readonly kind: 'permission' | 'awaiting_input';
+  readonly sessionId: string;
+  readonly sessionTitle: string;
+  readonly projectPath: string;
+  /** Epoch ms this item started waiting — a permission request's `enqueuedAt`, or the session's `session_status` transition time; the inbox's own sort key (oldest first). */
+  readonly waitingSince: number;
+  /** Set only for a `'permission'` item: the actionable FIFO-head request itself, so a renderer can show/act on it without a second lookup. */
+  readonly permission?: PendingPermissionRequest;
+}
+
+/**
+ * `AcpSessionStatusEvent.updatedAt` (an ISO string the node supplies) as a
+ * sortable epoch-ms value. A missing or unparseable timestamp falls back to
+ * "now" rather than throwing or sorting as `NaN` — a malformed value should
+ * degrade to "just happened", not corrupt the whole inbox's ordering.
+ */
+function parseStatusTimestamp(updatedAt: string | undefined): number {
+  if (!updatedAt) return Date.now();
+  const parsed = Date.parse(updatedAt);
+  return Number.isNaN(parsed) ? Date.now() : parsed;
+}
 
 export interface RelayClientOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
@@ -324,6 +359,12 @@ export class RelayClient {
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   private readonly subscribed = new Set<string>();
+  /** Backs {@link attentionInbox} — see that method's doc comment. */
+  private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
+  /** True once {@link attentionInbox} has been called at least once (it is lazily activated, like every other per-session subscription in this class). */
+  private inboxTrackingActive = false;
+  /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
+  private readonly inboxTrackedSessions = new Set<string>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
@@ -492,6 +533,44 @@ export class RelayClient {
     const store = this.permissionQueueStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return store;
+  }
+
+  /**
+   * The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
+   * one live, sorted (oldest-waiting first) list of every session-level item
+   * that needs the user right now, across every session on this account —
+   * not only the one currently open. Each session contributes at most:
+   * - a `'permission'` item for its FIFO-head pending request (issue #146's
+   *   nested-visibility rule already means only that head is ever
+   *   actionable, so listing the rest would show items the user can't yet
+   *   act on — approving the head is what promotes the next one into view,
+   *   on both this inbox and the session's own `PermissionQueueBar`);
+   * - an `'awaiting_input'` item while its live `session_status` is
+   *   `'awaiting_input'`.
+   *
+   * Reads straight off the exact same `permissionQueueStoreFor`/
+   * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
+   * do — never a second copy of queue/status state — so resolving a
+   * request via {@link resolvePermission}, whether the caller is this
+   * inbox's own "approve" button or the session's own composer-site queue
+   * bar, converges on the one store both read, and each reflects the
+   * other's resolution immediately (issue #169).
+   *
+   * Unlike `transcriptFor`/`permissionQueueFor`/`configOptionsFor`
+   * (subscribed per-session, only once a caller actually opens that
+   * session), this subscribes to EVERY currently-known session the first
+   * time it's called, and every session announced afterwards — the whole
+   * point of a cross-session inbox is surfacing a session's attention state
+   * without the user having opened it first. Still lazy in the sense that
+   * nothing here runs until this method is called at least once.
+   */
+  attentionInbox(): Readable<AttentionInboxItem[]> {
+    if (!this.inboxTrackingActive) {
+      this.inboxTrackingActive = true;
+      for (const session of get(this.sessionsStore)) this.trackSessionForInbox(session.id);
+      this.recomputeAttentionInbox();
+    }
+    return this.attentionInboxStore;
   }
 
   /**
@@ -1042,6 +1121,60 @@ export class RelayClient {
     this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
   }
 
+  /**
+   * Wires one session into the attention inbox: subscribes it (so its
+   * `permission_request`/`session_update` traffic actually reaches this
+   * client, see `ensureSubscribed`) and recomputes the inbox whenever
+   * either its transcript (status) or its permission queue changes.
+   * Idempotent per session id, and a no-op before {@link attentionInbox}
+   * has ever been called (see `syncInboxTracking`).
+   */
+  private trackSessionForInbox(sessionId: string): void {
+    if (this.inboxTrackedSessions.has(sessionId)) return;
+    this.inboxTrackedSessions.add(sessionId);
+    this.ensureSubscribed(sessionId);
+    this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+  }
+
+  /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
+  private syncInboxTracking(sessions: readonly ClientSessionMeta[]): void {
+    if (!this.inboxTrackingActive) return;
+    for (const session of sessions) this.trackSessionForInbox(session.id);
+  }
+
+  /** Rebuilds the whole attention-inbox list from current state — see {@link attentionInbox}'s doc comment for what qualifies and the sort order. */
+  private recomputeAttentionInbox(): void {
+    const items: AttentionInboxItem[] = [];
+    for (const session of get(this.sessionsStore)) {
+      const queue = get(this.permissionQueueStoreFor(session.id));
+      const head = headPermissionRequest(queue, session.id);
+      if (head) {
+        items.push({
+          kind: 'permission',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          waitingSince: head.enqueuedAt,
+          permission: head,
+        });
+      }
+
+      const transcript = get(this.transcriptStoreFor(session.id));
+      if (transcript.status === 'awaiting_input') {
+        items.push({
+          kind: 'awaiting_input',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
+        });
+      }
+    }
+    items.sort((a, b) => a.waitingSince - b.waitingSince);
+    this.attentionInboxStore.set(items);
+  }
+
   private transcriptStoreFor(sessionId: string): Writable<TranscriptState> {
     let store = this.transcripts.get(sessionId);
     if (!store) {
@@ -1100,6 +1233,7 @@ export class RelayClient {
           (session): session is ClientSessionMeta => session !== undefined,
         );
         this.sessionsStore.set(sessions);
+        this.syncInboxTracking(sessions);
       })
       .catch(() => {
         // Every per-session decrypt already caught its own error above;
@@ -1117,6 +1251,7 @@ export class RelayClient {
           next[index] = session;
           return next;
         });
+        this.syncInboxTracking([session]);
       })
       .catch((error: unknown) => {
         console.warn(
