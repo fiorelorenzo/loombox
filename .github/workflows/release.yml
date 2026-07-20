@@ -24,7 +24,7 @@ permissions:
 jobs:
   release:
     name: Version / Release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, devbox]
     steps:
       - uses: actions/checkout@v4
         with:
