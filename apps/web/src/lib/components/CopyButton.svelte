@@ -67,4 +67,17 @@
   .copy-button.copied {
     opacity: 1;
   }
+
+  /* Touch-optimized controls (SPEC.md §7.3, issue #133): reachable via
+     hover on desktop (this file's own doc comment), so a coarse (touch)
+     pointer — which has no hover — needs a real, adequately-sized tap
+     target instead of the compact desktop padding above. */
+  @media (pointer: coarse) {
+    .copy-button {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+      font-size: 1.1rem;
+      opacity: 0.7;
+    }
+  }
 </style>

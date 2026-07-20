@@ -34,6 +34,15 @@ describe('notificationContentFor (#164)', () => {
     expect(content.options.data).toEqual({ sessionId: 'sess_1' });
     expect(content.options.tag).toContain('sess_1');
   });
+
+  it('exposes approve/deny/open actions (#165) so a supporting platform can act without opening the app', () => {
+    const content = notificationContentFor({ kind: 'permission_required', sessionId: 'sess_1' });
+    expect(content.options.actions).toEqual([
+      { action: 'approve', title: 'Approve' },
+      { action: 'deny', title: 'Deny' },
+      { action: 'open', title: 'Open' },
+    ]);
+  });
 });
 
 describe('showAttentionNotification (#164)', () => {
@@ -68,6 +77,28 @@ describe('sessionUrlFromNotificationData', () => {
   it('URL-encodes a sessionId with special characters', () => {
     expect(sessionUrlFromNotificationData({ sessionId: 'sess a/b' })).toBe(
       '/?session=sess%20a%2Fb',
+    );
+  });
+
+  it('appends &action= for approve/deny (#165) so the app can auto-resolve on load', () => {
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, 'approve')).toBe(
+      '/?session=sess_1&action=approve',
+    );
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, 'deny')).toBe(
+      '/?session=sess_1&action=deny',
+    );
+  });
+
+  it('omits the action param for a plain click, the open action, or any unrecognized action', () => {
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, undefined)).toBe(
+      '/?session=sess_1',
+    );
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, '')).toBe('/?session=sess_1');
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, 'open')).toBe(
+      '/?session=sess_1',
+    );
+    expect(sessionUrlFromNotificationData({ sessionId: 'sess_1' }, 'nonsense')).toBe(
+      '/?session=sess_1',
     );
   });
 });

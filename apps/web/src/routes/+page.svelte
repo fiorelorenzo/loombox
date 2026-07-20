@@ -25,12 +25,20 @@
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import { isNarrowViewport } from '$lib/viewport';
+  import { resolvePendingPushAction } from '$lib/push-action-routing';
+  import {
+    createLocalStorageNotificationPreferencesStorage,
+    defaultNotificationPreferences,
+    type NotificationPreferences as NotificationPreferencesData,
+    type NotificationPreferencesStorage,
+  } from '$lib/notification-preferences';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import AttentionInbox from '$lib/components/AttentionInbox.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
+  import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
@@ -86,6 +94,19 @@
   // `RelayClient.attentionInbox`'s doc comment.
   let attentionInboxItems = $state<AttentionInboxItem[]>([]);
   let inboxOpen = $state(false);
+  // Per-project mute + quiet-hours settings panel (SPEC §7.11, issue #166).
+  // `notificationPreferencesStorage` is only ever constructed client-side
+  // (onMount below, same reason `amkStorage` is) — `localStorage` doesn't
+  // exist during `routes/page.test.ts`'s SSR render.
+  let notificationSettingsOpen = $state(false);
+  // `$state` (not a plain `let`) because the template's notification
+  // settings panel reads it reactively to decide whether to render.
+  let notificationPreferencesStorage = $state<NotificationPreferencesStorage | undefined>(
+    undefined,
+  );
+  let notificationPreferences = $state<NotificationPreferencesData>(
+    defaultNotificationPreferences(),
+  );
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
   // Narrow-viewport permission footer (SPEC §7.3; issue #134) — a live
@@ -182,6 +203,24 @@
   // loaded and connected).
   let pendingSessionIdFromUrl: string | undefined;
 
+  // #165: an approve/deny tap on a push notification's action button landed
+  // here as `?session=<id>&action=approve|deny` — the other half of
+  // `push-action-routing.ts`'s `resolvePendingPushAction`. Consumed as soon
+  // as this session's real permission queue arrives (may be empty on the
+  // very first emission, if the request itself hasn't reached this device
+  // yet — `maybeResolvePendingPushAction` below is re-checked on every
+  // subsequent queue update until it resolves or the session changes).
+  let pendingPushActionFromUrl: string | undefined;
+
+  /** #165: resolves `pendingPushActionFromUrl` against `sessionId`'s live queue the moment its FIFO head can satisfy it, via the exact same `RelayClient.resolvePermission` call a manual `PermissionCard` tap makes. */
+  function maybeResolvePendingPushAction(sessionId: string, queue: PermissionQueueState): void {
+    if (!client || !pendingPushActionFromUrl) return;
+    const resolution = resolvePendingPushAction(queue, sessionId, pendingPushActionFromUrl);
+    if (!resolution) return;
+    client.resolvePermission(sessionId, resolution.requestId, resolution.option);
+    pendingPushActionFromUrl = undefined;
+  }
+
   function selectSession(id: string): void {
     selectedSessionId = id;
     unsubscribeTranscript?.();
@@ -198,9 +237,10 @@
     staleNotice = undefined;
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
-    unsubscribePermissionQueue = client
-      .permissionQueueFor(id)
-      .subscribe((value) => (permissionQueue = value));
+    unsubscribePermissionQueue = client.permissionQueueFor(id).subscribe((value) => {
+      permissionQueue = value;
+      maybeResolvePendingPushAction(id, value);
+    });
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
       .subscribe((value) => (configOptions = value));
@@ -236,6 +276,10 @@
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
       syncSessionStatusSubscriptions(value);
+      // #166: the session list is where this device's `sessionId ->
+      // projectPath` map comes from — re-sync every time it changes so the
+      // service worker's mute check never acts on a stale map.
+      syncNotificationPreferencesToServiceWorker();
       if (pendingSessionIdFromUrl && value.some((s) => s.id === pendingSessionIdFromUrl)) {
         selectSession(pendingSessionIdFromUrl);
         pendingSessionIdFromUrl = undefined;
@@ -369,6 +413,38 @@
     })),
   );
 
+  // #166: v1 has no separate project entity yet — the mute list is keyed by
+  // this account's currently-known distinct `projectPath`s.
+  const projectPaths = $derived(
+    Array.from(new Set(sessions.map((session) => session.projectPath))).sort(),
+  );
+
+  /**
+   * Pushes the current mute/quiet-hours preferences, plus this device's
+   * `sessionId -> projectPath` map, into the active service worker (#166) —
+   * there is no `localStorage` access from a service worker, and the push
+   * payload itself never carries a `projectPath` (SPEC §8's blind-relay
+   * boundary), so the SW's `push` handler (`push-suppression.ts`'s
+   * `shouldSuppressPush`) relies entirely on this sync. A no-op wherever
+   * there is no controlling service worker yet (unsupported browser, or the
+   * very first load before the SW has taken control).
+   */
+  function syncNotificationPreferencesToServiceWorker(): void {
+    if (typeof navigator === 'undefined' || !navigator.serviceWorker?.controller) return;
+    const sessionProjectMap: Record<string, string> = {};
+    for (const session of sessions) sessionProjectMap[session.id] = session.projectPath;
+    navigator.serviceWorker.controller.postMessage({
+      type: 'loombox:notification-prefs-sync',
+      preferences: notificationPreferences,
+      sessionProjectMap,
+    });
+  }
+
+  function onNotificationPreferencesChange(preferences: NotificationPreferencesData): void {
+    notificationPreferences = preferences;
+    syncNotificationPreferencesToServiceWorker();
+  }
+
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     if (paletteOpen) return;
@@ -413,10 +489,23 @@
     amkStorage = createLocalStorageAmkStorage();
     deviceId = loadOrCreateDeviceId(createLocalStorageDeviceIdStorage());
 
-    // #164: a notification click landed here with `?session=<id>` — see
-    // `pendingSessionIdFromUrl`'s doc comment above.
-    const sessionIdFromUrl = new URLSearchParams(window.location.search).get('session');
+    // #166: load this device's mute/quiet-hours preferences and hand the
+    // service worker its first sync (before any session list has even
+    // arrived, so the SW's cache is never worse than "no mutes, no quiet
+    // hours" — never left with nothing at all).
+    notificationPreferencesStorage = createLocalStorageNotificationPreferencesStorage();
+    notificationPreferences = notificationPreferencesStorage.get();
+    syncNotificationPreferencesToServiceWorker();
+
+    // #164/#165: a notification click (or an approve/deny action tap)
+    // landed here with `?session=<id>` (and, for an action tap,
+    // `&action=approve|deny`) — see `pendingSessionIdFromUrl`'s and
+    // `pendingPushActionFromUrl`'s doc comments above.
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionIdFromUrl = urlParams.get('session');
     if (sessionIdFromUrl) pendingSessionIdFromUrl = sessionIdFromUrl;
+    const actionFromUrl = urlParams.get('action');
+    if (actionFromUrl) pendingPushActionFromUrl = actionFromUrl;
 
     // Narrow-viewport permission footer (SPEC §7.3; issue #134).
     const unsubscribeNarrow = isNarrowViewport().subscribe((value) => (narrowViewport = value));
@@ -511,11 +600,31 @@
           authToken={authSession.token}
           {deviceId}
         />
+        <button
+          type="button"
+          class="notification-settings-toggle"
+          class:active={notificationSettingsOpen}
+          onclick={() => (notificationSettingsOpen = !notificationSettingsOpen)}
+          data-testid="notification-settings-toggle"
+        >
+          Mute &amp; quiet hours
+        </button>
       {/if}
       {#if authError}
         <p class="error" role="alert">{authError}</p>
       {/if}
     </section>
+
+    {#if notificationSettingsOpen && notificationPreferencesStorage}
+      <section class="notification-settings-panel">
+        <h2>Notifications</h2>
+        <NotificationPreferences
+          {projectPaths}
+          storage={notificationPreferencesStorage}
+          onChange={onNotificationPreferencesChange}
+        />
+      </section>
+    {/if}
 
     {#if inboxOpen}
       <section class="inbox-panel">
@@ -744,6 +853,35 @@
   }
 
   .inbox-panel h2 {
+    font-size: 1rem;
+    margin: 0 0 0.5rem;
+  }
+
+  .notification-settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid currentColor;
+    border-radius: 0.375rem;
+    background: transparent;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    color: inherit;
+    font-size: 0.85rem;
+  }
+
+  .notification-settings-toggle.active {
+    background: rgba(79, 70, 229, 0.15);
+    border-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .notification-settings-panel {
+    border: 1px solid rgba(127, 127, 127, 0.25);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .notification-settings-panel h2 {
     font-size: 1rem;
     margin: 0 0 0.5rem;
   }

@@ -21,6 +21,7 @@
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { PendingPermissionRequest } from '@loombox/providers-core';
   import DiffViewer from './DiffViewer.svelte';
+  import { triggerHapticFeedback } from '$lib/haptics';
 
   /** Below this many options, there's nothing to collapse into an overflow menu even on a narrow viewport. */
   const NARROW_PRIMARY_OPTION_COUNT = 2;
@@ -43,9 +44,18 @@
      * in the caller (`+page.svelte`'s viewport store), not this component.
      */
     narrow?: boolean;
+    /** Injectable for tests; defaults to the real Vibration API (SPEC.md §7.3, issue #133). */
+    hapticFn?: typeof triggerHapticFeedback;
   }
 
-  const { request, actionable, onResolve, onDefer, narrow = false }: Props = $props();
+  const {
+    request,
+    actionable,
+    onResolve,
+    onDefer,
+    narrow = false,
+    hapticFn = triggerHapticFeedback,
+  }: Props = $props();
 
   let overflowOpen = $state(false);
 
@@ -60,8 +70,20 @@
     return kind === 'allow_once' || kind === 'allow_always' ? 'option allow' : 'option reject';
   }
 
+  /**
+   * Confirm/deny is irreversible (SPEC.md §7.3), so every resolve gets a
+   * short haptic cue on a device that supports it — a silent no-op
+   * elsewhere (`triggerHapticFeedback`'s own guard). Mirrors
+   * `handleKeydown`'s own `if (!actionable) return` guard: the option
+   * buttons are `disabled` when not actionable, but a synthetic click
+   * (e.g. a test's `fireEvent.click`, which — unlike a real user click —
+   * jsdom does not itself suppress on a disabled button) must not resolve
+   * or vibrate regardless.
+   */
   function resolveOption(option: AcpPermissionOption): void {
+    if (!actionable) return;
     overflowOpen = false;
+    hapticFn();
     onResolve(option);
   }
 
@@ -270,5 +292,17 @@
     border: 1px solid currentColor;
     border-radius: 0.2rem;
     padding: 0 0.25rem;
+  }
+
+  /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a
+     coarse (touch) pointer, the confirm/deny/overflow buttons grow to at
+     least the ~44px hit target both major mobile platforms recommend,
+     instead of the compact desktop sizing above. */
+  @media (pointer: coarse) {
+    .option {
+      min-height: 2.75rem;
+      padding: 0.55rem 0.9rem;
+      font-size: 0.95rem;
+    }
   }
 </style>
