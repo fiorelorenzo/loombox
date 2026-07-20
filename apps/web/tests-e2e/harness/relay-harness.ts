@@ -178,6 +178,10 @@ export async function startE2eRelay(): Promise<E2eRelay> {
     baseURL: 'http://127.0.0.1:0',
     secret: 'e2e-harness-secret-e2e-harness-secret',
     enableEmailPasswordForTests: true,
+    // The app is served from a different origin than this relay, so its
+    // origin must be trusted or Better Auth 403s the sign-up (CSRF/Origin
+    // check). Matches playwright.config.ts's baseURL/preview port.
+    trustedOrigins: ['http://127.0.0.1:4173', 'http://localhost:4173'],
   });
   // Same migration call `packages/relay/src/main.ts` and
   // `packages/relay/src/auth.test.ts` use — `migrateBetterAuth` itself is
