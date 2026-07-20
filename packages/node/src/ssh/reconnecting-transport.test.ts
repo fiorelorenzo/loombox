@@ -1,8 +1,31 @@
+import type { Duplex } from 'node:stream';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { FakeTransport } from './fake-transport';
+import type { PortForwardTransport } from './port-forward-transport';
 import { ReconnectingTransport, defaultIsRetryableError } from './reconnecting-transport';
 import type { RemoteTransport } from './remote-transport';
+
+/** A `RemoteTransport` that also implements `PortForwardTransport`, for proving `ReconnectingTransport` delegates `openForwardChannel` to whichever inner transport is currently live. */
+class FakePortForwardCapableTransport extends FakeTransport implements PortForwardTransport {
+  readonly forwardCalls: Array<{
+    srcHost: string;
+    srcPort: number;
+    dstHost: string;
+    dstPort: number;
+  }> = [];
+
+  async openForwardChannel(
+    srcHost: string,
+    srcPort: number,
+    dstHost: string,
+    dstPort: number,
+  ): Promise<Duplex> {
+    this.forwardCalls.push({ srcHost, srcPort, dstHost, dstPort });
+    return new PassThrough();
+  }
+}
 
 function connectionResetError(): NodeJS.ErrnoException {
   const error = new Error('read ECONNRESET') as NodeJS.ErrnoException;
@@ -262,5 +285,44 @@ describe('ReconnectingTransport', () => {
     await expect(connecting).rejects.toThrow();
     await vi.waitFor(() => expect(underlyingClosed).toBe(true));
     expect(transport.getHealth().status).not.toBe('connected');
+  });
+
+  describe('openForwardChannel (issue #92)', () => {
+    it('delegates to the currently-connected inner transport when it supports port forwarding', async () => {
+      const inner = new FakePortForwardCapableTransport();
+      const transport = new ReconnectingTransport(() => inner, { sleep: noSleep });
+
+      await transport.connect();
+      const channel = await transport.openForwardChannel('127.0.0.1', 5000, 'localhost', 8080);
+
+      expect(channel).toBeDefined();
+      expect(inner.forwardCalls).toEqual([
+        { srcHost: '127.0.0.1', srcPort: 5000, dstHost: 'localhost', dstPort: 8080 },
+      ]);
+    });
+
+    it('reconnects first if not currently connected, then delegates', async () => {
+      let createCount = 0;
+      const createTransport = (): RemoteTransport => {
+        createCount += 1;
+        return new FakePortForwardCapableTransport();
+      };
+      const transport = new ReconnectingTransport(createTransport, { sleep: noSleep });
+
+      // Never explicitly connect()ed — openForwardChannel() itself must
+      // trigger the initial connection, exactly like exec() does.
+      const channel = await transport.openForwardChannel('127.0.0.1', 1, '127.0.0.1', 2);
+      expect(channel).toBeDefined();
+      expect(createCount).toBe(1);
+    });
+
+    it('throws a clear error when the inner transport does not support port forwarding', async () => {
+      const transport = new ReconnectingTransport(() => new FakeTransport(), { sleep: noSleep });
+      await transport.connect();
+
+      await expect(transport.openForwardChannel('127.0.0.1', 1, '127.0.0.1', 2)).rejects.toThrow(
+        /does not support port forwarding/,
+      );
+    });
   });
 });

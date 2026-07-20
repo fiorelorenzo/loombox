@@ -121,6 +121,47 @@ describe('SessionManager', () => {
     await expect(manager.removeSession('unknown-id')).rejects.toThrow(/no session/i);
   });
 
+  describe('workInPlace (issue #75)', () => {
+    it('runs directly in projectPath instead of creating a worktree', async () => {
+      const session = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+
+      expect(session.worktreePath).toBe(repoPath);
+      expect(session.branch).toBe('');
+
+      const worktreeList = await git(repoPath, ['worktree', 'list', '--porcelain']);
+      // Only the repo's own primary worktree entry exists — no session
+      // worktree was added.
+      expect(worktreeList.split('\n\n').filter((entry) => entry.trim())).toHaveLength(1);
+    });
+
+    it('removeSession on a workInPlace session forgets the record without touching projectPath', async () => {
+      const session = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+
+      await manager.removeSession(session.id);
+
+      expect(manager.getSession(session.id)).toBeUndefined();
+      // projectPath itself must still exist and still be the git repo it was.
+      const dirStat = await stat(repoPath);
+      expect(dirStat.isDirectory()).toBe(true);
+      const insideWorkTree = await git(repoPath, ['rev-parse', '--is-inside-work-tree']);
+      expect(insideWorkTree).toBe('true');
+    });
+
+    it('defaults to creating an isolated worktree when workInPlace is omitted', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      expect(session.worktreePath).not.toBe(repoPath);
+      expect(session.branch).not.toBe('');
+    });
+  });
+
   it('uses a caller-supplied id instead of generating one, when given', async () => {
     const session = await manager.createSession({
       projectPath: repoPath,

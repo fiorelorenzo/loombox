@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { LocalProcessTransport } from './ssh/local-process-transport';
+import { RemoteFsError } from './ssh/remote-fs';
 import { SshExecutionTarget } from './ssh-execution-target';
 
 // Exercised against LocalProcessTransport — a real child-process "remote"
@@ -90,6 +91,40 @@ describe('SshExecutionTarget', () => {
 
     it('rejects readdir for a directory that does not exist', async () => {
       await expect(target.readdir(join(dir, 'does-not-exist'))).rejects.toThrow(/readdir/);
+    });
+  });
+
+  describe('remote filesystem browsing (issue #74)', () => {
+    it('readdirDetailed reports type/size/mtime for each entry', async () => {
+      await target.writeFile(join(dir, 'a.txt'), 'aaa');
+      await target.mkdir(join(dir, 'sub'));
+
+      const entries = await target.readdirDetailed(dir);
+      const byName = Object.fromEntries(entries.map((e) => [e.name, e]));
+      expect(byName['a.txt']).toMatchObject({ type: 'file', size: 3 });
+      expect(byName['sub']).toMatchObject({ type: 'dir' });
+      expect(byName['a.txt'].mtimeMs).toBeGreaterThan(0);
+    });
+
+    it('readdirDetailed throws RemoteFsError ENOENT for a missing directory', async () => {
+      const error = await target
+        .readdirDetailed(join(dir, 'does-not-exist'))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(RemoteFsError);
+      expect((error as RemoteFsError).code).toBe('ENOENT');
+    });
+
+    it("stat reports a file's type and size", async () => {
+      await target.writeFile(join(dir, 'note.txt'), 'hello world');
+      const result = await target.stat(join(dir, 'note.txt'));
+      expect(result.type).toBe('file');
+      expect(result.size).toBe(11);
+    });
+
+    it('stat throws RemoteFsError ENOENT for a missing path', async () => {
+      const error = await target.stat(join(dir, 'missing')).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(RemoteFsError);
+      expect((error as RemoteFsError).code).toBe('ENOENT');
     });
   });
 });

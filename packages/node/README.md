@@ -59,3 +59,64 @@ injected `osKeyringBackendFactory` isn't a hypothetical.
 See `keyring.ts`'s module doc comment for the concrete backend
 implementations (`OsKeyringBackend`/`FileKeyringBackend`/`NodeKeyring`), and
 `identity.ts` / `mcp-secrets.ts` for the two call sites above.
+
+## Dockerized SSH test fixture (issue #70)
+
+`ssh/docker-sshd-fixture.ts` boots a real, throwaway `sshd` in Docker so the
+`ssh:` execution-target machinery (`ssh2-transport.ts`, `remote-fs.ts`,
+`remote-worktree.ts`, `port-forward-tunnel.ts`, ...) gets exercised against
+an actual SSH server, not only the `FakeTransport`/`LocalProcessTransport`
+stand-ins the rest of this directory's tests use for pure control-logic
+coverage.
+
+```ts
+import { isDockerAvailable, startDockerSshdFixture } from './ssh/docker-sshd-fixture';
+
+const dockerAvailable = await isDockerAvailable();
+
+describe.skipIf(!dockerAvailable)('my ssh: feature', () => {
+  let fixture: Awaited<ReturnType<typeof startDockerSshdFixture>>;
+
+  beforeAll(async () => {
+    fixture = await startDockerSshdFixture();
+  }, 120_000); // first build can take a while if the base image isn't cached yet
+
+  afterAll(async () => {
+    await fixture.stop();
+  }, 30_000);
+
+  it('...', async () => {
+    const transport = new Ssh2Transport({
+      host: fixture.host,
+      port: fixture.port,
+      username: fixture.username,
+      privateKeyPath: fixture.privateKeyPath,
+    });
+    // ...
+  });
+});
+```
+
+What the fixture image is (`docker-sshd-fixture.ts`'s own doc comment has the
+full rationale): Alpine + `openssh-server` (key-based auth only, a fixed
+throwaway keypair baked into the image — not a secret, it only ever unlocks a
+disposable local container) + `git` + `socat`. `TcpForwarding` is explicitly
+re-enabled (Alpine's packaged `sshd_config` ships with it off). A pre-built
+git repo lives at `fixture.remoteRepoPath`, ready for worktree tests. A
+`socat` TCP echo server listens on `fixture.echoPort` for tunnel tests
+(issue #92). A fake-but-structurally-faithful `mise` at `~/.local/bin/mise`
+puts a `node` shim on `PATH` only via its `activate bash` output — on
+purpose, reproducing SPEC §9's non-interactive-shell PATH gap so
+`login-shell.ts`'s `wrapForLoginShell` fix (issue #73) has something real to
+prove itself against.
+
+Every test file that uses this fixture gates on {@link isDockerAvailable}
+(a short-timeout `docker info` probe) via `describe.skipIf(!dockerAvailable)`
+— on a machine with no Docker, or the daemon not running, those tests are
+skipped cleanly rather than hanging or failing the suite. The image is built
+once per tag (`docker build` layer-caches everything after the first run in
+a session) and each test file boots its own disposable container
+(`--rm`, bound to a random loopback port), torn down in `afterAll`.
+See `docker-sshd-fixture.test.ts`, `remote-fs.test.ts`,
+`remote-worktree.test.ts`, and `port-forward-tunnel.test.ts` (all under
+`src/ssh/`) for the fixture actually in use.

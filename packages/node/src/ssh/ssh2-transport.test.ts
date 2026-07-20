@@ -49,11 +49,27 @@ const { FakeSsh2Client } = vi.hoisted(() => {
 
   class FakeSsh2Client extends MiniEmitter {
     execCalls: string[] = [];
+    forwardOutCalls: Array<[string, number, string, number]> = [];
+    forwardOutError: Error | undefined;
     connect(): void {
       queueMicrotask(() => this.emit('ready'));
     }
     exec(command: string, callback: (err: Error | undefined, stream: FakeSshStream) => void): void {
       this.execCalls.push(command);
+      callback(undefined, new FakeSshStream());
+    }
+    forwardOut(
+      srcHost: string,
+      srcPort: number,
+      dstHost: string,
+      dstPort: number,
+      callback: (err: Error | undefined, stream: FakeSshStream) => void,
+    ): void {
+      this.forwardOutCalls.push([srcHost, srcPort, dstHost, dstPort]);
+      if (this.forwardOutError) {
+        callback(this.forwardOutError, undefined as unknown as FakeSshStream);
+        return;
+      }
       callback(undefined, new FakeSshStream());
     }
     end(): void {}
@@ -85,6 +101,38 @@ describe('Ssh2Transport (login-shell wrapping, issue #73 — against a fake ssh2
 
     const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
     expect(client.execCalls).toEqual(['node --version']);
+  });
+});
+
+describe('Ssh2Transport.openForwardChannel (issue #92 — against a fake ssh2 Client)', () => {
+  it('rejects before connect() rather than hanging or crashing', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await expect(transport.openForwardChannel('127.0.0.1', 1, '127.0.0.1', 2)).rejects.toThrow(
+      /not connected/,
+    );
+  });
+
+  it('delegates to the underlying client.forwardOut with the exact given addresses', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const stream = await transport.openForwardChannel('127.0.0.1', 5000, 'localhost', 8080);
+    expect(stream).toBeDefined();
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    expect(client.forwardOutCalls).toEqual([['127.0.0.1', 5000, 'localhost', 8080]]);
+  });
+
+  it('rejects when the underlying forwardOut fails (e.g. AllowTcpForwarding disabled remotely)', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    client.forwardOutError = new Error('open failed');
+
+    await expect(transport.openForwardChannel('127.0.0.1', 1, '127.0.0.1', 2)).rejects.toThrow(
+      /open failed/,
+    );
   });
 });
 

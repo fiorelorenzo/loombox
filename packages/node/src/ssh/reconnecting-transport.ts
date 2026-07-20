@@ -1,3 +1,6 @@
+import type { Duplex } from 'node:stream';
+
+import { supportsPortForward, type PortForwardTransport } from './port-forward-transport';
 import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
 
 /**
@@ -86,7 +89,7 @@ function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export class ReconnectingTransport implements RemoteTransport {
+export class ReconnectingTransport implements RemoteTransport, PortForwardTransport {
   private inner: RemoteTransport | undefined;
   private status: TransportConnectionStatus = 'disconnected';
   private attempts = 0;
@@ -166,6 +169,33 @@ export class ReconnectingTransport implements RemoteTransport {
         transport = await this.reconnect();
       }
     }
+  }
+
+  /**
+   * Delegates to the currently-connected (or freshly reconnected) inner
+   * transport's own {@link PortForwardTransport.openForwardChannel} (issue
+   * #92) — the same "reuse the live connection, reconnect first if needed"
+   * seam {@link exec} uses, so a tunnel opened against this pooled transport
+   * survives a mid-session reconnect exactly like a subsequent `exec()`
+   * call would. Throws if the inner transport doesn't implement
+   * `PortForwardTransport` (the hermetic `FakeTransport`/
+   * `LocalProcessTransport` doubles, by design — see that interface's own
+   * doc comment).
+   */
+  async openForwardChannel(
+    srcHost: string,
+    srcPort: number,
+    dstHost: string,
+    dstPort: number,
+  ): Promise<Duplex> {
+    const transport =
+      this.status === 'connected' && this.inner ? this.inner : await this.reconnect();
+    if (!supportsPortForward(transport)) {
+      throw new Error(
+        'ReconnectingTransport: underlying transport does not support port forwarding',
+      );
+    }
+    return transport.openForwardChannel(srcHost, srcPort, dstHost, dstPort);
   }
 
   async close(): Promise<void> {
