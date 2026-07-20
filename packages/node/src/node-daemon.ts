@@ -53,6 +53,7 @@ import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-c
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
+import { RelayLeaseClient, type RelayLeaseOutcome } from './ssh/relay-lease-client';
 import { SessionLeaseManager } from './ssh/session-lease';
 import { supportsShellChannel } from './ssh/shell-transport';
 import { shellChannelToPty } from './ssh/ssh-pty-adapter';
@@ -125,6 +126,30 @@ export interface NodeDaemonOptions {
    * distributed `LeaseStore` (e.g. relay-hosted) across every node instance.
    */
   leaseManager?: SessionLeaseManager;
+  /**
+   * The cross-process half of session-ownership leasing (SPEC §9; issues
+   * #82/#104): talks to the relay's own lease arbiter over this node's
+   * existing relay connection, so an `ssh:` session's lease is enforced
+   * across two different `NodeDaemon` processes (e.g. a Mac node and a
+   * devbox node), not just within this one. Defaults to a `RelayLeaseClient`
+   * built off this node's own relay connection, gated on `whenConnected()`
+   * so a request made before the handshake completes waits rather than
+   * being silently dropped. Layered additively alongside `leaseManager`
+   * above (never replaces it) — see `RelayLeaseClient`'s own doc comment
+   * for why the two are separate. Tests inject a fake with no relay/
+   * WebSocket involved, or point two real `NodeDaemon`s at one
+   * `startRelay()` instance to exercise real cross-node arbitration.
+   */
+  relayLeaseClient?: RelayLeaseClient;
+  /**
+   * How often an `ssh:` session's owning node re-renews its lease, both
+   * locally (`leaseManager`) and across the relay (`relayLeaseClient`),
+   * while it's running (SPEC §9's "renewable lease"). Defaults to a third of
+   * `leaseManager`'s configured `ttlMs` — comfortably inside the TTL even if
+   * one renewal is delayed or dropped. Tests lower this to keep
+   * heartbeat-observing assertions fast.
+   */
+  leaseHeartbeatIntervalMs?: number;
   /** Poll interval (ms) for a `RemoteAgentChildProcess` bridge on an `ssh:` target session; defaults to 150ms. Tests lower this to speed up polling-based assertions. */
   remoteChildPollIntervalMs?: number;
   /**
@@ -387,6 +412,10 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
+  private readonly relayLeaseClient: RelayLeaseClient;
+  private readonly leaseHeartbeatIntervalMs: number;
+  /** One heartbeat-renew interval per currently-owned `ssh:` session (SPEC §9) — cleared on `close()`, which also releases each one's lease (local + relay). */
+  private readonly leaseHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
   private readonly remoteChildPollIntervalMs: number | undefined;
   /**
    * One pooled, auto-reconnecting `RemoteTransport` per `ssh:` target id,
@@ -465,6 +494,16 @@ export class NodeDaemon extends EventEmitter {
           agent: config.agent,
         }));
     this.leaseManager = options.leaseManager ?? new SessionLeaseManager();
+    // Built off `this.relay` (constructed above), never a new connection —
+    // same rationale as `attachmentResolver`/`blobSource` above. Gated on
+    // `whenConnected()` so a request made before this node's relay handshake
+    // completes waits instead of being silently dropped by
+    // `RelayConnection.send()`.
+    this.relayLeaseClient =
+      options.relayLeaseClient ??
+      new RelayLeaseClient(this.relay, { whenReady: () => this.whenConnected() });
+    this.leaseHeartbeatIntervalMs =
+      options.leaseHeartbeatIntervalMs ?? Math.max(1_000, Math.floor(this.leaseManager.ttlMs / 3));
     this.remoteChildPollIntervalMs = options.remoteChildPollIntervalMs;
     this.sshTransportPool = new SshTransportPool({ reconnect: options.sshReconnect });
     this.mcpConfigStore =
@@ -526,6 +565,12 @@ export class NodeDaemon extends EventEmitter {
     for (const [sessionId, bridge] of this.bridges) {
       bridge.remoteChild?.detachLocal();
       this.supervisor.stop(sessionId);
+      // SPEC §9's "release on stop/exit": this node is no longer driving
+      // the session (the remote agent process itself keeps running, per
+      // issue #80, above), so its lease is freed immediately rather than
+      // left to expire on its own TTL — letting a reattach (by this node
+      // again, or another) acquire right away instead of waiting it out.
+      this.stopLeaseHeartbeat(sessionId);
     }
     this.bridges.clear();
     this.terminalSupervisor.closeAll();
@@ -696,6 +741,7 @@ export class NodeDaemon extends EventEmitter {
           `lease already held by node "${lease.heldBy}" (expires ${new Date(lease.expiresAt).toISOString()})`,
       );
     }
+    await this.acquireRelayLeaseOrRollback(sessionId, targetId);
 
     const provider = this.supervisor.getProvider(opts.provider);
     if (!provider) {
@@ -756,12 +802,107 @@ export class NodeDaemon extends EventEmitter {
       targetId,
     };
 
+    this.startLeaseHeartbeat(sessionId);
     return this.finishSessionCreation(
       session,
       agentSession,
       { targetId, title: opts.title },
       remoteChild,
     );
+  }
+
+  /**
+   * The relay half of session-ownership leasing (SPEC §9; issues #82/#104),
+   * called right after the local `leaseManager` grants an `ssh:` session's
+   * lease. A denial rolls the local grant back (so this node never believes
+   * it owns a session the relay says another node holds) and refuses session
+   * creation with a clear reason, exactly like the local-only refusal above.
+   * A relay round-trip failure (unreachable/timed out, rather than an actual
+   * denial) is logged and swallowed rather than blocking session creation —
+   * an honest v1 trade-off: the local lease and the eventual next heartbeat
+   * still keep this session correctly arbitrated once the relay is reachable
+   * again, so a transient relay hiccup does not make session creation
+   * unavailable.
+   */
+  private async acquireRelayLeaseOrRollback(sessionId: string, targetId: string): Promise<void> {
+    let outcome: RelayLeaseOutcome;
+    try {
+      outcome = await this.relayLeaseClient.acquire(
+        sessionId,
+        this.nodeId,
+        this.leaseManager.ttlMs,
+      );
+    } catch (error) {
+      console.warn(
+        `NodeDaemon: could not reach the relay to acquire session ${sessionId}'s cross-node lease (issue #82/#104); proceeding on the local lease alone: ${(error as Error).message}`,
+      );
+      return;
+    }
+    if (outcome.granted) return;
+
+    await this.leaseManager.release(sessionId, this.nodeId);
+    const heldBy = outcome.heldBy ? ` held by node "${outcome.heldBy}"` : '';
+    const expiry = outcome.expiresAt
+      ? ` (expires ${new Date(outcome.expiresAt).toISOString()})`
+      : '';
+    throw new Error(
+      `NodeDaemon: cannot create session ${sessionId} on ssh: target "${targetId}": ` +
+        `the relay refused this session's ownership lease —${heldBy}${expiry} (issues #82/#104)`,
+    );
+  }
+
+  /**
+   * Starts this `ssh:` session's renewal heartbeat (SPEC §9's "renewable
+   * lease"): re-renews both the local lease (`leaseManager`) and the relay's
+   * (`relayLeaseClient`) on `leaseHeartbeatIntervalMs`, comfortably inside
+   * the lease TTL, for as long as this node keeps driving the session.
+   * Stopped (and the lease released) by `close()` — there is no per-session
+   * stop API yet, so that is the only place a heartbeat ever ends today. A
+   * relay renewal denial (this node's lease actually lost, e.g. to an
+   * expiry-then-reclaim by another node) proactively releases the local
+   * lease too, so the very next `promptSession()` call fails fast on
+   * `assertStillLeaseholder`'s local, no-network check rather than only
+   * discovering the loss once its own local TTL separately expires.
+   */
+  private startLeaseHeartbeat(sessionId: string): void {
+    const timer = setInterval(() => {
+      void this.leaseManager.renew(sessionId, this.nodeId);
+      void this.relayLeaseClient
+        .renew(sessionId, this.nodeId, this.leaseManager.ttlMs)
+        .then((outcome) => {
+          if (!outcome.granted) {
+            void this.leaseManager.release(sessionId, this.nodeId);
+          }
+        })
+        .catch((error: Error) => {
+          console.warn(
+            `NodeDaemon: relay lease heartbeat failed for session ${sessionId} (issue #82/#104): ${error.message}`,
+          );
+        });
+    }, this.leaseHeartbeatIntervalMs);
+    timer.unref?.();
+    this.leaseHeartbeats.set(sessionId, timer);
+  }
+
+  /**
+   * Stops a session's heartbeat (if any) and releases its lease, both
+   * locally and on the relay. Idempotent: called for every bridge on
+   * `close()`, including `local` ones that never had a heartbeat at all.
+   *
+   * Uses {@link RelayLeaseClient.releaseBestEffort} rather than its awaited
+   * `release()` — `close()` (this method's only caller) is a synchronous
+   * teardown path that closes the underlying relay connection immediately
+   * afterward in the same call stack; an awaited release's `send()` is
+   * deferred behind at least one microtask even when already connected,
+   * which would then race — and could lose to — that synchronous close.
+   */
+  private stopLeaseHeartbeat(sessionId: string): void {
+    const timer = this.leaseHeartbeats.get(sessionId);
+    if (!timer) return;
+    clearInterval(timer);
+    this.leaseHeartbeats.delete(sessionId);
+    void this.leaseManager.release(sessionId, this.nodeId);
+    this.relayLeaseClient.releaseBestEffort(sessionId, this.nodeId);
   }
 
   /**

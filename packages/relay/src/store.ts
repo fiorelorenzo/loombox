@@ -258,6 +258,60 @@ export interface VapidKeyStore {
   saveIfAbsent(keys: VapidKeyPair): Awaitable<VapidKeyPair>;
 }
 
+/**
+ * One session's ownership lease (SPEC §9, §7.2's same-folder safety
+ * generalized across processes; issues #82/#104) — routing/coordination
+ * metadata only (who owns a session, and until when), never session
+ * content, so the relay legitimately arbitrates it exactly like the device
+ * registry. Scoped by `accountId` so two different accounts' sessions can
+ * never contend for the same lease slot, even in the (practically
+ * impossible, since session ids are UUIDs) event of a `sessionId` collision
+ * — the same account-isolation discipline every other store here follows.
+ */
+export interface LeaseRecord {
+  sessionId: string;
+  accountId: string;
+  holderNodeId: string;
+  expiresAt: number;
+}
+
+/** The result of an `acquire`/`renew` attempt against a `LeaseStore`. */
+export type LeaseGrantOutcome =
+  { granted: true; lease: LeaseRecord } | { granted: false; heldBy?: string; expiresAt?: number };
+
+/**
+ * The relay-side lease arbiter (issues #82/#104). Mirrors
+ * `packages/node/src/ssh/session-lease.ts`'s `SessionLeaseManager`/
+ * `LeaseStore` semantics — that file's own doc comment names this exact
+ * store as the seam a real distributed backend slots into — now scoped by
+ * `accountId` and reachable by every node over the wire (`lease_request`/
+ * `lease_release`, `packages/protocol/src/v1/lease.ts`), so a Mac node and a
+ * devbox node arbitrate through one shared authority instead of each
+ * holding its own disconnected local state.
+ */
+export interface LeaseStore {
+  /** Reads the current lease, including an already-expired one — expiry is a `now`-relative judgement the caller (`relay.ts`) makes, not something the store hides. */
+  get(accountId: string, sessionId: string): Awaitable<LeaseRecord | undefined>;
+  /** Grants iff the lease is currently unheld, already expired as of `now`, or already held by this same `nodeId` (idempotent re-acquire). */
+  acquire(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): Awaitable<LeaseGrantOutcome>;
+  /** Extends only if `nodeId` is the current live holder as of `now`; never grants a fresh lease to a non-holder — a renewal is never a back-door acquire. */
+  renew(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): Awaitable<LeaseGrantOutcome>;
+  /** Frees the lease iff currently held by `nodeId`. Returns whether it actually released — `false` for an already-free lease or one held by a different node (never releases another node's lease). */
+  release(accountId: string, sessionId: string, nodeId: string): Awaitable<boolean>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -268,6 +322,7 @@ export interface RelayStore {
   amkRotation: AmkRotationStore;
   pushSubscriptions: PushSubscriptionStore;
   vapidKeys: VapidKeyStore;
+  leases: LeaseStore;
 }
 
 export interface RelayStoreOptions {
@@ -344,6 +399,25 @@ interface SyncVapidKeyStore extends VapidKeyStore {
   saveIfAbsent(keys: VapidKeyPair): VapidKeyPair;
 }
 
+interface SyncLeaseStore extends LeaseStore {
+  get(accountId: string, sessionId: string): LeaseRecord | undefined;
+  acquire(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): LeaseGrantOutcome;
+  renew(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): LeaseGrantOutcome;
+  release(accountId: string, sessionId: string, nodeId: string): boolean;
+}
+
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
 export interface SyncRelayStore extends RelayStore {
   devices: SyncDeviceStore;
@@ -355,6 +429,7 @@ export interface SyncRelayStore extends RelayStore {
   amkRotation: SyncAmkRotationStore;
   pushSubscriptions: SyncPushSubscriptionStore;
   vapidKeys: SyncVapidKeyStore;
+  leases: SyncLeaseStore;
 }
 
 /**
@@ -668,6 +743,63 @@ function createVapidKeyStore(): SyncVapidKeyStore {
   };
 }
 
+function leaseKey(accountId: string, sessionId: string): string {
+  return `${accountId}:${sessionId}`;
+}
+
+/**
+ * In-memory `LeaseStore` (issues #82/#104). Same compare-and-swap semantics
+ * as `packages/node/src/ssh/session-lease.ts`'s `InMemoryLeaseStore` — see
+ * that file's doc comment — reimplemented here account-scoped rather than
+ * imported, since `@loombox/relay` does not depend on `@loombox/node`.
+ */
+function createLeaseStore(): SyncLeaseStore {
+  const leases = new Map<string, LeaseRecord>();
+
+  function grant(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): LeaseGrantOutcome {
+    const lease: LeaseRecord = {
+      sessionId,
+      accountId,
+      holderNodeId: nodeId,
+      expiresAt: now + ttlMs,
+    };
+    leases.set(leaseKey(accountId, sessionId), lease);
+    return { granted: true, lease };
+  }
+
+  return {
+    get(accountId, sessionId) {
+      return leases.get(leaseKey(accountId, sessionId));
+    },
+    acquire(accountId, sessionId, nodeId, ttlMs, now) {
+      const current = leases.get(leaseKey(accountId, sessionId));
+      if (current && current.holderNodeId !== nodeId && current.expiresAt > now) {
+        return { granted: false, heldBy: current.holderNodeId, expiresAt: current.expiresAt };
+      }
+      return grant(accountId, sessionId, nodeId, ttlMs, now);
+    },
+    renew(accountId, sessionId, nodeId, ttlMs, now) {
+      const current = leases.get(leaseKey(accountId, sessionId));
+      if (!current || current.holderNodeId !== nodeId || current.expiresAt <= now) {
+        return { granted: false, heldBy: current?.holderNodeId, expiresAt: current?.expiresAt };
+      }
+      return grant(accountId, sessionId, nodeId, ttlMs, now);
+    },
+    release(accountId, sessionId, nodeId) {
+      const current = leases.get(leaseKey(accountId, sessionId));
+      if (!current || current.holderNodeId !== nodeId) return false;
+      leases.delete(leaseKey(accountId, sessionId));
+      return true;
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -681,5 +813,6 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     amkRotation: createAmkRotationStore(),
     pushSubscriptions: createPushSubscriptionStore(),
     vapidKeys: createVapidKeyStore(),
+    leases: createLeaseStore(),
   };
 }

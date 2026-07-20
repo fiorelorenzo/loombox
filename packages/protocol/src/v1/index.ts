@@ -190,6 +190,27 @@ export {
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';
 export { presence, resyncMarker, resyncRequest } from './presence';
 
+export type {
+  LeaseDenial,
+  LeaseGrant,
+  LeaseOutcome,
+  LeaseRelease,
+  LeaseReleaseResult,
+  LeaseRequest,
+  LeaseRequestAction,
+  LeaseResult,
+} from './lease';
+export {
+  leaseDenial,
+  leaseGrant,
+  leaseOutcome,
+  leaseRelease,
+  leaseReleaseResult,
+  leaseRequest,
+  leaseRequestAction,
+  leaseResult,
+} from './lease';
+
 export type { WireMessageV1 } from './message';
 export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './message';
 
@@ -249,6 +270,16 @@ import {
   fsListResultV1,
 } from './fs';
 import { presence, resyncMarker, resyncRequest } from './presence';
+import {
+  leaseDenial,
+  leaseGrant,
+  leaseOutcome,
+  leaseRelease,
+  leaseReleaseResult,
+  leaseRequest,
+  leaseRequestAction,
+  leaseResult,
+} from './lease';
 import {
   terminalClose,
   terminalClosed,
@@ -339,5 +370,13 @@ export const schemasV1 = {
   presence,
   resyncRequest,
   resyncMarker,
+  leaseRequestAction,
+  leaseRequest,
+  leaseGrant,
+  leaseDenial,
+  leaseOutcome,
+  leaseResult,
+  leaseRelease,
+  leaseReleaseResult,
   wireMessageV1,
 } as const;

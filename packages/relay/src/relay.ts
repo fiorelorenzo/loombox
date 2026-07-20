@@ -9,6 +9,8 @@ import {
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type InitializeResult,
+  type LeaseReleaseResult,
+  type LeaseResult,
   type NewDeviceBootstrapResponse,
   type ResyncMarker,
   type SessionAnnounceV1,
@@ -179,6 +181,19 @@ export interface CreateRelayOptions {
     /** Defaults to {@link createWebPushSender} — injectable so #163's presence-aware delivery is testable without a real Web Push network call. */
     sender?: PushSender;
   };
+  /**
+   * Session-ownership lease TTL bounds (SPEC §9; issues #82/#104). A
+   * `lease_request`'s own `ttlMs` (if any) is clamped into `[1, max]`, then
+   * defaults to `default` when omitted entirely — the relay is always the
+   * final authority on how long a grant actually lasts, never a bare
+   * pass-through of whatever a node asks for. Defaults to
+   * {@link DEFAULT_LEASE_TTL_MS}/{@link DEFAULT_MAX_LEASE_TTL_MS}; tests lower
+   * both to keep expiry-then-grant assertions fast.
+   */
+  leaseTtlMs?: {
+    default?: number;
+    max?: number;
+  };
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -189,6 +204,10 @@ export const DEFAULT_RATE_LIMIT_MAX = 120;
 export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 /** Sane default for {@link CreateRelayOptions.maxAccountStorageBytes} — 50 MiB (#101). */
 export const DEFAULT_MAX_ACCOUNT_STORAGE_BYTES = 50 * 1024 * 1024;
+/** Sane default for {@link CreateRelayOptions.leaseTtlMs}'s `default` — 30s, matching `packages/node/src/ssh/session-lease.ts`'s own historical local default (issues #82/#104). */
+export const DEFAULT_LEASE_TTL_MS = 30_000;
+/** Sane default for {@link CreateRelayOptions.leaseTtlMs}'s `max` — 5 minutes, long enough for a slow renew cycle to catch up, short enough that a crashed/misbehaving node's session becomes reclaimable in a bounded time even if it requested an enormous TTL. */
+export const DEFAULT_MAX_LEASE_TTL_MS = 5 * 60_000;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -205,6 +224,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
   const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
+  const defaultLeaseTtlMs = opts.leaseTtlMs?.default ?? DEFAULT_LEASE_TTL_MS;
+  const maxLeaseTtlMs = opts.leaseTtlMs?.max ?? DEFAULT_MAX_LEASE_TTL_MS;
   const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
   const pushSender = opts.push ? (opts.push.sender ?? createWebPushSender()) : undefined;
   app.addHook('onClose', async () => {
@@ -654,6 +675,73 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     sendDirect(connection, response);
   }
 
+  /** Clamps a `lease_request`'s optional `ttlMs` into `[1, maxLeaseTtlMs]`, defaulting to `defaultLeaseTtlMs` when omitted (issues #82/#104) — the relay is always the final authority on how long a grant actually lasts. */
+  function resolveLeaseTtlMs(requested: number | undefined): number {
+    const base = requested ?? defaultLeaseTtlMs;
+    return Math.min(Math.max(base, 1), maxLeaseTtlMs);
+  }
+
+  /**
+   * Session-ownership leasing (SPEC §9; issues #82/#104): a node acquires or
+   * renews a session's lease, arbitrated by `store.leases` account-scoped to
+   * this connection's own `accountId` (never a client-supplied one, exactly
+   * like every other store lookup in this file). Always replies — a caller
+   * is waiting on `requestId` — whether granted or denied.
+   */
+  async function handleLeaseRequest(
+    connection: NodeConnection,
+    message: Extract<WireMessageV1, { type: 'lease_request' }>,
+  ): Promise<void> {
+    const ttlMs = resolveLeaseTtlMs(message.ttlMs);
+    const now = Date.now();
+    const outcome =
+      message.action === 'acquire'
+        ? await store.leases.acquire(
+            connection.accountId,
+            message.sessionId,
+            message.nodeId,
+            ttlMs,
+            now,
+          )
+        : await store.leases.renew(
+            connection.accountId,
+            message.sessionId,
+            message.nodeId,
+            ttlMs,
+            now,
+          );
+    const response: LeaseResult = {
+      type: 'lease_result',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      result: outcome.granted
+        ? { outcome: 'granted', expiresAt: outcome.lease.expiresAt }
+        : { outcome: 'denied', heldBy: outcome.heldBy, expiresAt: outcome.expiresAt },
+    };
+    sendDirect(connection, response);
+  }
+
+  /** A node deliberately releasing a lease it holds (session stop, node exit — SPEC §9). Account-scoped exactly like `handleLeaseRequest`. */
+  async function handleLeaseRelease(
+    connection: NodeConnection,
+    message: Extract<WireMessageV1, { type: 'lease_release' }>,
+  ): Promise<void> {
+    const released = await store.leases.release(
+      connection.accountId,
+      message.sessionId,
+      message.nodeId,
+    );
+    const response: LeaseReleaseResult = {
+      type: 'lease_release_result',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      released,
+    };
+    sendDirect(connection, response);
+  }
+
   async function handleNodeMessage(
     connection: NodeConnection,
     message: WireMessageV1,
@@ -754,6 +842,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // envelopes, so it never sees a byte of typed input, shell output,
         // or even the negotiated cols/rows (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
+        return;
+      case 'lease_request':
+        // SPEC §9; issues #82/#104: a session is owned by a node, never a
+        // client — only a node connection ever sends this.
+        await handleLeaseRequest(connection, message);
+        return;
+      case 'lease_release':
+        await handleLeaseRelease(connection, message);
         return;
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');

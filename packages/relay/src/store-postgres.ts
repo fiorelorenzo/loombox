@@ -11,6 +11,9 @@ import {
   type DeviceRecord,
   type DeviceStore,
   type EscrowStore,
+  type LeaseGrantOutcome,
+  type LeaseRecord,
+  type LeaseStore,
   type PushSubscriptionRecord,
   type PushSubscriptionStore,
   type QuotaStore,
@@ -49,6 +52,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     amkRotation: createPostgresAmkRotationStore(pg),
     pushSubscriptions: createPostgresPushSubscriptionStore(pg),
     vapidKeys: createPostgresVapidKeyStore(pg),
+    leases: createPostgresLeaseStore(pg),
   };
 }
 
@@ -625,6 +629,90 @@ function createPostgresVapidKeyStore(pg: PgLike): VapidKeyStore {
       const row = rows[0];
       if (!row) throw new Error('postgres vapid key store: saveIfAbsent did not persist a row');
       return { publicKey: row.public_key, privateKey: row.private_key };
+    },
+  };
+}
+
+interface LeaseRow {
+  account_id: string;
+  session_id: string;
+  holder_node_id: string;
+  expires_at: string | number;
+}
+
+function rowToLease(row: LeaseRow): LeaseRecord {
+  return {
+    accountId: row.account_id,
+    sessionId: row.session_id,
+    holderNodeId: row.holder_node_id,
+    expiresAt: Number(row.expires_at),
+  };
+}
+
+/**
+ * Postgres-backed `LeaseStore` (issues #82/#104). Read-then-write, same
+ * accepted-limitation trade-off `createPostgresAmkRotationStore` above
+ * documents (no heavier transactional locking elsewhere in this package
+ * either) — a concurrent double-acquire race on the exact same
+ * (account, session) is not fully closed at the SQL level, but the relay
+ * process is single-threaded per request so this only matters across two
+ * relay processes racing the same millisecond, an accepted v1 gap.
+ */
+function createPostgresLeaseStore(pg: PgLike): LeaseStore {
+  async function currentLease(
+    accountId: string,
+    sessionId: string,
+  ): Promise<LeaseRecord | undefined> {
+    const { rows } = await pg.query<LeaseRow>(
+      `SELECT account_id, session_id, holder_node_id, expires_at FROM leases WHERE account_id = $1 AND session_id = $2`,
+      [accountId, sessionId],
+    );
+    return rows[0] ? rowToLease(rows[0]) : undefined;
+  }
+
+  async function grant(
+    accountId: string,
+    sessionId: string,
+    nodeId: string,
+    ttlMs: number,
+    now: number,
+  ): Promise<LeaseGrantOutcome> {
+    const expiresAt = now + ttlMs;
+    await pg.query(
+      `INSERT INTO leases (account_id, session_id, holder_node_id, expires_at)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (account_id, session_id) DO UPDATE SET
+         holder_node_id = EXCLUDED.holder_node_id,
+         expires_at = EXCLUDED.expires_at`,
+      [accountId, sessionId, nodeId, expiresAt],
+    );
+    return { granted: true, lease: { accountId, sessionId, holderNodeId: nodeId, expiresAt } };
+  }
+
+  return {
+    get: currentLease,
+    async acquire(accountId, sessionId, nodeId, ttlMs, now) {
+      const current = await currentLease(accountId, sessionId);
+      if (current && current.holderNodeId !== nodeId && current.expiresAt > now) {
+        return { granted: false, heldBy: current.holderNodeId, expiresAt: current.expiresAt };
+      }
+      return grant(accountId, sessionId, nodeId, ttlMs, now);
+    },
+    async renew(accountId, sessionId, nodeId, ttlMs, now) {
+      const current = await currentLease(accountId, sessionId);
+      if (!current || current.holderNodeId !== nodeId || current.expiresAt <= now) {
+        return { granted: false, heldBy: current?.holderNodeId, expiresAt: current?.expiresAt };
+      }
+      return grant(accountId, sessionId, nodeId, ttlMs, now);
+    },
+    async release(accountId, sessionId, nodeId) {
+      const current = await currentLease(accountId, sessionId);
+      if (!current || current.holderNodeId !== nodeId) return false;
+      await pg.query(`DELETE FROM leases WHERE account_id = $1 AND session_id = $2`, [
+        accountId,
+        sessionId,
+      ]);
+      return true;
     },
   };
 }
