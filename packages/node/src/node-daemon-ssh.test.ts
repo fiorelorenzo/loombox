@@ -766,6 +766,154 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     expect(session.branch).toBe('');
   });
 
+  describe('same-folder safety on ssh: targets (issue #68, SPEC §7.2)', () => {
+    it('refuses a second in-place session on the same target+folder while one is running', async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-ssh-same-folder';
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-ssh-same-folder',
+        deviceId: 'device-node-ssh-same-folder',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+        accountId,
+        amk,
+        targets: [SSH_TARGET],
+        sshTargets: [SSH_TARGET_CONFIG],
+        sshTransportFactory: () => new LocalProcessTransport(),
+        remoteChildPollIntervalMs: 30,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+
+      const first = await node.createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+      expect(first.branch).toBe('');
+
+      await expect(
+        node.createSession({
+          projectPath: remoteWorkspace,
+          provider: 'test-echo',
+          targetId: 'devbox',
+        }),
+      ).rejects.toThrow(/already running/i);
+    });
+
+    it('two ssh: sessions on the same folder using separate worktrees are unaffected', async () => {
+      await git(remoteWorkspace, ['init', '-b', 'main']);
+      await git(remoteWorkspace, ['config', 'user.email', 'test@loombox.dev']);
+      await git(remoteWorkspace, ['config', 'user.name', 'loombox test']);
+      await execFileAsync(
+        'git',
+        ['-C', remoteWorkspace, 'commit', '--allow-empty', '-m', 'initial commit'],
+        {
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'loombox test',
+            GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+            GIT_COMMITTER_NAME: 'loombox test',
+            GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+          },
+        },
+      );
+
+      const amk = generateAmk();
+      const accountId = 'acct-ssh-same-folder-worktrees';
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-ssh-same-folder-wt',
+        deviceId: 'device-node-ssh-same-folder-wt',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+        accountId,
+        amk,
+        targets: [SSH_TARGET],
+        sshTargets: [SSH_TARGET_CONFIG],
+        sshTransportFactory: () => new LocalProcessTransport(),
+        remoteChildPollIntervalMs: 30,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+
+      const a = await node.createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+        worktree: true,
+      });
+      const b = await node.createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+        worktree: true,
+      });
+
+      expect(a.worktreePath).not.toBe(b.worktreePath);
+    });
+
+    it('a new in-place session is allowed on the same folder once the first agent process actually exits', async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-ssh-same-folder-reuse';
+      const transport = new LocalProcessTransport();
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-ssh-same-folder-reuse',
+        deviceId: 'device-node-ssh-same-folder-reuse',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+        accountId,
+        amk,
+        targets: [SSH_TARGET],
+        sshTargets: [SSH_TARGET_CONFIG],
+        // Same shared transport instance the standalone `runner` below
+        // stops the process through, mirroring the "this node exiting does
+        // not kill the remote agent process" test above.
+        sshTransportFactory: () => transport,
+        remoteChildPollIntervalMs: 30,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+
+      const first = await node.createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+
+      // Refused while the first session's remote process is genuinely still
+      // running.
+      await expect(
+        node.createSession({
+          projectPath: remoteWorkspace,
+          provider: 'test-echo',
+          targetId: 'devbox',
+        }),
+      ).rejects.toThrow(/already running/i);
+
+      // Kill the real remote process out from under it — NodeDaemon's own
+      // liveness poll (`remoteChildPollIntervalMs: 30`) detects the death
+      // and fires the same real `'exit'` event `wireAgentSession`'s release
+      // hook listens for.
+      const runner = new RemoteProcessRunner(transport);
+      const attached = await runner.attach(first.id);
+      await runner.stop(attached!.handle);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const second = await node.createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+      expect(second.id).not.toBe(first.id);
+    }, 10_000);
+  });
+
   it("lists an ssh: session's project directory over fs_list_request/fs_list_response, exactly like a local target (SPEC §7.4; issue #171)", async () => {
     const amk = generateAmk();
     const accountId = 'acct-ssh-fs-list';
