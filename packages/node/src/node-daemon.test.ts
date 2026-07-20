@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
 import {
@@ -103,6 +103,30 @@ function mcpProvider(): AcpProvider {
   return {
     id: 'test-mcp',
     spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [MCP_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
+// packages/supervisor's own crash fixture (issue #170's session_outcome
+// coverage needs a real 'exited' attention transition, not just the
+// 'awaiting_input' every other test here already gets from session
+// creation) — reused by relative path across the package boundary exactly
+// like ECHO_FIXTURE/CONFIG_FIXTURE/MCP_FIXTURE above reach into
+// packages/providers/core/test/fixtures.
+const CRASH_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'supervisor',
+  'test',
+  'fixtures',
+  'crashing-acp-agent.mjs',
+);
+
+function crashProvider(): AcpProvider {
+  return {
+    id: 'test-crash',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [CRASH_FIXTURE], cwd }),
     enrich: (update) => update,
   };
 }
@@ -1403,5 +1427,173 @@ describe('NodeDaemon MCP server resolution at session start (issues #187/#189)',
     // the project's effective server set is empty (see node-daemon.ts's doc
     // comment on that method).
     expect(session.id).toBeTruthy();
+  });
+});
+
+/**
+ * #170: the node's real `wireAgentSession`/`forwardInitialSessionState`
+ * wiring actually sends a relay-visible `attention_hint` for the two
+ * attention-inbox classes with a live source at v1 — `awaiting_input` and
+ * `session_outcome` — and the relay's existing presence-aware push delivery
+ * (`packages/relay/src/relay.ts`'s `maybeSendAttentionPush`, already proven
+ * against a simulated `permission_request` in
+ * `packages/relay/src/push-delivery.test.ts`) actually fires off it. Each
+ * test here starts its OWN push-enabled relay (the shared `relay` from the
+ * outer `beforeEach` has no push config, matching every other describe
+ * block in this file) and closes it itself in a `finally`, since it is not
+ * the shared fixture the outer `afterEach` tears down.
+ */
+describe('attention_hint push trigger (#170)', () => {
+  interface RecordedPush {
+    endpoint: string;
+    sessionId: string;
+    kind: string;
+  }
+
+  /** Mirrors `packages/relay/src/push-delivery.test.ts`'s own fake-sender pattern, but exercised through a real NodeDaemon rather than a simulated raw wire message — proving the actual `node-daemon.ts` wiring (not just the relay's own handling) drives the push. */
+  async function startPushRelay(): Promise<{ relay: StartedRelay; calls: RecordedPush[] }> {
+    const calls: RecordedPush[] = [];
+    const pushRelay = await startRelay({
+      push: {
+        vapidKeys: { publicKey: 'test-attention-pub', privateKey: 'test-attention-priv' },
+        subject: 'mailto:ops@example.com',
+        sender: {
+          async send(target, _vapidKeys, _subject, payload) {
+            calls.push({
+              endpoint: target.endpoint,
+              sessionId: payload.sessionId,
+              kind: payload.kind,
+            });
+            return { expired: false };
+          },
+        },
+      },
+    });
+    return { relay: pushRelay, calls };
+  }
+
+  async function subscribeDevice(
+    httpUrl: string,
+    accountId: string,
+    deviceId: string,
+    endpoint: string,
+  ): Promise<void> {
+    const response = await fetch(`${httpUrl}/push/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${accountId}` },
+      body: JSON.stringify({ deviceId, endpoint, keys: { p256dh: 'p', auth: 'a' } }),
+    });
+    expect(response.status).toBe(204);
+  }
+
+  it('pushes the initial awaiting_input hint to a device with no live client connection, and not to one that is currently connected', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attention-awaiting';
+    const { relay: pushRelay, calls } = await startPushRelay();
+
+    try {
+      const httpUrl = pushRelay.url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+      await subscribeDevice(
+        httpUrl,
+        accountId,
+        'device-connected',
+        'https://push.example/connected',
+      );
+      await subscribeDevice(httpUrl, accountId, 'device-absent', 'https://push.example/absent');
+
+      // device-connected has a LIVE client connection right now.
+      phone = new TestPhone(pushRelay.url, {
+        deviceId: 'device-connected',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      node = createNode({
+        relayUrl: pushRelay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-attention-awaiting',
+        deviceId: 'device-node-attention-awaiting',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-echo' });
+
+      await vi.waitFor(() => {
+        expect(calls.some((call) => call.sessionId === session.id)).toBe(true);
+      });
+
+      const sessionCalls = calls.filter((call) => call.sessionId === session.id);
+      expect(sessionCalls).toEqual([
+        {
+          endpoint: 'https://push.example/absent',
+          sessionId: session.id,
+          kind: 'awaiting_input',
+        },
+      ]);
+    } finally {
+      await pushRelay.close();
+    }
+  });
+
+  it('pushes a session_outcome hint when the agent crashes mid-session, only to the absent device', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attention-outcome';
+    const { relay: pushRelay, calls } = await startPushRelay();
+
+    try {
+      const httpUrl = pushRelay.url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+      await subscribeDevice(
+        httpUrl,
+        accountId,
+        'device-connected',
+        'https://push.example/connected',
+      );
+      await subscribeDevice(httpUrl, accountId, 'device-absent', 'https://push.example/absent');
+
+      phone = new TestPhone(pushRelay.url, {
+        deviceId: 'device-connected',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      node = createNode({
+        relayUrl: pushRelay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-attention-outcome',
+        deviceId: 'device-node-attention-outcome',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [crashProvider()] }),
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-crash' });
+
+      await vi.waitFor(() => {
+        expect(
+          calls.some((call) => call.sessionId === session.id && call.kind === 'session_outcome'),
+        ).toBe(true);
+      });
+
+      const sessionCalls = calls.filter((call) => call.sessionId === session.id);
+      // Every push this session ever triggered (its initial awaiting_input
+      // hint, then its session_outcome hint once the agent crashed) went to
+      // the absent device only — the connected device's own live client
+      // connection suppressed it the whole time, the same presence check
+      // #163's permission_request push already relies on.
+      expect(sessionCalls.every((call) => call.endpoint === 'https://push.example/absent')).toBe(
+        true,
+      );
+      expect(sessionCalls.map((call) => call.kind)).toContain('session_outcome');
+    } finally {
+      await pushRelay.close();
+    }
   });
 });

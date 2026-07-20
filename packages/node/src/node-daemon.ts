@@ -14,12 +14,14 @@ import {
   TerminalSupervisor,
   type AgentSession,
   type AttentionState,
+  type AttentionStatus,
   type TerminalSession,
 } from '@loombox/supervisor';
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
   type AmkEpochPendingEnvelope,
+  type AttentionHintClass,
   type FileEventPayloadV1,
   type FsListRequest,
   type FsListRequestPayloadV1,
@@ -279,6 +281,33 @@ interface PromptPayload {
   text: string;
   /** Attachments this turn references (SPEC §7.25); omitted/empty for a plain text prompt. */
   attachments?: PromptAttachmentRef[];
+}
+
+/**
+ * Maps a session's live attention status to the relay-visible `attention_hint`
+ * class that mirrors it (SPEC §7.11/§7.13; issue #170), or `undefined` when
+ * this status isn't inbox-eligible/doesn't need this hint:
+ * - `'working'` — not attention-worthy, nothing to notify.
+ * - `'permission_required'` — already has its own dedicated relay-visible
+ *   trigger, the real `permission_request` message (`@loombox/protocol`'s
+ *   `steering.ts`), so this hint would be a redundant second signal for the
+ *   same event.
+ * - `'awaiting_input'` maps to the hint class of the same name;
+ *   `'error'`/`'exited'` both map to `'session_outcome'` — SPEC §7.13 groups
+ *   a finished/errored session as one inbox class, and this hint mirrors
+ *   that grouping rather than leaking which one occurred (see
+ *   `@loombox/protocol`'s `attention.ts` doc comment for why).
+ */
+function attentionHintClassForStatus(status: AttentionStatus): AttentionHintClass | undefined {
+  switch (status) {
+    case 'awaiting_input':
+      return 'awaiting_input';
+    case 'error':
+    case 'exited':
+      return 'session_outcome';
+    default:
+      return undefined;
+  }
 }
 
 /** Thrown by {@link resolveSessionRelativePath} for a request that would read outside the session's project root. */
@@ -1049,6 +1078,10 @@ export class NodeDaemon extends EventEmitter {
         status: state.status,
         updatedAt: state.updatedAt,
       });
+      // #170: the relay-visible push trigger mirroring the encrypted
+      // session_status event just forwarded above — see
+      // `sendAttentionHint`'s doc comment.
+      this.sendAttentionHint(bridge.session.id, state.status);
     });
 
     bridge.agentSession.on('turn_end', (turnEnd: AcpTurnEnd) => {
@@ -1119,6 +1152,14 @@ export class NodeDaemon extends EventEmitter {
       status: attention.status,
       updatedAt: attention.updatedAt,
     });
+    // #170: a session that comes up already `awaiting_input` (the normal
+    // case right after creation) is just as inbox-eligible as one that
+    // transitions there later (`apps/web`'s `recomputeAttentionInbox`
+    // doesn't distinguish the two) — so this initial snapshot needs the same
+    // push trigger the 'attention' listener above sends for every later
+    // transition, or an account's other devices would silently miss the
+    // very first notification of a freshly created session.
+    this.sendAttentionHint(bridge.session.id, attention.status);
 
     // Keyed by the ACP-level session id (`bridge.agentSession.id`), not this
     // bridge's loombox-level `session.id` — same distinction as the
@@ -1420,6 +1461,31 @@ export class NodeDaemon extends EventEmitter {
    * `attachments-e2e.test.ts` for a test proving this concretely under a
    * saturated `session_update` queue.
    */
+  /**
+   * Sends this session's relay-visible `attention_hint` (SPEC §7.11/§7.13;
+   * issue #170) for `status`, mirroring how `sendFileEvent` below sends
+   * `blob_ref` on its own top-level wire message rather than through
+   * `bridge.sendQueue`/`session_update` — no-op for a status
+   * {@link attentionHintClassForStatus} maps to `undefined`. Deliberately
+   * plaintext, metadata-only (`sessionId` + `class`, no `detail`, no
+   * `stopReason`): the relay must learn just enough to decide whether to
+   * push (`packages/relay/src/relay.ts`'s `maybeSendAttentionPush`), never
+   * anything a subscribed client doesn't already get, encrypted, over the
+   * `session_status` event this rides alongside — see `@loombox/protocol`'s
+   * `attention.ts` doc comment for the full rationale, and `push.ts`'s
+   * `PushPayload` doc comment for the relay side.
+   */
+  private sendAttentionHint(sessionId: string, status: AttentionStatus): void {
+    const hintClass = attentionHintClassForStatus(status);
+    if (!hintClass) return;
+    this.relay.send({
+      type: 'attention_hint',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      class: hintClass,
+    });
+  }
+
   private async sendFileEvent(sessionId: string, payload: FileEventPayloadV1): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);

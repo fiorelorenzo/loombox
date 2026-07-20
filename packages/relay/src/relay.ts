@@ -27,7 +27,7 @@ import {
 } from './auth';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
-import { createWebPushSender, type PushSender } from './push';
+import { createWebPushSender, type PushPayload, type PushSender } from './push';
 import {
   createInMemoryRelayStore,
   envelopeByteSize,
@@ -320,16 +320,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
   /**
    * Presence-aware Web Push delivery (SPEC §7.11 "events go to the device
-   * you are actively using, fall back to push on the others"; issue #163).
-   * Fires only for `permission_request` — the one attention-worthy event
-   * class visible to this blind relay in cleartext-routable form (see
-   * `push.ts`'s `PushPayload` doc comment for why the other three SPEC
-   * §7.13 classes aren't reachable here). Never blocks/affects the live WS
-   * fan-out this runs alongside; a delivery failure to one device's
-   * subscription is logged and does not stop delivery to the account's
-   * other devices.
+   * you are actively using, fall back to push on the others"; issues
+   * #163/#170). Fires for every `PushPayload` kind visible to this blind
+   * relay in cleartext-routable form: `'permission_required'` (from a real
+   * `permission_request`) and, as of #170, `'awaiting_input'`/
+   * `'session_outcome'` (from an `attention_hint`, mirroring that same
+   * mechanism — see `push.ts`'s `PushPayload` doc comment for why CI/review
+   * aren't reachable here yet). Never blocks/affects the live WS fan-out
+   * this runs alongside; a delivery failure to one device's subscription is
+   * logged and does not stop delivery to the account's other devices.
    */
-  async function maybeSendAttentionPush(accountId: string, sessionId: string): Promise<void> {
+  async function maybeSendAttentionPush(accountId: string, payload: PushPayload): Promise<void> {
     if (!pushSender || !opts.push) return;
     const subscriptions = await store.pushSubscriptions.listForAccount(accountId);
     for (const subscription of subscriptions) {
@@ -338,10 +339,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // redundant OS notification for something already on screen.
       if (hasLiveClientConnection(accountId, subscription.deviceId)) continue;
       try {
-        const result = await pushSender.send(subscription, opts.push.vapidKeys, opts.push.subject, {
-          kind: 'permission_required',
-          sessionId,
-        });
+        const result = await pushSender.send(
+          subscription,
+          opts.push.vapidKeys,
+          opts.push.subject,
+          payload,
+        );
         if (result.expired) {
           // The browser itself dropped this subscription (410/404) — self-clean
           // rather than keep trying it on every future attention event (#163).
@@ -349,7 +352,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
       } catch (error) {
         app.log.warn(
-          { error, accountId, deviceId: subscription.deviceId, sessionId },
+          { error, accountId, deviceId: subscription.deviceId, sessionId: payload.sessionId },
           'relay: push delivery failed',
         );
       }
@@ -814,7 +817,26 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // of SPEC §7.11/§7.13's attention-worthy events, and `connection`
         // (the announcing node) always belongs to the same account the
         // session itself is scoped to.
-        await maybeSendAttentionPush(connection.accountId, message.sessionId);
+        await maybeSendAttentionPush(connection.accountId, {
+          kind: 'permission_required',
+          sessionId: message.sessionId,
+        });
+        return;
+      case 'attention_hint':
+        // #170: the metadata-only mirror of the permission_request push
+        // trigger above, for the two other attention-inbox classes that
+        // have a live source at v1 (SPEC §7.13) — `awaiting_input` and
+        // `session_outcome` (finished/errored). This message carries
+        // nothing else: no `fanOutDirect` here, unlike `permission_request`,
+        // because a client never needs to render this hint itself — it
+        // already gets the real `session_status` transition, encrypted,
+        // over the ordinary `session_update` fan-out this rides alongside.
+        // This message exists solely to give the relay a trigger to push
+        // on without ever decrypting that session_update.
+        await maybeSendAttentionPush(connection.accountId, {
+          kind: message.class,
+          sessionId: message.sessionId,
+        });
         return;
       case 'blob_ref':
         fanOutDirect(message.sessionId, message);

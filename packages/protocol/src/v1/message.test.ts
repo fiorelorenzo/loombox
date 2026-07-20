@@ -192,6 +192,12 @@ const messagesByType: Record<string, unknown> = {
     toSeq: 3,
     dropped: true,
   },
+  attention_hint: {
+    type: 'attention_hint',
+    protocolVersion: 1,
+    sessionId: 'sess-1',
+    class: 'awaiting_input',
+  },
 };
 
 describe('wireMessageV1', () => {

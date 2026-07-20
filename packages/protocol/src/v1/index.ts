@@ -228,6 +228,9 @@ export {
 export type { WireMessageV1 } from './message';
 export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './message';
 
+export type { AttentionHint, AttentionHintClass } from './attention';
+export { attentionHint, attentionHintClass } from './attention';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -316,6 +319,7 @@ import {
   terminalResizePayloadV1,
 } from './terminal';
 import { wireMessageV1 } from './message';
+import { attentionHint, attentionHintClass } from './attention';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -400,4 +404,6 @@ export const schemasV1 = {
   leaseRelease,
   leaseReleaseResult,
   wireMessageV1,
+  attentionHintClass,
+  attentionHint,
 } as const;
