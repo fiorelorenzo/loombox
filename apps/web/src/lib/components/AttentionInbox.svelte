@@ -1,25 +1,35 @@
 <script lang="ts">
   /**
-   * The cross-project attention inbox (SPEC.md §7.13, issues #167/#168/#169):
-   * one list of every session-level item across every project/session that
-   * needs the user now — a session's actionable FIFO-head permission
-   * request, or a session whose live status is `awaiting_input` — sorted
-   * oldest-waiting first (`RelayClient.attentionInbox()`'s own sort, not
-   * re-sorted here).
+   * The cross-project, cross-node attention inbox (SPEC.md §7.13, issues
+   * #167/#168/#169): one list of every item across every project/node that
+   * needs the user now, sorted oldest-waiting first
+   * (`RelayClient.attentionInbox()`'s own sort, not re-sorted here). Renders
+   * all four classes SPEC §7.13 names, each visually distinguishable via its
+   * `data-kind` attribute and a `.kind-badge` label:
+   * - `'permission'` — an actionable pending tool-call approval.
+   * - `'awaiting_input'` — a session waiting on the user's next message.
+   * - `'session_outcome'` — a session that finished (`outcome: 'exited'`) or
+   *   errored (`outcome: 'error'`).
+   * - `'ci_failure'` / `'review_request'` — modeled and rendered here so the
+   *   inbox already has a distinct look for them, but `RelayClient` never
+   *   produces one in v1: neither has a live event source in this client
+   *   yet (that needs the git/CI/tracker integration work, SPEC §7.10/§7.14,
+   *   v2). This is a forward-looking extension point, not a fake stub — no
+   *   item of either kind is ever synthesized.
    *
-   * A permission item is actionable inline (issue #168): its approve/deny
-   * buttons reuse `PermissionCard`, the exact same component the session's
-   * own `PermissionQueueBar` renders, wired to the same `onResolve` callback
-   * a caller backs with `RelayClient.resolvePermission` — approving here and
-   * approving from the session's own view are the same write to the same
-   * queue store, not two independent "resolve" paths that could drift
-   * (issue #169's single-source-of-truth requirement). Every item also has
-   * an Open action (`onOpenSession`) that jumps to its originating session,
-   * and an `'awaiting_input'` item additionally gets an inline reply
-   * composer: `onReply` is expected to be backed by the exact same
-   * `RelayClient.sendPrompt`/`prompt_inject` path a session's own composer
-   * form uses, so replying from the inbox is not a second, divergent "send"
-   * path.
+   * Every item has an Open action (`onOpenSession`) that jumps to its
+   * originating session. A `'permission'` item is additionally actionable
+   * inline (issue #168): its approve/deny buttons reuse `PermissionCard`,
+   * the exact same component the session's own `PermissionQueueBar` renders,
+   * wired to the same `onResolve` callback a caller backs with
+   * `RelayClient.resolvePermission` — approving here and approving from the
+   * session's own view are the same write to the same queue store, not two
+   * independent "resolve" paths that could drift (issue #169's
+   * single-source-of-truth requirement). An `'awaiting_input'` item
+   * additionally gets an inline reply composer: `onReply` is expected to be
+   * backed by the exact same `RelayClient.sendPrompt`/`prompt_inject` path a
+   * session's own composer form uses, so replying from the inbox is not a
+   * second, divergent "send" path.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { AttentionInboxItem } from '../relay-client';
@@ -42,15 +52,42 @@
   function itemKey(item: AttentionInboxItem): string {
     return item.kind === 'permission' && item.permission
       ? `permission:${item.permission.requestId}`
-      : `awaiting_input:${item.sessionId}`;
+      : `${item.kind}:${item.sessionId}`;
   }
 
   function needLabel(item: AttentionInboxItem): string {
-    if (item.kind === 'permission') {
-      const toolCall = item.permission?.toolCall;
-      return `Needs approval: ${toolCall?.title ?? toolCall?.id ?? 'a tool call'}`;
+    switch (item.kind) {
+      case 'permission': {
+        const toolCall = item.permission?.toolCall;
+        return `Needs approval: ${toolCall?.title ?? toolCall?.id ?? 'a tool call'}`;
+      }
+      case 'awaiting_input':
+        return 'Waiting for your reply';
+      case 'session_outcome':
+        return item.outcome === 'error'
+          ? `Errored${item.stopReason ? `: ${item.stopReason}` : ''}`
+          : `Finished${item.stopReason ? `: ${item.stopReason}` : ''}`;
+      case 'ci_failure':
+        return 'CI check failed';
+      case 'review_request':
+        return 'Review requested';
     }
-    return 'Waiting for your reply';
+  }
+
+  /** A short, class-identifying label shown alongside `needLabel` — color (`data-kind`) alone should never be the only way to tell classes apart. */
+  function kindBadge(item: AttentionInboxItem): string {
+    switch (item.kind) {
+      case 'permission':
+        return 'Approval';
+      case 'awaiting_input':
+        return 'Reply';
+      case 'session_outcome':
+        return item.outcome === 'error' ? 'Errored' : 'Finished';
+      case 'ci_failure':
+        return 'CI';
+      case 'review_request':
+        return 'Review';
+    }
   }
 
   function submitReply(sessionId: string): void {
@@ -69,6 +106,9 @@
       {#each items as item (itemKey(item))}
         <li class="item" data-kind={item.kind} data-testid="attention-inbox-item">
           <div class="item-header">
+            <span class="kind-badge" data-testid="attention-inbox-kind-badge"
+              >{kindBadge(item)}</span
+            >
             <button
               type="button"
               class="open"
@@ -76,9 +116,9 @@
               data-testid="attention-inbox-open"
             >
               <strong>{item.sessionTitle}</strong>
-              <small>{item.projectPath}</small>
+              <small>{item.projectPath} · {item.nodeId}</small>
             </button>
-            <span class="need">{needLabel(item)}</span>
+            <span class="need" data-testid="attention-inbox-need">{needLabel(item)}</span>
           </div>
           {#if item.kind === 'permission' && item.permission}
             {@const request = item.permission}
@@ -141,11 +181,30 @@
     gap: 0.4rem;
     padding: 0.5rem;
     border: 1px solid rgba(127, 127, 127, 0.25);
+    border-left-width: 0.25rem;
     border-radius: 0.5rem;
   }
 
+  /* Each class gets its own border-left color, in addition to the
+     text `.kind-badge` — color is never the only signal (accessibility). */
+  .item[data-kind='permission'] {
+    border-left-color: rgba(217, 119, 6, 0.6);
+  }
+
   .item[data-kind='awaiting_input'] {
-    border-color: rgba(79, 70, 229, 0.4);
+    border-left-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .item[data-kind='session_outcome'] {
+    border-left-color: rgba(5, 150, 105, 0.6);
+  }
+
+  .item[data-kind='ci_failure'] {
+    border-left-color: rgba(220, 38, 38, 0.6);
+  }
+
+  .item[data-kind='review_request'] {
+    border-left-color: rgba(37, 99, 235, 0.6);
   }
 
   .item-header {
@@ -154,6 +213,18 @@
     justify-content: space-between;
     gap: 0.5rem;
     flex-wrap: wrap;
+  }
+
+  .kind-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    opacity: 0.8;
+    padding: 0.1rem 0.4rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    white-space: nowrap;
   }
 
   .open {
