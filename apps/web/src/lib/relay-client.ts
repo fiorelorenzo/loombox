@@ -49,6 +49,14 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionUpdateEnvelopeV1,
+  type TerminalClosed,
+  type TerminalClosedPayloadV1,
+  type TerminalDataPayloadV1,
+  type TerminalOpened,
+  type TerminalOpenPayloadV1,
+  type TerminalOpenResultPayloadV1,
+  type TerminalOutput as TerminalOutputMessage,
+  type TerminalResizePayloadV1,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -155,6 +163,25 @@ export interface FileTreeDirectoryState {
   status: 'loading' | 'loaded' | 'error';
   entries: FsEntryV1[];
   error?: string;
+}
+
+/**
+ * One open (or opening/closed/errored) interactive PTY terminal's lifecycle
+ * state (SPEC §7.5; issues #172/#173/#174), keyed by `terminalId` in
+ * {@link RelayClient.terminalsFor}'s returned `Map`. Deliberately does NOT
+ * carry the terminal's actual byte stream — unlike the file tree's contents,
+ * a terminal's output is a live, potentially unbounded stream meant to feed
+ * an xterm.js buffer directly (`InteractiveTerminal.svelte`), not something
+ * this store should also buffer a second copy of; see
+ * {@link RelayClient.onTerminalOutput} for that.
+ */
+export interface TerminalClientState {
+  terminalId: string;
+  status: 'opening' | 'open' | 'closed' | 'error';
+  /** Set when `status` is `'error'` (the node's `terminal_opened` came back with an error outcome, or this client's own encrypt/send failed) or `'closed'` with `reason: 'error'`. */
+  error?: string;
+  /** Set when `status` is `'closed'` — why (SPEC §7.5's client-close vs. the shell exiting on its own). */
+  closedReason?: string;
 }
 
 /**
@@ -312,6 +339,14 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+/** The inverse of {@link bytesToBase64} — decodes a terminal_output/terminal_input payload's `data` field back into raw bytes, `Buffer`-free for the same reason. */
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 function errorMessage(error: unknown): string {
@@ -607,6 +642,15 @@ export class RelayClient {
    * same session is simply not a key here and is ignored.
    */
   private readonly pendingFsListRequests = new Map<string, { sessionId: string; path: string }>();
+  /** Backs {@link terminalsFor} (SPEC §7.5; issues #172/#173/#174) — one reactive `Map<terminalId, TerminalClientState>` per session. */
+  private readonly terminals = new Map<string, Writable<Map<string, TerminalClientState>>>();
+  /** requestId -> the session/terminal an in-flight `terminal_open` this client itself sent is about — the terminal counterpart of {@link pendingFsListRequests}'s sibling-device-awareness doc comment. */
+  private readonly pendingTerminalOpens = new Map<
+    string,
+    { sessionId: string; terminalId: string }
+  >();
+  /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalOutput}, fired with each decrypted `terminal_output` chunk as it arrives (never buffered here — see {@link TerminalClientState}'s doc comment for why). */
+  private readonly terminalOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -1027,6 +1071,135 @@ export class RelayClient {
     this.sendFsListRequest(sessionId, path).catch((error: unknown) => {
       this.setFileTreeError(sessionId, path, errorMessage(error));
     });
+  }
+
+  /**
+   * Every open (or opening/closed/errored) terminal for one session (SPEC
+   * §7.5; issues #172/#173/#174), reactive — `InteractiveTerminal.svelte`
+   * reads a single terminal's `status` out of this to know when to actually
+   * render xterm.js vs. a connecting/error placeholder. Never auto-opens
+   * anything (unlike `fileTreeFor`'s lazy root load): a terminal only starts
+   * existing once {@link openTerminal} is called for it.
+   */
+  terminalsFor(sessionId: string): Readable<Map<string, TerminalClientState>> {
+    return this.terminalStoreFor(sessionId);
+  }
+
+  /**
+   * Opens a new interactive PTY terminal on `sessionId`'s target (SPEC §7.5;
+   * issue #172). Returns the generated `terminalId` synchronously (mirrors
+   * `attachFile`'s same synchronous-id/async-work split) so a caller can
+   * start listening via {@link onTerminalOutput} before the round trip to
+   * the node completes; `terminalsFor`'s state for it starts at `'opening'`
+   * and flips to `'open'`/`'error'` once the node's `terminal_opened` reply
+   * (or a local encrypt/send failure) resolves. Calling this again for the
+   * same session opens an ADDITIONAL terminal with its own id — sharing that
+   * session's working directory is the node's job (issue #173), not
+   * something this client needs to arrange.
+   */
+  openTerminal(sessionId: string, cols: number, rows: number): string {
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    const terminalId = generateId('term');
+    if (!targetId) {
+      this.setTerminalState(sessionId, terminalId, {
+        terminalId,
+        status: 'error',
+        error: `RelayClient: unknown session ${sessionId}`,
+      });
+      return terminalId;
+    }
+
+    this.setTerminalState(sessionId, terminalId, { terminalId, status: 'opening' });
+    this.ensureSubscribed(sessionId);
+
+    const requestId = generateId('termreq');
+    this.pendingTerminalOpens.set(requestId, { sessionId, terminalId });
+    this.sendTerminalOpen(sessionId, targetId, terminalId, requestId, cols, rows).catch(
+      (error: unknown) => {
+        this.pendingTerminalOpens.delete(requestId);
+        this.setTerminalState(sessionId, terminalId, {
+          terminalId,
+          status: 'error',
+          error: errorMessage(error),
+        });
+      },
+    );
+    return terminalId;
+  }
+
+  /** Streams one chunk of typed input to `terminalId`'s stdin (SPEC §7.5) — the composer/xterm.js keystroke path. Fire-and-forget: a failure is logged, not thrown, since a live keystroke stream has no natural place to surface a rejected promise. */
+  sendTerminalInput(sessionId: string, terminalId: string, data: Uint8Array | string): void {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    this.getSessionKey(sessionId)
+      .then((key) => {
+        const payload: TerminalDataPayloadV1 = { data: bytesToBase64(bytes) };
+        return sealJson(sessionId, payload, key);
+      })
+      .then((envelope) => {
+        this.send({
+          type: 'terminal_input',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          terminalId,
+          envelope,
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to send terminal_input for session ${sessionId} terminal ${terminalId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** Renegotiates `terminalId`'s PTY window size (SPEC §7.5) — xterm.js's own resize event drives this. Fire-and-forget, same as {@link sendTerminalInput}. */
+  resizeTerminal(sessionId: string, terminalId: string, cols: number, rows: number): void {
+    this.getSessionKey(sessionId)
+      .then((key) => {
+        const payload: TerminalResizePayloadV1 = { cols, rows };
+        return sealJson(sessionId, payload, key);
+      })
+      .then((envelope) => {
+        this.send({
+          type: 'terminal_resize',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          terminalId,
+          envelope,
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to send terminal_resize for session ${sessionId} terminal ${terminalId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** Asks the owning node to close `terminalId` (SPEC §7.5). No envelope: closing carries no content, mirroring `@loombox/protocol`'s `terminalClose` schema. */
+  closeTerminal(sessionId: string, terminalId: string): void {
+    this.send({ type: 'terminal_close', protocolVersion: PROTOCOL_V1, sessionId, terminalId });
+  }
+
+  /**
+   * Registers `listener` to be called with each decrypted output chunk this
+   * terminal receives (SPEC §7.5) — `InteractiveTerminal.svelte` feeds these
+   * straight into xterm.js's `Terminal.write()`. Returns an unsubscribe
+   * function; call it (e.g. `onDestroy`) once the caller stops rendering
+   * this terminal, or listeners accumulate for a terminal a component has
+   * already torn down.
+   */
+  onTerminalOutput(
+    sessionId: string,
+    terminalId: string,
+    listener: (chunk: Uint8Array) => void,
+  ): () => void {
+    const key = `${sessionId}:${terminalId}`;
+    let listeners = this.terminalOutputListeners.get(key);
+    if (!listeners) {
+      listeners = new Set();
+      this.terminalOutputListeners.set(key, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
   }
 
   /**
@@ -1639,6 +1812,15 @@ export class RelayClient {
       case 'fs_list_response':
         this.handleFsListResponse(message);
         return;
+      case 'terminal_opened':
+        this.handleTerminalOpened(message);
+        return;
+      case 'terminal_output':
+        this.handleTerminalOutput(message);
+        return;
+      case 'terminal_closed':
+        this.handleTerminalClosed(message);
+        return;
       default:
         return;
     }
@@ -1787,6 +1969,128 @@ export class RelayClient {
       targetId,
       requestId,
       envelope,
+    });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own `terminal_open`s
+   * (SPEC §7.5; issue #172). `terminal_opened` is fanned out to every client
+   * subscribed to the session, so `requestId` not being in
+   * {@link pendingTerminalOpens} means this reply is to a sibling device's
+   * own request — silently ignored, exactly like `handleFsListResponse`'s
+   * identical sibling-device awareness.
+   */
+  private handleTerminalOpened(message: TerminalOpened): void {
+    const pending = this.pendingTerminalOpens.get(message.requestId);
+    if (!pending) return;
+    this.pendingTerminalOpens.delete(message.requestId);
+
+    this.getSessionKey(message.sessionId)
+      .then((key) =>
+        openJson<TerminalOpenResultPayloadV1>(message.sessionId, message.envelope, key),
+      )
+      .then((payload) => {
+        if (payload.outcome === 'ok') {
+          this.setTerminalState(message.sessionId, message.terminalId, {
+            terminalId: message.terminalId,
+            status: 'open',
+          });
+        } else {
+          this.setTerminalState(message.sessionId, message.terminalId, {
+            terminalId: message.terminalId,
+            status: 'error',
+            error: payload.message,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        this.setTerminalState(pending.sessionId, pending.terminalId, {
+          terminalId: pending.terminalId,
+          status: 'error',
+          error: errorMessage(error),
+        });
+      });
+  }
+
+  /** One chunk of an open terminal's output (SPEC §7.5) — decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`, never buffered by this class itself (see `TerminalClientState`'s doc comment). */
+  private handleTerminalOutput(message: TerminalOutputMessage): void {
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<TerminalDataPayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        const listeners = this.terminalOutputListeners.get(
+          `${message.sessionId}:${message.terminalId}`,
+        );
+        if (!listeners) return;
+        const bytes = base64ToBytes(payload.data);
+        for (const listener of listeners) listener(bytes);
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt terminal_output for session ${message.sessionId} terminal ${message.terminalId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** A terminal closed — either this client asked to (SPEC §7.5's `closed_by_client`) or its shell exited on its own. */
+  private handleTerminalClosed(message: TerminalClosed): void {
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<TerminalClosedPayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        this.setTerminalState(message.sessionId, message.terminalId, {
+          terminalId: message.terminalId,
+          status: 'closed',
+          closedReason: payload.reason,
+          error: payload.message,
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt terminal_closed for session ${message.sessionId} terminal ${message.terminalId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** Seals `{ cols, rows }` and sends the `terminal_open` (SPEC §7.5; issue #172). */
+  private async sendTerminalOpen(
+    sessionId: string,
+    targetId: string,
+    terminalId: string,
+    requestId: string,
+    cols: number,
+    rows: number,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: TerminalOpenPayloadV1 = { cols, rows };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.send({
+      type: 'terminal_open',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId,
+      terminalId,
+      requestId,
+      envelope,
+    });
+  }
+
+  private terminalStoreFor(sessionId: string): Writable<Map<string, TerminalClientState>> {
+    let store = this.terminals.get(sessionId);
+    if (!store) {
+      store = writable<Map<string, TerminalClientState>>(new Map());
+      this.terminals.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private setTerminalState(
+    sessionId: string,
+    terminalId: string,
+    state: TerminalClientState,
+  ): void {
+    this.terminalStoreFor(sessionId).update((map) => {
+      const next = new Map(map);
+      next.set(terminalId, state);
+      return next;
     });
   }
 

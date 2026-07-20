@@ -1,3 +1,6 @@
+import type { Readable } from 'svelte/store';
+import type { TerminalClientState } from './relay-client';
+
 /**
  * Chunk-boundary-safe decoding for a display-only terminal stream (SPEC.md
  * §7.24 "Display-only terminals": "buffering partial UTF-8/ANSI escape
@@ -8,6 +11,29 @@
  * frame before the next chunk "fixes" it. `TerminalChunkDecoder` buffers
  * across `appendChunk` calls so that never happens.
  */
+
+/**
+ * The narrow slice of `RelayClient` (SPEC §7.5; issues #172/#173/#174)
+ * `InteractiveTerminal.svelte` actually needs — its own interface, not a
+ * direct dependency on `RelayClient` itself, so a component test can inject
+ * a plain fake with none of the real client's crypto/WebSocket machinery
+ * (mirrors this file's own `TerminalChunkDecoder` being a shared primitive
+ * `TerminalOutput.svelte` consumes rather than owning). Every method here
+ * mirrors `RelayClient`'s own method of the same name and signature.
+ */
+export interface TerminalClient {
+  terminalsFor(sessionId: string): Readable<Map<string, TerminalClientState>>;
+  openTerminal(sessionId: string, cols: number, rows: number): string;
+  sendTerminalInput(sessionId: string, terminalId: string, data: Uint8Array | string): void;
+  resizeTerminal(sessionId: string, terminalId: string, cols: number, rows: number): void;
+  closeTerminal(sessionId: string, terminalId: string): void;
+  onTerminalOutput(
+    sessionId: string,
+    terminalId: string,
+    listener: (chunk: Uint8Array) => void,
+  ): () => void;
+}
+
 const ESC = '\x1b';
 
 // Built via `new RegExp(...)` from the `ESC` string constant rather than as

@@ -6,6 +6,7 @@ packages:
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
+  - node-pty
 allowBuilds:
   # Both are optional native addons ssh2 uses only for hardware-accelerated
   # crypto detection; ssh2 falls back to its pure-JS path without them
@@ -16,6 +17,12 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   ssh2: false
+  # Unlike ssh2's optional accelerators above, node-pty's native addon is not
+  # optional: `@loombox/supervisor`'s interactive PTY terminals (SPEC §7.5;
+  # issues #172/#173/#174) require it to actually spawn a PTY, so its build
+  # script must run (verified: builds cleanly on this devbox's Node 22 + the
+  # GitHub Actions Linux runner's build toolchain).
+  node-pty: true
 minimumReleaseAgeExclude:
   - svelte-check@4.7.3
   - vite@8.1.5

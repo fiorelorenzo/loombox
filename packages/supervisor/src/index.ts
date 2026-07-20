@@ -19,3 +19,12 @@ export type {
   TranscriptLogEntry,
   TranscriptStoreOptions,
 } from './transcript-store';
+
+// v1: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174).
+export { TerminalSession, TerminalSupervisor } from './terminal-supervisor';
+export type {
+  PtyLike,
+  PtySpawnFn,
+  TerminalExitEvent,
+  TerminalSpawnOptions,
+} from './terminal-supervisor';

@@ -2,6 +2,12 @@ import type { Duplex } from 'node:stream';
 
 import { supportsPortForward, type PortForwardTransport } from './port-forward-transport';
 import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
+import {
+  supportsShellChannel,
+  type ShellChannel,
+  type ShellChannelOptions,
+  type ShellTransport,
+} from './shell-transport';
 
 /**
  * Wraps a `RemoteTransport` factory with automatic reconnection (issue #71:
@@ -89,7 +95,9 @@ function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export class ReconnectingTransport implements RemoteTransport, PortForwardTransport {
+export class ReconnectingTransport
+  implements RemoteTransport, PortForwardTransport, ShellTransport
+{
   private inner: RemoteTransport | undefined;
   private status: TransportConnectionStatus = 'disconnected';
   private attempts = 0;
@@ -196,6 +204,30 @@ export class ReconnectingTransport implements RemoteTransport, PortForwardTransp
       );
     }
     return transport.openForwardChannel(srcHost, srcPort, dstHost, dstPort);
+  }
+
+  /**
+   * Delegates to the currently-connected (or freshly reconnected) inner
+   * transport's own {@link ShellTransport.openShellChannel} (issue #172),
+   * the same "reuse the live connection, reconnect first if needed" seam
+   * {@link openForwardChannel} uses. Throws if the inner transport doesn't
+   * implement `ShellTransport` (the hermetic `FakeTransport`/
+   * `LocalProcessTransport` doubles, by design — see that interface's own
+   * doc comment). A channel obtained this way does not itself survive a
+   * *later* mid-terminal reconnect — an interactive shell's state lives on
+   * the remote process, not something this pool can transparently replay —
+   * so a dropped connection ends that terminal (surfaced to the client as
+   * `terminal_closed`), exactly like a `local` target's shell exiting.
+   */
+  async openShellChannel(options: ShellChannelOptions): Promise<ShellChannel> {
+    const transport =
+      this.status === 'connected' && this.inner ? this.inner : await this.reconnect();
+    if (!supportsShellChannel(transport)) {
+      throw new Error(
+        'ReconnectingTransport: underlying transport does not support shell channels',
+      );
+    }
+    return transport.openShellChannel(options);
   }
 
   async close(): Promise<void> {

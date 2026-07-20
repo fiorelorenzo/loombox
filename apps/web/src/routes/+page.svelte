@@ -40,6 +40,7 @@
   import CopyButton from '$lib/components/CopyButton.svelte';
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
+  import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -98,6 +99,15 @@
   // picker, which opens on typing '@' in the composer.
   let fileTree = $state<Map<string, FileTreeDirectoryState>>(new Map());
   let fileTreeOpen = $state(false);
+  // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174):
+  // a togglable side panel, same shape as `fileTreeOpen` above. Each toggle
+  // ON mounts a fresh `InteractiveTerminal`, which opens its own new
+  // terminal on mount and closes it on unmount (its own doc comment) — so
+  // toggling it off and back on again opens a new terminal each time,
+  // rather than this page tracking one itself (issue #173's "multiple
+  // terminals" is the node/client's job below this component, not this
+  // page's).
+  let terminalOpen = $state(false);
   let filePickerOpen = $state(false);
   // The index in `draft` where the triggering '@' sits, so a picked file
   // reference replaces exactly the '@partial-query' text the user typed,
@@ -795,6 +805,15 @@
             >
               Files
             </button>
+            <button
+              type="button"
+              class="terminal-toggle"
+              class:active={terminalOpen}
+              onclick={() => (terminalOpen = !terminalOpen)}
+              data-testid="terminal-toggle"
+            >
+              Terminal
+            </button>
           </div>
 
           {#if fileTreeOpen}
@@ -804,6 +823,12 @@
                 onExpand={expandDirectory}
                 onSelectFile={insertFileReference}
               />
+            </aside>
+          {/if}
+
+          {#if terminalOpen && client}
+            <aside class="terminal-panel" data-testid="terminal-panel-wrapper">
+              <InteractiveTerminal sessionId={selectedSessionId} {client} />
             </aside>
           {/if}
 
@@ -1033,6 +1058,33 @@
     padding: 0.5rem;
     max-height: 16rem;
     overflow-y: auto;
+  }
+
+  .terminal-toggle {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid currentColor;
+    border-radius: 0.375rem;
+    background: transparent;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    color: inherit;
+    font-size: 0.85rem;
+  }
+
+  .terminal-toggle.active {
+    background: rgba(79, 70, 229, 0.15);
+    border-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .terminal-panel {
+    border: 1px solid rgba(127, 127, 127, 0.25);
+    border-radius: 0.5rem;
+    /* Reachability parity (#174): min-width 0 lets this panel shrink inside
+       a narrow/mobile flex layout instead of forcing horizontal overflow —
+       the same panel, not a separate mobile variant. */
+    min-width: 0;
+    height: 20rem;
   }
 
   .account {
