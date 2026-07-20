@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 import { fsListRequest, fsListResponse } from './fs';
 import {
@@ -81,6 +82,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   leaseResult,
   leaseRelease,
   leaseReleaseResult,
+  attentionHint,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

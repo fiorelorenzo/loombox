@@ -14,22 +14,29 @@ import type { PushSubscriptionRecord, VapidKeyPair, VapidKeyStore } from './stor
 /**
  * The relay-originated, non-sensitive payload a Web Push notification
  * carries — "enough to route/wake, not decrypted content" (this issue's own
- * framing). `'permission_required'` is the one attention-worthy event class
- * that ever actually reaches this module: it is the only one of SPEC
- * §7.11/§7.13's four classes (tool-call approval, session outcome, CI
- * failure, review request) with a relay-visible, cleartext trigger today —
- * `permission_request` is a top-level `WireMessageV1` the relay already
- * routes without decrypting (`steering.ts`'s doc comment: "the request body
- * is opaque, encrypted content" but the `sessionId`/message type are clear).
- * A session finishing/erroring is a `session_status` event sealed *inside*
- * the `session_update` envelope (`session-events.ts`'s doc comment: "the
- * relay is never told about them") and CI/review-request events have no
- * backing subsystem yet (§7.14 is later work) — extending this union to
- * those is out of this issue's reach without either decrypting on the relay
- * (a hard no, SPEC §8) or a client-observed trigger, which is future work.
+ * framing; issue #170 extended this from one to three classes). Each `kind`
+ * is one of SPEC §7.11/§7.13's attention-inbox classes that has a
+ * relay-visible, cleartext trigger as of v1:
+ * - `'permission_required'` — a tool-call approval; `permission_request` is
+ *   a top-level `WireMessageV1` the relay already routes without decrypting
+ *   (`steering.ts`'s doc comment: "the request body is opaque, encrypted
+ *   content" but the `sessionId`/message type are clear).
+ * - `'awaiting_input'` / `'session_outcome'` — a session's live status
+ *   settled to `awaiting_input`, or to `exited`/`error` (finished/errored).
+ *   That status is itself a `session_status` event sealed *inside* the
+ *   encrypted `session_update` envelope (`session-events.ts`'s doc comment:
+ *   "the relay is never told about them"), so the node additionally sends a
+ *   metadata-only `attention_hint` (`@loombox/protocol`'s `attention.ts`) —
+ *   `class` + `sessionId`, never the encrypted event's own detail — purely
+ *   so this relay-blind module has something cleartext to trigger on, the
+ *   same mechanism `permission_request` already used.
+ *
+ * CI-failure and review-request events have no backing subsystem yet (§7.14
+ * is v2 work) — extending this union to those needs either decrypting on the
+ * relay (a hard no, SPEC §8) or a client-observed trigger, both future work.
  */
 export interface PushPayload {
-  kind: 'permission_required';
+  kind: 'permission_required' | 'awaiting_input' | 'session_outcome';
   sessionId: string;
 }
 

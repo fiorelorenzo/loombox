@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   PROTOCOL_V1,
+  type AttentionHint,
+  type AttentionHintClass,
   type EncryptedEnvelope,
   type Initialize,
   type InitializeResult,
@@ -14,8 +16,10 @@ import { startRelay } from './relay';
 import { createInMemoryRelayStore, type SyncRelayStore } from './store';
 
 /**
- * #161 (VAPID key endpoint + subscription store, over real HTTP) and #163
- * (presence-aware Web Push delivery on `permission_request`, with a fake
+ * #161 (VAPID key endpoint + subscription store, over real HTTP), #163
+ * (presence-aware Web Push delivery on `permission_request`), and #170
+ * (the same delivery mechanism extended to `attention_hint`'s
+ * `awaiting_input`/`session_outcome` classes) — all with a fake
  * `PushSender` injected — no real Web Push network call, see `push.ts`'s
  * own `PushSender` doc comment). Deliberately a separate file from
  * `relay.test.ts` (not appended there) to stay out of that large,
@@ -135,6 +139,7 @@ function fakeVapidKeys() {
 interface FakeSenderCall {
   endpoint: string;
   sessionId: string;
+  kind: string;
 }
 
 /** Records every call by `endpoint` (each fake subscription below uses one distinguishing endpoint) — a real send is never attempted. */
@@ -145,11 +150,36 @@ function createFakeSender(expireEndpoints: readonly string[] = []): {
   const calls: FakeSenderCall[] = [];
   const sender: PushSender = {
     async send(target, _vapidKeys, _subject, payload) {
-      calls.push({ endpoint: target.endpoint, sessionId: payload.sessionId });
+      calls.push({ endpoint: target.endpoint, sessionId: payload.sessionId, kind: payload.kind });
       return { expired: expireEndpoints.includes(target.endpoint) };
     },
   };
   return { sender, calls };
+}
+
+/** Sends a `session_announce` for `sessionId` on `node`, then an `attention_hint` of `hintClass` for it — the metadata-only push trigger a `session_status` transition rides alongside (#170). Waits after each send the same way every other test in this file does, so the relay has processed it before the caller asserts. */
+async function announceAndSendAttentionHint(
+  node: WebSocket,
+  accountId: string,
+  sessionId: string,
+  hintClass: AttentionHintClass,
+): Promise<void> {
+  const meta = makeSessionMeta({ id: sessionId, accountId });
+  send(node, {
+    type: 'session_announce',
+    protocolVersion: PROTOCOL_V1,
+    session: meta,
+    privateEnvelope: fakeEnvelope('title'),
+  } satisfies SessionAnnounceV1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  send(node, {
+    type: 'attention_hint',
+    protocolVersion: PROTOCOL_V1,
+    sessionId,
+    class: hintClass,
+  } satisfies AttentionHint);
+  await new Promise((resolve) => setTimeout(resolve, 30));
 }
 
 describe('/push/vapid-public-key and /push/subscribe (#161/#162)', () => {
@@ -436,5 +466,178 @@ describe('presence-aware push delivery on permission_request (#163)', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(calls).toEqual(['sess_d']);
+  });
+});
+
+describe('presence-aware push delivery on attention_hint (#170)', () => {
+  async function subscribeDevice(
+    httpUrl: string,
+    accountId: string,
+    deviceId: string,
+    endpoint: string,
+  ): Promise<void> {
+    const response = await fetch(`${httpUrl}/push/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${accountId}` },
+      body: JSON.stringify({ deviceId, endpoint, keys: { p256dh: 'p', auth: 'a' } }),
+    });
+    expect(response.status).toBe(204);
+  }
+
+  it.each(['awaiting_input', 'session_outcome'] satisfies AttentionHintClass[])(
+    'pushes a %s hint to a device with no live client connection, but not to one that is currently connected',
+    async (hintClass) => {
+      const { sender, calls } = createFakeSender();
+      const store: SyncRelayStore = createInMemoryRelayStore();
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        store,
+        push: { vapidKeys: fakeVapidKeys(), subject: 'mailto:ops@example.com', sender },
+      });
+      closers.push(close);
+      const httpUrl = url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+
+      await subscribeDevice(httpUrl, 'acct_1', 'dev_connected', 'https://push.example/connected');
+      await subscribeDevice(
+        httpUrl,
+        'acct_1',
+        'dev_disconnected',
+        'https://push.example/disconnected',
+      );
+
+      // dev_connected has a LIVE client connection right now.
+      await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_connected',
+        authToken: 'acct_1',
+      });
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+
+      await announceAndSendAttentionHint(node, 'acct_1', 'sess_hint_a', hintClass);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        endpoint: 'https://push.example/disconnected',
+        sessionId: 'sess_hint_a',
+        kind: hintClass,
+      });
+    },
+  );
+
+  it('never triggers a push at all when the relay has no push config (feature disabled)', async () => {
+    const store: SyncRelayStore = createInMemoryRelayStore();
+    const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+    closers.push(close);
+
+    await store.pushSubscriptions.save({
+      accountId: 'acct_1',
+      deviceId: 'dev_1',
+      endpoint: 'https://push.example/ep1',
+      p256dh: 'p',
+      auth: 'a',
+    });
+
+    const { socket: node } = await initConnection(url, {
+      role: 'node',
+      deviceId: 'node-device',
+      authToken: 'acct_1',
+    });
+
+    // No throw, no crash — just quietly a no-op; the subscription is untouched.
+    await announceAndSendAttentionHint(node, 'acct_1', 'sess_hint_b', 'awaiting_input');
+
+    expect(await store.pushSubscriptions.get('acct_1', 'dev_1')).toBeDefined();
+  });
+
+  it('self-cleans a subscription the push service reports as expired (410/404), without affecting the account other subscriptions', async () => {
+    const { sender, calls } = createFakeSender(['https://push.example/expired']);
+    const store: SyncRelayStore = createInMemoryRelayStore();
+    const { url, close } = await startRelay({
+      host: '127.0.0.1',
+      port: 0,
+      store,
+      push: { vapidKeys: fakeVapidKeys(), subject: 'mailto:ops@example.com', sender },
+    });
+    closers.push(close);
+    const httpUrl = url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+
+    await subscribeDevice(httpUrl, 'acct_1', 'dev_expired', 'https://push.example/expired');
+    await subscribeDevice(httpUrl, 'acct_1', 'dev_alive', 'https://push.example/alive');
+
+    const { socket: node } = await initConnection(url, {
+      role: 'node',
+      deviceId: 'node-device',
+      authToken: 'acct_1',
+    });
+
+    await announceAndSendAttentionHint(node, 'acct_1', 'sess_hint_c', 'session_outcome');
+
+    expect(calls).toHaveLength(2);
+    expect(await store.pushSubscriptions.get('acct_1', 'dev_expired')).toBeUndefined();
+    expect(await store.pushSubscriptions.get('acct_1', 'dev_alive')).toBeDefined();
+  });
+
+  it('every v1 live attention class (permission, awaiting_input, session_outcome) reaches an absent device as a push - none silently fails to notify', async () => {
+    const { sender, calls } = createFakeSender();
+    const store: SyncRelayStore = createInMemoryRelayStore();
+    const { url, close } = await startRelay({
+      host: '127.0.0.1',
+      port: 0,
+      store,
+      push: { vapidKeys: fakeVapidKeys(), subject: 'mailto:ops@example.com', sender },
+    });
+    closers.push(close);
+    const httpUrl = url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+
+    await subscribeDevice(httpUrl, 'acct_1', 'dev_absent', 'https://push.example/absent');
+
+    const { socket: node } = await initConnection(url, {
+      role: 'node',
+      deviceId: 'node-device',
+      authToken: 'acct_1',
+    });
+    const meta = makeSessionMeta({ id: 'sess_all', accountId: 'acct_1' });
+    send(node, {
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: meta,
+      privateEnvelope: fakeEnvelope('title'),
+    } satisfies SessionAnnounceV1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    send(node, {
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: 'sess_all',
+      requestId: 'req_all',
+      envelope: fakeEnvelope('permission-body'),
+    } satisfies PermissionRequest);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    send(node, {
+      type: 'attention_hint',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: 'sess_all',
+      class: 'awaiting_input',
+    } satisfies AttentionHint);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    send(node, {
+      type: 'attention_hint',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: 'sess_all',
+      class: 'session_outcome',
+    } satisfies AttentionHint);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(calls.map((call) => call.kind).sort()).toEqual(
+      ['awaiting_input', 'permission_required', 'session_outcome'].sort(),
+    );
   });
 });
