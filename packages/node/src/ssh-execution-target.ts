@@ -1,3 +1,9 @@
+import {
+  listRemoteDir,
+  statRemotePath,
+  type RemoteDirEntry,
+  type RemoteStat,
+} from './ssh/remote-fs';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
 import type { ExecOptions, ExecResult, ExecutionTarget } from './target';
 
@@ -50,5 +56,22 @@ export class SshExecutionTarget implements ExecutionTarget {
     const result = await this.transport.exec(`ls -1A ${shQuote(path)}`);
     assertOk(result, `readdir ${path}`);
     return result.stdout.split('\n').filter((entry) => entry.length > 0);
+  }
+
+  /**
+   * Richer remote directory browsing (issue #74): every entry's type/size/
+   * mtime, not just its name — what a file-tree/editor UI actually needs,
+   * beyond {@link readdir}'s narrower name-only listing (kept as-is since
+   * it's also `ExecutionTarget`'s shared, `local`-target-parity contract).
+   * Throws {@link RemoteFsError} (`./ssh/remote-fs.ts`) rather than a generic
+   * error for a missing/permission-denied/not-a-directory path.
+   */
+  async readdirDetailed(path: string): Promise<RemoteDirEntry[]> {
+    return listRemoteDir(this.transport, path);
+  }
+
+  /** Stats a single remote path (issue #74). Throws {@link RemoteFsError} for a missing/permission-denied path, same as {@link readdirDetailed}. */
+  async stat(path: string): Promise<RemoteStat> {
+    return statRemotePath(this.transport, path);
   }
 }

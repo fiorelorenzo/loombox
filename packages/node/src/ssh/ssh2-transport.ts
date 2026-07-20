@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
+import type { Duplex } from 'node:stream';
 import { Client, type ConnectConfig } from 'ssh2';
 
 import { wrapForLoginShell } from './login-shell';
+import type { PortForwardTransport } from './port-forward-transport';
 import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
 
 /**
@@ -51,7 +53,7 @@ export interface Ssh2TransportConfig {
  * `verifySshTarget`, ...) keeps sending plain commands and gets the fix for
  * free.
  */
-export class Ssh2Transport implements RemoteTransport {
+export class Ssh2Transport implements RemoteTransport, PortForwardTransport {
   private client: Client | undefined;
 
   constructor(private readonly config: Ssh2TransportConfig) {}
@@ -125,5 +127,33 @@ export class Ssh2Transport implements RemoteTransport {
   async close(): Promise<void> {
     this.client?.end();
     this.client = undefined;
+  }
+
+  /**
+   * Opens a "direct-tcpip" channel over this connection (issue #92): `ssh2`'s
+   * `Client.forwardOut`, the same wire mechanism an interactive `ssh -L`
+   * uses, riding this transport's single already-open connection rather than
+   * spawning a second SSH process per tunnel.
+   */
+  async openForwardChannel(
+    srcHost: string,
+    srcPort: number,
+    dstHost: string,
+    dstPort: number,
+  ): Promise<Duplex> {
+    const client = this.client;
+    if (!client) {
+      throw new Error('Ssh2Transport: not connected; call connect() first');
+    }
+
+    return new Promise((resolve, reject) => {
+      client.forwardOut(srcHost, srcPort, dstHost, dstPort, (err, stream) => {
+        if (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        resolve(stream);
+      });
+    });
   }
 }

@@ -1,8 +1,10 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
@@ -21,6 +23,13 @@ import { createNode, type NodeDaemon } from './node-daemon';
 import { LocalProcessTransport } from './ssh/local-process-transport';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { SessionLeaseManager } from './ssh/session-lease';
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd });
+  return stdout.trim();
+}
 
 // Same hermetic fixture agent every other package's tests exercise (not a
 // real `claude` binary).
@@ -479,5 +488,97 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     });
 
     await expect(node.getExecutionTarget('no-such-target')).rejects.toThrow(/no target/i);
+  });
+
+  it('creates a remote git worktree for the session when worktree: true is passed (issue #75)', async () => {
+    await git(remoteWorkspace, ['init', '-b', 'main']);
+    await git(remoteWorkspace, ['config', 'user.email', 'test@loombox.dev']);
+    await git(remoteWorkspace, ['config', 'user.name', 'loombox test']);
+    await execFileAsync(
+      'git',
+      ['-C', remoteWorkspace, 'commit', '--allow-empty', '-m', 'initial commit'],
+      {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+        },
+      },
+    );
+
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-worktree';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-worktree',
+      deviceId: 'device-node-ssh-worktree',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({
+      projectPath: remoteWorkspace,
+      provider: 'test-echo',
+      targetId: 'devbox',
+      worktree: true,
+    });
+
+    expect(session.target).toBe('ssh');
+    expect(session.worktreePath).not.toBe(remoteWorkspace);
+    expect(session.worktreePath).toBe(
+      path.join(remoteWorkspace, '.loombox', 'worktrees', session.id),
+    );
+    expect(session.branch).toBe(`loombox/session-${session.id}`);
+
+    const insideWorkTree = await git(session.worktreePath, ['rev-parse', '--is-inside-work-tree']);
+    expect(insideWorkTree).toBe('true');
+    const currentBranch = await git(session.worktreePath, ['branch', '--show-current']);
+    expect(currentBranch).toBe(session.branch);
+
+    // The agent itself was actually spawned inside the worktree, not
+    // `remoteWorkspace`: prompting it round-trips fine, proving
+    // `startWithChild` got the worktree path as its `cwd`/`workspacePath`.
+    await expect(node.promptSession(session.id, 'hi from worktree')).resolves.toBeUndefined();
+  });
+
+  it('defaults ssh: sessions to running directly in projectPath when worktree is omitted (unchanged from before issue #75)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-no-worktree';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-no-worktree',
+      deviceId: 'device-node-ssh-no-worktree',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({
+      projectPath: remoteWorkspace,
+      provider: 'test-echo',
+      targetId: 'devbox',
+    });
+
+    expect(session.worktreePath).toBe(remoteWorkspace);
+    expect(session.branch).toBe('');
   });
 });

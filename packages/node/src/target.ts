@@ -12,11 +12,14 @@ import type { TargetDescriptor } from '@loombox/protocol';
  * `RemoteAgentChildProcess` so it plugs into `AgentSupervisor.startWithChild`
  * exactly like a `local` session plugs into `AgentSupervisor.start`.
  *
- * Known, deliberate gap in this wave: unlike `local`'s per-session isolated
- * git worktree, an `ssh:` session runs directly in `projectPath` on the
- * remote host — remote worktree/branch management over SSH is a natural
- * follow-up (SPEC §5.2 mentions it as part of the target's general
- * capability set) but isn't asked for by issues #80/#81/#82/#84.
+ * `ssh:` session worktree isolation (issue #75): `NodeDaemon.createSession()`
+ * defaults an `ssh:` session to running directly in `projectPath` on the
+ * remote host, matching `local`'s pre-#75 shape — but `worktree: true`
+ * (`CreateNodeSessionOptions`) creates one via `./ssh/remote-worktree.ts`
+ * over the same pooled transport, using the identical placement/branch
+ * convention `SessionManager` uses locally. Not yet reachable from a
+ * relay-driven `session_create` (no wire field for it; `@loombox/protocol`
+ * is out of this change's scope) — only this node-direct API.
  */
 
 /** A completed command's captured output and exit status — the same shape as `RemoteTransport`'s `RemoteExecResult` (see `./ssh/remote-transport.ts`), so `SshExecutionTarget` returns it unchanged. */

@@ -25,11 +25,12 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
-import { SessionManager, type Session } from './session-manager';
+import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
+import { createRemoteWorktree } from './ssh/remote-worktree';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
 import { SessionLeaseManager } from './ssh/session-lease';
 import { Ssh2Transport } from './ssh/ssh2-transport';
@@ -154,6 +155,22 @@ export interface CreateNodeSessionOptions {
   targetId?: string;
   /** Human-readable session title, travels only inside the encrypted private envelope (default: the project directory's basename). */
   title?: string;
+  /**
+   * Isolate this session in a fresh git worktree rather than running
+   * directly in `projectPath` (issue #75, SPEC §6: "the user chooses per
+   * session; worktree is not mandatory"). Defaults to this target kind's
+   * historical behavior when omitted, so every existing caller is
+   * unaffected: `true` for `local` (an isolated worktree, `SessionManager`'s
+   * only behavior before this option existed) and `false` for `ssh:` (runs
+   * directly in `projectPath` on the remote host, the "deliberate gap"
+   * `./target.ts`'s doc comment describes — now closeable per-session by
+   * passing `worktree: true` explicitly, backed by `./ssh/remote-worktree.ts`).
+   * Only reachable via this direct API in this wave: a relay-driven
+   * `session_create` has no wire field for it yet (`SessionCreate` is
+   * `@loombox/protocol`, out of this change's scope) and always gets the
+   * per-target default.
+   */
+  worktree?: boolean;
 }
 
 /** The plaintext a session's private envelope (`session_create`/`session_announce`) decrypts to — SPEC §8's metadata boundary: title and project path never reach the relay in the clear. */
@@ -435,6 +452,7 @@ export class NodeDaemon extends EventEmitter {
       provider: options.provider ?? 'claude',
       targetId: options.targetId ?? 'local',
       title: options.title ?? basename(options.projectPath),
+      worktree: options.worktree,
     });
   }
 
@@ -488,6 +506,7 @@ export class NodeDaemon extends EventEmitter {
     provider: string;
     targetId: string;
     title: string;
+    worktree?: boolean;
   }): Promise<Session> {
     const target = this.targets.find((candidate) => candidate.id === opts.targetId);
     if (!target) {
@@ -511,6 +530,11 @@ export class NodeDaemon extends EventEmitter {
       provider: opts.provider,
       nodeId: this.nodeId,
       targetId: opts.targetId,
+      // `undefined`/`true` here means an isolated worktree (`workInPlace:
+      // false`) — `local`'s historical default, unchanged for every caller
+      // that doesn't pass `worktree` at all. Only an explicit `worktree:
+      // false` opts into running directly in `projectPath`.
+      workInPlace: opts.worktree === false,
     });
     const agentSession = await this.supervisor.start({
       workspacePath: session.worktreePath,
@@ -553,7 +577,13 @@ export class NodeDaemon extends EventEmitter {
    */
   private async createSshSessionInternal(
     targetId: string,
-    opts: { sessionId?: string; projectPath: string; provider: string; title: string },
+    opts: {
+      sessionId?: string;
+      projectPath: string;
+      provider: string;
+      title: string;
+      worktree?: boolean;
+    },
     mcpServers: AcpMcpServerConfig[],
   ): Promise<Session> {
     const sessionId = opts.sessionId ?? randomUUID();
@@ -571,8 +601,26 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
     }
 
+    // `ssh:` defaults to `worktree: false` (unchanged from before this
+    // option existed: run directly in `projectPath`, see target.ts's doc
+    // comment on the historical gap this closes per-session) — only an
+    // explicit `worktree: true` creates one, via `./ssh/remote-worktree.ts`
+    // over this target's own pooled transport (issue #75).
+    let worktreePath = opts.projectPath;
+    let branch = '';
+    if (opts.worktree) {
+      const transport = await this.getSshTransport(targetId);
+      const created = await createRemoteWorktree(transport, {
+        projectPath: opts.projectPath,
+        sessionId,
+        branch: sessionWorktreeBranch(sessionId),
+      });
+      worktreePath = created.worktreePath;
+      branch = created.branch;
+    }
+
     const runner = await this.getRemoteRunner(targetId);
-    const spawnConfig = provider.spawnConfig({ cwd: opts.projectPath });
+    const spawnConfig = provider.spawnConfig({ cwd: worktreePath });
     const command = [spawnConfig.command, ...(spawnConfig.args ?? [])].map(shQuote).join(' ');
 
     const { mode, usedFallback, handle } = await runner.launchWithFallback(sessionId, command);
@@ -588,22 +636,19 @@ export class NodeDaemon extends EventEmitter {
     remoteChild.start();
 
     const agentSession = await this.supervisor.startWithChild({
-      workspacePath: opts.projectPath,
+      workspacePath: worktreePath,
       providerId: opts.provider,
       child: asAcpChildProcess(remoteChild),
       mcpServers,
     });
 
-    // No per-session remote git worktree in this wave (see target.ts's doc
-    // comment): the session runs directly in `projectPath` on the remote
-    // host, so `worktreePath` mirrors it and `branch` is genuinely N/A.
     const session: Session = {
       id: sessionId,
       projectPath: opts.projectPath,
-      worktreePath: opts.projectPath,
+      worktreePath,
       target: 'ssh',
       provider: opts.provider,
-      branch: '',
+      branch,
       createdAt: Date.now(),
       state: 'running',
       nodeId: this.nodeId,

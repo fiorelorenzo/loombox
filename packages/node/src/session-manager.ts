@@ -92,6 +92,21 @@ export interface CreateSessionOptions {
   nodeId?: string;
   /** The specific target id this session runs on; recorded on the session, not otherwise used by `SessionManager`. Defaults to `'local'`, since a bare `SessionManager` only ever creates `local`-kind sessions. */
   targetId?: string;
+  /**
+   * Skip creating an isolated git worktree and run directly in `projectPath`
+   * instead (issue #75, SPEC §6: "Worktree (optional)... The user chooses
+   * per session; worktree is not mandatory"). Defaults to `false` (an
+   * isolated worktree, `SessionManager`'s original and only behavior before
+   * this option existed). When `true`, `worktreePath` equals `projectPath`
+   * and `branch` is `''` — the same "genuinely N/A" shape an `ssh:` session
+   * without a remote worktree already uses (see the `Session` doc comment).
+   */
+  workInPlace?: boolean;
+}
+
+/** The branch name a session's isolated worktree is created on, on either target kind — `local` computes it right here; `ssh:` targets pass it to `./ssh/remote-worktree.ts`'s `createRemoteWorktree` so both stay byte-for-byte identical. */
+export function sessionWorktreeBranch(sessionId: string): string {
+  return `loombox/session-${sessionId}`;
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -145,14 +160,22 @@ export class SessionManager {
     id: givenId,
     nodeId,
     targetId,
+    workInPlace = false,
   }: CreateSessionOptions): Promise<Session> {
     await assertIsGitRepo(projectPath);
 
     const id = givenId ?? randomUUID();
-    const branch = `loombox/session-${id}`;
-    const worktreePath = join(projectPath, '.loombox', 'worktrees', id);
 
-    await runGit(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], projectPath);
+    let worktreePath: string;
+    let branch: string;
+    if (workInPlace) {
+      worktreePath = projectPath;
+      branch = '';
+    } else {
+      branch = sessionWorktreeBranch(id);
+      worktreePath = join(projectPath, '.loombox', 'worktrees', id);
+      await runGit(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], projectPath);
+    }
 
     const session: Session = {
       id,
@@ -212,6 +235,16 @@ export class SessionManager {
     const session = this.sessions.get(id);
     if (!session) {
       throw new Error(`no session with id ${id}`);
+    }
+
+    // A `workInPlace` (or, for an `ssh:` session recorded directly by
+    // `NodeDaemon`, worktree-less) session has `branch === ''` and its
+    // `worktreePath` *is* `projectPath` — there is no worktree to remove,
+    // and `git worktree remove`/`rm -rf` on `projectPath` itself would
+    // destroy the user's actual working copy. Just forget the record.
+    if (!session.branch) {
+      this.sessions.delete(id);
+      return;
     }
 
     try {
