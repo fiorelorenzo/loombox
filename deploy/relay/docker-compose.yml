@@ -50,6 +50,11 @@ services:
       # loopback-only publish; host Caddy reverse-proxies to this (prodbox
       # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).
       - '127.0.0.1:5185:8787'
+    volumes:
+      # Encrypted backup artifacts (#103, docs/relay-backup.md) land here so
+      # they survive `relay` container recreation and are reachable from the
+      # host for off-box shipping (rclone/restic).
+      - ./backups:/app/backups
     restart: unless-stopped
 
 volumes:

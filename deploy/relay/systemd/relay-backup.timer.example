@@ -1,0 +1,14 @@
+# Runs relay-backup.service nightly at 03:00 (host local time), +/- up to 15
+# minutes (RandomizedDelaySec, so it doesn't always land on the exact same
+# second as any other host cron/timer). Persistent=true catches up on the
+# next boot if the host was down at 03:00.
+[Unit]
+Description=Nightly loombox relay encrypted backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

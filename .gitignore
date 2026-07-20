@@ -12,6 +12,10 @@ coverage/
 .turbo/
 .pnpm-store/
 
+# Relay backup artifacts land here on the host (deploy/relay/docker-compose.yml
+# bind mount, #103) - encrypted, but still never committed.
+deploy/relay/backups/
+
 # Ephemeral agent/orchestration worktrees (Workflow tool, emdash)
 .claude/worktrees/
 .emdash/worktrees/

@@ -15,7 +15,9 @@
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "migrate": "tsx src/migrate-cli.ts",
-    "prune": "tsx src/prune-cli.ts"
+    "prune": "tsx src/prune-cli.ts",
+    "backup": "tsx src/backup-cli.ts",
+    "restore": "tsx src/restore-cli.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.1.0",
