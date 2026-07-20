@@ -29,16 +29,61 @@ export type WrappedAmkEnvelope = z.infer<typeof wrappedAmkEnvelope>;
 /**
  * Revokes a device and rotates the AMK (SPEC §8: "the acting device mints a
  * new AMK epoch... and ECDH-wraps that new epoch for each other currently
- * registered device's already-known public key"). `rewrappedAmk` carries one
- * wrapped copy per surviving device; the revoked `deviceId` gets none.
+ * registered device's already-known public key"). `newEpoch` is the account's
+ * new AMK epoch number this revoke establishes (relay-validated as exactly
+ * one past the account's current epoch, #116); `rewrappedAmk` carries one
+ * wrapped copy per surviving device, all wrapped for that same epoch — the
+ * revoked `deviceId` gets none.
  */
 export const deviceRevoke = z.object({
   type: z.literal('device_revoke'),
   protocolVersion: z.literal(PROTOCOL_V1),
   deviceId: z.string().min(1),
+  newEpoch: z.number().int().positive(),
   rewrappedAmk: z.array(wrappedAmkEnvelope),
 });
 export type DeviceRevoke = z.infer<typeof deviceRevoke>;
+
+/**
+ * A surviving device, on reconnect, asks whether the relay is holding a
+ * rewrapped-AMK-epoch envelope for it (SPEC §8's wrap-fan-out delivery leg;
+ * issue #116). Scoped to the requester's own connection — the relay only
+ * ever answers for `connection.deviceId`, never an arbitrary `deviceId` a
+ * client might supply (see `relay.ts`'s handler).
+ */
+export const amkEpochFetchRequest = z.object({
+  type: z.literal('amk_epoch_fetch_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  deviceId: z.string().min(1),
+});
+export type AmkEpochFetchRequest = z.infer<typeof amkEpochFetchRequest>;
+
+/**
+ * The relay's reply: this device's own pending rewrapped-AMK-epoch envelope,
+ * or `pending: undefined` if there is nothing to adopt (already on the
+ * latest epoch, or this account has never rotated). `fromDeviceId`/
+ * `fromDevicePublicKey` identify the acting device that wrapped it, exactly
+ * as `@loombox/crypto`'s `unwrapAmkEpochForDevice` needs to re-derive the
+ * ECDH shared secret — looked up by the relay from its own device registry
+ * at fetch time, never trusted from the original `device_revoke` sender.
+ * Still just opaque ciphertext plus routing metadata: the relay never learns
+ * the AMK.
+ */
+export const amkEpochFetchResponse = z.object({
+  type: z.literal('amk_epoch_fetch_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  deviceId: z.string().min(1),
+  pending: z
+    .object({
+      epoch: z.number().int().positive(),
+      fromDeviceId: z.string().min(1),
+      fromDevicePublicKey: base64String,
+      envelope: encryptedEnvelope,
+    })
+    .optional(),
+});
+export type AmkEpochFetchResponse = z.infer<typeof amkEpochFetchResponse>;
+export type AmkEpochPendingEnvelope = NonNullable<AmkEpochFetchResponse['pending']>;
 
 /** A device replaces its own identity keypair in place (key rotation without revocation). */
 export const deviceRotate = z.object({

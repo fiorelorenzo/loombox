@@ -1,6 +1,7 @@
 import { argv } from 'node:process';
 import { pathToFileURL } from 'node:url';
 
+import { wireAmkEpochAdoption } from './amk-epoch';
 import { loadNodeConfig, type LoadNodeConfigOptions } from './config';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
@@ -62,6 +63,13 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     stateDir: config.stateDir,
     webSocketImpl: options.webSocketImpl,
   });
+
+  // #116: this node holds `identity`'s private key (this module's own
+  // `NodeIdentityStore`, never handed into `NodeDaemon` itself — see that
+  // class's doc comment), so it's the one place that can actually unwrap a
+  // pending rewrapped-AMK-epoch envelope the daemon surfaces via
+  // `'amk-epoch-pending'`.
+  wireAmkEpochAdoption(node, identity, config.accountId, config.deviceId);
 
   const targetIds = (config.targets ?? [DEFAULT_LOCAL_TARGET]).map((target) => target.id);
   console.log(

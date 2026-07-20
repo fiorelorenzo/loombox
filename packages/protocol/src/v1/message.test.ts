@@ -43,6 +43,7 @@ const messagesByType: Record<string, unknown> = {
     type: 'device_revoke',
     protocolVersion: 1,
     deviceId: 'device-1',
+    newEpoch: 1,
     rewrappedAmk: [],
   },
   device_rotate: {
@@ -52,6 +53,22 @@ const messagesByType: Record<string, unknown> = {
     newDevicePublicKey: 'YWJjZA==',
   },
   amk_escrow: { type: 'amk_escrow', protocolVersion: 1, wrappedAmk: 'YWJjZA==' },
+  amk_epoch_fetch_request: {
+    type: 'amk_epoch_fetch_request',
+    protocolVersion: 1,
+    deviceId: 'device-2',
+  },
+  amk_epoch_fetch_response: {
+    type: 'amk_epoch_fetch_response',
+    protocolVersion: 1,
+    deviceId: 'device-2',
+    pending: {
+      epoch: 1,
+      fromDeviceId: 'device-1',
+      fromDevicePublicKey: 'YWJjZA==',
+      envelope: validEnvelope,
+    },
+  },
   new_device_bootstrap_request: {
     type: 'new_device_bootstrap_request',
     protocolVersion: 1,

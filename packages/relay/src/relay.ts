@@ -6,6 +6,7 @@ import {
   initialize,
   negotiateVersion,
   safeParseWireMessageV1,
+  type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type InitializeResult,
   type NewDeviceBootstrapResponse,
@@ -466,7 +467,52 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           app.log.warn({ deviceId: message.deviceId }, 'relay: revoke for unknown/foreign device');
           return true;
         }
+        // #116: the acting device's `newEpoch` must be exactly one past the
+        // account's current epoch — the relay's own defense against a
+        // stale/duplicate/out-of-order revoke setting a wrong epoch. A
+        // mismatch rejects the *whole* revoke (nothing below runs): the
+        // device stays registered and no envelope is stored, rather than
+        // silently accepting an inconsistent epoch number.
+        const advanced = await store.amkRotation.advanceEpoch(
+          connection.accountId,
+          message.newEpoch,
+        );
+        if (!advanced) {
+          app.log.warn(
+            { accountId: connection.accountId, newEpoch: message.newEpoch },
+            'relay: device_revoke newEpoch is not exactly one past the account current epoch; rejecting',
+          );
+          return true;
+        }
         await store.devices.revoke(message.deviceId);
+        // Wrap-fan-out delivery (SPEC §8): park each surviving device's own
+        // rewrapped-AMK-epoch envelope for it to fetch on next connect
+        // (`amk_epoch_fetch_request` below). Defensively skips any entry
+        // that targets the revoked device itself or a device this account
+        // doesn't actually own, rather than trusting the sender's list
+        // wholesale.
+        for (const entry of message.rewrappedAmk) {
+          if (entry.deviceId === message.deviceId) {
+            app.log.warn(
+              { deviceId: entry.deviceId },
+              'relay: device_revoke rewrappedAmk entry targets the revoked device itself; ignoring',
+            );
+            continue;
+          }
+          const survivor = await store.devices.get(entry.deviceId);
+          if (!survivor || survivor.accountId !== connection.accountId) {
+            app.log.warn(
+              { deviceId: entry.deviceId },
+              'relay: device_revoke rewrappedAmk entry targets an unknown/foreign device; ignoring',
+            );
+            continue;
+          }
+          await store.amkRotation.putPending(connection.accountId, entry.deviceId, {
+            epoch: message.newEpoch,
+            fromDeviceId: connection.deviceId,
+            envelope: entry.envelope,
+          });
+        }
         closeConnectionsForDevice(message.deviceId, connection.accountId);
         return true;
       }
@@ -510,14 +556,66 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(connection, response);
         return true;
       }
+      case 'amk_epoch_fetch_request': {
+        // #116: a surviving device, on reconnect, asks whether the relay is
+        // holding a rewrapped-AMK-epoch envelope for it. Always answered for
+        // *this connection's own* authenticated deviceId — `message.deviceId`
+        // is never trusted for the actual lookup (only logged if it disagrees,
+        // e.g. a stale client), so a spoofed `deviceId` in the request body
+        // can never fetch another device's envelope. Still always replies
+        // (never silently drops), since this is a request/response pair a
+        // caller waits on, exactly like `new_device_bootstrap_request` above.
+        if (message.deviceId !== connection.deviceId) {
+          app.log.warn(
+            { deviceId: message.deviceId, connectionDeviceId: connection.deviceId },
+            "relay: amk_epoch_fetch_request deviceId does not match the requesting connection; answering for the connection's own device instead",
+          );
+        }
+        const pending = await store.amkRotation.getPending(
+          connection.accountId,
+          connection.deviceId,
+        );
+        let responsePending: AmkEpochFetchResponse['pending'];
+        if (pending) {
+          // `fromDevicePublicKey` is looked up fresh from the device
+          // registry here, never trusted from whatever the original
+          // `device_revoke` sender claimed — the acting device's current
+          // registered public key is the only one `unwrapAmkEpochForDevice`
+          // can actually derive the right ECDH shared secret against.
+          const fromDevice = await store.devices.get(pending.fromDeviceId);
+          if (fromDevice && fromDevice.accountId === connection.accountId) {
+            responsePending = {
+              epoch: pending.epoch,
+              fromDeviceId: pending.fromDeviceId,
+              fromDevicePublicKey: fromDevice.devicePublicKey,
+              envelope: pending.envelope,
+            };
+          } else {
+            app.log.warn(
+              { deviceId: connection.deviceId, fromDeviceId: pending.fromDeviceId },
+              'relay: amk_epoch_fetch_request has a pending envelope whose wrapping device is no longer known; withholding',
+            );
+          }
+        }
+        const response: AmkEpochFetchResponse = {
+          type: 'amk_epoch_fetch_response',
+          protocolVersion: PROTOCOL_V1,
+          deviceId: connection.deviceId,
+          pending: responsePending,
+        };
+        sendDirect(connection, response);
+        return true;
+      }
       case 'new_device_bootstrap_response':
       case 'qr_pairing_request':
       case 'qr_pairing_response':
-        // `new_device_bootstrap_response` is only ever relay->client (this
-        // relay's own reply above); QR pairing (#113) is deliberately
-        // device-to-device over an out-of-band channel with "no relay
-        // unwrap" (SPEC §8 path 1) and never needs relay-side wiring at all.
-        // Neither is a message this relay legitimately receives.
+      case 'amk_epoch_fetch_response':
+        // `new_device_bootstrap_response`/`amk_epoch_fetch_response` are only
+        // ever relay->client (this relay's own replies above); QR pairing
+        // (#113) is deliberately device-to-device over an out-of-band
+        // channel with "no relay unwrap" (SPEC §8 path 1) and never needs
+        // relay-side wiring at all. None of these are messages this relay
+        // legitimately receives.
         app.log.warn({ type: message.type }, 'relay: unexpected inbound device-pairing message');
         return true;
       default:

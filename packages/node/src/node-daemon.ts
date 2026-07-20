@@ -13,6 +13,7 @@ import { AgentSupervisor, type AgentSession, type AttentionState } from '@loombo
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
+  type AmkEpochPendingEnvelope,
   type FsListRequest,
   type FsListRequestPayloadV1,
   type FsListResponsePayloadV1,
@@ -21,6 +22,7 @@ import {
   type SessionMetaPublic,
   type TargetDescriptor,
   type WireMessageV1,
+  type WrappedAmkEnvelope,
 } from '@loombox/protocol';
 
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
@@ -77,6 +79,16 @@ export interface NodeDaemonOptions {
    * directly until this node has its own pairing bootstrap.
    */
   amk: Uint8Array;
+  /**
+   * The epoch number `amk` above represents (SPEC §8, issue #116's AMK
+   * epoch rotation). Defaults to `0` — "the account's original AMK, never
+   * rotated." A node restarting after having previously adopted a rotation
+   * should pass its last-known epoch here (persistence of that number
+   * across restarts is the caller's concern, e.g. `main.ts`/`config.ts` —
+   * out of this option's scope); `NodeDaemon` itself only ever tracks it
+   * in memory for the lifetime of one connection.
+   */
+  amkEpoch?: number;
   /** Execution targets this node exposes (SPEC §5.2); defaults to just the `local` target. */
   targets?: TargetDescriptor[];
   /**
@@ -304,6 +316,19 @@ interface SessionBridge {
  * `SessionMetaPublic` deliberately allows (id, nodeId, targetId, accountId,
  * provider, timestamps).
  *
+ * On every fresh connection (including a reconnect), this node also asks the
+ * relay whether a rewrapped-AMK-epoch envelope is waiting for it (SPEC §8's
+ * wrap-fan-out delivery leg, issue #116's "fetch on next connect"). This
+ * class deliberately never holds this device's own ECDH private key (only
+ * `devicePublicKey`, a string, is ever passed in — see that option's doc
+ * comment), so it cannot unwrap the envelope itself: on a pending reply
+ * ahead of its own tracked epoch, it emits `'amk-epoch-pending'` with the
+ * raw `{ epoch, fromDeviceId, fromDevicePublicKey, envelope }` for a caller
+ * that *does* hold the private key (e.g. `main.ts` plus `identity.ts`'s
+ * `NodeIdentityStore`) to unwrap via `@loombox/crypto`'s
+ * `unwrapAmkEpochForDevice` and hand back via {@link NodeDaemon.adoptAmkEpoch}.
+ * Adopting fires `'amk-epoch-adopted'` with `{ epoch }`.
+ *
  * Emits `'connected'` once the relay handshake completes and this node has
  * (re-)announced its targets and sessions (including on every reconnect) —
  * useful for a caller/test that needs to know the node is actually routable
@@ -314,7 +339,11 @@ export class NodeDaemon extends EventEmitter {
   readonly nodeId: string;
 
   private readonly accountId: string;
-  private readonly amk: Uint8Array;
+  private readonly deviceId: string;
+  /** Mutable (unlike every other identity field here): {@link adoptAmkEpoch} replaces this in place once a rotation is adopted (#116). */
+  private amk: Uint8Array;
+  /** This node's currently-adopted AMK epoch (#116); see `NodeDaemonOptions.amkEpoch`'s doc comment. */
+  private amkEpoch: number;
   private readonly targets: TargetDescriptor[];
   private readonly sessionManager: SessionManager;
   private readonly relay: RelayConnection;
@@ -356,7 +385,9 @@ export class NodeDaemon extends EventEmitter {
     super();
     this.nodeId = options.nodeId;
     this.accountId = options.accountId;
+    this.deviceId = options.deviceId;
     this.amk = options.amk;
+    this.amkEpoch = options.amkEpoch ?? 0;
     this.targets = options.targets ?? [DEFAULT_LOCAL_TARGET];
     this.sessionManager = options.sessionManager ?? new SessionManager();
     this.relay = new RelayConnection({
@@ -415,6 +446,7 @@ export class NodeDaemon extends EventEmitter {
     this.relay.on('open', () => {
       this._connected = true;
       this.reannounceAll();
+      this.sendAmkEpochFetchRequest();
       this.emit('connected');
     });
     this.relay.on('close', () => {
@@ -936,6 +968,77 @@ export class NodeDaemon extends EventEmitter {
     }
   }
 
+  /** SPEC §8 / issue #116: on every fresh connection, ask whether a rewrapped-AMK-epoch envelope is waiting for this device. */
+  private sendAmkEpochFetchRequest(): void {
+    this.relay.send({
+      type: 'amk_epoch_fetch_request',
+      protocolVersion: PROTOCOL_V1,
+      deviceId: this.deviceId,
+    });
+  }
+
+  /**
+   * A pending rewrapped-AMK-epoch envelope arrived (or didn't). Ignored if
+   * there's nothing pending, or if it's for an epoch this node has already
+   * adopted (e.g. a duplicate reply after a reconnect churn) — otherwise
+   * emits `'amk-epoch-pending'` for a caller holding this device's private
+   * key to unwrap (this class never holds it itself; see the class doc
+   * comment).
+   */
+  private handleAmkEpochFetchResponse(pending: AmkEpochPendingEnvelope | undefined): void {
+    if (!pending || pending.epoch <= this.amkEpoch) return;
+    this.emit('amk-epoch-pending', pending);
+  }
+
+  /**
+   * A caller (holding this device's private key) has unwrapped a pending
+   * envelope and hands back the recovered AMK for this node to actually
+   * adopt. No-op (returns `false`) if `epoch` isn't strictly ahead of what
+   * this node already has — the same "only if ahead" guard
+   * `handleAmkEpochFetchResponse` applies before ever emitting, re-checked
+   * here since adoption is the security-relevant step and callers should
+   * never be trusted to skip a stale epoch on their own. Clears every
+   * cached session key so any *new* session created after this call derives
+   * from the new epoch; already-cached keys for sessions created before
+   * rotation are left alone for this process's remaining lifetime (see
+   * `session-keys.ts`'s doc comment for why the AMK is the sole root of
+   * derivation — there is no separate per-epoch history kept across a
+   * restart in this wave).
+   */
+  adoptAmkEpoch(newAmk: Uint8Array, epoch: number): boolean {
+    if (epoch <= this.amkEpoch) return false;
+    this.amk = newAmk;
+    this.amkEpoch = epoch;
+    this.sessionKeys.clear();
+    this.emit('amk-epoch-adopted', { epoch });
+    return true;
+  }
+
+  /** This node's currently-adopted AMK epoch (#116); `0` means "the account's original AMK, never rotated." */
+  get currentAmkEpoch(): number {
+    return this.amkEpoch;
+  }
+
+  /**
+   * Sends `device_revoke` (SPEC §8's revoke-and-rotate action). The caller
+   * is responsible for the crypto: minting the new epoch
+   * (`@loombox/crypto`'s `generateAmkEpoch`) and ECDH-wrapping it per
+   * surviving device (`wrapAmkEpochForDevice`) — this method only forwards
+   * the already-built wire payload, exactly like `announce`/
+   * `sendTargetAnnounce` above forward theirs. `newEpoch` must be exactly
+   * one past whatever the acting device/account currently believes the
+   * epoch to be (the relay rejects anything else, #116).
+   */
+  revokeDevice(deviceId: string, newEpoch: number, rewrappedAmk: WrappedAmkEnvelope[]): void {
+    this.relay.send({
+      type: 'device_revoke',
+      protocolVersion: PROTOCOL_V1,
+      deviceId,
+      newEpoch,
+      rewrappedAmk,
+    });
+  }
+
   private handleInbound(message: WireMessageV1): void {
     switch (message.type) {
       case 'session_create':
@@ -946,6 +1049,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'fs_list_request':
         this.handleFsListRequest(message);
+        return;
+      case 'amk_epoch_fetch_response':
+        this.handleAmkEpochFetchResponse(message.pending);
         return;
       default:
         // Every other v1 message type (permission_response, config_option,

@@ -20,6 +20,9 @@ export {
 } from './handshake';
 
 export type {
+  AmkEpochFetchRequest,
+  AmkEpochFetchResponse,
+  AmkEpochPendingEnvelope,
   AmkEscrow,
   DeviceRegister,
   DeviceRevoke,
@@ -31,6 +34,8 @@ export type {
   WrappedAmkEnvelope,
 } from './devices';
 export {
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   amkEscrow,
   deviceRegister,
   deviceRevoke,
@@ -144,6 +149,8 @@ export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './mes
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   amkEscrow,
   deviceRegister,
   deviceRevoke,
@@ -211,6 +218,8 @@ export const schemasV1 = {
   deviceRevoke,
   deviceRotate,
   amkEscrow,
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   newDeviceBootstrapRequest,
   newDeviceBootstrapResponse,
   qrPairingRequest,
