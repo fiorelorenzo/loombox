@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { Client, type ConnectConfig } from 'ssh2';
 
+import { wrapForLoginShell } from './login-shell';
 import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
 
 /**
@@ -25,9 +26,31 @@ export interface Ssh2TransportConfig {
   /** Overrides `$SSH_AUTH_SOCK` autodetection; set `false` to disable agent auth entirely. */
   agent?: string | false;
   readyTimeoutMs?: number;
+  /**
+   * Whether `exec()` wraps every command through {@link wrapForLoginShell}
+   * (issue #73's non-interactive-shell PATH fix). Defaults to `true`; set
+   * `false` only for a remote known not to have `bash` (the wrapper's login
+   * shell) — an unsupported, unusual host in this wave.
+   */
+  loginShell?: boolean;
 }
 
-/** Real SSH transport, `RemoteTransport` implemented over `ssh2` (issue #80). Every other mechanism in `packages/node/src/ssh/` is written against the `RemoteTransport` interface and tested via `LocalProcessTransport`/`FakeTransport` instead of this class directly — see `remote-transport.ts`'s doc comment for why. */
+/**
+ * Real SSH transport, `RemoteTransport` implemented over `ssh2` (issue #80).
+ * Every other mechanism in `packages/node/src/ssh/` is written against the
+ * `RemoteTransport` interface and tested via `LocalProcessTransport`/
+ * `FakeTransport` instead of this class directly — see `remote-transport.ts`'s
+ * doc comment for why.
+ *
+ * `exec()` sends every command through {@link wrapForLoginShell} rather than
+ * literally as-is (issue #73): `ssh2`'s `Client.exec`, like `ssh host cmd`,
+ * runs a single non-login, non-interactive remote shell, which does not
+ * source the profile lines a runtime manager's PATH activation typically
+ * lives behind (SPEC §9). This is the one seam where that fix lives — every
+ * caller above it (`RemoteProcessRunner`, `SshExecutionTarget`,
+ * `verifySshTarget`, ...) keeps sending plain commands and gets the fix for
+ * free.
+ */
 export class Ssh2Transport implements RemoteTransport {
   private client: Client | undefined;
 
@@ -67,8 +90,11 @@ export class Ssh2Transport implements RemoteTransport {
       throw new Error('Ssh2Transport: not connected; call connect() first');
     }
 
+    const loginShell = this.config.loginShell ?? true;
+    const wrappedCommand = loginShell ? wrapForLoginShell(command) : command;
+
     return new Promise((resolve, reject) => {
-      client.exec(command, (err, stream) => {
+      client.exec(wrappedCommand, (err, stream) => {
         if (err) {
           reject(err);
           return;
