@@ -40,7 +40,7 @@ describe('start (packages/node CLI entrypoint, issue #63)', () => {
     expect(started.nodeId).toBe('main-test-node');
     expect(started.devicePublicKey.length).toBeGreaterThan(0);
 
-    const connected = new Promise<void>((resolve) => started.node.once('connected', resolve));
+    const connected = started.node.whenConnected();
     await connected;
 
     await expect(started.stop()).resolves.toBeUndefined();
@@ -49,7 +49,7 @@ describe('start (packages/node CLI entrypoint, issue #63)', () => {
   it('stop() is idempotent: calling it more than once is a safe no-op', async () => {
     const amk = generateAmk();
     const started = await start({ env: envFor(relay.url, stateDir, amk), argv: [] });
-    await new Promise<void>((resolve) => started.node.once('connected', resolve));
+    await started.node.whenConnected();
 
     await started.stop();
     await expect(started.stop()).resolves.toBeUndefined();
@@ -70,12 +70,12 @@ describe('start (packages/node CLI entrypoint, issue #63)', () => {
     const env = envFor(relay.url, stateDir, amk);
 
     const first = await start({ env, argv: [] });
-    await new Promise<void>((resolve) => first.node.once('connected', resolve));
+    await first.node.whenConnected();
     const firstKey = first.devicePublicKey;
     await first.stop();
 
     const second = await start({ env, argv: [] });
-    await new Promise<void>((resolve) => second.node.once('connected', resolve));
+    await second.node.whenConnected();
     expect(second.devicePublicKey).toBe(firstKey);
     await second.stop();
   });
@@ -92,10 +92,7 @@ describe('start (packages/node CLI entrypoint, issue #63)', () => {
     try {
       const a = await start({ env: envFor(relay.url, dirA, amk, 'node-a'), argv: [] });
       const b = await start({ env: envFor(relay.url, dirB, amk, 'node-b'), argv: [] });
-      await Promise.all([
-        new Promise<void>((resolve) => a.node.once('connected', resolve)),
-        new Promise<void>((resolve) => b.node.once('connected', resolve)),
-      ]);
+      await Promise.all([a.node.whenConnected(), b.node.whenConnected()]);
 
       expect(a.devicePublicKey).not.toBe(b.devicePublicKey);
 
