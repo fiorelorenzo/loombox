@@ -817,6 +817,260 @@ describe('RelayClient', () => {
   });
 });
 
+describe('RelayClient: turn Stop/interrupt (SPEC §7.3/§7.24; issue #129)', () => {
+  it('interruptTurn cancels every open permission request for the session, same as cancelPermissionRequests', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-interrupt';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-interrupt',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_interrupt', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-interrupt' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queue = client.permissionQueueFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const envelope = await nodeSeal(
+      session.id,
+      { toolCall: { kind: 'tool_call', id: 'tc-interrupt' }, options: [] },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-interrupt',
+      envelope,
+    });
+    await waitForStore(queue, (value) => value.byId.size > 0);
+
+    client.interruptTurn(session.id);
+
+    expect(get(queue).byId.size).toBe(0);
+  });
+
+  it('interruptTurn settles the turn locally so a queued follow-up flushes right away instead of waiting out turnIdleMs — and never touches rollback/workspace state (no such call exists on this client)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-interrupt-queue';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-interrupt-queue',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_interrupt_queue', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-interrupt-queue',
+      outboxStorage: createInMemoryOutboxStorage(),
+      // Deliberately long: proves the flush below comes from interruptTurn
+      // itself, not from the turnIdleMs fallback timer happening to fire.
+      turnIdleMs: 60_000,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const queued = client.queuedPromptsFor(session.id);
+    const firstId = client.sendPrompt(session.id, 'first, in flight');
+    await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).promptId === firstId,
+    );
+
+    const secondId = client.sendPrompt(session.id, 'second, queued behind the first turn');
+    expect(get(queued)).toEqual([expect.objectContaining({ id: secondId, sessionId: session.id })]);
+
+    client.interruptTurn(session.id);
+
+    const secondRouted = (await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).promptId === secondId,
+    )) as PromptInjectV1;
+    expect(secondRouted.sessionId).toBe(session.id);
+    await waitForStore(queued, (value) => value.length === 0);
+  });
+});
+
+describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () => {
+  it('resolving a request this client already resolved is a graceful no-op: no second permission_response is sent, and a stale notice is published instead of erroring', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-stale-local';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-stale-local',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_stale_local', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-stale-local',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queue = client.permissionQueueFor(session.id);
+    const staleNotice = client.staleNoticeFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const option = { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const };
+    const envelope = await nodeSeal(
+      session.id,
+      { toolCall: { kind: 'tool_call', id: 'tc-stale' }, options: [option] },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-stale-local',
+      envelope,
+    });
+    await waitForStore(queue, (value) => value.byId.size > 0);
+
+    // The first (real) resolve — same path already covered elsewhere, just
+    // the setup this test's actual case (the second, stale resolve) needs.
+    client.resolvePermission(session.id, 'req-stale-local', option);
+    await node.waitFor((m) => m.type === 'permission_response');
+    expect(get(staleNotice)).toBeUndefined();
+
+    // The late/duplicate action — a double click, or a click that lands
+    // after the card already re-rendered without it (SPEC §7.3's "no
+    // longer applies" rule).
+    client.resolvePermission(session.id, 'req-stale-local', option);
+
+    expect(node.messages.filter((m) => m.type === 'permission_response')).toHaveLength(1);
+    const notice = get(staleNotice);
+    expect(notice?.requestId).toBe('req-stale-local');
+    expect(notice?.message).toMatch(/no longer applies/i);
+  });
+
+  it('two clients racing the same permission request: once the tool call update reveals device A already resolved it, device B auto-discards its own copy and a late resolve on B is a stale no-op, not a second permission_response', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-stale-race';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-stale-race',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_stale_race', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // Device A.
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-stale-race-a',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessionsA = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queueA = client.permissionQueueFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessionsA);
+
+    // Device B — a second, independent RelayClient on the SAME account,
+    // exactly like a second browser tab/phone watching the same session.
+    const clientB = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-stale-race-b',
+    });
+    try {
+      clientB.connect();
+      await waitForStore(clientB.status, (status) => status === 'open');
+      const initialSessionsB = await waitForStore(clientB.sessions, (value) => value.length > 0);
+      const queueB = clientB.permissionQueueFor(session.id);
+      const staleNoticeB = clientB.staleNoticeFor(session.id);
+      await waitForStoreChange(clientB.sessions, initialSessionsB);
+
+      const option = { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const };
+      const envelope = await nodeSeal(
+        session.id,
+        { toolCall: { kind: 'tool_call', id: 'tc-race' }, options: [option] },
+        key,
+      );
+      // The relay fans a live permission_request out to every subscribed
+      // client on the account — both A and B see the exact same request.
+      node.send({
+        type: 'permission_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        requestId: 'req-race',
+        envelope,
+      });
+      await waitForStore(queueA, (value) => value.byId.size > 0);
+      await waitForStore(queueB, (value) => value.byId.size > 0);
+
+      // Device A resolves first.
+      client.resolvePermission(session.id, 'req-race', option);
+      await node.waitFor((m) => m.type === 'permission_response');
+
+      // v1's relay never broadcasts permission_response to sibling clients
+      // (only routes it to the owning node) — B only learns the request
+      // was already handled once the agent's own ordinary tool_call_update
+      // reflects it, exactly like every other session_update fan-out.
+      const statusEnvelope = await nodeSeal(
+        session.id,
+        { kind: 'tool_call_update', id: 'tc-race', status: 'completed' },
+        key,
+      );
+      node.send({
+        type: 'session_update',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        seq: 1,
+        envelope: statusEnvelope,
+      });
+      await waitForStore(queueB, (value) => value.byId.size === 0);
+      expect(get(staleNoticeB)?.requestId).toBe('req-race');
+
+      // B's user, unaware, still submits the (now stale) approve — a
+      // graceful no-op: the queue was already empty, so this must not
+      // throw, must not send a second permission_response, and must
+      // (re-)publish the stale notice rather than silently applying it.
+      clientB.resolvePermission(session.id, 'req-race', option);
+
+      expect(node.messages.filter((m) => m.type === 'permission_response')).toHaveLength(1);
+      expect(get(staleNoticeB)?.requestId).toBe('req-race');
+    } finally {
+      clientB.close();
+    }
+  });
+});
+
 describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', () => {
   it("attachFile validates real image bytes, encrypts+uploads via blob_upload, and a peer (the node, exactly the executing host's own #156 download path) decrypts the exact original bytes (#151, #153)", async () => {
     const amk = generateAmk();

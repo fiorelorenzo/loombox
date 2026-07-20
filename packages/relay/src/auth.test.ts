@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BETTER_AUTH_ROUTE_PREFIX,
+  activeSocialProviders,
   createRelayAuth,
   deriveAccountIdStub,
+  describeActiveProviders,
   migrateBetterAuth,
   mountBetterAuth,
   resolveAccountIdViaBetterAuth,
@@ -91,6 +93,25 @@ describe('social provider registration is env-gated (#120)', () => {
     });
   });
 
+  it('registers google when its credentials are supplied', async () => {
+    const auth = await buildTestAuth({
+      google: { clientId: 'g-client', clientSecret: 'g-secret' },
+    });
+    expect(auth.options.socialProviders?.google).toMatchObject({
+      clientId: 'g-client',
+      clientSecret: 'g-secret',
+    });
+  });
+
+  it('registers both providers together when both are supplied', async () => {
+    const auth = await buildTestAuth({
+      github: { clientId: 'gh-client', clientSecret: 'gh-secret' },
+      google: { clientId: 'g-client', clientSecret: 'g-secret' },
+    });
+    expect(auth.options.socialProviders?.github).toMatchObject({ clientId: 'gh-client' });
+    expect(auth.options.socialProviders?.google).toMatchObject({ clientId: 'g-client' });
+  });
+
   it('does not register google when its credentials are absent, and startup does not crash', async () => {
     const auth = await buildTestAuth({
       github: { clientId: 'gh-client', clientSecret: 'gh-secret' },
@@ -102,6 +123,34 @@ describe('social provider registration is env-gated (#120)', () => {
     const auth = await buildTestAuth();
     expect(auth.options.socialProviders?.github).toBeUndefined();
     expect(auth.options.socialProviders?.google).toBeUndefined();
+  });
+});
+
+describe('activeSocialProviders / describeActiveProviders — the startup provider report (#120)', () => {
+  it('reports both when both are configured', () => {
+    const config = {
+      github: { clientId: 'gh', clientSecret: 'gh-secret' },
+      google: { clientId: 'g', clientSecret: 'g-secret' },
+    };
+    expect(activeSocialProviders(config)).toEqual(['github', 'google']);
+    expect(describeActiveProviders(config)).toBe('OAuth login providers active: github, google');
+  });
+
+  it('reports github only when google is unset', () => {
+    const config = { github: { clientId: 'gh', clientSecret: 'gh-secret' } };
+    expect(activeSocialProviders(config)).toEqual(['github']);
+    expect(describeActiveProviders(config)).toBe('OAuth login providers active: github');
+  });
+
+  it('reports google only when github is unset', () => {
+    const config = { google: { clientId: 'g', clientSecret: 'g-secret' } };
+    expect(activeSocialProviders(config)).toEqual(['google']);
+    expect(describeActiveProviders(config)).toBe('OAuth login providers active: google');
+  });
+
+  it('reports a clear "no providers" message rather than an empty string when both are unset', () => {
+    expect(activeSocialProviders({})).toEqual([]);
+    expect(describeActiveProviders({})).toContain('no providers configured');
   });
 });
 

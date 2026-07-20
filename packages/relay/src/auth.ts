@@ -32,6 +32,43 @@ export interface RelayAuthConfig {
   enableEmailPasswordForTests?: boolean;
 }
 
+/** Social login providers loombox's own Better Auth instance can be configured with (#120) — distinct from SPEC §7.26's separate, more-privileged connected-account OAuth. */
+export type SocialProviderName = 'github' | 'google';
+
+/**
+ * Which social providers are actually active, i.e. have env-supplied
+ * credentials present (#120) — the single source of truth both
+ * {@link createRelayAuth} (to build Better Auth's `socialProviders` config)
+ * and {@link describeActiveProviders} (the startup log line) draw from, so
+ * the two can never drift apart.
+ */
+export function activeSocialProviders(
+  config: Pick<RelayAuthConfig, 'github' | 'google'>,
+): SocialProviderName[] {
+  const providers: SocialProviderName[] = [];
+  if (config.github) providers.push('github');
+  if (config.google) providers.push('google');
+  return providers;
+}
+
+/**
+ * A one-line, human-readable startup report of which OAuth login providers
+ * are active (#120: "validate/log clearly which providers are active at
+ * startup") — `main.ts` logs this on boot. Missing Google credentials, say,
+ * must never crash startup (#120's other acceptance line); this is how a
+ * self-hoster instead *sees* that Google didn't take effect, from the
+ * process log, rather than discovering it only when a user hits a dead
+ * login button.
+ */
+export function describeActiveProviders(
+  config: Pick<RelayAuthConfig, 'github' | 'google'>,
+): string {
+  const providers = activeSocialProviders(config);
+  return providers.length > 0
+    ? `OAuth login providers active: ${providers.join(', ')}`
+    : 'OAuth login: no providers configured (set GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET and/or GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET) — login is unavailable';
+}
+
 /**
  * Builds the relay's Better Auth instance (#119). Registers only the social
  * providers whose env-supplied credentials are actually present (#120) —

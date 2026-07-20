@@ -3,7 +3,13 @@ import { pathToFileURL } from 'node:url';
 
 import { Pool } from 'pg';
 
-import { createRelayAuth, migrateBetterAuth, type RelayAuth } from './auth';
+import {
+  createRelayAuth,
+  describeActiveProviders,
+  migrateBetterAuth,
+  type RelayAuth,
+} from './auth';
+import { createRedisFanOutBackend, type FanOutBackend } from './fanout';
 import { runMigrations } from './migrate';
 import { startRelay } from './relay';
 import { createPostgresRelayStore } from './store-postgres';
@@ -19,9 +25,14 @@ import type { RelayStore } from './store';
  * `RelayStore` and mounts Better Auth (social login from whichever of
  * `GITHUB_CLIENT_ID`/`SECRET` and `GOOGLE_CLIENT_ID`/`SECRET` are present —
  * missing Google credentials, say, just mean Google login isn't offered,
- * never a crash); otherwise it falls back to the in-memory store and the
- * dev/hermetic auth stub, exactly as before — the shape this package's own
- * hermetic tests and `scripts/v1-e2e-harness.mjs` rely on.
+ * never a crash — see the `describeActiveProviders` log line below, #120);
+ * otherwise it falls back to the in-memory store and the dev/hermetic auth
+ * stub, exactly as before — the shape this package's own hermetic tests and
+ * `scripts/v1-e2e-harness.mjs` rely on.
+ *
+ * Fan-out (#97): `REDIS_URL` unset -> the default in-process, single-instance
+ * fan-out (unchanged); set -> Redis-backed, so this process can be one of
+ * several relay replicas behind a load balancer sharing one fan-out plane.
  *
  * Abuse limits (#101) are config-only, always on: `RELAY_RATE_LIMIT_MAX` /
  * `RELAY_RATE_LIMIT_WINDOW_MS` (per-IP) and
@@ -59,29 +70,31 @@ export async function start(): Promise<StartedRelayHandle> {
     if (!secret) {
       throw new Error('loombox relay: BETTER_AUTH_SECRET is required when DATABASE_URL is set');
     }
-    auth = createRelayAuth({
-      database: pool,
-      baseURL,
-      secret,
-      github:
-        process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
-          ? {
-              clientId: process.env.GITHUB_CLIENT_ID,
-              clientSecret: process.env.GITHUB_CLIENT_SECRET,
-            }
-          : undefined,
-      google:
-        process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
-          ? {
-              clientId: process.env.GOOGLE_CLIENT_ID,
-              clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-            }
-          : undefined,
-    });
+    const github =
+      process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+        ? { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET }
+        : undefined;
+    const google =
+      process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+        ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET }
+        : undefined;
+    auth = createRelayAuth({ database: pool, baseURL, secret, github, google });
     // Better Auth's tables are separate from the relay's own and are not
     // created lazily on Postgres, so apply its schema on boot too (otherwise
     // the first login 500s on a missing `verification` relation).
     await migrateBetterAuth(auth);
+    // #120: a self-hoster who forgot/mistyped a client id/secret finds out
+    // from this log line at boot, not from a user reporting a dead button.
+    console.log(`loombox relay: ${describeActiveProviders({ github, google })}`);
+  }
+
+  const redisUrl = process.env.REDIS_URL;
+  let fanOutBackend: FanOutBackend | undefined;
+  if (redisUrl) {
+    fanOutBackend = createRedisFanOutBackend(redisUrl);
+    console.log('loombox relay: Redis-backed fan-out enabled (multi-instance, REDIS_URL set)');
+  } else {
+    console.log('loombox relay: in-process fan-out (single instance; set REDIS_URL to scale out)');
   }
 
   const { url, close } = await startRelay({
@@ -92,6 +105,7 @@ export async function start(): Promise<StartedRelayHandle> {
     auth,
     rateLimit: { max: rateLimitMax, timeWindow: rateLimitWindowMs },
     maxAccountStorageBytes,
+    fanOutBackend,
   });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,

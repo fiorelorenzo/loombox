@@ -10,6 +10,14 @@
 #
 # .env (chmod 600, never committed) must define: POSTGRES_PASSWORD,
 # BETTER_AUTH_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET. See .env.example.
+#
+# Redis fan-out (#97) is opt-in, for running more than one relay replica:
+# the `redis` service below is behind the `redis` compose profile, off by
+# default. To enable it:
+#   docker compose --profile redis up -d --build
+# and set REDIS_URL=redis://redis:6379 in .env. A single relay instance
+# (the default) never needs this — it uses in-process fan-out. See
+# docs/deploy-relay.md.
 
 services:
   postgres:
@@ -46,6 +54,10 @@ services:
       # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are optional; omit to disable Google login.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Optional (#97): unset -> in-process, single-instance fan-out
+      # (default, unchanged). Set to redis://redis:6379 (and bring up the
+      # `redis` profile below) only when running more than one relay replica.
+      REDIS_URL: ${REDIS_URL:-}
     ports:
       # loopback-only publish; host Caddy reverse-proxies to this (prodbox
       # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).
@@ -55,6 +67,15 @@ services:
       # they survive `relay` container recreation and are reachable from the
       # host for off-box shipping (rclone/restic).
       - ./backups:/app/backups
+    restart: unless-stopped
+
+  # Opt-in (#97): only started with `docker compose --profile redis up`.
+  # Carries the same opaque wire-message payloads the relay already
+  # forwards over `/ws` — never plaintext (the relay stays blind on Redis
+  # exactly as it is on the socket).
+  redis:
+    image: redis:7-alpine
+    profiles: ['redis']
     restart: unless-stopped
 
 volumes:

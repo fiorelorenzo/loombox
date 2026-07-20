@@ -20,6 +20,7 @@ import {
   createTranscriptState,
   enqueuePermissionRequest,
   headPermissionRequest,
+  listPermissionRequests,
   reduceSessionEvent,
   resolvePermissionRequest,
   type AcpConfigOption,
@@ -154,6 +155,27 @@ export interface AttentionInboxItem {
   readonly waitingSince: number;
   /** Set only for a `'permission'` item: the actionable FIFO-head request itself, so a renderer can show/act on it without a second lookup. */
   readonly permission?: PendingPermissionRequest;
+}
+
+/**
+ * A permission-resolution attempt this client discarded because it no
+ * longer applies (SPEC §7.3 "a stale approve/deny is discarded with a 'no
+ * longer applies' note rather than silently applied"; issue #131). Two
+ * paths produce one: (1) this device itself tries to resolve a request a
+ * second time (a double-tap, or a click that lands after the card already
+ * re-rendered without it); (2) another device resolved the request first —
+ * v1's relay never broadcasts `permission_response` to sibling clients (only
+ * to the owning node, `packages/relay/src/relay.ts`'s `routeToOwningNode`),
+ * so this client learns about it indirectly, the same way the transcript
+ * itself would: the tool call's own `tool_call_update` (an ordinary,
+ * already-fanned-out `session_update`) moving past `'pending'` is the
+ * observable evidence the request was already acted on, wherever that
+ * happened — see {@link RelayClient} `discardStalePermissionForToolCall`.
+ */
+export interface PermissionStaleNotice {
+  readonly requestId: string;
+  readonly message: string;
+  readonly at: number;
 }
 
 /**
@@ -534,6 +556,8 @@ export class RelayClient {
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
+  /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
+  private readonly staleNotices = new Map<string, Writable<PermissionStaleNotice | undefined>>();
   private readonly subscribed = new Set<string>();
   /** Backs {@link attentionInbox} — see that method's doc comment. */
   private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
@@ -737,6 +761,19 @@ export class RelayClient {
   }
 
   /**
+   * The latest stale-permission-resolution notice for a session (issue
+   * #131) — `undefined` until one has happened. A UI (`PermissionQueueBar`/
+   * `PermissionCard`) renders this as a transient "no longer applies" note
+   * rather than erroring or acting as if the (already-moot) decision went
+   * through. Overwritten by the next stale attempt/discard, not
+   * accumulated into a list: only the most recent one is ever relevant to
+   * show.
+   */
+  staleNoticeFor(sessionId: string): Readable<PermissionStaleNotice | undefined> {
+    return this.staleNoticeStoreFor(sessionId);
+  }
+
+  /**
    * The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
    * one live, sorted (oldest-waiting first) list of every session-level item
    * that needs the user right now, across every session on this account —
@@ -780,16 +817,37 @@ export class RelayClient {
    * round trip) and sends the clear (unencrypted routing) `permission_response`
    * carrying ACP's own `option.kind` vocabulary as `decision` — the wire
    * schema has no raw `optionId` field (`packages/protocol/src/v1/steering.ts`).
+   *
+   * SPEC §7.3's stale-discard rule (issue #131): if `requestId` is no longer
+   * in this session's queue — already resolved by this same client (a
+   * double click, or a click that lands after the card already re-rendered
+   * without it), or discarded because {@link discardStalePermissionForToolCall}
+   * already learned it was resolved elsewhere — this is a graceful no-op: no
+   * `permission_response` is sent (there is nothing left to tell the node),
+   * and a {@link PermissionStaleNotice} is published instead of throwing or
+   * silently applying a decision the request's owner never asked for.
    */
   resolvePermission(sessionId: string, requestId: string, option: AcpPermissionOption): void {
     const store = this.permissionQueueStoreFor(sessionId);
-    store.update(
-      (state) =>
-        resolvePermissionRequest(state, requestId, {
-          outcome: 'selected',
-          optionId: option.optionId,
-        }).state,
-    );
+    let stale = false;
+    store.update((state) => {
+      const resolved = resolvePermissionRequest(state, requestId, {
+        outcome: 'selected',
+        optionId: option.optionId,
+      });
+      stale = resolved.result.status === 'stale';
+      return resolved.state;
+    });
+
+    if (stale) {
+      this.publishStaleNotice(
+        sessionId,
+        requestId,
+        'This request no longer applies — it was already resolved.',
+      );
+      return;
+    }
+
     this.send({
       type: 'permission_response',
       protocolVersion: PROTOCOL_V1,
@@ -811,6 +869,45 @@ export class RelayClient {
   cancelPermissionRequests(sessionId: string): void {
     const store = this.permissionQueueStoreFor(sessionId);
     store.update((state) => cancelAllPermissionRequests(state, sessionId).state);
+  }
+
+  /**
+   * The session-level turn Stop/interrupt (SPEC §7.3 "Stop/interrupt any
+   * running agent turn with one tap ... distinct from post-hoc rollback",
+   * §7.20; issue #129) — deliberately a *different* entry point from
+   * {@link cancelPermissionRequests}: that one is the permission queue's own
+   * "Multi-request ordering" cleanup (issue #147), only ever reachable
+   * through a permission card/bar; this one is the turn-level cancel
+   * itself, meant to be reachable from the live session view any time a
+   * turn is running, whether or not a permission request happens to be
+   * pending right now. Calling it:
+   * - cancels every open permission request for the session too (SPEC
+   *   §7.24's Multi-request-ordering rule already ties Stop to this — a
+   *   spinner must never outlive the press, no matter which Stop control
+   *   triggered it);
+   * - settles this client's own "turn active" bookkeeping right now
+   *   (mirrors the real `turn_ended` path, `settleTurnNow`) so a prompt
+   *   already queued behind this turn (issue #128) is free to flush
+   *   immediately instead of waiting out `turnIdleMs` for a turn the user
+   *   just told the agent to abandon — SPEC §7.24's "interrupting-to-redirect
+   *   is just Stop followed by a new prompt" only works if the queue isn't
+   *   still gated on the turn Stop just ended;
+   * - is deliberately a no-op on workspace/checkpoint state: this never
+   *   touches any checkpoint/rollback machinery (SPEC §7.20), which is a
+   *   wholly separate, later, explicit user action this method has no
+   *   knowledge of.
+   *
+   * There is still no v1 wire message for the ACP-level `session/cancel`
+   * call itself — that needs `packages/protocol` + `packages/relay` +
+   * `packages/node` changes, out of this apps/web-only PR's scope (mirrors
+   * {@link cancelPermissionRequests}'s own doc comment) — so this is the
+   * client-side half of Stop today, structured to send the real
+   * cancellation the moment that wire message exists, without changing this
+   * method's call sites.
+   */
+  interruptTurn(sessionId: string): void {
+    this.cancelPermissionRequests(sessionId);
+    this.settleTurnNow(sessionId);
   }
 
   /**
@@ -1394,6 +1491,54 @@ export class RelayClient {
     return store;
   }
 
+  private staleNoticeStoreFor(sessionId: string): Writable<PermissionStaleNotice | undefined> {
+    let store = this.staleNotices.get(sessionId);
+    if (!store) {
+      store = writable<PermissionStaleNotice | undefined>(undefined);
+      this.staleNotices.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private publishStaleNotice(sessionId: string, requestId: string, message: string): void {
+    this.staleNoticeStoreFor(sessionId).set({ requestId, message, at: Date.now() });
+  }
+
+  /**
+   * The cross-device half of issue #131's stale-discard rule. v1's relay
+   * never broadcasts a `permission_response` to sibling clients (only to
+   * the owning node), so a device that isn't the one that resolved a
+   * request has no direct signal it happened — but the tool call the
+   * request was about eventually gets an ordinary `tool_call`/
+   * `tool_call_update` (already fanned out to every subscribed client,
+   * `reduceSessionEvent`'s normal path) once the agent acts on whichever
+   * device's decision reached it first. A `status` on that update that has
+   * moved past `'pending'` while this session's queue still has a
+   * request for that same tool-call id is exactly the "resolved elsewhere"
+   * case: discard it here (optimistic `'cancelled'`, mirroring Stop's own
+   * multi-request-ordering rule) rather than leaving a card that will only
+   * ever error or double-apply if the user acts on it.
+   */
+  private discardStalePermissionForToolCall(sessionId: string, event: AcpSessionWireEvent): void {
+    if (event.kind !== 'tool_call' && event.kind !== 'tool_call_update') return;
+    if (!event.status || event.status === 'pending') return;
+
+    const queue = get(this.permissionQueueStoreFor(sessionId));
+    const stale = listPermissionRequests(queue, sessionId).find(
+      (request) => request.toolCall.id === event.id,
+    );
+    if (!stale) return;
+
+    this.permissionQueueStoreFor(sessionId).update(
+      (state) => resolvePermissionRequest(state, stale.requestId, { outcome: 'cancelled' }).state,
+    );
+    this.publishStaleNotice(
+      sessionId,
+      stale.requestId,
+      'This request no longer applies — it was already resolved on another device.',
+    );
+  }
+
   private applyUpdate(sessionId: string, event: AcpSessionWireEvent): void {
     const store = this.transcriptStoreFor(sessionId);
     store.update((state) => reduceSessionEvent(state, event));
@@ -1466,6 +1611,7 @@ export class RelayClient {
       .then((key) => openJson<AcpSessionWireEvent>(message.sessionId, message.envelope, key))
       .then((event) => {
         this.applyUpdate(message.sessionId, event);
+        this.discardStalePermissionForToolCall(message.sessionId, event);
         if (event.kind === 'turn_ended') {
           // The deterministic signal (SPEC §7.24; issue #128): settle and
           // flush right now instead of waiting out the idle-timeout fallback.
