@@ -2717,11 +2717,13 @@ describe('RelayClient: cross-project attention inbox (SPEC §7.13; issues #167/#
       sessionId: sessionB.id,
       sessionTitle: 'Add feature',
       projectPath: '/proj-b',
+      nodeId: sessionB.nodeId,
     });
     expect(items[1]).toMatchObject({
       sessionId: sessionA.id,
       sessionTitle: 'Fix the bug',
       projectPath: '/proj-a',
+      nodeId: sessionA.nodeId,
       permission: expect.objectContaining({ requestId: 'req-inbox-a' }),
     });
 
@@ -2765,6 +2767,126 @@ describe('RelayClient: cross-project attention inbox (SPEC §7.13; issues #167/#
     expect(
       final.some((item) => item.sessionId === sessionB.id && item.kind === 'awaiting_input'),
     ).toBe(true);
+  });
+});
+
+describe('RelayClient: attention inbox session-outcome class (SPEC §7.13; issue #167)', () => {
+  it('surfaces a session_outcome item live when a session settles to exited or error, replacing it in place, and clears it when the session resumes working', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-outcome';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-outcome',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const sessionA = makeSessionMeta({ id: 'sess_outcome_a', accountId });
+    const sessionB = makeSessionMeta({ id: 'sess_outcome_b', accountId, nodeId: 'node_2' });
+    const keyA = await deriveNodeSessionKey(amk, accountId, sessionA.id);
+    const keyB = await deriveNodeSessionKey(amk, accountId, sessionB.id);
+    const privateA = await nodeSeal(
+      sessionA.id,
+      { title: 'Refactor module', projectPath: '/proj-a' },
+      keyA,
+    );
+    const privateB = await nodeSeal(
+      sessionB.id,
+      { title: 'Migrate DB', projectPath: '/proj-b' },
+      keyB,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionA,
+      privateEnvelope: privateA,
+    });
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionB,
+      privateEnvelope: privateB,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-outcome' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 2);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 2);
+
+    // Session A finishes cleanly.
+    const finishedEnvelope = await nodeSeal(
+      sessionA.id,
+      { kind: 'session_status', status: 'exited', updatedAt: new Date().toISOString() },
+      keyA,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      seq: 1,
+      envelope: finishedEnvelope,
+    });
+
+    const afterFinish = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterFinish[0]).toMatchObject({
+      kind: 'session_outcome',
+      sessionId: sessionA.id,
+      sessionTitle: 'Refactor module',
+      projectPath: '/proj-a',
+      nodeId: sessionA.nodeId,
+      outcome: 'exited',
+    });
+
+    // Session B errors — both session_outcome items coexist, each tagged
+    // with its own node and outcome (cross-node, class-distinguished).
+    const erroredEnvelope = await nodeSeal(
+      sessionB.id,
+      {
+        kind: 'session_status',
+        status: 'error',
+        updatedAt: new Date(Date.now() - 1000).toISOString(),
+      },
+      keyB,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      seq: 1,
+      envelope: erroredEnvelope,
+    });
+
+    const afterError = await waitForStore(inbox, (value) => value.length === 2);
+    // B errored a second EARLIER than A finished, so the oldest-first sort
+    // puts B ahead of A even though A's event was sent first.
+    expect(afterError.map((item) => [item.sessionId, item.kind, item.outcome])).toEqual([
+      [sessionB.id, 'session_outcome', 'error'],
+      [sessionA.id, 'session_outcome', 'exited'],
+    ]);
+    expect(afterError[0].nodeId).toBe(sessionB.nodeId);
+
+    // Session A resumes working: its session_outcome item must disappear
+    // (a live status transition away from exited/error clears it, exactly
+    // like awaiting_input does), leaving only B's.
+    const resumedEnvelope = await nodeSeal(
+      sessionA.id,
+      { kind: 'session_status', status: 'working', updatedAt: new Date().toISOString() },
+      keyA,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      seq: 2,
+      envelope: resumedEnvelope,
+    });
+
+    const afterResume = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterResume[0].sessionId).toBe(sessionB.id);
   });
 });
 

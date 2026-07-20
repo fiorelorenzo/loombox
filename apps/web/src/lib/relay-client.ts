@@ -185,24 +185,45 @@ export interface TerminalClientState {
 }
 
 /**
- * One row of the cross-project attention inbox (SPEC §7.13; issues
- * #167/#168/#169): either a session's actionable FIFO-head permission
- * request, or a session whose live status is `awaiting_input` — the two
- * "needs the user now" classes this v1 slice covers (session outcomes/CI/
- * review-request classes from the full §7.13 scope are later work, not
- * implemented here). See {@link RelayClient.attentionInbox}'s doc comment
- * for why a session with a queue of several pending requests only ever
- * contributes its head as one item.
+ * One row of the cross-project, cross-node attention inbox (SPEC §7.13;
+ * issues #167/#168/#169). `kind` discriminates the four classes SPEC §7.13
+ * names:
+ * - `'permission'` — a session's actionable FIFO-head permission request.
+ * - `'awaiting_input'` — a session whose live status is `awaiting_input`.
+ * - `'session_outcome'` — a session whose live status settled to `'exited'`
+ *   (finished) or `'error'` (errored); see `outcome`/`stopReason`.
+ * - `'ci_failure'` / `'review_request'` — declared here as an extension
+ *   point ONLY: SPEC §7.13/§7.14 says a red CI check or a review request
+ *   lands in this same inbox, but neither has a live event source in this
+ *   client yet — that needs the git/CI/tracker integration work (SPEC
+ *   §7.10/§7.14, v2). `RelayClient` never constructs one of these in v1;
+ *   they exist in the union (and `AttentionInbox.svelte` already renders
+ *   them distinctly) purely so wiring a real source later is additive, not
+ *   a rendering/type rework.
+ *
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'` are the three "needs
+ * the user now" classes this v1 slice actually wires to live data. See
+ * {@link RelayClient.attentionInbox}'s doc comment for why a session with a
+ * queue of several pending requests only ever contributes its head as one
+ * item, and why a session contributes at most one of `awaiting_input`/
+ * `session_outcome` (its live status is one or the other, never both).
  */
 export interface AttentionInboxItem {
-  readonly kind: 'permission' | 'awaiting_input';
+  readonly kind:
+    'permission' | 'awaiting_input' | 'session_outcome' | 'ci_failure' | 'review_request';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
+  /** The node the originating session runs on (`ClientSessionMeta.nodeId`) — what makes this inbox cross-*node*, not just cross-project, legible in the row itself. */
+  readonly nodeId: string;
   /** Epoch ms this item started waiting — a permission request's `enqueuedAt`, or the session's `session_status` transition time; the inbox's own sort key (oldest first). */
   readonly waitingSince: number;
   /** Set only for a `'permission'` item: the actionable FIFO-head request itself, so a renderer can show/act on it without a second lookup. */
   readonly permission?: PendingPermissionRequest;
+  /** Set only for a `'session_outcome'` item: which live status this reflects. */
+  readonly outcome?: 'exited' | 'error';
+  /** Set only for a `'session_outcome'` item, when the session's last settled turn carried one (`TranscriptState.lastStopReason`, SPEC §7.24) — extra context for why it stopped. */
+  readonly stopReason?: string;
 }
 
 /**
@@ -851,17 +872,25 @@ export class RelayClient {
   }
 
   /**
-   * The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
-   * one live, sorted (oldest-waiting first) list of every session-level item
-   * that needs the user right now, across every session on this account —
-   * not only the one currently open. Each session contributes at most:
+   * The cross-project, cross-node attention inbox (SPEC §7.13; issues
+   * #167/#168/#169): one live, sorted (oldest-waiting first) list of every
+   * session-level item that needs the user right now, across every session
+   * on this account (every project, every node) — not only the one
+   * currently open. Each session contributes at most:
    * - a `'permission'` item for its FIFO-head pending request (issue #146's
    *   nested-visibility rule already means only that head is ever
    *   actionable, so listing the rest would show items the user can't yet
    *   act on — approving the head is what promotes the next one into view,
    *   on both this inbox and the session's own `PermissionQueueBar`);
-   * - an `'awaiting_input'` item while its live `session_status` is
-   *   `'awaiting_input'`.
+   * - AND, independently, at most one of:
+   *   - an `'awaiting_input'` item while its live `session_status` is
+   *     `'awaiting_input'`;
+   *   - a `'session_outcome'` item while its live `session_status` has
+   *     settled to `'exited'` or `'error'`.
+   *
+   * `'ci_failure'`/`'review_request'` are NOT produced here — see
+   * {@link AttentionInboxItem}'s doc comment for why those two classes are
+   * only a modeled extension point in v1, not live yet.
    *
    * Reads straight off the exact same `permissionQueueStoreFor`/
    * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
@@ -1704,6 +1733,7 @@ export class RelayClient {
           sessionId: session.id,
           sessionTitle: session.title,
           projectPath: session.projectPath,
+          nodeId: session.nodeId,
           waitingSince: head.enqueuedAt,
           permission: head,
         });
@@ -1716,7 +1746,19 @@ export class RelayClient {
           sessionId: session.id,
           sessionTitle: session.title,
           projectPath: session.projectPath,
+          nodeId: session.nodeId,
           waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
+        });
+      } else if (transcript.status === 'exited' || transcript.status === 'error') {
+        items.push({
+          kind: 'session_outcome',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
+          outcome: transcript.status,
+          stopReason: transcript.lastStopReason,
         });
       }
     }
