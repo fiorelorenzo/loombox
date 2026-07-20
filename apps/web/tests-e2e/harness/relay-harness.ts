@@ -217,10 +217,15 @@ export interface E2eTestUser {
  * `resolveAccountIdViaBetterAuth` does server-side — so a client seeded
  * with this pair always agrees with the relay on which account it is.
  */
+// A trusted origin (matches startE2eRelay's trustedOrigins + playwright.config's
+// preview port) that this node-side helper sends so Better Auth's CSRF/Origin
+// check accepts the sign-up (a bare fetch otherwise carries no Origin -> 403).
+const E2E_TRUSTED_ORIGIN = 'http://127.0.0.1:4173';
+
 export async function signUpTestUser(httpBaseUrl: string, email: string): Promise<E2eTestUser> {
   const signUpResponse = await fetch(`${httpBaseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: E2E_TRUSTED_ORIGIN },
     body: JSON.stringify({ email, password: 'correct horse battery staple', name: email }),
   });
   if (!signUpResponse.ok) {
