@@ -1,0 +1,58 @@
+name: Release
+
+# Runs the Changesets release flow on every push to main: if there are pending
+# changesets, opens/updates a "Version Packages" PR with the version bumps and
+# CHANGELOG updates; once that PR is merged (so main has no pending changesets
+# left but a fresh version commit), it creates the matching git tags and
+# GitHub Releases. All loombox packages are private (private: true, no npm
+# registry), so `pnpm release` (changeset publish) never publishes to npm -
+# it only tags and hands off to changesets/action for the GitHub Releases.
+# See CONTRIBUTING.md#releases for the full flow.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Version / Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create Version PR or Release
+        # v1 is the moving major ref changesets/action's own README
+        # recommends (a branch, not a tag, but Actions resolves either).
+        # v2 only exists as a v2.0.0-next.* prerelease with a different
+        # (hyphenated) input API, so v1 is the current stable line.
+        uses: changesets/action@v1
+        with:
+          version: pnpm version-packages
+          publish: pnpm release
+          commit: 'chore: version packages'
+          title: 'chore: version packages'
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
