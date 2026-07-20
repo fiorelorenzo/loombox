@@ -151,3 +151,20 @@ export type {
 // `AcpMcpServerConfig` list `AcpClient.newSession` consumes, failing fast
 // on an ungranted/missing secret (SPEC.md §7.7, §7.17; issue #189).
 export { McpSecretGrantStore, resolveMcpServerConfigs } from './mcp-secret-grants';
+
+// v1: quick-add MCP server presets — a small starter catalog, each
+// expanding to the exact same `McpServerConfig` shape a hand-entered
+// server produces (SPEC.md §7.7; issue #188).
+export { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from './mcp-presets';
+export type { McpServerPreset } from './mcp-presets';
+
+// v1: agent plugin/extension management, independent of the MCP-server
+// list — data model, parser/validator, and the global-plus-project-
+// overrides resolver (SPEC.md §7.7; issue #191).
+export {
+  PluginConfigError,
+  parsePluginConfig,
+  parsePluginConfigList,
+  resolveEffectivePlugins,
+} from './plugin-config';
+export type { PluginConfig, PluginConfigRecord } from './plugin-config';
