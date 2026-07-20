@@ -46,6 +46,7 @@
   import MessageItem from '$lib/components/MessageItem.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
+  import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
@@ -108,6 +109,12 @@
   // terminals" is the node/client's job below this component, not this
   // page's).
   let terminalOpen = $state(false);
+  // The project config surface (SPEC §7.7; issue #366): a togglable side
+  // panel, same shape as `fileTreeOpen`/`terminalOpen` above, that mounts
+  // the MCP-server quick-add panel (#188) and the plugin/extension panel
+  // (#191) — both shipped in #364 but left unmounted from this file to
+  // avoid a parallel-edit clash. See `ProjectConfigPanel.svelte`.
+  let projectConfigOpen = $state(false);
   let filePickerOpen = $state(false);
   // The index in `draft` where the triggering '@' sits, so a picked file
   // reference replaces exactly the '@partial-query' text the user typed,
@@ -196,6 +203,12 @@
   );
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
+  );
+  // Issue #366: the project config surface is scoped to the selected
+  // session's `projectPath` (v1 has no separate project entity yet, same
+  // "project" notion `NotificationPreferences`'s `projectPaths` below uses).
+  const selectedProjectPath = $derived(
+    sessions.find((session) => session.id === selectedSessionId)?.projectPath,
   );
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
@@ -361,6 +374,7 @@
     paletteOpen = false;
     fileTree = new Map();
     fileTreeOpen = false;
+    projectConfigOpen = false;
     filePickerOpen = false;
     atTriggerStart = undefined;
   }
@@ -814,6 +828,15 @@
             >
               Terminal
             </button>
+            <button
+              type="button"
+              class="project-config-toggle"
+              class:active={projectConfigOpen}
+              onclick={() => (projectConfigOpen = !projectConfigOpen)}
+              data-testid="project-config-toggle"
+            >
+              Config
+            </button>
           </div>
 
           {#if fileTreeOpen}
@@ -829,6 +852,12 @@
           {#if terminalOpen && client}
             <aside class="terminal-panel" data-testid="terminal-panel-wrapper">
               <InteractiveTerminal sessionId={selectedSessionId} {client} />
+            </aside>
+          {/if}
+
+          {#if projectConfigOpen && selectedProjectPath}
+            <aside class="project-config-panel-wrapper" data-testid="project-config-panel-wrapper">
+              <ProjectConfigPanel projectPath={selectedProjectPath} />
             </aside>
           {/if}
 
@@ -1087,6 +1116,33 @@
     height: 20rem;
   }
 
+  .project-config-toggle {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid currentColor;
+    border-radius: 0.375rem;
+    background: transparent;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    color: inherit;
+    font-size: 0.85rem;
+  }
+
+  .project-config-toggle.active {
+    background: rgba(79, 70, 229, 0.15);
+    border-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .project-config-panel-wrapper {
+    border: 1px solid rgba(127, 127, 127, 0.25);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    /* Same narrow/mobile parity fix as `.terminal-panel` (#174). */
+    min-width: 0;
+    max-height: 24rem;
+    overflow-y: auto;
+  }
+
   .account {
     font-family: monospace;
     font-size: 0.85rem;
@@ -1204,6 +1260,7 @@
 
   .transcript-toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
