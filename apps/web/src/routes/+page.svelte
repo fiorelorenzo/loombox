@@ -16,6 +16,7 @@
     type AttentionInboxItem,
     type ClientSessionMeta,
     type ConnectionStatus,
+    type FileTreeDirectoryState,
   } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
@@ -37,6 +38,8 @@
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
+  import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
+  import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -88,6 +91,19 @@
   let attachments = $state<ComposerAttachment[]>([]);
   let queuedPrompts = $state<QueuedPrompt[]>([]);
   let draft = $state('');
+  // The read-only file-tree panel (SPEC §7.4; issue #171) and the @file
+  // reference picker it backs (SPEC §7.25; issue #160). `fileTree` mirrors
+  // `RelayClient.fileTreeFor(selectedSessionId)`'s live snapshot; the panel
+  // itself is a togglable side panel (`fileTreeOpen`), independent of the
+  // picker, which opens on typing '@' in the composer.
+  let fileTree = $state<Map<string, FileTreeDirectoryState>>(new Map());
+  let fileTreeOpen = $state(false);
+  let filePickerOpen = $state(false);
+  // The index in `draft` where the triggering '@' sits, so a picked file
+  // reference replaces exactly the '@partial-query' text the user typed,
+  // rather than being appended blindly. `undefined` means "no active
+  // trigger" (the picker was opened some other way, or was never opened).
+  let atTriggerStart = $state<number | undefined>(undefined);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -193,6 +209,7 @@
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
   let unsubscribeStaleNotice: (() => void) | undefined;
+  let unsubscribeFileTree: (() => void) | undefined;
 
   // #164: "tapping/clicking a notification opens directly to the relevant
   // session" — the service worker's `notificationclick` handler
@@ -229,12 +246,14 @@
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
+    unsubscribeFileTree?.();
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
     queuedPrompts = [];
     staleNotice = undefined;
+    fileTree = new Map();
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client.permissionQueueFor(id).subscribe((value) => {
@@ -249,6 +268,17 @@
       .queuedPromptsFor(id)
       .subscribe((value) => (queuedPrompts = value));
     unsubscribeStaleNotice = client.staleNoticeFor(id).subscribe((value) => (staleNotice = value));
+    // SPEC §7.4/issue #171: lazily loads the root directory the moment this
+    // session is selected; deeper directories only load on an explicit
+    // expand (file-tree panel click) or the @file picker's own bounded
+    // opportunistic walk (`FileReferencePicker.svelte`).
+    unsubscribeFileTree = client.fileTreeFor(id).subscribe((value) => (fileTree = value));
+  }
+
+  /** Wired to both `FileTreePanel`'s and `FileReferencePicker`'s `onExpand` (SPEC §7.4; issue #171). */
+  function expandDirectory(path: string): void {
+    if (!client || !selectedSessionId) return;
+    client.expandDirectory(selectedSessionId, path);
   }
 
   /**
@@ -303,6 +333,7 @@
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
     unsubscribeStaleNotice?.();
+    unsubscribeFileTree?.();
     clearSessionStatusSubscriptions();
     client?.close();
     client = undefined;
@@ -318,6 +349,10 @@
     inboxOpen = false;
     staleNotice = undefined;
     paletteOpen = false;
+    fileTree = new Map();
+    fileTreeOpen = false;
+    filePickerOpen = false;
+    atTriggerStart = undefined;
   }
 
   function ensureAuthStore(): AuthStore {
@@ -365,6 +400,59 @@
   function removeAttachment(id: string): void {
     if (!client || !selectedSessionId) return;
     client.removeAttachment(selectedSessionId, id);
+  }
+
+  /**
+   * Detects an `@`-trigger in the composer as the user types (SPEC §7.25
+   * "@file references"; issue #160): whenever the text immediately before
+   * the caret ends with `@` followed by a run of non-whitespace (no space
+   * yet typed after the `@`), the picker opens/stays open, scoped to that
+   * partial query; typing a space, deleting back past the `@`, or moving
+   * the caret elsewhere closes it. `atTriggerStart` records where the `@`
+   * itself sits so {@link insertFileReference} replaces exactly the
+   * `@partial-query` text rather than guessing.
+   */
+  function handleComposerInput(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const caret = input.selectionStart ?? draft.length;
+    const beforeCaret = draft.slice(0, caret);
+    const match = /(?:^|\s)@(\S*)$/.exec(beforeCaret);
+    if (match) {
+      atTriggerStart = beforeCaret.length - match[1].length - 1;
+      filePickerOpen = true;
+    } else {
+      filePickerOpen = false;
+      atTriggerStart = undefined;
+    }
+  }
+
+  /**
+   * Inserts a `@path` reference into the composer (SPEC §7.25; issue #160)
+   * — the actual `ResourceLink`/`EmbeddedResource` hand-off to the agent is
+   * the provider adapter's job at prompt-build time (out of this wave's
+   * `apps/web`-only scope); here it is plain text in the draft, exactly
+   * like every other word the user types, since it costs nothing beyond the
+   * reference itself (no upload/encryption round trip). Replaces the
+   * triggering `@partial-query` text when opened via `@`-typing; otherwise
+   * (e.g. picked directly from the file-tree panel) appends it at the end.
+   */
+  function insertFileReference(path: string): void {
+    if (atTriggerStart !== undefined) {
+      const before = draft.slice(0, atTriggerStart);
+      const afterTrigger = draft.slice(atTriggerStart);
+      const afterQuery = /^@\S*/.exec(afterTrigger)?.[0] ?? '@';
+      const rest = draft.slice(atTriggerStart + afterQuery.length).replace(/^\s+/, '');
+      draft = `${before}@${path} ${rest}`;
+    } else {
+      const needsSpace = draft !== '' && !draft.endsWith(' ');
+      draft = `${draft}${needsSpace ? ' ' : ''}@${path} `;
+    }
+    closeFilePicker();
+  }
+
+  function closeFilePicker(): void {
+    filePickerOpen = false;
+    atTriggerStart = undefined;
   }
 
   function togglePlanCollapsed(): void {
@@ -691,7 +779,26 @@
               label="Export transcript"
               copyFn={exportTranscript}
             />
+            <button
+              type="button"
+              class="file-tree-toggle"
+              class:active={fileTreeOpen}
+              onclick={() => (fileTreeOpen = !fileTreeOpen)}
+              data-testid="file-tree-toggle"
+            >
+              Files
+            </button>
           </div>
+
+          {#if fileTreeOpen}
+            <aside class="file-tree-panel" data-testid="file-tree-panel-wrapper">
+              <FileTreePanel
+                tree={fileTree}
+                onExpand={expandDirectory}
+                onSelectFile={insertFileReference}
+              />
+            </aside>
+          {/if}
 
           <ol class="items">
             {#each transcript?.items ?? [] as item (item.id)}
@@ -749,8 +856,10 @@
               <input
                 type="text"
                 bind:value={draft}
-                placeholder="Send a follow-up prompt…"
+                oninput={handleComposerInput}
+                placeholder="Send a follow-up prompt… (type @ to reference a file)"
                 aria-label="Follow-up prompt"
+                data-testid="composer-input"
               />
               <button type="submit" disabled={sendDisabled}>Send</button>
             </div>
@@ -770,6 +879,14 @@
     paletteOpen = false;
   }}
   onClose={() => (paletteOpen = false)}
+/>
+
+<FileReferencePicker
+  open={filePickerOpen}
+  tree={fileTree}
+  onExpand={expandDirectory}
+  onSelect={insertFileReference}
+  onClose={closeFilePicker}
 />
 
 <style>
@@ -884,6 +1001,31 @@
   .notification-settings-panel h2 {
     font-size: 1rem;
     margin: 0 0 0.5rem;
+  }
+
+  .file-tree-toggle {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid currentColor;
+    border-radius: 0.375rem;
+    background: transparent;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    color: inherit;
+    font-size: 0.85rem;
+  }
+
+  .file-tree-toggle.active {
+    background: rgba(79, 70, 229, 0.15);
+    border-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .file-tree-panel {
+    border: 1px solid rgba(127, 127, 127, 0.25);
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    max-height: 16rem;
+    overflow-y: auto;
   }
 
   .account {

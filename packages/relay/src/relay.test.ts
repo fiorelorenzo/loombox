@@ -8,6 +8,8 @@ import {
   type DeviceRevoke,
   type DeviceRotate,
   type EncryptedEnvelope,
+  type FsListRequest,
+  type FsListResponse,
   type Initialize,
   type InitializeResult,
   type NewDeviceBootstrapRequest,
@@ -469,6 +471,126 @@ describe('relay v1', () => {
     });
   });
 
+  describe('fs_list_request/fs_list_response (SPEC §7.4/§7.25; issue #171/#160) — routed and fanned out exactly like prompt_inject/blob_ref, always blind', () => {
+    it('routes a client fs_list_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_list', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // Not real AES-GCM output — deliberately garbage bytes, so this proves
+      // the relay forwards the envelope opaquely rather than requiring it to
+      // be decryptable (it never attempts to decrypt anything, ever).
+      const request: FsListRequest = {
+        type: 'fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_list',
+        targetId: 'target_1',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('src/index.ts'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as FsListRequest;
+      expect(received).toEqual(request);
+      // The relay-visible frame carries only routing metadata + the opaque
+      // envelope — never a `path` field.
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an fs_list_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        targetId: 'target_1',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('some-path'),
+      } satisfies FsListRequest);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans fs_list_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_list_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // Subscribe (session_resume, same as the session_update fan-out
+      // model) — fs_list_response is fanned out through the exact same
+      // per-session subscriber list blob_ref/permission_request use.
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_fs_list_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: FsListResponse = {
+        type: 'fs_list_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_list_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('README.md,src'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as FsListResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
   describe('device registry (#112): register / revoke / rotate', () => {
     it('registers a device at initialize and updates its label via device_register', async () => {
       const store = createInMemoryRelayStore();
@@ -859,6 +981,64 @@ describe('relay v1', () => {
       const list = (await nextMessage(client)) as unknown as SessionListV1;
       // Byte-for-byte round trip of opaque "ciphertext" the relay never attempted to interpret.
       expect(list.sessions[0]?.privateEnvelope).toEqual(notReallyEncrypted);
+    });
+
+    it('round-trips fs_list_request/fs_list_response garbage "ciphertext" byte-for-byte — a real directory path never has to be decryptable by the relay for routing/fan-out to work (SPEC §7.4/§8; issue #171/#160)', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_list_blind', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_fs_list_blind',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client);
+
+      // Deliberately not valid AES-GCM output — garbage the relay must
+      // forward opaquely. If the relay ever attempted to JSON.parse or
+      // decrypt this to route it, this test would hang/throw instead of
+      // round-tripping.
+      const notReallyEncryptedRequest = fakeEnvelope('this-is-not-a-real-envelope-either');
+      send(client, {
+        type: 'fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_list_blind',
+        targetId: 'target_1',
+        requestId: 'req_blind',
+        envelope: notReallyEncryptedRequest,
+      } satisfies FsListRequest);
+      const forwardedRequest = (await nextMessage(node)) as unknown as FsListRequest;
+      expect(forwardedRequest.envelope).toEqual(notReallyEncryptedRequest);
+
+      const notReallyEncryptedResponse = fakeEnvelope('also-not-a-real-envelope');
+      send(node, {
+        type: 'fs_list_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_list_blind',
+        requestId: 'req_blind',
+        envelope: notReallyEncryptedResponse,
+      } satisfies FsListResponse);
+      const forwardedResponse = (await nextMessage(client)) as unknown as FsListResponse;
+      expect(forwardedResponse.envelope).toEqual(notReallyEncryptedResponse);
     });
   });
 });

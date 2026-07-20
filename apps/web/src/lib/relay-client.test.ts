@@ -1938,6 +1938,251 @@ describe('RelayClient: offline composer outbox (issue #130)', () => {
   });
 });
 
+describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
+  it('fileTreeFor lazily loads the root directory, decrypting a real fs_list_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-tree-root';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_root', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const tree = client.fileTreeFor(session.id);
+
+    // fileTreeFor sent session_resume + an fs_list_request for the root
+    // ('') path; the request must never carry the path in the clear.
+    const request = (await node.waitFor((m) => m.type === 'fs_list_request')) as {
+      type: 'fs_list_request';
+      sessionId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{ path: string }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ path: '' });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'ok',
+        path: '',
+        entries: [
+          { name: 'README.md', kind: 'file', size: 42 },
+          { name: 'src', kind: 'dir', size: 0 },
+        ],
+      },
+      key,
+    );
+    node.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const loaded = await waitForStore(tree, (value) => value.get('')?.status === 'loaded');
+    expect(loaded.get('')).toEqual({
+      path: '',
+      status: 'loaded',
+      entries: [
+        { name: 'README.md', kind: 'file', size: 42 },
+        { name: 'src', kind: 'dir', size: 0 },
+      ],
+    });
+  });
+
+  it('expandDirectory lazily loads a nested directory on demand, and is a no-op while already loading/loaded', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-tree-nested';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_nested', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const tree = client.fileTreeFor(session.id);
+    const rootRequest = (await node.waitFor((m) => m.type === 'fs_list_request')) as {
+      requestId: string;
+    };
+    const rootResponseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: '', entries: [{ name: 'src', kind: 'dir', size: 0 }] },
+      key,
+    );
+    node.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: rootRequest.requestId,
+      envelope: rootResponseEnvelope,
+    });
+    await waitForStore(tree, (value) => value.get('')?.status === 'loaded');
+
+    // Not yet in the tree — the nested directory has NOT been eagerly
+    // fetched just because the root loaded (SPEC §7.4's lazy-expand
+    // requirement).
+    expect(get(tree).has('src')).toBe(false);
+
+    client.expandDirectory(session.id, 'src');
+    // A second call while still loading must not send a second request.
+    client.expandDirectory(session.id, 'src');
+
+    const nestedRequests = await node.waitFor((m) => {
+      if (m.type !== 'fs_list_request') return false;
+      return (m as { requestId: string }).requestId !== rootRequest.requestId;
+    });
+    const nestedRequest = nestedRequests as { requestId: string };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(node.messages.filter((m) => m.type === 'fs_list_request')).toHaveLength(2);
+
+    const nestedResponseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'src', entries: [{ name: 'index.ts', kind: 'file', size: 10 }] },
+      key,
+    );
+    node.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: nestedRequest.requestId,
+      envelope: nestedResponseEnvelope,
+    });
+
+    const loaded = await waitForStore(tree, (value) => value.get('src')?.status === 'loaded');
+    expect(loaded.get('src')).toEqual({
+      path: 'src',
+      status: 'loaded',
+      entries: [{ name: 'index.ts', kind: 'file', size: 10 }],
+    });
+
+    // A third call once loaded must also not re-fetch.
+    client.expandDirectory(session.id, 'src');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(node.messages.filter((m) => m.type === 'fs_list_request')).toHaveLength(2);
+  });
+
+  it('surfaces an error outcome (e.g. path-traversal refusal) as status "error" rather than hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-tree-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_error', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const tree = client.fileTreeFor(session.id);
+    const request = (await node.waitFor((m) => m.type === 'fs_list_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', path: '', message: 'path escapes the project root' },
+      key,
+    );
+    node.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    const errored = await waitForStore(tree, (value) => value.get('')?.status === 'error');
+    expect(errored.get('')).toEqual({
+      path: '',
+      status: 'error',
+      entries: [],
+      error: 'path escapes the project root',
+    });
+  });
+
+  it("a client ignores an fs_list_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-tree-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_sibling', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const tree = client.fileTreeFor(session.id);
+    await node.waitFor((m) => m.type === 'fs_list_request'); // this client's own root request
+
+    // A reply to a requestId this client never sent (a sibling device's
+    // own request, fanned out to every subscriber of the session).
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'other-dir', entries: [] },
+      key,
+    );
+    node.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(get(tree).has('other-dir')).toBe(false);
+  });
+});
+
 /**
  * Applies Better Auth's own schema to a hermetic sqlite database — the same
  * call `packages/relay/src/auth.ts`'s `migrateBetterAuth` makes

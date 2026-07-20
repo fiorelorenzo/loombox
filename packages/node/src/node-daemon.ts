@@ -1,6 +1,6 @@
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { basename } from 'node:path';
+import { basename, posix } from 'node:path';
 
 import type {
   AcpMcpServerConfig,
@@ -13,6 +13,9 @@ import { AgentSupervisor, type AgentSession, type AttentionState } from '@loombo
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
+  type FsListRequest,
+  type FsListRequestPayloadV1,
+  type FsListResponsePayloadV1,
   type PromptInjectV1,
   type SessionCreate,
   type SessionMetaPublic,
@@ -201,6 +204,39 @@ interface PromptPayload {
   text: string;
   /** Attachments this turn references (SPEC §7.25); omitted/empty for a plain text prompt. */
   attachments?: PromptAttachmentRef[];
+}
+
+/** Thrown by {@link resolveSessionRelativePath} for a request that would read outside the session's project root. */
+class PathTraversalError extends Error {
+  constructor(readonly requestedPath: string) {
+    super(`path escapes the session's project root: ${requestedPath}`);
+    this.name = 'PathTraversalError';
+  }
+}
+
+/**
+ * Resolves `requestedPath` (an `fs_list_request`'s decrypted `path`, relative
+ * to the session's project root) against `root` (the session's
+ * `worktreePath` — its actual working directory, worktree or not), and
+ * refuses to resolve outside `root` (SPEC §7.4's read-only file-tree panel
+ * must never let a client browse anywhere but its own session's project;
+ * issue #171). Always POSIX path semantics (`node:path`'s `posix`), matching
+ * `./ssh/remote-fs.ts`'s own POSIX assumption for a remote host — every
+ * `local`/`ssh:` target this node runs against is a POSIX machine. Throws
+ * {@link PathTraversalError} for an absolute requested path or one whose
+ * normalized `..` segments walk past `root`.
+ */
+function resolveSessionRelativePath(root: string, requestedPath: string): string {
+  const trimmed = requestedPath.trim();
+  if (posix.isAbsolute(trimmed)) {
+    throw new PathTraversalError(requestedPath);
+  }
+  const normalizedRoot = posix.normalize(root);
+  const resolved = posix.normalize(posix.join(normalizedRoot, trimmed));
+  if (resolved !== normalizedRoot && !resolved.startsWith(`${normalizedRoot}/`)) {
+    throw new PathTraversalError(requestedPath);
+  }
+  return resolved;
 }
 
 /**
@@ -908,6 +944,9 @@ export class NodeDaemon extends EventEmitter {
       case 'prompt_inject':
         this.handlePromptInject(message);
         return;
+      case 'fs_list_request':
+        this.handleFsListRequest(message);
+        return;
       default:
         // Every other v1 message type (permission_response, config_option,
         // presence, blob_ref, ...) is out of this wave's scope; ignore
@@ -996,6 +1035,96 @@ export class NodeDaemon extends EventEmitter {
     }
     this.beginTurn(bridge);
     await bridge.agentSession.prompt(payload.text);
+  }
+
+  /**
+   * A client asked (via the relay) this node to list a directory inside one
+   * of its sessions' projects (SPEC §7.4; issue #171). Ignored if `sessionId`
+   * isn't one of this node's own bridges (mirrors `handlePromptInject`'s same
+   * guard). A decrypt failure is logged and dropped (there is no path to
+   * reply about); everything past that point — path-traversal refusal, a
+   * missing/permission-denied directory, an `ssh:` transport failure — is
+   * turned into an `outcome: 'error'` response instead of silently dropping,
+   * per `@loombox/protocol`'s `fsListResponsePayloadV1` doc comment.
+   */
+  private handleFsListRequest(message: FsListRequest): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptFsListRequest(message)
+      .then((payload) => this.listDirectoryForBridge(bridge, payload.path))
+      .then((responsePayload) =>
+        this.sendFsListResponse(bridge.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle fs_list_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptFsListRequest(message: FsListRequest): Promise<FsListRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<FsListRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves `requestedPath` against `bridge`'s session root and lists it via
+   * that session's `ExecutionTarget` (local or `ssh:`, issue #69's shared
+   * seam — identical code path for both target kinds, per SPEC §7.4's "works
+   * over the same transport the session already uses"). Never throws: a
+   * path-traversal attempt or a filesystem failure both become an
+   * `outcome: 'error'` payload rather than an unhandled rejection, so
+   * {@link handleFsListRequest} always has a response to seal and send back.
+   */
+  private async listDirectoryForBridge(
+    bridge: SessionBridge,
+    requestedPath: string,
+  ): Promise<FsListResponsePayloadV1> {
+    let resolvedPath: string;
+    try {
+      resolvedPath = resolveSessionRelativePath(bridge.session.worktreePath, requestedPath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: requestedPath, message: detail };
+    }
+
+    try {
+      const target = await this.getExecutionTarget(bridge.targetId);
+      const entries = await target.readdirDetailed(resolvedPath);
+      return {
+        outcome: 'ok',
+        path: requestedPath,
+        // `readdirDetailed`'s `'other'` (socket/device/fifo) collapses to
+        // `'file'` on the wire — `@loombox/protocol`'s `fsEntryKindV1` only
+        // distinguishes file/dir/symlink (see that schema's doc comment).
+        entries: entries.map((entry) => ({
+          name: entry.name,
+          kind: entry.type === 'other' ? ('file' as const) : entry.type,
+          size: entry.size,
+        })),
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: requestedPath, message: detail };
+    }
+  }
+
+  private async sendFsListResponse(
+    sessionId: string,
+    requestId: string,
+    payload: FsListResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
   }
 
   /**

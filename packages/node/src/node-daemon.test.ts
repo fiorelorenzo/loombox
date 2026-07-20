@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import type { webcrypto } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir as fsMkdir, mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import path from 'node:path';
+import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -851,6 +851,151 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     expect(result.exitCode).toBe(0);
 
     await expect(node.getExecutionTarget('does-not-exist')).rejects.toThrow(/no target/i);
+  });
+});
+
+describe('NodeDaemon fs-list (read-only file-tree panel, SPEC §7.4; issue #171)', () => {
+  it("lists a local session's project root, and a nested directory, over the encrypted fs_list_request/fs_list_response pair", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-list-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-1',
+      deviceId: 'device-node-fs-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    // Populate the session's own worktree (not projectPath — the isolated
+    // worktree issue #75 already gives every local session by default) with
+    // a nested tree the fs-list request should reveal lazily.
+    await fsWriteFile(pathJoin(session.worktreePath, 'README.md'), '# hi');
+    await fsMkdir(pathJoin(session.worktreePath, 'src'));
+    await fsWriteFile(pathJoin(session.worktreePath, 'src', 'index.ts'), 'export {};');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const rootRequestEnvelope = await phoneSeal(session.id, { path: '' }, key);
+    assertOpaque(rootRequestEnvelope, ['README.md', 'src', session.worktreePath]);
+    phone.send({
+      type: 'fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-root',
+      envelope: rootRequestEnvelope,
+    });
+
+    const rootResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_list_response' && (m as { requestId?: string }).requestId === 'req-root',
+    )) as {
+      type: 'fs_list_response';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    assertOpaque(rootResponse.envelope, ['README.md', 'index.ts', session.worktreePath]);
+    const rootPayload = await phoneOpen<{
+      outcome: string;
+      path: string;
+      entries?: { name: string; kind: string; size: number }[];
+    }>(session.id, rootResponse.envelope, key);
+    expect(rootPayload.outcome).toBe('ok');
+    const rootNames = rootPayload.entries?.map((e) => e.name).sort();
+    expect(rootNames).toContain('README.md');
+    expect(rootNames).toContain('src');
+    const readme = rootPayload.entries?.find((e) => e.name === 'README.md');
+    expect(readme).toMatchObject({ kind: 'file', size: 4 });
+    const src = rootPayload.entries?.find((e) => e.name === 'src');
+    expect(src?.kind).toBe('dir');
+
+    // Lazy-expand: a second request for the nested directory only.
+    const nestedRequestEnvelope = await phoneSeal(session.id, { path: 'src' }, key);
+    phone.send({
+      type: 'fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-src',
+      envelope: nestedRequestEnvelope,
+    });
+    const nestedResponse = (await phone.waitFor(
+      (m) => m.type === 'fs_list_response' && (m as { requestId?: string }).requestId === 'req-src',
+    )) as { type: 'fs_list_response'; envelope: EncryptedEnvelope };
+    const nestedPayload = await phoneOpen<{
+      outcome: string;
+      entries?: { name: string; kind: string; size: number }[];
+    }>(session.id, nestedResponse.envelope, key);
+    expect(nestedPayload.outcome).toBe('ok');
+    expect(nestedPayload.entries).toEqual([{ name: 'index.ts', kind: 'file', size: 10 }]);
+  });
+
+  it('refuses a path that escapes the session project root, replying with an error outcome instead of leaking data or hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-list-traversal';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-2',
+      deviceId: 'device-node-fs-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    for (const evilPath of ['../../../etc', '/etc/passwd']) {
+      const envelope = await phoneSeal(session.id, { path: evilPath }, key);
+      const requestId = `req-evil-${evilPath}`;
+      phone.send({
+        type: 'fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        requestId,
+        envelope,
+      });
+      const response = (await phone.waitFor(
+        (m) =>
+          m.type === 'fs_list_response' && (m as { requestId?: string }).requestId === requestId,
+      )) as { type: 'fs_list_response'; envelope: EncryptedEnvelope };
+      const payload = await phoneOpen<{ outcome: string; message?: string }>(
+        session.id,
+        response.envelope,
+        key,
+      );
+      expect(payload.outcome).toBe('error');
+    }
   });
 });
 

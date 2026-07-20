@@ -29,6 +29,20 @@ export interface ExecResult {
   exitCode: number;
 }
 
+/** A filesystem entry's type, as reported by {@link ExecutionTarget.readdirDetailed} — the same vocabulary `./ssh/remote-fs.ts`'s `RemoteEntryType` already uses (`'other'` covers a socket/device/fifo, which the file-tree wire schema, `@loombox/protocol`'s `fsEntryKindV1`, collapses to `'file'` before sealing — see `NodeDaemon`'s fs-list handler). */
+export type FsEntryType = 'file' | 'dir' | 'symlink' | 'other';
+
+/** One directory entry with the type/size/mtime a file-tree/editor UI needs (issue #74's richer browsing contract), as opposed to {@link ExecutionTarget.readdir}'s narrower name-only listing. */
+export interface DetailedDirEntry {
+  /** The entry's bare name within the listed directory (not a full path). */
+  name: string;
+  type: FsEntryType;
+  /** Bytes; `0` for a directory. */
+  size: number;
+  /** Milliseconds since epoch. */
+  mtimeMs: number;
+}
+
 export interface ExecOptions {
   /** Working directory the command runs in. `LocalExecutionTarget` passes this straight to `child_process.spawn`; `SshExecutionTarget` prefixes the remote command with `cd <cwd> &&`. Omit to run in the target's own default (the node process's cwd for `local`; the remote login shell's default for `ssh:`). */
   cwd?: string;
@@ -67,6 +81,16 @@ export interface ExecutionTarget {
   mkdir(path: string): Promise<void>;
   /** Lists a directory's entry names (not full paths), excluding `.`/`..`. Throws if `path` doesn't exist or isn't a directory. */
   readdir(path: string): Promise<string[]>;
+  /**
+   * Lists a directory's entries with type/size/mtime (issue #74/#171: what
+   * the file-tree panel and `@file` picker actually need, beyond
+   * {@link readdir}'s narrower name-only listing kept above for backward
+   * compatibility/other callers). Throws for a missing/permission-denied/
+   * not-a-directory path — `SshExecutionTarget` throws `RemoteFsError`
+   * (`./ssh/remote-fs.ts`) specifically; `LocalExecutionTarget` throws
+   * Node's own `fs` error (`ENOENT`/`ENOTDIR`/...).
+   */
+  readdirDetailed(path: string): Promise<DetailedDirEntry[]>;
 }
 
 /** The single `local` target every node exposes by default. */

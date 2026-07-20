@@ -1,12 +1,30 @@
 import { spawn } from 'node:child_process';
 import {
+  lstat as fsLstat,
   mkdir as fsMkdir,
   readdir as fsReaddir,
   readFile as fsReadFile,
   writeFile as fsWriteFile,
 } from 'node:fs/promises';
+import { join } from 'node:path';
 
-import type { ExecOptions, ExecResult, ExecutionTarget } from './target';
+import type {
+  DetailedDirEntry,
+  ExecOptions,
+  ExecResult,
+  ExecutionTarget,
+  FsEntryType,
+} from './target';
+
+/** Maps a Node `Dirent`'s type-test methods to {@link FsEntryType} — mirrors `./ssh/remote-fs.ts`'s `mapType` for the local target. */
+function directoryEntryType(dirent: {
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}): FsEntryType {
+  if (dirent.isDirectory()) return 'dir';
+  if (dirent.isSymbolicLink()) return 'symlink';
+  return 'file';
+}
 
 /**
  * The `local` implementation of {@link ExecutionTarget} (issue #69): runs the
@@ -62,5 +80,22 @@ export class LocalExecutionTarget implements ExecutionTarget {
 
   async readdir(path: string): Promise<string[]> {
     return fsReaddir(path);
+  }
+
+  /** Richer local directory browsing (issue #74/#171 parity with {@link SshExecutionTarget.readdirDetailed}): every entry's type/size/mtime. `lstat` (not `stat`) reports a symlink's own metadata rather than following it, matching this method's `'symlink'` type classification. */
+  async readdirDetailed(path: string): Promise<DetailedDirEntry[]> {
+    const dirents = await fsReaddir(path, { withFileTypes: true });
+    return Promise.all(
+      dirents.map(async (dirent) => {
+        const entryPath = join(path, dirent.name);
+        const stats = await fsLstat(entryPath);
+        return {
+          name: dirent.name,
+          type: directoryEntryType(dirent),
+          size: stats.size,
+          mtimeMs: stats.mtimeMs,
+        };
+      }),
+    );
   }
 }

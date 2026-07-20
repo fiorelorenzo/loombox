@@ -637,6 +637,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // The executing host fetching an attachment blob a client uploaded (#156).
         await handleBlobDownload(connection, message);
         return;
+      case 'fs_list_response':
+        // The owning node's reply to a client's fs_list_request (SPEC §7.4;
+        // issue #171/#160) — fanned out to this session's subscribed
+        // clients exactly like blob_ref/permission_request above; the
+        // relay never opens the envelope, so it never learns the path or
+        // directory contents (SPEC §8's metadata boundary). A requesting
+        // client matches its own pending request by `requestId`; any other
+        // subscribed client simply has no pending request with that id.
+        fanOutDirect(message.sessionId, message);
+        return;
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -698,6 +708,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'prompt_inject':
       case 'permission_response':
       case 'config_option':
+      case 'fs_list_request':
+        // fs_list_request (SPEC §7.4; issue #171/#160): a client asking the
+        // owning node to list a directory inside one of its sessions'
+        // projects — routed exactly like prompt_inject/config_option above.
+        // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
+        // opaque `EncryptedEnvelope`; the requested path never reaches the
+        // relay in the clear (SPEC §8's metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {
