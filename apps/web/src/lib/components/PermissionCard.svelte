@@ -22,6 +22,9 @@
   import type { PendingPermissionRequest } from '@loombox/providers-core';
   import DiffViewer from './DiffViewer.svelte';
 
+  /** Below this many options, there's nothing to collapse into an overflow menu even on a narrow viewport. */
+  const NARROW_PRIMARY_OPTION_COUNT = 2;
+
   interface Props {
     request: PendingPermissionRequest;
     /** Only the session's current FIFO head is actionable (SPEC.md §7.24). */
@@ -29,12 +32,37 @@
     onResolve: (option: AcpPermissionOption) => void;
     /** Esc: defer without resolving (issue #148). */
     onDefer?: () => void;
+    /**
+     * SPEC.md §7.3 "Narrow-viewport permission footer" / "Scrollable option
+     * lists" (issue #134): on a narrow viewport the button row collapses to
+     * its two primary actions plus an overflow control for the rest of the
+     * provider's option set, and that overflow list caps its height and
+     * scrolls internally rather than pushing the primary buttons off-screen.
+     * Defaults `false` (the existing full-row desktop layout) so every
+     * other caller/test is unaffected; the real viewport-width check lives
+     * in the caller (`+page.svelte`'s viewport store), not this component.
+     */
+    narrow?: boolean;
   }
 
-  const { request, actionable, onResolve, onDefer }: Props = $props();
+  const { request, actionable, onResolve, onDefer, narrow = false }: Props = $props();
+
+  let overflowOpen = $state(false);
+
+  const primaryOptions = $derived(
+    narrow ? request.options.slice(0, NARROW_PRIMARY_OPTION_COUNT) : request.options,
+  );
+  const overflowOptions = $derived(
+    narrow ? request.options.slice(NARROW_PRIMARY_OPTION_COUNT) : [],
+  );
 
   function optionClass(kind: AcpPermissionOption['kind']): string {
     return kind === 'allow_once' || kind === 'allow_always' ? 'option allow' : 'option reject';
+  }
+
+  function resolveOption(option: AcpPermissionOption): void {
+    overflowOpen = false;
+    onResolve(option);
   }
 
   function rawInputText(rawInput: unknown): string | undefined {
@@ -63,7 +91,7 @@
     const index = Number(event.key) - 1;
     if (Number.isInteger(index) && index >= 0 && index < request.options.length) {
       event.preventDefault();
-      onResolve(request.options[index]);
+      resolveOption(request.options[index]);
     }
   }
 </script>
@@ -99,19 +127,48 @@
     <p class="locations">{locationsText(request.toolCall.locations)}</p>
   {/if}
 
-  <div class="options">
-    {#each request.options as option, index (option.optionId)}
+  <div class="options" class:narrow data-testid="permission-options">
+    {#each primaryOptions as option (option.optionId)}
       <button
         type="button"
         class={optionClass(option.kind)}
         disabled={!actionable}
-        onclick={() => onResolve(option)}
+        onclick={() => resolveOption(option)}
       >
-        <span class="shortcut">{index + 1}</span>
+        <span class="shortcut">{request.options.indexOf(option) + 1}</span>
         {option.name}
       </button>
     {/each}
+
+    {#if overflowOptions.length > 0}
+      <button
+        type="button"
+        class="option overflow-toggle"
+        disabled={!actionable}
+        aria-expanded={overflowOpen}
+        onclick={() => (overflowOpen = !overflowOpen)}
+        data-testid="permission-overflow-toggle"
+      >
+        More ({overflowOptions.length})
+      </button>
+    {/if}
   </div>
+
+  {#if overflowOpen && overflowOptions.length > 0}
+    <div class="options-overflow" data-testid="permission-options-scroll">
+      {#each overflowOptions as option (option.optionId)}
+        <button
+          type="button"
+          class={optionClass(option.kind)}
+          disabled={!actionable}
+          onclick={() => resolveOption(option)}
+        >
+          <span class="shortcut">{request.options.indexOf(option) + 1}</span>
+          {option.name}
+        </button>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -158,6 +215,29 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+  }
+
+  /* Narrow-viewport permission footer (SPEC.md §7.3; issue #134): the
+     primary two actions stay on one reachable row, never wrapped away by
+     an overflow control that has nowhere left to go. */
+  .options.narrow {
+    flex-wrap: nowrap;
+  }
+
+  .overflow-toggle {
+    color: inherit;
+    opacity: 0.75;
+  }
+
+  /* Scrollable option lists (issue #134): capped height so a long
+     options[] list scrolls internally instead of pushing the primary
+     buttons off-screen on a small display. */
+  .options-overflow {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 10rem;
+    overflow-y: auto;
   }
 
   .option {

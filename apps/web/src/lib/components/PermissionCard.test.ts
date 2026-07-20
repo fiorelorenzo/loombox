@@ -62,6 +62,53 @@ describe('PermissionCard: option buttons', () => {
   });
 });
 
+describe('PermissionCard: narrow-viewport footer (#134)', () => {
+  it('shows every option on a wide viewport (narrow omitted) — no overflow control', () => {
+    render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });
+    expect(screen.queryByTestId('permission-overflow-toggle')).toBeNull();
+    expect(screen.getByRole('button', { name: /Allow once/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Allow all edits/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Deny/ })).toBeTruthy();
+  });
+
+  it('collapses to two primary actions plus an overflow control when narrow', () => {
+    render(PermissionCard, {
+      props: { request, actionable: true, onResolve: vi.fn(), narrow: true },
+    });
+    expect(screen.getByRole('button', { name: /Allow once/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Allow all edits/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Deny/ })).toBeNull();
+    expect(screen.getByTestId('permission-overflow-toggle')).toBeTruthy();
+  });
+
+  it('the overflow list is reachable, scrollable, and still resolves via onResolve', async () => {
+    const onResolve = vi.fn();
+    render(PermissionCard, { props: { request, actionable: true, onResolve, narrow: true } });
+
+    expect(screen.queryByTestId('permission-options-scroll')).toBeNull();
+    await fireEvent.click(screen.getByTestId('permission-overflow-toggle'));
+
+    const scrollArea = screen.getByTestId('permission-options-scroll');
+    expect(scrollArea).toBeTruthy();
+    const denyButton = screen.getByRole('button', { name: /Deny/ });
+    expect(scrollArea.contains(denyButton)).toBe(true);
+
+    await fireEvent.click(denyButton);
+    expect(onResolve).toHaveBeenCalledWith(request.options[2]);
+  });
+
+  it('never collapses when there are two or fewer options, even on narrow', () => {
+    const twoOptionRequest: PendingPermissionRequest = {
+      ...request,
+      options: request.options.slice(0, 2),
+    };
+    render(PermissionCard, {
+      props: { request: twoOptionRequest, actionable: true, onResolve: vi.fn(), narrow: true },
+    });
+    expect(screen.queryByTestId('permission-overflow-toggle')).toBeNull();
+  });
+});
+
 describe('PermissionCard: keyboard shortcuts (#148)', () => {
   it('digit keys resolve with the matching options[] entry in order, only while the card is focused', async () => {
     const onResolve = vi.fn();
