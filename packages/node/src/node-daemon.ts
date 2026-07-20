@@ -20,6 +20,7 @@ import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
   type AmkEpochPendingEnvelope,
+  type FileEventPayloadV1,
   type FsListRequest,
   type FsListRequestPayloadV1,
   type FsListResponsePayloadV1,
@@ -249,18 +250,28 @@ interface SessionPrivateMeta {
 /**
  * An attachment ref carried inside a `prompt_inject` envelope's plaintext
  * (SPEC §7.25) — the minimal fields this node needs to fetch and decrypt the
- * blob itself: `ref` (addresses the blob on the relay) plus enough metadata
- * for a future ACP hand-off to build the right content-block kind. Kept
+ * blob itself (`ref`, `mimeType`, `name`) plus the client-computed
+ * `dimensions`/`thumbhash` this node has no way to derive on its own (it
+ * never decodes the image, only fetches+decrypts the ciphertext). Kept
  * self-contained inside `PromptPayload` (this node's own private envelope
  * convention, not a `packages/protocol` schema — see `PromptPayload`'s doc
- * comment) rather than depending on the separate `blob_ref` side-channel
- * message (issue #154, not yet implemented), so this issue's scope doesn't
- * block on that one landing first.
+ * comment) rather than reusing `@loombox/protocol`'s `FileEventPayloadV1`
+ * directly, since a prompt's attachment list and a `blob_ref` file event are
+ * different wire messages that happen to share a metadata shape.
+ *
+ * Once this node resolves (fetches+decrypts) the referenced blob —
+ * confirming the upload is real, not just a client-claimed ref — it also
+ * seals and sends the `blob_ref` file event for it (`sendFileEvent`, issue
+ * #154), so every OTHER device subscribed to this session sees the
+ * attachment show up without waiting for/being gated by that session's
+ * `session_update` fan-out (SPEC §7.16).
  */
 export interface PromptAttachmentRef {
   ref: string;
   mimeType: string;
   name?: string;
+  dimensions?: { width: number; height: number };
+  thumbhash?: string;
 }
 
 /** The plaintext a `prompt_inject` envelope decrypts to. */
@@ -1361,6 +1372,15 @@ export class NodeDaemon extends EventEmitter {
    * node↔supervisor control channel") — identically whether `bridge` is a
    * `local` or an `ssh:` target session: resolution never touches the
    * execution target at all.
+   *
+   * Once an attachment resolves (the blob genuinely exists and decrypts —
+   * this node's own confirmation that the upload is real, SPEC §7.25's "only
+   * ever sent once the blob upload has confirmed"), this also seals and
+   * sends its `blob_ref` file event (issue #154) *before* handing the prompt
+   * to the agent: a broken/unresolvable ref aborts the whole prompt (same as
+   * before this change) rather than ever reaching either the agent or this
+   * side channel. `sendFileEvent` is on its own wire message type, never
+   * `bridge.sendQueue`/`session_update` — see that method's doc comment.
    */
   private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
     for (const attachment of payload.attachments ?? []) {
@@ -1373,9 +1393,43 @@ export class NodeDaemon extends EventEmitter {
         bytes,
       };
       this.emit('attachment_resolved', resolved);
+      await this.sendFileEvent(bridge.session.id, {
+        ref: attachment.ref,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+        dimensions: attachment.dimensions,
+        thumbhash: attachment.thumbhash,
+      });
     }
     this.beginTurn(bridge);
     await bridge.agentSession.prompt(payload.text);
+  }
+
+  /**
+   * Seals and sends one attachment's `blob_ref` file event (SPEC §7.25;
+   * issue #154) — metadata only (`FileEventPayloadV1`: ref, mimeType, name,
+   * dimensions, thumbhash), never the attachment bytes, which this node
+   * never even holds past `deliverPrompt`'s local `bytes` variable above.
+   * Deliberately calls `this.relay.send` directly with `type: 'blob_ref'`
+   * rather than going through `forwardSessionEvent`/`bridge.sendQueue` (the
+   * `session_update` chain `encryptAndSendUpdate` feeds): the relay fans a
+   * `blob_ref` out via its direct/unbounded control path (`relay.ts`'s
+   * `fanOutDirect`), not the bounded per-client `session_update` queue
+   * (§7.16) — so a large attachment can never starve, or be starved/gated
+   * by, that session's live transcript stream. See
+   * `attachments-e2e.test.ts` for a test proving this concretely under a
+   * saturated `session_update` queue.
+   */
+  private async sendFileEvent(sessionId: string, payload: FileEventPayloadV1): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'blob_ref',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      ref: payload.ref,
+      envelope,
+    });
   }
 
   /**

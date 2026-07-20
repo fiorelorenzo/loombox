@@ -4,6 +4,7 @@ import {
   type AmkEpochFetchResponse,
   type AmkEscrow,
   type BlobDownloadResponse,
+  type BlobRef,
   type BlobUpload,
   type DeviceRegister,
   type DeviceRevoke,
@@ -1498,6 +1499,95 @@ describe('relay v1', () => {
       }
       // drop-oldest: the very last update sent must still be the very last one delivered
       expect(updates.at(-1)?.seq).toBe(burstSize);
+    });
+  });
+
+  describe('blob_ref file events bypass the session_update bounded queue (SPEC §7.16, issue #154)', () => {
+    it('a saturated session_update queue that drops most updates still delivers a blob_ref, byte-for-byte, unaffected', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        maxClientQueueDepth: 1,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_blob_burst', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_blob_burst',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const received: Array<Record<string, unknown>> = [];
+      client.addEventListener('message', (event) => {
+        received.push(JSON.parse(event.data.toString()) as Record<string, unknown>);
+      });
+
+      // A burst big enough (at this depth) to genuinely overflow the
+      // client's bounded queue and drop most of the updates, immediately
+      // followed — on the very same node connection, processed dead last —
+      // by ONE blob_ref file event.
+      const burstSize = 50;
+      for (let i = 1; i <= burstSize; i++) {
+        send(node, {
+          type: 'session_update',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_blob_burst',
+          seq: 0,
+          envelope: fakeEnvelope(`chunk-${i}`),
+        } satisfies SessionUpdateEnvelopeV1);
+      }
+      const blobRefEnvelope = fakeEnvelope('attachment-metadata', 'sess_blob_burst:ref-1');
+      send(node, {
+        type: 'blob_ref',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_blob_burst',
+        ref: 'ref-1',
+        envelope: blobRefEnvelope,
+      } satisfies BlobRef);
+
+      // Same generous settle window the drop-oldest test above relies on.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // The bound genuinely bit: most of the burst never survived as a
+      // real session_update, and at least one resync_marker signaled it.
+      const updates = received.filter((m) => m.type === 'session_update');
+      const markers = received.filter((m) => m.type === 'resync_marker');
+      expect(updates.length).toBeLessThan(burstSize);
+      expect(markers.length).toBeGreaterThan(0);
+
+      // The blob_ref is nonetheless delivered exactly once, byte-for-byte
+      // the same opaque envelope sent — never dropped, never folded into a
+      // resync marker, never gated behind the backlog it was queued after.
+      const blobRefs = received.filter((m) => m.type === 'blob_ref');
+      expect(blobRefs).toEqual([
+        {
+          type: 'blob_ref',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_blob_burst',
+          ref: 'ref-1',
+          envelope: blobRefEnvelope,
+        },
+      ]);
     });
   });
 
