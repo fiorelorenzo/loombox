@@ -28,8 +28,12 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm run build && pnpm run preview -- --port 4173 --strictPort',
-    port: 4173,
+    // Serve the adapter-node build directly (its own server honours HOST/PORT
+    // and binds to 127.0.0.1 as asked). `vite preview` defaulted to `localhost`
+    // which resolves to ::1 on the CI runner, so a goto against the IPv4
+    // baseURL got ERR_CONNECTION_REFUSED.
+    command: 'pnpm run build && HOST=127.0.0.1 PORT=4173 node build/index.js',
+    url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
