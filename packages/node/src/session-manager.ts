@@ -4,7 +4,12 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { SameFolderConflictError, SameFolderGuard } from './same-folder-guard';
+
 const execFileAsync = promisify(execFile);
+
+/** Re-exported so a caller catching a same-folder refusal doesn't need to import `./same-folder-guard.ts` directly. */
+export { SameFolderConflictError };
 
 /**
  * A running (or paused) agent working inside one workspace derived from a
@@ -150,9 +155,21 @@ async function assertIsGitRepo(projectPath: string): Promise<void> {
  * git-ignored by consuming projects. Each worktree is created on a fresh
  * branch named `loombox/session-<sessionId>`, branched from the repo's
  * current HEAD.
+ *
+ * **Same-folder safety (issue #68, SPEC §7.2):** a `workInPlace` session
+ * reserves its `projectPath` in an internal {@link SameFolderGuard} for as
+ * long as it's running, and {@link createSession} throws
+ * {@link SameFolderConflictError} if another in-place session already holds
+ * it — "two sessions may not run in place on the same folder at once". An
+ * isolated-worktree session (the default, `workInPlace: false`) never
+ * touches the guard at all: it gets its own subtree under
+ * `<projectPath>/.loombox/worktrees/<sessionId>`, so any number of them can
+ * coexist on the same project regardless of what's running in place — "using
+ * worktrees removes the restriction".
  */
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
+  private readonly sameFolderGuard = new SameFolderGuard();
 
   async createSession({
     projectPath,
@@ -169,6 +186,10 @@ export class SessionManager {
     let worktreePath: string;
     let branch: string;
     if (workInPlace) {
+      // Reserve before creating anything: a refusal here is cheap (nothing
+      // was touched yet) and leaves no partial state to clean up, unlike a
+      // conflict discovered after `git worktree add` had already run.
+      this.sameFolderGuard.reserve(projectPath, id);
       worktreePath = projectPath;
       branch = '';
     } else {
@@ -216,10 +237,13 @@ export class SessionManager {
     return session;
   }
 
-  /** Transitions a `'running'` or `'paused'` session to the terminal `'ended'` state. Throws {@link InvalidSessionTransitionError} if it has already ended. Does not remove the session record or its worktree — see {@link removeSession} for that. */
+  /** Transitions a `'running'` or `'paused'` session to the terminal `'ended'` state. Throws {@link InvalidSessionTransitionError} if it has already ended. Does not remove the session record or its worktree — see {@link removeSession} for that. Releases this session's same-folder reservation (issue #68), if it held one, so a new in-place session on the same folder can start. */
   endSession(id: string): Session {
     const session = this.requireSession(id);
     applyTransition(session, 'end');
+    if (!session.branch) {
+      this.sameFolderGuard.release(session.projectPath, id);
+    }
     return session;
   }
 
@@ -241,8 +265,12 @@ export class SessionManager {
     // `NodeDaemon`, worktree-less) session has `branch === ''` and its
     // `worktreePath` *is* `projectPath` — there is no worktree to remove,
     // and `git worktree remove`/`rm -rf` on `projectPath` itself would
-    // destroy the user's actual working copy. Just forget the record.
+    // destroy the user's actual working copy. Just forget the record, and
+    // release its same-folder reservation (issue #68) — a force-remove can
+    // happen on a still-`running` session (never went through `endSession`),
+    // so this is the only release path guaranteed to run for it.
     if (!session.branch) {
+      this.sameFolderGuard.release(session.projectPath, id);
       this.sessions.delete(id);
       return;
     }
