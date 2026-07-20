@@ -11,12 +11,18 @@
   import { createPermissionQueueState, headPermissionRequest } from '@loombox/providers-core';
   import { APP_NAME, APP_TAGLINE } from '$lib/constants';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
-  import { RelayClient, type ClientSessionMeta, type ConnectionStatus } from '$lib/relay-client';
+  import {
+    RelayClient,
+    type AttentionInboxItem,
+    type ClientSessionMeta,
+    type ConnectionStatus,
+  } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
   import type { QueuedPrompt } from '$lib/outbox';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
+  import AttentionInbox from '$lib/components/AttentionInbox.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -61,6 +67,12 @@
   let attachments = $state<ComposerAttachment[]>([]);
   let queuedPrompts = $state<QueuedPrompt[]>([]);
   let draft = $state('');
+  // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
+  // one live list across every session on this account, independent of
+  // which session (if any) is currently selected/open — see
+  // `RelayClient.attentionInbox`'s doc comment.
+  let attentionInboxItems = $state<AttentionInboxItem[]>([]);
+  let inboxOpen = $state(false);
   // A plan's collapse state persists per session for as long as this tab
   // stays open (SPEC §7.24 "remembers collapse state during the session"),
   // keyed by session id so switching sessions and back preserves it.
@@ -136,6 +148,7 @@
   let unsubscribeConfigOptions: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
+  let unsubscribeAttentionInbox: (() => void) | undefined;
 
   function selectSession(id: string): void {
     selectedSessionId = id;
@@ -186,6 +199,9 @@
       syncSessionStatusSubscriptions(value);
       if (!selectedSessionId && value[0]) selectSession(value[0].id);
     });
+    unsubscribeAttentionInbox = client
+      .attentionInbox()
+      .subscribe((value) => (attentionInboxItems = value));
     client.connect();
   }
 
@@ -197,6 +213,7 @@
     unsubscribeConfigOptions?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
+    unsubscribeAttentionInbox?.();
     clearSessionStatusSubscriptions();
     client?.close();
     client = undefined;
@@ -208,6 +225,8 @@
     configOptions = [];
     attachments = [];
     queuedPrompts = [];
+    attentionInboxItems = [];
+    inboxOpen = false;
   }
 
   function ensureAuthStore(): AuthStore {
@@ -273,6 +292,22 @@
   function stopSession(): void {
     if (!client || !selectedSessionId) return;
     client.cancelPermissionRequests(selectedSessionId);
+  }
+
+  /** The attention inbox's approve/deny action (issue #168) — the exact same `RelayClient.resolvePermission` call the session's own `PermissionQueueBar` makes, so both resolve the one shared queue store (issue #169). */
+  function resolveInboxPermission(
+    sessionId: string,
+    requestId: string,
+    option: AcpPermissionOption,
+  ): void {
+    if (!client) return;
+    client.resolvePermission(sessionId, requestId, option);
+  }
+
+  /** The attention inbox's "Open" action (issue #168) — jumps to the item's originating session and closes the inbox panel. */
+  function openSessionFromInbox(sessionId: string): void {
+    selectSession(sessionId);
+    inboxOpen = false;
   }
 
   function changeConfigOption(category: string, optionId: string): void {
@@ -349,11 +384,34 @@
     <section class="connection">
       <span class="account">{authSession.accountId}</span>
       <span class="status" data-status={status}>status: {status}</span>
+      <button
+        type="button"
+        class="inbox-toggle"
+        class:active={inboxOpen}
+        onclick={() => (inboxOpen = !inboxOpen)}
+        data-testid="inbox-toggle"
+      >
+        Inbox
+        {#if attentionInboxItems.length > 0}
+          <span class="inbox-count" data-testid="inbox-count">{attentionInboxItems.length}</span>
+        {/if}
+      </button>
       <button type="button" onclick={signOut}>Sign out</button>
       {#if authError}
         <p class="error" role="alert">{authError}</p>
       {/if}
     </section>
+
+    {#if inboxOpen}
+      <section class="inbox-panel">
+        <h2>Attention inbox</h2>
+        <AttentionInbox
+          items={attentionInboxItems}
+          onResolve={resolveInboxPermission}
+          onOpenSession={openSessionFromInbox}
+        />
+      </section>
+    {/if}
 
     <div class="cockpit">
       <aside class="sessions">
@@ -507,6 +565,47 @@
   .status {
     opacity: 0.7;
     font-size: 0.85rem;
+  }
+
+  .inbox-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid currentColor;
+    border-radius: 0.375rem;
+    background: transparent;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    color: inherit;
+    font-size: 0.85rem;
+  }
+
+  .inbox-toggle.active {
+    background: rgba(79, 70, 229, 0.15);
+    border-color: rgba(79, 70, 229, 0.6);
+  }
+
+  .inbox-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: rgba(217, 119, 6, 0.35);
+    font-size: 0.7rem;
+  }
+
+  .inbox-panel {
+    border: 1px solid rgba(127, 127, 127, 0.25);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .inbox-panel h2 {
+    font-size: 1rem;
+    margin: 0 0 0.5rem;
   }
 
   .account {
