@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir as fsMkdir, mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import path from 'node:path';
+import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -580,5 +580,79 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     expect(session.worktreePath).toBe(remoteWorkspace);
     expect(session.branch).toBe('');
+  });
+
+  it("lists an ssh: session's project directory over fs_list_request/fs_list_response, exactly like a local target (SPEC §7.4; issue #171)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-fs-list';
+
+    await fsMkdir(pathJoin(remoteWorkspace, 'docs'), { recursive: true });
+    await fsWriteFile(pathJoin(remoteWorkspace, 'docs', 'guide.md'), '# guide');
+    await fsWriteFile(pathJoin(remoteWorkspace, 'top-level.txt'), 'hi');
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-fs-1',
+      deviceId: 'device-node-ssh-fs-1',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({
+      projectPath: remoteWorkspace,
+      provider: 'test-echo',
+      targetId: 'devbox',
+    });
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-ssh-fs-1',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await encryptEnvelope(
+      session.id,
+      new TextEncoder().encode(JSON.stringify({ path: 'docs' })),
+      key,
+    ).then((envelope) => ({
+      resourceId: envelope.resourceId,
+      iv: toBase64(envelope.iv),
+      ciphertext: toBase64(envelope.ciphertext),
+      alg: 'AES-256-GCM' as const,
+    }));
+    phone.send({
+      type: 'fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'devbox',
+      requestId: 'req-ssh-docs',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_list_response' && (m as { requestId?: string }).requestId === 'req-ssh-docs',
+    )) as {
+      type: 'fs_list_response';
+      envelope: { resourceId: string; iv: string; ciphertext: string };
+    };
+    const payload = await phoneOpen<{
+      outcome: string;
+      entries?: { name: string; kind: string; size: number }[];
+    }>(session.id, response.envelope, key);
+    expect(payload.outcome).toBe('ok');
+    expect(payload.entries).toEqual([{ name: 'guide.md', kind: 'file', size: 7 }]);
   });
 });

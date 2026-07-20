@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
+import { fsListRequest, fsListResponse } from './fs';
 import {
   amkEscrow,
   deviceRegister,
@@ -50,6 +51,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   blobRef,
   blobDownload,
   blobDownloadResponse,
+  fsListRequest,
+  fsListResponse,
   presence,
   resyncRequest,
   resyncMarker,

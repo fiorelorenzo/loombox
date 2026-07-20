@@ -110,6 +110,31 @@ export {
 export type { BlobDownload, BlobDownloadResponse, BlobRef, BlobUpload } from './attachments';
 export { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 
+export type {
+  FsEntryKindV1,
+  FsEntryV1,
+  FsListErrorV1,
+  FsListRequest,
+  FsListRequestPayloadV1,
+  FsListResponse,
+  FsListResponsePayloadV1,
+  FsListResultV1,
+} from './fs';
+export {
+  fsEntryKindV1,
+  fsEntryV1,
+  fsListErrorV1,
+  fsListRequest,
+  fsListRequestPayloadV1,
+  fsListResponse,
+  fsListResponsePayloadV1,
+  fsListResultV1,
+  parseFsListRequestPayloadV1,
+  parseFsListResponsePayloadV1,
+  safeParseFsListRequestPayloadV1,
+  safeParseFsListResponsePayloadV1,
+} from './fs';
+
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';
 export { presence, resyncMarker, resyncRequest } from './presence';
 
@@ -159,6 +184,16 @@ import {
   promptInjectV1,
 } from './steering';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
+import {
+  fsEntryKindV1,
+  fsEntryV1,
+  fsListErrorV1,
+  fsListRequest,
+  fsListRequestPayloadV1,
+  fsListResponse,
+  fsListResponsePayloadV1,
+  fsListResultV1,
+} from './fs';
 import { presence, resyncMarker, resyncRequest } from './presence';
 import { wireMessageV1 } from './message';
 
@@ -209,6 +244,14 @@ export const schemasV1 = {
   blobRef,
   blobDownload,
   blobDownloadResponse,
+  fsEntryKindV1,
+  fsEntryV1,
+  fsListRequestPayloadV1,
+  fsListResultV1,
+  fsListErrorV1,
+  fsListResponsePayloadV1,
+  fsListRequest,
+  fsListResponse,
   presence,
   resyncRequest,
   resyncMarker,

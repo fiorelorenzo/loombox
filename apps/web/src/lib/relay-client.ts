@@ -38,6 +38,10 @@ import {
   newDeviceBootstrapResponse,
   safeParseWireMessageV1,
   type EncryptedEnvelope,
+  type FsEntryV1,
+  type FsListRequestPayloadV1,
+  type FsListResponse,
+  type FsListResponsePayloadV1,
   type Initialize,
   type NewDeviceBootstrapRequest,
   type PermissionRequest,
@@ -135,6 +139,23 @@ interface PermissionRequestPayload {
 
 /** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
 export type ClientSessionMeta = SessionMetaPublic & SessionPrivateMeta;
+
+/**
+ * One directory's fs-list state for the read-only file-tree panel (SPEC
+ * §7.4; issue #171) and the `@file` picker (SPEC §7.25; issue #160) that's
+ * backed by it. Keyed by its path relative to the session's project root
+ * (`''` for the root itself) in {@link RelayClient.fileTreeFor}'s returned
+ * `Map`. `'loading'`/`'error'` are the only states before entries land — an
+ * `'error'` keeps whatever `entries` it last had (empty on a first load
+ * failure) so a retry (calling {@link RelayClient.expandDirectory} again)
+ * doesn't have to special-case anything.
+ */
+export interface FileTreeDirectoryState {
+  path: string;
+  status: 'loading' | 'loaded' | 'error';
+  entries: FsEntryV1[];
+  error?: string;
+}
 
 /**
  * One row of the cross-project attention inbox (SPEC §7.13; issues
@@ -574,6 +595,18 @@ export class RelayClient {
   private readonly turnIdleMs: number;
   /** A session's currently queued-but-not-yet-flushed prompts, oldest first (issues #128/#130). */
   private readonly queuedPrompts = new Map<string, Writable<QueuedPrompt[]>>();
+  /** Backs {@link fileTreeFor} (SPEC §7.4; issue #171) — one reactive `Map<path, FileTreeDirectoryState>` per session. */
+  private readonly fileTrees = new Map<string, Writable<Map<string, FileTreeDirectoryState>>>();
+  /**
+   * requestId -> the session/path an in-flight `fs_list_request` this client
+   * itself sent is about (issue #171). `fs_list_response` is fanned out to
+   * every client subscribed to the session (mirrors `permission_request`/
+   * `blob_ref`, `packages/relay/src/relay.ts`'s `fanOutDirect`), so this map
+   * is also this client's filter for "is this reply actually to one of MY
+   * pending requests" — a sibling device's own in-flight request for the
+   * same session is simply not a key here and is ignored.
+   */
+  private readonly pendingFsListRequests = new Map<string, { sessionId: string; path: string }>();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -948,6 +981,51 @@ export class RelayClient {
       sessionId,
       category,
       optionId,
+    });
+  }
+
+  /**
+   * The read-only file-tree panel's live state for one session (SPEC §7.4;
+   * issue #171): a `Map` from directory path (relative to the session's
+   * project root, `''` for the root) to that directory's
+   * {@link FileTreeDirectoryState}. Subscribes this connection to the
+   * session (`session_resume`, same as `transcriptFor`) and, the first time
+   * this session's tree is asked for, kicks off loading the root directory
+   * — lazy beyond that: a nested directory only loads once
+   * {@link expandDirectory} is called for it (e.g. the user expanding it in
+   * the UI), never eagerly walking the whole tree up front.
+   */
+  fileTreeFor(sessionId: string): Readable<Map<string, FileTreeDirectoryState>> {
+    const store = this.fileTreeStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    if (!get(store).has('')) this.expandDirectory(sessionId, '');
+    return store;
+  }
+
+  /**
+   * Lists (or re-lists, after an `'error'`) one directory inside a session's
+   * project (SPEC §7.4's lazy-expand contract; also the `@file` picker's own
+   * on-demand fetch, SPEC §7.25/issue #160, for a path it hasn't seen yet).
+   * A no-op while that exact path is already `'loading'`/`'loaded'` — call
+   * again (e.g. a manual retry action) to re-fetch a directory that came
+   * back `'error'`. `path` is `''` for the project root, or a path relative
+   * to it (e.g. `'src/lib'`); never sent to the relay in the clear — see
+   * `@loombox/protocol`'s `fs.ts` doc comment.
+   */
+  expandDirectory(sessionId: string, path: string): void {
+    const store = this.fileTreeStoreFor(sessionId);
+    const existing = get(store).get(path);
+    if (existing?.status === 'loading' || existing?.status === 'loaded') return;
+
+    store.update((map) => {
+      const next = new Map(map);
+      next.set(path, { path, status: 'loading', entries: existing?.entries ?? [] });
+      return next;
+    });
+
+    this.ensureSubscribed(sessionId);
+    this.sendFsListRequest(sessionId, path).catch((error: unknown) => {
+      this.setFileTreeError(sessionId, path, errorMessage(error));
     });
   }
 
@@ -1558,6 +1636,9 @@ export class RelayClient {
       case 'permission_request':
         this.handlePermissionRequest(message);
         return;
+      case 'fs_list_response':
+        this.handleFsListResponse(message);
+        return;
       default:
         return;
     }
@@ -1658,6 +1739,81 @@ export class RelayClient {
           `RelayClient: failed to decrypt permission_request for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own `fs_list_request`s
+   * (SPEC §7.4; issue #171). `fs_list_response` is fanned out to every
+   * client subscribed to the session (mirrors `permission_request`/
+   * `blob_ref`), so `requestId` not being in {@link pendingFsListRequests}
+   * means this reply is to a sibling device's own request, not this one —
+   * silently ignored, exactly like `discardStalePermissionForToolCall`'s
+   * sibling-device awareness elsewhere in this class.
+   */
+  private handleFsListResponse(message: FsListResponse): void {
+    const pending = this.pendingFsListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingFsListRequests.delete(message.requestId);
+
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<FsListResponsePayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        if (payload.outcome === 'ok') {
+          this.setFileTreeLoaded(message.sessionId, payload.path, payload.entries);
+        } else {
+          this.setFileTreeError(message.sessionId, payload.path, payload.message);
+        }
+      })
+      .catch((error: unknown) => {
+        this.setFileTreeError(pending.sessionId, pending.path, errorMessage(error));
+      });
+  }
+
+  /** Seals `{ path }` and sends the `fs_list_request` (SPEC §7.4; issue #171), tracking it in {@link pendingFsListRequests} so the eventual `fs_list_response` can be told apart from a sibling device's own request for the same session. */
+  private async sendFsListRequest(sessionId: string, path: string): Promise<void> {
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    if (!targetId) {
+      throw new Error(`RelayClient: unknown session ${sessionId}`);
+    }
+    const key = await this.getSessionKey(sessionId);
+    const payload: FsListRequestPayloadV1 = { path };
+    const envelope = await sealJson(sessionId, payload, key);
+    const requestId = generateId('fs');
+    this.pendingFsListRequests.set(requestId, { sessionId, path });
+    this.send({
+      type: 'fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId,
+      requestId,
+      envelope,
+    });
+  }
+
+  private fileTreeStoreFor(sessionId: string): Writable<Map<string, FileTreeDirectoryState>> {
+    let store = this.fileTrees.get(sessionId);
+    if (!store) {
+      store = writable<Map<string, FileTreeDirectoryState>>(new Map());
+      this.fileTrees.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private setFileTreeLoaded(sessionId: string, path: string, entries: FsEntryV1[]): void {
+    this.fileTreeStoreFor(sessionId).update((map) => {
+      const next = new Map(map);
+      next.set(path, { path, status: 'loaded', entries });
+      return next;
+    });
+  }
+
+  private setFileTreeError(sessionId: string, path: string, message: string): void {
+    this.fileTreeStoreFor(sessionId).update((map) => {
+      const next = new Map(map);
+      const existing = next.get(path);
+      next.set(path, { path, status: 'error', entries: existing?.entries ?? [], error: message });
+      return next;
+    });
   }
 
   private async decryptSessionMeta(
