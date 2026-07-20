@@ -63,3 +63,9 @@ docker compose up -d --build
 
 Migrations run automatically on the relay's boot. To roll a migration back
 manually, `docker compose exec relay pnpm --filter @loombox/relay migrate down`.
+
+## Backup & disaster recovery
+
+The relay's Postgres database is the only copy of everything it holds - set up
+the nightly encrypted backup and read the restore runbook before this goes
+live with real users. See `docs/relay-backup.md`.

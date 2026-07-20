@@ -16,8 +16,27 @@
 #
 # Runtime env (see deploy/relay/.env.example): DATABASE_URL, BETTER_AUTH_SECRET,
 # RELAY_PUBLIC_URL, GITHUB_CLIENT_ID/SECRET (GOOGLE_* optional).
+#
+# Also installs the PGDG `postgresql-client-16` package (#103, backup/DR):
+# Debian bookworm's own `postgresql-client` package is v15, and `pg_dump`
+# cannot dump from a *newer* server than itself (the reverse is fine) — this
+# image talks to the `postgres:16-alpine` compose service, so its dump/restore
+# tools need to be 16 too. `backup-cli.ts`/`restore-cli.ts` run inside this
+# image (`docker compose exec relay pnpm --filter @loombox/relay backup`),
+# which already has network access to the `postgres` service and
+# `DATABASE_URL` configured, so no extra dump-side config is needed —
+# see docs/relay-backup.md.
 
 FROM node:22-bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+  && install -d /usr/share/postgresql-common/pgdg \
+  && curl -sSf -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client-16 \
+  && apt-get purge -y --auto-remove curl gnupg \
+  && rm -rf /var/lib/apt/lists/*
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@11.6.0 --activate

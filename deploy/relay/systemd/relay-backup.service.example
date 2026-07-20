@@ -1,0 +1,29 @@
+# Example systemd unit for the nightly relay backup (#103). Adjust
+# WorkingDirectory/User for your host, then:
+#   sudo cp relay-backup.service.example /etc/systemd/system/relay-backup.service
+#   sudo cp relay-backup.timer.example /etc/systemd/system/relay-backup.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now relay-backup.timer
+#
+# OnFailure= is what makes a failed backup actually alertable rather than
+# silently swallowed (#103's acceptance: "job failures are logged/alertable,
+# not silent"). `status-email-user@.service`/`status-email-admin@.service`
+# are Debian's built-in systemd-mailer templates (package `systemd-mailer`,
+# or write your own one-line unit that curls a webhook/dead-man's-switch
+# like healthchecks.io) - point OnFailure= at whichever this host has
+# configured. See docs/relay-backup.md "Alerting on failure" for options and
+# for the companion healthchecks.io "did it even run" ping (ExecStartPost=).
+[Unit]
+Description=loombox relay nightly encrypted backup
+After=docker.service
+Requires=docker.service
+OnFailure=status-email-admin@%n.service
+
+[Service]
+Type=oneshot
+User=prod
+WorkingDirectory=/opt/apps/loombox/deploy/relay
+ExecStart=/opt/apps/loombox/deploy/relay/relay-backup.sh
+# journalctl -u relay-backup.service always has the full stdout/stderr
+# (backup-cli.ts prints a one-line summary on success, a stack trace + non-
+# zero exit on failure) regardless of whether OnFailure= is configured.
