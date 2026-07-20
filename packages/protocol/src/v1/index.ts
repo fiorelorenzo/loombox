@@ -112,8 +112,22 @@ export {
   promptInjectV1,
 } from './steering';
 
-export type { BlobDownload, BlobDownloadResponse, BlobRef, BlobUpload } from './attachments';
-export { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
+export type {
+  BlobDownload,
+  BlobDownloadResponse,
+  BlobRef,
+  BlobUpload,
+  FileEventPayloadV1,
+} from './attachments';
+export {
+  blobDownload,
+  blobDownloadResponse,
+  blobRef,
+  blobUpload,
+  fileEventPayloadV1,
+  parseFileEventPayloadV1,
+  safeParseFileEventPayloadV1,
+} from './attachments';
 
 export type {
   FsEntryKindV1,
@@ -258,7 +272,13 @@ import {
   permissionResponse,
   promptInjectV1,
 } from './steering';
-import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
+import {
+  blobDownload,
+  blobDownloadResponse,
+  blobRef,
+  blobUpload,
+  fileEventPayloadV1,
+} from './attachments';
 import {
   fsEntryKindV1,
   fsEntryV1,
@@ -344,6 +364,7 @@ export const schemasV1 = {
   configOption,
   blobUpload,
   blobRef,
+  fileEventPayloadV1,
   blobDownload,
   blobDownloadResponse,
   fsEntryKindV1,
