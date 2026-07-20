@@ -14,7 +14,7 @@ concurrency:
 jobs:
   verify:
     name: lint · typecheck · test
-    runs-on: [self-hosted, devbox]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +44,7 @@ jobs:
 
   licenses:
     name: license scan (no AGPL/GPL)
-    runs-on: [self-hosted, devbox]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
