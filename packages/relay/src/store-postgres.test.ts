@@ -204,6 +204,54 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     expect(await store.escrow.get('acct_1')).toBe('opaque-wrapped-amk-v2');
   });
 
+  it('AMK epoch rotation (#116): epoch advances only by exactly one, and pending envelopes are per (account, device)', async () => {
+    const store = await makeStore();
+    expect(await store.amkRotation.getCurrentEpoch('acct_1')).toBe(0);
+
+    // Skipping straight to epoch 2 without ever advancing to 1 is rejected.
+    expect(await store.amkRotation.advanceEpoch('acct_1', 2)).toBe(false);
+    expect(await store.amkRotation.getCurrentEpoch('acct_1')).toBe(0);
+
+    expect(await store.amkRotation.advanceEpoch('acct_1', 1)).toBe(true);
+    expect(await store.amkRotation.getCurrentEpoch('acct_1')).toBe(1);
+    // A second account's epoch is untouched.
+    expect(await store.amkRotation.getCurrentEpoch('acct_2')).toBe(0);
+
+    expect(await store.amkRotation.getPending('acct_1', 'dev_survivor')).toBeUndefined();
+    await store.amkRotation.putPending('acct_1', 'dev_survivor', {
+      epoch: 1,
+      fromDeviceId: 'dev_actor',
+      envelope: fakeEnvelope(
+        'rewrapped-amk-epoch-1',
+        'loombox-amk-rotation-v1:acct_1:dev_survivor:1',
+      ),
+    });
+    const pending = await store.amkRotation.getPending('acct_1', 'dev_survivor');
+    expect(pending?.epoch).toBe(1);
+    expect(pending?.fromDeviceId).toBe('dev_actor');
+    expect(pending?.envelope).toEqual(
+      fakeEnvelope('rewrapped-amk-epoch-1', 'loombox-amk-rotation-v1:acct_1:dev_survivor:1'),
+    );
+    // A different account never sees this device's pending envelope even
+    // under the same device id.
+    expect(await store.amkRotation.getPending('acct_2', 'dev_survivor')).toBeUndefined();
+
+    // A later revoke's wrap-fan-out overwrites this device's pending entry
+    // rather than accumulating.
+    expect(await store.amkRotation.advanceEpoch('acct_1', 2)).toBe(true);
+    await store.amkRotation.putPending('acct_1', 'dev_survivor', {
+      epoch: 2,
+      fromDeviceId: 'dev_actor_2',
+      envelope: fakeEnvelope(
+        'rewrapped-amk-epoch-2',
+        'loombox-amk-rotation-v1:acct_1:dev_survivor:2',
+      ),
+    });
+    const updated = await store.amkRotation.getPending('acct_1', 'dev_survivor');
+    expect(updated?.epoch).toBe(2);
+    expect(updated?.fromDeviceId).toBe('dev_actor_2');
+  });
+
   it('round-trips a push subscription per (account, device), scoped by account, and re-subscribing the same device overwrites (#161/#163)', async () => {
     const store = await makeStore();
     expect(await store.pushSubscriptions.get('acct_1', 'dev_1')).toBeUndefined();

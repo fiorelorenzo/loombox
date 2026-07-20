@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  amkEpochFetchRequest,
+  amkEpochFetchResponse,
   amkEscrow,
   deviceRegister,
   deviceRevoke,
@@ -64,6 +66,7 @@ describe('deviceRevoke', () => {
     type: 'device_revoke',
     protocolVersion: 1,
     deviceId: 'device-1',
+    newEpoch: 1,
     rewrappedAmk: [
       {
         deviceId: 'device-2',
@@ -88,6 +91,79 @@ describe('deviceRevoke', () => {
   it('rejects a malformed rewrappedAmk entry', () => {
     expect(() =>
       deviceRevoke.parse({ ...valid, rewrappedAmk: [{ deviceId: 'device-2' }] }),
+    ).toThrow();
+  });
+
+  it('rejects a missing newEpoch', () => {
+    const { newEpoch: _newEpoch, ...rest } = valid;
+    expect(() => deviceRevoke.parse(rest)).toThrow();
+  });
+
+  it('rejects a non-positive newEpoch', () => {
+    expect(() => deviceRevoke.parse({ ...valid, newEpoch: 0 })).toThrow();
+    expect(() => deviceRevoke.parse({ ...valid, newEpoch: -1 })).toThrow();
+  });
+});
+
+describe('amkEpochFetchRequest / amkEpochFetchResponse', () => {
+  const request = {
+    type: 'amk_epoch_fetch_request',
+    protocolVersion: 1,
+    deviceId: 'device-2',
+  };
+  const responseWithPending = {
+    type: 'amk_epoch_fetch_response',
+    protocolVersion: 1,
+    deviceId: 'device-2',
+    pending: {
+      epoch: 1,
+      fromDeviceId: 'device-1',
+      fromDevicePublicKey: 'YWJjZA==',
+      envelope: {
+        resourceId: 'loombox-amk-rotation-v1:acct_1:device-2:1',
+        iv: 'aGVsbG8=',
+        ciphertext: 'YWJjZA==',
+        alg: 'AES-256-GCM' as const,
+      },
+    },
+  };
+  const responseWithoutPending = {
+    type: 'amk_epoch_fetch_response',
+    protocolVersion: 1,
+    deviceId: 'device-2',
+  };
+
+  it('parses a valid request', () => {
+    expect(amkEpochFetchRequest.parse(request)).toEqual(request);
+  });
+
+  it('rejects a missing deviceId on the request', () => {
+    const { deviceId: _deviceId, ...rest } = request;
+    expect(() => amkEpochFetchRequest.parse(rest)).toThrow();
+  });
+
+  it('parses a valid response carrying a pending envelope', () => {
+    expect(amkEpochFetchResponse.parse(responseWithPending)).toEqual(responseWithPending);
+  });
+
+  it('parses a valid response with no pending envelope (already current)', () => {
+    expect(amkEpochFetchResponse.parse(responseWithoutPending).pending).toBeUndefined();
+  });
+
+  it('rejects a pending envelope missing fromDevicePublicKey', () => {
+    const { fromDevicePublicKey: _fromDevicePublicKey, ...restPending } =
+      responseWithPending.pending;
+    expect(() =>
+      amkEpochFetchResponse.parse({ ...responseWithPending, pending: restPending }),
+    ).toThrow();
+  });
+
+  it('rejects a non-positive pending epoch', () => {
+    expect(() =>
+      amkEpochFetchResponse.parse({
+        ...responseWithPending,
+        pending: { ...responseWithPending.pending, epoch: 0 },
+      }),
     ).toThrow();
   });
 });

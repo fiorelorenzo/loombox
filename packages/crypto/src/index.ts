@@ -86,3 +86,11 @@ export {
   unwrapAmkWithRecoveryCode,
   wrapAmkWithRecoveryCode,
 } from './recovery-escrow';
+
+/**
+ * AMK epoch rotation for device revocation (SPEC §8, §16; issue #116): mint a
+ * fresh AMK epoch and ECDH-wrap it per surviving device for the relay to park
+ * and that device to later fetch — the wrap-fan-out side of revoke.
+ */
+export type { UnwrapAmkEpochForDeviceOptions, WrapAmkEpochForDeviceOptions } from './amk-rotation';
+export { generateAmkEpoch, unwrapAmkEpochForDevice, wrapAmkEpochForDevice } from './amk-rotation';

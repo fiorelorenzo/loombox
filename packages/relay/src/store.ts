@@ -180,6 +180,37 @@ export interface EscrowStore {
   get(accountId: string): Awaitable<string | undefined>;
 }
 
+/** One survivor device's pending rewrapped-AMK-epoch envelope, still parked at the relay awaiting fetch (SPEC §8 wrap-fan-out; issue #116). */
+export interface AmkRotationPending {
+  epoch: number;
+  /** The acting (revoking) device that wrapped this envelope — looked up fresh from the device registry at fetch time in `relay.ts`, not trusted from storage; kept here only as the pointer. */
+  fromDeviceId: string;
+  envelope: EncryptedEnvelope;
+}
+
+/**
+ * Per-account AMK epoch counter plus each surviving device's pending
+ * rewrapped-AMK-epoch envelope (SPEC §8's wrap-fan-out delivery leg; issue
+ * #116). The relay stays blind here exactly like `EscrowStore`: `envelope`
+ * is opaque ciphertext, never parsed or decrypted.
+ *
+ * `advanceEpoch` is the relay's own defense against a stale/duplicate/
+ * out-of-order `device_revoke`: it only accepts `newEpoch === currentEpoch +
+ * 1`, returning whether it actually advanced, so `relay.ts` can reject the
+ * whole revoke (including never persisting `rewrappedAmk`, never revoking
+ * the target device) rather than silently accepting a wrong epoch number.
+ */
+export interface AmkRotationStore {
+  /** 0 if this account has never rotated (still on its original, pre-#116 AMK). */
+  getCurrentEpoch(accountId: string): Awaitable<number>;
+  /** Advances the account's epoch to `newEpoch` only if it is exactly one past the current epoch; returns whether it actually advanced. */
+  advanceEpoch(accountId: string, newEpoch: number): Awaitable<boolean>;
+  /** Persists (overwriting any earlier pending envelope) one surviving device's rewrapped-AMK-epoch envelope. */
+  putPending(accountId: string, deviceId: string, pending: AmkRotationPending): Awaitable<void>;
+  /** Returns this device's own pending envelope, or `undefined` if none (already on the latest epoch, or never wrapped-for). Account-scoped: never returns another account's envelope. */
+  getPending(accountId: string, deviceId: string): Awaitable<AmkRotationPending | undefined>;
+}
+
 /**
  * A client's registered Web Push subscription (SPEC §7.11/§16 "self-owned
  * VAPID push"; issues #161/#163), one per `(accountId, deviceId)` — a device
@@ -234,6 +265,7 @@ export interface RelayStore {
   blobs: BlobStore;
   quota: QuotaStore;
   escrow: EscrowStore;
+  amkRotation: AmkRotationStore;
   pushSubscriptions: PushSubscriptionStore;
   vapidKeys: VapidKeyStore;
 }
@@ -293,6 +325,13 @@ interface SyncEscrowStore extends EscrowStore {
   get(accountId: string): string | undefined;
 }
 
+interface SyncAmkRotationStore extends AmkRotationStore {
+  getCurrentEpoch(accountId: string): number;
+  advanceEpoch(accountId: string, newEpoch: number): boolean;
+  putPending(accountId: string, deviceId: string, pending: AmkRotationPending): void;
+  getPending(accountId: string, deviceId: string): AmkRotationPending | undefined;
+}
+
 interface SyncPushSubscriptionStore extends PushSubscriptionStore {
   save(record: Omit<PushSubscriptionRecord, 'createdAt'>): PushSubscriptionRecord;
   get(accountId: string, deviceId: string): PushSubscriptionRecord | undefined;
@@ -313,6 +352,7 @@ export interface SyncRelayStore extends RelayStore {
   blobs: SyncBlobStore;
   quota: SyncQuotaStore;
   escrow: SyncEscrowStore;
+  amkRotation: SyncAmkRotationStore;
   pushSubscriptions: SyncPushSubscriptionStore;
   vapidKeys: SyncVapidKeyStore;
 }
@@ -565,6 +605,32 @@ function createEscrowStore(): SyncEscrowStore {
   };
 }
 
+function amkRotationPendingKey(accountId: string, deviceId: string): string {
+  return `${accountId}:${deviceId}`;
+}
+
+function createAmkRotationStore(): SyncAmkRotationStore {
+  const epochs = new Map<string, number>();
+  const pending = new Map<string, AmkRotationPending>();
+  return {
+    getCurrentEpoch(accountId) {
+      return epochs.get(accountId) ?? 0;
+    },
+    advanceEpoch(accountId, newEpoch) {
+      const current = epochs.get(accountId) ?? 0;
+      if (newEpoch !== current + 1) return false;
+      epochs.set(accountId, newEpoch);
+      return true;
+    },
+    putPending(accountId, deviceId, value) {
+      pending.set(amkRotationPendingKey(accountId, deviceId), value);
+    },
+    getPending(accountId, deviceId) {
+      return pending.get(amkRotationPendingKey(accountId, deviceId));
+    },
+  };
+}
+
 function pushSubscriptionKey(accountId: string, deviceId: string): string {
   return `${accountId}:${deviceId}`;
 }
@@ -612,6 +678,7 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     blobs: createBlobStore(usage),
     quota: createQuotaStore(usage),
     escrow: createEscrowStore(),
+    amkRotation: createAmkRotationStore(),
     pushSubscriptions: createPushSubscriptionStore(),
     vapidKeys: createVapidKeyStore(),
   };

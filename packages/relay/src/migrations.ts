@@ -169,4 +169,38 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS vapid_keys;
     `,
   },
+  {
+    // #116: device-revocation AMK epoch rotation. `amk_epochs` is the
+    // relay's own per-account epoch counter (one row per account, absent ==
+    // epoch 0, "never rotated"), advanced only by exactly one per
+    // `device_revoke` (`store.ts`'s `AmkRotationStore.advanceEpoch`).
+    // `amk_rotation_pending` is one row per surviving device, overwritten by
+    // its next revoke's wrap-fan-out if it hasn't fetched yet — never the
+    // AMK itself, only the opaque ECDH-wrapped envelope plus which device
+    // wrapped it.
+    id: '0007_amk_rotation',
+    up: `
+      CREATE TABLE amk_epochs (
+        account_id TEXT PRIMARY KEY,
+        epoch INTEGER NOT NULL
+      );
+
+      CREATE TABLE amk_rotation_pending (
+        account_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        from_device_id TEXT NOT NULL,
+        envelope_resource_id TEXT NOT NULL,
+        envelope_iv TEXT NOT NULL,
+        envelope_ciphertext TEXT NOT NULL,
+        envelope_alg TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (account_id, device_id)
+      );
+    `,
+    down: `
+      DROP TABLE IF EXISTS amk_rotation_pending;
+      DROP TABLE IF EXISTS amk_epochs;
+    `,
+  },
 ];

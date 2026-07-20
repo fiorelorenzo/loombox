@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   PROTOCOL_V1,
+  type AmkEpochFetchResponse,
   type AmkEscrow,
   type BlobDownloadResponse,
   type BlobUpload,
@@ -637,6 +638,7 @@ describe('relay v1', () => {
         type: 'device_revoke',
         protocolVersion: PROTOCOL_V1,
         deviceId: 'dev_victim',
+        newEpoch: 1,
         rewrappedAmk: [],
       } satisfies DeviceRevoke);
 
@@ -678,6 +680,237 @@ describe('relay v1', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(store.devices.get('dev_1')?.devicePublicKey).toBe(newKey);
+    });
+  });
+
+  describe('AMK epoch rotation on revoke (#116): wrap-fan-out delivery', () => {
+    it('bumps the account epoch and parks a rewrapped-AMK envelope only for each surviving device', async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: actor } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_actor',
+        authToken: 'acct_1',
+      });
+      const { socket: victim } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_victim',
+        authToken: 'acct_1',
+      });
+      const { socket: survivorX } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_survivor_x',
+        authToken: 'acct_1',
+      });
+      const { socket: survivorY } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_survivor_y',
+        authToken: 'acct_1',
+      });
+
+      const envelopeX = fakeEnvelope('for-x');
+      const envelopeY = fakeEnvelope('for-y');
+      send(actor, {
+        type: 'device_revoke',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_victim',
+        newEpoch: 1,
+        rewrappedAmk: [
+          { deviceId: 'dev_survivor_x', envelope: envelopeX },
+          { deviceId: 'dev_survivor_y', envelope: envelopeY },
+        ],
+      } satisfies DeviceRevoke);
+
+      await waitForClose(victim);
+      expect(store.devices.get('dev_victim')?.status).toBe('revoked');
+      expect(store.amkRotation.getCurrentEpoch('acct_1')).toBe(1);
+
+      send(survivorX, {
+        type: 'amk_epoch_fetch_request',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_survivor_x',
+      });
+      const responseX = (await nextMessage(survivorX)) as unknown as AmkEpochFetchResponse;
+      expect(responseX.type).toBe('amk_epoch_fetch_response');
+      expect(responseX.pending?.epoch).toBe(1);
+      expect(responseX.pending?.fromDeviceId).toBe('dev_actor');
+      expect(responseX.pending?.fromDevicePublicKey).toBe(fakeBase64('dev_actor-pubkey'));
+      expect(responseX.pending?.envelope).toEqual(envelopeX);
+
+      send(survivorY, {
+        type: 'amk_epoch_fetch_request',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_survivor_y',
+      });
+      const responseY = (await nextMessage(survivorY)) as unknown as AmkEpochFetchResponse;
+      // Y never sees X's envelope, and vice versa (proven by both bytes and identity).
+      expect(responseY.pending?.envelope).toEqual(envelopeY);
+      expect(responseY.pending?.envelope).not.toEqual(responseX.pending?.envelope);
+    });
+
+    it('a device with nothing pending gets pending: undefined, not another devices envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_never_revoked',
+        authToken: 'acct_1',
+      });
+      send(socket, {
+        type: 'amk_epoch_fetch_request',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_never_revoked',
+      });
+      const response = (await nextMessage(socket)) as unknown as AmkEpochFetchResponse;
+      expect(response.pending).toBeUndefined();
+    });
+
+    it("a device can't fetch another device's pending envelope by spoofing deviceId in the request", async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: actor } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_actor2',
+        authToken: 'acct_1',
+      });
+      const { socket: victim } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_victim2',
+        authToken: 'acct_1',
+      });
+      const { socket: survivor } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_survivor2',
+        authToken: 'acct_1',
+      });
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_intruder2',
+        authToken: 'acct_1',
+      });
+
+      send(actor, {
+        type: 'device_revoke',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_victim2',
+        newEpoch: 1,
+        rewrappedAmk: [{ deviceId: 'dev_survivor2', envelope: fakeEnvelope('for-survivor2') }],
+      } satisfies DeviceRevoke);
+      await waitForClose(victim);
+
+      // The intruder's own connection has deviceId `dev_intruder2`; asking
+      // for `dev_survivor2`'s envelope by putting that id in the request
+      // body must not work.
+      send(intruder, {
+        type: 'amk_epoch_fetch_request',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_survivor2',
+      });
+      const response = (await nextMessage(intruder)) as unknown as AmkEpochFetchResponse;
+      expect(response.deviceId).toBe('dev_intruder2');
+      expect(response.pending).toBeUndefined();
+
+      // The real survivor still gets its own envelope.
+      send(survivor, {
+        type: 'amk_epoch_fetch_request',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_survivor2',
+      });
+      const survivorResponse = (await nextMessage(survivor)) as unknown as AmkEpochFetchResponse;
+      expect(survivorResponse.pending).toBeDefined();
+    });
+
+    it('a revoked device is closed immediately and can never fetch (reconnect itself is rejected)', async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: actor } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_actor3',
+        authToken: 'acct_1',
+      });
+      const { socket: victim } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_victim3',
+        authToken: 'acct_1',
+      });
+
+      send(actor, {
+        type: 'device_revoke',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_victim3',
+        newEpoch: 1,
+        rewrappedAmk: [],
+      } satisfies DeviceRevoke);
+      await waitForClose(victim);
+
+      // The relay never parked anything under the revoked device's own id.
+      expect(store.amkRotation.getPending('acct_1', 'dev_victim3')).toBeUndefined();
+
+      // And it can't reconnect to ask (already covered above for the base
+      // device-registry case, re-asserted here alongside the new fetch path).
+      const reconnectSocket = await connect(url);
+      send(reconnectSocket, {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'client',
+        authToken: 'acct_1',
+        deviceId: 'dev_victim3',
+        devicePublicKey: fakeBase64('dev_victim3-pubkey'),
+      } satisfies Initialize);
+      const closeEvent = await waitForClose(reconnectSocket);
+      expect(closeEvent.code).toBe(4403);
+    });
+
+    it('rejects a device_revoke whose newEpoch is not exactly one past the account current epoch', async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: actor } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_actor4',
+        authToken: 'acct_1',
+      });
+      const { socket: victim } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'dev_victim4',
+        authToken: 'acct_1',
+      });
+
+      // Skips straight to epoch 2 without ever having advanced to 1.
+      send(actor, {
+        type: 'device_revoke',
+        protocolVersion: PROTOCOL_V1,
+        deviceId: 'dev_victim4',
+        newEpoch: 2,
+        rewrappedAmk: [],
+      } satisfies DeviceRevoke);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Rejected wholesale: the device stays active, un-revoked, un-closed.
+      expect(store.devices.get('dev_victim4')?.status).toBe('active');
+      expect(store.amkRotation.getCurrentEpoch('acct_1')).toBe(0);
+      expect(victim.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it('account isolation: a pending envelope never crosses accounts even for a colliding deviceId', () => {
+      const store = createInMemoryRelayStore();
+      store.amkRotation.putPending('acct_a', 'dev_shared_id', {
+        epoch: 1,
+        fromDeviceId: 'dev_a_actor',
+        envelope: fakeEnvelope('acct-a-payload'),
+      });
+      expect(store.amkRotation.getPending('acct_b', 'dev_shared_id')).toBeUndefined();
+      expect(store.amkRotation.getPending('acct_a', 'dev_shared_id')?.envelope).toEqual(
+        fakeEnvelope('acct-a-payload'),
+      );
     });
   });
 
