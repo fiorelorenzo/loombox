@@ -19,6 +19,7 @@
   } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
+  import { createLocalStorageDeviceIdStorage, loadOrCreateDeviceId } from '$lib/device-id-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
@@ -29,6 +30,7 @@
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
+  import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
@@ -57,6 +59,12 @@
   // `routes/page.test.ts`, where `window`/`localStorage` don't exist.
   let authStore: AuthStore | undefined;
   let amkStorage: ReturnType<typeof createLocalStorageAmkStorage> | undefined;
+  // This browser's own stable device id (issue #163's presence check needs
+  // the push subscription and the live WS connection to agree on one id —
+  // see `device-id-store.ts`'s doc comment), loaded once in `onMount` below.
+  // `$state` (not a plain `let`) because the template's `PushNotificationToggle`
+  // guard reads it reactively.
+  let deviceId = $state<string | undefined>(undefined);
   let authSession = $state<StoredAuthSession | undefined>(undefined);
   // Distinguishes "haven't checked yet" from "checked, not signed in" so the
   // sign-in gate doesn't flash before `restoreSession()` resolves.
@@ -165,6 +173,15 @@
   let unsubscribeAttentionInbox: (() => void) | undefined;
   let unsubscribeStaleNotice: (() => void) | undefined;
 
+  // #164: "tapping/clicking a notification opens directly to the relevant
+  // session" — the service worker's `notificationclick` handler
+  // (`push-payload.ts`'s `sessionUrlFromNotificationData`) opens/focuses
+  // this app at `?session=<id>`; this is the other half, read once on
+  // mount and consumed as soon as that session actually shows up in the
+  // account's session list (which may arrive after this page has already
+  // loaded and connected).
+  let pendingSessionIdFromUrl: string | undefined;
+
   function selectSession(id: string): void {
     selectedSessionId = id;
     unsubscribeTranscript?.();
@@ -210,12 +227,21 @@
       amk,
       accountId: session.accountId,
       authToken: session.token,
+      // #163: reuse the same persisted device id the push subscription
+      // registers under, so the relay's presence check can actually match
+      // this connection against that subscription's `deviceId`.
+      deviceId,
     });
     unsubscribeStatus = client.status.subscribe((value) => (status = value));
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
       syncSessionStatusSubscriptions(value);
-      if (!selectedSessionId && value[0]) selectSession(value[0].id);
+      if (pendingSessionIdFromUrl && value.some((s) => s.id === pendingSessionIdFromUrl)) {
+        selectSession(pendingSessionIdFromUrl);
+        pendingSessionIdFromUrl = undefined;
+      } else if (!selectedSessionId && value[0]) {
+        selectSession(value[0].id);
+      }
     });
     unsubscribeAttentionInbox = client
       .attentionInbox()
@@ -385,6 +411,12 @@
 
   onMount(() => {
     amkStorage = createLocalStorageAmkStorage();
+    deviceId = loadOrCreateDeviceId(createLocalStorageDeviceIdStorage());
+
+    // #164: a notification click landed here with `?session=<id>` — see
+    // `pendingSessionIdFromUrl`'s doc comment above.
+    const sessionIdFromUrl = new URLSearchParams(window.location.search).get('session');
+    if (sessionIdFromUrl) pendingSessionIdFromUrl = sessionIdFromUrl;
 
     // Narrow-viewport permission footer (SPEC §7.3; issue #134).
     const unsubscribeNarrow = isNarrowViewport().subscribe((value) => (narrowViewport = value));
@@ -473,6 +505,13 @@
         Jump to… (Ctrl/Cmd+K)
       </button>
       <button type="button" onclick={signOut}>Sign out</button>
+      {#if deviceId}
+        <PushNotificationToggle
+          relayBaseUrl={relayHttpBaseUrl(relayUrl)}
+          authToken={authSession.token}
+          {deviceId}
+        />
+      {/if}
       {#if authError}
         <p class="error" role="alert">{authError}</p>
       {/if}

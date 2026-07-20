@@ -24,7 +24,13 @@ import {
 } from './auth';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
-import { createInMemoryRelayStore, envelopeByteSize, type RelayStore } from './store';
+import { createWebPushSender, type PushSender } from './push';
+import {
+  createInMemoryRelayStore,
+  envelopeByteSize,
+  type RelayStore,
+  type VapidKeyPair,
+} from './store';
 
 /**
  * Resolves the WS handshake's `authToken` to an `accountId`, or `undefined`
@@ -153,6 +159,25 @@ export interface CreateRelayOptions {
    * `REDIS_URL` is set, so multiple relay processes share one fan-out plane.
    */
   fanOutBackend?: FanOutBackend;
+  /**
+   * Self-owned Web Push (SPEC §7.11/§16, RFC 8291/8292; issues #161/#163).
+   * Undefined disables the feature entirely (`/push/*` routes 404, and a
+   * `permission_request` never triggers a push) — the shape every existing
+   * hermetic test in this package and `scripts/v1-e2e-harness.mjs` already
+   * rely on by constructing `startRelay()`/`createRelay()` without this
+   * option. `main.ts` resolves `vapidKeys` once at boot (`push.ts`'s
+   * `resolveVapidKeys`, generating + persisting on first setup) and passes
+   * the result here — key resolution needs the store's own `Awaitable`
+   * (genuinely async against Postgres), which `createRelay` itself, unlike
+   * `startRelay`, deliberately stays synchronous to construct.
+   */
+  push?: {
+    vapidKeys: VapidKeyPair;
+    /** The VAPID JWT's `sub` claim (RFC 8292) — a `mailto:` address or `https:` URL identifying the relay operator. */
+    subject: string;
+    /** Defaults to {@link createWebPushSender} — injectable so #163's presence-aware delivery is testable without a real Web Push network call. */
+    sender?: PushSender;
+  };
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -180,6 +205,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
   const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
   const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
+  const pushSender = opts.push ? (opts.push.sender ?? createWebPushSender()) : undefined;
   app.addHook('onClose', async () => {
     await fanOutBackend.close();
   });
@@ -260,6 +286,52 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       return;
     }
     sendDirect(nodeConnection, message);
+  }
+
+  /** True when `deviceId` (under `accountId`) currently has a live *client* connection — a node connection (the daemon side) never counts, only a PWA client "seeing it live" is what #163's presence check suppresses push for. */
+  function hasLiveClientConnection(accountId: string, deviceId: string): boolean {
+    for (const client of registry.clients) {
+      if (client.accountId === accountId && client.deviceId === deviceId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Presence-aware Web Push delivery (SPEC §7.11 "events go to the device
+   * you are actively using, fall back to push on the others"; issue #163).
+   * Fires only for `permission_request` — the one attention-worthy event
+   * class visible to this blind relay in cleartext-routable form (see
+   * `push.ts`'s `PushPayload` doc comment for why the other three SPEC
+   * §7.13 classes aren't reachable here). Never blocks/affects the live WS
+   * fan-out this runs alongside; a delivery failure to one device's
+   * subscription is logged and does not stop delivery to the account's
+   * other devices.
+   */
+  async function maybeSendAttentionPush(accountId: string, sessionId: string): Promise<void> {
+    if (!pushSender || !opts.push) return;
+    const subscriptions = await store.pushSubscriptions.listForAccount(accountId);
+    for (const subscription of subscriptions) {
+      // The device that's currently open/connected already sees this live
+      // over the WS fan-out above — pushing to it too would just be a
+      // redundant OS notification for something already on screen.
+      if (hasLiveClientConnection(accountId, subscription.deviceId)) continue;
+      try {
+        const result = await pushSender.send(subscription, opts.push.vapidKeys, opts.push.subject, {
+          kind: 'permission_required',
+          sessionId,
+        });
+        if (result.expired) {
+          // The browser itself dropped this subscription (410/404) — self-clean
+          // rather than keep trying it on every future attention event (#163).
+          await store.pushSubscriptions.delete(accountId, subscription.deviceId);
+        }
+      } catch (error) {
+        app.log.warn(
+          { error, accountId, deviceId: subscription.deviceId, sessionId },
+          'relay: push delivery failed',
+        );
+      }
+    }
   }
 
   /** Closes every live connection registered under `deviceId`/`accountId`, e.g. on revoke (#112). */
@@ -551,6 +623,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       case 'permission_request':
+        fanOutDirect(message.sessionId, message);
+        // #163: presence-aware push — a tool call awaiting approval is one
+        // of SPEC §7.11/§7.13's attention-worthy events, and `connection`
+        // (the announcing node) always belongs to the same account the
+        // session itself is scoped to.
+        await maybeSendAttentionPush(connection.accountId, message.sessionId);
+        return;
       case 'blob_ref':
         fanOutDirect(message.sessionId, message);
         return;
@@ -730,6 +809,79 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   // A DB-dependent readiness check would flap the whole site down on a brief
   // Postgres blip, so that stays out of the liveness path.
   app.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok' }));
+
+  /** Resolves the `Authorization: Bearer <token>` header the same way the WS handshake resolves its `authToken` (#121) — `undefined` if absent/invalid. Used by the `/push/*` REST routes below, which have no WS connection of their own to piggyback auth on. */
+  async function accountIdFromBearer(
+    header: string | string[] | undefined,
+  ): Promise<string | undefined> {
+    const value = Array.isArray(header) ? header[0] : header;
+    if (!value?.startsWith('Bearer ')) return undefined;
+    return resolveAccountId(value.slice('Bearer '.length));
+  }
+
+  function isPushSubscribeBody(
+    body: unknown,
+  ): body is { deviceId: string; endpoint: string; keys: { p256dh: string; auth: string } } {
+    if (typeof body !== 'object' || body === null) return false;
+    const candidate = body as Record<string, unknown>;
+    const keys = candidate.keys as Record<string, unknown> | undefined;
+    return (
+      typeof candidate.deviceId === 'string' &&
+      candidate.deviceId.length > 0 &&
+      typeof candidate.endpoint === 'string' &&
+      candidate.endpoint.length > 0 &&
+      typeof keys === 'object' &&
+      keys !== null &&
+      typeof keys.p256dh === 'string' &&
+      typeof keys.auth === 'string'
+    );
+  }
+
+  // #161: the documented endpoint a client fetches the relay's self-owned
+  // VAPID public key from, to pass into `PushManager.subscribe()`'s
+  // `applicationServerKey`. 404 (not disabled-but-empty) when this relay
+  // wasn't configured with `push` at all — the same "feature absent, not
+  // feature broken" signal `/push/subscribe` below gives.
+  app.get('/push/vapid-public-key', async (_request, reply) => {
+    if (!opts.push) return reply.code(404).send({ error: 'push not configured' });
+    return { publicKey: opts.push.vapidKeys.publicKey };
+  });
+
+  // #161/#162: registers (or overwrites, on re-subscribe) this account's
+  // device's push subscription — see `store.ts`'s `PushSubscriptionStore`
+  // doc comment for the overwrite-not-accumulate behavior.
+  app.post('/push/subscribe', async (request, reply) => {
+    if (!opts.push) return reply.code(404).send({ error: 'push not configured' });
+    const accountId = await accountIdFromBearer(request.headers.authorization);
+    if (!accountId) return reply.code(401).send({ error: 'invalid or missing auth token' });
+    if (!isPushSubscribeBody(request.body)) {
+      return reply.code(400).send({ error: 'invalid push subscription body' });
+    }
+    const body = request.body;
+    await store.pushSubscriptions.save({
+      accountId,
+      deviceId: body.deviceId,
+      endpoint: body.endpoint,
+      p256dh: body.keys.p256dh,
+      auth: body.keys.auth,
+    });
+    return reply.code(204).send();
+  });
+
+  // A client that turned notifications off, or is signing this device out,
+  // removes its own subscription — scoped to the bearer's own account, same
+  // as every other account-scoped mutation in this file.
+  app.delete('/push/subscribe', async (request, reply) => {
+    if (!opts.push) return reply.code(404).send({ error: 'push not configured' });
+    const accountId = await accountIdFromBearer(request.headers.authorization);
+    if (!accountId) return reply.code(401).send({ error: 'invalid or missing auth token' });
+    const body = request.body as { deviceId?: unknown } | undefined;
+    if (typeof body?.deviceId !== 'string' || body.deviceId.length === 0) {
+      return reply.code(400).send({ error: 'deviceId is required' });
+    }
+    await store.pushSubscriptions.delete(accountId, body.deviceId);
+    return reply.code(204).send();
+  });
 
   app.register(fastifyWebsocket);
 

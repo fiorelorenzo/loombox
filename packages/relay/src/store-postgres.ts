@@ -9,6 +9,8 @@ import {
   type DeviceRecord,
   type DeviceStore,
   type EscrowStore,
+  type PushSubscriptionRecord,
+  type PushSubscriptionStore,
   type QuotaStore,
   type RelayStore,
   type RelayStoreOptions,
@@ -17,6 +19,8 @@ import {
   type RingEntryRetentionMeta,
   type SessionRecord,
   type SessionStore,
+  type VapidKeyPair,
+  type VapidKeyStore,
 } from './store';
 
 /**
@@ -40,6 +44,8 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     blobs: createPostgresBlobStore(pg),
     quota: createPostgresQuotaStore(pg),
     escrow: createPostgresEscrowStore(pg),
+    pushSubscriptions: createPostgresPushSubscriptionStore(pg),
+    vapidKeys: createPostgresVapidKeyStore(pg),
   };
 }
 
@@ -445,6 +451,95 @@ function createPostgresEscrowStore(pg: PgLike): EscrowStore {
         [accountId],
       );
       return rows[0]?.wrapped_amk;
+    },
+  };
+}
+
+interface PushSubscriptionRow {
+  account_id: string;
+  device_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: string | number;
+}
+
+function rowToPushSubscription(row: PushSubscriptionRow): PushSubscriptionRecord {
+  return {
+    accountId: row.account_id,
+    deviceId: row.device_id,
+    endpoint: row.endpoint,
+    p256dh: row.p256dh,
+    auth: row.auth,
+    createdAt: Number(row.created_at),
+  };
+}
+
+function createPostgresPushSubscriptionStore(pg: PgLike): PushSubscriptionStore {
+  return {
+    async save(input) {
+      const createdAt = Date.now();
+      await pg.query(
+        `INSERT INTO push_subscriptions (account_id, device_id, endpoint, p256dh, auth, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (account_id, device_id) DO UPDATE SET
+           endpoint = EXCLUDED.endpoint,
+           p256dh = EXCLUDED.p256dh,
+           auth = EXCLUDED.auth,
+           created_at = EXCLUDED.created_at`,
+        [input.accountId, input.deviceId, input.endpoint, input.p256dh, input.auth, createdAt],
+      );
+      return { ...input, createdAt };
+    },
+    async get(accountId, deviceId) {
+      const { rows } = await pg.query<PushSubscriptionRow>(
+        `SELECT * FROM push_subscriptions WHERE account_id = $1 AND device_id = $2`,
+        [accountId, deviceId],
+      );
+      return rows[0] ? rowToPushSubscription(rows[0]) : undefined;
+    },
+    async listForAccount(accountId) {
+      const { rows } = await pg.query<PushSubscriptionRow>(
+        `SELECT * FROM push_subscriptions WHERE account_id = $1`,
+        [accountId],
+      );
+      return rows.map(rowToPushSubscription);
+    },
+    async delete(accountId, deviceId) {
+      await pg.query(`DELETE FROM push_subscriptions WHERE account_id = $1 AND device_id = $2`, [
+        accountId,
+        deviceId,
+      ]);
+    },
+  };
+}
+
+function createPostgresVapidKeyStore(pg: PgLike): VapidKeyStore {
+  return {
+    async get() {
+      const { rows } = await pg.query<{ public_key: string; private_key: string }>(
+        `SELECT public_key, private_key FROM vapid_keys WHERE id = 1`,
+      );
+      const row = rows[0];
+      return row ? { publicKey: row.public_key, privateKey: row.private_key } : undefined;
+    },
+    async saveIfAbsent(keys: VapidKeyPair) {
+      // #161: first-writer-wins across concurrent boots — `ON CONFLICT DO
+      // NOTHING` means a losing race's INSERT is silently dropped, then the
+      // SELECT below always returns whatever ended up stored (the winner's
+      // row), never the loser's own `keys` argument.
+      await pg.query(
+        `INSERT INTO vapid_keys (id, public_key, private_key, created_at)
+         VALUES (1, $1, $2, $3)
+         ON CONFLICT (id) DO NOTHING`,
+        [keys.publicKey, keys.privateKey, Date.now()],
+      );
+      const { rows } = await pg.query<{ public_key: string; private_key: string }>(
+        `SELECT public_key, private_key FROM vapid_keys WHERE id = 1`,
+      );
+      const row = rows[0];
+      if (!row) throw new Error('postgres vapid key store: saveIfAbsent did not persist a row');
+      return { publicKey: row.public_key, privateKey: row.private_key };
     },
   };
 }

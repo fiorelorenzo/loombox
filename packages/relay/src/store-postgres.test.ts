@@ -203,6 +203,65 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     await store.escrow.put('acct_1', 'opaque-wrapped-amk-v2');
     expect(await store.escrow.get('acct_1')).toBe('opaque-wrapped-amk-v2');
   });
+
+  it('round-trips a push subscription per (account, device), scoped by account, and re-subscribing the same device overwrites (#161/#163)', async () => {
+    const store = await makeStore();
+    expect(await store.pushSubscriptions.get('acct_1', 'dev_1')).toBeUndefined();
+
+    await store.pushSubscriptions.save({
+      accountId: 'acct_1',
+      deviceId: 'dev_1',
+      endpoint: 'https://push.example/ep1',
+      p256dh: 'p256dh-1',
+      auth: 'auth-1',
+    });
+    const saved = await store.pushSubscriptions.get('acct_1', 'dev_1');
+    expect(saved?.endpoint).toBe('https://push.example/ep1');
+
+    // a second account's own device is never returned by another account's listing
+    await store.pushSubscriptions.save({
+      accountId: 'acct_2',
+      deviceId: 'dev_2',
+      endpoint: 'https://push.example/ep2',
+      p256dh: 'p256dh-2',
+      auth: 'auth-2',
+    });
+    expect((await store.pushSubscriptions.listForAccount('acct_1')).map((r) => r.deviceId)).toEqual(
+      ['dev_1'],
+    );
+
+    // re-subscribing the same (account, device) overwrites rather than accumulating
+    await store.pushSubscriptions.save({
+      accountId: 'acct_1',
+      deviceId: 'dev_1',
+      endpoint: 'https://push.example/ep1-rotated',
+      p256dh: 'p256dh-1b',
+      auth: 'auth-1b',
+    });
+    expect(await store.pushSubscriptions.listForAccount('acct_1')).toHaveLength(1);
+    expect((await store.pushSubscriptions.get('acct_1', 'dev_1'))?.endpoint).toBe(
+      'https://push.example/ep1-rotated',
+    );
+
+    await store.pushSubscriptions.delete('acct_1', 'dev_1');
+    expect(await store.pushSubscriptions.get('acct_1', 'dev_1')).toBeUndefined();
+    // deleting an already-gone pair is a no-op, not an error
+    await store.pushSubscriptions.delete('acct_1', 'dev_1');
+  });
+
+  it('persists a VAPID keypair once, and a later saveIfAbsent call never overwrites it (#161)', async () => {
+    const store = await makeStore();
+    expect(await store.vapidKeys.get()).toBeUndefined();
+
+    const first = await store.vapidKeys.saveIfAbsent({ publicKey: 'pub-1', privateKey: 'priv-1' });
+    expect(first).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
+    expect(await store.vapidKeys.get()).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
+
+    // a second call (e.g. a concurrent boot) never replaces the stored keypair
+    const second = await store.vapidKeys.saveIfAbsent({ publicKey: 'pub-2', privateKey: 'priv-2' });
+    expect(second).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
+    expect(await store.vapidKeys.get()).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
+  });
 });
 
 describe('Postgres store matches the in-memory store contract shape', () => {
