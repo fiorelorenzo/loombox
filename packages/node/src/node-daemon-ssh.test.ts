@@ -207,6 +207,10 @@ async function waitForDecryptedKinds(
 
 let relay: StartedRelay;
 let remoteWorkspace: string;
+// Passed as every createNode() call's `stateDir` below, so its default-
+// constructed `McpConfigStore`/`NodeMcpSecretManager` (issues #187/#189)
+// never touch the real ~/.loombox/node.
+let nodeStateDir: string;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
@@ -216,6 +220,7 @@ const SSH_TARGET_CONFIG = { id: 'devbox', label: 'Dev box', host: 'devbox.invali
 beforeEach(async () => {
   relay = await startRelay();
   remoteWorkspace = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-node-daemon-'));
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-node-daemon-state-'));
 });
 
 afterEach(async () => {
@@ -224,6 +229,7 @@ afterEach(async () => {
   node = undefined;
   phone = undefined;
   await rm(remoteWorkspace, { recursive: true, force: true });
+  await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
 });
 
@@ -234,6 +240,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-1',
       deviceId: 'device-node-ssh-1',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
@@ -277,6 +284,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-2',
       deviceId: 'device-node-ssh-2',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
@@ -322,6 +330,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-3',
       deviceId: 'device-node-ssh-3',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
@@ -385,6 +394,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-4',
       deviceId: 'device-node-ssh-4',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
@@ -423,6 +433,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-5',
       deviceId: 'device-node-ssh-5',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
@@ -454,6 +465,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-ssh-6',
       deviceId: 'device-node-ssh-6',
       devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),

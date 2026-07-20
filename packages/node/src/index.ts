@@ -23,9 +23,23 @@ export { createNode, NodeDaemon } from './node-daemon';
 export type { BlobSource, RelayBlobSourceOptions, RelayLike } from './attachments';
 export { AttachmentResolver, RelayBlobSource, attachmentResourceId } from './attachments';
 
-// v1: node identity keypair generation + persistence (SPEC §5.1, §8, §16; issue #64).
+// v1: node identity keypair generation + persistence (SPEC §5.1, §8, §16; issues #64, #118).
 export type { NodeIdentity, NodeIdentityStoreOptions } from './identity';
 export { NodeIdentityStore } from './identity';
+
+// v1: node-side secrets-at-rest via an OS-native keyring, with a documented
+// and tested 0600-file fallback (SPEC §8, §16; issue #118).
+export type { FileKeyringBackendOptions, KeyringBackend, NodeKeyringOptions } from './keyring';
+export { createOsKeyringBackend, FileKeyringBackend, NodeKeyring } from './keyring';
+
+// v1: node-side MCP server configuration persistence (SPEC §7.7; issue #187).
+export type { McpConfigStoreOptions } from './mcp-config-store';
+export { McpConfigError, McpConfigStore } from './mcp-config-store';
+
+// v1: node-side per-server MCP secret grants + secret-value storage +
+// session-start resolution (SPEC §7.7, §7.17; issue #189).
+export type { NodeMcpSecretManagerOptions } from './mcp-secrets';
+export { NodeMcpSecretManager } from './mcp-secrets';
 
 // v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63). The
 // runnable CLI entrypoint itself (`main.ts`'s `start`/`run`) is not part of

@@ -5,7 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { AcpChildProcess, AcpProvider, AcpUpdate } from '@loombox/providers-core';
+import type {
+  AcpChildProcess,
+  AcpMcpServerConfig,
+  AcpProvider,
+  AcpUpdate,
+} from '@loombox/providers-core';
 
 import { AgentSupervisor } from './agent-supervisor';
 import type { AgentSession } from './agent-session';
@@ -26,6 +31,23 @@ const ECHO_FIXTURE = path.join(
   'echo-acp-agent.mjs',
 );
 
+// Echoes back whatever `mcpServers` it received on `session/new` when
+// prompted with "echo-mcp-servers" (`packages/providers/core`'s own
+// `mcp-servers.test.ts` fixture, issue #190) — reused here (same relative-
+// path pattern as ECHO_FIXTURE above) to prove issues #187/#189's node-side
+// plumbing actually reaches `AcpClient.newSession`, not just that
+// `AgentSupervisor.start()`/`startWithChild()` accept the option.
+const MCP_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'mcp-acp-agent.mjs',
+);
+
 const CRASH_FIXTURE = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -40,6 +62,24 @@ function echoProvider(): AcpProvider {
     spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [ECHO_FIXTURE], cwd }),
     enrich: (update) => update,
   };
+}
+
+function mcpProvider(): AcpProvider {
+  return {
+    id: 'test-mcp',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [MCP_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
+/** Prompts `session` with the fixture's magic "echo back what you got" text and parses its single reply chunk. Mirrors `packages/providers/core/src/mcp-servers.test.ts`'s own `echoMcpServers` helper, one layer up (through `AgentSession`, not a raw `AcpClient`). */
+async function echoMcpServers(session: AgentSession): Promise<unknown> {
+  const updates: AcpUpdate[] = [];
+  const handler = (update: AcpUpdate) => updates.push(update);
+  session.on('update', handler);
+  await session.prompt('echo-mcp-servers');
+  session.off('update', handler);
+  return JSON.parse(updates.at(-1)?.text ?? '[]');
 }
 
 function crashProvider(): AcpProvider {
@@ -269,5 +309,52 @@ describe('AgentSupervisor', () => {
     await expect(supervisor.resolveAttachment('sess-1', 'ref-missing')).rejects.toThrow(
       /boom: blob not found/,
     );
+  });
+
+  describe('mcpServers (issues #187/#189 node-side plumbing)', () => {
+    it('start() with no mcpServers opens the session with an empty list, unchanged from before this option existed', async () => {
+      const supervisor = new AgentSupervisor({ providers: [mcpProvider()], stateDir });
+      const session = await supervisor.start({ workspacePath, providerId: 'test-mcp' });
+      activeSessions.push(session);
+
+      await expect(echoMcpServers(session)).resolves.toEqual([]);
+    });
+
+    it('start() with mcpServers passes them through verbatim to the underlying session/new call', async () => {
+      const supervisor = new AgentSupervisor({ providers: [mcpProvider()], stateDir });
+      const mcpServers: AcpMcpServerConfig[] = [
+        { name: 'fs', command: '/usr/bin/mcp-fs', args: [], env: [] },
+      ];
+
+      const session = await supervisor.start({
+        workspacePath,
+        providerId: 'test-mcp',
+        mcpServers,
+      });
+      activeSessions.push(session);
+
+      await expect(echoMcpServers(session)).resolves.toEqual(mcpServers);
+    });
+
+    it('startWithChild() also threads mcpServers through, identically to start()', async () => {
+      const supervisor = new AgentSupervisor({ providers: [mcpProvider()], stateDir });
+      const mcpServers: AcpMcpServerConfig[] = [
+        { type: 'http', name: 'tracker', url: 'https://tracker.example/mcp', headers: [] },
+      ];
+      const child = spawn(process.execPath, [MCP_FIXTURE], {
+        cwd: workspacePath,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }) as AcpChildProcess;
+
+      const session = await supervisor.startWithChild({
+        workspacePath,
+        providerId: 'test-mcp',
+        child,
+        mcpServers,
+      });
+      activeSessions.push(session);
+
+      await expect(echoMcpServers(session)).resolves.toEqual(mcpServers);
+    });
   });
 });
