@@ -14,6 +14,7 @@ import {
   qrPairingResponse,
 } from './devices';
 import { initialize, initializeResult } from './handshake';
+import { leaseRelease, leaseReleaseResult, leaseRequest, leaseResult } from './lease';
 import { presence, resyncMarker, resyncRequest } from './presence';
 import {
   sessionAnnounceV1,
@@ -76,6 +77,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   presence,
   resyncRequest,
   resyncMarker,
+  leaseRequest,
+  leaseResult,
+  leaseRelease,
+  leaseReleaseResult,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

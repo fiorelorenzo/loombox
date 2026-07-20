@@ -88,6 +88,17 @@ export type {
 } from './ssh/session-lease';
 export { InMemoryLeaseStore, SessionLeaseManager } from './ssh/session-lease';
 
+// v1: the cross-process half of session-ownership leasing (SPEC §9; issues
+// #82/#104) — talks to the relay's own lease arbiter over this node's
+// existing relay connection, layered additively alongside
+// `SessionLeaseManager` above (see `RelayLeaseClient`'s own doc comment).
+export type {
+  RelayLeaseClientOptions,
+  RelayLeaseOutcome,
+  RelayLike as RelayLeaseRelayLike,
+} from './ssh/relay-lease-client';
+export { RelayLeaseClient } from './ssh/relay-lease-client';
+
 export type { SshVerifyFailureReason, SshVerifyResult } from './ssh/verify-and-persist';
 export {
   classifyConnectError,

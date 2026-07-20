@@ -203,4 +203,24 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS amk_epochs;
     `,
   },
+  {
+    // #82/#104: session-ownership leases. One row per (account_id,
+    // session_id) — `holder_node_id`/`expires_at` are the whole of it, since
+    // this is purely routing/coordination metadata (which node currently
+    // owns a session, and until when), never session content. A fresh
+    // `lease_request` upserts in place (`store-postgres.ts`'s
+    // `createPostgresLeaseStore`); a `lease_release` deletes the row.
+    id: '0008_leases',
+    up: `
+      CREATE TABLE leases (
+        account_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        holder_node_id TEXT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        PRIMARY KEY (account_id, session_id)
+      );
+      CREATE INDEX leases_expires_at_idx ON leases (expires_at);
+    `,
+    down: `DROP TABLE IF EXISTS leases;`,
+  },
 ];

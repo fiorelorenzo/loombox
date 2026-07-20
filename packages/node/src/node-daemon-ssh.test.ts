@@ -8,7 +8,13 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
-import { PROTOCOL_V1, type SessionUpdateEnvelopeV1, type WireMessageV1 } from '@loombox/protocol';
+import {
+  PROTOCOL_V1,
+  type SessionListV1,
+  type SessionUpdateEnvelopeV1,
+  type SessionWithPrivateEnvelope,
+  type WireMessageV1,
+} from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
 import { AgentSupervisor } from '@loombox/supervisor';
 import {
@@ -214,6 +220,32 @@ async function waitForDecryptedKinds(
   }
 }
 
+/** Waits until `node` has completed the relay handshake at least once — mirrors `node-daemon.test.ts`'s identical helper. */
+function waitForConnected(node: NodeDaemon): Promise<void> {
+  return new Promise((resolve) => node.once('connected', resolve));
+}
+
+/** Polls `session_list_request` until `sessionId` shows up (a client-initiated `session_create` has no direct ack) — mirrors `node-daemon.test.ts`'s identical helper (kept local rather than shared, same as this file's other duplicated `TestPhone`/`phoneOpen`). */
+async function waitForSessionInList(
+  phone: TestPhone,
+  sessionId: string,
+  timeoutMs = 5000,
+): Promise<SessionWithPrivateEnvelope> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const list = [...phone.messages]
+      .reverse()
+      .find((m): m is SessionListV1 => m.type === 'session_list');
+    const entry = list?.sessions.find((s) => s.session.id === sessionId);
+    if (entry) return entry;
+    if (Date.now() > deadline) {
+      throw new Error(`waitForSessionInList: timed out waiting for session ${sessionId}`);
+    }
+  }
+}
+
 let relay: StartedRelay;
 let remoteWorkspace: string;
 // Passed as every createNode() call's `stateDir` below, so its default-
@@ -415,6 +447,13 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       sshTransportFactory: () => new LocalProcessTransport(),
       remoteChildPollIntervalMs: 30,
       leaseManager,
+      // This test simulates the owning node going silent (SPEC §9: "an
+      // expired lease can be explicitly reclaimed by another node") — it
+      // must let the lease's own TTL lapse with nothing renewing it. A very
+      // long heartbeat interval keeps `NodeDaemon`'s own renewal (issues
+      // #82/#104) from firing within this test's short wait window, so the
+      // lease actually goes stale exactly as this test expects.
+      leaseHeartbeatIntervalMs: 60_000,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
 
@@ -435,6 +474,151 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     await expect(node.promptSession(session.id, 'still there?')).rejects.toThrow(/lease/);
   }, 10_000);
+
+  it('cross-node: two separate NodeDaemon processes sharing one relay arbitrate a session lease through it — node A holds, node B is denied; A releases, B acquires (issues #82/#104)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-cross-node-lease';
+    const sessionId = randomUUID();
+    const nodeAStateDir = await mkdtemp(
+      path.join(tmpdir(), 'loombox-ssh-node-daemon-state-cross-a-'),
+    );
+    const nodeBStateDir = await mkdtemp(
+      path.join(tmpdir(), 'loombox-ssh-node-daemon-state-cross-b-'),
+    );
+    // Node B gets its own distinct target id — the relay's target registry
+    // maps one nodeId per targetId (last announcer wins), so reusing
+    // `SSH_TARGET`'s id 'devbox' on both nodes would make a `session_create`
+    // routed to "devbox" land on whichever node announced most recently,
+    // not deterministically on node B. A distinct id sidesteps that and
+    // isolates this test to exactly what it means to prove: the SAME
+    // sessionId contended across two different nodes.
+    const SSH_TARGET_B = { id: 'devbox-b', kind: 'ssh' as const, label: 'Dev box B' };
+    const SSH_TARGET_CONFIG_B = {
+      id: 'devbox-b',
+      label: 'Dev box B',
+      host: 'devbox.invalid',
+      user: 'dev',
+    };
+
+    // Two independent `NodeDaemon`s (their own in-process `SessionLeaseManager`
+    // each, exactly like two real processes on two real machines — a Mac
+    // node and a devbox node, SPEC §9) connected to the SAME relay under the
+    // SAME account. Neither node's local lease state can see the other's —
+    // only the relay's own `LeaseStore` (issues #82/#104) can arbitrate
+    // between them, which is exactly what this test exercises.
+    const nodeA = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeAStateDir,
+      nodeId: 'node-cross-a',
+      deviceId: 'device-cross-a',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const nodeB = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeBStateDir,
+      nodeId: 'node-cross-b',
+      deviceId: 'device-cross-b',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET_B],
+      sshTargets: [SSH_TARGET_CONFIG_B],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    let phone: TestPhone | undefined;
+
+    try {
+      // Ensures both nodes' target_announce has landed at the relay before
+      // either session_create below needs to route off it.
+      await Promise.all([waitForConnected(nodeA), waitForConnected(nodeB)]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+      const plaintext = new TextEncoder().encode(
+        JSON.stringify({ title: 'cross-node', projectPath: remoteWorkspace }),
+      );
+      const envelope = await encryptEnvelope(sessionId, plaintext, key);
+      const privateEnvelope = {
+        resourceId: envelope.resourceId,
+        iv: toBase64(envelope.iv),
+        ciphertext: toBase64(envelope.ciphertext),
+        alg: 'AES-256-GCM' as const,
+      };
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-cross-phone',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      // node A creates the session (relay-routed, exactly like a real
+      // client-initiated session_create).
+      phone.send({
+        type: 'session_create',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId: 'devbox',
+        provider: 'test-echo',
+        privateEnvelope,
+      });
+      const ownedByA = await waitForSessionInList(phone, sessionId);
+      expect(ownedByA.session.nodeId).toBe('node-cross-a');
+
+      // node B attempts the exact same sessionId on ITS OWN target — node
+      // B's own local leaseManager has never heard of this sessionId (it
+      // would happily grant it locally); only the relay's cross-node
+      // arbitration can deny it. A denial is logged and dropped, not
+      // surfaced on the wire (same as the single-node "already leased"
+      // test above), so prove it by confirming the session's owner is
+      // still node A after giving it a moment to (not) take effect.
+      phone.send({
+        type: 'session_create',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId: 'devbox-b',
+        provider: 'test-echo',
+        privateEnvelope,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const stillOwnedByA = await waitForSessionInList(phone, sessionId);
+      expect(stillOwnedByA.session.nodeId).toBe('node-cross-a');
+
+      // node A stops driving the session (SPEC §9's "release on stop/exit");
+      // node B's retry now succeeds and becomes the new owner.
+      nodeA.close();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      phone.send({
+        type: 'session_create',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId: 'devbox-b',
+        provider: 'test-echo',
+        privateEnvelope,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const ownedByB = await waitForSessionInList(phone, sessionId);
+      expect(ownedByB.session.nodeId).toBe('node-cross-b');
+    } finally {
+      phone?.close();
+      nodeA.close();
+      nodeB.close();
+      await rm(nodeAStateDir, { recursive: true, force: true });
+      await rm(nodeBStateDir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("exposes the ssh: target through getExecutionTarget(), sharing this target's pooled transport (issue #69)", async () => {
     const amk = generateAmk();

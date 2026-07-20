@@ -78,12 +78,12 @@ export type LeaseAcquireResult =
  */
 export class SessionLeaseManager {
   private readonly store: LeaseStore;
-  private readonly ttlMs: number;
+  private readonly _ttlMs: number;
   private readonly now: () => number;
 
   constructor(options: SessionLeaseManagerOptions = {}) {
     this.store = options.store ?? new InMemoryLeaseStore();
-    this.ttlMs = options.ttlMs ?? 30_000;
+    this._ttlMs = options.ttlMs ?? 30_000;
     this.now = options.now ?? Date.now;
   }
 
@@ -108,7 +108,7 @@ export class SessionLeaseManager {
 
   private async acquireOrRenew(sessionId: string, nodeId: string): Promise<LeaseAcquireResult> {
     const now = this.now();
-    const lease: Lease = { sessionId, holderNodeId: nodeId, expiresAt: now + this.ttlMs };
+    const lease: Lease = { sessionId, holderNodeId: nodeId, expiresAt: now + this._ttlMs };
     const ok = await this.store.compareAndSwap(lease, now);
     if (ok) return { granted: true, lease };
 
@@ -146,5 +146,10 @@ export class SessionLeaseManager {
     const now = this.now();
     const current = await this.store.read(sessionId);
     return current !== undefined && current.holderNodeId === nodeId && current.expiresAt > now;
+  }
+
+  /** This manager's configured lease lifetime in ms — exposed so a caller driving a second, cross-process arbitration layer alongside this one (e.g. `NodeDaemon`'s `RelayLeaseClient`) can request the same TTL rather than inventing an unrelated one. */
+  get ttlMs(): number {
+    return this._ttlMs;
   }
 }

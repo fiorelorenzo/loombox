@@ -13,6 +13,10 @@ import {
   type FsListResponse,
   type Initialize,
   type InitializeResult,
+  type LeaseRelease,
+  type LeaseReleaseResult,
+  type LeaseRequest,
+  type LeaseResult,
   type NewDeviceBootstrapRequest,
   type NewDeviceBootstrapResponse,
   type PromptInjectV1,
@@ -1706,5 +1710,252 @@ describe('device escrow / new-device bootstrap (SPEC §8 path 2, §16; issues #1
 
     const response = (await nextMessage(newDevice)) as unknown as NewDeviceBootstrapResponse;
     expect(response.wrappedAmk).toBe(freshBlob);
+  });
+
+  describe('session-ownership leases (SPEC §9; issues #82/#104)', () => {
+    it('grants an unheld session, denies a conflicting node while it is live, and grants again after an explicit release', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: nodeA } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-a',
+        authToken: 'acct_lease',
+      });
+      const { socket: nodeB } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-b',
+        authToken: 'acct_lease',
+      });
+
+      send(nodeA, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-a-1',
+        sessionId: 'sess_lease_1',
+        nodeId: 'node_a',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const granted = (await nextMessage(nodeA)) as unknown as LeaseResult;
+      expect(granted.requestId).toBe('req-a-1');
+      expect(granted.result.outcome).toBe('granted');
+
+      // A second node's acquire is denied while the lease is live, naming the current holder.
+      send(nodeB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-b-1',
+        sessionId: 'sess_lease_1',
+        nodeId: 'node_b',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const denied = (await nextMessage(nodeB)) as unknown as LeaseResult;
+      expect(denied.requestId).toBe('req-b-1');
+      expect(denied.result).toEqual({
+        outcome: 'denied',
+        heldBy: 'node_a',
+        expiresAt: (granted.result as { outcome: 'granted'; expiresAt: number }).expiresAt,
+      });
+
+      // node A releases; only then can node B acquire.
+      send(nodeA, {
+        type: 'lease_release',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-a-release',
+        sessionId: 'sess_lease_1',
+        nodeId: 'node_a',
+      } satisfies LeaseRelease);
+      const releaseResult = (await nextMessage(nodeA)) as unknown as LeaseReleaseResult;
+      expect(releaseResult.released).toBe(true);
+
+      send(nodeB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-b-2',
+        sessionId: 'sess_lease_1',
+        nodeId: 'node_b',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const grantedAfterRelease = (await nextMessage(nodeB)) as unknown as LeaseResult;
+      expect(grantedAfterRelease.result.outcome).toBe('granted');
+    });
+
+    it('renew extends only for the current holder; a non-holder renew is denied without granting', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: nodeA } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-a2',
+        authToken: 'acct_lease_renew',
+      });
+      const { socket: nodeB } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-b2',
+        authToken: 'acct_lease_renew',
+      });
+
+      send(nodeA, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+        sessionId: 'sess_lease_2',
+        nodeId: 'node_a',
+        action: 'acquire',
+        ttlMs: 5_000,
+      } satisfies LeaseRequest);
+      await nextMessage(nodeA);
+
+      // A non-holder's renew is denied and never grants it the lease.
+      send(nodeB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-2',
+        sessionId: 'sess_lease_2',
+        nodeId: 'node_b',
+        action: 'renew',
+      } satisfies LeaseRequest);
+      const foreignRenew = (await nextMessage(nodeB)) as unknown as LeaseResult;
+      expect(foreignRenew.result.outcome).toBe('denied');
+      if (foreignRenew.result.outcome === 'denied') {
+        expect(foreignRenew.result.heldBy).toBe('node_a');
+      }
+
+      // The actual holder's renew succeeds.
+      send(nodeA, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-3',
+        sessionId: 'sess_lease_2',
+        nodeId: 'node_a',
+        action: 'renew',
+        ttlMs: 5_000,
+      } satisfies LeaseRequest);
+      const renewed = (await nextMessage(nodeA)) as unknown as LeaseResult;
+      expect(renewed.result.outcome).toBe('granted');
+    });
+
+    it('clamps a requested ttlMs to leaseTtlMs.max, and a lease past its expiry is granted to a different node without needing a release (lazy expiry)', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        leaseTtlMs: { default: 30_000, max: 50 },
+      });
+      closers.push(close);
+
+      const { socket: nodeA } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-a4',
+        authToken: 'acct_lease_clamp',
+      });
+      const { socket: nodeB } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-b4',
+        authToken: 'acct_lease_clamp',
+      });
+
+      send(nodeA, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+        sessionId: 'sess_lease_4',
+        nodeId: 'node_a',
+        // Asks for a much longer TTL than the relay's configured max — the
+        // relay clamps it down rather than trusting the caller's value.
+        ttlMs: 60_000,
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const granted = (await nextMessage(nodeA)) as unknown as LeaseResult;
+      expect(granted.result.outcome).toBe('granted');
+      if (granted.result.outcome === 'granted') {
+        expect(granted.result.expiresAt).toBeLessThan(Date.now() + 1_000);
+      }
+
+      // Still live: a conflicting acquire is denied.
+      send(nodeB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-2',
+        sessionId: 'sess_lease_4',
+        nodeId: 'node_b',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const stillDenied = (await nextMessage(nodeB)) as unknown as LeaseResult;
+      expect(stillDenied.result.outcome).toBe('denied');
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      send(nodeB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-3',
+        sessionId: 'sess_lease_4',
+        nodeId: 'node_b',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const grantedAfterExpiry = (await nextMessage(nodeB)) as unknown as LeaseResult;
+      expect(grantedAfterExpiry.result.outcome).toBe('granted');
+    });
+
+    it('scopes leases per account: two accounts can each hold a lease for the same sessionId without contending', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: nodeAcctA } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-acct-a',
+        authToken: 'acct_isolated_a',
+      });
+      const { socket: nodeAcctB } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-acct-b',
+        authToken: 'acct_isolated_b',
+      });
+
+      send(nodeAcctA, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-a',
+        sessionId: 'sess_shared_id',
+        nodeId: 'node_x',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const grantedA = (await nextMessage(nodeAcctA)) as unknown as LeaseResult;
+      expect(grantedA.result.outcome).toBe('granted');
+
+      // A different account's node acquiring the exact same sessionId is
+      // unaffected — the relay scopes leases per (accountId, sessionId).
+      send(nodeAcctB, {
+        type: 'lease_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-b',
+        sessionId: 'sess_shared_id',
+        nodeId: 'node_y',
+        action: 'acquire',
+      } satisfies LeaseRequest);
+      const grantedB = (await nextMessage(nodeAcctB)) as unknown as LeaseResult;
+      expect(grantedB.result.outcome).toBe('granted');
+    });
+
+    it('releasing a lease this node does not hold is a no-op, reported as released: false', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-node-noop-release',
+        authToken: 'acct_lease_noop',
+      });
+
+      send(node, {
+        type: 'lease_release',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-noop',
+        sessionId: 'sess_never_leased',
+        nodeId: 'node_ghost',
+      } satisfies LeaseRelease);
+      const result = (await nextMessage(node)) as unknown as LeaseReleaseResult;
+      expect(result.released).toBe(false);
+    });
   });
 });

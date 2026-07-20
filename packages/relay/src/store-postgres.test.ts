@@ -310,6 +310,94 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     expect(second).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
     expect(await store.vapidKeys.get()).toEqual({ publicKey: 'pub-1', privateKey: 'priv-1' });
   });
+
+  it('session-ownership leases (#82/#104): grant, conflict, expiry-then-grant, renew-by-holder-only, release, account isolation', async () => {
+    const store = await makeStore();
+    let now = 1_000_000;
+
+    // grant: unheld session acquires cleanly
+    const first = await store.leases.acquire('acct_1', 'sess_1', 'node_a', 30_000, now);
+    expect(first).toEqual({
+      granted: true,
+      lease: {
+        accountId: 'acct_1',
+        sessionId: 'sess_1',
+        holderNodeId: 'node_a',
+        expiresAt: now + 30_000,
+      },
+    });
+    expect(await store.leases.get('acct_1', 'sess_1')).toEqual(
+      first.granted ? first.lease : undefined,
+    );
+
+    // conflict: a second node's acquire is denied while the lease is live
+    const conflict = await store.leases.acquire('acct_1', 'sess_1', 'node_b', 30_000, now + 1_000);
+    expect(conflict).toEqual({ granted: false, heldBy: 'node_a', expiresAt: now + 30_000 });
+
+    // idempotent re-acquire by the current holder always succeeds
+    const reacquire = await store.leases.acquire('acct_1', 'sess_1', 'node_a', 30_000, now + 2_000);
+    expect(reacquire.granted).toBe(true);
+
+    // renew-by-holder-only: a non-holder's renew is denied without granting
+    const foreignRenew = await store.leases.renew(
+      'acct_1',
+      'sess_1',
+      'node_b',
+      30_000,
+      now + 3_000,
+    );
+    expect(foreignRenew).toEqual({
+      granted: false,
+      heldBy: 'node_a',
+      expiresAt: now + 2_000 + 30_000,
+    });
+
+    // renew-by-holder extends the expiry
+    const renewed = await store.leases.renew('acct_1', 'sess_1', 'node_a', 30_000, now + 4_000);
+    expect(renewed).toEqual({
+      granted: true,
+      lease: {
+        accountId: 'acct_1',
+        sessionId: 'sess_1',
+        holderNodeId: 'node_a',
+        expiresAt: now + 4_000 + 30_000,
+      },
+    });
+
+    // expiry-then-grant: once the holder's lease is actually past its
+    // expiry, a different node's acquire succeeds without needing a release
+    const pastExpiry = now + 4_000 + 30_000 + 1;
+    const afterExpiry = await store.leases.acquire(
+      'acct_1',
+      'sess_1',
+      'node_b',
+      30_000,
+      pastExpiry,
+    );
+    expect(afterExpiry).toEqual({
+      granted: true,
+      lease: {
+        accountId: 'acct_1',
+        sessionId: 'sess_1',
+        holderNodeId: 'node_b',
+        expiresAt: pastExpiry + 30_000,
+      },
+    });
+
+    // release: only the current holder can release; a foreign release is a no-op
+    now = pastExpiry;
+    expect(await store.leases.release('acct_1', 'sess_1', 'node_a')).toBe(false);
+    expect(await store.leases.release('acct_1', 'sess_1', 'node_b')).toBe(true);
+    expect(await store.leases.get('acct_1', 'sess_1')).toBeUndefined();
+    // releasing an already-free lease is a no-op, not an error
+    expect(await store.leases.release('acct_1', 'sess_1', 'node_b')).toBe(false);
+
+    // account isolation: the same sessionId under a different account never
+    // sees, and never contends with, acct_1's lease
+    expect(await store.leases.get('acct_2', 'sess_1')).toBeUndefined();
+    const otherAccount = await store.leases.acquire('acct_2', 'sess_1', 'node_a', 30_000, now);
+    expect(otherAccount.granted).toBe(true);
+  });
 });
 
 describe('Postgres store matches the in-memory store contract shape', () => {
