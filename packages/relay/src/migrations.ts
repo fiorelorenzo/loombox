@@ -137,4 +137,36 @@ export const migrations: readonly Migration[] = [
     `,
     down: `DROP TABLE IF EXISTS amk_escrow;`,
   },
+  {
+    // #161/#163: the relay's own self-owned VAPID keypair (one row, ever —
+    // `id` is pinned to 1 so a second INSERT can never create a second
+    // "current" keypair) and each device's registered Web Push subscription,
+    // one row per `(account_id, device_id)` so a re-subscribe overwrites
+    // rather than accumulates.
+    id: '0006_push',
+    up: `
+      CREATE TABLE vapid_keys (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        public_key TEXT NOT NULL,
+        private_key TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        CONSTRAINT vapid_keys_singleton CHECK (id = 1)
+      );
+
+      CREATE TABLE push_subscriptions (
+        account_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (account_id, device_id)
+      );
+      CREATE INDEX push_subscriptions_account_id_idx ON push_subscriptions (account_id);
+    `,
+    down: `
+      DROP TABLE IF EXISTS push_subscriptions;
+      DROP TABLE IF EXISTS vapid_keys;
+    `,
+  },
 ];

@@ -180,6 +180,53 @@ export interface EscrowStore {
   get(accountId: string): Awaitable<string | undefined>;
 }
 
+/**
+ * A client's registered Web Push subscription (SPEC §7.11/§16 "self-owned
+ * VAPID push"; issues #161/#163), one per `(accountId, deviceId)` — a device
+ * re-subscribing (e.g. the browser rotated its push endpoint) overwrites its
+ * previous row rather than accumulating stale ones. `endpoint`/`p256dh`/
+ * `auth` are exactly the three fields of the browser's own
+ * `PushSubscription.toJSON()`; this store, like every other one in this
+ * file, never inspects or transforms them.
+ */
+export interface PushSubscriptionRecord {
+  accountId: string;
+  deviceId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  createdAt: number;
+}
+
+export interface PushSubscriptionStore {
+  save(record: Omit<PushSubscriptionRecord, 'createdAt'>): Awaitable<PushSubscriptionRecord>;
+  get(accountId: string, deviceId: string): Awaitable<PushSubscriptionRecord | undefined>;
+  /** Every subscription this account has registered, across its devices — the presence-aware delivery fan-out (#163) iterates this. */
+  listForAccount(accountId: string): Awaitable<readonly PushSubscriptionRecord[]>;
+  /** Idempotent: removing an already-gone `(accountId, deviceId)` pair is a no-op. Called both on an explicit client unsubscribe and self-cleaning after the push service reports a subscription gone (410/404, #163). */
+  delete(accountId: string, deviceId: string): Awaitable<void>;
+}
+
+/** The relay's own self-owned VAPID keypair (SPEC §7.11/§16, RFC 8292; issue #161) — one per relay deployment, never per-account. */
+export interface VapidKeyPair {
+  publicKey: string;
+  privateKey: string;
+}
+
+export interface VapidKeyStore {
+  get(): Awaitable<VapidKeyPair | undefined>;
+  /**
+   * First-writer-wins: persists `keys` only if no keypair is stored yet, and
+   * always returns whatever ends up stored (its own `keys` argument on a
+   * fresh write, or the pre-existing one on a losing race). This is what
+   * lets two relay processes boot concurrently against the same fresh
+   * database and still converge on one shared keypair instead of each
+   * generating and using its own (#161's "generates and persists ... on
+   * first setup").
+   */
+  saveIfAbsent(keys: VapidKeyPair): Awaitable<VapidKeyPair>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -187,6 +234,8 @@ export interface RelayStore {
   blobs: BlobStore;
   quota: QuotaStore;
   escrow: EscrowStore;
+  pushSubscriptions: PushSubscriptionStore;
+  vapidKeys: VapidKeyStore;
 }
 
 export interface RelayStoreOptions {
@@ -244,6 +293,18 @@ interface SyncEscrowStore extends EscrowStore {
   get(accountId: string): string | undefined;
 }
 
+interface SyncPushSubscriptionStore extends PushSubscriptionStore {
+  save(record: Omit<PushSubscriptionRecord, 'createdAt'>): PushSubscriptionRecord;
+  get(accountId: string, deviceId: string): PushSubscriptionRecord | undefined;
+  listForAccount(accountId: string): readonly PushSubscriptionRecord[];
+  delete(accountId: string, deviceId: string): void;
+}
+
+interface SyncVapidKeyStore extends VapidKeyStore {
+  get(): VapidKeyPair | undefined;
+  saveIfAbsent(keys: VapidKeyPair): VapidKeyPair;
+}
+
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
 export interface SyncRelayStore extends RelayStore {
   devices: SyncDeviceStore;
@@ -252,6 +313,8 @@ export interface SyncRelayStore extends RelayStore {
   blobs: SyncBlobStore;
   quota: SyncQuotaStore;
   escrow: SyncEscrowStore;
+  pushSubscriptions: SyncPushSubscriptionStore;
+  vapidKeys: SyncVapidKeyStore;
 }
 
 /**
@@ -502,6 +565,43 @@ function createEscrowStore(): SyncEscrowStore {
   };
 }
 
+function pushSubscriptionKey(accountId: string, deviceId: string): string {
+  return `${accountId}:${deviceId}`;
+}
+
+function createPushSubscriptionStore(): SyncPushSubscriptionStore {
+  const subscriptions = new Map<string, PushSubscriptionRecord>();
+  return {
+    save(input) {
+      const record: PushSubscriptionRecord = { ...input, createdAt: Date.now() };
+      subscriptions.set(pushSubscriptionKey(input.accountId, input.deviceId), record);
+      return record;
+    },
+    get(accountId, deviceId) {
+      return subscriptions.get(pushSubscriptionKey(accountId, deviceId));
+    },
+    listForAccount(accountId) {
+      return Array.from(subscriptions.values()).filter((record) => record.accountId === accountId);
+    },
+    delete(accountId, deviceId) {
+      subscriptions.delete(pushSubscriptionKey(accountId, deviceId));
+    },
+  };
+}
+
+function createVapidKeyStore(): SyncVapidKeyStore {
+  let keys: VapidKeyPair | undefined;
+  return {
+    get() {
+      return keys;
+    },
+    saveIfAbsent(candidate) {
+      keys ??= candidate;
+      return keys;
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -512,5 +612,7 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     blobs: createBlobStore(usage),
     quota: createQuotaStore(usage),
     escrow: createEscrowStore(),
+    pushSubscriptions: createPushSubscriptionStore(),
+    vapidKeys: createVapidKeyStore(),
   };
 }

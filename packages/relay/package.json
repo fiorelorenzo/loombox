@@ -27,12 +27,14 @@
     "fastify": "^5.0.0",
     "ioredis": "^5.11.1",
     "pg": "^8.22.0",
-    "tsx": "^4.19.1"
+    "tsx": "^4.19.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/ioredis-mock": "^8.2.7",
     "@types/pg": "^8.20.0",
+    "@types/web-push": "^3.6.4",
     "better-sqlite3": "^12.11.1",
     "ioredis-mock": "^8.13.1",
     "pg-mem": "^3.0.14"

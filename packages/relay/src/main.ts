@@ -11,7 +11,9 @@ import {
 } from './auth';
 import { createRedisFanOutBackend, type FanOutBackend } from './fanout';
 import { runMigrations } from './migrate';
+import { resolveVapidKeys } from './push';
 import { startRelay } from './relay';
+import { createInMemoryRelayStore } from './store';
 import { createPostgresRelayStore } from './store-postgres';
 import type { RelayStore } from './store';
 
@@ -56,7 +58,13 @@ export async function start(): Promise<StartedRelayHandle> {
     : undefined;
 
   const databaseUrl = process.env.DATABASE_URL;
-  let store: RelayStore | undefined;
+  // #161: always a concrete store (Postgres when configured, otherwise a
+  // process-lifetime in-memory one) rather than leaving it `undefined` for
+  // `createRelay`'s own internal fallback to construct — VAPID key
+  // resolution below needs to read/write the SAME store instance
+  // `startRelay` ends up using, so the keypair it generates on first boot
+  // is the one `createRelay` actually serves from `/push/vapid-public-key`.
+  let store: RelayStore = createInMemoryRelayStore();
   let auth: RelayAuth | undefined;
   let pool: Pool | undefined;
 
@@ -97,6 +105,33 @@ export async function start(): Promise<StartedRelayHandle> {
     console.log('loombox relay: in-process fan-out (single instance; set REDIS_URL to scale out)');
   }
 
+  // #161: self-owned VAPID push — `VAPID_SUBJECT` is required to enable it
+  // at all (RFC 8292 mandates a `sub` claim; there is no safe default to
+  // fall back to), an operator-supplied `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
+  // pair wins outright, otherwise a keypair is generated and persisted to
+  // `store` on first boot (`push.ts`'s `resolveVapidKeys`).
+  const vapidSubject = process.env.VAPID_SUBJECT;
+  const push = vapidSubject
+    ? {
+        vapidKeys: await resolveVapidKeys(store.vapidKeys, {
+          subject: vapidSubject,
+          envKeys:
+            process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
+              ? {
+                  publicKey: process.env.VAPID_PUBLIC_KEY,
+                  privateKey: process.env.VAPID_PRIVATE_KEY,
+                }
+              : undefined,
+        }),
+        subject: vapidSubject,
+      }
+    : undefined;
+  console.log(
+    push
+      ? 'loombox relay: self-owned Web Push enabled (VAPID_SUBJECT set)'
+      : 'loombox relay: Web Push disabled (set VAPID_SUBJECT to enable, SPEC §7.11)',
+  );
+
   const { url, close } = await startRelay({
     host,
     port,
@@ -106,6 +141,7 @@ export async function start(): Promise<StartedRelayHandle> {
     rateLimit: { max: rateLimitMax, timeWindow: rateLimitWindowMs },
     maxAccountStorageBytes,
     fanOutBackend,
+    push,
   });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,
