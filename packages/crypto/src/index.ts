@@ -64,3 +64,25 @@ export {
  */
 export { deriveSessionKey } from './session-keys';
 export { envelopeFromWire, envelopeToWire, openJson, sealJson } from './session-envelope';
+
+/**
+ * Recovery-code AMK escrow (SPEC §8 path 2, §16; issues #114/#115): generate
+ * a Recovery Code, wrap/unwrap the AMK under a key derived from it, and
+ * pack/unpack the wrapped blob into the single opaque base64 string the
+ * `amk_escrow`/`new_device_bootstrap_response` wire messages carry.
+ */
+export type { WrappedAmkBlob } from './recovery-escrow';
+export {
+  RECOVERY_CODE_BYTES,
+  RECOVERY_CODE_GROUP_SIZE,
+  RECOVERY_PBKDF2_ITERATIONS,
+  RECOVERY_SALT_BYTES,
+  deriveRecoveryWrapKeyBits,
+  formatRecoveryCodeForDisplay,
+  generateRecoveryCode,
+  normalizeRecoveryCode,
+  packWrappedAmkForWire,
+  unpackWrappedAmkFromWire,
+  unwrapAmkWithRecoveryCode,
+  wrapAmkWithRecoveryCode,
+} from './recovery-escrow';

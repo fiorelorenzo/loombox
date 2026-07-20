@@ -8,6 +8,7 @@ import {
   type BlobStore,
   type DeviceRecord,
   type DeviceStore,
+  type EscrowStore,
   type QuotaStore,
   type RelayStore,
   type RelayStoreOptions,
@@ -38,6 +39,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     sessions: createPostgresSessionStore(pg, opts.ringBufferSize ?? 200),
     blobs: createPostgresBlobStore(pg),
     quota: createPostgresQuotaStore(pg),
+    escrow: createPostgresEscrowStore(pg),
   };
 }
 
@@ -421,6 +423,28 @@ function createPostgresBlobStore(pg: PgLike): BlobStore {
     },
     async delete(key) {
       await pg.query(`DELETE FROM blobs WHERE blob_key = $1`, [key]);
+    },
+  };
+}
+
+function createPostgresEscrowStore(pg: PgLike): EscrowStore {
+  return {
+    async put(accountId, wrappedAmk) {
+      await pg.query(
+        `INSERT INTO amk_escrow (account_id, wrapped_amk, updated_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (account_id) DO UPDATE SET
+           wrapped_amk = EXCLUDED.wrapped_amk,
+           updated_at = EXCLUDED.updated_at`,
+        [accountId, wrappedAmk, Date.now()],
+      );
+    },
+    async get(accountId) {
+      const { rows } = await pg.query<{ wrapped_amk: string }>(
+        `SELECT wrapped_amk FROM amk_escrow WHERE account_id = $1`,
+        [accountId],
+      );
+      return rows[0]?.wrapped_amk;
     },
   };
 }

@@ -8,6 +8,7 @@ import {
   deriveKeyTree,
   encryptEnvelope,
   generateAmk,
+  generateRecoveryCode,
   importAesGcmKey,
 } from '@loombox/crypto';
 import { createTranscriptState, reduceTranscript } from '@loombox/providers-core';
@@ -25,6 +26,7 @@ import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '
 
 import {
   RelayClient,
+  bootstrapAmkFromRecoveryCode,
   type ClientSessionMeta,
   type WebSocketConstructor,
   type WebSocketLike,
@@ -1974,5 +1976,123 @@ describe('RelayClient: cross-project attention inbox (SPEC §7.13; issues #167/#
     expect(
       final.some((item) => item.sessionId === sessionB.id && item.kind === 'awaiting_input'),
     ).toBe(true);
+  });
+});
+
+describe('RelayClient: recovery-code AMK escrow + new-device bootstrap (SPEC §8 path 2, §16; issues #114/#115)', () => {
+  it('escrows the AMK from a first device, then a fresh device bootstraps from just the Recovery Code and decrypts a session the first device could', async () => {
+    const accountId = 'acct-recovery';
+    const recoveryCode = generateRecoveryCode();
+    const amk = generateAmk();
+
+    // The first device: escrows its AMK to the relay.
+    const firstDevice = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'device-first',
+    });
+    firstDevice.connect();
+    await waitForStore(firstDevice.status, (status) => status === 'open');
+    await firstDevice.escrowAmk(recoveryCode);
+
+    // A node announces a session under this account, sealed under the
+    // first device's AMK-derived session key.
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-recovery',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const session = makeSessionMeta({ id: 'sess_recovery', accountId });
+    const sessionKey = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'recovered session', projectPath: '/proj-recovery' },
+      sessionKey,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    // A brand-new device, with no prior state at all: OAuth identity
+    // (`accountId`/`authToken`) plus only the Recovery Code — no previously
+    // trusted device involved.
+    const bootstrapped = await bootstrapAmkFromRecoveryCode({
+      relayUrl: relay.url,
+      accountId,
+      deviceId: 'device-new',
+      recoveryCode,
+    });
+    expect(bootstrapped.amk).toEqual(amk);
+    // SPEC §8: bootstrap also generates the new device's own ECDH P-256
+    // identity keypair (not the placeholder random bytes RelayClient uses
+    // when no keypair is supplied).
+    expect(bootstrapped.deviceKeyPair).toBeDefined();
+    expect(bootstrapped.devicePublicKey).toBeTruthy();
+    expect(bootstrapped.deviceId).toBe('device-new');
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk: bootstrapped.amk,
+      accountId,
+      deviceId: bootstrapped.deviceId,
+      devicePublicKey: bootstrapped.devicePublicKey,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const sessions = (await waitForStore(
+      client.sessions,
+      (value) => value.length > 0,
+    )) as ClientSessionMeta[];
+    expect(sessions).toEqual([
+      { ...session, title: 'recovered session', projectPath: '/proj-recovery' },
+    ]);
+  });
+
+  it('rejects bootstrap with the wrong Recovery Code', async () => {
+    const accountId = 'acct-recovery-wrong-code';
+    const amk = generateAmk();
+
+    const firstDevice = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'device-first',
+    });
+    firstDevice.connect();
+    await waitForStore(firstDevice.status, (status) => status === 'open');
+    await firstDevice.escrowAmk(generateRecoveryCode());
+
+    await expect(
+      bootstrapAmkFromRecoveryCode({
+        relayUrl: relay.url,
+        accountId,
+        deviceId: 'device-new',
+        recoveryCode: generateRecoveryCode(),
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects bootstrap for an account that has never escrowed an AMK', async () => {
+    await expect(
+      bootstrapAmkFromRecoveryCode({
+        relayUrl: relay.url,
+        accountId: 'acct-never-escrowed',
+        deviceId: 'device-new',
+        recoveryCode: generateRecoveryCode(),
+        timeoutMs: 200,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('escrowAmk rejects when called before the connection is open', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-not-connected',
+      deviceId: 'device-x',
+    });
+    await expect(client.escrowAmk(generateRecoveryCode())).rejects.toThrow();
   });
 });

@@ -4,8 +4,15 @@ import {
   deriveSessionKey,
   encryptEnvelope,
   envelopeToWire,
+  exportPublicKeyRaw,
+  generateEcdhKeyPair,
   openJson,
+  packWrappedAmkForWire,
   sealJson,
+  unpackWrappedAmkFromWire,
+  unwrapAmkWithRecoveryCode,
+  wrapAmkWithRecoveryCode,
+  type EcdhKeyPair,
 } from '@loombox/crypto';
 import {
   cancelAllPermissionRequests,
@@ -27,9 +34,11 @@ import {
 import {
   PROTOCOL_V1,
   initializeResult,
+  newDeviceBootstrapResponse,
   safeParseWireMessageV1,
   type EncryptedEnvelope,
   type Initialize,
+  type NewDeviceBootstrapRequest,
   type PermissionRequest,
   type SessionAnnounceV1,
   type SessionListV1,
@@ -252,7 +261,11 @@ function generateId(prefix: string): string {
  * this module does (mirrors `amk-store.ts`'s identical fix/rationale).
  */
 function randomBase64(byteLength = 32): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return bytesToBase64(crypto.getRandomValues(new Uint8Array(byteLength)));
+}
+
+/** `Buffer`-free base64 encoding — see {@link randomBase64}'s doc comment for why. */
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
@@ -260,6 +273,169 @@ function randomBase64(byteLength = 32): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Options for {@link bootstrapAmkFromRecoveryCode}. */
+export interface BootstrapAmkFromRecoveryCodeOptions {
+  /** The relay's ws:// (or wss://) URL to connect to. */
+  relayUrl: string;
+  /**
+   * The account being bootstrapped — SPEC §8's "OAuth login (proves
+   * identity, no QR, no other device involved)"; this must be the signed-in
+   * account's own id (`auth-store.ts`'s `StoredAuthSession.accountId`), the
+   * same value {@link unwrapAmkWithRecoveryCode}'s AAD binding checks
+   * against.
+   */
+  accountId: string;
+  /** The WS handshake's `authToken` — see `RelayClientOptions.authToken`'s doc comment. Defaults to `accountId` (the relay's dev/hermetic-test stub mode). */
+  authToken?: string;
+  /** This new device's id, sent in the `initialize`/`new_device_bootstrap_request` handshake; generated if omitted. */
+  deviceId?: string;
+  /**
+   * Skips generating a fresh ECDH P-256 identity keypair and uses this raw
+   * base64 public key instead — an escape hatch for a test asserting on a
+   * fixed device identity; real callers should omit this and let
+   * {@link bootstrapAmkFromRecoveryCode} generate one (SPEC §8: "generates
+   * its own device ECDH P-256 keypair and registers into the device
+   * registry"), since the whole point of this function is standing up a
+   * brand-new device's identity, not reusing someone else's.
+   */
+  devicePublicKey?: string;
+  /** The Recovery Code the user was shown (and confirmed saving) on their first device. */
+  recoveryCode: string;
+  /** WebSocket constructor override; defaults to the global `WebSocket`. Tests inject a fake. */
+  webSocketImpl?: WebSocketConstructor;
+  /** How long to wait for the relay's `new_device_bootstrap_response` before giving up. Defaults to 10s. */
+  timeoutMs?: number;
+}
+
+/** What {@link bootstrapAmkFromRecoveryCode} recovers: the account's AMK, plus the fresh device identity it registered along the way. */
+export interface BootstrapAmkResult {
+  /** This account's Account Master Key, recovered by unwrapping the relay's escrowed blob with the Recovery Code. Pass straight into `RelayClientOptions.amk`. */
+  amk: Uint8Array;
+  /** The device id this bootstrap registered under (SPEC §8's device registry, `owner_account_id` set from the OAuth session) — pass into `RelayClientOptions.deviceId` so the follow-up `RelayClient` connection reuses the same registered identity rather than registering a second device. */
+  deviceId: string;
+  /**
+   * This new device's freshly generated ECDH P-256 identity keypair (SPEC
+   * §8: "generates its own device ECDH P-256 keypair"), non-extractable —
+   * `undefined` only when the caller explicitly opted out via
+   * `devicePublicKey` (see that option's doc comment), since in that case
+   * there is no keypair this function generated to hand back.
+   */
+  deviceKeyPair: EcdhKeyPair | undefined;
+  /** The raw base64 public key half of `deviceKeyPair` (or the caller-supplied override) — what was actually sent to the relay and registered. */
+  devicePublicKey: string;
+}
+
+const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 10_000;
+
+/**
+ * New-device bootstrap (SPEC §8 path 2 "New-device bootstrap"; issue #115):
+ * a brand-new device, holding only OAuth identity and the account's Recovery
+ * Code, recovers the account's AMK with **no previously-trusted device
+ * online**, and generates+registers its own ECDH P-256 device identity along
+ * the way. Opens its own short-lived connection — deliberately not a
+ * {@link RelayClient}, since that class requires an AMK up front to derive
+ * session keys, which is exactly what this function doesn't have yet — sends
+ * `initialize` (which is what actually registers the device, `owner_account_id`
+ * set from this connection's own OAuth-resolved account) then
+ * `new_device_bootstrap_request`, and unwraps whatever wrapped-AMK blob the
+ * relay hands back with `recoveryCode` (rejects, AEAD tag failure, if the
+ * code is wrong). Does not persist the AMK or construct a `RelayClient`
+ * itself: callers do both afterward (mirrors `amk-store.ts`'s
+ * `loadOrCreateAmk`/`AmkStorage.set`), so this function has no storage side
+ * effects of its own and stays trivially testable. The socket is always
+ * closed before this resolves or rejects.
+ */
+export async function bootstrapAmkFromRecoveryCode(
+  options: BootstrapAmkFromRecoveryCodeOptions,
+): Promise<BootstrapAmkResult> {
+  const deviceId = options.deviceId ?? generateId('device');
+  const authToken = options.authToken ?? options.accountId;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_BOOTSTRAP_TIMEOUT_MS;
+
+  // SPEC §8: a new device generates its own ECDH P-256 identity keypair as
+  // part of bootstrapping — only skipped when the caller explicitly hands
+  // in its own `devicePublicKey` (see that option's doc comment).
+  const deviceKeyPair = options.devicePublicKey ? undefined : await generateEcdhKeyPair();
+  const devicePublicKey =
+    options.devicePublicKey ??
+    bytesToBase64(await exportPublicKeyRaw((deviceKeyPair as EcdhKeyPair).publicKey));
+
+  const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
+  if (!ctor) {
+    throw new Error(
+      'bootstrapAmkFromRecoveryCode: no global WebSocket available; pass webSocketImpl explicitly',
+    );
+  }
+
+  const socket = new ctor(options.relayUrl);
+  try {
+    const wrappedAmkWire = await new Promise<string>((resolve, reject) => {
+      let awaitingInitializeResult = true;
+      const timer = setTimeout(() => {
+        reject(new Error('bootstrapAmkFromRecoveryCode: timed out waiting for the relay'));
+      }, timeoutMs);
+
+      socket.addEventListener('open', () => {
+        const initialize: Initialize = {
+          type: 'initialize',
+          protocolVersion: PROTOCOL_V1,
+          role: 'client',
+          authToken,
+          deviceId,
+          devicePublicKey,
+        };
+        socket.send(JSON.stringify(initialize));
+      });
+
+      socket.addEventListener('message', (event: { data: unknown }) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+
+        if (awaitingInitializeResult) {
+          awaitingInitializeResult = false;
+          const result = initializeResult.safeParse(parsed);
+          if (!result.success) {
+            clearTimeout(timer);
+            reject(new Error('bootstrapAmkFromRecoveryCode: relay rejected the handshake'));
+            return;
+          }
+          const request: NewDeviceBootstrapRequest = {
+            type: 'new_device_bootstrap_request',
+            protocolVersion: PROTOCOL_V1,
+            deviceId,
+            devicePublicKey,
+          };
+          socket.send(JSON.stringify(request));
+          return;
+        }
+
+        const response = newDeviceBootstrapResponse.safeParse(parsed);
+        if (response.success) {
+          clearTimeout(timer);
+          resolve(response.data.wrappedAmk);
+        }
+      });
+
+      socket.addEventListener('error', () => {
+        clearTimeout(timer);
+        reject(new Error(`bootstrapAmkFromRecoveryCode: cannot reach ${options.relayUrl}`));
+      });
+    });
+
+    const blob = unpackWrappedAmkFromWire(wrappedAmkWire);
+    const amk = await unwrapAmkWithRecoveryCode(blob, options.recoveryCode, options.accountId);
+    return { amk, deviceId, deviceKeyPair, devicePublicKey };
+  } finally {
+    if (socket.readyState === 0 /* CONNECTING */ || socket.readyState === WS_OPEN) {
+      socket.close();
+    }
+  }
 }
 
 /**
@@ -489,6 +665,31 @@ export class RelayClient {
   close(): void {
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  /**
+   * Uploads this account's AMK to the relay, wrapped under a key derived
+   * from `recoveryCode` (SPEC §8 path 2 "recovery-code escrow"; issue #114).
+   * The relay only ever stores the single opaque blob
+   * `@loombox/crypto`'s `packWrappedAmkForWire` produces — see that
+   * module's doc comment. Meant to run once, right after the Recovery Code
+   * is generated and shown with its "I saved this" confirmation (out of
+   * scope here, the PWA client epic's concern) on the account's first
+   * device. Requires an open connection: unlike `send()`'s best-effort
+   * fire-and-forget for live session traffic, this is a deliberate one-time
+   * setup action, so a caller that isn't connected gets a loud rejection
+   * instead of a silently dropped upload.
+   */
+  async escrowAmk(recoveryCode: string): Promise<void> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient.escrowAmk: not connected to the relay');
+    }
+    const wrapped = await wrapAmkWithRecoveryCode(this.amk, recoveryCode, this.accountId);
+    this.send({
+      type: 'amk_escrow',
+      protocolVersion: PROTOCOL_V1,
+      wrappedAmk: packWrappedAmkForWire(wrapped),
+    });
   }
 
   /**
