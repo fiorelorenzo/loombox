@@ -1,0 +1,13 @@
+This is not a valid directive at all
+Host
+Host good-host
+    HostName good.example.com
+    ThisIsNotARealDirective something
+    Port not-a-number
+    User
+    IdentityFile "~/.ssh/quoted key"
+
+# A directive with no preceding Host block at all besides the one above ends
+# up attached to "good-host" (the nearest preceding block) — no crash either
+# way, which is the point of this fixture.
+    HostName good.example.com

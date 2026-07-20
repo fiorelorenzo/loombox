@@ -1,0 +1,25 @@
+# Global defaults (apply to every concrete Host below unless overridden).
+User defaultuser
+IdentityFile ~/.ssh/id_ed25519
+
+Host prodbox
+    HostName 100.78.245.39
+    User prod
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+
+# No explicit User here — inherits the global default "defaultuser".
+Host staging
+    HostName staging.example.com
+    Port 2222
+
+# Multiple aliases on one Host line, sharing the same connection recipe.
+Host mac macbook
+    HostName 100.82.41.78
+    User lorenzofiore
+    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/macbook_key
+
+# A wildcard-only pattern is not a selectable concrete host.
+Host *.internal
+    User internal-user

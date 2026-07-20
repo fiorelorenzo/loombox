@@ -1,0 +1,6 @@
+# A minimal single-host config, the common case SPEC §7.23 step 1 describes.
+Host devbox
+  HostName 100.87.202.117
+  User dev
+  Port 22
+  IdentityFile ~/.ssh/id_ed25519
