@@ -46,6 +46,7 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
+import { SameFolderGuard } from './same-folder-guard';
 import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
@@ -411,6 +412,15 @@ export class NodeDaemon extends EventEmitter {
   /** SPEC §7.7/§7.17; issues #187/#189 — see `NodeDaemonOptions.mcpConfigStore`/`mcpSecretManager`'s doc comments. */
   private readonly mcpConfigStore: McpConfigStore;
   private readonly mcpSecretManager: NodeMcpSecretManager;
+  /**
+   * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
+   * sessions — a separate instance from `SessionManager`'s own guard
+   * (`local` sessions never route through `createSshSessionInternal`, so
+   * there's nothing to share). Keyed by `` `${targetId}:${projectPath}` ``,
+   * since the same path string can genuinely name different folders on
+   * different remote hosts.
+   */
+  private readonly sshSameFolderGuard = new SameFolderGuard();
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -689,79 +699,102 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<Session> {
     const sessionId = opts.sessionId ?? randomUUID();
 
-    const lease = await this.leaseManager.acquire(sessionId, this.nodeId);
-    if (!lease.granted) {
-      throw new Error(
-        `NodeDaemon: cannot create session ${sessionId} on ssh: target "${targetId}": ` +
-          `lease already held by node "${lease.heldBy}" (expires ${new Date(lease.expiresAt).toISOString()})`,
-      );
+    // Same-folder safety (issue #68, SPEC §7.2): an ssh: session defaults to
+    // running in-place (see the `worktree`-defaulting comment below) — only
+    // an explicit `worktree: true` opts out of the restriction. Reserved
+    // before the lease/deploy/spawn machinery below ever runs, so a refusal
+    // here is cheap and leaves nothing to unwind; released in the `catch`
+    // if anything after this point throws, and again once the agent process
+    // itself exits (see `wireAgentSession`'s `'exit'` handler).
+    const inPlace = !opts.worktree;
+    const sameFolderKey = `${targetId}:${opts.projectPath}`;
+    if (inPlace) {
+      this.sshSameFolderGuard.reserve(sameFolderKey, sessionId);
     }
 
-    const provider = this.supervisor.getProvider(opts.provider);
-    if (!provider) {
-      throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
-    }
+    try {
+      const lease = await this.leaseManager.acquire(sessionId, this.nodeId);
+      if (!lease.granted) {
+        throw new Error(
+          `NodeDaemon: cannot create session ${sessionId} on ssh: target "${targetId}": ` +
+            `lease already held by node "${lease.heldBy}" (expires ${new Date(lease.expiresAt).toISOString()})`,
+        );
+      }
 
-    // `ssh:` defaults to `worktree: false` (unchanged from before this
-    // option existed: run directly in `projectPath`, see target.ts's doc
-    // comment on the historical gap this closes per-session) — only an
-    // explicit `worktree: true` creates one, via `./ssh/remote-worktree.ts`
-    // over this target's own pooled transport (issue #75).
-    let worktreePath = opts.projectPath;
-    let branch = '';
-    if (opts.worktree) {
-      const transport = await this.getSshTransport(targetId);
-      const created = await createRemoteWorktree(transport, {
-        projectPath: opts.projectPath,
-        sessionId,
-        branch: sessionWorktreeBranch(sessionId),
+      const provider = this.supervisor.getProvider(opts.provider);
+      if (!provider) {
+        throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
+      }
+
+      // `ssh:` defaults to `worktree: false` (unchanged from before this
+      // option existed: run directly in `projectPath`, see target.ts's doc
+      // comment on the historical gap this closes per-session) — only an
+      // explicit `worktree: true` creates one, via `./ssh/remote-worktree.ts`
+      // over this target's own pooled transport (issue #75).
+      let worktreePath = opts.projectPath;
+      let branch = '';
+      if (opts.worktree) {
+        const transport = await this.getSshTransport(targetId);
+        const created = await createRemoteWorktree(transport, {
+          projectPath: opts.projectPath,
+          sessionId,
+          branch: sessionWorktreeBranch(sessionId),
+        });
+        worktreePath = created.worktreePath;
+        branch = created.branch;
+      }
+
+      const runner = await this.getRemoteRunner(targetId);
+      const spawnConfig = provider.spawnConfig({ cwd: worktreePath });
+      const command = [spawnConfig.command, ...(spawnConfig.args ?? [])].map(shQuote).join(' ');
+
+      const { mode, usedFallback, handle } = await runner.launchWithFallback(sessionId, command);
+      if (usedFallback) {
+        console.warn(
+          `NodeDaemon: ssh target "${targetId}" has no setsid+mkfifo available; session ${sessionId} launched under the ${mode} fallback (#81)`,
+        );
+      }
+
+      const remoteChild = new RemoteAgentChildProcess(runner, handle, {
+        pollIntervalMs: this.remoteChildPollIntervalMs,
       });
-      worktreePath = created.worktreePath;
-      branch = created.branch;
-    }
+      remoteChild.start();
 
-    const runner = await this.getRemoteRunner(targetId);
-    const spawnConfig = provider.spawnConfig({ cwd: worktreePath });
-    const command = [spawnConfig.command, ...(spawnConfig.args ?? [])].map(shQuote).join(' ');
+      const agentSession = await this.supervisor.startWithChild({
+        workspacePath: worktreePath,
+        providerId: opts.provider,
+        child: asAcpChildProcess(remoteChild),
+        mcpServers,
+      });
 
-    const { mode, usedFallback, handle } = await runner.launchWithFallback(sessionId, command);
-    if (usedFallback) {
-      console.warn(
-        `NodeDaemon: ssh target "${targetId}" has no setsid+mkfifo available; session ${sessionId} launched under the ${mode} fallback (#81)`,
+      const session: Session = {
+        id: sessionId,
+        projectPath: opts.projectPath,
+        worktreePath,
+        target: 'ssh',
+        provider: opts.provider,
+        branch,
+        createdAt: Date.now(),
+        state: 'running',
+        nodeId: this.nodeId,
+        targetId,
+      };
+
+      return await this.finishSessionCreation(
+        session,
+        agentSession,
+        { targetId, title: opts.title },
+        remoteChild,
       );
+    } catch (error) {
+      // Nothing after the reservation above ever ran to completion — undo
+      // it so a subsequent attempt on this same folder isn't stuck refused
+      // by a session that never actually came to exist.
+      if (inPlace) {
+        this.sshSameFolderGuard.release(sameFolderKey, sessionId);
+      }
+      throw error;
     }
-
-    const remoteChild = new RemoteAgentChildProcess(runner, handle, {
-      pollIntervalMs: this.remoteChildPollIntervalMs,
-    });
-    remoteChild.start();
-
-    const agentSession = await this.supervisor.startWithChild({
-      workspacePath: worktreePath,
-      providerId: opts.provider,
-      child: asAcpChildProcess(remoteChild),
-      mcpServers,
-    });
-
-    const session: Session = {
-      id: sessionId,
-      projectPath: opts.projectPath,
-      worktreePath,
-      target: 'ssh',
-      provider: opts.provider,
-      branch,
-      createdAt: Date.now(),
-      state: 'running',
-      nodeId: this.nodeId,
-      targetId,
-    };
-
-    return this.finishSessionCreation(
-      session,
-      agentSession,
-      { targetId, title: opts.title },
-      remoteChild,
-    );
   }
 
   /**
@@ -895,6 +928,19 @@ export class NodeDaemon extends EventEmitter {
       console.warn(
         `NodeDaemon: session ${bridge.session.id} agent exited (code ${code ?? 'unknown'})`,
       );
+      // Same-folder safety (issue #68): an in-place ssh: session (`branch
+      // === ''`, this bridge's own `remoteChild` marker) frees its folder
+      // reservation once the agent process genuinely stops, so a new
+      // in-place session on the same target+folder can start. A `local`
+      // in-place session's release is handled by `SessionManager`'s own
+      // guard instead (see `endSession`/`removeSession` there) — nothing to
+      // do here for it.
+      if (bridge.remoteChild && !bridge.session.branch) {
+        this.sshSameFolderGuard.release(
+          `${bridge.targetId}:${bridge.session.projectPath}`,
+          bridge.session.id,
+        );
+      }
     });
   }
 

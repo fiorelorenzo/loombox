@@ -162,6 +162,104 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('same-folder safety (issue #68, SPEC §7.2)', () => {
+    it('refuses a second in-place session on a folder that already has one running', async () => {
+      const first = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+      expect(first.state).toBe('running');
+
+      await expect(
+        manager.createSession({ projectPath: repoPath, provider: 'claude', workInPlace: true }),
+      ).rejects.toThrow(/already running/i);
+
+      // The refused attempt never touched anything: still exactly one
+      // session on this project.
+      expect(manager.listSessions()).toHaveLength(1);
+    });
+
+    it('two sessions on the same project using separate worktrees are unaffected', async () => {
+      const a = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      const b = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      expect(a.worktreePath).not.toBe(b.worktreePath);
+      expect(manager.listSessions()).toHaveLength(2);
+    });
+
+    it('a worktree session does not block, and is not blocked by, an in-place session on the same project', async () => {
+      const inPlace = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+      const worktreed = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      expect(inPlace.worktreePath).toBe(repoPath);
+      expect(worktreed.worktreePath).not.toBe(repoPath);
+      expect(manager.listSessions()).toHaveLength(2);
+    });
+
+    it('a new in-place session is allowed once the first one ends', async () => {
+      const first = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+      manager.endSession(first.id);
+
+      const second = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+      expect(second.id).not.toBe(first.id);
+      expect(second.worktreePath).toBe(repoPath);
+    });
+
+    it('a new in-place session is allowed once the first one is force-removed while still running', async () => {
+      const first = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+      await manager.removeSession(first.id);
+
+      await expect(
+        manager.createSession({ projectPath: repoPath, provider: 'claude', workInPlace: true }),
+      ).resolves.toMatchObject({ worktreePath: repoPath });
+    });
+
+    it('in-place sessions on different projects never contend', async () => {
+      const otherRepoPath = await mkdtemp(join(tmpdir(), 'loombox-repo-other-'));
+      tempDirs.push(otherRepoPath);
+      await git(otherRepoPath, ['init', '-b', 'main']);
+      await git(otherRepoPath, ['config', 'user.email', 'test@loombox.dev']);
+      await git(otherRepoPath, ['config', 'user.name', 'loombox test']);
+      await execFileAsync('git', ['-C', otherRepoPath, 'commit', '--allow-empty', '-m', 'init'], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+        },
+      });
+
+      await expect(
+        manager.createSession({ projectPath: repoPath, provider: 'claude', workInPlace: true }),
+      ).resolves.toBeDefined();
+      await expect(
+        manager.createSession({
+          projectPath: otherRepoPath,
+          provider: 'claude',
+          workInPlace: true,
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
   it('uses a caller-supplied id instead of generating one, when given', async () => {
     const session = await manager.createSession({
       projectPath: repoPath,
