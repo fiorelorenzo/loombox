@@ -125,7 +125,13 @@ export class NodeIdentityStore {
     }
     if (raw === undefined) return undefined;
 
-    const parsed = JSON.parse(raw) as PersistedIdentityFileV1;
+    const parsed = JSON.parse(raw) as PersistedIdentityFileV1 | null;
+    // Defensive: a corrupt/empty stored value (e.g. the literal "null", or a
+    // shape from an older format) is treated as "no identity yet" rather than
+    // crashing on a null-property read, so loadOrCreate regenerates cleanly.
+    if (parsed === null || typeof parsed !== 'object' || !parsed.privateKeyJwk) {
+      return undefined;
+    }
 
     const privateKey = await crypto.subtle.importKey(
       'jwk',

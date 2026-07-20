@@ -40,9 +40,28 @@ function fakeBackend(): KeyringBackend & { data: Map<string, string> } {
 }
 
 describe('createOsKeyringBackend', () => {
-  it('returns undefined on this headless devbox (no keyring session) — verifies issue #118 fallback path is actually exercised, not just theorized', async () => {
+  it('returns undefined when the OS keyring is disabled (LOOMBOX_KEYRING_DISABLE_OS=1, set for the whole node suite) — the 0600-file fallback path is what runs in tests', async () => {
+    // The test suite forces the file fallback (vitest.setup.ts) so it never
+    // depends on the ambient OS keyring, which is present in CI but not on the
+    // headless devbox. This asserts that escape hatch actually short-circuits.
+    expect(process.env.LOOMBOX_KEYRING_DISABLE_OS).toBe('1');
     const backend = await createOsKeyringBackend();
     expect(backend).toBeUndefined();
+  });
+
+  it('probes the real OS keyring when not disabled (best-effort; returns a backend or undefined depending on the host)', async () => {
+    const prev = process.env.LOOMBOX_KEYRING_DISABLE_OS;
+    delete process.env.LOOMBOX_KEYRING_DISABLE_OS;
+    try {
+      const backend = await createOsKeyringBackend();
+      // Host-dependent (CI runner has a secret-service, the devbox does not),
+      // so assert only the contract: either no backend, or a usable one.
+      if (backend !== undefined) {
+        expect(typeof backend.get).toBe('function');
+      }
+    } finally {
+      if (prev !== undefined) process.env.LOOMBOX_KEYRING_DISABLE_OS = prev;
+    }
   });
 });
 
