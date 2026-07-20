@@ -22,6 +22,7 @@ import {
   resolveAccountIdViaBetterAuth,
   type RelayAuth,
 } from './auth';
+import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
 import { createInMemoryRelayStore, envelopeByteSize, type RelayStore } from './store';
 
@@ -73,6 +74,8 @@ interface ClientConnection extends BaseConnection {
   kind: 'client';
   subscriptions: Set<string>;
   outbox: BoundedClientOutbox;
+  /** One entry per subscribed sessionId — the {@link FanOutBackend}'s own unsubscribe function for this specific connection, released on disconnect (#97). */
+  fanOutUnsubscribes: Map<string, () => void>;
 }
 
 type Connection = NodeConnection | ClientConnection;
@@ -141,6 +144,15 @@ export interface CreateRelayOptions {
    * {@link DEFAULT_MAX_ACCOUNT_STORAGE_BYTES}.
    */
   maxAccountStorageBytes?: number;
+  /**
+   * How `session_update`/session-scoped control messages reach subscribed
+   * clients (#97). Defaults to {@link createInProcessFanOutBackend} — a
+   * same-process, synchronous stand-in that reproduces this relay's
+   * pre-#97 direct-iteration fan-out exactly, for the single deployed
+   * instance case. `main.ts` supplies a Redis-backed backend instead when
+   * `REDIS_URL` is set, so multiple relay processes share one fan-out plane.
+   */
+  fanOutBackend?: FanOutBackend;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -167,6 +179,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
   const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
+  const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
+  app.addHook('onClose', async () => {
+    await fanOutBackend.close();
+  });
   const resolveAccountId: AccountResolver =
     opts.resolveAccountId ??
     (opts.auth
@@ -197,18 +213,39 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     sendJson(connection.socket, message);
   }
 
+  // #97: publishing goes through the fan-out backend rather than iterating
+  // `registry.clients` directly — with the default in-process backend this
+  // is exactly the old direct-iteration fan-out (see
+  // `subscribeClientToSession` below for the other half: registering each
+  // subscribed client's own delivery). With a Redis-backed backend, this is
+  // what lets a client connected to a different relay process receive an
+  // update whose owning node is connected here.
   function fanOutSessionUpdate(sessionId: string, item: OutboxItem): void {
-    for (const client of registry.clients) {
-      if (!client.subscriptions.has(sessionId)) continue;
-      client.outbox.enqueue(item);
-    }
+    fanOutBackend.publish(sessionId, { kind: 'update', item });
   }
 
   /** Direct fan-out (no bounded queue) for lower-volume session-scoped control traffic (permission requests, blob refs, ...). */
   function fanOutDirect(sessionId: string, message: WireMessageV1): void {
-    for (const client of registry.clients) {
-      if (client.subscriptions.has(sessionId)) sendDirect(client, message);
-    }
+    fanOutBackend.publish(sessionId, { kind: 'direct', message });
+  }
+
+  /**
+   * Registers this client connection's own delivery for `sessionId` with
+   * the fan-out backend (#97) — the other half of `fanOutSessionUpdate`/
+   * `fanOutDirect` above. Idempotent: a client resuming the same session
+   * twice does not double-subscribe. The registration is undone in
+   * `dropConnection` on disconnect, which is also what releases the
+   * backend's own channel subscription once the last local client for a
+   * session goes away (see `FanOutBackend.subscribe`'s doc comment).
+   */
+  function subscribeClientToSession(client: ClientConnection, sessionId: string): void {
+    if (client.subscriptions.has(sessionId)) return;
+    client.subscriptions.add(sessionId);
+    const unsubscribe = fanOutBackend.subscribe(sessionId, (payload) => {
+      if (payload.kind === 'update') client.outbox.enqueue(payload.item);
+      else sendDirect(client, payload.message);
+    });
+    client.fanOutUnsubscribes.set(sessionId, unsubscribe);
   }
 
   async function routeToOwningNode(sessionId: string, message: WireMessageV1): Promise<void> {
@@ -322,6 +359,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               sendJson(socket, item);
               done();
             }, maxClientQueueDepth),
+            fanOutUnsubscribes: new Map(),
           };
 
     if (connection.kind === 'node') registry.nodes.add(connection);
@@ -555,7 +593,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
-        connection.subscriptions.add(message.sessionId);
+        subscribeClientToSession(connection, message.sessionId);
         const announce: SessionAnnounceV1 = {
           type: 'session_announce',
           protocolVersion: PROTOCOL_V1,
@@ -678,6 +716,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       }
     } else {
       registry.clients.delete(connection);
+      // #97: release this client's fan-out backend subscriptions — for the
+      // Redis backend this is what actually issues UNSUBSCRIBE once no
+      // local client cares about a given session anymore.
+      for (const unsubscribe of connection.fanOutUnsubscribes.values()) unsubscribe();
+      connection.fanOutUnsubscribes.clear();
     }
   }
 
