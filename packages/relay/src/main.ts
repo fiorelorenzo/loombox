@@ -86,7 +86,12 @@ export async function start(): Promise<StartedRelayHandle> {
       process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
         ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET }
         : undefined;
-    auth = createRelayAuth({ database: pool, baseURL, secret, github, google });
+    // The PWA is served from a different origin than the relay, so its
+    // origin(s) must be trusted or Better Auth 403s the browser's auth calls.
+    const trustedOrigins = process.env.LOOMBOX_TRUSTED_ORIGINS?.split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+    auth = createRelayAuth({ database: pool, baseURL, secret, github, google, trustedOrigins });
     // Better Auth's tables are separate from the relay's own and are not
     // created lazily on Postgres, so apply its schema on boot too (otherwise
     // the first login 500s on a missing `verification` relation).

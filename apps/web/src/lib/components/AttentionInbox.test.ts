@@ -38,7 +38,9 @@ const awaitingInputItem: AttentionInboxItem = {
 
 describe('AttentionInbox: empty state', () => {
   it('shows an empty-state message and no items when there is nothing to surface', () => {
-    render(AttentionInbox, { props: { items: [], onResolve: vi.fn(), onOpenSession: vi.fn() } });
+    render(AttentionInbox, {
+      props: { items: [], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply: vi.fn() },
+    });
     expect(screen.getByText('Nothing needs your attention.')).toBeTruthy();
     expect(screen.queryAllByTestId('attention-inbox-item')).toHaveLength(0);
   });
@@ -51,6 +53,7 @@ describe('AttentionInbox: rendering (issue #167)', () => {
         items: [awaitingInputItem, permissionItem],
         onResolve: vi.fn(),
         onOpenSession: vi.fn(),
+        onReply: vi.fn(),
       },
     });
     const rows = screen.getAllByTestId('attention-inbox-item');
@@ -71,6 +74,7 @@ describe('AttentionInbox: rendering (issue #167)', () => {
         items: [awaitingInputItem, permissionItem],
         onResolve: vi.fn(),
         onOpenSession: vi.fn(),
+        onReply: vi.fn(),
       },
     });
     expect(screen.getAllByTestId('permission-card')).toHaveLength(1);
@@ -81,7 +85,7 @@ describe('AttentionInbox: inline actions (issue #168)', () => {
   it('calls onResolve with the session id, request id, and chosen option when a permission item is approved', async () => {
     const onResolve = vi.fn();
     render(AttentionInbox, {
-      props: { items: [permissionItem], onResolve, onOpenSession: vi.fn() },
+      props: { items: [permissionItem], onResolve, onOpenSession: vi.fn(), onReply: vi.fn() },
     });
     await fireEvent.click(screen.getByRole('button', { name: /Allow/ }));
     expect(onResolve).toHaveBeenCalledWith('sess-a', 'req-1', PERMISSION_OPTIONS[0]);
@@ -90,9 +94,42 @@ describe('AttentionInbox: inline actions (issue #168)', () => {
   it('calls onOpenSession with the item session id when its Open control is pressed', async () => {
     const onOpenSession = vi.fn();
     render(AttentionInbox, {
-      props: { items: [awaitingInputItem], onResolve: vi.fn(), onOpenSession },
+      props: { items: [awaitingInputItem], onResolve: vi.fn(), onOpenSession, onReply: vi.fn() },
     });
     await fireEvent.click(screen.getByTestId('attention-inbox-open'));
     expect(onOpenSession).toHaveBeenCalledWith('sess-b');
+  });
+
+  it('shows an inline reply composer only for an awaiting_input item, not a permission item', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.getAllByTestId('attention-inbox-reply')).toHaveLength(1);
+  });
+
+  it('calls onReply with the session id and typed text when the reply composer is submitted, then clears the input', async () => {
+    const onReply = vi.fn();
+    render(AttentionInbox, {
+      props: { items: [awaitingInputItem], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply },
+    });
+    const input = screen.getByTestId('attention-inbox-reply-input');
+    await fireEvent.input(input, { target: { value: 'go ahead and merge it' } });
+    await fireEvent.click(screen.getByTestId('attention-inbox-reply-send'));
+    expect(onReply).toHaveBeenCalledWith('sess-b', 'go ahead and merge it');
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
+  it('does not call onReply when the composer is submitted empty', async () => {
+    const onReply = vi.fn();
+    render(AttentionInbox, {
+      props: { items: [awaitingInputItem], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply },
+    });
+    await fireEvent.click(screen.getByTestId('attention-inbox-reply-send'));
+    expect(onReply).not.toHaveBeenCalled();
   });
 });

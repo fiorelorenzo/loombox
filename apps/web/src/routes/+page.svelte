@@ -563,6 +563,12 @@
     inboxOpen = false;
   }
 
+  /** The attention inbox's inline reply action (issue #168) — the exact same `RelayClient.sendPrompt` call the session's own composer form makes, so a reply sent from the inbox is not a second, divergent send path; it works for any listed session, not only the currently selected one. */
+  function replyFromInbox(sessionId: string, text: string): void {
+    if (!client) return;
+    client.sendPrompt(sessionId, text);
+  }
+
   function changeConfigOption(category: string, optionId: string): void {
     if (!client || !selectedSessionId) return;
     client.setConfigOption(selectedSessionId, category, optionId);
@@ -721,6 +727,7 @@
           items={attentionInboxItems}
           onResolve={resolveInboxPermission}
           onOpenSession={openSessionFromInbox}
+          onReply={replyFromInbox}
         />
       </section>
     {/if}

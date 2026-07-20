@@ -30,6 +30,16 @@ export interface RelayAuthConfig {
    * OAuth only.
    */
   enableEmailPasswordForTests?: boolean;
+  /**
+   * Extra origins Better Auth trusts for its CSRF/Origin check, beyond
+   * `baseURL`'s own origin. The PWA is served from a different origin than
+   * the relay (SPEC §10: app at e.g. `app.loombox.dev`, relay at
+   * `relay.loombox.dev`), so its origin must be trusted or every
+   * state-changing `/api/auth/*` call the browser makes is rejected with a
+   * 403. Set from `LOOMBOX_TRUSTED_ORIGINS` in production; the Playwright
+   * e2e harness sets it to the preview server's origin.
+   */
+  trustedOrigins?: string[];
 }
 
 /** Social login providers loombox's own Better Auth instance can be configured with (#120) — distinct from SPEC §7.26's separate, more-privileged connected-account OAuth. */
@@ -96,6 +106,7 @@ export function createRelayAuth(config: RelayAuthConfig) {
     database: config.database,
     baseURL: config.baseURL,
     secret: config.secret,
+    ...(config.trustedOrigins ? { trustedOrigins: config.trustedOrigins } : {}),
     socialProviders,
     emailAndPassword: config.enableEmailPasswordForTests ? { enabled: true } : undefined,
     plugins: [bearer()],
