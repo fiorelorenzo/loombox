@@ -11,7 +11,9 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts"
   },
   "dependencies": {
     "@loombox/crypto": "workspace:*",
@@ -22,6 +24,7 @@
   },
   "devDependencies": {
     "@loombox/relay": "workspace:*",
-    "@types/ssh2": "^1.15.1"
+    "@types/ssh2": "^1.15.1",
+    "tsx": "^4.19.1"
   }
 }

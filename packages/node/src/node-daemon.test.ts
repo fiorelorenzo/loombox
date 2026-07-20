@@ -782,4 +782,32 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
     expect(chunk!.kind).toBe('agent_message_chunk');
   });
+
+  it('exposes the default local target through getExecutionTarget() (issue #69)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-local-execution-target';
+
+    node = createNode({
+      relayUrl: relay.url,
+      nodeId: 'node-6',
+      deviceId: 'device-node-6',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const executionTarget = await node.getExecutionTarget('local');
+    expect(executionTarget.kind).toBe('local');
+
+    const result = await executionTarget.exec(process.execPath, [
+      '-e',
+      "process.stdout.write('hello from local target')",
+    ]);
+    expect(result.stdout).toBe('hello from local target');
+    expect(result.exitCode).toBe(0);
+
+    await expect(node.getExecutionTarget('does-not-exist')).rejects.toThrow(/no target/i);
+  });
 });

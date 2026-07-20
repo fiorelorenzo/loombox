@@ -416,4 +416,56 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
 
     await expect(node.promptSession(session.id, 'still there?')).rejects.toThrow(/lease/);
   }, 10_000);
+
+  it("exposes the ssh: target through getExecutionTarget(), sharing this target's pooled transport (issue #69)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-execution-target';
+
+    node = createNode({
+      relayUrl: relay.url,
+      nodeId: 'node-ssh-5',
+      deviceId: 'device-node-ssh-5',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const executionTarget = await node.getExecutionTarget('devbox');
+    expect(executionTarget.kind).toBe('ssh');
+
+    const result = await executionTarget.exec('echo', ['hello from ssh target']);
+    expect(result.stdout).toBe('hello from ssh target\n');
+    expect(result.exitCode).toBe(0);
+
+    // Every call for the same target id returns the same instance, backed by
+    // the one pooled transport session creation itself uses — never a second
+    // connection.
+    expect(await node.getExecutionTarget('devbox')).toBe(executionTarget);
+  });
+
+  it('rejects getExecutionTarget() for an unknown target id', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-execution-target-unknown';
+
+    node = createNode({
+      relayUrl: relay.url,
+      nodeId: 'node-ssh-6',
+      deviceId: 'device-node-ssh-6',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    await expect(node.getExecutionTarget('no-such-target')).rejects.toThrow(/no target/i);
+  });
 });

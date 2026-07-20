@@ -1,7 +1,7 @@
 export const PACKAGE_NAME = '@loombox/node';
 
-export type { CreateSessionOptions, Session } from './session-manager';
-export { SessionManager } from './session-manager';
+export type { CreateSessionOptions, Session, SessionLifecycleState } from './session-manager';
+export { InvalidSessionTransitionError, SessionManager } from './session-manager';
 
 export type {
   RelayConnectionOptions,
@@ -27,8 +27,21 @@ export { AttachmentResolver, RelayBlobSource, attachmentResourceId } from './att
 export type { NodeIdentity, NodeIdentityStoreOptions } from './identity';
 export { NodeIdentityStore } from './identity';
 
-export type { SshTargetConfig } from './target';
+// v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63). The
+// runnable CLI entrypoint itself (`main.ts`'s `start`/`run`) is not part of
+// this package's library surface, same as `@loombox/relay`'s own `main.ts` —
+// it's reached via this package's `start`/`dev` scripts (`tsx src/main.ts`),
+// not imported.
+export type { LoadNodeConfigOptions, NodeCliConfig } from './config';
+export { ConfigError, loadNodeConfig } from './config';
+
+export type { ExecOptions, ExecResult, ExecutionTarget, SshTargetConfig } from './target';
 export { DEFAULT_LOCAL_TARGET } from './target';
+
+// v1: the shared exec/filesystem seam local and ssh: targets both implement
+// (SPEC §5.2, §6; issue #69).
+export { LocalExecutionTarget } from './local-execution-target';
+export { SshExecutionTarget } from './ssh-execution-target';
 
 // ssh: target execution (issues #80/#81/#82/#84): deploy-and-launch over a
 // pooled SSH transport with a tmux/screen fallback, cross-node session

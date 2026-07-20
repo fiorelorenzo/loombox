@@ -26,6 +26,51 @@ export interface Session {
   provider: string;
   branch: string;
   createdAt: number;
+  /** This session's lifecycle state (issue #67); see {@link SessionLifecycleState}. */
+  state: SessionLifecycleState;
+  /** The node id that owns this session (SPEC §5.1/§6; issue #67's "node ... association per session"). `undefined` when the caller didn't supply one (e.g. a bare `SessionManager` used outside `NodeDaemon`). */
+  nodeId: string | undefined;
+  /** The specific `TargetDescriptor.id` (e.g. `'local'`, or an `ssh:` target's id) this session runs on — distinct from `target`, which only records the target *kind*. `undefined` when the caller didn't supply one. */
+  targetId: string | undefined;
+}
+
+/**
+ * A session's lifecycle state (SPEC §7.1 "Sessions can be paused, resumed,
+ * and reconnected"; issue #67). A freshly created session starts `'running'`
+ * (its agent is spawned immediately by `NodeDaemon`, never created inert);
+ * `'ended'` is terminal — no further transition is valid out of it. See
+ * {@link assertValidTransition} for the full transition table.
+ */
+export type SessionLifecycleState = 'running' | 'paused' | 'ended';
+
+/** A lifecycle transition {@link SessionManager} rejects (e.g. resuming a session that was never paused, or any transition out of `'ended'`). */
+export class InvalidSessionTransitionError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly from: SessionLifecycleState,
+    readonly action: 'pause' | 'resume' | 'end',
+  ) {
+    super(`SessionManager: cannot ${action} session ${sessionId}: it is currently "${from}"`);
+    this.name = 'InvalidSessionTransitionError';
+  }
+}
+
+const VALID_TRANSITIONS: Record<
+  SessionLifecycleState,
+  Partial<Record<'pause' | 'resume' | 'end', SessionLifecycleState>>
+> = {
+  running: { pause: 'paused', end: 'ended' },
+  paused: { resume: 'running', end: 'ended' },
+  ended: {},
+};
+
+/** Validates and applies one lifecycle transition on `session` in place, or throws {@link InvalidSessionTransitionError}. The sole source of truth for which transitions are legal — see the module doc comment for the state diagram this encodes. */
+function applyTransition(session: Session, action: 'pause' | 'resume' | 'end'): void {
+  const next = VALID_TRANSITIONS[session.state][action];
+  if (!next) {
+    throw new InvalidSessionTransitionError(session.id, session.state, action);
+  }
+  session.state = next;
 }
 
 export interface CreateSessionOptions {
@@ -43,6 +88,10 @@ export interface CreateSessionOptions {
    * behavior of generating a fresh id.
    */
   id?: string;
+  /** The owning node's id (issue #67); recorded on the session, not otherwise used by `SessionManager`. */
+  nodeId?: string;
+  /** The specific target id this session runs on; recorded on the session, not otherwise used by `SessionManager`. Defaults to `'local'`, since a bare `SessionManager` only ever creates `local`-kind sessions. */
+  targetId?: string;
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -94,6 +143,8 @@ export class SessionManager {
     projectPath,
     provider,
     id: givenId,
+    nodeId,
+    targetId,
   }: CreateSessionOptions): Promise<Session> {
     await assertIsGitRepo(projectPath);
 
@@ -111,6 +162,9 @@ export class SessionManager {
       provider,
       branch,
       createdAt: Date.now(),
+      state: 'running',
+      nodeId,
+      targetId: targetId ?? 'local',
     };
 
     this.sessions.set(id, session);
@@ -123,6 +177,35 @@ export class SessionManager {
 
   listSessions(): Session[] {
     return [...this.sessions.values()];
+  }
+
+  /** Transitions a `'running'` session to `'paused'`. Throws {@link InvalidSessionTransitionError} if it isn't currently `'running'` (including if it's already `'ended'`). */
+  pauseSession(id: string): Session {
+    const session = this.requireSession(id);
+    applyTransition(session, 'pause');
+    return session;
+  }
+
+  /** Transitions a `'paused'` session back to `'running'`. Throws {@link InvalidSessionTransitionError} if it isn't currently `'paused'` (e.g. it was never paused, or it already ended). */
+  resumeSession(id: string): Session {
+    const session = this.requireSession(id);
+    applyTransition(session, 'resume');
+    return session;
+  }
+
+  /** Transitions a `'running'` or `'paused'` session to the terminal `'ended'` state. Throws {@link InvalidSessionTransitionError} if it has already ended. Does not remove the session record or its worktree — see {@link removeSession} for that. */
+  endSession(id: string): Session {
+    const session = this.requireSession(id);
+    applyTransition(session, 'end');
+    return session;
+  }
+
+  private requireSession(id: string): Session {
+    const session = this.sessions.get(id);
+    if (!session) {
+      throw new Error(`no session with id ${id}`);
+    }
+    return session;
   }
 
   async removeSession(id: string): Promise<void> {
