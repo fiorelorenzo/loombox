@@ -14,7 +14,12 @@
    * approving from the session's own view are the same write to the same
    * queue store, not two independent "resolve" paths that could drift
    * (issue #169's single-source-of-truth requirement). Every item also has
-   * an Open action (`onOpenSession`) that jumps to its originating session.
+   * an Open action (`onOpenSession`) that jumps to its originating session,
+   * and an `'awaiting_input'` item additionally gets an inline reply
+   * composer: `onReply` is expected to be backed by the exact same
+   * `RelayClient.sendPrompt`/`prompt_inject` path a session's own composer
+   * form uses, so replying from the inbox is not a second, divergent "send"
+   * path.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { AttentionInboxItem } from '../relay-client';
@@ -24,9 +29,15 @@
     items: AttentionInboxItem[];
     onResolve: (sessionId: string, requestId: string, option: AcpPermissionOption) => void;
     onOpenSession: (sessionId: string) => void;
+    onReply: (sessionId: string, text: string) => void;
   }
 
-  const { items, onResolve, onOpenSession }: Props = $props();
+  const { items, onResolve, onOpenSession, onReply }: Props = $props();
+
+  // Keyed by sessionId — one reply composer per awaiting_input item, and
+  // there is at most one such item per session (`attentionInbox()`'s own
+  // per-session doc comment).
+  let replyDrafts = $state<Record<string, string>>({});
 
   function itemKey(item: AttentionInboxItem): string {
     return item.kind === 'permission' && item.permission
@@ -40,6 +51,13 @@
       return `Needs approval: ${toolCall?.title ?? toolCall?.id ?? 'a tool call'}`;
     }
     return 'Waiting for your reply';
+  }
+
+  function submitReply(sessionId: string): void {
+    const text = (replyDrafts[sessionId] ?? '').trim();
+    if (text === '') return;
+    onReply(sessionId, text);
+    replyDrafts[sessionId] = '';
   }
 </script>
 
@@ -69,6 +87,26 @@
               actionable={true}
               onResolve={(option) => onResolve(item.sessionId, request.requestId, option)}
             />
+          {:else if item.kind === 'awaiting_input'}
+            <form
+              class="reply"
+              data-testid="attention-inbox-reply"
+              onsubmit={(event) => {
+                event.preventDefault();
+                submitReply(item.sessionId);
+              }}
+            >
+              <input
+                type="text"
+                value={replyDrafts[item.sessionId] ?? ''}
+                oninput={(event) =>
+                  (replyDrafts[item.sessionId] = (event.currentTarget as HTMLInputElement).value)}
+                placeholder="Send a follow-up without leaving the inbox…"
+                aria-label={`Reply to ${item.sessionTitle}`}
+                data-testid="attention-inbox-reply-input"
+              />
+              <button type="submit" data-testid="attention-inbox-reply-send">Send</button>
+            </form>
           {/if}
         </li>
       {/each}
@@ -139,5 +177,31 @@
   .need {
     font-size: 0.75rem;
     opacity: 0.75;
+  }
+
+  .reply {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .reply input {
+    flex: 1;
+    min-width: 0;
+    border-radius: 0.35rem;
+    border: 1px solid rgba(127, 127, 127, 0.35);
+    background: transparent;
+    color: inherit;
+    padding: 0.3rem 0.5rem;
+    font: inherit;
+  }
+
+  .reply button {
+    border-radius: 0.35rem;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    padding: 0.3rem 0.7rem;
+    cursor: pointer;
+    font: inherit;
   }
 </style>
