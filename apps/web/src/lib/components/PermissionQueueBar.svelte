@@ -84,4 +84,14 @@
     cursor: pointer;
     font-size: 0.75rem;
   }
+
+  /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): a
+     coarse (touch) pointer gets a larger Stop hit target. */
+  @media (pointer: coarse) {
+    .stop {
+      min-height: 2.75rem;
+      padding: 0.5rem 0.9rem;
+      font-size: 0.9rem;
+    }
+  }
 </style>

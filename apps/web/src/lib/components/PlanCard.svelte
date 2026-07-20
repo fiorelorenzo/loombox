@@ -137,4 +137,15 @@
     justify-content: flex-end;
     padding: 0 0.5rem 0.4rem;
   }
+
+  /* Touch-optimized plan controls (SPEC.md §7.3, issue #133): the plan
+     header (its only tap target — the individual entries below are a
+     read-only, agent-driven checklist, not user-interactive in v1) grows to
+     a larger hit target on a coarse (touch) pointer. */
+  @media (pointer: coarse) {
+    .plan-header {
+      min-height: 2.75rem;
+      padding: 0.65rem 0.9rem;
+    }
+  }
 </style>

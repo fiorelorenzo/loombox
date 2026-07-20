@@ -62,6 +62,25 @@ describe('PermissionCard: option buttons', () => {
   });
 });
 
+describe('PermissionCard: haptic feedback (#133)', () => {
+  it('triggers a haptic cue on every confirm/deny resolve, since those are irreversible', async () => {
+    const onResolve = vi.fn();
+    const hapticFn = vi.fn();
+    render(PermissionCard, { props: { request, actionable: true, onResolve, hapticFn } });
+    await fireEvent.click(screen.getByRole('button', { name: /Deny/ }));
+    expect(hapticFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('never triggers haptic feedback when a button is disabled (not actionable)', async () => {
+    const onResolve = vi.fn();
+    const hapticFn = vi.fn();
+    render(PermissionCard, { props: { request, actionable: false, onResolve, hapticFn } });
+    await fireEvent.click(screen.getByRole('button', { name: /Deny/ }));
+    expect(hapticFn).not.toHaveBeenCalled();
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+});
+
 describe('PermissionCard: narrow-viewport footer (#134)', () => {
   it('shows every option on a wide viewport (narrow omitted) — no overflow control', () => {
     render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });

@@ -35,10 +35,43 @@ export function parsePushPayload(data: unknown): AttentionPushPayload | undefine
   return undefined;
 }
 
+/**
+ * One `Notification.actions[]` entry (#165). TS's lib.dom `NotificationOptions`
+ * — the type shared by the plain `Notification` constructor and
+ * `ServiceWorkerRegistration.showNotification()` — omits `actions` entirely
+ * (it only ever applies to the latter, SW-only call), so this fills that
+ * lib gap instead of casting it away at every call site. Mirrors the real
+ * `NotificationAction` DOM type (`action`/`title`/optional `icon`).
+ */
+export interface NotificationActionDescriptor {
+  action: string;
+  title: string;
+  icon?: string;
+}
+
+export type ServiceWorkerNotificationOptions = NotificationOptions & {
+  actions?: NotificationActionDescriptor[];
+};
+
 export interface NotificationContent {
   title: string;
-  options: NotificationOptions & { data: { sessionId: string } };
+  options: ServiceWorkerNotificationOptions & { data: { sessionId: string } };
 }
+
+/**
+ * The action buttons a `permission_required` push exposes (#165, SPEC §7.3
+ * "Mobile approval cards ... actionable buttons (OS-actionable push where
+ * allowed)"). Only ever rendered where the platform supports notification
+ * actions (iOS 16.4+, most desktop/Android browsers) — everywhere else the
+ * browser silently ignores `actions` and shows a plain notification, which
+ * still opens the app on tap via the ordinary `notificationclick` path
+ * (`service-worker.ts`), the documented graceful degradation.
+ */
+export const PERMISSION_PUSH_ACTIONS: NotificationActionDescriptor[] = [
+  { action: 'approve', title: 'Approve' },
+  { action: 'deny', title: 'Deny' },
+  { action: 'open', title: 'Open' },
+];
 
 /**
  * Non-sensitive, generic copy only — the relay never sent us the session's
@@ -53,13 +86,14 @@ export function notificationContentFor(payload: AttentionPushPayload): Notificat
       body: 'A session is waiting for you to approve a tool call.',
       tag: `loombox-session-${payload.sessionId}`,
       data: { sessionId: payload.sessionId },
+      actions: PERMISSION_PUSH_ACTIONS,
     },
   };
 }
 
 /** The minimal `ServiceWorkerRegistration` surface the push handler needs. */
 export interface NotificationShower {
-  showNotification(title: string, options?: NotificationOptions): Promise<void>;
+  showNotification(title: string, options?: ServiceWorkerNotificationOptions): Promise<void>;
 }
 
 /** Shows the notification for a validated push payload — the `push` event listener's whole job (#164). */
@@ -71,15 +105,28 @@ export async function showAttentionNotification(
   await registration.showNotification(title, options);
 }
 
-/** Builds the in-app URL a notification click should land on — `+page.svelte` reads `?session=` on load and selects it once the session list arrives (issue #164's "opens directly to the relevant session"). */
-export function sessionUrlFromNotificationData(data: unknown): string {
+/**
+ * Builds the in-app URL a notification click should land on — `+page.svelte`
+ * reads `?session=` on load and selects it once the session list arrives
+ * (issue #164's "opens directly to the relevant session"). `action` (#165)
+ * carries which notification button was tapped (`event.action` off a real
+ * `NotificationEvent`, or `undefined`/`''` for a plain click on the
+ * notification body itself) so `+page.svelte` can also auto-resolve an
+ * approve/deny tap once this session's live permission queue arrives
+ * (`push-action-routing.ts`'s `resolvePendingPushAction`) — omitted from the
+ * URL entirely for a plain click or the `'open'` action, both of which are
+ * just "go to this session", nothing to resolve.
+ */
+export function sessionUrlFromNotificationData(data: unknown, action?: string): string {
   const sessionId =
     typeof data === 'object' &&
     data !== null &&
     typeof (data as Record<string, unknown>).sessionId === 'string'
       ? ((data as Record<string, unknown>).sessionId as string)
       : undefined;
-  return sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/';
+  if (!sessionId) return '/';
+  const base = `/?session=${encodeURIComponent(sessionId)}`;
+  return action === 'approve' || action === 'deny' ? `${base}&action=${action}` : base;
 }
 
 /** The minimal `WindowClient` surface `focusOrOpenSession` needs. */
