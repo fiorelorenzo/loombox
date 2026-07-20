@@ -190,6 +190,19 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     const result = await store.sessions.getEntriesSince('sess_never_pushed', 0);
     expect(result).toEqual({ entries: [] });
   });
+
+  it('round-trips an escrowed wrapped-AMK blob per account, and re-escrowing overwrites (#114/#115)', async () => {
+    const store = await makeStore();
+    expect(await store.escrow.get('acct_1')).toBeUndefined();
+
+    await store.escrow.put('acct_1', 'opaque-wrapped-amk-v1');
+    expect(await store.escrow.get('acct_1')).toBe('opaque-wrapped-amk-v1');
+    // a different account never sees acct_1's blob
+    expect(await store.escrow.get('acct_2')).toBeUndefined();
+
+    await store.escrow.put('acct_1', 'opaque-wrapped-amk-v2');
+    expect(await store.escrow.get('acct_1')).toBe('opaque-wrapped-amk-v2');
+  });
 });
 
 describe('Postgres store matches the in-memory store contract shape', () => {

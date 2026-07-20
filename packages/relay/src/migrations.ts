@@ -120,4 +120,21 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE blobs DROP COLUMN IF EXISTS account_id;
     `,
   },
+  {
+    // #114/#115: the account's escrowed wrapped-AMK blob (SPEC §8 path 2,
+    // "recovery-code escrow"). One row per account — `amk_escrow` upserts,
+    // overwriting any previous blob for that account. `wrapped_amk` is
+    // exactly the opaque base64 string `@loombox/crypto`'s
+    // `packWrappedAmkForWire` produced; this table never stores the AMK or
+    // the Recovery Code, only ciphertext.
+    id: '0005_amk_escrow',
+    up: `
+      CREATE TABLE amk_escrow (
+        account_id TEXT PRIMARY KEY,
+        wrapped_amk TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `,
+    down: `DROP TABLE IF EXISTS amk_escrow;`,
+  },
 ];

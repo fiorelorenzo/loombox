@@ -164,12 +164,29 @@ export interface QuotaStore {
   getUsageBytes(accountId: string): Awaitable<number>;
 }
 
+/**
+ * The account's escrowed wrapped-AMK blob (SPEC §8 path 2 "recovery-code
+ * escrow", §16; issues #114/#115), one opaque blob per account. `wrappedAmk`
+ * is exactly what `@loombox/crypto`'s `packWrappedAmkForWire` produced —
+ * this store, like every other one here, never parses or decrypts it, it
+ * only ever stores/returns the base64 string as-is. `amk_escrow` overwrites
+ * any previous blob for the account (re-escrowing after generating a fresh
+ * AMK is expected to replace, not accumulate).
+ */
+export interface EscrowStore {
+  /** `accountId` is the OAuth-authenticated account the blob is scoped to (`connection.accountId`, never client-supplied). */
+  put(accountId: string, wrappedAmk: string): Awaitable<void>;
+  /** Returns `undefined` if this account has never escrowed an AMK — `new_device_bootstrap_request`'s "nothing to bootstrap from yet" case. */
+  get(accountId: string): Awaitable<string | undefined>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
   sessions: SessionStore;
   blobs: BlobStore;
   quota: QuotaStore;
+  escrow: EscrowStore;
 }
 
 export interface RelayStoreOptions {
@@ -222,6 +239,11 @@ interface SyncQuotaStore extends QuotaStore {
   getUsageBytes(accountId: string): number;
 }
 
+interface SyncEscrowStore extends EscrowStore {
+  put(accountId: string, wrappedAmk: string): void;
+  get(accountId: string): string | undefined;
+}
+
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
 export interface SyncRelayStore extends RelayStore {
   devices: SyncDeviceStore;
@@ -229,6 +251,7 @@ export interface SyncRelayStore extends RelayStore {
   sessions: SyncSessionStore;
   blobs: SyncBlobStore;
   quota: SyncQuotaStore;
+  escrow: SyncEscrowStore;
 }
 
 /**
@@ -467,6 +490,18 @@ function createBlobStore(usage: UsageTracker): SyncBlobStore {
   };
 }
 
+function createEscrowStore(): SyncEscrowStore {
+  const blobs = new Map<string, string>();
+  return {
+    put(accountId, wrappedAmk) {
+      blobs.set(accountId, wrappedAmk);
+    },
+    get(accountId) {
+      return blobs.get(accountId);
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -476,5 +511,6 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     sessions: createSessionStore(opts.ringBufferSize ?? DEFAULT_RING_BUFFER_SIZE, usage),
     blobs: createBlobStore(usage),
     quota: createQuotaStore(usage),
+    escrow: createEscrowStore(),
   };
 }

@@ -8,6 +8,7 @@ import {
   safeParseWireMessageV1,
   type BlobDownloadResponse,
   type InitializeResult,
+  type NewDeviceBootstrapResponse,
   type ResyncMarker,
   type SessionAnnounceV1,
   type SessionListV1,
@@ -369,12 +370,45 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return true;
       }
       case 'amk_escrow':
-      case 'new_device_bootstrap_request':
+        // SPEC §8 path 2 "recovery-code escrow": the relay only ever stores
+        // this as an opaque base64 blob (`@loombox/crypto`'s
+        // `packWrappedAmkForWire` output) — it never parses, decrypts, or
+        // otherwise learns anything from it. Scoped to `connection.accountId`
+        // (the OAuth-authenticated account from this connection's own
+        // `initialize` handshake), never a client-supplied account id.
+        await store.escrow.put(connection.accountId, message.wrappedAmk);
+        return true;
+      case 'new_device_bootstrap_request': {
+        // A new device, having proven identity via OAuth alone (this
+        // connection's own handshake), asks for its account's escrowed
+        // wrapped-AMK blob. Scoped to `connection.accountId` exactly like
+        // `amk_escrow` above — a device can only ever fetch its own
+        // account's blob, never another account's.
+        const wrappedAmk = await store.escrow.get(connection.accountId);
+        if (!wrappedAmk) {
+          app.log.warn(
+            { accountId: connection.accountId },
+            'relay: new_device_bootstrap_request but this account has never escrowed an AMK',
+          );
+          return true;
+        }
+        const response: NewDeviceBootstrapResponse = {
+          type: 'new_device_bootstrap_response',
+          protocolVersion: PROTOCOL_V1,
+          wrappedAmk,
+        };
+        sendDirect(connection, response);
+        return true;
+      }
       case 'new_device_bootstrap_response':
       case 'qr_pairing_request':
       case 'qr_pairing_response':
-        // Deliberately deferred to #113/#114/#115 (AMK escrow + QR pairing) — not in this PR's scope.
-        app.log.warn({ type: message.type }, 'relay: device-pairing message not yet implemented');
+        // `new_device_bootstrap_response` is only ever relay->client (this
+        // relay's own reply above); QR pairing (#113) is deliberately
+        // device-to-device over an out-of-band channel with "no relay
+        // unwrap" (SPEC §8 path 1) and never needs relay-side wiring at all.
+        // Neither is a message this relay legitimately receives.
+        app.log.warn({ type: message.type }, 'relay: unexpected inbound device-pairing message');
         return true;
       default:
         return false;

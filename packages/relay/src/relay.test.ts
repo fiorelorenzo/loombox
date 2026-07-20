@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   PROTOCOL_V1,
+  type AmkEscrow,
   type BlobDownloadResponse,
   type BlobUpload,
   type DeviceRegister,
@@ -9,6 +10,8 @@ import {
   type EncryptedEnvelope,
   type Initialize,
   type InitializeResult,
+  type NewDeviceBootstrapRequest,
+  type NewDeviceBootstrapResponse,
   type PromptInjectV1,
   type ResyncMarker,
   type SessionAnnounceV1,
@@ -857,5 +860,125 @@ describe('relay v1', () => {
       // Byte-for-byte round trip of opaque "ciphertext" the relay never attempted to interpret.
       expect(list.sessions[0]?.privateEnvelope).toEqual(notReallyEncrypted);
     });
+  });
+});
+
+describe('device escrow / new-device bootstrap (SPEC §8 path 2, §16; issues #114/#115)', () => {
+  it('amk_escrow stores an opaque blob, and new_device_bootstrap_request returns the exact same blob for that account', async () => {
+    const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+    closers.push(close);
+
+    const { socket: firstDevice } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'device-1',
+      authToken: 'acct_escrow',
+    });
+    const wrappedAmk = fakeBase64('not-really-a-wrapped-amk-just-opaque-bytes');
+    send(firstDevice, {
+      type: 'amk_escrow',
+      protocolVersion: PROTOCOL_V1,
+      wrappedAmk,
+    } satisfies AmkEscrow);
+    // amk_escrow has no reply; give the relay a beat to process it before the second device asks.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const { socket: newDevice } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'device-2',
+      authToken: 'acct_escrow',
+    });
+    send(newDevice, {
+      type: 'new_device_bootstrap_request',
+      protocolVersion: PROTOCOL_V1,
+      deviceId: 'device-2',
+      devicePublicKey: fakeBase64('device-2-pubkey'),
+    } satisfies NewDeviceBootstrapRequest);
+
+    const response = (await nextMessage(newDevice)) as unknown as NewDeviceBootstrapResponse;
+    expect(response.type).toBe('new_device_bootstrap_response');
+    // Byte-for-byte the exact same opaque blob that was escrowed — the relay never touches it.
+    expect(response.wrappedAmk).toBe(wrappedAmk);
+  });
+
+  it('never returns another account’s escrowed blob', async () => {
+    const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+    closers.push(close);
+
+    const { socket: accountAFirstDevice } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'a-device-1',
+      authToken: 'acct_a',
+    });
+    send(accountAFirstDevice, {
+      type: 'amk_escrow',
+      protocolVersion: PROTOCOL_V1,
+      wrappedAmk: fakeBase64('acct-a-wrapped-amk'),
+    } satisfies AmkEscrow);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A different account bootstraps a new device — it must never see acct_a's blob.
+    const { socket: accountBNewDevice } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'b-device-1',
+      authToken: 'acct_b',
+    });
+    send(accountBNewDevice, {
+      type: 'new_device_bootstrap_request',
+      protocolVersion: PROTOCOL_V1,
+      deviceId: 'b-device-1',
+      devicePublicKey: fakeBase64('b-device-1-pubkey'),
+    } satisfies NewDeviceBootstrapRequest);
+
+    // acct_b has never escrowed anything itself, so the relay has nothing to
+    // hand back — assert no `new_device_bootstrap_response` ever arrives
+    // (in particular, never acct_a's blob).
+    let sawResponse = false;
+    await Promise.race([
+      nextMessage(accountBNewDevice, 300)
+        .then(() => {
+          sawResponse = true;
+        })
+        .catch(() => undefined),
+    ]);
+    expect(sawResponse).toBe(false);
+  });
+
+  it('a second escrow for the same account overwrites the first (re-escrow after a fresh AMK)', async () => {
+    const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+    closers.push(close);
+
+    const { socket: device } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'device-1',
+      authToken: 'acct_overwrite',
+    });
+    send(device, {
+      type: 'amk_escrow',
+      protocolVersion: PROTOCOL_V1,
+      wrappedAmk: fakeBase64('old-wrapped-amk'),
+    } satisfies AmkEscrow);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const freshBlob = fakeBase64('new-wrapped-amk');
+    send(device, {
+      type: 'amk_escrow',
+      protocolVersion: PROTOCOL_V1,
+      wrappedAmk: freshBlob,
+    } satisfies AmkEscrow);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const { socket: newDevice } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'device-2',
+      authToken: 'acct_overwrite',
+    });
+    send(newDevice, {
+      type: 'new_device_bootstrap_request',
+      protocolVersion: PROTOCOL_V1,
+      deviceId: 'device-2',
+      devicePublicKey: fakeBase64('device-2-pubkey'),
+    } satisfies NewDeviceBootstrapRequest);
+
+    const response = (await nextMessage(newDevice)) as unknown as NewDeviceBootstrapResponse;
+    expect(response.wrappedAmk).toBe(freshBlob);
   });
 });
