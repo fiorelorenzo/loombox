@@ -55,6 +55,11 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     amk: config.amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
+    // Same convention as `identityStore` above: MCP config/secret storage
+    // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
+    // silently defaulting to `~/.loombox/node` regardless of what the
+    // identity keypair itself was configured to use.
+    stateDir: config.stateDir,
     webSocketImpl: options.webSocketImpl,
   });
 

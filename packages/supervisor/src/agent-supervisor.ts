@@ -1,4 +1,4 @@
-import type { AcpChildProcess, AcpProvider } from '@loombox/providers-core';
+import type { AcpChildProcess, AcpMcpServerConfig, AcpProvider } from '@loombox/providers-core';
 import { claudeProvider } from '@loombox/providers-claude';
 
 import type { AttachmentChannel } from './attachment-channel';
@@ -10,6 +10,8 @@ export interface AgentSupervisorStartOptions {
   workspacePath: string;
   /** Provider id registered on this supervisor (default: 'claude'). */
   providerId?: string;
+  /** This session's effective, already-secret-resolved MCP server set (SPEC.md §7.7; issues #187/#189) — see `AgentSessionSpawnOptions.mcpServers`'s doc comment for exactly what "resolved" means and whose job it is. */
+  mcpServers?: AcpMcpServerConfig[];
 }
 
 export interface AgentSupervisorOptions {
@@ -80,6 +82,7 @@ export class AgentSupervisor {
   async start({
     workspacePath,
     providerId = 'claude',
+    mcpServers,
   }: AgentSupervisorStartOptions): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
@@ -89,6 +92,7 @@ export class AgentSupervisor {
     const spawnConfig = provider.spawnConfig({ cwd: workspacePath });
     const session = await AgentSession.spawn(provider, spawnConfig, workspacePath, {
       store: this.store,
+      mcpServers,
     });
     this.sessions.set(session.id, session);
     return session;
@@ -108,17 +112,23 @@ export class AgentSupervisor {
     workspacePath,
     providerId = 'claude',
     child,
+    mcpServers,
   }: {
     workspacePath: string;
     providerId?: string;
     child: AcpChildProcess;
+    /** See `AgentSupervisorStartOptions.mcpServers`'s doc comment. */
+    mcpServers?: AcpMcpServerConfig[];
   }): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
       throw new Error(`AgentSupervisor: no provider registered for id "${providerId}"`);
     }
 
-    const session = await AgentSession.spawn(provider, child, workspacePath, { store: this.store });
+    const session = await AgentSession.spawn(provider, child, workspacePath, {
+      store: this.store,
+      mcpServers,
+    });
     this.sessions.set(session.id, session);
     return session;
   }

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { basename } from 'node:path';
 
 import type {
+  AcpMcpServerConfig,
   AcpSessionWireEvent,
   AcpTranscriptUpdate,
   AcpTurnEnd,
@@ -21,6 +22,8 @@ import {
 
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
 import { LocalExecutionTarget } from './local-execution-target';
+import { McpConfigStore } from './mcp-config-store';
+import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { SessionManager, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
@@ -116,6 +119,30 @@ export interface NodeDaemonOptions {
   /** WebSocket constructor override for tests; defaults to the global WebSocket. */
   webSocketImpl?: WebSocketConstructor;
   reconnect?: { initialBackoffMs?: number; maxBackoffMs?: number };
+  /**
+   * Where this node's on-disk state lives — MCP server config
+   * (`mcpConfigStore`), secret grants/values (`mcpSecretManager`), and (via
+   * `main.ts`'s separate `NodeIdentityStore`) the identity keypair all
+   * default to the same convention (`./ssh/verify-and-persist.ts`'s
+   * `defaultNodeStateDir()`, `~/.loombox/node`) unless overridden here or
+   * per-store below. Mirrors `NodeCliConfig.stateDir`.
+   */
+  stateDir?: string;
+  /**
+   * This node's MCP server configuration store (SPEC §7.7; issue #187):
+   * global + per-project records, resolved to each session's effective set
+   * at session start. Injectable for tests; defaults to a fresh
+   * `McpConfigStore({ stateDir })`.
+   */
+  mcpConfigStore?: McpConfigStore;
+  /**
+   * This node's per-server MCP secret grant ACL + local secret-value storage
+   * (SPEC §7.7, §7.17; issue #189), used at session start to resolve
+   * `mcpConfigStore`'s effective server set into the plain
+   * `AcpMcpServerConfig` list handed to the ACP session. Injectable for
+   * tests; defaults to a fresh `NodeMcpSecretManager({ stateDir })`.
+   */
+  mcpSecretManager?: NodeMcpSecretManager;
 }
 
 export interface CreateNodeSessionOptions {
@@ -268,6 +295,9 @@ export class NodeDaemon extends EventEmitter {
    */
   private readonly localExecutionTarget = new LocalExecutionTarget();
   private readonly sshExecutionTargets = new Map<string, SshExecutionTarget>();
+  /** SPEC §7.7/§7.17; issues #187/#189 — see `NodeDaemonOptions.mcpConfigStore`/`mcpSecretManager`'s doc comments. */
+  private readonly mcpConfigStore: McpConfigStore;
+  private readonly mcpSecretManager: NodeMcpSecretManager;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -321,6 +351,10 @@ export class NodeDaemon extends EventEmitter {
     this.leaseManager = options.leaseManager ?? new SessionLeaseManager();
     this.remoteChildPollIntervalMs = options.remoteChildPollIntervalMs;
     this.sshTransportPool = new SshTransportPool({ reconnect: options.sshReconnect });
+    this.mcpConfigStore =
+      options.mcpConfigStore ?? new McpConfigStore({ stateDir: options.stateDir });
+    this.mcpSecretManager =
+      options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
 
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
@@ -459,8 +493,16 @@ export class NodeDaemon extends EventEmitter {
     if (!target) {
       throw new Error(`NodeDaemon: no target with id "${opts.targetId}"`);
     }
+
+    // Resolved before any worktree/lease/child is touched (issues #187/#189's
+    // "fails clearly on an ungranted/missing secret... before any session
+    // opens"): a session that would fail on a missing MCP secret grant fails
+    // right here, not after this node has already created a worktree or
+    // acquired an ssh: lease for it.
+    const mcpServers = await this.resolveMcpServers(opts.projectPath);
+
     if (target.kind === 'ssh') {
-      return this.createSshSessionInternal(target.id, opts);
+      return this.createSshSessionInternal(target.id, opts, mcpServers);
     }
 
     const session = await this.sessionManager.createSession({
@@ -473,9 +515,29 @@ export class NodeDaemon extends EventEmitter {
     const agentSession = await this.supervisor.start({
       workspacePath: session.worktreePath,
       providerId: opts.provider,
+      mcpServers,
     });
 
     return this.finishSessionCreation(session, agentSession, opts);
+  }
+
+  /**
+   * `projectPath`'s effective MCP server set (SPEC §7.7; issue #187), with
+   * every declared secret substituted from this node's local grant/secret
+   * storage (SPEC §7.17; issue #189) — the exact list a session's
+   * `AcpClient.newSession` call receives as `mcpServers`. Throws
+   * `McpServerSecretMissingError` (from `@loombox/providers-core`) the
+   * moment a required secret is ungranted or has no stored value, naming the
+   * server and variable — before this method returns anything, so a caller
+   * never gets a partially-resolved list. Returns `[]` (skipping secret
+   * resolution entirely) when the project has no effective servers at all,
+   * the common case, rather than doing pointless keyring I/O for an empty
+   * `requiredSecretsForList`.
+   */
+  private async resolveMcpServers(projectPath: string): Promise<AcpMcpServerConfig[]> {
+    const effective = this.mcpConfigStore.effectiveServers(projectPath);
+    if (effective.length === 0) return [];
+    return this.mcpSecretManager.resolveForSession(projectPath, effective);
   }
 
   /**
@@ -492,6 +554,7 @@ export class NodeDaemon extends EventEmitter {
   private async createSshSessionInternal(
     targetId: string,
     opts: { sessionId?: string; projectPath: string; provider: string; title: string },
+    mcpServers: AcpMcpServerConfig[],
   ): Promise<Session> {
     const sessionId = opts.sessionId ?? randomUUID();
 
@@ -528,6 +591,7 @@ export class NodeDaemon extends EventEmitter {
       workspacePath: opts.projectPath,
       providerId: opts.provider,
       child: asAcpChildProcess(remoteChild),
+      mcpServers,
     });
 
     // No per-session remote git worktree in this wave (see target.ts's doc

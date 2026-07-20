@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { AcpClient } from '@loombox/providers-core';
 import type {
   AcpChildProcess,
+  AcpMcpServerConfig,
   AcpProvider,
   AcpSpawnConfig,
   AcpTranscriptUpdate,
@@ -24,6 +25,18 @@ import type {
 /** Constructor options threading a `TranscriptStore` through `AgentSession.spawn()` (issue #77); optional so a caller that doesn't care about persistence still works exactly like v0. */
 export interface AgentSessionSpawnOptions {
   store?: TranscriptStore;
+  /**
+   * This session's effective, already-secret-resolved MCP server set (SPEC.md
+   * §7.7; issues #187/#189), passed through verbatim to `AcpClient.newSession`'s
+   * own `mcpServers` option. The caller (`@loombox/node`'s `NodeDaemon`) is
+   * responsible for having already run `resolveEffectiveMcpServers` +
+   * `resolveMcpServerConfigs` over its MCP config + secret-grant stores
+   * before reaching here — this class and `AcpClient` both just pass the
+   * resolved list along; neither knows anything about config storage or
+   * grants. Defaults to `undefined`, matching `AcpClient.newSession`'s own
+   * "no servers configured" default.
+   */
+  mcpServers?: AcpMcpServerConfig[];
 }
 
 /**
@@ -141,7 +154,7 @@ export class AgentSession extends EventEmitter {
     });
 
     await client.initialize();
-    const sessionId = await client.newSession(workspacePath);
+    const sessionId = await client.newSession(workspacePath, { mcpServers: options.mcpServers });
     session.sessionId = sessionId;
 
     options.store?.createSession({ sessionId, providerId: provider.id, workspacePath });
