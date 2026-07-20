@@ -9,7 +9,13 @@ import type {
   AcpTurnEnd,
   ConfigOptionChangeEvent,
 } from '@loombox/providers-core';
-import { AgentSupervisor, type AgentSession, type AttentionState } from '@loombox/supervisor';
+import {
+  AgentSupervisor,
+  TerminalSupervisor,
+  type AgentSession,
+  type AttentionState,
+  type TerminalSession,
+} from '@loombox/supervisor';
 import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
@@ -21,6 +27,16 @@ import {
   type SessionCreate,
   type SessionMetaPublic,
   type TargetDescriptor,
+  type TerminalClose,
+  type TerminalClosedPayloadV1,
+  type TerminalClosedReasonV1,
+  type TerminalDataPayloadV1,
+  type TerminalInput,
+  type TerminalOpen,
+  type TerminalOpenPayloadV1,
+  type TerminalOpenResultPayloadV1,
+  type TerminalResize,
+  type TerminalResizePayloadV1,
   type WireMessageV1,
   type WrappedAmkEnvelope,
 } from '@loombox/protocol';
@@ -38,6 +54,8 @@ import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
 import { SessionLeaseManager } from './ssh/session-lease';
+import { supportsShellChannel } from './ssh/shell-transport';
+import { shellChannelToPty } from './ssh/ssh-pty-adapter';
 import { Ssh2Transport } from './ssh/ssh2-transport';
 import { SshTransportPool } from './ssh/ssh-transport-pool';
 import type { ReconnectingTransportOptions } from './ssh/reconnecting-transport';
@@ -126,6 +144,14 @@ export interface NodeDaemonOptions {
    * none) the caller already configured on it.
    */
   supervisor?: AgentSupervisor;
+  /**
+   * Owns every interactive PTY terminal this node opens (SPEC §7.5; issues
+   * #172/#173/#174) — the sibling of `supervisor` above, for terminals
+   * instead of ACP agent processes. Injected for tests (e.g. a fake
+   * `PtySpawnFn` that never touches a real PTY); defaults to a fresh
+   * `TerminalSupervisor` (real `node-pty` for `local` targets).
+   */
+  terminalSupervisor?: TerminalSupervisor;
   /**
    * Fetches attachment blob ciphertext by ref (SPEC §7.25; issue #156).
    * Defaults to a `RelayBlobSource` over this node's own relay connection —
@@ -349,6 +375,11 @@ export class NodeDaemon extends EventEmitter {
   private readonly relay: RelayConnection;
   private readonly attachmentResolver: AttachmentResolver;
   private readonly supervisor: AgentSupervisor;
+  private readonly terminalSupervisor: TerminalSupervisor;
+  /** `terminalId`s this node itself asked to close (`handleTerminalClose`), consulted the moment the underlying PTY's `onExit` fires so `sendTerminalClosed`'s `reason` can say `'closed_by_client'` instead of `'exited'` — see {@link wireTerminalSession}'s doc comment. */
+  private readonly clientInitiatedTerminalCloses = new Set<string>();
+  /** Chains every `terminal_output` send per terminal (mirrors `SessionBridge.sendQueue`) so concurrent `crypto.subtle.encrypt` calls can never resolve — and so get sent to the relay — out of the order their chunks actually arrived in. */
+  private readonly terminalSendQueues = new Map<string, Promise<void>>();
   private readonly bridges = new Map<string, SessionBridge>();
   private _connected = false;
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
@@ -407,6 +438,7 @@ export class NodeDaemon extends EventEmitter {
       options.blobSource ?? new RelayBlobSource(this.relay),
     );
     this.supervisor = options.supervisor ?? new AgentSupervisor();
+    this.terminalSupervisor = options.terminalSupervisor ?? new TerminalSupervisor();
     // Always wired in, whether `this.supervisor` was just built above or
     // injected by a caller (e.g. to register a fixture provider): this node
     // is the only thing holding the account's AMK and the relay connection
@@ -496,6 +528,7 @@ export class NodeDaemon extends EventEmitter {
       this.supervisor.stop(sessionId);
     }
     this.bridges.clear();
+    this.terminalSupervisor.closeAll();
     this.remoteRunners.clear();
     this.sshExecutionTargets.clear();
     this.sshTransportPool.closeAll().catch(() => {});
@@ -1050,6 +1083,18 @@ export class NodeDaemon extends EventEmitter {
       case 'fs_list_request':
         this.handleFsListRequest(message);
         return;
+      case 'terminal_open':
+        this.handleTerminalOpen(message);
+        return;
+      case 'terminal_input':
+        this.handleTerminalInput(message);
+        return;
+      case 'terminal_resize':
+        this.handleTerminalResize(message);
+        return;
+      case 'terminal_close':
+        this.handleTerminalClose(message);
+        return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
         return;
@@ -1231,6 +1276,257 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       envelope,
     });
+  }
+
+  /**
+   * A client asked (via the relay) this node to open a new interactive PTY
+   * terminal on one of its sessions' targets (SPEC §7.5; issues #172/#173).
+   * Ignored if `sessionId` isn't one of this node's own bridges (mirrors
+   * `handleFsListRequest`'s same guard). Always replies with `terminal_opened`
+   * — `outcome: 'ok'` once the PTY is spawned and streaming, or
+   * `outcome: 'error'` for a decrypt failure, an unknown target, or a spawn
+   * failure — so the client never hangs waiting for a reply that never
+   * comes, per `@loombox/protocol`'s `terminalOpenResultPayloadV1` doc
+   * comment.
+   */
+  private handleTerminalOpen(message: TerminalOpen): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTerminalOpenPayload(message)
+      .then((payload) => this.openTerminalForBridge(bridge, message.terminalId, payload))
+      .then(() =>
+        this.sendTerminalOpened(bridge.session.id, message.terminalId, message.requestId, {
+          outcome: 'ok',
+        }),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle terminal_open for session ${message.sessionId} terminal ${message.terminalId}: ${detail}`,
+        );
+        this.sendTerminalOpened(bridge.session.id, message.terminalId, message.requestId, {
+          outcome: 'error',
+          message: detail,
+        }).catch(() => {
+          /* best-effort error reply; nothing further to do if even this fails */
+        });
+      });
+  }
+
+  private async decryptTerminalOpenPayload(message: TerminalOpen): Promise<TerminalOpenPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TerminalOpenPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Spawns `terminalId`'s PTY on `bridge`'s target and wires its output/exit
+   * back to the relay (issue #172's "the same terminal works identically
+   * whether the target is `local` or `ssh:`"): a `local` target gets a real
+   * `node-pty` process (`TerminalSupervisor.open`) running this node's own
+   * shell; an `ssh:` target gets a `Client.shell()` channel on that target's
+   * already-pooled transport (`./ssh/ssh2-transport.ts`), adapted into the
+   * same `PtyLike` contract (`./ssh/ssh-pty-adapter.ts`) and adopted via
+   * `TerminalSupervisor.openWithPty` — from here on both look identical to
+   * every caller. Both start in `bridge.session.worktreePath` — the session's
+   * project root/worktree — so a second terminal opened for the same session
+   * shares that same directory automatically (issue #173).
+   */
+  private async openTerminalForBridge(
+    bridge: SessionBridge,
+    terminalId: string,
+    payload: TerminalOpenPayloadV1,
+  ): Promise<void> {
+    const target = this.targets.find((candidate) => candidate.id === bridge.targetId);
+    if (!target) {
+      throw new Error(`NodeDaemon: no target with id "${bridge.targetId}"`);
+    }
+
+    let session: TerminalSession;
+    if (target.kind === 'local') {
+      session = this.terminalSupervisor.open({
+        terminalId,
+        file: process.env.SHELL ?? '/bin/bash',
+        cwd: bridge.session.worktreePath,
+        cols: payload.cols,
+        rows: payload.rows,
+      });
+    } else {
+      const transport = await this.getSshTransport(bridge.targetId);
+      if (!supportsShellChannel(transport)) {
+        throw new Error(
+          `NodeDaemon: ssh target "${bridge.targetId}" transport does not support shell channels`,
+        );
+      }
+      const channel = await transport.openShellChannel({ cols: payload.cols, rows: payload.rows });
+      // `ssh2`'s `Client.shell()` has no `cwd` option (unlike `node-pty`'s
+      // local spawn): the remote PTY always starts in the login shell's own
+      // default directory. Typing a `cd` as the very first input lands this
+      // terminal in the session's worktree exactly like a local one, at the
+      // cost of that one line briefly appearing before `clear` wipes it —
+      // an accepted, documented tradeoff (SPEC §16 grounding notes this is
+      // the same channel primitive an interactive `ssh host` uses, which has
+      // this same limitation).
+      channel.write(`cd ${shQuote(bridge.session.worktreePath)} && clear\n`);
+      session = this.terminalSupervisor.openWithPty(terminalId, shellChannelToPty(channel));
+    }
+
+    this.wireTerminalSession(bridge.session.id, session);
+  }
+
+  /**
+   * Streams a just-opened terminal's output/exit to the relay for the
+   * lifetime of the PTY. Registered exactly once per terminal, right after
+   * {@link openTerminalForBridge} spawns it.
+   */
+  private wireTerminalSession(sessionId: string, session: TerminalSession): void {
+    session.onData((chunk) => {
+      this.queueTerminalOutput(sessionId, session.terminalId, chunk);
+    });
+    session.onExit((event) => {
+      const closedByClient = this.clientInitiatedTerminalCloses.delete(session.terminalId);
+      const reason: TerminalClosedReasonV1 = closedByClient ? 'closed_by_client' : 'exited';
+      this.sendTerminalClosed(sessionId, session.terminalId, {
+        reason,
+        exitCode: event.exitCode,
+        signal: event.signal !== undefined ? String(event.signal) : undefined,
+      }).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send terminal_closed for session ${sessionId} terminal ${session.terminalId}: ${detail}`,
+        );
+      });
+    });
+  }
+
+  /** Chains this terminal's `terminal_output` sends (mirrors `forwardSessionEvent`'s `bridge.sendQueue`) so concurrent encrypts can never resolve, and so get sent to the relay, out of the order their chunks arrived in. */
+  private queueTerminalOutput(sessionId: string, terminalId: string, chunk: Uint8Array): void {
+    const queueKey = `${sessionId}:${terminalId}`;
+    const previous = this.terminalSendQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.sendTerminalOutput(sessionId, terminalId, chunk))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to encrypt/send terminal_output for session ${sessionId} terminal ${terminalId}: ${detail}`,
+        );
+      });
+    this.terminalSendQueues.set(queueKey, next);
+  }
+
+  private async sendTerminalOutput(
+    sessionId: string,
+    terminalId: string,
+    chunk: Uint8Array,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: TerminalDataPayloadV1 = { data: Buffer.from(chunk).toString('base64') };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'terminal_output',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      terminalId,
+      envelope,
+    });
+  }
+
+  private async sendTerminalOpened(
+    sessionId: string,
+    terminalId: string,
+    requestId: string,
+    payload: TerminalOpenResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'terminal_opened',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      terminalId,
+      requestId,
+      envelope,
+    });
+  }
+
+  private async sendTerminalClosed(
+    sessionId: string,
+    terminalId: string,
+    payload: TerminalClosedPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'terminal_closed',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      terminalId,
+      envelope,
+    });
+  }
+
+  /** A client streamed one chunk of typed input to an open terminal's stdin (SPEC §7.5). Ignored if `sessionId` isn't one of this node's own bridges. */
+  private handleTerminalInput(message: TerminalInput): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTerminalDataPayload(message)
+      .then((payload) => {
+        this.terminalSupervisor.write(message.terminalId, Buffer.from(payload.data, 'base64'));
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle terminal_input for session ${message.sessionId} terminal ${message.terminalId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTerminalDataPayload(message: TerminalInput): Promise<TerminalDataPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TerminalDataPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /** A client asked to renegotiate an open terminal's PTY window size (SPEC §7.5). Ignored if `sessionId` isn't one of this node's own bridges. */
+  private handleTerminalResize(message: TerminalResize): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTerminalResizePayload(message)
+      .then((payload) => {
+        this.terminalSupervisor.resize(message.terminalId, payload.cols, payload.rows);
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle terminal_resize for session ${message.sessionId} terminal ${message.terminalId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTerminalResizePayload(
+    message: TerminalResize,
+  ): Promise<TerminalResizePayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TerminalResizePayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * A client asked to close one of its open terminals (SPEC §7.5). Marks
+   * `terminalId` as client-initiated before closing it (see
+   * {@link clientInitiatedTerminalCloses}'s doc comment) so the
+   * `TerminalSession.onExit` this triggers reports `reason: 'closed_by_client'`
+   * rather than `'exited'` in the `terminal_closed` this sends. Ignored if
+   * `sessionId` isn't one of this node's own bridges; a silent no-op if
+   * `terminalId` is already closed or unknown (`TerminalSupervisor.close`'s
+   * own no-op contract).
+   */
+  private handleTerminalClose(message: TerminalClose): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.clientInitiatedTerminalCloses.add(message.terminalId);
+    this.terminalSupervisor.close(message.terminalId);
   }
 
   /**

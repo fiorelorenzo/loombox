@@ -25,6 +25,13 @@ import {
   type SessionUpdateEnvelopeV1,
   type TargetAnnounce,
   type TargetDescriptor,
+  type TerminalClose,
+  type TerminalClosed,
+  type TerminalInput,
+  type TerminalOpen,
+  type TerminalOpened,
+  type TerminalOutput,
+  type TerminalResize,
 } from '@loombox/protocol';
 
 import { startRelay } from './relay';
@@ -589,6 +596,312 @@ describe('relay v1', () => {
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
       );
+    });
+  });
+
+  describe('interactive PTY terminals (SPEC §7.5; issues #172/#173/#174) — routed and fanned out exactly like fs_list_request/fs_list_response, always blind', () => {
+    /** Boots a relay, a `node`-role connection that has already announced `sessionId`, and a `client`-role connection subscribed to it (`session_resume`) — the shared setup every terminal test below needs. */
+    async function bootstrapAnnouncedSession(
+      sessionId: string,
+    ): Promise<{ url: string; node: WebSocket; client: WebSocket }> {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: sessionId, accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId,
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      return { url, node, client };
+    }
+
+    it('routes a client terminal_open to the owning node, byte-for-byte, never inspecting the envelope (cols/rows stay opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_open');
+
+      const request: TerminalOpen = {
+        type: 'terminal_open',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_open',
+        targetId: 'target_1',
+        terminalId: 'term_1',
+        requestId: 'req_open_1',
+        envelope: fakeEnvelope('80x24'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TerminalOpen;
+      expect(received).toEqual(request);
+      // The relay-visible frame carries only routing metadata + the opaque
+      // envelope — never a plaintext cols/rows field.
+      expect(Object.keys(received).sort()).toEqual(
+        [
+          'envelope',
+          'protocolVersion',
+          'requestId',
+          'sessionId',
+          'targetId',
+          'terminalId',
+          'type',
+        ].sort(),
+      );
+    });
+
+    it('fans terminal_opened out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_opened');
+
+      const response: TerminalOpened = {
+        type: 'terminal_opened',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_opened',
+        terminalId: 'term_1',
+        requestId: 'req_open_1',
+        envelope: fakeEnvelope('ok'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as TerminalOpened;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client terminal_input (typed keystrokes) to the owning node, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_input');
+
+      const request: TerminalInput = {
+        type: 'terminal_input',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_input',
+        terminalId: 'term_1',
+        envelope: fakeEnvelope('rm -rf secrets/'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TerminalInput;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+      // The relay never learns what was typed: the only place "rm -rf
+      // secrets/" could appear on this frame is inside the opaque envelope,
+      // and this frame carries nothing else.
+      expect(JSON.stringify(Object.keys(received))).not.toContain('secrets');
+    });
+
+    it("fans terminal_output out to the session's subscribed client, byte-for-byte, never inspecting the envelope (the shell's actual output stays opaque)", async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_output');
+
+      const response: TerminalOutput = {
+        type: 'terminal_output',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_output',
+        terminalId: 'term_1',
+        envelope: fakeEnvelope('$ cat ~/.ssh/id_ed25519'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as TerminalOutput;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client terminal_resize to the owning node, byte-for-byte, never inspecting the envelope (the new cols/rows stay opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_resize');
+
+      const request: TerminalResize = {
+        type: 'terminal_resize',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_resize',
+        terminalId: 'term_1',
+        envelope: fakeEnvelope('120x40'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TerminalResize;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client terminal_close to the owning node — no envelope, since closing carries no content', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_close');
+
+      const request: TerminalClose = {
+        type: 'terminal_close',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_close',
+        terminalId: 'term_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TerminalClose;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+    });
+
+    it('fans terminal_closed out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_closed');
+
+      const response: TerminalClosed = {
+        type: 'terminal_closed',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_closed',
+        terminalId: 'term_1',
+        envelope: fakeEnvelope('exited:0'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as TerminalClosed;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a terminal_open/terminal_input/terminal_resize/terminal_close for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+
+      send(client, {
+        type: 'terminal_open',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        targetId: 'target_1',
+        terminalId: 'term_orphan',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('80x24'),
+      } satisfies TerminalOpen);
+      send(client, {
+        type: 'terminal_input',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        terminalId: 'term_orphan',
+        envelope: fakeEnvelope('x'),
+      } satisfies TerminalInput);
+      send(client, {
+        type: 'terminal_resize',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        terminalId: 'term_orphan',
+        envelope: fakeEnvelope('80x24'),
+      } satisfies TerminalResize);
+      send(client, {
+        type: 'terminal_close',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        terminalId: 'term_orphan',
+      } satisfies TerminalClose);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it('proves no terminal bytes are ever visible to the relay: every routed/fanned-out frame is exactly {routing fields, envelope} — never a decrypted field', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_term_blind');
+
+      const frames: Array<[WebSocket, WebSocket, unknown]> = [
+        [
+          client,
+          node,
+          {
+            type: 'terminal_open',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: 'sess_term_blind',
+            targetId: 'target_1',
+            terminalId: 'term_blind',
+            requestId: 'req_blind_open',
+            envelope: fakeEnvelope('secret-cols-rows'),
+          } satisfies TerminalOpen,
+        ],
+        [
+          node,
+          client,
+          {
+            type: 'terminal_opened',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: 'sess_term_blind',
+            terminalId: 'term_blind',
+            requestId: 'req_blind_open',
+            envelope: fakeEnvelope('ok'),
+          } satisfies TerminalOpened,
+        ],
+        [
+          client,
+          node,
+          {
+            type: 'terminal_input',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: 'sess_term_blind',
+            terminalId: 'term_blind',
+            envelope: fakeEnvelope('super-secret-command'),
+          } satisfies TerminalInput,
+        ],
+        [
+          node,
+          client,
+          {
+            type: 'terminal_output',
+            protocolVersion: PROTOCOL_V1,
+            sessionId: 'sess_term_blind',
+            terminalId: 'term_blind',
+            envelope: fakeEnvelope('super-secret-output'),
+          } satisfies TerminalOutput,
+        ],
+      ];
+
+      for (const [from, to, frame] of frames) {
+        send(from, frame);
+        const received = await nextMessage(to);
+        expect(received).toEqual(frame);
+        // Every key on the relay-visible frame is either declared routing
+        // metadata or the opaque `envelope` — nothing else ever rides along.
+        for (const key of Object.keys(received)) {
+          expect([
+            'type',
+            'protocolVersion',
+            'sessionId',
+            'terminalId',
+            'targetId',
+            'requestId',
+            'envelope',
+          ]).toContain(key);
+        }
+      }
     });
   });
 

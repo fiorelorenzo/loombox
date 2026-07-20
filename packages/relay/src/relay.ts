@@ -745,6 +745,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'terminal_opened':
+      case 'terminal_output':
+      case 'terminal_closed':
+        // The owning node's terminal replies/output/close notification
+        // (SPEC §7.5; issues #172/#173/#174) — fanned out exactly like
+        // fs_list_response above; the relay never opens any of these
+        // envelopes, so it never sees a byte of typed input, shell output,
+        // or even the negotiated cols/rows (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -813,6 +823,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
         // opaque `EncryptedEnvelope`; the requested path never reaches the
         // relay in the clear (SPEC §8's metadata boundary).
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'terminal_open':
+      case 'terminal_input':
+      case 'terminal_resize':
+      case 'terminal_close':
+        // A client opening/typing into/resizing/closing an interactive PTY
+        // terminal (SPEC §7.5; issues #172/#173) — routed to the owning node
+        // exactly like fs_list_request above. The relay only ever sees
+        // sessionId/terminalId (and, for terminal_open, targetId/requestId)
+        // plus an opaque `EncryptedEnvelope`; not one byte of typed input or
+        // the negotiated cols/rows ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {

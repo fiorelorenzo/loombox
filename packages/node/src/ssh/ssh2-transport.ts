@@ -5,6 +5,7 @@ import { Client, type ConnectConfig } from 'ssh2';
 import { wrapForLoginShell } from './login-shell';
 import type { PortForwardTransport } from './port-forward-transport';
 import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
+import type { ShellChannel, ShellChannelOptions, ShellTransport } from './shell-transport';
 
 /**
  * Connection recipe for a real `ssh:` target (SPEC.md §5.2, §10: "a
@@ -53,7 +54,7 @@ export interface Ssh2TransportConfig {
  * `verifySshTarget`, ...) keeps sending plain commands and gets the fix for
  * free.
  */
-export class Ssh2Transport implements RemoteTransport, PortForwardTransport {
+export class Ssh2Transport implements RemoteTransport, PortForwardTransport, ShellTransport {
   private client: Client | undefined;
 
   constructor(private readonly config: Ssh2TransportConfig) {}
@@ -155,5 +156,78 @@ export class Ssh2Transport implements RemoteTransport, PortForwardTransport {
         resolve(stream);
       });
     });
+  }
+
+  /**
+   * Opens an interactive shell with a remote PTY allocated (issue #172's
+   * `ssh:` terminal backend, SPEC §16 grounding): `ssh2`'s `Client.shell()`
+   * with `PseudoTtyOptions`, the same wire mechanism a plain `ssh host`
+   * (no command) uses. Wraps the raw `ClientChannel` into the small
+   * {@link ShellChannel} contract this directory's terminal adapter
+   * (`./ssh-pty-adapter.ts`) needs — `stdout` and `stderr` both feed the
+   * same `onData` (a real PTY has no separate stderr stream; `ssh2` still
+   * exposes one for protocol completeness, and a remote login shell with a
+   * pty allocated writes everything to the one merged stream anyway, but
+   * this covers the rare case something writes to the channel's stderr sub-
+   * stream directly).
+   */
+  async openShellChannel(options: ShellChannelOptions): Promise<ShellChannel> {
+    const client = this.client;
+    if (!client) {
+      throw new Error('Ssh2Transport: not connected; call connect() first');
+    }
+
+    const stream = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
+      client.shell(
+        { term: 'xterm-256color', cols: options.cols, rows: options.rows },
+        (err, shellStream) => {
+          if (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
+          resolve(shellStream);
+        },
+      );
+    });
+
+    return {
+      onData(listener) {
+        const onData = (chunk: Buffer): void => listener(new Uint8Array(chunk));
+        stream.on('data', onData);
+        stream.stderr.on('data', onData);
+        return () => {
+          stream.off('data', onData);
+          stream.stderr.off('data', onData);
+        };
+      },
+      onClose(listener) {
+        // `ssh2`'s `exit` event carries the process's return code when the
+        // remote side reports one (SPEC §16: SSH2 makes this optional); a
+        // remote shell exiting normally always sends it. `close` is the
+        // channel-teardown event that always fires (whether or not `exit`
+        // did) — used as the fallback so a caller is always told the
+        // channel ended, even against a remote that skips `exit`.
+        let exitCode: number | undefined;
+        const onExit = (code: number | null): void => {
+          exitCode = code ?? undefined;
+        };
+        const onClose = (): void => listener({ exitCode: exitCode ?? 0 });
+        stream.on('exit', onExit);
+        stream.on('close', onClose);
+        return () => {
+          stream.off('exit', onExit);
+          stream.off('close', onClose);
+        };
+      },
+      write(data) {
+        stream.write(typeof data === 'string' ? data : Buffer.from(data));
+      },
+      resize(cols, rows) {
+        stream.setWindow(rows, cols, 0, 0);
+      },
+      end() {
+        stream.end();
+      },
+    };
   }
 }

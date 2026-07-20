@@ -34,6 +34,15 @@ const { FakeSsh2Client } = vi.hoisted(() => {
       this.listeners.set(event, existing);
       return this;
     }
+    off(event: string, listener: (...args: unknown[]) => void): this {
+      const existing = this.listeners.get(event);
+      if (existing)
+        this.listeners.set(
+          event,
+          existing.filter((l) => l !== listener),
+        );
+      return this;
+    }
     emit(event: string, ...args: unknown[]): void {
       for (const listener of this.listeners.get(event) ?? []) listener(...args);
     }
@@ -41,9 +50,18 @@ const { FakeSsh2Client } = vi.hoisted(() => {
 
   class FakeSshStream extends MiniEmitter {
     stderr = new MiniEmitter();
+    writeCalls: string[] = [];
+    setWindowCalls: Array<[number, number, number, number]> = [];
     end(): this {
       queueMicrotask(() => this.emit('close', 0));
       return this;
+    }
+    write(data: Buffer | string): boolean {
+      this.writeCalls.push(typeof data === 'string' ? data : data.toString('utf8'));
+      return true;
+    }
+    setWindow(rows: number, cols: number, height: number, width: number): void {
+      this.setWindowCalls.push([rows, cols, height, width]);
     }
   }
 
@@ -51,6 +69,9 @@ const { FakeSsh2Client } = vi.hoisted(() => {
     execCalls: string[] = [];
     forwardOutCalls: Array<[string, number, string, number]> = [];
     forwardOutError: Error | undefined;
+    shellCalls: Array<{ term?: string; cols?: number; rows?: number }> = [];
+    shellError: Error | undefined;
+    lastShellStream: FakeSshStream | undefined;
     connect(): void {
       queueMicrotask(() => this.emit('ready'));
     }
@@ -71,6 +92,19 @@ const { FakeSsh2Client } = vi.hoisted(() => {
         return;
       }
       callback(undefined, new FakeSshStream());
+    }
+    shell(
+      window: { term?: string; cols?: number; rows?: number },
+      callback: (err: Error | undefined, stream: FakeSshStream) => void,
+    ): void {
+      this.shellCalls.push(window);
+      if (this.shellError) {
+        callback(this.shellError, undefined as unknown as FakeSshStream);
+        return;
+      }
+      const stream = new FakeSshStream();
+      this.lastShellStream = stream;
+      callback(undefined, stream);
     }
     end(): void {}
   }
@@ -133,6 +167,106 @@ describe('Ssh2Transport.openForwardChannel (issue #92 — against a fake ssh2 Cl
     await expect(transport.openForwardChannel('127.0.0.1', 1, '127.0.0.1', 2)).rejects.toThrow(
       /open failed/,
     );
+  });
+});
+
+describe('Ssh2Transport.openShellChannel (issue #172 — against a fake ssh2 Client)', () => {
+  it('rejects before connect() rather than hanging or crashing', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await expect(transport.openShellChannel({ cols: 80, rows: 24 })).rejects.toThrow(
+      /not connected/,
+    );
+  });
+
+  it('calls client.shell() with the given cols/rows and a pty term type', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    await transport.openShellChannel({ cols: 100, rows: 30 });
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    expect(client.shellCalls).toEqual([{ term: 'xterm-256color', cols: 100, rows: 30 }]);
+  });
+
+  it('rejects when the underlying shell() fails', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    client.shellError = new Error('no pty available');
+
+    await expect(transport.openShellChannel({ cols: 80, rows: 24 })).rejects.toThrow(
+      /no pty available/,
+    );
+  });
+
+  it('write() forwards to the underlying stream', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const channel = await transport.openShellChannel({ cols: 80, rows: 24 });
+    channel.write('echo hi\n');
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    expect(client.lastShellStream?.writeCalls).toEqual(['echo hi\n']);
+  });
+
+  it('resize() forwards to the underlying stream.setWindow(rows, cols, ...)', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const channel = await transport.openShellChannel({ cols: 80, rows: 24 });
+    channel.resize(120, 40);
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    expect(client.lastShellStream?.setWindowCalls).toEqual([[40, 120, 0, 0]]);
+  });
+
+  it('onData receives both the stream and its stderr sub-stream', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const channel = await transport.openShellChannel({ cols: 80, rows: 24 });
+    const received: string[] = [];
+    channel.onData((chunk) => received.push(Buffer.from(chunk).toString('utf8')));
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    client.lastShellStream?.emit('data', Buffer.from('stdout chunk'));
+    client.lastShellStream?.stderr.emit('data', Buffer.from('stderr chunk'));
+
+    expect(received).toEqual(['stdout chunk', 'stderr chunk']);
+  });
+
+  it('onClose fires with the exit code once the channel closes', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const channel = await transport.openShellChannel({ cols: 80, rows: 24 });
+    let exitEvent: { exitCode: number } | undefined;
+    channel.onClose((event) => {
+      exitEvent = event;
+    });
+
+    const client = (transport as unknown as { client: InstanceType<typeof FakeSsh2Client> }).client;
+    client.lastShellStream?.emit('exit', 3);
+    client.lastShellStream?.emit('close');
+
+    expect(exitEvent).toEqual({ exitCode: 3 });
+  });
+
+  it('end() ends the underlying stream', async () => {
+    const transport = new Ssh2Transport({ host: 'example.invalid', username: 'nobody' });
+    await transport.connect();
+
+    const channel = await transport.openShellChannel({ cols: 80, rows: 24 });
+    let closed = false;
+    channel.onClose(() => {
+      closed = true;
+    });
+    channel.end();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closed).toBe(true);
   });
 });
 

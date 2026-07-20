@@ -140,6 +140,53 @@ export {
   safeParseFsListResponsePayloadV1,
 } from './fs';
 
+export type {
+  TerminalClose,
+  TerminalClosed,
+  TerminalClosedPayloadV1,
+  TerminalClosedReasonV1,
+  TerminalData,
+  TerminalDataPayloadV1,
+  TerminalInput,
+  TerminalOpen,
+  TerminalOpened,
+  TerminalOpenErrorV1,
+  TerminalOpenOkV1,
+  TerminalOpenPayloadV1,
+  TerminalOpenResultPayloadV1,
+  TerminalOutput,
+  TerminalResize,
+  TerminalResizePayloadV1,
+} from './terminal';
+export {
+  parseTerminalClosedPayloadV1,
+  parseTerminalDataPayloadV1,
+  parseTerminalOpenPayloadV1,
+  parseTerminalOpenResultPayloadV1,
+  parseTerminalResizePayloadV1,
+  safeParseTerminalClosedPayloadV1,
+  safeParseTerminalDataPayloadV1,
+  safeParseTerminalOpenPayloadV1,
+  safeParseTerminalOpenResultPayloadV1,
+  safeParseTerminalResizePayloadV1,
+  terminalClose,
+  terminalClosed,
+  terminalClosedPayloadV1,
+  terminalClosedReasonV1,
+  terminalData,
+  terminalDataPayloadV1,
+  terminalInput,
+  terminalOpen,
+  terminalOpened,
+  terminalOpenErrorV1,
+  terminalOpenOkV1,
+  terminalOpenPayloadV1,
+  terminalOpenResultPayloadV1,
+  terminalOutput,
+  terminalResize,
+  terminalResizePayloadV1,
+} from './terminal';
+
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';
 export { presence, resyncMarker, resyncRequest } from './presence';
 
@@ -202,6 +249,21 @@ import {
   fsListResultV1,
 } from './fs';
 import { presence, resyncMarker, resyncRequest } from './presence';
+import {
+  terminalClose,
+  terminalClosed,
+  terminalClosedPayloadV1,
+  terminalData,
+  terminalDataPayloadV1,
+  terminalInput,
+  terminalOpen,
+  terminalOpened,
+  terminalOpenResultPayloadV1,
+  terminalOpenPayloadV1,
+  terminalOutput,
+  terminalResize,
+  terminalResizePayloadV1,
+} from './terminal';
 import { wireMessageV1 } from './message';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
@@ -261,6 +323,19 @@ export const schemasV1 = {
   fsListResponsePayloadV1,
   fsListRequest,
   fsListResponse,
+  terminalOpenPayloadV1,
+  terminalOpenResultPayloadV1,
+  terminalDataPayloadV1,
+  terminalResizePayloadV1,
+  terminalClosedPayloadV1,
+  terminalOpen,
+  terminalOpened,
+  terminalInput,
+  terminalOutput,
+  terminalData,
+  terminalResize,
+  terminalClose,
+  terminalClosed,
   presence,
   resyncRequest,
   resyncMarker,

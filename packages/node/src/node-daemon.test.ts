@@ -999,6 +999,290 @@ describe('NodeDaemon fs-list (read-only file-tree panel, SPEC §7.4; issue #171)
   });
 });
 
+/** Decrypts every `terminal_output` seen so far for `sessionId`/`terminalId`, concatenates their `data` in arrival order, and polls until the result contains `substring` or times out — the terminal-stream counterpart to `waitForDecryptedKinds`. */
+async function waitForTerminalOutputContains(
+  phone: TestPhone,
+  sessionId: string,
+  terminalId: string,
+  key: CryptoKey,
+  substring: string,
+  timeoutMs = 10000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const candidates = phone.messages.filter(
+      (m): m is Extract<WireMessageV1, { type: 'terminal_output' }> =>
+        m.type === 'terminal_output' && m.sessionId === sessionId && m.terminalId === terminalId,
+    );
+    const chunks = await Promise.all(
+      candidates.map((m) => phoneOpen<{ data: string }>(sessionId, m.envelope, key)),
+    );
+    const text = chunks
+      .map((c) => fromBase64(c.data))
+      .reduce((acc, bytes) => acc + Buffer.from(bytes).toString('utf8'), '');
+    if (text.includes(substring)) return text;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `waitForTerminalOutputContains: timed out waiting for "${substring}" (saw: ${JSON.stringify(text)})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+describe('NodeDaemon interactive PTY terminals (SPEC §7.5; issues #172/#173)', () => {
+  it('opens a local terminal, streams typed input to it, streams its output back, resizes it, and closes it — all over encrypted envelopes', async () => {
+    // Spawns and waits on a real bash child (not the fast in-process fixture
+    // agent every other test in this file uses); vitest's default 5s
+    // per-test timeout is occasionally too tight for that on a loaded box.
+    const amk = generateAmk();
+    const accountId = 'acct-terminal-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-term-1',
+      deviceId: 'device-node-term-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-term-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const terminalId = 'term-1';
+    const openEnvelope = await phoneSeal(session.id, { cols: 80, rows: 24 }, key);
+    assertOpaque(openEnvelope, ['80', '24']);
+    phone.send({
+      type: 'terminal_open',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      terminalId,
+      requestId: 'req-open-1',
+      envelope: openEnvelope,
+    });
+
+    const openedMessage = (await phone.waitFor(
+      (m) =>
+        m.type === 'terminal_opened' && (m as { requestId?: string }).requestId === 'req-open-1',
+    )) as Extract<WireMessageV1, { type: 'terminal_opened' }>;
+    const openedPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      openedMessage.envelope,
+      key,
+    );
+    expect(openedPayload.outcome).toBe('ok');
+
+    const inputEnvelope = await phoneSeal(
+      session.id,
+      { data: Buffer.from('echo hello-e2e\n', 'utf8').toString('base64') },
+      key,
+    );
+    assertOpaque(inputEnvelope, ['hello-e2e']);
+    phone.send({
+      type: 'terminal_input',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      envelope: inputEnvelope,
+    });
+
+    await waitForTerminalOutputContains(phone, session.id, terminalId, key, 'hello-e2e');
+    // The relay must never see the typed command or the shell's output in
+    // the clear — every terminal_output envelope observed so far is opaque.
+    for (const m of phone.messages) {
+      if (
+        m.type === 'terminal_output' &&
+        m.sessionId === session.id &&
+        m.terminalId === terminalId
+      ) {
+        assertOpaque(m.envelope, ['hello-e2e']);
+      }
+    }
+
+    const resizeEnvelope = await phoneSeal(session.id, { cols: 120, rows: 40 }, key);
+    phone.send({
+      type: 'terminal_resize',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      envelope: resizeEnvelope,
+    });
+
+    phone.send({
+      type: 'terminal_close',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+    });
+
+    const closedMessage = (await phone.waitFor(
+      (m) =>
+        m.type === 'terminal_closed' && (m as { terminalId?: string }).terminalId === terminalId,
+    )) as Extract<WireMessageV1, { type: 'terminal_closed' }>;
+    const closedPayload = await phoneOpen<{ reason: string }>(
+      session.id,
+      closedMessage.envelope,
+      key,
+    );
+    expect(closedPayload.reason).toBe('closed_by_client');
+  }, 20000);
+
+  it('supports multiple terminals for the same session sharing its working directory, and closing one does not affect the other (issue #173)', async () => {
+    // See the previous test's comment: a real bash child needs more than
+    // vitest's default 5s per-test timeout on a loaded box.
+    const amk = generateAmk();
+    const accountId = 'acct-terminal-multi';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-term-2',
+      deviceId: 'device-node-term-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-term-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    async function openTerminal(terminalId: string, requestId: string): Promise<void> {
+      const envelope = await phoneSeal(session.id, { cols: 80, rows: 24 }, key);
+      phone!.send({
+        type: 'terminal_open',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        terminalId,
+        requestId,
+        envelope,
+      });
+      const opened = (await phone!.waitFor(
+        (m) =>
+          m.type === 'terminal_opened' && (m as { requestId?: string }).requestId === requestId,
+      )) as Extract<WireMessageV1, { type: 'terminal_opened' }>;
+      const payload = await phoneOpen<{ outcome: string }>(session.id, opened.envelope, key);
+      expect(payload.outcome).toBe('ok');
+    }
+
+    async function typeInto(terminalId: string, text: string): Promise<void> {
+      const envelope = await phoneSeal(
+        session.id,
+        { data: Buffer.from(text, 'utf8').toString('base64') },
+        key,
+      );
+      phone!.send({
+        type: 'terminal_input',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        terminalId,
+        envelope,
+      });
+    }
+
+    await openTerminal('term-a', 'req-open-a');
+    await openTerminal('term-b', 'req-open-b');
+
+    await typeInto('term-a', 'pwd\n');
+    await typeInto('term-b', 'pwd\n');
+
+    await waitForTerminalOutputContains(phone, session.id, 'term-a', key, session.worktreePath);
+    await waitForTerminalOutputContains(phone, session.id, 'term-b', key, session.worktreePath);
+
+    phone.send({
+      type: 'terminal_close',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId: 'term-a',
+    });
+    await phone.waitFor(
+      (m) => m.type === 'terminal_closed' && (m as { terminalId?: string }).terminalId === 'term-a',
+    );
+
+    // term-b must still be alive and independently usable after term-a closed.
+    await typeInto('term-b', 'echo still-alive\n');
+    await waitForTerminalOutputContains(phone, session.id, 'term-b', key, 'still-alive');
+    expect(
+      phone.count(
+        (m) =>
+          m.type === 'terminal_closed' && (m as { terminalId?: string }).terminalId === 'term-b',
+      ),
+    ).toBe(0);
+  }, 20000);
+
+  it('a terminal_open for a session this node does not own is silently ignored, not a crash', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-terminal-unknown-session';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-term-3',
+      deviceId: 'device-node-term-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-term-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const bogusSessionId = 'session-that-does-not-exist';
+    const envelope = await phoneSeal(
+      bogusSessionId,
+      { cols: 80, rows: 24 },
+      await derivePhoneSessionKey(amk, accountId, bogusSessionId),
+    );
+    phone.send({
+      type: 'terminal_open',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: bogusSessionId,
+      targetId: 'local',
+      terminalId: 'term-bogus',
+      requestId: 'req-bogus',
+      envelope,
+    });
+
+    // No terminal_opened ever arrives — this node has no bridge for that
+    // session, so it drops the message per SPEC.md §12, rather than crashing
+    // or replying about a session it doesn't own.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(phone.count((m) => m.type === 'terminal_opened')).toBe(0);
+  });
+});
+
 describe('NodeDaemon MCP server resolution at session start (issues #187/#189)', () => {
   it("resolves a project's effective MCP server set (with a granted secret) and hands it to the ACP session", async () => {
     const amk = generateAmk();

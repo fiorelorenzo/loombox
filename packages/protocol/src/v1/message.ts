@@ -24,6 +24,15 @@ import {
 } from './sessions';
 import { configOption, permissionRequest, permissionResponse, promptInjectV1 } from './steering';
 import { targetAnnounce } from './targets';
+import {
+  terminalClose,
+  terminalClosed,
+  terminalInput,
+  terminalOpen,
+  terminalOpened,
+  terminalOutput,
+  terminalResize,
+} from './terminal';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
@@ -57,6 +66,13 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   blobDownloadResponse,
   fsListRequest,
   fsListResponse,
+  terminalOpen,
+  terminalOpened,
+  terminalInput,
+  terminalOutput,
+  terminalResize,
+  terminalClose,
+  terminalClosed,
   presence,
   resyncRequest,
   resyncMarker,

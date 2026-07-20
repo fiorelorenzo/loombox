@@ -2183,6 +2183,296 @@ describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
   });
 });
 
+describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
+  it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-term-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-term-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_term_1', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-term-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const terminals = client.terminalsFor(session.id);
+    const terminalId = client.openTerminal(session.id, 80, 24);
+    expect(get(terminals).get(terminalId)?.status).toBe('opening');
+
+    const openRequest = (await node.waitFor((m) => m.type === 'terminal_open')) as {
+      type: 'terminal_open';
+      sessionId: string;
+      targetId: string;
+      terminalId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(openRequest.sessionId).toBe(session.id);
+    expect(openRequest.targetId).toBe('local');
+    expect(openRequest.terminalId).toBe(terminalId);
+    expect(Object.keys(openRequest).sort()).toEqual(
+      [
+        'envelope',
+        'protocolVersion',
+        'requestId',
+        'sessionId',
+        'targetId',
+        'terminalId',
+        'type',
+      ].sort(),
+    );
+    const openPayload = await nodeOpen<{ cols: number; rows: number }>(
+      session.id,
+      openRequest.envelope,
+      key,
+    );
+    expect(openPayload).toEqual({ cols: 80, rows: 24 });
+
+    node.send({
+      type: 'terminal_opened',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      requestId: openRequest.requestId,
+      envelope: await nodeSeal(session.id, { outcome: 'ok' }, key),
+    });
+    await waitForStore(terminals, (value) => value.get(terminalId)?.status === 'open');
+
+    // Output: node -> client, decrypted and fanned out to onTerminalOutput.
+    const received: Uint8Array[] = [];
+    const unsubscribe = client.onTerminalOutput(session.id, terminalId, (chunk) => {
+      received.push(chunk);
+    });
+    const outputBytes = new TextEncoder().encode('hello from the shell');
+    node.send({
+      type: 'terminal_output',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      envelope: await nodeSeal(
+        session.id,
+        { data: Buffer.from(outputBytes).toString('base64') },
+        key,
+      ),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toHaveLength(1);
+    expect(new TextDecoder().decode(received[0])).toBe('hello from the shell');
+    unsubscribe();
+
+    // Input: client -> node, encrypted, base64 bytes inside.
+    client.sendTerminalInput(session.id, terminalId, 'echo hi\n');
+    const inputMessage = (await node.waitFor((m) => m.type === 'terminal_input')) as {
+      type: 'terminal_input';
+      sessionId: string;
+      terminalId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(Object.keys(inputMessage).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+    );
+    const inputPayload = await nodeOpen<{ data: string }>(session.id, inputMessage.envelope, key);
+    expect(Buffer.from(inputPayload.data, 'base64').toString('utf8')).toBe('echo hi\n');
+
+    // Resize: client -> node, encrypted.
+    client.resizeTerminal(session.id, terminalId, 120, 40);
+    const resizeMessage = (await node.waitFor((m) => m.type === 'terminal_resize')) as {
+      type: 'terminal_resize';
+      envelope: EncryptedEnvelope;
+    };
+    const resizePayload = await nodeOpen<{ cols: number; rows: number }>(
+      session.id,
+      resizeMessage.envelope,
+      key,
+    );
+    expect(resizePayload).toEqual({ cols: 120, rows: 40 });
+
+    // Close: client -> node, no envelope.
+    client.closeTerminal(session.id, terminalId);
+    const closeMessage = await node.waitFor((m) => m.type === 'terminal_close');
+    expect(Object.keys(closeMessage).sort()).toEqual(
+      ['protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+    );
+
+    // terminal_closed: node -> client, flips status to closed with a reason.
+    node.send({
+      type: 'terminal_closed',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      envelope: await nodeSeal(session.id, { reason: 'closed_by_client' }, key),
+    });
+    const closedState = await waitForStore(
+      terminals,
+      (value) => value.get(terminalId)?.status === 'closed',
+    );
+    expect(closedState.get(terminalId)?.closedReason).toBe('closed_by_client');
+  });
+
+  it('a failed terminal_open (error outcome) flips the terminal to error with the node-supplied message', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-term-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-term-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_term_2', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-term-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const terminals = client.terminalsFor(session.id);
+    const terminalId = client.openTerminal(session.id, 80, 24);
+    const openRequest = (await node.waitFor((m) => m.type === 'terminal_open')) as {
+      type: 'terminal_open';
+      requestId: string;
+    };
+
+    node.send({
+      type: 'terminal_opened',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId,
+      requestId: openRequest.requestId,
+      envelope: await nodeSeal(
+        session.id,
+        { outcome: 'error', message: 'no shell available' },
+        key,
+      ),
+    });
+
+    const errored = await waitForStore(
+      terminals,
+      (value) => value.get(terminalId)?.status === 'error',
+    );
+    expect(errored.get(terminalId)?.error).toBe('no shell available');
+  });
+
+  it("a client ignores a terminal_opened for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-term-3';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-term-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_term_3', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-term-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const terminals = client.terminalsFor(session.id);
+    const terminalId = client.openTerminal(session.id, 80, 24);
+    await node.waitFor((m) => m.type === 'terminal_open'); // this client's own request
+
+    node.send({
+      type: 'terminal_opened',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId: 'sibling-terminal',
+      requestId: 'req-not-mine',
+      envelope: await nodeSeal(session.id, { outcome: 'ok' }, key),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(get(terminals).get(terminalId)?.status).toBe('opening');
+    expect(get(terminals).has('sibling-terminal')).toBe(false);
+  });
+
+  it('opening a second terminal for the same session is independent of the first (issue #173: multiple terminals per session)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-term-4';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-term-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_term_4', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-term-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const terminals = client.terminalsFor(session.id);
+    const terminalA = client.openTerminal(session.id, 80, 24);
+    const terminalB = client.openTerminal(session.id, 80, 24);
+    expect(terminalA).not.toBe(terminalB);
+
+    const deadline = Date.now() + 3000;
+    while (node.messages.filter((msg) => msg.type === 'terminal_open').length < 2) {
+      if (Date.now() > deadline) throw new Error('timed out waiting for both terminal_open frames');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const opens = node.messages.filter((msg) => msg.type === 'terminal_open') as Array<{
+      type: 'terminal_open';
+      terminalId: string;
+      requestId: string;
+    }>;
+
+    for (const request of opens) {
+      node!.send({
+        type: 'terminal_opened',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        terminalId: request.terminalId,
+        requestId: request.requestId,
+        envelope: await nodeSeal(session.id, { outcome: 'ok' }, key),
+      });
+    }
+
+    await waitForStore(
+      terminals,
+      (value) => value.get(terminalA)?.status === 'open' && value.get(terminalB)?.status === 'open',
+    );
+
+    // Closing terminalA must not affect terminalB's state.
+    client.closeTerminal(session.id, terminalA);
+    node!.send({
+      type: 'terminal_closed',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      terminalId: terminalA,
+      envelope: await nodeSeal(session.id, { reason: 'closed_by_client' }, key),
+    });
+    await waitForStore(terminals, (value) => value.get(terminalA)?.status === 'closed');
+    expect(get(terminals).get(terminalB)?.status).toBe('open');
+  });
+});
+
 /**
  * Applies Better Auth's own schema to a hermetic sqlite database — the same
  * call `packages/relay/src/auth.ts`'s `migrateBetterAuth` makes
