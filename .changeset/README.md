@@ -12,6 +12,8 @@ pnpm changeset
 Pick the affected packages and a semver bump (patch/minor/major), then write a
 short human-readable summary. The changeset file lands here and is consumed by
 `pnpm version-packages` (which updates versions + changelogs) and `pnpm release`
-(which publishes). v0 packages are not released yet, so this is wiring only.
+(which tags releases). All loombox packages are `private: true` and unpublished
+to npm, so `pnpm release` never pushes anything to a registry; it exists so the
+release workflow can create git tags and GitHub Releases off the version bump.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contribution flow.
+See [CONTRIBUTING.md](../CONTRIBUTING.md#releases) for the full release flow.
