@@ -20,9 +20,13 @@
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
+  import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
+  import { isThoughtStillThinking } from '$lib/thinking';
+  import { isNarrowViewport } from '$lib/viewport';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import AttentionInbox from '$lib/components/AttentionInbox.svelte';
+  import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
@@ -30,6 +34,7 @@
   import PlanCard from '$lib/components/PlanCard.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
+  import TurnStopControl from '$lib/components/TurnStopControl.svelte';
 
   // Disposable v1 relay (SPEC §12): no default deployment, so the operator
   // points the PWA at whatever host/port the relay printed (loopback here;
@@ -73,6 +78,15 @@
   // `RelayClient.attentionInbox`'s doc comment.
   let attentionInboxItems = $state<AttentionInboxItem[]>([]);
   let inboxOpen = $state(false);
+  // The fuzzy command palette (SPEC §7.3; issue #132).
+  let paletteOpen = $state(false);
+  // Narrow-viewport permission footer (SPEC §7.3; issue #134) — a live
+  // `matchMedia` read, client-only (see `viewport.ts`'s doc comment for why
+  // it defaults `false` during SSR).
+  let narrowViewport = $state(false);
+  // Stale-approve/deny discard note for the selected session (SPEC §7.3;
+  // issue #131) — `undefined` until one has happened.
+  let staleNotice = $state<{ requestId: string; message: string } | undefined>(undefined);
   // A plan's collapse state persists per session for as long as this tab
   // stays open (SPEC §7.24 "remembers collapse state during the session"),
   // keyed by session id so switching sessions and back preserves it.
@@ -149,6 +163,7 @@
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
+  let unsubscribeStaleNotice: (() => void) | undefined;
 
   function selectSession(id: string): void {
     selectedSessionId = id;
@@ -157,11 +172,13 @@
     unsubscribeConfigOptions?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
+    unsubscribeStaleNotice?.();
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
     queuedPrompts = [];
+    staleNotice = undefined;
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client
@@ -174,6 +191,7 @@
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
       .subscribe((value) => (queuedPrompts = value));
+    unsubscribeStaleNotice = client.staleNoticeFor(id).subscribe((value) => (staleNotice = value));
   }
 
   /**
@@ -214,6 +232,7 @@
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
+    unsubscribeStaleNotice?.();
     clearSessionStatusSubscriptions();
     client?.close();
     client = undefined;
@@ -227,6 +246,8 @@
     queuedPrompts = [];
     attentionInboxItems = [];
     inboxOpen = false;
+    staleNotice = undefined;
+    paletteOpen = false;
   }
 
   function ensureAuthStore(): AuthStore {
@@ -289,9 +310,51 @@
     client.resolvePermission(selectedSessionId, requestId, option);
   }
 
+  /** SPEC §7.3/§7.24; issue #129 — the turn-level Stop/interrupt, distinct from any rollback affordance. See `RelayClient.interruptTurn`'s doc comment. */
   function stopSession(): void {
     if (!client || !selectedSessionId) return;
-    client.cancelPermissionRequests(selectedSessionId);
+    client.interruptTurn(selectedSessionId);
+  }
+
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the palette's action list, rebuilt from current state so it always reflects what's actually doable right now (e.g. Stop only appears while a turn is active). */
+  const paletteActions = $derived.by((): CommandPaletteAction[] => {
+    const actions: CommandPaletteAction[] = [];
+    if (selectedSessionId && transcript?.turnActive) {
+      actions.push({
+        id: 'stop-turn',
+        label: 'Stop current turn',
+        shortcut: 'Mod+.',
+        run: stopSession,
+      });
+    }
+    actions.push({
+      id: 'toggle-inbox',
+      label: inboxOpen ? 'Close attention inbox' : 'Open attention inbox',
+      run: () => (inboxOpen = !inboxOpen),
+    });
+    return actions;
+  });
+
+  const paletteSessions = $derived(
+    sessions.map((session) => ({
+      id: session.id,
+      title: session.title,
+      projectPath: session.projectPath,
+    })),
+  );
+
+  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  function handleGlobalKeydown(event: KeyboardEvent): void {
+    if (paletteOpen) return;
+    if (isModShortcut(event, 'k')) {
+      event.preventDefault();
+      paletteOpen = true;
+      return;
+    }
+    if (isModShortcut(event, '.') && !isTypingTarget(event.target)) {
+      event.preventDefault();
+      stopSession();
+    }
   }
 
   /** The attention inbox's approve/deny action (issue #168) — the exact same `RelayClient.resolvePermission` call the session's own `PermissionQueueBar` makes, so both resolve the one shared queue store (issue #169). */
@@ -322,6 +385,9 @@
 
   onMount(() => {
     amkStorage = createLocalStorageAmkStorage();
+
+    // Narrow-viewport permission footer (SPEC §7.3; issue #134).
+    const unsubscribeNarrow = isNarrowViewport().subscribe((value) => (narrowViewport = value));
 
     // Restores an operator-customized relay URL before constructing
     // `authStore` against it, so a self-hoster who edits this field, then
@@ -356,10 +422,13 @@
 
     return () => {
       unsubscribeAuthSession();
+      unsubscribeNarrow();
       disconnect();
     };
   });
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <main>
   <header>
@@ -395,6 +464,13 @@
         {#if attentionInboxItems.length > 0}
           <span class="inbox-count" data-testid="inbox-count">{attentionInboxItems.length}</span>
         {/if}
+      </button>
+      <button
+        type="button"
+        onclick={() => (paletteOpen = true)}
+        data-testid="command-palette-toggle"
+      >
+        Jump to… (Ctrl/Cmd+K)
       </button>
       <button type="button" onclick={signOut}>Sign out</button>
       {#if authError}
@@ -461,6 +537,7 @@
               cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
               onChange={changeConfigOption}
             />
+            <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
             <CopyButton
               text={transcript ? exportTranscriptText(transcript) : ''}
               label="Export transcript"
@@ -472,7 +549,13 @@
             {#each transcript?.items ?? [] as item (item.id)}
               <li>
                 {#if item.type === 'message'}
-                  <MessageItem {item} />
+                  <MessageItem
+                    {item}
+                    thinking={item.kind === 'agent_thought_chunk' && transcript
+                      ? isThoughtStillThinking(transcript, item.turnId)
+                      : false}
+                    turnActive={transcript?.turnActive ?? false}
+                  />
                 {:else}
                   <ToolCallRow
                     {item}
@@ -493,11 +576,18 @@
 
           <QueuedPromptBar prompts={queuedPrompts} />
 
+          {#if staleNotice}
+            <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+              {staleNotice.message}
+            </p>
+          {/if}
+
           <PermissionQueueBar
             sessionId={selectedSessionId}
             queue={permissionQueue}
             onResolve={resolvePermission}
             onStop={stopSession}
+            narrow={narrowViewport}
           />
 
           <form class="composer" onsubmit={submitPrompt}>
@@ -522,6 +612,17 @@
     </div>
   {/if}
 </main>
+
+<CommandPalette
+  open={paletteOpen}
+  sessions={paletteSessions}
+  actions={paletteActions}
+  onSelectSession={(id) => {
+    selectSession(id);
+    paletteOpen = false;
+  }}
+  onClose={() => (paletteOpen = false)}
+/>
 
 <style>
   main {
@@ -760,5 +861,14 @@
 
   .empty {
     opacity: 0.6;
+  }
+
+  /* Stale approve/deny discard note (SPEC §7.3; issue #131). */
+  .stale-notice {
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.4rem;
+    background: rgba(217, 119, 6, 0.15);
+    font-size: 0.8rem;
   }
 </style>

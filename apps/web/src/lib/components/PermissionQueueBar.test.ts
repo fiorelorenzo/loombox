@@ -77,6 +77,19 @@ describe('PermissionQueueBar', () => {
     expect(onStop).toHaveBeenCalledOnce();
   });
 
+  it('forwards narrow to PermissionCard and marks the bar itself reachable/sticky (issue #134)', () => {
+    render(PermissionQueueBar, {
+      props: {
+        sessionId: 's1',
+        queue: seedThree(),
+        onResolve: vi.fn(),
+        onStop: vi.fn(),
+        narrow: true,
+      },
+    });
+    expect(screen.getByTestId('permission-queue-bar').className).toContain('narrow');
+  });
+
   it('never blocks a different session — an empty queue for another session renders nothing even if this one has pending requests', () => {
     render(PermissionQueueBar, {
       props: { sessionId: 's2', queue: seedThree(), onResolve: vi.fn(), onStop: vi.fn() },

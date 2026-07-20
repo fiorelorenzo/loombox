@@ -25,16 +25,18 @@
     queue: PermissionQueueState;
     onResolve: (requestId: string, option: AcpPermissionOption) => void;
     onStop: () => void;
+    /** SPEC.md §7.3 "Narrow-viewport permission footer" (issue #134) — forwarded to `PermissionCard`; also pins this bar to the bottom of its scroll container so it's always reachable without hunting for it below the fold. Defaults `false`. */
+    narrow?: boolean;
   }
 
-  const { sessionId, queue, onResolve, onStop }: Props = $props();
+  const { sessionId, queue, onResolve, onStop, narrow = false }: Props = $props();
 
   const pending = $derived(listPermissionRequests(queue, sessionId));
   const head = $derived(headPermissionRequest(queue, sessionId));
 </script>
 
 {#if head}
-  <div class="permission-queue-bar" data-testid="permission-queue-bar">
+  <div class="permission-queue-bar" class:narrow data-testid="permission-queue-bar">
     <div class="queue-meta">
       <span>{pending.length} pending</span>
       <button type="button" class="stop" onclick={onStop}>Stop</button>
@@ -43,6 +45,7 @@
       request={head}
       actionable={true}
       onResolve={(option) => onResolve(head.requestId, option)}
+      {narrow}
     />
   </div>
 {/if}
@@ -52,6 +55,16 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+  }
+
+  /* Narrow-viewport permission footer (SPEC.md §7.3; issue #134): pinned to
+     the bottom of the transcript's own scroll container so it stays
+     reachable on a phone without the user hunting for it below the fold. */
+  .permission-queue-bar.narrow {
+    position: sticky;
+    bottom: 0;
+    padding-top: 0.4rem;
+    background: var(--loombox-surface, canvas);
   }
 
   .queue-meta {
