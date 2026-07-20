@@ -4,7 +4,9 @@ import { basename, posix } from 'node:path';
 
 import type {
   AcpMcpServerConfig,
+  AcpPermissionOption,
   AcpSessionWireEvent,
+  AcpToolCallUpdate,
   AcpTranscriptUpdate,
   AcpTurnEnd,
   ConfigOptionChangeEvent,
@@ -284,13 +286,27 @@ interface PromptPayload {
 }
 
 /**
+ * The plaintext a `permission_request` envelope decrypts to (SPEC §7.24;
+ * `@loombox/protocol`'s `steering.ts` doc comment: "the permission
+ * request's `ToolCallUpdate` ... travel[s] as an opaque `encryptedEnvelope`").
+ * Mirrors `apps/web`'s own `PermissionRequestPayload` (`relay-client.ts`) —
+ * that client has been ready to decrypt exactly this shape since before this
+ * issue; see {@link NodeDaemon.sendPermissionRequest} for the producer this
+ * issue (#373) adds.
+ */
+interface PermissionRequestPayloadV1 {
+  toolCall: AcpToolCallUpdate;
+  options: AcpPermissionOption[];
+}
+
+/**
  * Maps a session's live attention status to the relay-visible `attention_hint`
  * class that mirrors it (SPEC §7.11/§7.13; issue #170), or `undefined` when
  * this status isn't inbox-eligible/doesn't need this hint:
  * - `'working'` — not attention-worthy, nothing to notify.
- * - `'permission_required'` — already has its own dedicated relay-visible
- *   trigger, the real `permission_request` message (`@loombox/protocol`'s
- *   `steering.ts`), so this hint would be a redundant second signal for the
+ * - `'permission_required'` — has its own dedicated relay-visible trigger,
+ *   the real `permission_request` message ({@link NodeDaemon.sendPermissionRequest};
+ *   issue #373), so this hint would be a redundant second signal for the
  *   same event.
  * - `'awaiting_input'` maps to the hint class of the same name;
  *   `'error'`/`'exited'` both map to `'session_outcome'` — SPEC §7.13 groups
@@ -308,6 +324,22 @@ function attentionHintClassForStatus(status: AttentionStatus): AttentionHintClas
     default:
       return undefined;
   }
+}
+
+/**
+ * Narrows `AttentionState.detail` (typed `unknown` at its source,
+ * `transcript-store.ts`'s `AttentionState`) for a `'permission_required'`
+ * transition — `agent-session.ts`'s `setAttention('permission_required',
+ * { requestId, toolCallId })` is the only producer of that status, so this
+ * is the one shape {@link NodeDaemon.sendPermissionRequest} ever needs to
+ * pull a `requestId` out of.
+ */
+function isPermissionRequestDetail(detail: unknown): detail is { requestId: string } {
+  return (
+    typeof detail === 'object' &&
+    detail !== null &&
+    typeof (detail as { requestId?: unknown }).requestId === 'string'
+  );
 }
 
 /** Thrown by {@link resolveSessionRelativePath} for a request that would read outside the session's project root. */
@@ -1078,10 +1110,24 @@ export class NodeDaemon extends EventEmitter {
         status: state.status,
         updatedAt: state.updatedAt,
       });
-      // #170: the relay-visible push trigger mirroring the encrypted
-      // session_status event just forwarded above — see
-      // `sendAttentionHint`'s doc comment.
-      this.sendAttentionHint(bridge.session.id, state.status);
+      if (state.status === 'permission_required') {
+        // #373: this class's OWN dedicated relay-visible trigger — the real
+        // `permission_request` message — rather than the `attention_hint`
+        // mirror `sendAttentionHint` sends for every other inbox-eligible
+        // class below (see `attentionHintClassForStatus`'s doc comment for
+        // why `permission_required` maps to `undefined` there).
+        this.sendPermissionRequest(bridge, state.detail).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: failed to send permission_request for ${bridge.session.id}: ${message}`,
+          );
+        });
+      } else {
+        // #170: the relay-visible push trigger mirroring the encrypted
+        // session_status event just forwarded above — see
+        // `sendAttentionHint`'s doc comment.
+        this.sendAttentionHint(bridge.session.id, state.status);
+      }
     });
 
     bridge.agentSession.on('turn_end', (turnEnd: AcpTurnEnd) => {
@@ -1483,6 +1529,56 @@ export class NodeDaemon extends EventEmitter {
       protocolVersion: PROTOCOL_V1,
       sessionId,
       class: hintClass,
+    });
+  }
+
+  /**
+   * Sends the real, top-level `permission_request` wire message (SPEC
+   * §7.24; `@loombox/protocol`'s `steering.ts`) for a live tool-call
+   * approval — issue #373's gap: that message, and the relay's fan-out +
+   * presence-aware push on it, already existed (#163/`relay.ts`'s `case
+   * 'permission_request'`), and `apps/web` was already ready to decrypt and
+   * render one (`relay-client.ts`'s `PermissionRequestPayload` doc comment:
+   * "No node in this repo emits `permission_request` yet"), but no node
+   * ever actually constructed one. Sent alongside — never instead of — the
+   * encrypted `session_status: 'permission_required'` event the caller (the
+   * `'attention'` listener in `wireAgentSession`) already forwarded over
+   * `session_update`; the relay never opens this envelope, only routes on
+   * its clear `sessionId`/`requestId`.
+   *
+   * `detail` is that same event's `AttentionState.detail` — narrowed by
+   * {@link isPermissionRequestDetail} down to the `requestId`
+   * `agent-session.ts`'s `setAttention('permission_required', ...)` stamped
+   * it with — looked up against this session's own live `permissions` FIFO
+   * queue (`AgentSession.permissions`) for the full `toolCall`/`options`
+   * this message actually needs to carry (SPEC §7.24's approval UI, once a
+   * client acts on it — resolving it back is a separate, later concern).
+   * A no-op when `detail` doesn't carry a `requestId`, when that specific
+   * request has already resolved by the time this async encrypt runs (a
+   * fast allow/deny racing it), or when this session has no live agent
+   * process at all (a replay-only session can never be mid-approval).
+   */
+  private async sendPermissionRequest(bridge: SessionBridge, detail: unknown): Promise<void> {
+    if (!bridge.agentSession.isLive) return;
+    if (!isPermissionRequestDetail(detail)) return;
+    const { requestId } = detail;
+    const pending = bridge.agentSession.permissions
+      .list(bridge.agentSession.id)
+      .find((request) => request.requestId === requestId);
+    if (!pending) return;
+
+    const payload: PermissionRequestPayloadV1 = {
+      toolCall: pending.toolCall,
+      options: pending.options,
+    };
+    const key = await this.getSessionKey(bridge.session.id);
+    const envelope = await sealJson(bridge.session.id, payload, key);
+    this.relay.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: bridge.session.id,
+      requestId,
+      envelope,
     });
   }
 

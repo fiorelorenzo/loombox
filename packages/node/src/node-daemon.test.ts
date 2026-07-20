@@ -11,6 +11,7 @@ import type { AcpProvider } from '@loombox/providers-core';
 import {
   PROTOCOL_V1,
   type EncryptedEnvelope,
+  type PermissionRequest,
   type SessionAnnounceV1,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
@@ -127,6 +128,34 @@ function crashProvider(): AcpProvider {
   return {
     id: 'test-crash',
     spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [CRASH_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
+// packages/providers/core's own `session/request_permission` fixture (issue
+// #178, also reused by packages/supervisor's own persistence tests) — issue
+// #373's coverage needs a real live 'permission_required' attention
+// transition, not just the crash-driven 'exited' one CRASH_FIXTURE gives
+// above. Prompted with "request-permission", it sends one
+// `session/request_permission` and awaits the response before finishing the
+// turn — deliberately never answered by these tests (no `permission_response`
+// wire handling is in scope for #373), so `node.promptSession(...)` is
+// always fired without awaiting it (see the tests below).
+const PERMISSION_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'permission-acp-agent.mjs',
+);
+
+function permissionProvider(): AcpProvider {
+  return {
+    id: 'test-permission',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [PERMISSION_FIXTURE], cwd }),
     enrich: (update) => update,
   };
 }
@@ -1592,6 +1621,210 @@ describe('attention_hint push trigger (#170)', () => {
         true,
       );
       expect(sessionCalls.map((call) => call.kind)).toContain('session_outcome');
+    } finally {
+      await pushRelay.close();
+    }
+  });
+});
+
+/**
+ * #373: unlike `awaiting_input`/`session_outcome` above, a live tool-call
+ * approval has its own dedicated top-level wire message — the real
+ * `permission_request` (`@loombox/protocol`'s `steering.ts`) — rather than
+ * the metadata-only `attention_hint` mirror those two classes ride (see
+ * `attentionHintClassForStatus`'s doc comment in `node-daemon.ts`). These
+ * tests prove the actual `node-daemon.ts` wiring (`sendPermissionRequest`)
+ * constructs and sends that message on a live permission-required
+ * transition: first that a connected client actually receives it,
+ * decryptable, with the real `toolCall`/`options` content (closing the gap
+ * `apps/web`'s `relay-client.ts`'s `PermissionRequestPayload` doc comment
+ * flagged: "No node in this repo emits `permission_request` yet"); then
+ * that the relay's already-tested presence-aware push
+ * (`push-delivery.test.ts`'s `'permission_required'`-kind coverage)
+ * actually fires off it end to end, mirroring #372's own crash/
+ * awaiting_input push-trigger tests above.
+ */
+describe('permission_request (#373 approval signal)', () => {
+  it('sends the real permission_request message, decryptable by a connected client, when a live tool call needs approval', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permission-request';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-permission-request',
+      deviceId: 'device-node-permission-request',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [permissionProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-permission' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-permission',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // Subscribe before prompting: `permission_request` fans out live-only
+    // (no resync ring, same as `blob_ref`/`fs_list_response`), so a
+    // subscription registered after the agent's request would miss it.
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+    );
+
+    // Fired without awaiting: the fixture's `session/request_permission`
+    // never gets a response here (no `permission_response` wire handling is
+    // in scope for #373), so the underlying `session/prompt` call would
+    // hang forever — this test only needs the live transition to have
+    // happened, not the turn to finish.
+    node.promptSession(session.id, 'request-permission').catch(() => {});
+
+    const message = (await phone.waitFor(
+      (m) => m.type === 'permission_request' && m.sessionId === session.id,
+    )) as PermissionRequest;
+    expect(message.requestId).toBeTruthy();
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const payload = await phoneOpen<{
+      toolCall: { id: string; title: string };
+      options: { optionId: string }[];
+    }>(session.id, message.envelope, key);
+
+    expect(payload.toolCall.id).toBe('tc1');
+    expect(payload.toolCall.title).toBe('Edit file');
+    expect(payload.options.map((option) => option.optionId).sort()).toEqual(['allow', 'deny']);
+    // The relay only ever carried this ciphertext: the tool-call title is
+    // not recoverable from it (SPEC §8's metadata boundary).
+    assertOpaque(message.envelope, ['Edit file']);
+
+    // The encrypted session_status event still rides alongside this,
+    // unchanged — this message is additive, never a replacement.
+    const statusEvents = await waitForDecryptedKinds(phone, session.id, key, ['session_status'], 1);
+    expect(statusEvents.some((event) => event.status === 'permission_required')).toBe(true);
+  });
+});
+
+/**
+ * #373's other half: an absent device gets the presence-aware push the
+ * relay's `case 'permission_request'` already fires on (#163), driven here
+ * by real `node-daemon.ts` code rather than a simulated raw wire message —
+ * mirrors `describe('attention_hint push trigger (#170)')` above exactly,
+ * including its own push-enabled relay (the shared `relay` from the outer
+ * `beforeEach` has no push config).
+ */
+describe('permission_request push trigger (#373)', () => {
+  interface RecordedPush {
+    endpoint: string;
+    sessionId: string;
+    kind: string;
+  }
+
+  async function startPushRelay(): Promise<{ relay: StartedRelay; calls: RecordedPush[] }> {
+    const calls: RecordedPush[] = [];
+    const pushRelay = await startRelay({
+      push: {
+        vapidKeys: {
+          publicKey: 'test-permission-push-pub',
+          privateKey: 'test-permission-push-priv',
+        },
+        subject: 'mailto:ops@example.com',
+        sender: {
+          async send(target, _vapidKeys, _subject, payload) {
+            calls.push({
+              endpoint: target.endpoint,
+              sessionId: payload.sessionId,
+              kind: payload.kind,
+            });
+            return { expired: false };
+          },
+        },
+      },
+    });
+    return { relay: pushRelay, calls };
+  }
+
+  async function subscribeDevice(
+    httpUrl: string,
+    accountId: string,
+    deviceId: string,
+    endpoint: string,
+  ): Promise<void> {
+    const response = await fetch(`${httpUrl}/push/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${accountId}` },
+      body: JSON.stringify({ deviceId, endpoint, keys: { p256dh: 'p', auth: 'a' } }),
+    });
+    expect(response.status).toBe(204);
+  }
+
+  it('pushes a permission_required push to an absent device, and not to one that is currently connected, when a live tool call needs approval', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permission-push';
+    const { relay: pushRelay, calls } = await startPushRelay();
+
+    try {
+      const httpUrl = pushRelay.url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+      await subscribeDevice(
+        httpUrl,
+        accountId,
+        'device-connected',
+        'https://push.example/connected',
+      );
+      await subscribeDevice(httpUrl, accountId, 'device-absent', 'https://push.example/absent');
+
+      // device-connected has a LIVE client connection right now.
+      phone = new TestPhone(pushRelay.url, {
+        deviceId: 'device-connected',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      node = createNode({
+        relayUrl: pushRelay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-permission-push',
+        deviceId: 'device-node-permission-push',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [permissionProvider()] }),
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-permission' });
+      // See the previous describe block's test for why this is fired
+      // without awaiting it.
+      node.promptSession(session.id, 'request-permission').catch(() => {});
+
+      await vi.waitFor(() => {
+        expect(
+          calls.some(
+            (call) => call.sessionId === session.id && call.kind === 'permission_required',
+          ),
+        ).toBe(true);
+      });
+
+      const sessionCalls = calls.filter(
+        (call) => call.sessionId === session.id && call.kind === 'permission_required',
+      );
+      // Every permission_required push this session triggered went to the
+      // absent device only — the connected device's own live client
+      // connection suppressed it, the same presence check #163's original
+      // permission_request push already relied on.
+      expect(sessionCalls).toEqual([
+        {
+          endpoint: 'https://push.example/absent',
+          sessionId: session.id,
+          kind: 'permission_required',
+        },
+      ]);
     } finally {
       await pushRelay.close();
     }
