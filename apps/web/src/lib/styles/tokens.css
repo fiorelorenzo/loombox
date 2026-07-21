@@ -1,0 +1,206 @@
+/*
+ * loombox design tokens (issue #195, SPEC.md §4 "Visual style").
+ *
+ * Single source of truth for every color/spacing/radius/elevation/z-index
+ * value the PWA draws from. Dark is the default (`:root`) because SPEC §4
+ * calls this "dark-mode-first (it is a dev tool)"; light is a secondary
+ * variant applied either automatically (`prefers-color-scheme: light`, for
+ * a user who has never chosen) or explicitly (`[data-theme="light"]`, set
+ * by `$lib/theme.ts` once a user picks a side — see that file's doc
+ * comment for how the two interact).
+ *
+ * NOTE ON THE PALETTE: SPEC §4 asks for an "ink/paper monochrome base plus
+ * one warm 'thread' accent (a loom-thread hue — warm coral/amber)". The
+ * exact hues below are a coherent first pass, not a final brand decision —
+ * every color a component draws goes through one of these custom
+ * properties, so retuning the whole app is a matter of editing the values
+ * in this one file, never hunting through components.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---------------------------------------------------------------- */
+  /* Neutral / surface ramp ("ink" — dark, default)                    */
+  /* ---------------------------------------------------------------- */
+  --color-bg: #0b0d10;
+  --color-surface: #14171b;
+  --color-surface-raised: #1c2025;
+  --color-overlay: rgb(6 7 9 / 72%);
+
+  /* Neutral "fill"/"border" scale: one hue (a cool slate), several
+     opacities, reused as both `background` and `border-color` across
+     components instead of each one inventing its own gray. */
+  --color-border-subtle: rgb(148 163 184 / 14%);
+  --color-border: rgb(148 163 184 / 28%);
+  --color-border-strong: rgb(148 163 184 / 46%);
+  --color-fill-subtle: rgb(148 163 184 / 10%);
+  --color-fill: rgb(148 163 184 / 20%);
+
+  /* ---------------------------------------------------------------- */
+  /* Text ramp                                                        */
+  /* ---------------------------------------------------------------- */
+  --color-text-primary: #eef0f2;
+  --color-text-secondary: #b7bcc3;
+  --color-text-muted: #80868f;
+  --color-text-inverse: #0b0d10;
+
+  /* ---------------------------------------------------------------- */
+  /* Brand accent — the "thread": warm coral/amber, used sparingly for  */
+  /* active/selected state and the woven motif (SPEC §4).              */
+  /* ---------------------------------------------------------------- */
+  --color-accent: #ef7d4c;
+  --color-accent-hover: #f4926a;
+  --color-accent-active: #d9622f;
+  --color-accent-subtle: rgb(239 125 76 / 16%);
+  --color-accent-contrast: #1a0e07;
+
+  /* ---------------------------------------------------------------- */
+  /* Semantic status                                                  */
+  /* ---------------------------------------------------------------- */
+  --color-success: #3fb27f;
+  --color-success-subtle: rgb(63 178 127 / 16%);
+  --color-warning: #e0a72e;
+  --color-warning-subtle: rgb(224 167 46 / 16%);
+  --color-danger: #e5636a;
+  --color-danger-subtle: rgb(229 99 106 / 16%);
+  --color-info: #5aa2e0;
+  --color-info-subtle: rgb(90 162 224 / 16%);
+
+  /* ---------------------------------------------------------------- */
+  /* Spacing scale (t-shirt sizes so the ratio, not a pixel-perfect     */
+  /* grid, is the thing worth keeping consistent)                      */
+  /* ---------------------------------------------------------------- */
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.375rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 3rem;
+
+  /* ---------------------------------------------------------------- */
+  /* Radius scale                                                     */
+  /* ---------------------------------------------------------------- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 999px;
+
+  /* ---------------------------------------------------------------- */
+  /* Elevation (dark surfaces read best with a soft, dark shadow       */
+  /* rather than a light-mode-style drop shadow)                      */
+  /* ---------------------------------------------------------------- */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 55%);
+
+  /* ---------------------------------------------------------------- */
+  /* Z-index scale — name the layer, not the number                   */
+  /* ---------------------------------------------------------------- */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 20;
+  --z-overlay: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+}
+
+/*
+ * Light variant ("paper"). Two ways in on purpose:
+ *  - `prefers-color-scheme: light` covers a first-ever visit before any
+ *    explicit choice exists (no `data-theme` attribute yet).
+ *  - `[data-theme="light"]` is the explicit, persisted choice `theme.ts`
+ *    writes onto `<html>`, and always wins over the media query (it's the
+ *    more specific selector and also comes second in source order for
+ *    `[data-theme="dark"]` vs the media query below).
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --color-bg: #f6f5f2;
+    --color-surface: #ffffff;
+    --color-surface-raised: #fffdfa;
+    --color-overlay: rgb(23 20 15 / 40%);
+
+    --color-border-subtle: rgb(71 85 105 / 8%);
+    --color-border: rgb(71 85 105 / 18%);
+    --color-border-strong: rgb(71 85 105 / 32%);
+    --color-fill-subtle: rgb(71 85 105 / 6%);
+    --color-fill: rgb(71 85 105 / 12%);
+
+    --color-text-primary: #16181b;
+    --color-text-secondary: #4a4e55;
+    --color-text-muted: #767b83;
+    --color-text-inverse: #f6f5f2;
+
+    --color-accent: #c85a2a;
+    --color-accent-hover: #b04f24;
+    --color-accent-active: #94421e;
+    --color-accent-subtle: rgb(200 90 42 / 12%);
+    --color-accent-contrast: #fff8f3;
+
+    --color-success: #1f8a5a;
+    --color-success-subtle: rgb(31 138 90 / 12%);
+    --color-warning: #a1710f;
+    --color-warning-subtle: rgb(161 113 15 / 12%);
+    --color-danger: #c23b41;
+    --color-danger-subtle: rgb(194 59 65 / 12%);
+    --color-info: #2568a8;
+    --color-info-subtle: rgb(37 104 168 / 12%);
+
+    --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
+    --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);
+    --shadow-lg: 0 12px 32px rgb(23 20 15 / 14%);
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --color-bg: #f6f5f2;
+  --color-surface: #ffffff;
+  --color-surface-raised: #fffdfa;
+  --color-overlay: rgb(23 20 15 / 40%);
+
+  --color-border-subtle: rgb(71 85 105 / 8%);
+  --color-border: rgb(71 85 105 / 18%);
+  --color-border-strong: rgb(71 85 105 / 32%);
+  --color-fill-subtle: rgb(71 85 105 / 6%);
+  --color-fill: rgb(71 85 105 / 12%);
+
+  --color-text-primary: #16181b;
+  --color-text-secondary: #4a4e55;
+  --color-text-muted: #767b83;
+  --color-text-inverse: #f6f5f2;
+
+  --color-accent: #c85a2a;
+  --color-accent-hover: #b04f24;
+  --color-accent-active: #94421e;
+  --color-accent-subtle: rgb(200 90 42 / 12%);
+  --color-accent-contrast: #fff8f3;
+
+  --color-success: #1f8a5a;
+  --color-success-subtle: rgb(31 138 90 / 12%);
+  --color-warning: #a1710f;
+  --color-warning-subtle: rgb(161 113 15 / 12%);
+  --color-danger: #c23b41;
+  --color-danger-subtle: rgb(194 59 65 / 12%);
+  --color-info: #2568a8;
+  --color-info-subtle: rgb(37 104 168 / 12%);
+
+  --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
+  --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);
+  --shadow-lg: 0 12px 32px rgb(23 20 15 / 14%);
+}
+
+/* Explicit dark choice always resolves back to the (identical) `:root`
+   defaults above — declared so `[data-theme="dark"]` is a valid, matched
+   selector in its own right rather than relying on absence-of-light. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}

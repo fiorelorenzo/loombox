@@ -68,19 +68,19 @@
 
 <style>
   .diff-viewer {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    font-size: 0.85rem;
+    font-size: var(--text-code-size);
   }
 
   .diff-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.6rem;
-    background: rgba(127, 127, 127, 0.1);
-    font-family: monospace;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    font-family: var(--font-mono);
   }
 
   .diff-path {
@@ -91,34 +91,34 @@
   }
 
   .diff-stats .added {
-    color: #16a34a;
+    color: var(--color-success);
   }
 
   .diff-stats .removed {
-    color: #dc2626;
-    margin-left: 0.35rem;
+    color: var(--color-danger);
+    margin-left: var(--space-xs);
   }
 
   .diff-lines {
     list-style: none;
     margin: 0;
     padding: 0;
-    font-family: monospace;
+    font-family: var(--font-mono);
     overflow-x: auto;
   }
 
   .diff-lines li {
     display: flex;
     white-space: pre;
-    padding: 0 0.5rem;
+    padding: 0 var(--space-sm);
   }
 
   .diff-lines li.added {
-    background: rgba(22, 163, 74, 0.12);
+    background: var(--color-success-subtle);
   }
 
   .diff-lines li.removed {
-    background: rgba(220, 38, 38, 0.12);
+    background: var(--color-danger-subtle);
   }
 
   .line-no {
@@ -127,7 +127,7 @@
     text-align: right;
     opacity: 0.45;
     flex-shrink: 0;
-    padding-right: 0.5rem;
+    padding-right: var(--space-sm);
     user-select: none;
   }
 
@@ -138,7 +138,7 @@
   }
 
   .structural-only {
-    padding: 0.6rem;
+    padding: var(--space-sm);
     opacity: 0.75;
     margin: 0;
   }

@@ -224,19 +224,19 @@
   .mcp-config {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    font-size: 0.85rem;
+    gap: var(--space-md);
+    font-size: var(--text-small-size);
   }
 
   h3 {
-    margin: 0 0 0.4rem;
+    margin: 0 0 var(--space-xs);
     font-size: 0.8rem;
     opacity: 0.7;
     font-weight: 600;
   }
 
   .error {
-    color: #dc2626;
+    color: var(--color-danger);
     margin: 0;
   }
 
@@ -247,13 +247,13 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .preset-list li {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .preset-description {
@@ -264,20 +264,20 @@
   .server-list li {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     flex-wrap: wrap;
   }
 
   .server-transport {
     opacity: 0.55;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .secret-badge {
-    background: rgba(220, 38, 38, 0.12);
-    color: #dc2626;
-    border-radius: 0.3rem;
-    padding: 0.1rem 0.4rem;
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3xs) var(--space-xs);
     font-size: 0.72rem;
   }
 
@@ -287,7 +287,7 @@
 
   .manual-form {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     flex-wrap: wrap;
   }
 

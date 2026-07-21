@@ -145,15 +145,15 @@
     display: flex;
     flex-wrap: wrap;
     align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.3rem;
+    gap: var(--space-sm);
+    padding: var(--space-2xs);
     border: 1px dashed transparent;
-    border-radius: 0.5rem;
+    border-radius: var(--radius-lg);
   }
 
   .attachment-bar.drag-active {
-    border-color: #4f46e5;
-    background: rgba(79, 70, 229, 0.06);
+    border-color: var(--color-accent);
+    background: var(--color-accent-subtle);
   }
 
   .file-input {
@@ -161,13 +161,13 @@
   }
 
   .pick-button {
-    border: 1px solid rgba(127, 127, 127, 0.4);
+    border: 1px solid var(--color-border-strong);
     background: transparent;
     color: inherit;
-    border-radius: 0.35rem;
-    padding: 0.3rem 0.6rem;
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: var(--text-small-size);
     align-self: center;
   }
 
@@ -177,40 +177,40 @@
     padding: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .chip {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    border: 1px solid rgba(127, 127, 127, 0.3);
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.4rem;
+    gap: var(--space-xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) var(--space-xs);
     max-width: 16rem;
   }
 
   .chip.failed {
-    border-color: #dc2626;
+    border-color: var(--color-danger);
   }
 
   .preview {
     width: 2rem;
     height: 2rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     object-fit: cover;
     flex-shrink: 0;
   }
 
   .preview.placeholder {
-    background: rgba(127, 127, 127, 0.2);
+    background: var(--color-fill);
   }
 
   .meta {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    gap: 0.1rem;
+    gap: var(--space-3xs);
   }
 
   .name {
@@ -226,17 +226,17 @@
   }
 
   .status.error {
-    color: #dc2626;
+    color: var(--color-danger);
     opacity: 1;
     white-space: normal;
   }
 
   .retry {
-    border: 1px solid #dc2626;
-    color: #dc2626;
+    border: 1px solid var(--color-danger);
+    color: var(--color-danger);
     background: transparent;
-    border-radius: 0.3rem;
-    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius-sm);
+    padding: var(--space-3xs) var(--space-xs);
     cursor: pointer;
     font-size: 0.7rem;
     flex-shrink: 0;
@@ -251,7 +251,7 @@
     font-size: 0.9rem;
     line-height: 1;
     flex-shrink: 0;
-    padding: 0 0.2rem;
+    padding: 0 var(--space-2xs);
   }
 
   .remove:hover {

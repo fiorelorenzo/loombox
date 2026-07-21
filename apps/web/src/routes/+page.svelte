@@ -27,6 +27,7 @@
   import { isThoughtStillThinking } from '$lib/thinking';
   import { isNarrowViewport } from '$lib/viewport';
   import { resolvePendingPushAction } from '$lib/push-action-routing';
+  import { themeStore, type ThemePreference } from '$lib/theme';
   import {
     createLocalStorageNotificationPreferencesStorage,
     defaultNotificationPreferences,
@@ -140,6 +141,12 @@
   let notificationPreferences = $state<NotificationPreferencesData>(
     defaultNotificationPreferences(),
   );
+  // Design tokens' theme toggle (SPEC.md §4/issue #195): mirrors
+  // `$lib/theme.ts`'s store so the header button's label reflects the
+  // current preference; the actual `data-theme` DOM effect and
+  // localStorage persistence happen in `theme.ts` itself, not here.
+  let themePreference = $state<ThemePreference>('system');
+
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
   // Narrow-viewport permission footer (SPEC §7.3; issue #134) — a live
@@ -604,6 +611,14 @@
   }
 
   onMount(() => {
+    // Design tokens' theme toggle (issue #195): `+layout.svelte` already
+    // called `themeStore.init()` (the DOM/localStorage side effect); this
+    // subscription only mirrors the resulting value into local state so
+    // the toggle button below can render the right label/icon.
+    const unsubscribeTheme = themeStore.preference.subscribe((value) => {
+      themePreference = value;
+    });
+
     amkStorage = createLocalStorageAmkStorage();
     deviceId = loadOrCreateDeviceId(createLocalStorageDeviceIdStorage());
 
@@ -660,6 +675,7 @@
       });
 
     return () => {
+      unsubscribeTheme();
       unsubscribeAuthSession();
       unsubscribeNarrow();
       disconnect();
@@ -671,6 +687,19 @@
 
 <main>
   <header>
+    <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
+         label, not an icon glyph, states the toggle's current mode. -->
+    <button
+      type="button"
+      class="theme-toggle"
+      onclick={() => themeStore.toggleTheme()}
+      title={`Theme: ${themePreference}`}
+      aria-label={`Switch theme (currently ${themePreference})`}
+      data-testid="theme-toggle"
+      data-theme-preference={themePreference}
+    >
+      {themePreference}
+    </button>
     <h1>{APP_NAME}</h1>
     <p>{APP_TAGLINE}</p>
   </header>
@@ -955,15 +984,12 @@
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
-    gap: 1rem;
-    padding: 1rem;
-    font-family:
-      system-ui,
-      -apple-system,
-      sans-serif;
+    gap: var(--space-lg);
+    padding: var(--space-lg);
   }
 
   header {
+    position: relative;
     text-align: center;
   }
 
@@ -973,15 +999,31 @@
   }
 
   header p {
-    margin: 0.25rem 0 0;
+    margin: var(--space-2xs) 0 0;
     opacity: 0.7;
+  }
+
+  /* Design tokens' theme toggle (issue #195): pinned to the header's
+     top-right corner rather than crowding the centered title/tagline. */
+  .theme-toggle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    text-transform: capitalize;
   }
 
   .connection {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .connection input {
@@ -991,25 +1033,25 @@
 
   .status {
     opacity: 0.7;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .inbox-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
     border: 1px solid currentColor;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     background: transparent;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .inbox-toggle.active {
-    background: rgba(79, 70, 229, 0.15);
-    border-color: rgba(79, 70, 229, 0.6);
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   .inbox-count {
@@ -1018,73 +1060,76 @@
     justify-content: center;
     min-width: 1.2rem;
     height: 1.2rem;
-    padding: 0 0.3rem;
-    border-radius: 999px;
-    background: rgba(217, 119, 6, 0.35);
+    padding: 0 var(--space-2xs);
+    border-radius: var(--radius-full);
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
     font-size: 0.7rem;
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feature-tabular);
   }
 
   .inbox-panel {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
-    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
   }
 
   .inbox-panel h2 {
     font-size: 1rem;
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--space-sm);
   }
 
   .notification-settings-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
     border: 1px solid currentColor;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     background: transparent;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .notification-settings-toggle.active {
-    background: rgba(79, 70, 229, 0.15);
-    border-color: rgba(79, 70, 229, 0.6);
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   .notification-settings-panel {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
-    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
   }
 
   .notification-settings-panel h2 {
     font-size: 1rem;
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--space-sm);
   }
 
   .file-tree-toggle {
     display: inline-flex;
     align-items: center;
     border: 1px solid currentColor;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     background: transparent;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .file-tree-toggle.active {
-    background: rgba(79, 70, 229, 0.15);
-    border-color: rgba(79, 70, 229, 0.6);
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   .file-tree-panel {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
-    padding: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm);
     max-height: 16rem;
     overflow-y: auto;
   }
@@ -1093,22 +1138,22 @@
     display: inline-flex;
     align-items: center;
     border: 1px solid currentColor;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     background: transparent;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .terminal-toggle.active {
-    background: rgba(79, 70, 229, 0.15);
-    border-color: rgba(79, 70, 229, 0.6);
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   .terminal-panel {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
     /* Reachability parity (#174): min-width 0 lets this panel shrink inside
        a narrow/mobile flex layout instead of forcing horizontal overflow —
        the same panel, not a separate mobile variant. */
@@ -1120,23 +1165,23 @@
     display: inline-flex;
     align-items: center;
     border: 1px solid currentColor;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     background: transparent;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .project-config-toggle.active {
-    background: rgba(79, 70, 229, 0.15);
-    border-color: rgba(79, 70, 229, 0.6);
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   .project-config-panel-wrapper {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
-    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     /* Same narrow/mobile parity fix as `.terminal-panel` (#174). */
     min-width: 0;
     max-height: 24rem;
@@ -1144,22 +1189,22 @@
   }
 
   .account {
-    font-family: monospace;
-    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
     opacity: 0.8;
   }
 
   .error {
-    color: #e5484d;
+    color: var(--color-danger);
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
     width: 100%;
   }
 
   .cockpit {
     display: flex;
     flex: 1;
-    gap: 1rem;
+    gap: var(--space-lg);
     min-height: 0;
   }
 
@@ -1170,7 +1215,7 @@
 
   .sessions h2 {
     font-size: 1rem;
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--space-sm);
   }
 
   .sessions ul {
@@ -1179,7 +1224,7 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-2xs);
   }
 
   .session {
@@ -1187,16 +1232,17 @@
     text-align: left;
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
-    padding: 0.5rem;
-    border-radius: 0.375rem;
+    gap: var(--space-3xs);
+    padding: var(--space-sm);
+    border-radius: var(--radius-md);
     border: 1px solid transparent;
     background: transparent;
     cursor: pointer;
   }
 
   .session.selected {
-    border-color: currentColor;
+    border-color: var(--color-accent);
+    background: var(--color-accent-subtle);
   }
 
   .session small {
@@ -1204,13 +1250,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-family: var(--font-mono);
   }
 
   .session-title-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     min-width: 0;
   }
 
@@ -1227,26 +1274,29 @@
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.02em;
-    padding: 0.1rem 0.4rem;
-    border-radius: 999px;
-    background: rgba(127, 127, 127, 0.2);
+    padding: var(--space-3xs) var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
     opacity: 0.85;
   }
 
   .status-badge[data-status='working'] {
-    background: rgba(79, 70, 229, 0.25);
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
   }
 
   .status-badge[data-status='permission_required'] {
-    background: rgba(217, 119, 6, 0.3);
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
   }
 
   .status-badge[data-status='error'] {
-    background: rgba(229, 72, 77, 0.3);
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
   }
 
   .status-badge[data-status='exited'] {
-    background: rgba(127, 127, 127, 0.35);
+    background: var(--color-fill);
   }
 
   .transcript {
@@ -1255,7 +1305,7 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    gap: 0.6rem;
+    gap: var(--space-sm);
   }
 
   .transcript-toolbar {
@@ -1263,9 +1313,9 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
-    padding-bottom: 0.4rem;
+    gap: var(--space-sm);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-xs);
   }
 
   .items {
@@ -1276,18 +1326,18 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .composer {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .composer-row {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .composer-row input {
@@ -1301,9 +1351,9 @@
   /* Stale approve/deny discard note (SPEC §7.3; issue #131). */
   .stale-notice {
     margin: 0;
-    padding: 0.4rem 0.6rem;
-    border-radius: 0.4rem;
-    background: rgba(217, 119, 6, 0.15);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    background: var(--color-warning-subtle);
     font-size: 0.8rem;
   }
 </style>

@@ -126,14 +126,14 @@
 
 <style>
   .message-item {
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    background: rgba(127, 127, 127, 0.1);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--color-fill-subtle);
   }
 
   .message-item.user {
     align-self: flex-end;
-    background: rgba(79, 70, 229, 0.15);
+    background: var(--color-accent-subtle);
   }
 
   .message-item.thought {
@@ -144,7 +144,7 @@
   .row {
     display: flex;
     align-items: flex-start;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .role {
@@ -152,7 +152,7 @@
     font-size: 0.7rem;
     text-transform: uppercase;
     opacity: 0.6;
-    padding-top: 0.15rem;
+    padding-top: var(--space-3xs);
   }
 
   .text {

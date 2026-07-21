@@ -50,10 +50,10 @@
     border: none;
     background: transparent;
     cursor: pointer;
-    padding: 0.15rem 0.35rem;
-    border-radius: 0.25rem;
+    padding: var(--space-3xs) var(--space-xs);
+    border-radius: var(--radius-sm);
     opacity: 0.5;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
     line-height: 1;
     color: inherit;
   }
@@ -61,7 +61,7 @@
   .copy-button:hover,
   .copy-button:focus-visible {
     opacity: 1;
-    background: rgba(127, 127, 127, 0.15);
+    background: var(--color-fill-subtle);
   }
 
   .copy-button.copied {

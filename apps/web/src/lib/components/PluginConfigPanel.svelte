@@ -132,19 +132,19 @@
   .plugin-config {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    font-size: 0.85rem;
+    gap: var(--space-md);
+    font-size: var(--text-small-size);
   }
 
   h3 {
-    margin: 0 0 0.4rem;
+    margin: 0 0 var(--space-xs);
     font-size: 0.8rem;
     opacity: 0.7;
     font-weight: 600;
   }
 
   .error {
-    color: #dc2626;
+    color: var(--color-danger);
     margin: 0;
   }
 
@@ -154,18 +154,18 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .plugin-list li {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .plugin-source {
     opacity: 0.55;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .remove {
@@ -174,7 +174,7 @@
 
   .add-form {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     flex-wrap: wrap;
   }
 

@@ -44,25 +44,25 @@
   .turn-stop {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    border: 1px solid #dc2626;
-    color: #dc2626;
+    gap: var(--space-xs);
+    border: 1px solid var(--color-danger);
+    color: var(--color-danger);
     background: transparent;
-    border-radius: 0.375rem;
-    padding: 0.3rem 0.7rem;
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) 0.7rem;
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
     font-weight: 600;
   }
 
   .turn-stop:hover {
-    background: rgba(220, 38, 38, 0.1);
+    background: var(--color-danger-subtle);
   }
 
   .dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 999px;
+    width: var(--space-sm);
+    height: var(--space-sm);
+    border-radius: var(--radius-full);
     background: currentColor;
   }
 </style>

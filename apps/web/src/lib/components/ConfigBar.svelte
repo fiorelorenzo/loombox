@@ -93,15 +93,15 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
+    gap: var(--space-sm);
     font-size: 0.8rem;
-    padding: 0.4rem 0;
+    padding: var(--space-xs) 0;
   }
 
   .control {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
   }
 
   .label {
@@ -110,28 +110,30 @@
 
   .mode {
     display: inline-flex;
-    border: 1px solid rgba(127, 127, 127, 0.3);
-    border-radius: 0.4rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
     overflow: hidden;
   }
 
   .mode-choice {
     border: none;
     background: transparent;
-    padding: 0.2rem 0.5rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     color: inherit;
   }
 
   .mode-choice.selected {
-    background: rgba(79, 70, 229, 0.2);
+    background: var(--color-accent-subtle);
     font-weight: 600;
   }
 
   .meter {
     margin-left: auto;
     display: flex;
-    gap: 0.6rem;
+    gap: var(--space-sm);
     opacity: 0.75;
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feature-tabular);
   }
 </style>

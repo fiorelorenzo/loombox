@@ -38,7 +38,7 @@
 
   .copy-row {
     position: absolute;
-    top: 0.25rem;
-    right: 0.4rem;
+    top: var(--space-2xs);
+    right: var(--space-xs);
   }
 </style>

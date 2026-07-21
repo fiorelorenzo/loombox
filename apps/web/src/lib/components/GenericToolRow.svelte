@@ -39,16 +39,16 @@
 
 <style>
   .generic-tool-row {
-    border: 1px solid rgba(127, 127, 127, 0.2);
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.7rem;
-    font-size: 0.85rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) 0.7rem;
+    font-size: var(--text-small-size);
   }
 
   .row-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .kind-badge {
@@ -57,8 +57,8 @@
     letter-spacing: 0.03em;
     opacity: 0.6;
     border: 1px solid currentColor;
-    border-radius: 0.25rem;
-    padding: 0.05rem 0.3rem;
+    border-radius: var(--radius-sm);
+    padding: 0.05rem var(--space-2xs);
   }
 
   .title {
@@ -70,16 +70,17 @@
 
   .status {
     opacity: 0.6;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .output {
-    margin: 0.4rem 0 0;
-    padding: 0.4rem 0.5rem;
-    background: rgba(127, 127, 127, 0.08);
-    border-radius: 0.35rem;
+    margin: var(--space-xs) 0 0;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-md);
     overflow-x: auto;
     white-space: pre-wrap;
-    font-size: 0.8rem;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
   }
 </style>

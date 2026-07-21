@@ -41,18 +41,18 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: var(--space-xs);
   }
 
   .queued-item {
     align-self: flex-end;
     display: flex;
     align-items: flex-start;
-    gap: 0.4rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    border: 1px dashed rgba(79, 70, 229, 0.5);
-    background: rgba(79, 70, 229, 0.06);
+    gap: var(--space-xs);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-lg);
+    border: 1px dashed var(--color-accent);
+    background: var(--color-accent-subtle);
     opacity: 0.75;
   }
 
@@ -62,7 +62,7 @@
     text-transform: uppercase;
     letter-spacing: 0.03em;
     opacity: 0.75;
-    padding-top: 0.2rem;
+    padding-top: var(--space-2xs);
   }
 
   .text {

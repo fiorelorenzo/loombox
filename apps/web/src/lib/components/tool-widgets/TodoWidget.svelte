@@ -36,16 +36,16 @@
 
 <style>
   .todo-widget {
-    border: 1px solid rgba(127, 127, 127, 0.2);
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.7rem;
-    font-size: 0.85rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) 0.7rem;
+    font-size: var(--text-small-size);
   }
 
   .header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .title {
@@ -55,16 +55,16 @@
 
   .todos {
     list-style: none;
-    margin: 0.4rem 0 0;
+    margin: var(--space-xs) 0 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-2xs);
   }
 
   .todos li {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .todos li.completed .content {

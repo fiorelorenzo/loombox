@@ -60,8 +60,8 @@
 
 <style>
   .tool-call-row.awaiting-permission {
-    outline: 2px solid #f59e0b;
+    outline: 2px solid var(--color-warning);
     outline-offset: 2px;
-    border-radius: 0.5rem;
+    border-radius: var(--radius-lg);
   }
 </style>

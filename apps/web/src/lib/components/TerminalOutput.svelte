@@ -47,19 +47,19 @@
 
 <style>
   .terminal-output {
-    border-radius: 0.5rem;
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    background: #0b0b12;
-    color: #e5e7eb;
-    font-family: monospace;
-    font-size: 0.85rem;
+    background: var(--color-bg);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
   }
 
   .header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.6rem;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
   }
 
   .prompt {
@@ -74,12 +74,12 @@
 
   .status {
     opacity: 0.6;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .body {
     margin: 0;
-    padding: 0.5rem 0.6rem;
+    padding: var(--space-sm) var(--space-sm);
     white-space: pre-wrap;
     overflow-x: auto;
     /* A read-only rendering — never focusable/editable, only selectable for copy. */

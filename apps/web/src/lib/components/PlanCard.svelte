@@ -61,8 +61,8 @@
 
 <style>
   .plan-card {
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
     overflow: hidden;
     font-size: 0.9rem;
   }
@@ -71,9 +71,9 @@
     width: 100%;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.7rem;
-    background: rgba(127, 127, 127, 0.08);
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0.7rem;
+    background: var(--color-fill-subtle);
     border: none;
     cursor: pointer;
     color: inherit;
@@ -87,14 +87,14 @@
 
   .progress {
     opacity: 0.6;
-    font-size: 0.8rem;
+    font-size: var(--text-small-size);
   }
 
   .shimmer {
-    width: 0.6rem;
-    height: 0.6rem;
+    width: var(--space-sm);
+    height: var(--space-sm);
     border-radius: 50%;
-    background: currentColor;
+    background: var(--color-accent);
     animation: pulse 1.2s ease-in-out infinite;
   }
 
@@ -111,15 +111,15 @@
   .plan-entries {
     list-style: none;
     margin: 0;
-    padding: 0.4rem 0.7rem;
+    padding: var(--space-xs) 0.7rem;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
   }
 
   .plan-entries li {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     align-items: baseline;
   }
 
@@ -135,7 +135,7 @@
   .plan-actions {
     display: flex;
     justify-content: flex-end;
-    padding: 0 0.5rem 0.4rem;
+    padding: 0 var(--space-sm) var(--space-xs);
   }
 
   /* Touch-optimized plan controls (SPEC.md §7.3, issue #133): the plan

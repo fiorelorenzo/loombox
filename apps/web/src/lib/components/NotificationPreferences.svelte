@@ -147,15 +147,15 @@
   .notification-preferences {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    font-size: 0.85rem;
+    gap: var(--space-md);
+    font-size: var(--text-small-size);
   }
 
   .quiet-hours,
   .muted-projects {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   h3 {
@@ -168,14 +168,14 @@
   .quiet-toggle {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     cursor: pointer;
   }
 
   .quiet-range {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .muted-projects ul {
@@ -184,13 +184,13 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
   }
 
   .muted-projects label {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-xs);
     cursor: pointer;
   }
 

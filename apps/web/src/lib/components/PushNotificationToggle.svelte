@@ -91,7 +91,7 @@
   .push-toggle {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     font-size: 0.8rem;
   }
 
@@ -100,14 +100,14 @@
   }
 
   .error {
-    color: #e5484d;
+    color: var(--color-danger);
   }
 
   button {
     font: inherit;
-    padding: 0.3rem 0.6rem;
-    border-radius: 0.4rem;
-    border: 1px solid rgba(127, 127, 127, 0.3);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
     background: transparent;
     color: inherit;
     cursor: pointer;
