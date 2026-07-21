@@ -46,14 +46,22 @@
   --color-text-inverse: #0b0d10;
 
   /* ---------------------------------------------------------------- */
-  /* Brand accent — the "thread": warm coral/amber, used sparingly for  */
-  /* active/selected state and the woven motif (SPEC §4).              */
+  /* Brand accent — the "thread" (SPEC §4), used sparingly for          */
+  /* active/selected state and the woven motif. Azure is the default    */
+  /* preset (issue #376); it and the other five presets, plus a custom  */
+  /* hex, are selectable at runtime via `$lib/accent.ts`, which          */
+  /* overrides these five custom properties on `:root` — the values     */
+  /* below are only the pre-JS/no-choice-yet default, derived from      */
+  /* azure's base hex (#3b9df7) by the exact same                       */
+  /* `$lib/accent-color.ts#deriveAccentPalette` every preset and custom  */
+  /* accent goes through (hover ~8% darker, active ~14% darker, subtle   */
+  /* 16%-alpha, contrast = the AA-correct on-accent ink).                */
   /* ---------------------------------------------------------------- */
-  --color-accent: #ef7d4c;
-  --color-accent-hover: #f4926a;
-  --color-accent-active: #d9622f;
-  --color-accent-subtle: rgb(239 125 76 / 16%);
-  --color-accent-contrast: #1a0e07;
+  --color-accent: #3b9df7;
+  --color-accent-hover: #3690e3;
+  --color-accent-active: #3387d4;
+  --color-accent-subtle: rgb(59 157 247 / 16%);
+  --color-accent-contrast: #0a0a0a;
 
   /* ---------------------------------------------------------------- */
   /* Semantic status                                                  */
@@ -138,11 +146,11 @@
     --color-text-muted: #767b83;
     --color-text-inverse: #f6f5f2;
 
-    --color-accent: #c85a2a;
-    --color-accent-hover: #b04f24;
-    --color-accent-active: #94421e;
-    --color-accent-subtle: rgb(200 90 42 / 12%);
-    --color-accent-contrast: #fff8f3;
+    --color-accent: #1f7fd0;
+    --color-accent-hover: #1d75bf;
+    --color-accent-active: #1b6db3;
+    --color-accent-subtle: rgb(31 127 208 / 16%);
+    --color-accent-contrast: #0a0a0a;
 
     --color-success: #1f8a5a;
     --color-success-subtle: rgb(31 138 90 / 12%);
@@ -178,11 +186,11 @@
   --color-text-muted: #767b83;
   --color-text-inverse: #f6f5f2;
 
-  --color-accent: #c85a2a;
-  --color-accent-hover: #b04f24;
-  --color-accent-active: #94421e;
-  --color-accent-subtle: rgb(200 90 42 / 12%);
-  --color-accent-contrast: #fff8f3;
+  --color-accent: #1f7fd0;
+  --color-accent-hover: #1d75bf;
+  --color-accent-active: #1b6db3;
+  --color-accent-subtle: rgb(31 127 208 / 16%);
+  --color-accent-contrast: #0a0a0a;
 
   --color-success: #1f8a5a;
   --color-success-subtle: rgb(31 138 90 / 12%);

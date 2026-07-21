@@ -5,6 +5,7 @@
   import '$lib/styles/tokens.css';
   import '$lib/styles/typography.css';
   import { themeStore } from '$lib/theme';
+  import { accentStore } from '$lib/accent';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -25,8 +26,15 @@
   // client-side, before the rest of the app renders. See `$lib/theme.ts`'s
   // doc comment for how this interacts with `tokens.css`'s CSS-only
   // `prefers-color-scheme` fallback.
+  //
+  // The accent-theming mechanism (issue #376) is initialized right after —
+  // it subscribes to `themeStore.preference` internally, so `theme.ts`'s
+  // own `init()` must run first (it's what gives that store its real,
+  // possibly-persisted starting value rather than the module's static
+  // default).
   onMount(() => {
     themeStore.init();
+    accentStore.init();
   });
 </script>
 

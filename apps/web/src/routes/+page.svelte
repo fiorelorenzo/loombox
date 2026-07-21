@@ -9,7 +9,7 @@
     TranscriptState,
   } from '@loombox/providers-core';
   import { createPermissionQueueState, headPermissionRequest } from '@loombox/providers-core';
-  import { APP_NAME, APP_TAGLINE } from '$lib/constants';
+  import { APP_TAGLINE } from '$lib/constants';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import {
     RelayClient,
@@ -34,8 +34,10 @@
     type NotificationPreferences as NotificationPreferencesData,
     type NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
+  import AppearanceSettings from '$lib/components/AppearanceSettings.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import AttentionInbox from '$lib/components/AttentionInbox.svelte';
+  import BrandLockup from '$lib/components/BrandLockup.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
@@ -146,6 +148,11 @@
   // current preference; the actual `data-theme` DOM effect and
   // localStorage persistence happen in `theme.ts` itself, not here.
   let themePreference = $state<ThemePreference>('system');
+  // Appearance settings panel (SPEC.md §4; issues #194/#376): a togglable
+  // panel, same shape as `notificationSettingsOpen` below, holding the
+  // theme radios and the accent preset/custom picker. `AppearanceSettings`
+  // itself owns all the reading/writing against `theme.ts`/`accent.ts`.
+  let appearanceSettingsOpen = $state(false);
 
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
@@ -687,22 +694,40 @@
 
 <main>
   <header>
-    <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
-         label, not an icon glyph, states the toggle's current mode. -->
-    <button
-      type="button"
-      class="theme-toggle"
-      onclick={() => themeStore.toggleTheme()}
-      title={`Theme: ${themePreference}`}
-      aria-label={`Switch theme (currently ${themePreference})`}
-      data-testid="theme-toggle"
-      data-theme-preference={themePreference}
-    >
-      {themePreference}
-    </button>
-    <h1>{APP_NAME}</h1>
+    <h1 class="brand-heading"><BrandLockup /></h1>
     <p>{APP_TAGLINE}</p>
+    <div class="header-actions">
+      <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
+           label, not an icon glyph, states the toggle's current mode. -->
+      <button
+        type="button"
+        class="theme-toggle"
+        onclick={() => themeStore.toggleTheme()}
+        title={`Theme: ${themePreference}`}
+        aria-label={`Switch theme (currently ${themePreference})`}
+        data-testid="theme-toggle"
+        data-theme-preference={themePreference}
+      >
+        {themePreference}
+      </button>
+      <button
+        type="button"
+        class="appearance-toggle"
+        class:active={appearanceSettingsOpen}
+        onclick={() => (appearanceSettingsOpen = !appearanceSettingsOpen)}
+        data-testid="appearance-settings-toggle"
+      >
+        Appearance
+      </button>
+    </div>
   </header>
+
+  {#if appearanceSettingsOpen}
+    <section class="appearance-settings-panel">
+      <h2>Appearance</h2>
+      <AppearanceSettings />
+    </section>
+  {/if}
 
   {#if !authChecked}
     <section class="connection">
@@ -993,8 +1018,9 @@
     text-align: center;
   }
 
-  h1 {
-    font-size: 1.5rem;
+  .brand-heading {
+    display: flex;
+    justify-content: center;
     margin: 0;
   }
 
@@ -1003,12 +1029,19 @@
     opacity: 0.7;
   }
 
-  /* Design tokens' theme toggle (issue #195): pinned to the header's
-     top-right corner rather than crowding the centered title/tagline. */
-  .theme-toggle {
+  /* Brand lockup (issue #194) + theme/appearance toggles (issue #195/#376):
+     pinned to the header's top-right corner rather than crowding the
+     centered lockup/tagline. */
+  .header-actions {
     position: absolute;
     top: 0;
     right: 0;
+    display: flex;
+    gap: var(--space-2xs);
+  }
+
+  .theme-toggle,
+  .appearance-toggle {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: transparent;
@@ -1016,7 +1049,26 @@
     padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     font-size: var(--text-small-size);
+  }
+
+  .theme-toggle {
     text-transform: capitalize;
+  }
+
+  .appearance-toggle.active {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+  }
+
+  .appearance-settings-panel {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+
+  .appearance-settings-panel h2 {
+    font-size: 1rem;
+    margin: 0 0 var(--space-sm);
   }
 
   .connection {
