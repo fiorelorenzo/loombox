@@ -195,13 +195,13 @@
 
 <style>
   .permission-card {
-    border: 1px solid #f59e0b;
-    border-radius: 0.6rem;
-    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-xl);
+    padding: var(--space-sm) var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    background: rgba(245, 158, 11, 0.06);
+    gap: var(--space-sm);
+    background: var(--color-warning-subtle);
   }
 
   .permission-card:not(.actionable) {
@@ -209,7 +209,7 @@
   }
 
   .permission-card:focus-visible {
-    outline: 2px solid #f59e0b;
+    outline: 2px solid var(--color-warning);
     outline-offset: 2px;
   }
 
@@ -219,24 +219,25 @@
 
   .field {
     margin: 0;
-    padding: 0.4rem 0.5rem;
-    background: rgba(127, 127, 127, 0.08);
-    border-radius: 0.35rem;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-md);
     overflow-x: auto;
     white-space: pre-wrap;
-    font-size: 0.8rem;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
   }
 
   .locations {
     margin: 0;
     opacity: 0.65;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .options {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   /* Narrow-viewport permission footer (SPEC.md §7.3; issue #134): the
@@ -257,7 +258,7 @@
   .options-overflow {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
     max-height: 10rem;
     overflow-y: auto;
   }
@@ -265,21 +266,21 @@
   .option {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    border-radius: 0.35rem;
+    gap: var(--space-2xs);
+    border-radius: var(--radius-md);
     border: 1px solid currentColor;
-    padding: 0.3rem 0.6rem;
+    padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     background: transparent;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .option.allow {
-    color: #16a34a;
+    color: var(--color-success);
   }
 
   .option.reject {
-    color: #dc2626;
+    color: var(--color-danger);
   }
 
   .option:disabled {
@@ -290,8 +291,8 @@
     opacity: 0.55;
     font-size: 0.7rem;
     border: 1px solid currentColor;
-    border-radius: 0.2rem;
-    padding: 0 0.25rem;
+    border-radius: var(--radius-sm);
+    padding: 0 var(--space-2xs);
   }
 
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a

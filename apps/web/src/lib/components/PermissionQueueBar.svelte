@@ -54,7 +54,7 @@
   .permission-queue-bar {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   /* Narrow-viewport permission footer (SPEC.md §7.3; issue #134): pinned to
@@ -63,26 +63,26 @@
   .permission-queue-bar.narrow {
     position: sticky;
     bottom: 0;
-    padding-top: 0.4rem;
-    background: var(--loombox-surface, canvas);
+    padding-top: var(--space-xs);
+    background: var(--color-surface);
   }
 
   .queue-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
     opacity: 0.7;
   }
 
   .stop {
-    border: 1px solid #dc2626;
-    color: #dc2626;
+    border: 1px solid var(--color-danger);
+    color: var(--color-danger);
     background: transparent;
-    border-radius: 0.3rem;
-    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+    padding: var(--space-3xs) var(--space-sm);
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): a

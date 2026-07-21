@@ -1,0 +1,104 @@
+/*
+ * Typography tokens + type scale (issue #196, SPEC.md §4 "Typography: a
+ * clean grotesk for UI (e.g. Inter); a monospace (e.g. JetBrains Mono) for
+ * agent output, code, and diffs.").
+ *
+ * `--font-ui`/`--font-mono` name the two roles the spec calls out; each
+ * fallback stack ends in a generic (`sans-serif`/`monospace`) that every
+ * platform ships, so there's no invisible-text flash before the
+ * self-hosted `@font-face`s in `fonts.css` finish loading (`font-display:
+ * swap` on those rules means the fallback paints immediately and swaps in
+ * once ready, rather than a blank gap).
+ */
+
+@import './fonts.css';
+
+:root {
+  --font-ui: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:
+    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* A dev cockpit reads a lot of aligned numbers (usage counters, costs,
+     timestamps) — tabular figures keep those columns from jittering as
+     digits change. Ligatures are left off `--font-mono` by default (SPEC
+     doesn't call for them); `.font-ligatures` opts a code surface in. */
+  --font-feature-tabular: 'tnum' 1, 'lnum' 1;
+
+  /* ---------------------------------------------------------------- */
+  /* Type scale: size / line-height / weight per role.                 */
+  /* ---------------------------------------------------------------- */
+  --text-display-size: 1.75rem;
+  --text-display-line: 2.15rem;
+  --text-display-weight: 650;
+
+  --text-title-size: 1.125rem;
+  --text-title-line: 1.5rem;
+  --text-title-weight: 600;
+
+  --text-body-size: 0.95rem;
+  --text-body-line: 1.45rem;
+  --text-body-weight: 400;
+
+  --text-small-size: 0.8rem;
+  --text-small-line: 1.15rem;
+  --text-small-weight: 400;
+
+  --text-code-size: 0.85rem;
+  --text-code-line: 1.4rem;
+  --text-code-weight: 400;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Base element styles — the app's default typographic surface.           */
+/* ---------------------------------------------------------------------- */
+
+html {
+  font-family: var(--font-ui);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  font-weight: var(--text-body-weight);
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  color-scheme: inherit;
+}
+
+body {
+  margin: 0;
+}
+
+/* Every monospace transcript/terminal/diff surface in apps/web (SPEC §4:
+   "agent output, code, and diffs") opts in via `.font-mono` alongside the
+   bare element selectors, since several of those surfaces render inside a
+   <div>/<span>, not a <pre>/<code>. */
+code,
+kbd,
+pre,
+samp,
+.font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: var(--font-feature-tabular);
+}
+
+.font-mono.font-ligatures {
+  font-variant-ligatures: contextual;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-ui);
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--text-display-size);
+  line-height: var(--text-display-line);
+  font-weight: var(--text-display-weight);
+}
+
+h2 {
+  font-size: var(--text-title-size);
+  line-height: var(--text-title-line);
+  font-weight: var(--text-title-weight);
+}

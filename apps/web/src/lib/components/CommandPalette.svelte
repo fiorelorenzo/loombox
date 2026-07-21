@@ -186,12 +186,12 @@
   .palette-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--color-overlay);
     display: flex;
     align-items: flex-start;
     justify-content: center;
     padding-top: 10vh;
-    z-index: 50;
+    z-index: var(--z-modal);
   }
 
   .palette {
@@ -199,17 +199,17 @@
     max-height: 70vh;
     display: flex;
     flex-direction: column;
-    border-radius: 0.6rem;
-    background: canvas;
-    color: canvastext;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    border-radius: var(--radius-xl);
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
   }
 
   .palette-input {
-    padding: 0.75rem 0.9rem;
+    padding: var(--space-md) 0.9rem;
     border: none;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    border-bottom: 1px solid var(--color-border);
     font-size: 1rem;
     background: transparent;
     color: inherit;
@@ -222,33 +222,33 @@
   .palette-results {
     list-style: none;
     margin: 0;
-    padding: 0.3rem;
+    padding: var(--space-2xs);
     overflow-y: auto;
     flex: 1;
   }
 
   .palette-empty {
-    padding: 0.6rem;
+    padding: var(--space-sm);
     opacity: 0.6;
-    font-size: 0.85rem;
+    font-size: var(--text-small-size);
   }
 
   .palette-item {
     width: 100%;
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     text-align: left;
     border: none;
     background: transparent;
     color: inherit;
-    padding: 0.45rem 0.6rem;
-    border-radius: 0.4rem;
+    padding: 0.45rem var(--space-sm);
+    border-radius: var(--radius-md);
     cursor: pointer;
   }
 
   .palette-item.active {
-    background: rgba(79, 70, 229, 0.18);
+    background: var(--color-accent-subtle);
   }
 
   .kind {
@@ -267,16 +267,16 @@
 
   .meta {
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
     opacity: 0.55;
   }
 
   .palette-hints {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem;
-    padding: 0.5rem 0.9rem;
-    border-top: 1px solid rgba(127, 127, 127, 0.2);
+    gap: var(--space-md);
+    padding: var(--space-sm) 0.9rem;
+    border-top: 1px solid var(--color-border);
     font-size: 0.7rem;
     opacity: 0.6;
   }

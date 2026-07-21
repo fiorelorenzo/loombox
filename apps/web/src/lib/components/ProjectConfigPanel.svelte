@@ -47,7 +47,7 @@
   .project-config {
     display: flex;
     flex-wrap: wrap;
-    gap: 1.2rem;
+    gap: var(--space-xl);
   }
 
   .project-config-section {
@@ -58,7 +58,7 @@
   }
 
   h3 {
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--space-sm);
     font-size: 0.85rem;
     opacity: 0.7;
     font-weight: 600;

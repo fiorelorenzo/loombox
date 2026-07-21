@@ -18,10 +18,13 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'service-worker.ts',
       injectManifest: {
-        // Precache only the built client bundle/assets, matching the v0
-        // spike's original `generateSW` scope — offline data strategy
-        // beyond "survive a reload" is still out of scope here.
-        globPatterns: ['client/**/*.{js,css,ico,png,svg,webmanifest}'],
+        // Precache the built client bundle/assets. `woff2` was added
+        // alongside the design-token foundation (issue #196): the two
+        // self-hosted brand typefaces (`$lib/styles/fonts.css`) ship as
+        // Latin-subset `.woff2` files bundled into `client/`, and the PWA
+        // being usable offline (SPEC §4/§10) means those need to be
+        // precached too, not just fetched-and-browser-cached on first load.
+        globPatterns: ['client/**/*.{js,css,ico,png,svg,webmanifest,woff2}'],
       },
       manifest: {
         name: 'loombox',
@@ -30,8 +33,11 @@ export default defineConfig({
         start_url: '/',
         scope: '/',
         display: 'standalone',
-        background_color: '#0b0b12',
-        theme_color: '#4f46e5',
+        // Mirrors tokens.css's dark-first --color-bg/--color-accent
+        // (issue #195) for the OS splash screen/task switcher, which can't
+        // read CSS custom properties.
+        background_color: '#0b0d10',
+        theme_color: '#0b0d10',
         icons: [
           {
             src: '/icons/icon-192.png',

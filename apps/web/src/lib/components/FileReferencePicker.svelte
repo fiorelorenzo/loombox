@@ -172,12 +172,12 @@
   .picker-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--color-overlay);
     display: flex;
     align-items: flex-start;
     justify-content: center;
     padding-top: 12vh;
-    z-index: 60;
+    z-index: var(--z-modal);
   }
 
   .picker {
@@ -185,17 +185,17 @@
     max-height: 60vh;
     display: flex;
     flex-direction: column;
-    border-radius: 0.6rem;
-    background: canvas;
-    color: canvastext;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    border-radius: var(--radius-xl);
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
   }
 
   .picker-input {
-    padding: 0.65rem 0.8rem;
+    padding: 0.65rem var(--space-md);
     border: none;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    border-bottom: 1px solid var(--color-border);
     font-size: 0.95rem;
     background: transparent;
     color: inherit;
@@ -208,15 +208,15 @@
   .picker-results {
     list-style: none;
     margin: 0;
-    padding: 0.3rem;
+    padding: var(--space-2xs);
     overflow-y: auto;
     flex: 1;
   }
 
   .picker-empty {
-    padding: 0.5rem;
+    padding: var(--space-sm);
     opacity: 0.6;
-    font-size: 0.8rem;
+    font-size: var(--text-small-size);
   }
 
   .picker-item {
@@ -225,28 +225,29 @@
     border: none;
     background: transparent;
     color: inherit;
-    padding: 0.4rem 0.55rem;
-    border-radius: 0.35rem;
+    padding: var(--space-xs) 0.55rem;
+    border-radius: var(--radius-md);
     cursor: pointer;
     font-size: 0.82rem;
   }
 
   .picker-item.active {
-    background: rgba(79, 70, 229, 0.18);
+    background: var(--color-accent-subtle);
   }
 
   .path {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-family: var(--font-mono);
   }
 
   .picker-hints {
     display: flex;
     flex-wrap: wrap;
     gap: 0.65rem;
-    padding: 0.4rem 0.8rem;
-    border-top: 1px solid rgba(127, 127, 127, 0.2);
+    padding: var(--space-xs) var(--space-md);
+    border-top: 1px solid var(--color-border);
     font-size: 0.68rem;
     opacity: 0.6;
   }

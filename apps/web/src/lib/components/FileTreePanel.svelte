@@ -102,19 +102,20 @@
 
 <style>
   .file-tree {
-    font-size: 0.82rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
     overflow-y: auto;
   }
 
   .tree-status {
     margin: 0;
-    padding: 0.2rem 0.4rem;
+    padding: var(--space-3xs) var(--space-xs);
     opacity: 0.65;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 
   .tree-status.error {
-    color: #dc2626;
+    color: var(--color-danger);
     opacity: 1;
   }
 
@@ -131,20 +132,20 @@
   .tree-row {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-xs);
     width: 100%;
     border: none;
     background: transparent;
     color: inherit;
     text-align: left;
-    padding: 0.15rem 0.3rem;
-    border-radius: 0.3rem;
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font: inherit;
   }
 
   .tree-row:hover {
-    background: rgba(127, 127, 127, 0.12);
+    background: var(--color-fill-subtle);
   }
 
   .icon {

@@ -158,7 +158,7 @@
   .attention-inbox {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .empty {
@@ -172,46 +172,46 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .item {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.5rem;
-    border: 1px solid rgba(127, 127, 127, 0.25);
-    border-left-width: 0.25rem;
-    border-radius: 0.5rem;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-left-width: var(--space-2xs);
+    border-radius: var(--radius-lg);
   }
 
   /* Each class gets its own border-left color, in addition to the
      text `.kind-badge` — color is never the only signal (accessibility). */
   .item[data-kind='permission'] {
-    border-left-color: rgba(217, 119, 6, 0.6);
+    border-left-color: var(--color-warning);
   }
 
   .item[data-kind='awaiting_input'] {
-    border-left-color: rgba(79, 70, 229, 0.6);
+    border-left-color: var(--color-accent);
   }
 
   .item[data-kind='session_outcome'] {
-    border-left-color: rgba(5, 150, 105, 0.6);
+    border-left-color: var(--color-success);
   }
 
   .item[data-kind='ci_failure'] {
-    border-left-color: rgba(220, 38, 38, 0.6);
+    border-left-color: var(--color-danger);
   }
 
   .item[data-kind='review_request'] {
-    border-left-color: rgba(37, 99, 235, 0.6);
+    border-left-color: var(--color-info);
   }
 
   .item-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     flex-wrap: wrap;
   }
 
@@ -221,9 +221,9 @@
     text-transform: uppercase;
     letter-spacing: 0.03em;
     opacity: 0.8;
-    padding: 0.1rem 0.4rem;
+    padding: var(--space-3xs) var(--space-xs);
     border: 1px solid currentColor;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     white-space: nowrap;
   }
 
@@ -231,7 +231,7 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.1rem;
+    gap: var(--space-3xs);
     background: transparent;
     border: none;
     padding: 0;
@@ -246,32 +246,32 @@
   }
 
   .need {
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
     opacity: 0.75;
   }
 
   .reply {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-xs);
   }
 
   .reply input {
     flex: 1;
     min-width: 0;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-strong);
     background: transparent;
     color: inherit;
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-2xs) var(--space-sm);
     font: inherit;
   }
 
   .reply button {
-    border-radius: 0.35rem;
+    border-radius: var(--radius-md);
     border: 1px solid currentColor;
     background: transparent;
     color: inherit;
-    padding: 0.3rem 0.7rem;
+    padding: var(--space-2xs) var(--space-md);
     cursor: pointer;
     font: inherit;
   }

@@ -104,20 +104,20 @@
     min-width: 0;
     min-height: 0;
     height: 100%;
-    background: #0b0b12;
-    border-radius: 0.5rem;
+    background: var(--color-bg);
+    border-radius: var(--radius-lg);
     overflow: hidden;
   }
 
   .status {
-    padding: 0.4rem 0.6rem;
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #9ca3af;
+    padding: var(--space-xs) var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
   }
 
   .status.error {
-    color: #f87171;
+    color: var(--color-danger);
   }
 
   .xterm-container {

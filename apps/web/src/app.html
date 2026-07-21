@@ -4,7 +4,11 @@
     <meta charset="utf-8" />
     <link rel="icon" href="/icons/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#4f46e5" />
+    <!-- Dark-first (SPEC.md §4); tokens.css itself is the source of truth
+         for the actual palette — this mirrors its --color-bg/--color-accent
+         so the browser chrome/splash matches before any CSS has loaded. -->
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b0d10" />
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

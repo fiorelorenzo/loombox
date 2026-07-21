@@ -31,20 +31,20 @@
   .edit-write-widget {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-2xs);
   }
 
   .header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85rem;
+    gap: var(--space-sm);
+    font-size: var(--text-small-size);
     font-weight: 600;
   }
 
   .status {
     font-weight: 400;
     opacity: 0.6;
-    font-size: 0.75rem;
+    font-size: var(--text-small-size);
   }
 </style>
