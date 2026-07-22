@@ -1,0 +1,29 @@
+# loombox web PWA - prodbox deployment.
+#
+# Modeled on deploy/relay/docker-compose.yml: the app binds to a
+# loopback-published port and host Caddy fronts it with TLS. No database,
+# no secrets - the PWA is a static-ish adapter-node server that talks to a
+# relay over WebSocket; the relay URL is entered/persisted client-side in
+# the browser (see README.md), not baked in here.
+#
+# Run from this directory (deploy/web/) so the build context resolves
+# correctly:
+#   docker compose up -d --build
+
+services:
+  web:
+    build:
+      # context is the repo root so pnpm can resolve the workspace
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      # adapter-node's CSRF/form-action check needs the real public origin
+      # behind Caddy's reverse proxy.
+      ORIGIN: ${ORIGIN:-https://app.loombox.dev}
+    ports:
+      # loopback-only publish; host Caddy reverse-proxies to this (prodbox
+      # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).
+      - '127.0.0.1:5186:3000'
+    restart: unless-stopped
