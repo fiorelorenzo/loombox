@@ -26,6 +26,7 @@
   "devDependencies": {
     "@loombox/relay": "workspace:*",
     "@playwright/test": "^1.61.1",
+    "@resvg/resvg-js": "^2.6.2",
     "@sveltejs/kit": "^2.69.3",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@testing-library/dom": "^10.4.1",

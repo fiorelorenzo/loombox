@@ -2,11 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="/icons/icon-192.png" />
+    <!-- The "Warp & Weft" mark (issue #194). SVG first (scales to any size,
+         what most modern browsers use for the tab favicon); the PNGs are
+         fallbacks/specific-purpose sizes a `<link>` alone can't cover
+         (touch-icon, and the two fixed favicon sizes some older UAs still
+         pick over an SVG). All generated from the same source by
+         `scripts/gen-brand-assets.mjs` — see that file for the exact
+         command. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/icons/favicon-16.png" sizes="16x16" type="image/png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <!-- Dark-first (SPEC.md §4); tokens.css itself is the source of truth
          for the actual palette — this mirrors its --color-bg/--color-accent
-         so the browser chrome/splash matches before any CSS has loaded. -->
+         so the browser chrome/splash matches before any CSS has loaded.
+         (theme-color mirrors --color-bg, not the selectable --color-accent
+         (#376): the OS chrome it paints has no notion of the in-app accent
+         choice, so it stays pinned to the one color that's true regardless
+         of accent — see vite.config.ts's PWA manifest doc comment for the
+         same call on `theme_color`.) -->
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0b0d10" />
     %sveltekit.head%
