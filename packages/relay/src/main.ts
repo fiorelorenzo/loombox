@@ -143,6 +143,9 @@ export async function start(): Promise<StartedRelayHandle> {
     logger: true,
     store,
     auth,
+    corsOrigins: process.env.LOOMBOX_TRUSTED_ORIGINS?.split(',')
+      .map((o) => o.trim())
+      .filter(Boolean),
     rateLimit: { max: rateLimitMax, timeWindow: rateLimitWindowMs },
     maxAccountStorageBytes,
     fanOutBackend,
