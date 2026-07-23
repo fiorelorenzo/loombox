@@ -1,0 +1,57 @@
+# Example systemd unit for a resident loombox node (#388). Runs
+# `packages/node`'s built-in entry point (packages/node/src/main.ts, run via
+# `pnpm --filter @loombox/node start`, which is `tsx src/main.ts` - see that
+# package's package.json; there's no separate build/emit step, `build` is
+# just a `tsc --noEmit` typecheck, the same "run TS sources directly with
+# tsx" shape packages/relay/Dockerfile uses for the relay).
+#
+# Adjust User=/WorkingDirectory= for your host, then:
+#   sudo cp loombox-node.service.example /etc/systemd/system/loombox-node.service
+#   sudo cp loombox-node.env.example /etc/loombox-node.env   # then edit + chmod 600
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now loombox-node.service
+#   journalctl -u loombox-node.service -f
+#
+# See README.md for the full runbook (getting a device token, the recovery
+# code, and verifying the node registers).
+
+[Unit]
+Description=loombox resident node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+WorkingDirectory=/home/dev/Progetti/loombox
+
+# mise (this repo's Node/pnpm version manager) is only activated in
+# interactive shells (see the devbox's ~/.bashrc guard) - systemd never runs
+# one, so PATH must point at mise's shims directly rather than relying on
+# shell activation. Adjust the mise-install path if it differs on your host
+# ($HOME/.local/share/mise/shims is the devbox default).
+Environment=PATH=/home/dev/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+
+# Secrets and per-deploy config (LOOMBOX_RELAY_URL, LOOMBOX_NODE_ID,
+# LOOMBOX_AUTH_TOKEN, LOOMBOX_RECOVERY_CODE, CLAUDE_CODE_OAUTH_TOKEN, ...) -
+# see loombox-node.env.example. Never commit the real file.
+EnvironmentFile=/etc/loombox-node.env
+
+# Requires `pnpm install` already run at WorkingDirectory (normal repo
+# checkout, not a --prod-only install: tsx is a devDependency).
+ExecStart=/home/dev/.local/share/mise/shims/pnpm --filter @loombox/node start
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening: narrow, but the node still needs to spawn `claude`/`npx` and
+# read/write project worktrees and its own state dir, so this deliberately
+# stays looser than e.g. a stateless network service.
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
