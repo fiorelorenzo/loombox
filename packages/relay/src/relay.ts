@@ -134,6 +134,15 @@ export interface CreateRelayOptions {
    */
   auth?: RelayAuth;
   /**
+   * Origins allowed to make credentialed cross-origin HTTP requests to this
+   * relay (the web app + desktop app are served from a different origin than
+   * the relay, e.g. app.loombox.dev vs relay.loombox.dev). Better Auth's
+   * `trustedOrigins` only covers its CSRF/Origin check; the browser also
+   * needs `Access-Control-Allow-Origin` on the response, which these drive.
+   * Usually the same list as `LOOMBOX_TRUSTED_ORIGINS`.
+   */
+  corsOrigins?: string[];
+  /**
    * Per-IP abuse protection for the public relay endpoint (#101, SPEC §8's
    * "public-relay abuse limits"): caps requests per IP per window across
    * every HTTP/upgrade route this Fastify instance serves — the WS upgrade
@@ -248,6 +257,32 @@ export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
  */
 export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
+
+  // CORS for the app origins (SPEC §10: app served from a different origin
+  // than the relay). Better Auth's trustedOrigins handles CSRF but not the
+  // Access-Control-* response headers the browser needs for credentialed
+  // cross-origin fetches (sign-in, get-session). Runs before routing so a
+  // preflight OPTIONS is answered even where no route matches the verb.
+  const corsOrigins = opts.corsOrigins ?? [];
+  if (corsOrigins.length > 0) {
+    app.addHook('onRequest', async (request, reply) => {
+      const origin = request.headers.origin;
+      if (typeof origin === 'string' && corsOrigins.includes(origin)) {
+        reply
+          .header('Access-Control-Allow-Origin', origin)
+          .header('Access-Control-Allow-Credentials', 'true')
+          .header('Vary', 'Origin');
+        if (request.method === 'OPTIONS') {
+          await reply
+            .header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            .header('Access-Control-Allow-Headers', 'content-type, authorization')
+            .header('Access-Control-Max-Age', '600')
+            .code(204)
+            .send();
+        }
+      }
+    });
+  }
   const registry = createRegistry();
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
