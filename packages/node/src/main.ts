@@ -1,8 +1,15 @@
 import { argv } from 'node:process';
 import { pathToFileURL } from 'node:url';
 
+import { bootstrapAmkFromRecoveryCode, type AmkBootstrapper } from './amk-bootstrap';
 import { wireAmkEpochAdoption } from './amk-epoch';
-import { loadNodeConfig, type LoadNodeConfigOptions } from './config';
+import {
+  ConfigError,
+  loadNodeConfig,
+  type LoadNodeConfigOptions,
+  type NodeCliConfig,
+} from './config';
+import type { NodeIdentity } from './identity';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
 import { resolveAccountIdViaRelay, type AccountIdResolver } from './resolve-account-id';
@@ -20,6 +27,45 @@ export interface StartOptions extends LoadNodeConfigOptions {
    * they never need a real Better Auth login flow just to start a node.
    */
   resolveAccountId?: AccountIdResolver;
+  /**
+   * Recovers this node's AMK from `config.recoveryCode` when the config
+   * doesn't provide a raw `amk` override — issue #386. Defaults to
+   * {@link bootstrapAmkFromRecoveryCode}, the real relay-backed
+   * implementation. Tests inject a stub so they never need a real escrow
+   * round-trip just to start a node.
+   */
+  bootstrapAmk?: AmkBootstrapper;
+}
+
+/**
+ * Resolves the AMK a starting node hands `createNode()` (issue #386): a raw
+ * `config.amk` override wins outright (tests/advanced use, see
+ * `NodeCliConfig.amk`'s doc comment); otherwise it's recovered from
+ * `config.recoveryCode` via `bootstrapAmk` (real relay round-trip by
+ * default). `loadNodeConfig` already guarantees at least one of the two is
+ * set — the `ConfigError` below is an unreachable defensive fallback, not a
+ * path a caller can actually hit.
+ */
+async function resolveAmk(
+  config: NodeCliConfig,
+  identity: NodeIdentity,
+  accountId: string,
+  bootstrapAmk: AmkBootstrapper,
+  webSocketImpl: WebSocketConstructor | undefined,
+): Promise<Uint8Array> {
+  if (config.amk) return config.amk;
+  if (!config.recoveryCode) {
+    throw new ConfigError('amk (LOOMBOX_AMK) or recoveryCode (LOOMBOX_RECOVERY_CODE) is required');
+  }
+  return bootstrapAmk({
+    relayUrl: config.relayUrl,
+    accountId,
+    authToken: config.authToken,
+    deviceId: config.deviceId,
+    devicePublicKey: identity.publicKeyBase64,
+    recoveryCode: config.recoveryCode,
+    webSocketImpl,
+  });
 }
 
 export interface StartedNode {
@@ -57,6 +103,12 @@ export interface StartedNode {
  * resolved here via `resolveAccountId` (real Better Auth `getSession` by
  * default) — which throws rather than let this node start up scoped to the
  * wrong account.
+ *
+ * The account AMK itself (issue #386) comes from `config.recoveryCode` via
+ * `resolveAmk`/`bootstrapAmk` by default — the recovery-code bootstrap
+ * against the relay's escrow, the same crypto path `apps/web` drives — never
+ * hand-pasted, unless `config.amk` (`LOOMBOX_AMK`) is set as an explicit
+ * override for tests/advanced use.
  */
 export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const config = loadNodeConfig(options);
@@ -66,6 +118,9 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const identityStore = new NodeIdentityStore({ stateDir: config.stateDir });
   const identity = await identityStore.loadOrCreate();
 
+  const bootstrapAmk = options.bootstrapAmk ?? bootstrapAmkFromRecoveryCode;
+  const amk = await resolveAmk(config, identity, accountId, bootstrapAmk, options.webSocketImpl);
+
   const node = createNode({
     relayUrl: config.relayUrl,
     nodeId: config.nodeId,
@@ -73,7 +128,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     devicePublicKey: identity.publicKeyBase64,
     authToken: config.authToken,
     accountId,
-    amk: config.amk,
+    amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
     // Same convention as `identityStore` above: MCP config/secret storage

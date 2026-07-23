@@ -92,6 +92,34 @@ describe('loadNodeConfig', () => {
       expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/32 bytes/);
     });
 
+    it('loads recoveryCode from LOOMBOX_RECOVERY_CODE and leaves amk undefined when no LOOMBOX_AMK is set (issue #386)', () => {
+      const env: Record<string, string> = {
+        LOOMBOX_RELAY_URL: BASE_ENV.LOOMBOX_RELAY_URL,
+        LOOMBOX_NODE_ID: BASE_ENV.LOOMBOX_NODE_ID,
+        LOOMBOX_AUTH_TOKEN: BASE_ENV.LOOMBOX_AUTH_TOKEN,
+        LOOMBOX_RECOVERY_CODE: 'ABCD-EFGH-JKMN-PQRS',
+      };
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.recoveryCode).toBe('ABCD-EFGH-JKMN-PQRS');
+      expect(config.amk).toBeUndefined();
+    });
+
+    it('rejects a config with neither amk nor recoveryCode set', () => {
+      const env: Record<string, string> = {
+        LOOMBOX_RELAY_URL: BASE_ENV.LOOMBOX_RELAY_URL,
+        LOOMBOX_NODE_ID: BASE_ENV.LOOMBOX_NODE_ID,
+        LOOMBOX_AUTH_TOKEN: BASE_ENV.LOOMBOX_AUTH_TOKEN,
+      };
+      expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/LOOMBOX_AMK.*LOOMBOX_RECOVERY_CODE/);
+    });
+
+    it('amk wins when both LOOMBOX_AMK and LOOMBOX_RECOVERY_CODE are set (the raw override takes precedence)', () => {
+      const env = { ...BASE_ENV, LOOMBOX_RECOVERY_CODE: 'ABCD-EFGH-JKMN-PQRS' };
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.amk).toBeInstanceOf(Uint8Array);
+      expect(config.recoveryCode).toBeUndefined();
+    });
+
     it('rejects malformed JSON in LOOMBOX_TARGETS', () => {
       const env = { ...BASE_ENV, LOOMBOX_TARGETS: '{not valid json' };
       expect(() => loadNodeConfig({ env, argv: [] })).toThrow(ConfigError);
@@ -184,6 +212,19 @@ describe('loadNodeConfig', () => {
       expect(config.nodeId).toBe('env-override-node');
       // Untouched fields still come from the file.
       expect(config.relayUrl).toBe('ws://127.0.0.1:8787');
+    });
+
+    it('loads recoveryCode from the config file when no amk is present (issue #386)', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        recoveryCode: 'ABCD-EFGH-JKMN-PQRS',
+      });
+
+      const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
+      expect(config.recoveryCode).toBe('ABCD-EFGH-JKMN-PQRS');
+      expect(config.amk).toBeUndefined();
     });
 
     it('rejects a config file that does not exist', () => {
