@@ -99,6 +99,25 @@ const messagesByType: Record<string, unknown> = {
     nodeId: 'node-1',
     targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
   },
+  target_list_request: {
+    type: 'target_list_request',
+    protocolVersion: 1,
+    requestId: 'req-1',
+  },
+  target_list: {
+    type: 'target_list',
+    protocolVersion: 1,
+    requestId: 'req-1',
+    targets: [
+      {
+        nodeId: 'node-1',
+        targetId: 'local',
+        label: 'This machine',
+        kind: 'local',
+        reachable: true,
+      },
+    ],
+  },
   session_create: {
     type: 'session_create',
     protocolVersion: 1,

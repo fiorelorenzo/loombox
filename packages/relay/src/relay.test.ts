@@ -30,6 +30,8 @@ import {
   type SessionUpdateEnvelopeV1,
   type TargetAnnounce,
   type TargetDescriptor,
+  type TargetList,
+  type TargetListRequest,
   type TerminalClose,
   type TerminalClosed,
   type TerminalInput,
@@ -313,6 +315,146 @@ describe('relay v1', () => {
       send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
       const response = (await nextMessage(intruder)) as unknown as SessionListV1;
       expect(response.type).toBe('session_list');
+    });
+  });
+
+  describe('target_list_request/target_list (#383): account-scoped client-facing target discovery', () => {
+    it("returns the requesting account's announced targets, marked reachable while the announcing node is still connected", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [
+          makeTarget({ id: 'local', kind: 'local', label: 'This machine' }),
+          makeTarget({ id: 'ssh_devbox', kind: 'ssh', label: 'devbox' }),
+        ],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_1',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.type).toBe('target_list');
+      expect(response.requestId).toBe('req_1');
+      expect(response.targets).toHaveLength(2);
+      expect(response.targets).toEqual(
+        expect.arrayContaining([
+          {
+            nodeId: 'node_1',
+            targetId: 'local',
+            label: 'This machine',
+            kind: 'local',
+            reachable: true,
+          },
+          {
+            nodeId: 'node_1',
+            targetId: 'ssh_devbox',
+            label: 'devbox',
+            kind: 'ssh',
+            reachable: true,
+          },
+        ]),
+      );
+    });
+
+    it("never returns another account's targets", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget()],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_intruder',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(intruder)) as unknown as TargetList;
+      expect(response.type).toBe('target_list');
+      expect(response.targets).toEqual([]);
+
+      // The owning account still sees its own target, proving isolation isn't just an empty relay.
+      const { socket: owner } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'owner-device',
+        authToken: 'acct_owner',
+      });
+      send(owner, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_owner',
+      } satisfies TargetListRequest);
+      const ownerResponse = (await nextMessage(owner)) as unknown as TargetList;
+      expect(ownerResponse.targets).toHaveLength(1);
+    });
+
+    it('marks a target unreachable once its announcing node disconnects, without dropping it from the list', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget()],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      node.close();
+      await waitForClose(node);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_1',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets).toHaveLength(1);
+      expect(response.targets[0]?.reachable).toBe(false);
     });
   });
 

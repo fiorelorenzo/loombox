@@ -16,6 +16,8 @@ import {
   type SessionAnnounceV1,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
+  type TargetList,
+  type TargetListEntry,
   type WireMessageV1,
 } from '@loombox/protocol';
 
@@ -753,7 +755,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
     switch (message.type) {
       case 'target_announce': {
-        store.targets.announce(message.nodeId, message.targets);
+        store.targets.announce(message.nodeId, connection.accountId, message.targets);
         connection.nodeIds.add(message.nodeId);
         registry.nodeConnectionsByNodeId.set(message.nodeId, connection);
         return;
@@ -885,6 +887,38 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (await handleDeviceMessage(connection, message)) return;
 
     switch (message.type) {
+      case 'target_list_request': {
+        // #383: account-scoped, exactly like session_list_request below —
+        // `store.targets.listForAccount` only ever returns nodes whose
+        // announcing connection's `accountId` matched this account, so one
+        // account can never see another's nodes/targets. `reachable` is
+        // true only while that nodeId still has a live relay connection
+        // (`registry.nodeConnectionsByNodeId`); a node that announced then
+        // disconnected still shows up (so a client can see it existed) but
+        // as unreachable.
+        const perNode = store.targets.listForAccount(connection.accountId);
+        const targets: TargetListEntry[] = [];
+        for (const { nodeId, targets: nodeTargets } of perNode) {
+          const reachable = registry.nodeConnectionsByNodeId.get(nodeId) !== undefined;
+          for (const target of nodeTargets) {
+            targets.push({
+              nodeId,
+              targetId: target.id,
+              label: target.label,
+              kind: target.kind,
+              reachable,
+            });
+          }
+        }
+        const response: TargetList = {
+          type: 'target_list',
+          protocolVersion: PROTOCOL_V1,
+          requestId: message.requestId,
+          targets,
+        };
+        sendDirect(connection, response);
+        return;
+      }
       case 'session_list_request': {
         const records = await store.sessions.listForAccount(connection.accountId);
         const sessions = records.map((record) => ({
