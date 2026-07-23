@@ -25,8 +25,27 @@ export interface NodeCliConfig {
   nodeId: string;
   /** This device's stable id sent in the `initialize` handshake; defaults to `nodeId` (a CLI-run node is a single device). */
   deviceId: string;
-  /** Opaque Better Auth bearer token. */
-  authToken: string;
+  /**
+   * Opaque bearer token used as this node's WS `authToken` — a Better Auth
+   * session bearer (`LOOMBOX_AUTH_TOKEN`, the legacy/advanced path) or a
+   * relay-native device token obtained via the device-authorization grant
+   * (issue #387). `undefined` when neither `LOOMBOX_AUTH_TOKEN` nor
+   * `LOOMBOX_DEVICE_TOKEN` is set — the caller (`main.ts`'s `start()`) then
+   * either reuses a previously-persisted device token or runs the
+   * device-login flow to obtain and persist a fresh one, exactly like
+   * `recoveryCode` below drives the AMK bootstrap. `LOOMBOX_AUTH_TOKEN`
+   * always wins over `LOOMBOX_DEVICE_TOKEN` when both are set, mirroring
+   * `amk`'s precedence over `recoveryCode`.
+   */
+  authToken?: string;
+  /**
+   * A relay-native device token (`LOOMBOX_DEVICE_TOKEN`/the config file's
+   * `deviceToken`, issue #387) supplied directly — e.g. copied from another
+   * node, or provisioned out of band — skipping the interactive device-login
+   * flow entirely. `undefined` when `authToken` is set instead (`authToken`
+   * wins — see its own doc comment) or when neither is configured.
+   */
+  deviceToken?: string;
   /**
    * The account this node's sessions are scoped under
    * (`NodeDaemonOptions.accountId`). `undefined` when not explicitly set via
@@ -76,6 +95,8 @@ interface NodeConfigFile {
   nodeId?: string;
   deviceId?: string;
   authToken?: string;
+  /** See {@link NodeCliConfig.deviceToken}. */
+  deviceToken?: string;
   /** See {@link NodeCliConfig.accountId} — an explicit override; when absent the caller must resolve it from `authToken` instead. */
   accountId?: string;
   amk?: string;
@@ -176,7 +197,12 @@ export interface LoadNodeConfigOptions {
  * - `LOOMBOX_RELAY_URL` (required)
  * - `LOOMBOX_NODE_ID` (required)
  * - `LOOMBOX_DEVICE_ID` (optional, defaults to `nodeId`)
- * - `LOOMBOX_AUTH_TOKEN` (required)
+ * - `LOOMBOX_AUTH_TOKEN` (optional; a Better Auth session bearer, the
+ *   legacy/advanced path) / `LOOMBOX_DEVICE_TOKEN` (optional; a relay-native
+ *   device token supplied directly, issue #387). Neither is required here:
+ *   left both unset, `main.ts`'s `start()` reuses a previously-persisted
+ *   device token or runs the device-login flow to obtain one. `authToken`
+ *   wins if both are set — see {@link NodeCliConfig.authToken}'s doc comment.
  * - `LOOMBOX_ACCOUNT_ID` (optional; explicit override. Left unset, the
  *   returned config's `accountId` is `undefined` and the caller must resolve
  *   the real one from `authToken` — issue #380, see {@link NodeCliConfig.accountId})
@@ -211,14 +237,17 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
 
   const relayUrl = env.LOOMBOX_RELAY_URL ?? file.relayUrl;
   const nodeId = env.LOOMBOX_NODE_ID ?? file.nodeId;
+  // #387: neither is required at this layer — see NodeCliConfig.authToken's
+  // doc comment for why (main.ts's start() resolves a concrete bearer, via
+  // the device-login flow if genuinely neither is configured).
   const authToken = env.LOOMBOX_AUTH_TOKEN ?? file.authToken;
+  const deviceToken = env.LOOMBOX_DEVICE_TOKEN ?? file.deviceToken;
   const amkText = env.LOOMBOX_AMK ?? file.amk;
   const recoveryCode = env.LOOMBOX_RECOVERY_CODE ?? file.recoveryCode;
 
   const missing: string[] = [];
   if (!relayUrl) missing.push('relayUrl (LOOMBOX_RELAY_URL)');
   if (!nodeId) missing.push('nodeId (LOOMBOX_NODE_ID)');
-  if (!authToken) missing.push('authToken (LOOMBOX_AUTH_TOKEN)');
   // #386: exactly one of amk / recoveryCode is required — recoveryCode is
   // the intended path (main.ts bootstraps the AMK from it), amk a raw
   // override. Only missing when NEITHER is set; see NodeCliConfig.amk's doc
@@ -240,7 +269,10 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     relayUrl: relayUrl!,
     nodeId: nodeId!,
     deviceId,
-    authToken: authToken!,
+    authToken,
+    // #387: authToken wins if both are set, mirroring amk's precedence over
+    // recoveryCode above.
+    deviceToken: authToken ? undefined : deviceToken,
     accountId,
     amk,
     recoveryCode: amk ? undefined : recoveryCode,

@@ -223,4 +223,40 @@ export const migrations: readonly Migration[] = [
     `,
     down: `DROP TABLE IF EXISTS leases;`,
   },
+  {
+    // #387: device-authorization grant (RFC 8628-shaped, SPEC §16). One row
+    // per pending/resolved request in `device_auth_requests` (never a raw
+    // `device_code`, only its hash), and one row per minted device token in
+    // `device_tokens` (never a raw token, only its hash) — a resident node's
+    // bearer once it's completed the flow, an account-scoped alternative to
+    // a Better Auth session token. `pending_token` is the one intentionally
+    // *raw* value in this schema: the relay-minted device token, held only
+    // between approval and the node's next poll revealing it once
+    // (`store.ts`'s `DeviceAuthRequestRecord` doc comment explains why).
+    id: '0009_device_auth',
+    up: `
+      CREATE TABLE device_auth_requests (
+        device_code_hash TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        account_id TEXT,
+        pending_token TEXT,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL
+      );
+
+      CREATE TABLE device_tokens (
+        token_hash TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        label TEXT,
+        created_at BIGINT NOT NULL,
+        last_used_at BIGINT
+      );
+      CREATE INDEX device_tokens_account_id_idx ON device_tokens (account_id);
+    `,
+    down: `
+      DROP TABLE IF EXISTS device_tokens;
+      DROP TABLE IF EXISTS device_auth_requests;
+    `,
+  },
 ];

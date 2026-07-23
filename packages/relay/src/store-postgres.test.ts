@@ -398,6 +398,97 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     const otherAccount = await store.leases.acquire('acct_2', 'sess_1', 'node_a', 30_000, now);
     expect(otherAccount.granted).toBe(true);
   });
+
+  it('device auth (#387): create -> approve binds an account and stashes a one-time pendingToken -> consumeToken clears it', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+
+    const created = await store.deviceAuth.create({
+      deviceCodeHash: 'hash-device-code-1',
+      userCode: 'WXYZ-2345',
+      createdAt: now,
+      expiresAt: now + 600_000,
+    });
+    expect(created.status).toBe('pending');
+    expect(await store.deviceAuth.getByDeviceCodeHash('hash-device-code-1')).toMatchObject({
+      userCode: 'WXYZ-2345',
+      status: 'pending',
+    });
+    expect(await store.deviceAuth.getByUserCode('WXYZ-2345')).toMatchObject({
+      deviceCodeHash: 'hash-device-code-1',
+    });
+
+    const approved = await store.deviceAuth.approve('WXYZ-2345', 'acct_1', 'raw-token-1', now);
+    expect(approved).toMatchObject({
+      status: 'approved',
+      accountId: 'acct_1',
+      pendingToken: 'raw-token-1',
+    });
+
+    // Re-approving (or denying) an already-approved request is a no-op —
+    // never silently rebinds to a different account.
+    expect(
+      await store.deviceAuth.approve('WXYZ-2345', 'acct_2', 'raw-token-2', now),
+    ).toBeUndefined();
+    expect(await store.deviceAuth.deny('WXYZ-2345', now)).toBeUndefined();
+
+    await store.deviceAuth.consumeToken('hash-device-code-1');
+    expect(
+      (await store.deviceAuth.getByDeviceCodeHash('hash-device-code-1'))?.pendingToken,
+    ).toBeUndefined();
+    // consumeToken is idempotent
+    await store.deviceAuth.consumeToken('hash-device-code-1');
+  });
+
+  it('device auth (#387): approve/deny refuse an already-expired request', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+    await store.deviceAuth.create({
+      deviceCodeHash: 'hash-expired',
+      userCode: 'EXPR-EDCD',
+      createdAt: now - 10_000,
+      expiresAt: now - 1_000,
+    });
+
+    expect(await store.deviceAuth.approve('EXPR-EDCD', 'acct_1', 'raw-token', now)).toBeUndefined();
+    expect(await store.deviceAuth.deny('EXPR-EDCD', now)).toBeUndefined();
+  });
+
+  it('device auth (#387): deny transitions pending -> denied', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+    await store.deviceAuth.create({
+      deviceCodeHash: 'hash-deny-me',
+      userCode: 'DENY-ABCD',
+      createdAt: now,
+      expiresAt: now + 600_000,
+    });
+
+    const denied = await store.deviceAuth.deny('DENY-ABCD', now);
+    expect(denied?.status).toBe('denied');
+    expect(await store.deviceAuth.approve('DENY-ABCD', 'acct_1', 'raw-token', now)).toBeUndefined();
+  });
+
+  it('device tokens (#387): create then resolve by hash, isolated per account, unknown hash resolves to undefined', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+
+    await store.deviceTokens.create({
+      tokenHash: 'hash-token-a',
+      accountId: 'acct_a',
+      label: 'Resident node',
+      createdAt: now,
+    });
+    await store.deviceTokens.create({
+      tokenHash: 'hash-token-b',
+      accountId: 'acct_b',
+      createdAt: now,
+    });
+
+    expect(await store.deviceTokens.resolveByHash('hash-token-a')).toBe('acct_a');
+    expect(await store.deviceTokens.resolveByHash('hash-token-b')).toBe('acct_b');
+    expect(await store.deviceTokens.resolveByHash('hash-token-unknown')).toBeUndefined();
+  });
 });
 
 describe('Postgres store matches the in-memory store contract shape', () => {

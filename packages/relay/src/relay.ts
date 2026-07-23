@@ -27,6 +27,8 @@ import {
   resolveAccountIdViaBetterAuth,
   type RelayAuth,
 } from './auth';
+import { hashDeviceSecret } from './device-auth';
+import { registerDeviceAuthRoutes } from './device-auth-routes';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
 import { createWebPushSender, type PushPayload, type PushSender } from './push';
@@ -196,6 +198,18 @@ export interface CreateRelayOptions {
     default?: number;
     max?: number;
   };
+  /**
+   * Device-authorization-grant config (issue #387, RFC 8628-shaped). Only
+   * `appUrl` today: the app's own origin `/device/authorize`'s
+   * `verification_uri` is built from (`main.ts`'s `LOOMBOX_APP_URL`),
+   * defaulting to `device-auth.ts`'s `DEFAULT_APP_URL`. Unlike `/push/*`
+   * (gated on operator-supplied VAPID keys), the `/device/*` routes are
+   * always registered — minting a device token needs no operator secret,
+   * so there's nothing to meaningfully disable the feature on.
+   */
+  deviceAuth?: {
+    appUrl?: string;
+  };
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -233,11 +247,24 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   app.addHook('onClose', async () => {
     await fanOutBackend.close();
   });
-  const resolveAccountId: AccountResolver =
+  const baseResolveAccountId: AccountResolver =
     opts.resolveAccountId ??
     (opts.auth
       ? (authToken) => resolveAccountIdViaBetterAuth(opts.auth as RelayAuth, authToken)
       : deriveAccountIdStub);
+  // #387: a relay-native device token (minted by `/device/approve`, see
+  // `device-auth-routes.ts`) is checked ahead of the base resolver on EVERY
+  // bearer this relay sees — the WS handshake's `authToken` and every HTTP
+  // route's `Authorization: Bearer` alike, since both ultimately call this
+  // same `resolveAccountId`. A device token that doesn't match anything
+  // falls through to `baseResolveAccountId` unchanged, so this is purely
+  // additive: it never changes how a real Better Auth bearer (or, in
+  // hermetic/dev mode, the stub) resolves.
+  const resolveAccountId: AccountResolver = async (authToken) => {
+    const deviceAccountId = await store.deviceTokens.resolveByHash(hashDeviceSecret(authToken));
+    if (deviceAccountId) return deviceAccountId;
+    return baseResolveAccountId(authToken);
+  };
 
   // #101: registered before any route, so its `onRequest` hook covers every
   // HTTP/upgrade request this instance serves (all Fastify hooks run ahead
@@ -1170,6 +1197,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     await store.pushSubscriptions.delete(accountId, body.deviceId);
     return reply.code(204).send();
+  });
+
+  // #387: the device-authorization-grant REST endpoints — see
+  // `device-auth-routes.ts`'s own doc comment. `accountIdFromBearer` above
+  // is what makes `/device/approve`/`/device/deny` (the operator's browser)
+  // resolve the SAME way `/push/subscribe` does; `resolveAccountId` itself
+  // (not `accountIdFromBearer`) is what makes a minted device token usable
+  // for the WS handshake and every other bearer-checked route, wired above.
+  registerDeviceAuthRoutes(app, store, accountIdFromBearer, {
+    appUrl: opts.deviceAuth?.appUrl,
   });
 
   app.register(fastifyWebsocket);

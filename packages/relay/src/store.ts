@@ -320,6 +320,84 @@ export interface LeaseStore {
   release(accountId: string, sessionId: string, nodeId: string): Awaitable<boolean>;
 }
 
+/** Lifecycle of a pending device-authorization request (issue #387, RFC 8628-shaped — see `device-auth.ts`'s module doc comment). */
+export type DeviceAuthStatus = 'pending' | 'approved' | 'denied';
+
+/**
+ * One pending (or resolved) device-authorization request, keyed by the hash
+ * of its `device_code` (issue #387). `pendingToken` is the one place this
+ * package intentionally stores a *raw* secret rather than a hash: the
+ * relay-minted device token must be handed back to the node verbatim on its
+ * next `/device/token` poll, and it can only be revealed once — the
+ * permanent record lives hashed in `device_tokens` (see
+ * {@link DeviceTokenStore}) from the moment of approval, this field is
+ * cleared the instant a poll actually reveals it
+ * ({@link DeviceAuthStore.consumeToken}).
+ */
+export interface DeviceAuthRequestRecord {
+  deviceCodeHash: string;
+  userCode: string;
+  status: DeviceAuthStatus;
+  /** Set once approved — the account the resulting device token is bound to. */
+  accountId?: string;
+  /** See this interface's own doc comment. `undefined` before approval, and again once the node's poll has consumed it. */
+  pendingToken?: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface DeviceAuthStore {
+  create(
+    record: Pick<
+      DeviceAuthRequestRecord,
+      'deviceCodeHash' | 'userCode' | 'createdAt' | 'expiresAt'
+    >,
+  ): Awaitable<DeviceAuthRequestRecord>;
+  getByDeviceCodeHash(deviceCodeHash: string): Awaitable<DeviceAuthRequestRecord | undefined>;
+  /** Case/format-insensitive lookup is the caller's job (`device-auth.ts`'s `normalizeUserCode`) — this store matches `userCode` exactly as stored. */
+  getByUserCode(userCode: string): Awaitable<DeviceAuthRequestRecord | undefined>;
+  /**
+   * Transitions a request from `'pending'` to `'approved'`, binding
+   * `accountId` and stashing `pendingToken` for one-time reveal. Returns
+   * `undefined` (no-op) if `userCode` is unknown, already expired as of
+   * `now`, or not currently `'pending'` — never overwrites an
+   * already-resolved request, so a delayed/duplicate approve can't silently
+   * rebind a request to a different account.
+   */
+  approve(
+    userCode: string,
+    accountId: string,
+    pendingToken: string,
+    now: number,
+  ): Awaitable<DeviceAuthRequestRecord | undefined>;
+  /** Transitions a request from `'pending'` to `'denied'` — same not-found/expired/not-pending guards as {@link approve}. */
+  deny(userCode: string, now: number): Awaitable<DeviceAuthRequestRecord | undefined>;
+  /** Clears `pendingToken` after a `/device/token` poll has revealed it — the one-time-reveal enforcement point. Idempotent: consuming an already-consumed (or never-approved) request is a no-op. */
+  consumeToken(deviceCodeHash: string): Awaitable<void>;
+}
+
+/** A relay-native device token (issue #387) — the bearer a resident node presents once it's completed the device-authorization flow, in place of a Better Auth session token. Never holds the raw token; only its hash. */
+export interface DeviceTokenRecord {
+  tokenHash: string;
+  accountId: string;
+  label?: string;
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
+export interface DeviceTokenStore {
+  create(
+    record: Pick<DeviceTokenRecord, 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
+  ): Awaitable<DeviceTokenRecord>;
+  /**
+   * Resolves an already-hashed device token to the account it's bound to, or
+   * `undefined` if unknown — the device-token half of `relay.ts`'s
+   * `AccountResolver` (checked ahead of Better Auth on every bearer, WS and
+   * HTTP alike). Touches `lastUsedAt` as a side effect on a hit.
+   */
+  resolveByHash(tokenHash: string): Awaitable<string | undefined>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -331,6 +409,8 @@ export interface RelayStore {
   pushSubscriptions: PushSubscriptionStore;
   vapidKeys: VapidKeyStore;
   leases: LeaseStore;
+  deviceAuth: DeviceAuthStore;
+  deviceTokens: DeviceTokenStore;
 }
 
 export interface RelayStoreOptions {
@@ -426,6 +506,32 @@ interface SyncLeaseStore extends LeaseStore {
   release(accountId: string, sessionId: string, nodeId: string): boolean;
 }
 
+interface SyncDeviceAuthStore extends DeviceAuthStore {
+  create(
+    record: Pick<
+      DeviceAuthRequestRecord,
+      'deviceCodeHash' | 'userCode' | 'createdAt' | 'expiresAt'
+    >,
+  ): DeviceAuthRequestRecord;
+  getByDeviceCodeHash(deviceCodeHash: string): DeviceAuthRequestRecord | undefined;
+  getByUserCode(userCode: string): DeviceAuthRequestRecord | undefined;
+  approve(
+    userCode: string,
+    accountId: string,
+    pendingToken: string,
+    now: number,
+  ): DeviceAuthRequestRecord | undefined;
+  deny(userCode: string, now: number): DeviceAuthRequestRecord | undefined;
+  consumeToken(deviceCodeHash: string): void;
+}
+
+interface SyncDeviceTokenStore extends DeviceTokenStore {
+  create(
+    record: Pick<DeviceTokenRecord, 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
+  ): DeviceTokenRecord;
+  resolveByHash(tokenHash: string): string | undefined;
+}
+
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
 export interface SyncRelayStore extends RelayStore {
   devices: SyncDeviceStore;
@@ -438,6 +544,8 @@ export interface SyncRelayStore extends RelayStore {
   pushSubscriptions: SyncPushSubscriptionStore;
   vapidKeys: SyncVapidKeyStore;
   leases: SyncLeaseStore;
+  deviceAuth: SyncDeviceAuthStore;
+  deviceTokens: SyncDeviceTokenStore;
 }
 
 /**
@@ -817,6 +925,78 @@ function createLeaseStore(): SyncLeaseStore {
   };
 }
 
+/**
+ * In-memory `DeviceAuthStore` (issue #387). `approve`/`deny` both apply the
+ * exact same not-found/expired/not-pending guard so a stale or duplicate
+ * request can never silently rebind or re-resolve an already-settled one —
+ * see the public interface's own doc comment for why that matters.
+ */
+function createDeviceAuthStore(): SyncDeviceAuthStore {
+  const byDeviceCodeHash = new Map<string, DeviceAuthRequestRecord>();
+  const byUserCode = new Map<string, DeviceAuthRequestRecord>();
+
+  function settle(
+    userCode: string,
+    now: number,
+    apply: (record: DeviceAuthRequestRecord) => void,
+  ): DeviceAuthRequestRecord | undefined {
+    const record = byUserCode.get(userCode);
+    if (!record) return undefined;
+    if (record.status !== 'pending' || now > record.expiresAt) return undefined;
+    apply(record);
+    return record;
+  }
+
+  return {
+    create(input) {
+      const record: DeviceAuthRequestRecord = { ...input, status: 'pending' };
+      byDeviceCodeHash.set(record.deviceCodeHash, record);
+      byUserCode.set(record.userCode, record);
+      return record;
+    },
+    getByDeviceCodeHash(deviceCodeHash) {
+      return byDeviceCodeHash.get(deviceCodeHash);
+    },
+    getByUserCode(userCode) {
+      return byUserCode.get(userCode);
+    },
+    approve(userCode, accountId, pendingToken, now) {
+      return settle(userCode, now, (record) => {
+        record.status = 'approved';
+        record.accountId = accountId;
+        record.pendingToken = pendingToken;
+      });
+    },
+    deny(userCode, now) {
+      return settle(userCode, now, (record) => {
+        record.status = 'denied';
+      });
+    },
+    consumeToken(deviceCodeHash) {
+      const record = byDeviceCodeHash.get(deviceCodeHash);
+      if (record) record.pendingToken = undefined;
+    },
+  };
+}
+
+/** In-memory `DeviceTokenStore` (issue #387) — see the public interface's doc comment. */
+function createDeviceTokenStore(): SyncDeviceTokenStore {
+  const byHash = new Map<string, DeviceTokenRecord>();
+  return {
+    create(input) {
+      const record: DeviceTokenRecord = { ...input };
+      byHash.set(record.tokenHash, record);
+      return record;
+    },
+    resolveByHash(tokenHash) {
+      const record = byHash.get(tokenHash);
+      if (!record) return undefined;
+      record.lastUsedAt = Date.now();
+      return record.accountId;
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -831,5 +1011,7 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     pushSubscriptions: createPushSubscriptionStore(),
     vapidKeys: createVapidKeyStore(),
     leases: createLeaseStore(),
+    deviceAuth: createDeviceAuthStore(),
+    deviceTokens: createDeviceTokenStore(),
   };
 }
