@@ -69,6 +69,18 @@ export interface NodeCliConfig {
    * `recoveryCode` is guaranteed set by {@link loadNodeConfig} — never both
    * unset, and when both ARE set, `amk` wins (the override, meant for
    * tests/advanced use, always takes precedence over bootstrapping).
+   *
+   * This is also the co-located-app handoff path for a Mac-resident LOCAL
+   * node (issue #406): unlike `ssh:` provisioning, a caller driving `start()`
+   * in-process (e.g. the desktop app's Electron main process, which already
+   * holds the unlocked AMK from its own login) needs no file and no SSH
+   * channel at all — it just passes `options.env.LOOMBOX_AMK` (base64) or,
+   * for the even more direct in-memory case, drives `./ssh/local-guided-
+   * setup.ts`'s `runLocalGuidedSetup({ amk, ... })` instead, which takes the
+   * raw `Uint8Array` straight from the caller with no encode/decode step at
+   * all. `wrappedAmkFilePath`'s device-key-wrapped file handoff below exists
+   * specifically for the case this doesn't cover — a *separate* host with no
+   * pre-existing trust relationship to hand a plaintext AMK to directly.
    */
   amk?: Uint8Array;
   /**

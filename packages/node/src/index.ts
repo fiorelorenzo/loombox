@@ -41,13 +41,35 @@ export { McpConfigError, McpConfigStore } from './mcp-config-store';
 export type { NodeMcpSecretManagerOptions } from './mcp-secrets';
 export { NodeMcpSecretManager } from './mcp-secrets';
 
-// v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63). The
-// runnable CLI entrypoint itself (`main.ts`'s `start`/`run`) is not part of
-// this package's library surface, same as `@loombox/relay`'s own `main.ts` —
-// it's reached via this package's `start`/`dev` scripts (`tsx src/main.ts`),
-// not imported.
+// v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63).
 export type { LoadNodeConfigOptions, NodeCliConfig } from './config';
 export { ConfigError, loadNodeConfig } from './config';
+
+// v2: the local-node runtime entry point (issue #406) — previously reached
+// only via this package's `start`/`dev` scripts (`tsx src/main.ts`) run as a
+// separate process, same as `@loombox/relay`'s own `main.ts`. Exported here
+// too so a co-located caller (the desktop app's Electron main process) can
+// drive a local node in-process — `start()` resolves config/identity/
+// accountId/AMK and connects, `installGracefulShutdown` wires SIGTERM/SIGINT
+// to its `stop()`, and `run()` is the two combined (what `main.ts`'s own
+// `isMainModule` guard calls when this module runs as the CLI entry — that
+// guard only fires for the literal entry-point invocation, never on import,
+// so re-exporting these here doesn't also start a second node as a
+// side effect of importing this package).
+export type {
+  DeviceLoginRunner,
+  GracefulShutdownOptions,
+  StartedNode,
+  StartOptions,
+  WrappedAmkFileAdopter,
+} from './main';
+export { installGracefulShutdown, run, start } from './main';
+
+// v2: resolves this node's `accountId` from its bearer token (issue #380) —
+// exported so a caller driving `start()`/`runLocalGuidedSetup()`
+// programmatically can inject a non-default resolver the same way tests do.
+export type { AccountIdResolver } from './resolve-account-id';
+export { relayHttpBaseUrl, resolveAccountIdViaRelay } from './resolve-account-id';
 
 // v1: recovery-code AMK bootstrap (SPEC §8 path 2; issue #386) — the
 // intended way a resident node obtains its account AMK, mirroring
@@ -155,6 +177,41 @@ export {
   resolveWrappedAmkHandoffPath,
   writeWrappedAmkHandoff,
 } from './ssh/amk-handoff-provision';
+
+// v2: the common local-only first-run flow (SPEC §7.23, issue #91) — no SSH
+// configuration touched at any point. Exported (issue #406) so the Electron
+// bridge/app can drive it programmatically instead of only through a test.
+export type {
+  GuidedSetupStepId,
+  GuidedSetupStepResult,
+  LocalGuidedSetupOptions,
+  LocalGuidedSetupResult,
+} from './ssh/local-guided-setup';
+export { runLocalGuidedSetup } from './ssh/local-guided-setup';
+
+// v2: opt-in launchd LaunchAgent install for a Mac-resident LOCAL node
+// (issue #406) — the launchd counterpart to `./ssh/systemd-provisioning.ts`'s
+// resident-node systemd unit, for the co-located (no SSH) case. Pure plist
+// generation plus a plan/execute split, with every disk write/`launchctl`
+// call behind the injectable `LaunchdIo` seam; `createNodeLaunchdIo` is the
+// real implementation a caller wires up on the actual Mac it runs on.
+export type {
+  LaunchctlResult,
+  LaunchdAgentConfig,
+  LaunchdIo,
+  LaunchdProvisionAction,
+  LaunchdProvisionPlan,
+  LaunchdProvisionResult,
+  PlanLaunchdProvisioningOptions,
+} from './launchd/launchd-provisioning';
+export {
+  buildLocalNodeLaunchdAgent,
+  createNodeLaunchdIo,
+  DEFAULT_LAUNCHD_LABEL,
+  executeLaunchdProvisioning,
+  generateLaunchdPlist,
+  planLaunchdProvisioning,
+} from './launchd/launchd-provisioning';
 
 // Moved into @loombox/crypto so a node and a client/PWA share one seal/open/
 // derive implementation (SPEC §8, §16); re-exported here for callers that

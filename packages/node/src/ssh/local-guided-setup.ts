@@ -1,6 +1,7 @@
 import { createNode, type NodeDaemon, type NodeDaemonOptions } from '../node-daemon';
 import { NodeIdentityStore } from '../identity';
 import type { WebSocketConstructor } from '../relay-connection';
+import { resolveAccountIdViaRelay, type AccountIdResolver } from '../resolve-account-id';
 
 /**
  * The common **local-only** first-run flow (issue #91; SPEC §7.23's "First
@@ -40,8 +41,25 @@ export interface LocalGuidedSetupOptions {
   /** Defaults to `nodeId` (a guided-setup node is a single device), matching `NodeCliConfig`'s own convention (`../config.ts`). */
   deviceId?: string;
   authToken: string;
-  /** Defaults to `authToken` (see `NodeDaemonOptions.accountId`'s doc comment for why those currently must match). */
+  /**
+   * The account this node's sessions are scoped under. `undefined` resolves
+   * it from `authToken` via `resolveAccountId` (issue #380/#406 — the same
+   * class of bug as `main.ts`'s `start()`: `authToken` is an opaque bearer,
+   * never a real accountId, so defaulting one to the other made a live relay
+   * silently drop every session once it resolved the *real* accountId itself
+   * and found it didn't match the claimed one).
+   */
   accountId?: string;
+  /**
+   * This account's raw AMK, handed straight to `createNode()` — see
+   * `../config.ts`'s `NodeCliConfig.amk` doc comment for why a raw in-memory
+   * override (rather than `wrappedAmkFilePath`'s SSH-provisioning file
+   * handoff) is exactly the right shape for THIS flow's caller: a co-located
+   * process (a CLI prompt, or the desktop app driving this in-process) that
+   * already holds the unlocked AMK needs no file and no device-key wrap/
+   * unwrap round trip to hand it to the `NodeDaemon` it's about to construct
+   * in the very same process.
+   */
   amk: Uint8Array;
   stateDir?: string;
   webSocketImpl?: WebSocketConstructor;
@@ -55,6 +73,14 @@ export interface LocalGuidedSetupOptions {
   nodeFactory?: (options: NodeDaemonOptions) => NodeDaemon;
   /** Injectable for tests: overrides identity load/create; defaults to a fresh `NodeIdentityStore({ stateDir })`. */
   identityStore?: Pick<NodeIdentityStore, 'loadOrCreate'>;
+  /**
+   * Resolves this node's `accountId` from `authToken` when `accountId` isn't
+   * given explicitly (issue #380/#406). Defaults to
+   * {@link resolveAccountIdViaRelay}, the real HTTP-backed implementation
+   * `main.ts`'s `start()` also uses. Tests inject a stub so they never need a
+   * real Better Auth login flow just to run this flow.
+   */
+  resolveAccountId?: AccountIdResolver;
 }
 
 export interface LocalGuidedSetupResult {
@@ -109,6 +135,9 @@ export async function runLocalGuidedSetup(
       options.identityStore ?? new NodeIdentityStore({ stateDir: options.stateDir });
     const identity = await identityStore.loadOrCreate();
 
+    const resolveAccountId = options.resolveAccountId ?? resolveAccountIdViaRelay;
+    const accountId = options.accountId ?? (await resolveAccountId(relayUrl, options.authToken));
+
     const nodeFactory = options.nodeFactory ?? createNode;
     node = nodeFactory({
       relayUrl,
@@ -116,7 +145,7 @@ export async function runLocalGuidedSetup(
       deviceId: options.deviceId ?? options.nodeId,
       devicePublicKey: identity.publicKeyBase64,
       authToken: options.authToken,
-      accountId: options.accountId ?? options.authToken,
+      accountId,
       amk: options.amk,
       stateDir: options.stateDir,
       webSocketImpl: options.webSocketImpl,
