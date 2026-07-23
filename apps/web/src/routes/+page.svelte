@@ -14,14 +14,20 @@
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import {
     RelayClient,
+    bootstrapAmkFromRecoveryCode,
     type AttentionInboxItem,
+    type BootstrapAmkResult,
     type ClientSessionMeta,
     type ConnectionStatus,
     type FileTreeDirectoryState,
   } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
-  import { createLocalStorageAmkStorage, loadOrCreateAmk } from '$lib/amk-store';
-  import { createLocalStorageDeviceIdStorage, loadOrCreateDeviceId } from '$lib/device-id-store';
+  import { createLocalStorageAmkStorage } from '$lib/amk-store';
+  import {
+    createLocalStorageDeviceIdStorage,
+    loadOrCreateDeviceId,
+    type DeviceIdStorage,
+  } from '$lib/device-id-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
@@ -48,10 +54,13 @@
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
+  import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
+  import OnboardingGate from '$lib/components/OnboardingGate.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
+  import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
 
@@ -88,11 +97,50 @@
   // `$state` (not a plain `let`) because the template's `PushNotificationToggle`
   // guard reads it reactively.
   let deviceId = $state<string | undefined>(undefined);
+  // The handle backing `deviceId` above — kept around (not just the loaded
+  // value) so a new-device bootstrap or a mismatched-AMK re-pair (both issue
+  // #384) can persist the FRESH device id the relay just registered, so a
+  // later reload/reconnect reuses that same identity instead of registering
+  // a second device (`BootstrapAmkResult.deviceId`'s own doc comment).
+  let deviceIdStorage: DeviceIdStorage | undefined;
   let authSession = $state<StoredAuthSession | undefined>(undefined);
   // Distinguishes "haven't checked yet" from "checked, not signed in" so the
   // sign-in gate doesn't flash before `restoreSession()` resolves.
   let authChecked = $state(false);
   let authError = $state<string | undefined>(undefined);
+
+  // First-run AMK onboarding (SPEC §8; issue #384): `undefined` until this
+  // device's AMK presence has actually been checked (avoids a flash of
+  // either the gate or the cockpit before that check runs), then `true`
+  // while this browser has no local AMK for the signed-in account yet (the
+  // `OnboardingGate` renders instead of the cockpit) or `false` once a
+  // usable AMK exists and `connect()` can proceed as before.
+  let onboardingNeeded = $state<boolean | undefined>(undefined);
+  // Set the moment a first-device onboarding hands back a freshly generated
+  // AMK + Recovery Code (`handleFirstDeviceOnboarded`); consumed the moment
+  // `connect()`'s own `client.status` store reaches `'open'`
+  // (`escrowPendingRecoveryCode`) — escrow needs a live connection, which
+  // `OnboardingGate` deliberately doesn't own (see its doc comment).
+  let pendingEscrowRecoveryCode: string | undefined;
+  // Surfaces the first-device escrow round trip as a real, tasteful loading
+  // state on the cockpit itself (issue #384's "tasteful loading state for
+  // ... escrow in flight") rather than leaving `OnboardingGate` blocking on
+  // it — that component's own job already ended once it handed the pair
+  // over. `'idle'` covers both "never escrowing" (every path but first-
+  // device onboarding) and "already finished" (cleared once escrow settles).
+  let escrowStatus = $state<'idle' | 'in-flight' | 'error'>('idle');
+  let escrowError = $state<string | undefined>(undefined);
+
+  // The mismatched-AMK re-pair affordance (issue #384's "surface the
+  // mismatched-AMK failure" requirement): shown on the sessions list instead
+  // of a bare "No sessions yet." whenever `client.sessionDecryptFailures`
+  // reports this device's AMK failed to decrypt sessions that do exist.
+  let sessionDecryptFailures = $state(0);
+  let rePairBusy = $state(false);
+  let rePairError = $state<string | undefined>(undefined);
+
+  // The "New session" flow (SPEC §7.1; issue #385).
+  let newSessionOpen = $state(false);
 
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
@@ -246,6 +294,7 @@
   let client: RelayClient | undefined;
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
+  let unsubscribeSessionDecryptFailures: (() => void) | undefined;
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
@@ -328,14 +377,18 @@
   /**
    * Connects the relay's WS session once this device has both halves of
    * real v1 auth (SPEC §8): a Better Auth bearer token (the WS handshake's
-   * `authToken` — no longer a stub) and this device's own persisted AMK
-   * (`amk-store.ts`'s `loadOrCreateAmk`, generated once and reused, not
-   * injected). Both come from `session`/`amkStorage`, never from a form
-   * field.
+   * `authToken` — no longer a stub) and this device's own persisted AMK.
+   * Unlike the old dev-hack this replaces, the AMK is never silently
+   * generated here — `beginSessionFor` only ever calls this once
+   * `amkStorage` already holds one for this account (real onboarding, issue
+   * #384, having produced it via `handleFirstDeviceOnboarded`/
+   * `handleNewDeviceOnboarded`/`rePairWithRecoveryCode` below, or a prior
+   * visit having already run one of those).
    */
   function connect(session: StoredAuthSession): void {
     if (typeof window === 'undefined' || client || !amkStorage) return;
-    const amk = loadOrCreateAmk(session.accountId, amkStorage);
+    const amk = amkStorage.get(session.accountId);
+    if (!amk) return; // guarded by beginSessionFor; defensive no-op otherwise
     client = new RelayClient({
       relayUrl,
       amk,
@@ -346,7 +399,17 @@
       // this connection against that subscription's `deviceId`.
       deviceId,
     });
-    unsubscribeStatus = client.status.subscribe((value) => (status = value));
+    unsubscribeStatus = client.status.subscribe((value) => {
+      status = value;
+      // Issue #384: the first-device onboarding path hands `AMK`/Recovery
+      // Code persistence off to this function, but escrowing that code
+      // needs a LIVE connection (`RelayClient.escrowAmk`) — the moment this
+      // freshly constructed client actually reaches `'open'` is the first
+      // point that's true.
+      if (value === 'open' && pendingEscrowRecoveryCode) {
+        void escrowPendingRecoveryCode();
+      }
+    });
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
       syncSessionStatusSubscriptions(value);
@@ -361,15 +424,114 @@
         selectSession(value[0].id);
       }
     });
+    // Issue #384's mismatched-AMK state: today's silent decrypt-drop gets a
+    // real, distinguishable count instead of just an ever-empty `sessions`.
+    unsubscribeSessionDecryptFailures = client.sessionDecryptFailures.subscribe(
+      (value) => (sessionDecryptFailures = value),
+    );
     unsubscribeAttentionInbox = client
       .attentionInbox()
       .subscribe((value) => (attentionInboxItems = value));
     client.connect();
   }
 
+  /**
+   * Decides, once a Better Auth session actually exists, whether this
+   * browser can proceed straight to `connect()` (it already holds this
+   * account's AMK) or needs real onboarding first (issue #384) — replacing
+   * the old unconditional `connect(value)` this subscription used to call,
+   * which is exactly what let every browser silently mint its own
+   * independent AMK.
+   */
+  function beginSessionFor(session: StoredAuthSession): void {
+    if (!amkStorage) return; // amkStorage is assigned synchronously before this can run (onMount)
+    if (amkStorage.get(session.accountId)) {
+      onboardingNeeded = false;
+      connect(session);
+    } else {
+      onboardingNeeded = true;
+    }
+  }
+
+  /** `OnboardingGate`'s first-device path (issue #384): persists the freshly generated AMK, defers escrowing its Recovery Code until `connect()`'s own client reaches `'open'` (see that function's doc comment), then proceeds into the cockpit. */
+  function handleFirstDeviceOnboarded(amk: Uint8Array, recoveryCode: string): void {
+    if (!amkStorage || !authSession) return;
+    amkStorage.set(authSession.accountId, amk);
+    pendingEscrowRecoveryCode = recoveryCode;
+    escrowStatus = 'in-flight';
+    escrowError = undefined;
+    onboardingNeeded = false;
+    connect(authSession);
+  }
+
+  /** `OnboardingGate`'s new-device path (issue #384): persists the AMK `bootstrapAmkFromRecoveryCode` already recovered from the relay's escrow, adopts the freshly registered device identity (so a later reload/reconnect reuses it rather than registering a second device — `BootstrapAmkResult.deviceId`'s doc comment), and proceeds into the cockpit. No escrow needed here: the account's Recovery Code already has an escrowed AMK, or this bootstrap couldn't have succeeded. */
+  function handleNewDeviceOnboarded(result: BootstrapAmkResult): void {
+    if (!amkStorage || !authSession) return;
+    amkStorage.set(authSession.accountId, result.amk);
+    deviceId = result.deviceId;
+    deviceIdStorage?.set(result.deviceId);
+    onboardingNeeded = false;
+    connect(authSession);
+  }
+
+  /** Sends this first device's already-confirmed Recovery Code up to the relay the moment its connection opens (see `connect()`'s `client.status` subscription) — a real, tasteful loading state (`escrowStatus`) rather than a silent fire-and-forget. */
+  async function escrowPendingRecoveryCode(): Promise<void> {
+    const code = pendingEscrowRecoveryCode;
+    if (!code || !client) return;
+    pendingEscrowRecoveryCode = undefined;
+    try {
+      await client.escrowAmk(code);
+      escrowStatus = 'idle';
+    } catch (error) {
+      escrowStatus = 'error';
+      escrowError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /**
+   * The mismatched-AMK re-pair affordance (issue #384): reruns the exact
+   * same new-device bootstrap `OnboardingGate` uses, then reconnects with
+   * the recovered AMK — this browser had SOME AMK already (hence the
+   * mismatch, not the onboarding gate), so this replaces it outright rather
+   * than layering a second one.
+   */
+  async function rePairWithRecoveryCode(code: string): Promise<void> {
+    if (!amkStorage || !authSession) return;
+    rePairBusy = true;
+    rePairError = undefined;
+    try {
+      const result = await bootstrapAmkFromRecoveryCode({
+        relayUrl,
+        accountId: authSession.accountId,
+        authToken: authSession.token,
+        recoveryCode: code,
+      });
+      amkStorage.set(authSession.accountId, result.amk);
+      deviceId = result.deviceId;
+      deviceIdStorage?.set(result.deviceId);
+      disconnect();
+      connect(authSession);
+    } catch (error) {
+      rePairError = error instanceof Error ? error.message : String(error);
+    } finally {
+      rePairBusy = false;
+    }
+  }
+
+  /** The "New session" flow's entry point (SPEC §7.1; issue #385) — wired to the sessions aside's CTA and the empty-state's own action. */
+  function openNewSessionDialog(): void {
+    newSessionOpen = true;
+  }
+
+  /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
+  function handleSessionCreated(sessionId: string): void {
+    selectSession(sessionId);
+  }
+
   function disconnect(): void {
     unsubscribeStatus?.();
     unsubscribeSessions?.();
+    unsubscribeSessionDecryptFailures?.();
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
@@ -383,6 +545,7 @@
     client = undefined;
     status = 'idle';
     sessions = [];
+    sessionDecryptFailures = 0;
     selectedSessionId = undefined;
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
@@ -398,6 +561,7 @@
     projectConfigOpen = false;
     filePickerOpen = false;
     atTriggerStart = undefined;
+    newSessionOpen = false;
   }
 
   function ensureAuthStore(): AuthStore {
@@ -634,7 +798,8 @@
     });
 
     amkStorage = createLocalStorageAmkStorage();
-    deviceId = loadOrCreateDeviceId(createLocalStorageDeviceIdStorage());
+    deviceIdStorage = createLocalStorageDeviceIdStorage();
+    deviceId = loadOrCreateDeviceId(deviceIdStorage);
 
     // #166: load this device's mute/quiet-hours preferences and hand the
     // service worker its first sync (before any session list has even
@@ -670,8 +835,12 @@
     const unsubscribeAuthSession = store.session.subscribe((value) => {
       authSession = value;
       if (value) {
-        connect(value);
+        // Issue #384: decides onboarding-vs-straight-to-cockpit instead of
+        // unconditionally connecting (which used to silently mint a fresh
+        // AMK per browser via the old `loadOrCreateAmk` call here).
+        beginSessionFor(value);
       } else {
+        onboardingNeeded = undefined;
         disconnect();
       }
     });
@@ -794,201 +963,257 @@
       {/if}
     </section>
 
-    {#if notificationSettingsOpen && notificationPreferencesStorage}
-      <section class="notification-settings-panel">
-        <h2>Notifications</h2>
-        <NotificationPreferences
-          {projectPaths}
-          storage={notificationPreferencesStorage}
-          onChange={onNotificationPreferencesChange}
-        />
-      </section>
-    {/if}
-
-    {#if inboxOpen}
-      <section class="inbox-panel">
-        <h2>Attention inbox</h2>
-        <AttentionInbox
-          items={attentionInboxItems}
-          onResolve={resolveInboxPermission}
-          onOpenSession={openSessionFromInbox}
-          onReply={replyFromInbox}
-        />
-      </section>
-    {/if}
-
-    <div class="cockpit">
-      <aside class="sessions">
-        <h2>Sessions</h2>
-        {#if status === 'connecting' || status === 'idle'}
-          <p class="empty">Loading sessions…</p>
-        {:else if sessions.length === 0}
-          <p class="empty">No sessions yet.</p>
-        {:else}
-          <ul>
-            {#each sessions as session (session.id)}
-              <li>
-                <button
-                  type="button"
-                  class="session"
-                  class:selected={session.id === selectedSessionId}
-                  onclick={() => selectSession(session.id)}
-                >
-                  <span class="session-title-row">
-                    <strong>{session.title}</strong>
-                    {#if sessionStatuses.get(session.id)}
-                      <span
-                        class="status-badge"
-                        data-status={sessionStatuses.get(session.id)}
-                        data-testid="session-status-badge"
-                      >
-                        {sessionStatuses.get(session.id)}
-                      </span>
-                    {/if}
-                  </span>
-                  <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </aside>
-
-      <section class="transcript">
-        {#if !selectedSessionId}
-          <p class="empty">Select a session to view its live transcript.</p>
-        {:else}
-          <div class="transcript-toolbar">
-            <ConfigBar
-              options={configOptions}
-              usage={transcript?.usage}
-              cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-              onChange={changeConfigOption}
-            />
-            <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
-            <CopyButton
-              text={transcript ? exportTranscriptText(transcript) : ''}
-              label="Export transcript"
-              copyFn={exportTranscript}
-            />
-            <button
-              type="button"
-              class="file-tree-toggle"
-              class:active={fileTreeOpen}
-              onclick={() => (fileTreeOpen = !fileTreeOpen)}
-              data-testid="file-tree-toggle"
-            >
-              Files
-            </button>
-            <button
-              type="button"
-              class="terminal-toggle"
-              class:active={terminalOpen}
-              onclick={() => (terminalOpen = !terminalOpen)}
-              data-testid="terminal-toggle"
-            >
-              Terminal
-            </button>
-            <button
-              type="button"
-              class="project-config-toggle"
-              class:active={projectConfigOpen}
-              onclick={() => (projectConfigOpen = !projectConfigOpen)}
-              data-testid="project-config-toggle"
-            >
-              Config
-            </button>
-          </div>
-
-          {#if fileTreeOpen}
-            <aside class="file-tree-panel" data-testid="file-tree-panel-wrapper">
-              <FileTreePanel
-                tree={fileTree}
-                onExpand={expandDirectory}
-                onSelectFile={insertFileReference}
-              />
-            </aside>
+    {#if onboardingNeeded}
+      <OnboardingGate
+        accountId={authSession.accountId}
+        {relayUrl}
+        authToken={authSession.token}
+        onFirstDevice={handleFirstDeviceOnboarded}
+        onNewDevice={handleNewDeviceOnboarded}
+      />
+    {:else}
+      {#if escrowStatus !== 'idle'}
+        <p class="escrow-status" role="status" data-testid="escrow-status">
+          {#if escrowStatus === 'in-flight'}
+            Securing your account key…
+          {:else}
+            Couldn't save your Recovery Code to the relay{escrowError ? `: ${escrowError}` : '.'} This
+            device still works, but recovering this account elsewhere may not until it does.
           {/if}
+        </p>
+      {/if}
 
-          {#if terminalOpen && client}
-            <aside class="terminal-panel" data-testid="terminal-panel-wrapper">
-              <InteractiveTerminal sessionId={selectedSessionId} {client} />
-            </aside>
-          {/if}
-
-          {#if projectConfigOpen && selectedProjectPath}
-            <aside class="project-config-panel-wrapper" data-testid="project-config-panel-wrapper">
-              <ProjectConfigPanel projectPath={selectedProjectPath} />
-            </aside>
-          {/if}
-
-          <ol class="items">
-            {#each transcript?.items ?? [] as item (item.id)}
-              <li>
-                {#if item.type === 'message'}
-                  <MessageItem
-                    {item}
-                    thinking={item.kind === 'agent_thought_chunk' && transcript
-                      ? isThoughtStillThinking(transcript, item.turnId)
-                      : false}
-                    turnActive={transcript?.turnActive ?? false}
-                  />
-                {:else}
-                  <ToolCallRow
-                    {item}
-                    awaitingPermission={permissionHead?.toolCall.id === item.id}
-                  />
-                {/if}
-              </li>
-            {/each}
-          </ol>
-
-          {#if transcript && transcript.plan.length > 0}
-            <PlanCard
-              entries={transcript.plan}
-              collapsed={planCollapsed}
-              onToggle={togglePlanCollapsed}
-            />
-          {/if}
-
-          <QueuedPromptBar prompts={queuedPrompts} />
-
-          {#if staleNotice}
-            <p class="stale-notice" role="status" data-testid="stale-permission-notice">
-              {staleNotice.message}
-            </p>
-          {/if}
-
-          <PermissionQueueBar
-            sessionId={selectedSessionId}
-            queue={permissionQueue}
-            onResolve={resolvePermission}
-            onStop={stopSession}
-            narrow={narrowViewport}
+      {#if notificationSettingsOpen && notificationPreferencesStorage}
+        <section class="notification-settings-panel">
+          <h2>Notifications</h2>
+          <NotificationPreferences
+            {projectPaths}
+            storage={notificationPreferencesStorage}
+            onChange={onNotificationPreferencesChange}
           />
+        </section>
+      {/if}
 
-          <form class="composer" onsubmit={submitPrompt}>
-            <AttachmentBar
-              {attachments}
-              onFiles={attachFiles}
-              onRetry={retryAttachment}
-              onRemove={removeAttachment}
-            />
-            <div class="composer-row">
-              <input
-                type="text"
-                bind:value={draft}
-                oninput={handleComposerInput}
-                placeholder="Send a follow-up prompt… (type @ to reference a file)"
-                aria-label="Follow-up prompt"
-                data-testid="composer-input"
+      {#if inboxOpen}
+        <section class="inbox-panel">
+          <h2>Attention inbox</h2>
+          <AttentionInbox
+            items={attentionInboxItems}
+            onResolve={resolveInboxPermission}
+            onOpenSession={openSessionFromInbox}
+            onReply={replyFromInbox}
+          />
+        </section>
+      {/if}
+
+      <div class="cockpit">
+        <aside class="sessions">
+          <div class="sessions-header">
+            <h2>Sessions</h2>
+            {#if status === 'open'}
+              <button
+                type="button"
+                class="new-session-button"
+                onclick={openNewSessionDialog}
+                data-testid="new-session-button"
+              >
+                New session
+              </button>
+            {/if}
+          </div>
+          {#if status === 'connecting' || status === 'idle'}
+            <p class="empty">Loading sessions…</p>
+          {:else if sessions.length === 0 && sessionDecryptFailures > 0}
+            <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
+              <p class="key-mismatch-title">This device's key can't read these sessions.</p>
+              <p class="hint">Re-pair this device with your Recovery Code to restore access.</p>
+              <RecoveryCodeEntryForm
+                busy={rePairBusy}
+                error={rePairError}
+                submitLabel="Re-pair this device"
+                onSubmit={rePairWithRecoveryCode}
               />
-              <button type="submit" disabled={sendDisabled}>Send</button>
             </div>
-          </form>
-        {/if}
-      </section>
-    </div>
+          {:else if sessions.length === 0}
+            <div class="empty-sessions">
+              <p class="empty">No sessions yet.</p>
+              <button
+                type="button"
+                onclick={openNewSessionDialog}
+                data-testid="new-session-empty-cta"
+              >
+                Start your first session
+              </button>
+            </div>
+          {:else}
+            <ul>
+              {#each sessions as session (session.id)}
+                <li>
+                  <button
+                    type="button"
+                    class="session"
+                    class:selected={session.id === selectedSessionId}
+                    onclick={() => selectSession(session.id)}
+                  >
+                    <span class="session-title-row">
+                      <strong>{session.title}</strong>
+                      {#if sessionStatuses.get(session.id)}
+                        <span
+                          class="status-badge"
+                          data-status={sessionStatuses.get(session.id)}
+                          data-testid="session-status-badge"
+                        >
+                          {sessionStatuses.get(session.id)}
+                        </span>
+                      {/if}
+                    </span>
+                    <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </aside>
+
+        <section class="transcript">
+          {#if !selectedSessionId}
+            <p class="empty">Select a session to view its live transcript.</p>
+          {:else}
+            <div class="transcript-toolbar">
+              <ConfigBar
+                options={configOptions}
+                usage={transcript?.usage}
+                cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+                onChange={changeConfigOption}
+              />
+              <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
+              <CopyButton
+                text={transcript ? exportTranscriptText(transcript) : ''}
+                label="Export transcript"
+                copyFn={exportTranscript}
+              />
+              <button
+                type="button"
+                class="file-tree-toggle"
+                class:active={fileTreeOpen}
+                onclick={() => (fileTreeOpen = !fileTreeOpen)}
+                data-testid="file-tree-toggle"
+              >
+                Files
+              </button>
+              <button
+                type="button"
+                class="terminal-toggle"
+                class:active={terminalOpen}
+                onclick={() => (terminalOpen = !terminalOpen)}
+                data-testid="terminal-toggle"
+              >
+                Terminal
+              </button>
+              <button
+                type="button"
+                class="project-config-toggle"
+                class:active={projectConfigOpen}
+                onclick={() => (projectConfigOpen = !projectConfigOpen)}
+                data-testid="project-config-toggle"
+              >
+                Config
+              </button>
+            </div>
+
+            {#if fileTreeOpen}
+              <aside class="file-tree-panel" data-testid="file-tree-panel-wrapper">
+                <FileTreePanel
+                  tree={fileTree}
+                  onExpand={expandDirectory}
+                  onSelectFile={insertFileReference}
+                />
+              </aside>
+            {/if}
+
+            {#if terminalOpen && client}
+              <aside class="terminal-panel" data-testid="terminal-panel-wrapper">
+                <InteractiveTerminal sessionId={selectedSessionId} {client} />
+              </aside>
+            {/if}
+
+            {#if projectConfigOpen && selectedProjectPath}
+              <aside
+                class="project-config-panel-wrapper"
+                data-testid="project-config-panel-wrapper"
+              >
+                <ProjectConfigPanel projectPath={selectedProjectPath} />
+              </aside>
+            {/if}
+
+            <ol class="items">
+              {#each transcript?.items ?? [] as item (item.id)}
+                <li>
+                  {#if item.type === 'message'}
+                    <MessageItem
+                      {item}
+                      thinking={item.kind === 'agent_thought_chunk' && transcript
+                        ? isThoughtStillThinking(transcript, item.turnId)
+                        : false}
+                      turnActive={transcript?.turnActive ?? false}
+                    />
+                  {:else}
+                    <ToolCallRow
+                      {item}
+                      awaitingPermission={permissionHead?.toolCall.id === item.id}
+                    />
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+
+            {#if transcript && transcript.plan.length > 0}
+              <PlanCard
+                entries={transcript.plan}
+                collapsed={planCollapsed}
+                onToggle={togglePlanCollapsed}
+              />
+            {/if}
+
+            <QueuedPromptBar prompts={queuedPrompts} />
+
+            {#if staleNotice}
+              <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+                {staleNotice.message}
+              </p>
+            {/if}
+
+            <PermissionQueueBar
+              sessionId={selectedSessionId}
+              queue={permissionQueue}
+              onResolve={resolvePermission}
+              onStop={stopSession}
+              narrow={narrowViewport}
+            />
+
+            <form class="composer" onsubmit={submitPrompt}>
+              <AttachmentBar
+                {attachments}
+                onFiles={attachFiles}
+                onRetry={retryAttachment}
+                onRemove={removeAttachment}
+              />
+              <div class="composer-row">
+                <input
+                  type="text"
+                  bind:value={draft}
+                  oninput={handleComposerInput}
+                  placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                  aria-label="Follow-up prompt"
+                  data-testid="composer-input"
+                />
+                <button type="submit" disabled={sendDisabled}>Send</button>
+              </div>
+            </form>
+          {/if}
+        </section>
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -1009,6 +1234,13 @@
   onExpand={expandDirectory}
   onSelect={insertFileReference}
   onClose={closeFilePicker}
+/>
+
+<NewSessionDialog
+  open={newSessionOpen}
+  {client}
+  onCreated={handleSessionCreated}
+  onClose={() => (newSessionOpen = false)}
 />
 
 <style>
@@ -1272,9 +1504,75 @@
     flex-shrink: 0;
   }
 
-  .sessions h2 {
+  .sessions-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+  }
+
+  .sessions-header h2 {
     font-size: 1rem;
-    margin: 0 0 var(--space-sm);
+    margin: 0;
+  }
+
+  .new-session-button {
+    border: none;
+    border-radius: var(--radius-md);
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .empty-sessions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .empty-sessions button {
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+    padding: var(--space-sm) var(--space-md);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: var(--text-small-size);
+  }
+
+  .key-mismatch {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-danger-subtle);
+  }
+
+  .key-mismatch-title {
+    margin: 0;
+    font-weight: 600;
+    color: var(--color-danger);
+  }
+
+  .key-mismatch .hint {
+    margin: 0;
+    font-size: var(--text-small-size);
+    opacity: 0.85;
+  }
+
+  .escrow-status {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
+    font-size: var(--text-small-size);
   }
 
   .sessions ul {
