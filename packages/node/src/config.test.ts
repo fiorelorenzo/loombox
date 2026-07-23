@@ -76,9 +76,40 @@ describe('loadNodeConfig', () => {
         const message = (error as ConfigError).message;
         expect(message).toContain('LOOMBOX_RELAY_URL');
         expect(message).toContain('LOOMBOX_NODE_ID');
-        expect(message).toContain('LOOMBOX_AUTH_TOKEN');
         expect(message).toContain('LOOMBOX_AMK');
       }
+    });
+
+    // #387: authToken is no longer required at this layer — a node with
+    // neither LOOMBOX_AUTH_TOKEN nor LOOMBOX_DEVICE_TOKEN set is valid
+    // config (main.ts's start() then reuses a persisted device token or
+    // runs the device-login flow to obtain one).
+    it('does not require LOOMBOX_AUTH_TOKEN or LOOMBOX_DEVICE_TOKEN', () => {
+      const env = { ...BASE_ENV };
+      delete (env as Record<string, string | undefined>).LOOMBOX_AUTH_TOKEN;
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.authToken).toBeUndefined();
+      expect(config.deviceToken).toBeUndefined();
+    });
+
+    it('loads deviceToken from LOOMBOX_DEVICE_TOKEN when no LOOMBOX_AUTH_TOKEN is set', () => {
+      const env = { ...BASE_ENV };
+      delete (env as Record<string, string | undefined>).LOOMBOX_AUTH_TOKEN;
+      const config = loadNodeConfig({
+        env: { ...env, LOOMBOX_DEVICE_TOKEN: 'a-device-token' },
+        argv: [],
+      });
+      expect(config.deviceToken).toBe('a-device-token');
+      expect(config.authToken).toBeUndefined();
+    });
+
+    it('authToken wins over deviceToken when both are set', () => {
+      const config = loadNodeConfig({
+        env: { ...BASE_ENV, LOOMBOX_DEVICE_TOKEN: 'a-device-token' },
+        argv: [],
+      });
+      expect(config.authToken).toBe('test-auth-token');
+      expect(config.deviceToken).toBeUndefined();
     });
 
     it('rejects a config missing only relayUrl', () => {

@@ -14,7 +14,8 @@ import { startRelay, type StartedRelay } from '@loombox/relay';
 
 import type { AmkBootstrapper } from './amk-bootstrap';
 import { ConfigError } from './config';
-import { installGracefulShutdown, start } from './main';
+import { DeviceTokenFileStore } from './device-token-store';
+import { installGracefulShutdown, start, type DeviceLoginRunner } from './main';
 import type { AccountIdResolver } from './resolve-account-id';
 
 function envFor(relayUrl: string, stateDir: string, amk: Uint8Array, nodeId = 'main-test-node') {
@@ -327,6 +328,94 @@ describe('start: AMK from a Recovery Code (issue #386)', () => {
     });
 
     expect(bootstrapAmk).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+});
+
+describe('start: bearer token resolution (issue #387)', () => {
+  let relay: StartedRelay;
+  let stateDir: string;
+
+  beforeEach(async () => {
+    relay = await startRelay();
+    stateDir = await mkdtemp(join(tmpdir(), 'loombox-node-main-devicetoken-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+    await relay.close();
+  });
+
+  /** `envFor` minus `LOOMBOX_AUTH_TOKEN` — every test below supplies its own bearer via a different path. */
+  function envWithoutAuthToken(nodeId = 'main-test-node') {
+    const env = envFor(relay.url, stateDir, generateAmk(), nodeId) as Record<
+      string,
+      string | undefined
+    >;
+    delete env.LOOMBOX_AUTH_TOKEN;
+    return env;
+  }
+
+  it('uses LOOMBOX_DEVICE_TOKEN directly, without running the device-login flow', async () => {
+    const deviceLogin = vi.fn();
+    const started = await start({
+      env: { ...envWithoutAuthToken(), LOOMBOX_DEVICE_TOKEN: 'a-direct-device-token' },
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      runDeviceLogin: deviceLogin,
+    });
+
+    expect(deviceLogin).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('reuses a device token already persisted under this node’s state dir, skipping login', async () => {
+    new DeviceTokenFileStore({ stateDir }).save('a-persisted-device-token');
+    const deviceLogin = vi.fn();
+
+    const started = await start({
+      env: envWithoutAuthToken(),
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      runDeviceLogin: deviceLogin,
+    });
+
+    expect(deviceLogin).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('runs the device-login flow when neither LOOMBOX_AUTH_TOKEN, LOOMBOX_DEVICE_TOKEN, nor a persisted token exist, then persists the result', async () => {
+    const deviceLogin = vi.fn<DeviceLoginRunner>().mockResolvedValue({
+      accessToken: 'freshly-logged-in-token',
+    });
+
+    const started = await start({
+      env: envWithoutAuthToken(),
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      runDeviceLogin: deviceLogin,
+    });
+
+    expect(deviceLogin).toHaveBeenCalledExactlyOnceWith({ relayUrl: relay.url });
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+
+    expect(new DeviceTokenFileStore({ stateDir }).load()).toBe('freshly-logged-in-token');
+  });
+
+  it('an explicit LOOMBOX_AUTH_TOKEN wins over LOOMBOX_DEVICE_TOKEN, and never runs the device-login flow', async () => {
+    const deviceLogin = vi.fn();
+    const started = await start({
+      env: { ...envFor(relay.url, stateDir, generateAmk()), LOOMBOX_DEVICE_TOKEN: 'ignored' },
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      runDeviceLogin: deviceLogin,
+    });
+
+    expect(deviceLogin).not.toHaveBeenCalled();
     await expect(started.node.whenConnected()).resolves.toBeUndefined();
     await started.stop();
   });

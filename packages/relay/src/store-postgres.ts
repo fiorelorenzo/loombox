@@ -8,8 +8,11 @@ import {
   type AmkRotationStore,
   type BlobRetentionMeta,
   type BlobStore,
+  type DeviceAuthRequestRecord,
+  type DeviceAuthStore,
   type DeviceRecord,
   type DeviceStore,
+  type DeviceTokenStore,
   type EscrowStore,
   type LeaseGrantOutcome,
   type LeaseRecord,
@@ -53,6 +56,8 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     pushSubscriptions: createPostgresPushSubscriptionStore(pg),
     vapidKeys: createPostgresVapidKeyStore(pg),
     leases: createPostgresLeaseStore(pg),
+    deviceAuth: createPostgresDeviceAuthStore(pg),
+    deviceTokens: createPostgresDeviceTokenStore(pg),
   };
 }
 
@@ -753,6 +758,109 @@ function createPostgresQuotaStore(pg: PgLike): QuotaStore {
       );
 
       return blobBytes + ringBytes;
+    },
+  };
+}
+
+interface DeviceAuthRequestRow {
+  device_code_hash: string;
+  user_code: string;
+  status: string;
+  account_id: string | null;
+  pending_token: string | null;
+  created_at: string | number;
+  expires_at: string | number;
+}
+
+function rowToDeviceAuthRequest(row: DeviceAuthRequestRow): DeviceAuthRequestRecord {
+  return {
+    deviceCodeHash: row.device_code_hash,
+    userCode: row.user_code,
+    status: row.status === 'approved' || row.status === 'denied' ? row.status : 'pending',
+    accountId: row.account_id ?? undefined,
+    pendingToken: row.pending_token ?? undefined,
+    createdAt: Number(row.created_at),
+    expiresAt: Number(row.expires_at),
+  };
+}
+
+/**
+ * Postgres-backed `DeviceAuthStore` (issue #387). `approve`/`deny` are a
+ * single conditional `UPDATE ... WHERE status = 'pending' AND expires_at >
+ * $now`, so the not-found/expired/not-pending guard `store.ts`'s in-memory
+ * implementation applies in application code is instead enforced by
+ * Postgres itself here — a `RETURNING` clause with zero rows means the same
+ * "no-op" outcome the in-memory store returns `undefined` for.
+ */
+function createPostgresDeviceAuthStore(pg: PgLike): DeviceAuthStore {
+  return {
+    async create(input) {
+      await pg.query(
+        `INSERT INTO device_auth_requests (device_code_hash, user_code, status, created_at, expires_at)
+         VALUES ($1, $2, 'pending', $3, $4)`,
+        [input.deviceCodeHash, input.userCode, input.createdAt, input.expiresAt],
+      );
+      return { ...input, status: 'pending' };
+    },
+    async getByDeviceCodeHash(deviceCodeHash) {
+      const { rows } = await pg.query<DeviceAuthRequestRow>(
+        `SELECT * FROM device_auth_requests WHERE device_code_hash = $1`,
+        [deviceCodeHash],
+      );
+      return rows[0] ? rowToDeviceAuthRequest(rows[0]) : undefined;
+    },
+    async getByUserCode(userCode) {
+      const { rows } = await pg.query<DeviceAuthRequestRow>(
+        `SELECT * FROM device_auth_requests WHERE user_code = $1`,
+        [userCode],
+      );
+      return rows[0] ? rowToDeviceAuthRequest(rows[0]) : undefined;
+    },
+    async approve(userCode, accountId, pendingToken, now) {
+      const { rows } = await pg.query<DeviceAuthRequestRow>(
+        `UPDATE device_auth_requests
+         SET status = 'approved', account_id = $2, pending_token = $3
+         WHERE user_code = $1 AND status = 'pending' AND expires_at >= $4
+         RETURNING *`,
+        [userCode, accountId, pendingToken, now],
+      );
+      return rows[0] ? rowToDeviceAuthRequest(rows[0]) : undefined;
+    },
+    async deny(userCode, now) {
+      const { rows } = await pg.query<DeviceAuthRequestRow>(
+        `UPDATE device_auth_requests
+         SET status = 'denied'
+         WHERE user_code = $1 AND status = 'pending' AND expires_at >= $2
+         RETURNING *`,
+        [userCode, now],
+      );
+      return rows[0] ? rowToDeviceAuthRequest(rows[0]) : undefined;
+    },
+    async consumeToken(deviceCodeHash) {
+      await pg.query(
+        `UPDATE device_auth_requests SET pending_token = NULL WHERE device_code_hash = $1`,
+        [deviceCodeHash],
+      );
+    },
+  };
+}
+
+function createPostgresDeviceTokenStore(pg: PgLike): DeviceTokenStore {
+  return {
+    async create(input) {
+      await pg.query(
+        `INSERT INTO device_tokens (token_hash, account_id, label, created_at)
+         VALUES ($1, $2, $3, $4)`,
+        [input.tokenHash, input.accountId, input.label ?? null, input.createdAt],
+      );
+      return { ...input };
+    },
+    async resolveByHash(tokenHash) {
+      const { rows } = await pg.query<{ account_id: string }>(
+        `UPDATE device_tokens SET last_used_at = $2 WHERE token_hash = $1 RETURNING account_id`,
+        [tokenHash, Date.now()],
+      );
+      return rows[0]?.account_id;
     },
   };
 }

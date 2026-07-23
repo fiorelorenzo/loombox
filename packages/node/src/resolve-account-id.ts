@@ -13,10 +13,13 @@ export type AccountIdResolver = (relayUrl: string, authToken: string) => Promise
  * `ws://host:port/ws` -> `http://host:port` (and `wss:` -> `https:`).
  * Mirrors `apps/web/src/routes/+page.svelte`'s own `relayHttpBaseUrl` (and
  * its copy in `apps/web/tests-e2e/harness/relay-harness.ts`) — the relay
- * serves Better Auth's `/api/auth/*` routes over plain HTTP(S) on the same
- * origin as its WS endpoint.
+ * serves Better Auth's `/api/auth/*` routes (and, per issue #387,
+ * `/device/*`) over plain HTTP(S) on the same origin as its WS endpoint.
+ * Exported so `device-login.ts` (this package) reuses this exact
+ * implementation rather than adding yet another copy within the same
+ * package boundary.
  */
-function relayHttpBaseUrl(wsUrl: string): string {
+export function relayHttpBaseUrl(wsUrl: string): string {
   return wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
 }
 

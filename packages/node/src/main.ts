@@ -9,12 +9,17 @@ import {
   type LoadNodeConfigOptions,
   type NodeCliConfig,
 } from './config';
+import { DeviceTokenFileStore } from './device-token-store';
+import { runDeviceLogin, type DeviceLoginResult, type RunDeviceLoginOptions } from './device-login';
 import type { NodeIdentity } from './identity';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
 import { resolveAccountIdViaRelay, type AccountIdResolver } from './resolve-account-id';
 import { DEFAULT_LOCAL_TARGET } from './target';
 import type { WebSocketConstructor } from './relay-connection';
+
+/** Runs the device-authorization login flow (issue #387). Injected as `StartOptions.runDeviceLogin` so tests never have to drive a real operator-approval round trip; production defaults to {@link runDeviceLogin} itself. */
+export type DeviceLoginRunner = (options: RunDeviceLoginOptions) => Promise<DeviceLoginResult>;
 
 export interface StartOptions extends LoadNodeConfigOptions {
   /** Test-only: overrides the global `WebSocket` `NodeDaemon` connects with. Never set in production. */
@@ -35,6 +40,15 @@ export interface StartOptions extends LoadNodeConfigOptions {
    * round-trip just to start a node.
    */
   bootstrapAmk?: AmkBootstrapper;
+  /**
+   * Recovers this node's bearer token via the device-authorization grant
+   * when neither `LOOMBOX_AUTH_TOKEN` nor `LOOMBOX_DEVICE_TOKEN` is
+   * configured and no token is already persisted on disk (issue #387).
+   * Defaults to {@link runDeviceLogin}, the real relay-backed
+   * implementation. Tests inject a stub so they never need a real
+   * operator-approval round trip just to start a node.
+   */
+  runDeviceLogin?: DeviceLoginRunner;
 }
 
 /**
@@ -50,6 +64,7 @@ async function resolveAmk(
   config: NodeCliConfig,
   identity: NodeIdentity,
   accountId: string,
+  authToken: string,
   bootstrapAmk: AmkBootstrapper,
   webSocketImpl: WebSocketConstructor | undefined,
 ): Promise<Uint8Array> {
@@ -60,12 +75,40 @@ async function resolveAmk(
   return bootstrapAmk({
     relayUrl: config.relayUrl,
     accountId,
-    authToken: config.authToken,
+    authToken,
     deviceId: config.deviceId,
     devicePublicKey: identity.publicKeyBase64,
     recoveryCode: config.recoveryCode,
     webSocketImpl,
   });
+}
+
+/**
+ * Resolves the concrete bearer token this node connects with (issue #387):
+ * an explicit `config.authToken` (Better Auth session bearer, legacy/
+ * advanced) or `config.deviceToken` (supplied directly via
+ * `LOOMBOX_DEVICE_TOKEN`) wins outright. Otherwise, a device token
+ * previously persisted by a prior run's device-login is reused
+ * (`DeviceTokenFileStore`, scoped to `config.stateDir` exactly like
+ * `NodeIdentityStore`) — "if a token already exists, skip login". Only when
+ * NONE of those apply does this actually run the interactive
+ * device-authorization flow (`deviceLogin`), then persist whatever it
+ * returns so the next restart skips straight to the reuse path above.
+ */
+async function resolveAuthToken(
+  config: NodeCliConfig,
+  deviceLogin: DeviceLoginRunner,
+): Promise<string> {
+  if (config.authToken) return config.authToken;
+  if (config.deviceToken) return config.deviceToken;
+
+  const tokenStore = new DeviceTokenFileStore({ stateDir: config.stateDir });
+  const existing = tokenStore.load();
+  if (existing) return existing;
+
+  const { accessToken } = await deviceLogin({ relayUrl: config.relayUrl });
+  tokenStore.save(accessToken);
+  return accessToken;
 }
 
 export interface StartedNode {
@@ -109,24 +152,42 @@ export interface StartedNode {
  * against the relay's escrow, the same crypto path `apps/web` drives — never
  * hand-pasted, unless `config.amk` (`LOOMBOX_AMK`) is set as an explicit
  * override for tests/advanced use.
+ *
+ * The bearer token itself (issue #387) comes from `resolveAuthToken`: an
+ * explicit `LOOMBOX_AUTH_TOKEN`/`LOOMBOX_DEVICE_TOKEN`, a previously
+ * persisted device token, or — only if none of those exist — the
+ * device-authorization login flow (`deviceLogin`), which prints a code for
+ * the operator to approve in a browser and prints/persists the resulting
+ * token once approved.
  */
 export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const config = loadNodeConfig(options);
+
+  const deviceLogin = options.runDeviceLogin ?? runDeviceLogin;
+  const authToken = await resolveAuthToken(config, deviceLogin);
+
   const resolveAccountId = options.resolveAccountId ?? resolveAccountIdViaRelay;
-  const accountId = config.accountId ?? (await resolveAccountId(config.relayUrl, config.authToken));
+  const accountId = config.accountId ?? (await resolveAccountId(config.relayUrl, authToken));
 
   const identityStore = new NodeIdentityStore({ stateDir: config.stateDir });
   const identity = await identityStore.loadOrCreate();
 
   const bootstrapAmk = options.bootstrapAmk ?? bootstrapAmkFromRecoveryCode;
-  const amk = await resolveAmk(config, identity, accountId, bootstrapAmk, options.webSocketImpl);
+  const amk = await resolveAmk(
+    config,
+    identity,
+    accountId,
+    authToken,
+    bootstrapAmk,
+    options.webSocketImpl,
+  );
 
   const node = createNode({
     relayUrl: config.relayUrl,
     nodeId: config.nodeId,
     deviceId: config.deviceId,
     devicePublicKey: identity.publicKeyBase64,
-    authToken: config.authToken,
+    authToken,
     accountId,
     amk,
     targets: config.targets,

@@ -147,6 +147,12 @@ export async function start(): Promise<StartedRelayHandle> {
     maxAccountStorageBytes,
     fanOutBackend,
     push,
+    // #387: where a node's device-authorization `verification_uri` points
+    // the operator's browser — the PWA's own origin, distinct from this
+    // relay's (SPEC §10: app at e.g. app.loombox.dev, relay at
+    // relay.loombox.dev). Falls back to `relay.ts`'s own DEFAULT_APP_URL
+    // when unset.
+    deviceAuth: process.env.LOOMBOX_APP_URL ? { appUrl: process.env.LOOMBOX_APP_URL } : undefined,
   });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,
