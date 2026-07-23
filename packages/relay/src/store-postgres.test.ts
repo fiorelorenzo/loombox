@@ -474,12 +474,14 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     const now = Date.now();
 
     await store.deviceTokens.create({
+      id: 'tok_a',
       tokenHash: 'hash-token-a',
       accountId: 'acct_a',
       label: 'Resident node',
       createdAt: now,
     });
     await store.deviceTokens.create({
+      id: 'tok_b',
       tokenHash: 'hash-token-b',
       accountId: 'acct_b',
       createdAt: now,
@@ -488,6 +490,49 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     expect(await store.deviceTokens.resolveByHash('hash-token-a')).toBe('acct_a');
     expect(await store.deviceTokens.resolveByHash('hash-token-b')).toBe('acct_b');
     expect(await store.deviceTokens.resolveByHash('hash-token-unknown')).toBeUndefined();
+  });
+
+  it('device tokens (#398): listForAccount returns metadata only, never the hash, and revoke is account-scoped', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+
+    await store.deviceTokens.create({
+      id: 'tok_list_a1',
+      tokenHash: 'hash-list-a1',
+      accountId: 'acct_a',
+      label: 'phone',
+      createdAt: now,
+    });
+    await store.deviceTokens.create({
+      id: 'tok_list_a2',
+      tokenHash: 'hash-list-a2',
+      accountId: 'acct_a',
+      createdAt: now + 1,
+    });
+    await store.deviceTokens.create({
+      id: 'tok_list_b1',
+      tokenHash: 'hash-list-b1',
+      accountId: 'acct_b',
+      createdAt: now,
+    });
+
+    const listedA = await store.deviceTokens.listForAccount('acct_a');
+    expect(listedA.map((token) => token.id).sort()).toEqual(['tok_list_a1', 'tok_list_a2']);
+    expect(listedA.every((token) => token.accountId === 'acct_a')).toBe(true);
+
+    // Account B can never revoke account A's token by id.
+    expect(await store.deviceTokens.revoke('tok_list_a1', 'acct_b')).toBe(false);
+    expect(await store.deviceTokens.resolveByHash('hash-list-a1')).toBe('acct_a');
+
+    // The owning account can revoke its own token, which then stops resolving.
+    expect(await store.deviceTokens.revoke('tok_list_a1', 'acct_a')).toBe(true);
+    expect(await store.deviceTokens.resolveByHash('hash-list-a1')).toBeUndefined();
+    expect((await store.deviceTokens.listForAccount('acct_a')).map((token) => token.id)).toEqual([
+      'tok_list_a2',
+    ]);
+
+    // Revoking an already-gone id is a no-op, not an error.
+    expect(await store.deviceTokens.revoke('tok_list_a1', 'acct_a')).toBe(false);
   });
 });
 
@@ -501,6 +546,31 @@ describe('Postgres store matches the in-memory store contract shape', () => {
       expect((await store.devices.get('d'))?.accountId).toBe('a');
       await store.devices.revoke('d');
       expect((await store.devices.get('d'))?.status).toBe('revoked');
+    }
+  });
+
+  it('device tokens (#398): both implementations list/revoke identically, account-scoped', async () => {
+    const pgStore = await freshPgMemStore();
+    const memStore = createInMemoryRelayStore();
+
+    for (const store of [pgStore, memStore]) {
+      const now = Date.now();
+      await store.deviceTokens.create({
+        id: 'parity_tok_1',
+        tokenHash: 'parity-hash-1',
+        accountId: 'acct_parity',
+        label: 'parity token',
+        createdAt: now,
+      });
+
+      const listed = await store.deviceTokens.listForAccount('acct_parity');
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.id).toBe('parity_tok_1');
+      expect(listed[0]?.label).toBe('parity token');
+
+      expect(await store.deviceTokens.revoke('parity_tok_1', 'someone_else')).toBe(false);
+      expect(await store.deviceTokens.revoke('parity_tok_1', 'acct_parity')).toBe(true);
+      expect(await store.deviceTokens.listForAccount('acct_parity')).toHaveLength(0);
     }
   });
 });

@@ -259,4 +259,23 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS device_auth_requests;
     `,
   },
+  {
+    // #398: zero-touch authenticated node-token mint. `device_tokens` was
+    // keyed only by `token_hash` (#387) with no stable id to list/revoke a
+    // token by without exposing its hash — adds `id`, backfilling existing
+    // rows from their own `token_hash` (already a one-way SHA-256 digest, so
+    // reusing it as a one-time backfill value leaks nothing new) so a token
+    // minted before this migration still gets a usable, unique id.
+    id: '0010_device_token_ids',
+    up: `
+      ALTER TABLE device_tokens ADD COLUMN id TEXT;
+      UPDATE device_tokens SET id = token_hash WHERE id IS NULL;
+      ALTER TABLE device_tokens ALTER COLUMN id SET NOT NULL;
+      CREATE UNIQUE INDEX device_tokens_id_idx ON device_tokens (id);
+    `,
+    down: `
+      DROP INDEX IF EXISTS device_tokens_id_idx;
+      ALTER TABLE device_tokens DROP COLUMN IF EXISTS id;
+    `,
+  },
 ];

@@ -1,4 +1,6 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+
+import type { RelayStore } from './store';
 
 /**
  * Device-authorization-grant primitives (RFC 8628-shaped, SPEC §16's
@@ -31,6 +33,40 @@ export function generateDeviceCode(): string {
 /** The relay-minted bearer a node presents on every future connection (WS `initialize.authToken` and the `/device/*`-adjacent REST routes' `Authorization: Bearer`) — same shape/length as `generateDeviceCode`, but a distinct call site so the two secrets are never accidentally reused for each other. */
 export function generateDeviceTokenSecret(): string {
   return randomBytes(32).toString('base64url');
+}
+
+/** A stable identifier for a minted device token (`device_tokens.id`), distinct from its hash — lets a token be listed/revoked by id (#398) without ever exposing, or needing, the raw secret or its hash outside this module. */
+export function generateDeviceTokenId(): string {
+  return randomUUID();
+}
+
+/** What {@link mintDeviceToken} hands back — the raw secret for one-time reveal to the caller over HTTP, plus the id/hash a caller may need to log or reference. Never stored anywhere except hashed (`tokenHash`, in `store.deviceTokens`). */
+export interface MintedDeviceToken {
+  id: string;
+  rawToken: string;
+  tokenHash: string;
+}
+
+/**
+ * Mints a fresh device/node bearer token bound to `accountId` — the single
+ * minting primitive `/device/approve` (#387, the RFC 8628 grant) and the
+ * authenticated `/account/node-tokens` mint (#398, the zero-touch grant)
+ * both call, so there is exactly one token scheme with two ways to reach it,
+ * never a second invented one. Persists only the hash
+ * ({@link hashDeviceSecret}) via `store.deviceTokens.create`; the raw secret
+ * lives only in this function's return value, for its caller to reveal once.
+ */
+export async function mintDeviceToken(
+  store: Pick<RelayStore, 'deviceTokens'>,
+  accountId: string,
+  label: string | undefined,
+  now: number,
+): Promise<MintedDeviceToken> {
+  const id = generateDeviceTokenId();
+  const rawToken = generateDeviceTokenSecret();
+  const tokenHash = hashDeviceSecret(rawToken);
+  await store.deviceTokens.create({ id, tokenHash, accountId, label, createdAt: now });
+  return { id, rawToken, tokenHash };
 }
 
 /** Alphabet for the human-typable `user_code` — excludes visually ambiguous characters (`0`/`O`, `1`/`I`/`L`), same discipline as a Recovery Code (`@loombox/crypto`'s alphabet). */

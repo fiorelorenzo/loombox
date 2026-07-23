@@ -5,9 +5,9 @@ import {
   DEVICE_AUTH_EXPIRES_IN_SECONDS,
   DEVICE_AUTH_POLL_INTERVAL_SECONDS,
   generateDeviceCode,
-  generateDeviceTokenSecret,
   generateUserCode,
   hashDeviceSecret,
+  mintDeviceToken,
   normalizeUserCode,
 } from './device-auth';
 import type { RelayStore } from './store';
@@ -98,14 +98,16 @@ export function registerDeviceAuthRoutes(
       return reply.code(409).send({ error: `already_${existing.status}` });
     }
 
-    const rawToken = generateDeviceTokenSecret();
-    const tokenHash = hashDeviceSecret(rawToken);
-    await store.deviceTokens.create({
-      tokenHash,
-      accountId,
-      label: 'Resident node (device authorization)',
-      createdAt: now,
-    });
+    const label = 'Resident node (device authorization)';
+    const { rawToken } = await mintDeviceToken(store, accountId, label, now);
+    // #398 trust-model mitigation: every node-token mint is logged
+    // server-side (accountId, label, timestamp, caller) — this is the
+    // human-approved (user_code) mint path; `node-token-routes.ts` logs the
+    // authenticated zero-touch path the same way.
+    app.log.info(
+      { accountId, callerAccountId: accountId, label, source: 'device_authorization' },
+      'relay: minted a node token',
+    );
 
     const approved = await store.deviceAuth.approve(userCode, accountId, rawToken, now);
     if (!approved) {

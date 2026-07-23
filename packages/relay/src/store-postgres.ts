@@ -12,6 +12,7 @@ import {
   type DeviceAuthStore,
   type DeviceRecord,
   type DeviceStore,
+  type DeviceTokenRecord,
   type DeviceTokenStore,
   type EscrowStore,
   type LeaseGrantOutcome,
@@ -845,13 +846,33 @@ function createPostgresDeviceAuthStore(pg: PgLike): DeviceAuthStore {
   };
 }
 
+interface DeviceTokenRow {
+  id: string;
+  token_hash: string;
+  account_id: string;
+  label: string | null;
+  created_at: string | number;
+  last_used_at: string | number | null;
+}
+
+function rowToDeviceToken(row: DeviceTokenRow): DeviceTokenRecord {
+  return {
+    id: row.id,
+    tokenHash: row.token_hash,
+    accountId: row.account_id,
+    label: row.label ?? undefined,
+    createdAt: Number(row.created_at),
+    lastUsedAt: row.last_used_at === null ? undefined : Number(row.last_used_at),
+  };
+}
+
 function createPostgresDeviceTokenStore(pg: PgLike): DeviceTokenStore {
   return {
     async create(input) {
       await pg.query(
-        `INSERT INTO device_tokens (token_hash, account_id, label, created_at)
-         VALUES ($1, $2, $3, $4)`,
-        [input.tokenHash, input.accountId, input.label ?? null, input.createdAt],
+        `INSERT INTO device_tokens (id, token_hash, account_id, label, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [input.id, input.tokenHash, input.accountId, input.label ?? null, input.createdAt],
       );
       return { ...input };
     },
@@ -861,6 +882,20 @@ function createPostgresDeviceTokenStore(pg: PgLike): DeviceTokenStore {
         [tokenHash, Date.now()],
       );
       return rows[0]?.account_id;
+    },
+    async listForAccount(accountId) {
+      const { rows } = await pg.query<DeviceTokenRow>(
+        `SELECT * FROM device_tokens WHERE account_id = $1 ORDER BY created_at DESC`,
+        [accountId],
+      );
+      return rows.map(rowToDeviceToken);
+    },
+    async revoke(id, accountId) {
+      const { rows } = await pg.query<{ id: string }>(
+        `DELETE FROM device_tokens WHERE id = $1 AND account_id = $2 RETURNING id`,
+        [id, accountId],
+      );
+      return rows.length > 0;
     },
   };
 }

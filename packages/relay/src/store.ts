@@ -376,8 +376,17 @@ export interface DeviceAuthStore {
   consumeToken(deviceCodeHash: string): Awaitable<void>;
 }
 
-/** A relay-native device token (issue #387) — the bearer a resident node presents once it's completed the device-authorization flow, in place of a Better Auth session token. Never holds the raw token; only its hash. */
+/**
+ * A relay-native device token (issues #387, #398) — the bearer a resident
+ * node presents once it's completed either the RFC 8628 device-authorization
+ * flow (#387) or the authenticated zero-touch mint (#398), in place of a
+ * Better Auth session token. Never holds the raw token; only its hash.
+ * `id` is a separate, stable handle for listing/revoking a token (#398) —
+ * deliberately not `tokenHash` itself, so a listing response never has to
+ * reason about whether exposing a token's hash is safe.
+ */
 export interface DeviceTokenRecord {
+  id: string;
   tokenHash: string;
   accountId: string;
   label?: string;
@@ -387,7 +396,7 @@ export interface DeviceTokenRecord {
 
 export interface DeviceTokenStore {
   create(
-    record: Pick<DeviceTokenRecord, 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
+    record: Pick<DeviceTokenRecord, 'id' | 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
   ): Awaitable<DeviceTokenRecord>;
   /**
    * Resolves an already-hashed device token to the account it's bound to, or
@@ -396,6 +405,10 @@ export interface DeviceTokenStore {
    * HTTP alike). Touches `lastUsedAt` as a side effect on a hit.
    */
   resolveByHash(tokenHash: string): Awaitable<string | undefined>;
+  /** Every token minted for this account, metadata only — the raw token and its hash are never returned here (#398's `GET /account/node-tokens`). Never another account's tokens. */
+  listForAccount(accountId: string): Awaitable<readonly DeviceTokenRecord[]>;
+  /** Deletes a token by id, scoped to `accountId` — returns whether a row was actually deleted, so a caller can never revoke another account's token by guessing/reusing an id (#398's `DELETE /account/node-tokens/:id`). */
+  revoke(id: string, accountId: string): Awaitable<boolean>;
 }
 
 export interface RelayStore {
@@ -527,9 +540,11 @@ interface SyncDeviceAuthStore extends DeviceAuthStore {
 
 interface SyncDeviceTokenStore extends DeviceTokenStore {
   create(
-    record: Pick<DeviceTokenRecord, 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
+    record: Pick<DeviceTokenRecord, 'id' | 'tokenHash' | 'accountId' | 'label' | 'createdAt'>,
   ): DeviceTokenRecord;
   resolveByHash(tokenHash: string): string | undefined;
+  listForAccount(accountId: string): readonly DeviceTokenRecord[];
+  revoke(id: string, accountId: string): boolean;
 }
 
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
@@ -979,13 +994,15 @@ function createDeviceAuthStore(): SyncDeviceAuthStore {
   };
 }
 
-/** In-memory `DeviceTokenStore` (issue #387) — see the public interface's doc comment. */
+/** In-memory `DeviceTokenStore` (issues #387, #398) — see the public interface's doc comment. `byId` and `byHash` point at the SAME record objects, so `resolveByHash`'s `lastUsedAt` mutation is visible through either map. */
 function createDeviceTokenStore(): SyncDeviceTokenStore {
   const byHash = new Map<string, DeviceTokenRecord>();
+  const byId = new Map<string, DeviceTokenRecord>();
   return {
     create(input) {
       const record: DeviceTokenRecord = { ...input };
       byHash.set(record.tokenHash, record);
+      byId.set(record.id, record);
       return record;
     },
     resolveByHash(tokenHash) {
@@ -993,6 +1010,16 @@ function createDeviceTokenStore(): SyncDeviceTokenStore {
       if (!record) return undefined;
       record.lastUsedAt = Date.now();
       return record.accountId;
+    },
+    listForAccount(accountId) {
+      return Array.from(byId.values()).filter((record) => record.accountId === accountId);
+    },
+    revoke(id, accountId) {
+      const record = byId.get(id);
+      if (!record || record.accountId !== accountId) return false;
+      byId.delete(id);
+      byHash.delete(record.tokenHash);
+      return true;
     },
   };
 }
