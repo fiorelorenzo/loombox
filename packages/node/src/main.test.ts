@@ -3,9 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { generateAmk } from '@loombox/crypto';
+import {
+  generateAmk,
+  generateRecoveryCode,
+  packWrappedAmkForWire,
+  wrapAmkWithRecoveryCode,
+} from '@loombox/crypto';
+import { PROTOCOL_V1, type AmkEscrow, type Initialize } from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
 
+import type { AmkBootstrapper } from './amk-bootstrap';
 import { ConfigError } from './config';
 import { installGracefulShutdown, start } from './main';
 import type { AccountIdResolver } from './resolve-account-id';
@@ -30,6 +37,49 @@ function envFor(relayUrl: string, stateDir: string, amk: Uint8Array, nodeId = 'm
  * but *explicitly*, not as a silent fallback.
  */
 const stubResolveAccountId: AccountIdResolver = async (_relayUrl, authToken) => authToken;
+
+/**
+ * Escrows `wrappedAmk` for `accountId` on `relay`, exactly the way a real
+ * client would (SPEC §8 path 2's `amk_escrow` message) — a raw WebSocket
+ * round-trip, mirroring `amk-bootstrap.test.ts`'s own helper, so `start()`'s
+ * recovery-code path (issue #386) has something real to bootstrap against.
+ */
+async function escrowAmk(
+  relay: StartedRelay,
+  accountId: string,
+  amk: Uint8Array,
+  recoveryCode: string,
+): Promise<void> {
+  const blob = await wrapAmkWithRecoveryCode(amk, recoveryCode, accountId);
+  const wrappedAmk = packWrappedAmkForWire(blob);
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(relay.url);
+    socket.addEventListener('open', () => {
+      const initialize: Initialize = {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'node',
+        authToken: accountId,
+        deviceId: `${accountId}-escrow-source`,
+        devicePublicKey: 'ZXNjcm93LXNvdXJjZQ==',
+      };
+      socket.send(JSON.stringify(initialize));
+    });
+    let sentEscrow = false;
+    socket.addEventListener('message', () => {
+      if (sentEscrow) return;
+      sentEscrow = true;
+      const escrow: AmkEscrow = { type: 'amk_escrow', protocolVersion: PROTOCOL_V1, wrappedAmk };
+      socket.send(JSON.stringify(escrow));
+      setTimeout(() => {
+        socket.close();
+        resolve();
+      }, 50);
+    });
+    socket.addEventListener('error', () => reject(new Error('escrowAmk: relay unreachable')));
+  });
+}
 
 describe('start (packages/node CLI entrypoint, issue #63)', () => {
   let relay: StartedRelay;
@@ -189,6 +239,96 @@ describe('start: accountId resolution (issue #380)', () => {
     // No `resolveAccountId` override: exercises the real default
     // (`resolveAccountIdViaRelay`) against a relay that can't answer it.
     await expect(start({ env, argv: [] })).rejects.toThrow(ConfigError);
+  });
+});
+
+describe('start: AMK from a Recovery Code (issue #386)', () => {
+  let relay: StartedRelay;
+  let stateDir: string;
+
+  beforeEach(async () => {
+    relay = await startRelay();
+    stateDir = await mkdtemp(join(tmpdir(), 'loombox-node-main-amk-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+    await relay.close();
+  });
+
+  function recoveryEnvFor(relayUrl: string, dir: string, accountId: string, recoveryCode: string) {
+    return {
+      LOOMBOX_RELAY_URL: relayUrl,
+      LOOMBOX_NODE_ID: 'recovery-node',
+      LOOMBOX_AUTH_TOKEN: accountId,
+      LOOMBOX_ACCOUNT_ID: accountId,
+      LOOMBOX_RECOVERY_CODE: recoveryCode,
+      LOOMBOX_NODE_STATE_DIR: dir,
+    };
+  }
+
+  it('connects using the AMK recovered from a Recovery Code, with no LOOMBOX_AMK set at all', async () => {
+    const amk = generateAmk();
+    const recoveryCode = generateRecoveryCode();
+    const accountId = 'acct-recovery-main';
+    await escrowAmk(relay, accountId, amk, recoveryCode);
+
+    const started = await start({
+      env: recoveryEnvFor(relay.url, stateDir, accountId, recoveryCode),
+      argv: [],
+    });
+
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it("calls bootstrapAmk with this node's own resolved accountId/device identity and recoveryCode, and connects with what it returns", async () => {
+    const amk = generateAmk();
+    const bootstrapAmk = vi.fn<AmkBootstrapper>().mockResolvedValue(amk);
+
+    const started = await start({
+      env: recoveryEnvFor(relay.url, stateDir, 'acct-spy', 'SOME-RECOVERY-CODE'),
+      argv: [],
+      bootstrapAmk,
+    });
+
+    expect(bootstrapAmk).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        relayUrl: relay.url,
+        accountId: 'acct-spy',
+        authToken: 'acct-spy',
+        deviceId: 'recovery-node',
+        recoveryCode: 'SOME-RECOVERY-CODE',
+      }),
+    );
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('rejects with a clear error, and never connects, when the recovery code is wrong', async () => {
+    const amk = generateAmk();
+    const recoveryCode = generateRecoveryCode();
+    const accountId = 'acct-recovery-wrong-code';
+    await escrowAmk(relay, accountId, amk, recoveryCode);
+
+    const env = recoveryEnvFor(relay.url, stateDir, accountId, generateRecoveryCode());
+    await expect(start({ env, argv: [] })).rejects.toThrow(ConfigError);
+  });
+
+  it('an explicit LOOMBOX_AMK still works as a raw override, bypassing the recovery-code bootstrap entirely', async () => {
+    const amk = generateAmk();
+    const bootstrapAmk = vi.fn<AmkBootstrapper>();
+
+    const started = await start({
+      env: envFor(relay.url, stateDir, amk),
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      bootstrapAmk,
+    });
+
+    expect(bootstrapAmk).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
   });
 });
 
