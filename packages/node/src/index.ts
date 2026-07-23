@@ -55,6 +55,13 @@ export { ConfigError, loadNodeConfig } from './config';
 export type { AmkBootstrapper, BootstrapAmkFromRecoveryCodeOptions } from './amk-bootstrap';
 export { bootstrapAmkFromRecoveryCode } from './amk-bootstrap';
 
+// v2: the node RECEIVER side of the non-interactive AMK handoff over SSH
+// (SPEC §8, §16; issue #399) — reads, unwraps, adopts, and deletes the
+// one-shot wrapped-AMK file a provisioner wrote, the third AMK source
+// alongside the raw override and the recovery-code bootstrap above.
+export type { AdoptWrappedAmkFileOptions, WrappedAmkFileIdentity } from './amk-handoff-file';
+export { adoptWrappedAmkFromFile } from './amk-handoff-file';
+
 export type { ExecOptions, ExecResult, ExecutionTarget, SshTargetConfig } from './target';
 export { DEFAULT_LOCAL_TARGET } from './target';
 
@@ -131,6 +138,23 @@ export type {
   VerifyAndPersistStep,
 } from './ssh/provision-target';
 export { buildResidentNodeEnvironment, decommission, provision } from './ssh/provision-target';
+
+// v2: the PROVISIONER side of the non-interactive AMK handoff over SSH
+// (SPEC §8, §16; issue #399) — wraps the unlocked AMK for a freshly-
+// provisioned target's device pubkey and writes it to a one-shot file on the
+// remote, the counterpart to `amk-handoff-file.ts`'s receiver above.
+// Callable by `provision-target.ts`'s orchestrator or a future app bridge
+// that already holds the unlocked AMK.
+export type {
+  AmkHandoffActingIdentity,
+  WriteWrappedAmkHandoffOptions,
+  WriteWrappedAmkHandoffResult,
+} from './ssh/amk-handoff-provision';
+export {
+  DEFAULT_WRAPPED_AMK_HANDOFF_FILENAME,
+  resolveWrappedAmkHandoffPath,
+  writeWrappedAmkHandoff,
+} from './ssh/amk-handoff-provision';
 
 // Moved into @loombox/crypto so a node and a client/PWA share one seal/open/
 // derive implementation (SPEC §8, §16); re-exported here for callers that

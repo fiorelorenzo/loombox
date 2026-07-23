@@ -94,3 +94,24 @@ export {
  */
 export type { UnwrapAmkEpochForDeviceOptions, WrapAmkEpochForDeviceOptions } from './amk-rotation';
 export { generateAmkEpoch, unwrapAmkEpochForDevice, wrapAmkEpochForDevice } from './amk-rotation';
+
+/**
+ * Non-interactive AMK handoff to a freshly-provisioned node over SSH (SPEC
+ * §8, §16; issue #399): the provisioning app wraps the unlocked AMK for a
+ * brand-new node's freshly-generated device pubkey, and the node unwraps it
+ * with its own device private key once the wrapped blob reaches it — see
+ * `amk-handoff.ts`'s doc comment for why this reuses `amk-rotation.ts`'s
+ * wrap/unwrap primitives.
+ */
+export type {
+  AmkHandoffFileBlob,
+  UnwrapAmkForNodeHandoffOptions,
+  WrapAmkForNodeHandoffOptions,
+} from './amk-handoff';
+export {
+  AMK_HANDOFF_DEFAULT_EPOCH,
+  packAmkHandoffForFile,
+  unpackAmkHandoffFromFile,
+  unwrapAmkForNodeHandoff,
+  wrapAmkForNodeHandoff,
+} from './amk-handoff';

@@ -72,13 +72,29 @@ export interface NodeCliConfig {
    */
   amk?: Uint8Array;
   /**
+   * Path to a one-shot wrapped-AMK handoff file (`LOOMBOX_WRAPPED_AMK_FILE`/
+   * the config file's `wrappedAmkFilePath`, issue #399): the non-interactive
+   * SSH-provisioning AMK handoff. A provisioner that already holds the
+   * unlocked AMK wraps it for this node's freshly-generated device pubkey
+   * (`packages/node/src/ssh/amk-handoff-provision.ts`) and writes it here
+   * over the already-open, already-encrypted SSH channel; on first start,
+   * `main.ts`'s `start()` reads it, unwraps it with this node's own device
+   * private key (`amk-handoff-file.ts`), adopts the AMK, and deletes the
+   * file — consumed exactly once. `undefined` when `amk` is set directly
+   * instead (that always wins — see `amk`'s doc comment).
+   */
+  wrappedAmkFilePath?: string;
+  /**
    * The account's Recovery Code (`LOOMBOX_RECOVERY_CODE`/the config file's
    * `recoveryCode`), driving the recovery-code AMK bootstrap (SPEC §8 path 2,
    * issue #386): `main.ts`'s `start()` uses this to fetch this account's
    * escrowed wrapped-AMK blob from the relay and unwrap it locally, the same
    * crypto path `apps/web`'s `bootstrapAmkFromRecoveryCode` drives. This is
-   * the *intended* way a resident node obtains its AMK — `amk` above is only
-   * an escape hatch. `undefined` when `amk` is set directly instead.
+   * the fallback way a resident node obtains its AMK when it wasn't handed
+   * off during provisioning — `amk` is a raw escape hatch, `wrappedAmkFilePath`
+   * is the zero-touch SSH-provisioning path (issue #399), and this is what's
+   * left when neither applies. `undefined` when `amk` or `wrappedAmkFilePath`
+   * is set instead.
    */
   recoveryCode?: string;
   /** Execution targets this node exposes, beyond the always-available `local` one; `undefined` lets `NodeDaemon` fall back to its own `[DEFAULT_LOCAL_TARGET]` default. */
@@ -100,6 +116,8 @@ interface NodeConfigFile {
   /** See {@link NodeCliConfig.accountId} — an explicit override; when absent the caller must resolve it from `authToken` instead. */
   accountId?: string;
   amk?: string;
+  /** See {@link NodeCliConfig.wrappedAmkFilePath}. */
+  wrappedAmkFilePath?: string;
   /** See {@link NodeCliConfig.recoveryCode}. */
   recoveryCode?: string;
   targets?: TargetDescriptor[];
@@ -206,11 +224,17 @@ export interface LoadNodeConfigOptions {
  * - `LOOMBOX_ACCOUNT_ID` (optional; explicit override. Left unset, the
  *   returned config's `accountId` is `undefined` and the caller must resolve
  *   the real one from `authToken` — issue #380, see {@link NodeCliConfig.accountId})
- * - `LOOMBOX_AMK` (base64, must decode to 32 bytes) / `LOOMBOX_RECOVERY_CODE`
- *   — exactly one of these two is required (issue #386). `LOOMBOX_RECOVERY_CODE`
- *   is the intended path: `main.ts`'s `start()` uses it to bootstrap the AMK
- *   from the relay's escrow, the same crypto `apps/web` drives. `LOOMBOX_AMK`
- *   is a raw override for tests/advanced use, and wins if both are set.
+ * - `LOOMBOX_AMK` (base64, must decode to 32 bytes) / `LOOMBOX_WRAPPED_AMK_FILE`
+ *   / `LOOMBOX_RECOVERY_CODE` — at least one of these three is required
+ *   (issues #386, #399). `LOOMBOX_WRAPPED_AMK_FILE` (a path) is the zero-touch
+ *   SSH-provisioning handoff (issue #399): `main.ts`'s `start()` reads,
+ *   unwraps, adopts, and deletes it. `LOOMBOX_RECOVERY_CODE` is the
+ *   Recovery-Code bootstrap fallback (issue #386): `start()` uses it to
+ *   fetch this account's escrowed wrapped-AMK blob from the relay, the same
+ *   crypto `apps/web` drives. `LOOMBOX_AMK` is a raw override for
+ *   tests/advanced use. Precedence when more than one is set: `LOOMBOX_AMK`
+ *   wins outright, then `LOOMBOX_WRAPPED_AMK_FILE`, then
+ *   `LOOMBOX_RECOVERY_CODE` — see {@link NodeCliConfig.amk}'s doc comment.
  * - `LOOMBOX_TARGETS` (optional; a JSON array of `TargetDescriptor`)
  * - `LOOMBOX_NODE_STATE_DIR` (optional; overrides where node state — the
  *   persisted identity keypair — lives on disk)
@@ -243,17 +267,21 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
   const authToken = env.LOOMBOX_AUTH_TOKEN ?? file.authToken;
   const deviceToken = env.LOOMBOX_DEVICE_TOKEN ?? file.deviceToken;
   const amkText = env.LOOMBOX_AMK ?? file.amk;
+  const wrappedAmkFilePathRaw = env.LOOMBOX_WRAPPED_AMK_FILE ?? file.wrappedAmkFilePath;
   const recoveryCode = env.LOOMBOX_RECOVERY_CODE ?? file.recoveryCode;
 
   const missing: string[] = [];
   if (!relayUrl) missing.push('relayUrl (LOOMBOX_RELAY_URL)');
   if (!nodeId) missing.push('nodeId (LOOMBOX_NODE_ID)');
-  // #386: exactly one of amk / recoveryCode is required — recoveryCode is
-  // the intended path (main.ts bootstraps the AMK from it), amk a raw
-  // override. Only missing when NEITHER is set; see NodeCliConfig.amk's doc
-  // comment for the precedence when both are.
-  if (!amkText && !recoveryCode) {
-    missing.push('amk (LOOMBOX_AMK) or recoveryCode (LOOMBOX_RECOVERY_CODE)');
+  // #386/#399: at least one of amk / wrappedAmkFilePath / recoveryCode is
+  // required — recoveryCode is the fallback bootstrap path, wrappedAmkFilePath
+  // the zero-touch SSH-provisioning handoff, amk a raw override. Only missing
+  // when NONE of the three is set; see NodeCliConfig.amk's doc comment for
+  // the precedence when more than one is.
+  if (!amkText && !wrappedAmkFilePathRaw && !recoveryCode) {
+    missing.push(
+      'amk (LOOMBOX_AMK), wrappedAmkFilePath (LOOMBOX_WRAPPED_AMK_FILE), or recoveryCode (LOOMBOX_RECOVERY_CODE)',
+    );
   }
   if (missing.length > 0) {
     throw new ConfigError(`missing required config: ${missing.join(', ')}`);
@@ -262,6 +290,10 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
   const accountId = env.LOOMBOX_ACCOUNT_ID ?? file.accountId;
   const deviceId = env.LOOMBOX_DEVICE_ID ?? file.deviceId ?? nodeId!;
   const amk = amkText ? decodeAmk(amkText) : undefined;
+  // #399: wrappedAmkFilePath only applies when amk isn't set (amk wins
+  // outright); recoveryCode only applies when neither amk nor
+  // wrappedAmkFilePath is set — see NodeCliConfig.amk's doc comment.
+  const wrappedAmkFilePath = amk ? undefined : wrappedAmkFilePathRaw;
   const targets = env.LOOMBOX_TARGETS ? parseTargetsEnv(env.LOOMBOX_TARGETS) : file.targets;
   const stateDir = env.LOOMBOX_NODE_STATE_DIR ?? file.stateDir;
 
@@ -275,7 +307,8 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     deviceToken: authToken ? undefined : deviceToken,
     accountId,
     amk,
-    recoveryCode: amk ? undefined : recoveryCode,
+    wrappedAmkFilePath,
+    recoveryCode: amk || wrappedAmkFilePath ? undefined : recoveryCode,
     targets,
     sshTargets: file.sshTargets,
     stateDir,
