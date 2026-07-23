@@ -113,6 +113,30 @@ describe('buildResidentNodeEnvironment', () => {
     expect(environment.LOOMBOX_RECOVERY_CODE).toBeUndefined();
   });
 
+  it('wrappedAmkFilePath (issue #399) wins over recoveryCode when amk is not set', () => {
+    const environment = buildResidentNodeEnvironment({
+      relayUrl: 'wss://relay.loombox.dev',
+      nodeId: 'devbox',
+      wrappedAmkFilePath: '/home/loombox/.loombox/node/wrapped-amk-handoff.json',
+      recoveryCode: 'recovery-code',
+    });
+    expect(environment.LOOMBOX_WRAPPED_AMK_FILE).toBe(
+      '/home/loombox/.loombox/node/wrapped-amk-handoff.json',
+    );
+    expect(environment.LOOMBOX_RECOVERY_CODE).toBeUndefined();
+  });
+
+  it('amk wins over wrappedAmkFilePath when both are set', () => {
+    const environment = buildResidentNodeEnvironment({
+      relayUrl: 'wss://relay.loombox.dev',
+      nodeId: 'devbox',
+      amk: 'YW1r',
+      wrappedAmkFilePath: '/home/loombox/.loombox/node/wrapped-amk-handoff.json',
+    });
+    expect(environment.LOOMBOX_AMK).toBe('YW1r');
+    expect(environment.LOOMBOX_WRAPPED_AMK_FILE).toBeUndefined();
+  });
+
   it('lets extraEnvironment override/add keys without dropping them', () => {
     const environment = buildResidentNodeEnvironment({
       relayUrl: 'wss://relay.loombox.dev',

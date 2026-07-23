@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { bootstrapAmkFromRecoveryCode, type AmkBootstrapper } from './amk-bootstrap';
 import { wireAmkEpochAdoption } from './amk-epoch';
+import { adoptWrappedAmkFromFile, type AdoptWrappedAmkFileOptions } from './amk-handoff-file';
 import {
   ConfigError,
   loadNodeConfig,
@@ -20,6 +21,9 @@ import type { WebSocketConstructor } from './relay-connection';
 
 /** Runs the device-authorization login flow (issue #387). Injected as `StartOptions.runDeviceLogin` so tests never have to drive a real operator-approval round trip; production defaults to {@link runDeviceLogin} itself. */
 export type DeviceLoginRunner = (options: RunDeviceLoginOptions) => Promise<DeviceLoginResult>;
+
+/** Reads, unwraps, adopts, and deletes the one-shot wrapped-AMK handoff file (issue #399). Injected as `StartOptions.adoptWrappedAmkFile` so tests never need a real provisioner-written file on disk; production defaults to {@link adoptWrappedAmkFromFile}. */
+export type WrappedAmkFileAdopter = (options: AdoptWrappedAmkFileOptions) => Promise<Uint8Array>;
 
 export interface StartOptions extends LoadNodeConfigOptions {
   /** Test-only: overrides the global `WebSocket` `NodeDaemon` connects with. Never set in production. */
@@ -41,6 +45,16 @@ export interface StartOptions extends LoadNodeConfigOptions {
    */
   bootstrapAmk?: AmkBootstrapper;
   /**
+   * Reads, unwraps, adopts, and deletes the one-shot wrapped-AMK handoff
+   * file (`config.recoveryCode`'s sibling for zero-touch SSH provisioning
+   * — issue #399) when the config provides `wrappedAmkFilePath`
+   * (`LOOMBOX_WRAPPED_AMK_FILE`) instead of a raw `amk` override. Defaults
+   * to {@link adoptWrappedAmkFromFile}, the real file-based implementation.
+   * Tests inject a stub so they never need a real provisioner-written file
+   * on disk just to start a node.
+   */
+  adoptWrappedAmkFile?: WrappedAmkFileAdopter;
+  /**
    * Recovers this node's bearer token via the device-authorization grant
    * when neither `LOOMBOX_AUTH_TOKEN` nor `LOOMBOX_DEVICE_TOKEN` is
    * configured and no token is already persisted on disk (issue #387).
@@ -52,11 +66,14 @@ export interface StartOptions extends LoadNodeConfigOptions {
 }
 
 /**
- * Resolves the AMK a starting node hands `createNode()` (issue #386): a raw
- * `config.amk` override wins outright (tests/advanced use, see
- * `NodeCliConfig.amk`'s doc comment); otherwise it's recovered from
+ * Resolves the AMK a starting node hands `createNode()` (issues #386, #399),
+ * in precedence order: a raw `config.amk` override wins outright
+ * (tests/advanced use, see `NodeCliConfig.amk`'s doc comment); otherwise a
+ * `config.wrappedAmkFilePath` one-shot handoff file (issue #399's zero-touch
+ * SSH-provisioning path) is read/unwrapped/adopted/deleted via
+ * `adoptWrappedAmkFile`; otherwise it's recovered from
  * `config.recoveryCode` via `bootstrapAmk` (real relay round-trip by
- * default). `loadNodeConfig` already guarantees at least one of the two is
+ * default). `loadNodeConfig` already guarantees at least one of the three is
  * set — the `ConfigError` below is an unreachable defensive fallback, not a
  * path a caller can actually hit.
  */
@@ -67,10 +84,22 @@ async function resolveAmk(
   authToken: string,
   bootstrapAmk: AmkBootstrapper,
   webSocketImpl: WebSocketConstructor | undefined,
+  adoptWrappedAmkFile: WrappedAmkFileAdopter,
 ): Promise<Uint8Array> {
   if (config.amk) return config.amk;
+  if (config.wrappedAmkFilePath) {
+    return adoptWrappedAmkFile({
+      filePath: config.wrappedAmkFilePath,
+      accountId,
+      targetDeviceId: config.deviceId,
+      identity,
+    });
+  }
   if (!config.recoveryCode) {
-    throw new ConfigError('amk (LOOMBOX_AMK) or recoveryCode (LOOMBOX_RECOVERY_CODE) is required');
+    throw new ConfigError(
+      'amk (LOOMBOX_AMK), wrappedAmkFilePath (LOOMBOX_WRAPPED_AMK_FILE), or recoveryCode ' +
+        '(LOOMBOX_RECOVERY_CODE) is required',
+    );
   }
   return bootstrapAmk({
     relayUrl: config.relayUrl,
@@ -147,11 +176,15 @@ export interface StartedNode {
  * default) — which throws rather than let this node start up scoped to the
  * wrong account.
  *
- * The account AMK itself (issue #386) comes from `config.recoveryCode` via
- * `resolveAmk`/`bootstrapAmk` by default — the recovery-code bootstrap
- * against the relay's escrow, the same crypto path `apps/web` drives — never
- * hand-pasted, unless `config.amk` (`LOOMBOX_AMK`) is set as an explicit
- * override for tests/advanced use.
+ * The account AMK itself (issues #386, #399) comes from `resolveAmk`, in
+ * precedence order: `config.amk` (`LOOMBOX_AMK`) as an explicit raw override
+ * for tests/advanced use; else `config.wrappedAmkFilePath`
+ * (`LOOMBOX_WRAPPED_AMK_FILE`) via `adoptWrappedAmkFile` — the zero-touch
+ * SSH-provisioning handoff (issue #399), reading the one-shot file a
+ * provisioner wrote and unwrapping it with this node's own device private
+ * key; else `config.recoveryCode` via `bootstrapAmk` — the recovery-code
+ * bootstrap against the relay's escrow, the same crypto path `apps/web`
+ * drives. Never hand-pasted on the happy path.
  *
  * The bearer token itself (issue #387) comes from `resolveAuthToken`: an
  * explicit `LOOMBOX_AUTH_TOKEN`/`LOOMBOX_DEVICE_TOKEN`, a previously
@@ -173,6 +206,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const identity = await identityStore.loadOrCreate();
 
   const bootstrapAmk = options.bootstrapAmk ?? bootstrapAmkFromRecoveryCode;
+  const adoptWrappedAmkFile = options.adoptWrappedAmkFile ?? adoptWrappedAmkFromFile;
   const amk = await resolveAmk(
     config,
     identity,
@@ -180,6 +214,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     authToken,
     bootstrapAmk,
     options.webSocketImpl,
+    adoptWrappedAmkFile,
   );
 
   const node = createNode({

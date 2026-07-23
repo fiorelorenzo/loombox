@@ -48,7 +48,12 @@ import {
  * Deliberately does **not** mint or fetch the resident node's auth token or
  * AMK/recovery code — that's the zero-touch pairing work (issues #398/#399).
  * {@link ResidentNodeConfig} accepts them as plain parameters a caller (a
- * future add-target wizard, or those later issues) supplies.
+ * future add-target wizard, or those later issues) supplies — including
+ * {@link ResidentNodeConfig.wrappedAmkFilePath}, issue #399's zero-touch
+ * handoff path: a caller that separately calls `./amk-handoff-provision.ts`'s
+ * `writeWrappedAmkHandoff` against this same target should point this at
+ * the exact same remote path so the generated unit's `LOOMBOX_WRAPPED_AMK_FILE`
+ * matches what was actually written.
  */
 export type ProvisionStepId =
   'verify_and_persist' | 'runtime_bootstrap' | 'supervisor_install' | 'resident_node_install';
@@ -122,8 +127,10 @@ export interface ResidentNodeConfig {
   deviceToken?: string;
   /** `LOOMBOX_ACCOUNT_ID`. */
   accountId?: string;
-  /** `LOOMBOX_AMK`, base64. Wins over `recoveryCode` if both are set. */
+  /** `LOOMBOX_AMK`, base64. Wins over `wrappedAmkFilePath`/`recoveryCode` if set. */
   amk?: string;
+  /** `LOOMBOX_WRAPPED_AMK_FILE` (issue #399's zero-touch SSH-handoff path). Wins over `recoveryCode` when `amk` isn't set. */
+  wrappedAmkFilePath?: string;
   /** `LOOMBOX_RECOVERY_CODE`. */
   recoveryCode?: string;
   /** `CLAUDE_CODE_OAUTH_TOKEN` — the spawned Claude Code ACP agent's own credential (`deploy/node/README.md`'s "Get a device token"/env docs), not read by `@loombox/node` itself but inherited by the child process it spawns. */
@@ -198,6 +205,8 @@ export function buildResidentNodeEnvironment(config: ResidentNodeConfig): Record
   if (config.accountId) environment.LOOMBOX_ACCOUNT_ID = config.accountId;
   if (config.amk) {
     environment.LOOMBOX_AMK = config.amk;
+  } else if (config.wrappedAmkFilePath) {
+    environment.LOOMBOX_WRAPPED_AMK_FILE = config.wrappedAmkFilePath;
   } else if (config.recoveryCode) {
     environment.LOOMBOX_RECOVERY_CODE = config.recoveryCode;
   }

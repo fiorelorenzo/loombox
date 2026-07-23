@@ -151,6 +151,50 @@ describe('loadNodeConfig', () => {
       expect(config.recoveryCode).toBeUndefined();
     });
 
+    it('loads wrappedAmkFilePath from LOOMBOX_WRAPPED_AMK_FILE and leaves amk/recoveryCode undefined (issue #399)', () => {
+      const env: Record<string, string> = {
+        LOOMBOX_RELAY_URL: BASE_ENV.LOOMBOX_RELAY_URL,
+        LOOMBOX_NODE_ID: BASE_ENV.LOOMBOX_NODE_ID,
+        LOOMBOX_AUTH_TOKEN: BASE_ENV.LOOMBOX_AUTH_TOKEN,
+        LOOMBOX_WRAPPED_AMK_FILE: '/home/node/.loombox/node/wrapped-amk-handoff.json',
+      };
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.wrappedAmkFilePath).toBe('/home/node/.loombox/node/wrapped-amk-handoff.json');
+      expect(config.amk).toBeUndefined();
+      expect(config.recoveryCode).toBeUndefined();
+    });
+
+    it('rejects a config with none of amk, wrappedAmkFilePath, or recoveryCode set', () => {
+      const env: Record<string, string> = {
+        LOOMBOX_RELAY_URL: BASE_ENV.LOOMBOX_RELAY_URL,
+        LOOMBOX_NODE_ID: BASE_ENV.LOOMBOX_NODE_ID,
+        LOOMBOX_AUTH_TOKEN: BASE_ENV.LOOMBOX_AUTH_TOKEN,
+      };
+      expect(() => loadNodeConfig({ env, argv: [] })).toThrow(
+        /LOOMBOX_AMK.*LOOMBOX_WRAPPED_AMK_FILE.*LOOMBOX_RECOVERY_CODE/,
+      );
+    });
+
+    it('amk wins over wrappedAmkFilePath when both LOOMBOX_AMK and LOOMBOX_WRAPPED_AMK_FILE are set', () => {
+      const env = { ...BASE_ENV, LOOMBOX_WRAPPED_AMK_FILE: '/tmp/wrapped-amk-handoff.json' };
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.amk).toBeInstanceOf(Uint8Array);
+      expect(config.wrappedAmkFilePath).toBeUndefined();
+    });
+
+    it('wrappedAmkFilePath wins over recoveryCode when both are set and no LOOMBOX_AMK is present', () => {
+      const env: Record<string, string> = {
+        LOOMBOX_RELAY_URL: BASE_ENV.LOOMBOX_RELAY_URL,
+        LOOMBOX_NODE_ID: BASE_ENV.LOOMBOX_NODE_ID,
+        LOOMBOX_AUTH_TOKEN: BASE_ENV.LOOMBOX_AUTH_TOKEN,
+        LOOMBOX_WRAPPED_AMK_FILE: '/tmp/wrapped-amk-handoff.json',
+        LOOMBOX_RECOVERY_CODE: 'ABCD-EFGH-JKMN-PQRS',
+      };
+      const config = loadNodeConfig({ env, argv: [] });
+      expect(config.wrappedAmkFilePath).toBe('/tmp/wrapped-amk-handoff.json');
+      expect(config.recoveryCode).toBeUndefined();
+    });
+
     it('rejects malformed JSON in LOOMBOX_TARGETS', () => {
       const env = { ...BASE_ENV, LOOMBOX_TARGETS: '{not valid json' };
       expect(() => loadNodeConfig({ env, argv: [] })).toThrow(ConfigError);
@@ -255,6 +299,19 @@ describe('loadNodeConfig', () => {
 
       const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
       expect(config.recoveryCode).toBe('ABCD-EFGH-JKMN-PQRS');
+      expect(config.amk).toBeUndefined();
+    });
+
+    it('loads wrappedAmkFilePath from the config file when no amk is present (issue #399)', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        wrappedAmkFilePath: '/home/node/.loombox/node/wrapped-amk-handoff.json',
+      });
+
+      const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
+      expect(config.wrappedAmkFilePath).toBe('/home/node/.loombox/node/wrapped-amk-handoff.json');
       expect(config.amk).toBeUndefined();
     });
 

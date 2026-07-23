@@ -1,18 +1,24 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  exportPublicKeyRaw,
   generateAmk,
+  generateEcdhKeyPair,
   generateRecoveryCode,
+  packAmkHandoffForFile,
   packWrappedAmkForWire,
+  wrapAmkForNodeHandoff,
   wrapAmkWithRecoveryCode,
 } from '@loombox/crypto';
 import { PROTOCOL_V1, type AmkEscrow, type Initialize } from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
 
 import type { AmkBootstrapper } from './amk-bootstrap';
+import type { AdoptWrappedAmkFileOptions } from './amk-handoff-file';
+import { NodeIdentityStore } from './identity';
 import { ConfigError } from './config';
 import { DeviceTokenFileStore } from './device-token-store';
 import { installGracefulShutdown, start, type DeviceLoginRunner } from './main';
@@ -330,6 +336,173 @@ describe('start: AMK from a Recovery Code (issue #386)', () => {
     expect(bootstrapAmk).not.toHaveBeenCalled();
     await expect(started.node.whenConnected()).resolves.toBeUndefined();
     await started.stop();
+  });
+});
+
+describe('start: AMK from a wrapped-AMK handoff file (issue #399)', () => {
+  let relay: StartedRelay;
+  let stateDir: string;
+
+  beforeEach(async () => {
+    relay = await startRelay();
+    stateDir = await mkdtemp(join(tmpdir(), 'loombox-node-main-handoff-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+    await relay.close();
+  });
+
+  function handoffEnvFor(relayUrl: string, dir: string, accountId: string, filePath: string) {
+    return {
+      LOOMBOX_RELAY_URL: relayUrl,
+      LOOMBOX_NODE_ID: 'handoff-node',
+      LOOMBOX_AUTH_TOKEN: accountId,
+      LOOMBOX_ACCOUNT_ID: accountId,
+      LOOMBOX_WRAPPED_AMK_FILE: filePath,
+      LOOMBOX_NODE_STATE_DIR: dir,
+    };
+  }
+
+  it('connects using the AMK adopted from a real wrapped-AMK handoff file, with no LOOMBOX_AMK/LOOMBOX_RECOVERY_CODE set at all', async () => {
+    // This node's own identity is generated up front (mirroring what a real
+    // first start does internally) so the provisioner side below can wrap
+    // for its real, already-known device pubkey.
+    const identity = await new NodeIdentityStore({ stateDir }).loadOrCreate();
+    const provisioner = await generateEcdhKeyPair();
+    const accountId = 'acct-handoff-main';
+    const amk = generateAmk();
+
+    const envelope = await wrapAmkForNodeHandoff({
+      amk,
+      accountId,
+      targetDeviceId: 'handoff-node',
+      actingPrivateKey: provisioner.privateKey,
+      targetDevicePublicKeyRaw: identity.publicKeyRaw,
+    });
+    const filePath = join(stateDir, 'wrapped-amk-handoff.json');
+    await writeFile(
+      filePath,
+      packAmkHandoffForFile({
+        epoch: 0,
+        actingDevicePublicKeyRaw: await exportPublicKeyRaw(provisioner.publicKey),
+        envelope,
+      }),
+      'utf8',
+    );
+
+    const started = await start({
+      env: handoffEnvFor(relay.url, stateDir, accountId, filePath),
+      argv: [],
+    });
+
+    expect(started.devicePublicKey).toBe(identity.publicKeyBase64);
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+
+    // Consumed exactly once.
+    await expect(access(filePath)).rejects.toThrow();
+  });
+
+  it("calls adoptWrappedAmkFile with this node's own resolved accountId/deviceId/identity, and connects with what it returns", async () => {
+    const amk = generateAmk();
+    const adoptWrappedAmkFile = vi
+      .fn<(options: AdoptWrappedAmkFileOptions) => Promise<Uint8Array>>()
+      .mockResolvedValue(amk);
+
+    const started = await start({
+      env: handoffEnvFor(relay.url, stateDir, 'acct-spy-handoff', '/tmp/does-not-matter.json'),
+      argv: [],
+      adoptWrappedAmkFile,
+    });
+
+    expect(adoptWrappedAmkFile).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        filePath: '/tmp/does-not-matter.json',
+        accountId: 'acct-spy-handoff',
+        targetDeviceId: 'handoff-node',
+      }),
+    );
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('an explicit LOOMBOX_AMK still wins over LOOMBOX_WRAPPED_AMK_FILE, bypassing the handoff-file adoption entirely', async () => {
+    const amk = generateAmk();
+    const adoptWrappedAmkFile =
+      vi.fn<(options: AdoptWrappedAmkFileOptions) => Promise<Uint8Array>>();
+
+    const started = await start({
+      env: {
+        ...envFor(relay.url, stateDir, amk, 'handoff-node'),
+        LOOMBOX_WRAPPED_AMK_FILE: '/tmp/ignored.json',
+      },
+      argv: [],
+      resolveAccountId: stubResolveAccountId,
+      adoptWrappedAmkFile,
+    });
+
+    expect(adoptWrappedAmkFile).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('LOOMBOX_WRAPPED_AMK_FILE wins over LOOMBOX_RECOVERY_CODE when both are set (no LOOMBOX_AMK)', async () => {
+    const amk = generateAmk();
+    const adoptWrappedAmkFile = vi
+      .fn<(options: AdoptWrappedAmkFileOptions) => Promise<Uint8Array>>()
+      .mockResolvedValue(amk);
+    const bootstrapAmk = vi.fn<AmkBootstrapper>();
+
+    const started = await start({
+      env: {
+        ...handoffEnvFor(relay.url, stateDir, 'acct-precedence', '/tmp/handoff.json'),
+        LOOMBOX_RECOVERY_CODE: 'ABCD-EFGH-JKMN-PQRS',
+      },
+      argv: [],
+      adoptWrappedAmkFile,
+      bootstrapAmk,
+    });
+
+    expect(adoptWrappedAmkFile).toHaveBeenCalledOnce();
+    expect(bootstrapAmk).not.toHaveBeenCalled();
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('rejects with a clear error, and never connects, when the handoff file was wrapped for a different device', async () => {
+    const wrongIdentityDir = await mkdtemp(join(tmpdir(), 'loombox-node-main-handoff-wrong-'));
+    try {
+      const wrongIdentity = await new NodeIdentityStore({
+        stateDir: wrongIdentityDir,
+      }).loadOrCreate();
+      const provisioner = await generateEcdhKeyPair();
+      const accountId = 'acct-handoff-wrong';
+
+      const envelope = await wrapAmkForNodeHandoff({
+        amk: generateAmk(),
+        accountId,
+        targetDeviceId: 'handoff-node',
+        actingPrivateKey: provisioner.privateKey,
+        // Wrapped for a device that is NOT this node's own identity.
+        targetDevicePublicKeyRaw: wrongIdentity.publicKeyRaw,
+      });
+      const filePath = join(stateDir, 'wrapped-amk-handoff.json');
+      await writeFile(
+        filePath,
+        packAmkHandoffForFile({
+          epoch: 0,
+          actingDevicePublicKeyRaw: await exportPublicKeyRaw(provisioner.publicKey),
+          envelope,
+        }),
+        'utf8',
+      );
+
+      const env = handoffEnvFor(relay.url, stateDir, accountId, filePath);
+      await expect(start({ env, argv: [] })).rejects.toThrow(ConfigError);
+    } finally {
+      await rm(wrongIdentityDir, { recursive: true, force: true });
+    }
   });
 });
 
