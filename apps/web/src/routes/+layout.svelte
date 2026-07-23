@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onMount } from 'svelte';
   import { pwaInfo } from 'virtual:pwa-info';
   import { useRegisterSW } from 'virtual:pwa-register/svelte';
@@ -19,7 +20,19 @@
 
   // Registers the generated service worker on the client. No update-prompt
   // UI here on purpose: this issue is the plumbing spike, not session UI.
-  useRegisterSW({ immediate: true });
+  // The Electron desktop shell (apps/desktop) loads this same app but its
+  // service-worker support breaks workbox's auto-update postMessage
+  // (DataCloneError) and, worse, the SW's fetch interception leaves the app
+  // hanging on startup, so skip registration there and tear down any SW a
+  // prior load left behind. The offline/installable PWA story is browser-only.
+  if (browser && navigator.userAgent.includes('Electron')) {
+    void navigator.serviceWorker
+      ?.getRegistrations?.()
+      .then((registrations) => registrations.forEach((registration) => registration.unregister()))
+      .catch(() => {});
+  } else {
+    useRegisterSW({ immediate: true });
+  }
 
   // Design tokens' theme mechanism (issue #195): stamps the persisted (or
   // absent, i.e. "follow the system") theme preference onto <html> once,

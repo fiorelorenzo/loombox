@@ -27,14 +27,18 @@ export function createMainWindow(options: CreateMainWindowOptions): BrowserWindo
     show: false,
     title: 'loombox',
     webPreferences: {
-      // Sandboxed + isolated + no direct Node access in the renderer (the
-      // PWA is untrusted, remotely-loaded web content) — the preload script
-      // is the *only* bridge, via `contextBridge` (see `../preload/index.ts`
-      // and `../../shared/bridge.ts`'s doc comment).
+      // Context-isolated with no direct Node access in the renderer (the PWA
+      // is untrusted, remotely-loaded web content) — the preload script is
+      // the *only* bridge, via `contextBridge` (see `../preload/index.ts` and
+      // `../../shared/bridge.ts`'s doc comment). `sandbox` is off: the preload
+      // runs raw TS through tsx (`preload/bootstrap.cjs`), and a sandboxed
+      // preload cannot `require('tsx/cjs')` (only a small module allow-list is
+      // available), so it failed to load at all. contextIsolation still keeps
+      // the renderer walled off from the preload's Node world.
       preload: options.preloadPath ?? path.join(__dirname, '../preload/bootstrap.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   });
 
