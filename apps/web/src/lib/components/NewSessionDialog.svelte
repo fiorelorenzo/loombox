@@ -18,6 +18,7 @@
    */
   import type { CreateSessionOptions, TargetListEntry } from '$lib/relay-client';
   import TargetPicker from './TargetPicker.svelte';
+  import WovenLoader from './WovenLoader.svelte';
 
   export interface NewSessionClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
@@ -135,7 +136,10 @@
       <h2>New session</h2>
 
       {#if targetsLoading}
-        <p class="status-line">Looking for connected nodes…</p>
+        <p class="status-line">
+          <WovenLoader label="Looking for connected nodes" />
+          Looking for connected nodes…
+        </p>
       {:else if targetsError}
         <p class="error" role="alert">{targetsError}</p>
       {:else if targets.length === 0}
@@ -193,7 +197,12 @@
         <div class="actions">
           <button type="button" class="cancel" onclick={handleClose}>Cancel</button>
           <button type="submit" disabled={!canSubmit} data-testid="new-session-submit">
-            {creating ? 'Creating…' : 'Create session'}
+            {#if creating}
+              <WovenLoader label="Creating session" />
+              Creating…
+            {:else}
+              Create session
+            {/if}
           </button>
         </div>
       </form>
@@ -231,6 +240,9 @@
   }
 
   .status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
     margin: 0;
     opacity: 0.7;
     font-size: var(--text-small-size);
@@ -269,9 +281,9 @@
     resize: vertical;
   }
 
-  .session-form input:focus,
-  .session-form select:focus,
-  .session-form textarea:focus {
+  .session-form input:focus-visible,
+  .session-form select:focus-visible,
+  .session-form textarea:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
   }
@@ -284,10 +296,19 @@
   }
 
   .actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-lg);
     cursor: pointer;
     font-weight: 600;
+  }
+
+  .actions button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .actions .cancel {

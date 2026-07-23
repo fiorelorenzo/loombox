@@ -45,4 +45,9 @@ describe('RecoveryCodeEntryForm', () => {
     expect(submit.textContent).toMatch(/verifying/i);
     expect(screen.getByText('wrong code')).toBeTruthy();
   });
+
+  it('shows the woven-thread loading motif while busy (issue #274)', () => {
+    render(RecoveryCodeEntryForm, { props: { onSubmit: vi.fn(), busy: true } });
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+  });
 });

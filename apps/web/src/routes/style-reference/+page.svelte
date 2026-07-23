@@ -15,6 +15,7 @@
    */
   import { onMount } from 'svelte';
   import { themeStore, type ThemePreference } from '$lib/theme';
+  import WovenLoader from '$lib/components/WovenLoader.svelte';
 
   const neutralSwatches = [
     { name: '--color-bg', label: 'Background' },
@@ -222,6 +223,34 @@
     </div>
   </section>
 
+  <section aria-labelledby="motion-heading">
+    <h2 id="motion-heading">Woven-thread motif (SPEC.md §4, issue #274)</h2>
+    <p class="motion-intro">
+      The recurring loading/"agent working" motif: threads being woven, in the accent color. Two
+      states — <code>loading</code> for an indeterminate wait, <code>working</code> for a
+      continuous, ongoing process — both driven by CSS animation only, and a static fallback for
+      <code>prefers-reduced-motion</code>.
+    </p>
+    <div class="motion-row">
+      <div class="motion-sample">
+        <WovenLoader size="md" variant="loading" label="Loading" />
+        <span class="motion-label">size="md" variant="loading"</span>
+      </div>
+      <div class="motion-sample">
+        <WovenLoader size="md" variant="working" label="Working" />
+        <span class="motion-label">size="md" variant="working"</span>
+      </div>
+      <div class="motion-sample">
+        <WovenLoader size="sm" variant="loading" label="Loading" />
+        <span class="motion-label">size="sm" (inline, e.g. in a button)</span>
+      </div>
+      <div class="motion-sample">
+        <WovenLoader size="md" variant="working" reducedMotion label="Working" />
+        <span class="motion-label">reducedMotion static fallback</span>
+      </div>
+    </div>
+  </section>
+
   <section aria-labelledby="type-heading">
     <h2 id="type-heading">Typography (issue #196: Inter + JetBrains Mono, self-hosted)</h2>
 
@@ -380,6 +409,36 @@
     max-width: 42rem;
     opacity: 0.85;
     font-size: var(--text-small-size);
+  }
+
+  .motion-intro {
+    max-width: 42rem;
+    opacity: 0.85;
+    margin: 0 0 var(--space-md);
+  }
+
+  .motion-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+  }
+
+  .motion-sample {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 8rem;
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-raised);
+  }
+
+  .motion-label {
+    font-size: var(--text-small-size);
+    text-align: center;
+    opacity: 0.7;
   }
 
   .scale-row {

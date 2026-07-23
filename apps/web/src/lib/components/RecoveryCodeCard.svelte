@@ -16,6 +16,7 @@
    * `code` and reports the moment the user has confirmed they saved it.
    */
   import { copyToClipboard } from '$lib/copy';
+  import WovenLoader from './WovenLoader.svelte';
 
   interface Props {
     /** The Recovery Code to display, already formatted for display (`@loombox/crypto`'s `generateRecoveryCode`, dash-grouped). */
@@ -80,7 +81,12 @@
     onclick={handleContinue}
     data-testid="recovery-code-continue"
   >
-    {busy ? 'Securing your account…' : 'Continue'}
+    {#if busy}
+      <WovenLoader label="Securing your account" />
+      Securing your account…
+    {:else}
+      Continue
+    {/if}
   </button>
 </div>
 
@@ -108,10 +114,12 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+    flex-wrap: wrap;
   }
 
   .code {
     flex: 1;
+    min-width: 0;
     padding: var(--space-md);
     border-radius: var(--radius-md);
     background: var(--color-fill-subtle);
@@ -136,6 +144,13 @@
     background: var(--color-fill-subtle);
   }
 
+  .copy-button:focus-visible,
+  .continue-button:focus-visible,
+  .confirm-row input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   .confirm-row {
     display: flex;
     align-items: center;
@@ -151,6 +166,9 @@
   }
 
   .continue-button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     align-self: flex-start;
     border: none;
     border-radius: var(--radius-md);

@@ -21,6 +21,7 @@
   import { approveDevice, denyDevice, type DeviceApprovalOutcome } from '$lib/device-approve';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import DeviceApprove from '$lib/components/DeviceApprove.svelte';
+  import WovenLoader from '$lib/components/WovenLoader.svelte';
 
   const DEFAULT_RELAY_URL = publicEnv.PUBLIC_LOOMBOX_RELAY_URL || 'wss://relay.loombox.dev';
   const RELAY_URL_STORAGE_KEY = 'loombox:relay-url';
@@ -140,7 +141,10 @@
     <h2>Link a device</h2>
 
     {#if !authChecked}
-      <p class="empty">Checking session…</p>
+      <p class="empty loading-line">
+        <WovenLoader label="Checking session" />
+        Checking session…
+      </p>
     {:else if !authSession}
       <div class="sign-in">
         <p>Sign in to approve this device.</p>
@@ -205,8 +209,30 @@
     align-items: flex-start;
   }
 
+  .sign-in button {
+    border: none;
+    border-radius: var(--radius-md);
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+    padding: var(--space-sm) var(--space-lg);
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .sign-in button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   .empty {
     color: var(--color-text-muted);
+  }
+
+  .loading-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin: 0;
   }
 
   .error {

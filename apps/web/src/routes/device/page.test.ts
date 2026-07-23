@@ -11,5 +11,7 @@ describe('/device route (#387)', () => {
     // "checking session" state renders rather than the sign-in gate or the
     // approval form — proves the page doesn't crash before hydration.
     expect(body).toContain('Checking session');
+    // The woven-thread loading motif (#274) backs that "checking session" wait.
+    expect(body).toContain('data-testid="woven-loader"');
   });
 });

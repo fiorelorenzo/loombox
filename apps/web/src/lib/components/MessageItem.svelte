@@ -32,6 +32,7 @@
   import { itemCopyText } from '$lib/copy';
   import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
+  import WovenLoader from './WovenLoader.svelte';
 
   interface Props {
     item: TranscriptMessageItem;
@@ -111,6 +112,9 @@
   <div class="row">
     <span class="role">{role}</span>
     {#if role === 'thought'}
+      {#if thinking}
+        <WovenLoader size="sm" variant="working" label="Agent thinking" />
+      {/if}
       <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
     {/if}
     {#if role === 'thought' && !expanded}

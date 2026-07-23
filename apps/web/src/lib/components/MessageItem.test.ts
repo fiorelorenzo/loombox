@@ -74,6 +74,17 @@ describe('MessageItem: thinking/reasoning display (#136)', () => {
     expect(later).not.toBe(early);
   });
 
+  it('shows the woven-thread motif (issue #274) while thinking, dropped once settled', async () => {
+    vi.useFakeTimers();
+    const { rerender } = render(MessageItem, {
+      props: { item: messageItem({ kind: 'agent_thought_chunk' }), thinking: true },
+    });
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+
+    await rerender({ item: messageItem({ kind: 'agent_thought_chunk' }), thinking: false });
+    expect(screen.queryByTestId('woven-loader')).toBeNull();
+  });
+
   it('settles to a static "Thought for Ns" the instant thinking flips false, and never ticks again', async () => {
     vi.useFakeTimers();
     const { rerender } = render(MessageItem, {

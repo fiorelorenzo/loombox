@@ -56,4 +56,9 @@ describe('RecoveryCodeCard (issue #384)', () => {
     expect(continueButton.textContent).toMatch(/securing/i);
     expect(screen.getByText('escrow failed')).toBeTruthy();
   });
+
+  it('shows the woven-thread loading motif while busy (issue #274)', () => {
+    render(RecoveryCodeCard, { props: { code: CODE, onConfirmed: vi.fn(), busy: true } });
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+  });
 });
