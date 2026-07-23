@@ -1,0 +1,42 @@
+# electron-builder config (issue #403). Mac-only — this app has no
+# Windows/Linux target, and this config is only ever meant to be *run* on
+# Lorenzo's Mac (see README.md: this devbox is headless and cannot build,
+# sign, or notarize a .app at all).
+appId: com.loombox.desktop
+productName: loombox
+directories:
+  output: release
+# This package ships raw TypeScript run through `tsx` at runtime (see
+# `src/main/bootstrap.cjs`'s doc comment — the same "no compiled dist"
+# convention every package in this monorepo follows), so the packaged app
+# needs its `src/` and `node_modules/` (which is where `tsx` and every
+# `@loombox/*` workspace package's own raw source live) — not a `dist/`.
+files:
+  - '**/*'
+  - '!*.md'
+  - '!*.test.ts'
+  - '!tsconfig*.json'
+  - '!vitest.config.ts'
+  - '!electron-builder.yml'
+  - '!release/**'
+extraResources:
+  - from: assets
+    to: assets
+mac:
+  category: public.app-category.developer-tools
+  icon: assets/icon.png
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  # Signing/notarization need Lorenzo's Apple Developer certificate and are
+  # NOT configured here — electron-builder auto-discovers a keychain
+  # identity by default (`CSC_IDENTITY_AUTO_DISCOVERY`), and notarization
+  # needs APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID (or an
+  # API-key equivalent) set as env vars on the Mac before `pnpm run
+  # package:mac` — see README.md.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+dmg:
+  sign: false

@@ -23,6 +23,12 @@ allowBuilds:
   # script must run (verified: builds cleanly on this devbox's Node 22 + the
   # GitHub Actions Linux runner's build toolchain).
   node-pty: true
+  # Windows-only NSIS-installer builder, a transitive dep of electron-builder
+  # (`apps/desktop`, issue #403); apps/desktop only ever targets mac (dmg/zip
+  # — see `apps/desktop/electron-builder.yml`), so its build script is never
+  # functionally needed here — skipped, same conservative policy as ssh2/
+  # cpu-features above.
+  electron-winstaller: false
 minimumReleaseAgeExclude:
   - svelte-check@4.7.3
   - vite@8.1.5
