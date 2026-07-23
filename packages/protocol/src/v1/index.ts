@@ -50,18 +50,24 @@ export {
 export type {
   TargetAnnounce,
   TargetDescriptor,
+  TargetHealth,
   TargetKind,
   TargetList,
   TargetListEntry,
   TargetListRequest,
+  TargetResourceSample,
+  TargetStatus,
 } from './targets';
 export {
   targetAnnounce,
   targetDescriptor,
+  targetHealth,
   targetKind,
   targetList,
   targetListEntry,
   targetListRequest,
+  targetResourceSample,
+  targetStatus,
 } from './targets';
 
 export type {
@@ -280,10 +286,13 @@ import {
 import {
   targetAnnounce,
   targetDescriptor,
+  targetHealth,
   targetKind,
   targetList,
   targetListEntry,
   targetListRequest,
+  targetResourceSample,
+  targetStatus,
 } from './targets';
 import {
   sessionAnnounceV1,
@@ -390,6 +399,9 @@ export const schemasV1 = {
   targetKind,
   targetDescriptor,
   targetAnnounce,
+  targetHealth,
+  targetResourceSample,
+  targetStatus,
   targetListEntry,
   targetListRequest,
   targetList,

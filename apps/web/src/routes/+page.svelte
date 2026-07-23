@@ -20,6 +20,7 @@
     type ClientSessionMeta,
     type ConnectionStatus,
     type FileTreeDirectoryState,
+    type TargetListEntry,
   } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { createLocalStorageAmkStorage } from '$lib/amk-store';
@@ -56,6 +57,9 @@
   import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
+  import TargetStatusView, {
+    type FocusTarget as TargetStatusFocusTarget,
+  } from '$lib/components/TargetStatusView.svelte';
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
@@ -145,6 +149,20 @@
   let newSessionOpen = $state(false);
   // The "Add target" zero-touch provision-and-pair wizard (SPEC §7.23; issue #408).
   let addTargetOpen = $state(false);
+  // The node/target status view (SPEC §7.21; issue #269): a togglable panel,
+  // same shape as `inboxOpen`/`notificationSettingsOpen` — this page owns
+  // fetching/loading/error/polling, `TargetStatusView` itself is purely
+  // presentational (mirrors `NewSessionDialog`'s split with `TargetPicker`).
+  let targetStatusOpen = $state(false);
+  let targetStatusEntries = $state<TargetListEntry[]>([]);
+  let targetStatusLoading = $state(false);
+  let targetStatusError = $state<string | undefined>(undefined);
+  /** Set when opened from a specific session's target link, so `TargetStatusView` can highlight it (issue #269's "a stalled session's view links back to this status view for its target"). */
+  let targetStatusFocus = $state<TargetStatusFocusTarget | undefined>(undefined);
+  /** Not `$state`: a timer handle, never rendered — only `targetStatusOpen`/`targetStatusEntries` above drive the UI. */
+  let targetStatusPollHandle: ReturnType<typeof setInterval> | undefined;
+  /** How often the status view re-polls `listTargets()` while open (issue #269's "refreshed on a regular interval"). */
+  const TARGET_STATUS_POLL_MS = 10_000;
 
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
@@ -532,6 +550,40 @@
     addTargetOpen = true;
   }
 
+  /** One `listTargets()` round trip for the status view (issue #269). `loading` only flips on for the very first fetch (an empty-so-far list) — a background refresh reusing an already-populated list never re-shows the loading state, so live polling doesn't flicker the whole panel every 10s. */
+  async function refreshTargetStatus(): Promise<void> {
+    if (!client) return;
+    const activeClient = client;
+    if (targetStatusEntries.length === 0) targetStatusLoading = true;
+    try {
+      const targets = await activeClient.listTargets();
+      targetStatusEntries = targets;
+      targetStatusError = undefined;
+    } catch (error) {
+      targetStatusError = error instanceof Error ? error.message : String(error);
+    } finally {
+      targetStatusLoading = false;
+    }
+  }
+
+  /** The node/target status view's entry point (SPEC §7.21; issue #269) — `focus` optionally scopes the highlight to one session's target (wired from the sessions list's target link below). */
+  function openTargetStatus(focus?: TargetStatusFocusTarget): void {
+    targetStatusFocus = focus;
+    targetStatusOpen = true;
+    void refreshTargetStatus();
+    if (targetStatusPollHandle === undefined) {
+      targetStatusPollHandle = setInterval(() => void refreshTargetStatus(), TARGET_STATUS_POLL_MS);
+    }
+  }
+
+  function closeTargetStatus(): void {
+    targetStatusOpen = false;
+    if (targetStatusPollHandle !== undefined) {
+      clearInterval(targetStatusPollHandle);
+      targetStatusPollHandle = undefined;
+    }
+  }
+
   /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
   function handleSessionCreated(sessionId: string): void {
     selectSession(sessionId);
@@ -571,6 +623,10 @@
     filePickerOpen = false;
     atTriggerStart = undefined;
     newSessionOpen = false;
+    closeTargetStatus();
+    targetStatusEntries = [];
+    targetStatusError = undefined;
+    targetStatusFocus = undefined;
   }
 
   function ensureAuthStore(): AuthStore {
@@ -953,6 +1009,15 @@
       </button>
       <button
         type="button"
+        class="target-status-toggle"
+        class:active={targetStatusOpen}
+        onclick={() => (targetStatusOpen ? closeTargetStatus() : openTargetStatus())}
+        data-testid="target-status-toggle"
+      >
+        Nodes &amp; targets
+      </button>
+      <button
+        type="button"
         onclick={() => (paletteOpen = true)}
         data-testid="command-palette-toggle"
       >
@@ -1024,6 +1089,19 @@
         </section>
       {/if}
 
+      {#if targetStatusOpen}
+        <section class="target-status-panel" data-testid="target-status-panel">
+          <TargetStatusView
+            targets={targetStatusEntries}
+            loading={targetStatusLoading}
+            error={targetStatusError}
+            focusTarget={targetStatusFocus}
+            onRefresh={refreshTargetStatus}
+            onClose={closeTargetStatus}
+          />
+        </section>
+      {/if}
+
       <div class="cockpit">
         <aside class="sessions">
           <div class="sessions-header">
@@ -1079,7 +1157,7 @@
           {:else}
             <ul>
               {#each sessions as session (session.id)}
-                <li>
+                <li class="session-row">
                   <button
                     type="button"
                     class="session"
@@ -1099,6 +1177,17 @@
                       {/if}
                     </span>
                     <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
+                  </button>
+                  <button
+                    type="button"
+                    class="session-target-status-link"
+                    title={`View status for target ${session.targetId}`}
+                    aria-label={`View status for target ${session.targetId}`}
+                    onclick={() =>
+                      openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
+                    data-testid="session-target-status-link"
+                  >
+                    Target status
                   </button>
                 </li>
               {/each}
@@ -1454,6 +1543,60 @@
   .inbox-panel h2 {
     font-size: 1rem;
     margin: 0 0 var(--space-sm);
+  }
+
+  .target-status-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    border: 1px solid currentColor;
+    border-radius: var(--radius-md);
+    background: transparent;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    color: inherit;
+    font-size: var(--text-small-size);
+  }
+
+  .target-status-toggle.active {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+  }
+
+  .target-status-panel {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+
+  .session-row {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-2xs);
+  }
+
+  .session-row .session {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .session-target-status-link {
+    flex-shrink: 0;
+    align-self: center;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+    padding: var(--space-3xs) var(--space-2xs);
+    font-size: 0.65rem;
+    cursor: pointer;
+  }
+
+  .session-target-status-link:hover,
+  .session-target-status-link:focus-visible {
+    opacity: 1;
+    border-color: var(--color-accent);
   }
 
   .notification-settings-toggle {

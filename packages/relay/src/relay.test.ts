@@ -35,6 +35,7 @@ import {
   type TargetDescriptor,
   type TargetList,
   type TargetListRequest,
+  type TargetStatus,
   type TerminalClose,
   type TerminalClosed,
   type TerminalInput,
@@ -458,6 +459,236 @@ describe('relay v1', () => {
       const response = (await nextMessage(client)) as unknown as TargetList;
       expect(response.targets).toHaveLength(1);
       expect(response.targets[0]?.reachable).toBe(false);
+    });
+  });
+
+  describe('target_status (#253/#269): per-target resource sampling attached to target_list', () => {
+    it("attaches a node's latest target_status sample to the matching target_list entry", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'This machine' })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      send(node, {
+        type: 'target_status',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        samples: [
+          {
+            targetId: 'local',
+            cpuPercent: 42,
+            memPercent: 60,
+            memUsedBytes: 6_000_000_000,
+            memTotalBytes: 10_000_000_000,
+            diskPercent: 30,
+            diskUsedBytes: 30_000_000_000,
+            diskTotalBytes: 100_000_000_000,
+            healthy: true,
+            sampledAt: 1_700_000_000_000,
+          },
+        ],
+      } satisfies TargetStatus);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_1',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets).toHaveLength(1);
+      expect(response.targets[0]?.health).toEqual({
+        cpuPercent: 42,
+        memPercent: 60,
+        memUsedBytes: 6_000_000_000,
+        memTotalBytes: 10_000_000_000,
+        diskPercent: 30,
+        diskUsedBytes: 30_000_000_000,
+        diskTotalBytes: 100_000_000_000,
+        healthy: true,
+        sampledAt: 1_700_000_000_000,
+      });
+    });
+
+    it('omits health from a target_list entry that has never received a target_status sample', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget()],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_1',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets).toHaveLength(1);
+      expect(response.targets[0]?.health).toBeUndefined();
+    });
+
+    it('ignores a target_status sample for a targetId this node never announced (never lets a stray/stale claim slip through)', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local' })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      send(node, {
+        type: 'target_status',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        samples: [
+          {
+            targetId: 'never-announced',
+            cpuPercent: 1,
+            memPercent: 1,
+            memUsedBytes: 1,
+            memTotalBytes: 1,
+            diskPercent: 1,
+            diskUsedBytes: 1,
+            diskTotalBytes: 1,
+            healthy: true,
+            sampledAt: 1,
+          },
+        ],
+      } satisfies TargetStatus);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Still alive and unaffected — the benign round trip below proves the
+      // relay didn't choke on the stray sample, and the announced target's
+      // own entry never picked up a phantom health reading either.
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_1',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets).toHaveLength(1);
+      expect(response.targets[0]?.targetId).toBe('local');
+      expect(response.targets[0]?.health).toBeUndefined();
+    });
+
+    it("never leaks one account's target_status sample into another account's target_list, even for the same targetId", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: ownerNode } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'owner-node-device',
+        authToken: 'acct_owner',
+      });
+      send(ownerNode, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_owner',
+        targets: [makeTarget({ id: 'shared_id', kind: 'local', label: "owner's box" })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      send(ownerNode, {
+        type: 'target_status',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_owner',
+        samples: [
+          {
+            targetId: 'shared_id',
+            cpuPercent: 77,
+            memPercent: 77,
+            memUsedBytes: 1,
+            memTotalBytes: 1,
+            diskPercent: 77,
+            diskUsedBytes: 1,
+            diskTotalBytes: 1,
+            healthy: true,
+            sampledAt: 1,
+          },
+        ],
+      } satisfies TargetStatus);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // A different account happens to announce a target under the exact
+      // same id — it must never see the owner's health reading attached.
+      const { socket: otherNode } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'other-node-device',
+        authToken: 'acct_other',
+      });
+      send(otherNode, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_other',
+        targets: [makeTarget({ id: 'shared_id', kind: 'local', label: "other's box" })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_intruder',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(intruder)) as unknown as TargetList;
+      expect(response.targets).toHaveLength(1);
+      expect(response.targets[0]?.nodeId).toBe('node_other');
+      // The owner's later target_announce for the same id re-pointed
+      // `nodeByTarget['shared_id']` at `node_owner` already before this — so
+      // this assertion also guards that re-announcing doesn't retroactively
+      // grant `node_other`'s account the owner's stale health reading.
+      expect(response.targets[0]?.health).toBeUndefined();
     });
   });
 

@@ -26,7 +26,7 @@ import {
   sessionResume,
 } from './sessions';
 import { configOption, permissionRequest, permissionResponse, promptInjectV1 } from './steering';
-import { targetAnnounce, targetList, targetListRequest } from './targets';
+import { targetAnnounce, targetList, targetListRequest, targetStatus } from './targets';
 import {
   terminalClose,
   terminalClosed,
@@ -55,6 +55,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   targetAnnounce,
   targetListRequest,
   targetList,
+  targetStatus,
   sessionCreate,
   sessionAnnounceV1,
   sessionResume,

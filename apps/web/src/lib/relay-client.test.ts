@@ -2276,6 +2276,68 @@ describe('RelayClient: listTargets (issue #383)', () => {
     // Deliberately never connected.
     await expect(client.listTargets()).rejects.toThrow(/no open connection/);
   });
+
+  it("passes through a target's latest CPU/RAM/disk reading (issues #253/#269) once its node has pushed a target_status", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-targets-health';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-targets-health',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_health',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    node.send({
+      type: 'target_status',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_health',
+      samples: [
+        {
+          targetId: 'local',
+          cpuPercent: 33,
+          memPercent: 44,
+          memUsedBytes: 4,
+          memTotalBytes: 9,
+          diskPercent: 55,
+          diskUsedBytes: 5,
+          diskTotalBytes: 9,
+          healthy: true,
+          sampledAt: 1_700_000_000_000,
+        },
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-targets-health',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const targets = await client.listTargets();
+    const local = targets.find((target) => target.targetId === 'local');
+    expect(local?.health).toEqual({
+      cpuPercent: 33,
+      memPercent: 44,
+      memUsedBytes: 4,
+      memTotalBytes: 9,
+      diskPercent: 55,
+      diskUsedBytes: 5,
+      diskTotalBytes: 9,
+      healthy: true,
+      sampledAt: 1_700_000_000_000,
+    });
+  });
 });
 
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {

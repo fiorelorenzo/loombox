@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   targetAnnounce,
   targetDescriptor,
+  targetHealth,
   targetKind,
   targetList,
   targetListEntry,
   targetListRequest,
+  targetResourceSample,
+  targetStatus,
 } from './targets';
 
 describe('targetKind', () => {
@@ -75,6 +78,112 @@ describe('targetListRequest', () => {
   });
 });
 
+describe('targetHealth', () => {
+  const valid = {
+    cpuPercent: 42.5,
+    memPercent: 60,
+    memUsedBytes: 6_000_000_000,
+    memTotalBytes: 16_000_000_000,
+    diskPercent: 30,
+    diskUsedBytes: 150_000_000_000,
+    diskTotalBytes: 500_000_000_000,
+    healthy: true,
+    sampledAt: 1_700_000_000_000,
+  };
+
+  it('parses a valid health reading', () => {
+    expect(targetHealth.parse(valid)).toEqual(valid);
+  });
+
+  it('rejects a percent above 100', () => {
+    expect(() => targetHealth.parse({ ...valid, cpuPercent: 150 })).toThrow();
+  });
+
+  it('rejects a negative percent', () => {
+    expect(() => targetHealth.parse({ ...valid, memPercent: -1 })).toThrow();
+  });
+
+  it('rejects a missing healthy flag', () => {
+    const { healthy: _healthy, ...rest } = valid;
+    expect(() => targetHealth.parse(rest)).toThrow();
+  });
+
+  it('accepts an unhealthy reading with zeroed-out figures (a failed sample)', () => {
+    const failed = {
+      cpuPercent: 0,
+      memPercent: 0,
+      memUsedBytes: 0,
+      memTotalBytes: 0,
+      diskPercent: 0,
+      diskUsedBytes: 0,
+      diskTotalBytes: 0,
+      healthy: false,
+      sampledAt: valid.sampledAt,
+    };
+    expect(targetHealth.parse(failed)).toEqual(failed);
+  });
+});
+
+describe('targetResourceSample', () => {
+  const valid = {
+    targetId: 'ssh:devbox',
+    cpuPercent: 12,
+    memPercent: 20,
+    memUsedBytes: 1,
+    memTotalBytes: 2,
+    diskPercent: 5,
+    diskUsedBytes: 1,
+    diskTotalBytes: 2,
+    healthy: true,
+    sampledAt: 1,
+  };
+
+  it('parses a valid sample', () => {
+    expect(targetResourceSample.parse(valid)).toEqual(valid);
+  });
+
+  it('rejects a missing targetId', () => {
+    const { targetId: _targetId, ...rest } = valid;
+    expect(() => targetResourceSample.parse(rest)).toThrow();
+  });
+});
+
+describe('targetStatus', () => {
+  const valid = {
+    type: 'target_status',
+    protocolVersion: 1,
+    nodeId: 'node-1',
+    samples: [
+      {
+        targetId: 'local',
+        cpuPercent: 12,
+        memPercent: 20,
+        memUsedBytes: 1,
+        memTotalBytes: 2,
+        diskPercent: 5,
+        diskUsedBytes: 1,
+        diskTotalBytes: 2,
+        healthy: true,
+        sampledAt: 1,
+      },
+    ],
+  };
+
+  it('parses a valid target_status', () => {
+    expect(targetStatus.parse(valid)).toEqual(valid);
+  });
+
+  it('accepts an empty samples array', () => {
+    expect(targetStatus.parse({ ...valid, samples: [] }).samples).toEqual([]);
+  });
+
+  it('rejects a malformed sample in the list', () => {
+    expect(() =>
+      targetStatus.parse({ ...valid, samples: [{ targetId: 'x', cpuPercent: 200 }] }),
+    ).toThrow();
+  });
+});
+
 describe('targetListEntry', () => {
   const valid = {
     nodeId: 'node-1',
@@ -84,8 +193,26 @@ describe('targetListEntry', () => {
     reachable: true,
   };
 
-  it('parses a valid entry', () => {
+  it('parses a valid entry with no health yet', () => {
     expect(targetListEntry.parse(valid)).toEqual(valid);
+  });
+
+  it('parses a valid entry with a health reading attached', () => {
+    const withHealth = {
+      ...valid,
+      health: {
+        cpuPercent: 10,
+        memPercent: 20,
+        memUsedBytes: 1,
+        memTotalBytes: 2,
+        diskPercent: 5,
+        diskUsedBytes: 1,
+        diskTotalBytes: 2,
+        healthy: true,
+        sampledAt: 1,
+      },
+    };
+    expect(targetListEntry.parse(withHealth)).toEqual(withHealth);
   });
 
   it('rejects a missing reachable flag', () => {

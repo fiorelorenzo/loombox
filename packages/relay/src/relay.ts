@@ -832,6 +832,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         registry.nodeConnectionsByNodeId.set(message.nodeId, connection);
         return;
       }
+      case 'target_status': {
+        // Issues #253/#269: no account check needed here beyond what
+        // `TargetStore.updateHealth` itself enforces (a sample is only ever
+        // recorded for a targetId this nodeId has actually announced) —
+        // mirrors `target_announce`'s own trust model just above.
+        store.targets.updateHealth(message.nodeId, message.samples);
+        return;
+      }
       case 'session_announce': {
         if (message.session.accountId !== connection.accountId) {
           app.log.warn(
@@ -1007,12 +1015,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         for (const { nodeId, targets: nodeTargets } of perNode) {
           const reachable = registry.nodeConnectionsByNodeId.get(nodeId) !== undefined;
           for (const target of nodeTargets) {
+            // Issues #253/#269: the latest `target_status` sample for this
+            // target, if any has arrived yet — `undefined` for a node that
+            // predates resource sampling or hasn't completed its first tick.
+            const health = store.targets.healthForTarget(nodeId, target.id);
             targets.push({
               nodeId,
               targetId: target.id,
               label: target.label,
               kind: target.kind,
               reachable,
+              ...(health ? { health } : {}),
             });
           }
         }
