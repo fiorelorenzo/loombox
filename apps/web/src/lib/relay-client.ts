@@ -73,7 +73,7 @@ import {
 } from './attachments';
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
 
-export type { TargetListEntry } from '@loombox/protocol';
+export type { TargetHealth, TargetListEntry } from '@loombox/protocol';
 export type {
   ProvisionProgress,
   ProvisionStepIdV1,

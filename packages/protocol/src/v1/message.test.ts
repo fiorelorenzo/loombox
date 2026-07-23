@@ -118,6 +118,25 @@ const messagesByType: Record<string, unknown> = {
       },
     ],
   },
+  target_status: {
+    type: 'target_status',
+    protocolVersion: 1,
+    nodeId: 'node-1',
+    samples: [
+      {
+        targetId: 'local',
+        cpuPercent: 12,
+        memPercent: 20,
+        memUsedBytes: 1,
+        memTotalBytes: 2,
+        diskPercent: 5,
+        diskUsedBytes: 1,
+        diskTotalBytes: 2,
+        healthy: true,
+        sampledAt: 1,
+      },
+    ],
+  },
   session_create: {
     type: 'session_create',
     protocolVersion: 1,

@@ -34,6 +34,7 @@ import {
   type SessionCreate,
   type SessionMetaPublic,
   type TargetDescriptor,
+  type TargetResourceSample,
   type TerminalClose,
   type TerminalClosedPayloadV1,
   type TerminalClosedReasonV1,
@@ -53,10 +54,12 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
+import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
 import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
+import { TargetHealthSampler } from './target-health-sampler';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -127,6 +130,27 @@ export interface NodeDaemonOptions {
   sshTargets?: SshTargetConfig[];
   /** Builds the `RemoteTransport` for a given `ssh:` target; defaults to a real `Ssh2Transport`. Tests inject a `LocalProcessTransport`/`FakeTransport` factory instead. */
   sshTransportFactory?: (config: SshTargetConfig) => RemoteTransport;
+  /**
+   * Per-target CPU/RAM/disk sampling (SPEC §7.16/§7.21; issues #253/#269).
+   * `enabled` defaults to `false`: constructing a `NodeDaemon` never spins up
+   * a background timer or proactively opens an `ssh:` target's pooled
+   * transport (`getSshTransport`, connecting it if not already) just to
+   * sample it — every existing test that builds a `NodeDaemon` (and doesn't
+   * ask for this) sees no new background work or connection attempts.
+   * `main.ts`'s real `createNode()` call turns this on explicitly. When
+   * enabled, a `local`-kind target samples via `sampleLocalResources`; an
+   * `ssh:`-kind target with a matching `sshTargets` entry samples via
+   * `sampleRemoteResources` over that same pooled transport (never a second
+   * connection); an `ssh:`-kind target with no connection recipe is simply
+   * never sampled (mirrors `getExecutionTarget`'s own "no target config"
+   * case, just skipped rather than thrown). `intervalMs`/`timeoutMs` tune
+   * `TargetHealthSampler`'s own defaults (30s / 10s).
+   */
+  resourceSampling?: {
+    enabled?: boolean;
+    intervalMs?: number;
+    timeoutMs?: number;
+  };
   /**
    * Session ownership leasing across nodes (issue #82). Defaults to a fresh
    * in-memory manager, correct for a single-node deployment and for tests;
@@ -524,6 +548,9 @@ export class NodeDaemon extends EventEmitter {
    * different remote hosts.
    */
   private readonly sshSameFolderGuard = new SameFolderGuard();
+  /** Per-target CPU/RAM/disk sampling (issues #253/#269) — see `NodeDaemonOptions.resourceSampling`'s doc comment for why it's opt-in. */
+  private readonly targetHealthSampler: TargetHealthSampler;
+  private readonly resourceSamplingEnabled: boolean;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -595,6 +622,19 @@ export class NodeDaemon extends EventEmitter {
     this.mcpSecretManager =
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
 
+    this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
+    this.targetHealthSampler = new TargetHealthSampler({
+      intervalMs: options.resourceSampling?.intervalMs,
+      timeoutMs: options.resourceSampling?.timeoutMs,
+      onSample: () => this.sendTargetStatus(),
+    });
+    for (const target of this.targets) {
+      this.registerHealthProbe(target);
+    }
+    if (this.resourceSamplingEnabled) {
+      this.targetHealthSampler.start();
+    }
+
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
     // reconnects) must re-announce everything this node still holds.
@@ -657,6 +697,7 @@ export class NodeDaemon extends EventEmitter {
       this.stopLeaseHeartbeat(sessionId);
     }
     this.bridges.clear();
+    this.targetHealthSampler.stop();
     this.terminalSupervisor.closeAll();
     this.remoteRunners.clear();
     this.sshExecutionTargets.clear();
@@ -1283,12 +1324,50 @@ export class NodeDaemon extends EventEmitter {
 
   private reannounceAll(): void {
     this.sendTargetAnnounce();
+    // A fresh connection means the relay has no `target_status` for this
+    // node either (it drops everything on socket close, same as
+    // `target_announce`'s own doc comment above) — push whatever this
+    // sampler already knows right away rather than leaving a client's
+    // `target_list` looking healthless until the next interval tick.
+    this.sendTargetStatus();
     for (const bridge of this.bridges.values()) {
       this.announce(bridge).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`NodeDaemon: failed to re-announce session ${bridge.session.id}: ${message}`);
       });
     }
+  }
+
+  /** Registers this target's {@link TargetHealthSampler} probe (issues #253/#269) — a no-op when resource sampling is disabled (`resourceSampling.enabled`, off by default), since the sampler simply never starts in that case, but harmless to always register so a later opt-in (were one ever added) would need no other change here. */
+  private registerHealthProbe(target: TargetDescriptor): void {
+    if (target.kind === 'local') {
+      this.targetHealthSampler.setProbe(target.id, () => sampleLocalResources());
+      return;
+    }
+    // Mirrors `getExecutionTarget`'s own "no ssh target config" case: an
+    // `ssh:` target announced without a matching `sshTargets` connection
+    // recipe can't be sampled at all, so it's simply left unprobed rather
+    // than registered with a probe that would always fail.
+    if (!this.sshTargetConfigs.has(target.id)) return;
+    this.targetHealthSampler.setProbe(target.id, async () =>
+      sampleRemoteResources(await this.getSshTransport(target.id)),
+    );
+  }
+
+  /** Pushes this sampler's full latest-per-target snapshot to the relay as `target_status` (issues #253/#269) — a no-op while disconnected (`RelayConnection.send` would otherwise throw/queue oddly) or before any sample has completed yet. */
+  private sendTargetStatus(): void {
+    if (!this._connected) return;
+    const samples: TargetResourceSample[] = [];
+    for (const [targetId, sample] of this.targetHealthSampler.snapshot()) {
+      samples.push({ targetId, ...sample });
+    }
+    if (samples.length === 0) return;
+    this.relay.send({
+      type: 'target_status',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: this.nodeId,
+      samples,
+    });
   }
 
   /** SPEC §8 / issue #116: on every fresh connection, ask whether a rewrapped-AMK-epoch envelope is waiting for this device. */

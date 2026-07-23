@@ -227,6 +227,11 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
+    // Issues #253/#269: on for every real node started this way (tests
+    // build `NodeDaemon`/`createNode` directly and get the option's own
+    // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
+    // doc comment for why).
+    resourceSampling: { enabled: true },
     // Same convention as `identityStore` above: MCP config/secret storage
     // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
     // silently defaulting to `~/.loombox/node` regardless of what the

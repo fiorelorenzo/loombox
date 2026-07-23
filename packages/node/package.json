@@ -21,6 +21,7 @@
     "@loombox/providers-core": "workspace:*",
     "@loombox/supervisor": "workspace:*",
     "@napi-rs/keyring": "^1.3.0",
+    "check-disk-space": "^3.4.0",
     "ssh2": "^1.16.0"
   },
   "devDependencies": {

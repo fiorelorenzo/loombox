@@ -1,4 +1,10 @@
-import type { EncryptedEnvelope, SessionMetaPublic, TargetDescriptor } from '@loombox/protocol';
+import type {
+  EncryptedEnvelope,
+  SessionMetaPublic,
+  TargetDescriptor,
+  TargetHealth,
+  TargetResourceSample,
+} from '@loombox/protocol';
 
 /**
  * In-memory and Postgres-backed relay stores (SPEC §16 relay stack;
@@ -76,6 +82,29 @@ export interface TargetStore {
   listForNode(nodeId: string): readonly TargetDescriptor[];
   /** Every node's targets this account owns (issue #383) — the relay's account-scoping for `target_list_request`, mirroring `SessionStore.listForAccount`'s isolation. */
   listForAccount(accountId: string): readonly AccountTargets[];
+  /**
+   * Records `nodeId`'s latest `target_status` samples (issues #253/#269).
+   * Only ever records a sample for a `targetId` this `nodeId` has actually
+   * announced via {@link announce} — a stray/stale `targetId` claim (e.g. a
+   * late `target_status` for a target the node has since dropped from its
+   * announce) is silently ignored rather than trusted, mirroring
+   * `findNodeForTarget`'s own routing authority.
+   */
+  updateHealth(nodeId: string, samples: readonly TargetResourceSample[]): void;
+  /**
+   * The latest recorded health reading for `nodeId`'s `targetId`, if any has
+   * arrived yet. Deliberately keyed by the *pair*, not `targetId` alone:
+   * target ids are node-chosen strings (every node's default target is
+   * literally `'local'`) and can collide across unrelated accounts, so a
+   * lookup by bare `targetId` could return a stale reading recorded for a
+   * *different* node that used to own that id — mirrors `session_create`'s
+   * own "verify against the live connection, never trust a stored id alone"
+   * pattern (`relay.ts`'s `nodeConnection.accountId !== connection.accountId`
+   * check) rather than `findNodeForTarget`'s bare-id routing table, which is
+   * safe there only because its caller re-checks the resolved node's live
+   * account before using it.
+   */
+  healthForTarget(nodeId: string, targetId: string): TargetHealth | undefined;
 }
 
 /** A session's public routing metadata plus its opaque title/path envelope (the §8 metadata boundary). */
@@ -639,6 +668,7 @@ export function createTargetStore(): TargetStore {
   const byNode = new Map<string, TargetDescriptor[]>();
   const nodeByTarget = new Map<string, string>();
   const accountByNode = new Map<string, string>();
+  const healthByTarget = new Map<string, TargetHealth>();
   return {
     announce(nodeId, accountId, targets) {
       const previous = byNode.get(nodeId) ?? [];
@@ -663,6 +693,15 @@ export function createTargetStore(): TargetStore {
         if (owner === accountId) result.push({ nodeId, targets: byNode.get(nodeId) ?? [] });
       }
       return result;
+    },
+    updateHealth(nodeId, samples) {
+      for (const { targetId, ...health } of samples) {
+        if (nodeByTarget.get(targetId) !== nodeId) continue;
+        healthByTarget.set(`${nodeId}:${targetId}`, health);
+      }
+    },
+    healthForTarget(nodeId, targetId) {
+      return healthByTarget.get(`${nodeId}:${targetId}`);
     },
   };
 }
