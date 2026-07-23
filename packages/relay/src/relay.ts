@@ -30,6 +30,7 @@ import {
 import { hashDeviceSecret } from './device-auth';
 import { registerDeviceAuthRoutes } from './device-auth-routes';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
+import { registerNodeTokenRoutes } from './node-token-routes';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
 import { createWebPushSender, type PushPayload, type PushSender } from './push';
 import {
@@ -1208,6 +1209,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   registerDeviceAuthRoutes(app, store, accountIdFromBearer, {
     appUrl: opts.deviceAuth?.appUrl,
   });
+
+  // #398: the authenticated, zero-touch node-token mint — an already-signed-
+  // in caller mints a token for its OWN account in one call, no `user_code`
+  // round trip. Shares `accountIdFromBearer` with every other authenticated
+  // REST route above, so a device token minted here (or via `/device/
+  // approve`) resolves the same way through `resolveAccountId`.
+  registerNodeTokenRoutes(app, store, accountIdFromBearer);
 
   app.register(fastifyWebsocket);
 
