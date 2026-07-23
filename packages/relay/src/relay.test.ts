@@ -21,6 +21,9 @@ import {
   type NewDeviceBootstrapRequest,
   type NewDeviceBootstrapResponse,
   type PromptInjectV1,
+  type ProvisionProgress,
+  type ProvisionTargetRequest,
+  type ProvisionTargetResult,
   type ResyncMarker,
   type SessionAnnounceV1,
   type SessionCreate,
@@ -2188,6 +2191,422 @@ describe('device escrow / new-device bootstrap (SPEC §8 path 2, §16; issues #1
       } satisfies LeaseRelease);
       const result = (await nextMessage(node)) as unknown as LeaseReleaseResult;
       expect(result.released).toBe(false);
+    });
+  });
+
+  describe('provision_target routing (#410): zero-touch add-target wizard wire-through', () => {
+    function makeProvisionRequest(
+      overrides: Partial<ProvisionTargetRequest> = {},
+    ): ProvisionTargetRequest {
+      return {
+        type: 'provision_target_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'preq_1',
+        nodeId: 'node_1',
+        targetId: 'target_new',
+        host: { host: 'devbox.example.com' },
+        ...overrides,
+      };
+    }
+
+    it("routes provision_target_request to the node identified by nodeId, scoped to the requester's account", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_a',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_a',
+      });
+      const request = makeProvisionRequest();
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as ProvisionTargetRequest;
+      expect(received).toEqual(request);
+    });
+
+    it('does not route provision_target_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, makeProvisionRequest({ requestId: 'preq_intruder' }));
+
+      // The owner's node must not receive it; prove the relay is still
+      // alive with a benign round trip instead (same technique as the
+      // session_create cross-account test above).
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('streams provision_progress and provision_target_result back to the requesting client only', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_a',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_a',
+      });
+      // A second, uninvolved client on the SAME account — must never see
+      // this request's progress/result.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_a',
+      });
+
+      const request = makeProvisionRequest();
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const progress: ProvisionProgress = {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        step: 'verify_and_persist',
+        status: 'ok',
+        message: 'verified',
+      };
+      send(node, progress);
+      const receivedProgress = (await nextMessage(requester)) as unknown as ProvisionProgress;
+      expect(receivedProgress).toEqual(progress);
+
+      const result: ProvisionTargetResult = {
+        type: 'provision_target_result',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        ok: true,
+        message: 'paired',
+      };
+      send(node, result);
+      const receivedResult = (await nextMessage(requester)) as unknown as ProvisionTargetResult;
+      expect(receivedResult).toEqual(result);
+
+      // The bystander never received either — prove it's still alive and
+      // its next frame is the benign one we send now, not a leaked
+      // progress/result.
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = await nextMessage(bystander);
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it("account isolation: another account's client can't target this node, and never sees this request's progress", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: nodeA } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-a-device',
+        authToken: 'acct_a',
+      });
+      send(nodeA, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_a',
+        targets: [],
+      } satisfies TargetAnnounce);
+
+      const { socket: nodeB } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-b-device',
+        authToken: 'acct_b',
+      });
+      send(nodeB, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_b',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: clientA } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-a-device',
+        authToken: 'acct_a',
+      });
+      const { socket: clientB } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-b-device',
+        authToken: 'acct_b',
+      });
+
+      const requestA = makeProvisionRequest({ requestId: 'preq_a', nodeId: 'node_a' });
+      send(clientA, requestA);
+      await nextMessage(nodeA);
+
+      const progress: ProvisionProgress = {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: requestA.requestId,
+        nodeId: 'node_a',
+        targetId: requestA.targetId,
+        step: 'runtime_bootstrap',
+        status: 'started',
+        message: 'installing runtime',
+      };
+      send(nodeA, progress);
+      const receivedByA = (await nextMessage(clientA)) as unknown as ProvisionProgress;
+      expect(receivedByA).toEqual(progress);
+
+      // clientB never subscribed to requestA — prove it stays quiet by
+      // racing a benign round trip against it.
+      send(clientB, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const clientBNext = await nextMessage(clientB);
+      expect(clientBNext.type).toBe('session_list');
+
+      // nodeB, forwarding a spoofed reply for account A's requestId, is
+      // rejected (account mismatch) rather than delivered to clientA.
+      send(nodeB, { ...progress, message: 'spoofed from acct_b' } satisfies ProvisionProgress);
+      send(clientA, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const clientANext = (await nextMessage(clientA)) as unknown as SessionListV1;
+      expect(clientANext.type).toBe('session_list');
+    });
+
+    it('cleans up the routing entry once the final result is delivered: a reused requestId starts fresh', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_a',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_a',
+      });
+      const request = makeProvisionRequest({ requestId: 'preq_reused' });
+      send(firstClient, request);
+      await nextMessage(node);
+
+      const result: ProvisionTargetResult = {
+        type: 'provision_target_result',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        ok: true,
+        message: 'paired',
+      };
+      send(node, result);
+      expect(await nextMessage(firstClient)).toEqual(result);
+
+      // A stray progress reusing the now-cleaned-up requestId must not
+      // reach the original (still-connected) client.
+      send(node, {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        step: 'target_identity',
+        status: 'started',
+        message: 'stray, should be dropped',
+      } satisfies ProvisionProgress);
+
+      // A second client reuses the exact same requestId for a brand-new
+      // provisioning attempt — this only makes sense if the old entry is
+      // truly gone, not still routing to firstClient.
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_a',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const secondProgress: ProvisionProgress = {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        step: 'target_identity',
+        status: 'ok',
+        message: 'fresh attempt',
+      };
+      send(node, secondProgress);
+      const receivedBySecond = (await nextMessage(secondClient)) as unknown as ProvisionProgress;
+      expect(receivedBySecond).toEqual(secondProgress);
+
+      // firstClient's next frame must be the benign one we send now, never
+      // the stray/second progress meant for someone else's request.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
+    });
+
+    it('cleans up the routing entry on the requesting client’s disconnect: a reused requestId works for a fresh client', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_a',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_a',
+      });
+      const request = makeProvisionRequest({ requestId: 'preq_disconnect' });
+      send(firstClient, request);
+      await nextMessage(node);
+
+      firstClient.close();
+      await waitForClose(firstClient);
+
+      // A second client reuses the disconnected client's requestId.
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_a',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const progress: ProvisionProgress = {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        step: 'mint_node_token',
+        status: 'ok',
+        message: 'token minted',
+      };
+      send(node, progress);
+      const received = (await nextMessage(secondClient)) as unknown as ProvisionProgress;
+      expect(received).toEqual(progress);
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        provisionRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_a',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_a',
+      });
+      const request = makeProvisionRequest({ requestId: 'preq_ttl' });
+      send(firstClient, request);
+      await nextMessage(node);
+
+      // Never send a result — simulate an abandoned/crashed run and let it
+      // expire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_a',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const progress: ProvisionProgress = {
+        type: 'provision_progress',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        nodeId: 'node_1',
+        targetId: request.targetId,
+        step: 'resident_node_install',
+        status: 'ok',
+        message: 'installed',
+      };
+      send(node, progress);
+      const received = (await nextMessage(secondClient)) as unknown as ProvisionProgress;
+      expect(received).toEqual(progress);
+
+      // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
     });
   });
 });
