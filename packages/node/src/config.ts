@@ -41,8 +41,27 @@ export interface NodeCliConfig {
    * use) whenever this is left unset.
    */
   accountId?: string;
-  /** This account's 256-bit Account Master Key, decoded from base64. */
-  amk: Uint8Array;
+  /**
+   * This account's 256-bit Account Master Key, decoded from base64 — an
+   * explicit raw-AMK override (`LOOMBOX_AMK`/the config file's `amk`).
+   * `undefined` when not set, which is the intended path (issue #386): the
+   * caller (`main.ts`'s `start()`) then obtains the AMK from `recoveryCode`
+   * below via the recovery-code bootstrap instead. Exactly one of `amk` /
+   * `recoveryCode` is guaranteed set by {@link loadNodeConfig} — never both
+   * unset, and when both ARE set, `amk` wins (the override, meant for
+   * tests/advanced use, always takes precedence over bootstrapping).
+   */
+  amk?: Uint8Array;
+  /**
+   * The account's Recovery Code (`LOOMBOX_RECOVERY_CODE`/the config file's
+   * `recoveryCode`), driving the recovery-code AMK bootstrap (SPEC §8 path 2,
+   * issue #386): `main.ts`'s `start()` uses this to fetch this account's
+   * escrowed wrapped-AMK blob from the relay and unwrap it locally, the same
+   * crypto path `apps/web`'s `bootstrapAmkFromRecoveryCode` drives. This is
+   * the *intended* way a resident node obtains its AMK — `amk` above is only
+   * an escape hatch. `undefined` when `amk` is set directly instead.
+   */
+  recoveryCode?: string;
   /** Execution targets this node exposes, beyond the always-available `local` one; `undefined` lets `NodeDaemon` fall back to its own `[DEFAULT_LOCAL_TARGET]` default. */
   targets?: TargetDescriptor[];
   /** Connection recipes for this node's `ssh:` targets, file-only (see {@link loadNodeConfig}). */
@@ -60,6 +79,8 @@ interface NodeConfigFile {
   /** See {@link NodeCliConfig.accountId} — an explicit override; when absent the caller must resolve it from `authToken` instead. */
   accountId?: string;
   amk?: string;
+  /** See {@link NodeCliConfig.recoveryCode}. */
+  recoveryCode?: string;
   targets?: TargetDescriptor[];
   sshTargets?: SshTargetConfig[];
   stateDir?: string;
@@ -159,7 +180,11 @@ export interface LoadNodeConfigOptions {
  * - `LOOMBOX_ACCOUNT_ID` (optional; explicit override. Left unset, the
  *   returned config's `accountId` is `undefined` and the caller must resolve
  *   the real one from `authToken` — issue #380, see {@link NodeCliConfig.accountId})
- * - `LOOMBOX_AMK` (required; base64, must decode to 32 bytes)
+ * - `LOOMBOX_AMK` (base64, must decode to 32 bytes) / `LOOMBOX_RECOVERY_CODE`
+ *   — exactly one of these two is required (issue #386). `LOOMBOX_RECOVERY_CODE`
+ *   is the intended path: `main.ts`'s `start()` uses it to bootstrap the AMK
+ *   from the relay's escrow, the same crypto `apps/web` drives. `LOOMBOX_AMK`
+ *   is a raw override for tests/advanced use, and wins if both are set.
  * - `LOOMBOX_TARGETS` (optional; a JSON array of `TargetDescriptor`)
  * - `LOOMBOX_NODE_STATE_DIR` (optional; overrides where node state — the
  *   persisted identity keypair — lives on disk)
@@ -188,19 +213,26 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
   const nodeId = env.LOOMBOX_NODE_ID ?? file.nodeId;
   const authToken = env.LOOMBOX_AUTH_TOKEN ?? file.authToken;
   const amkText = env.LOOMBOX_AMK ?? file.amk;
+  const recoveryCode = env.LOOMBOX_RECOVERY_CODE ?? file.recoveryCode;
 
   const missing: string[] = [];
   if (!relayUrl) missing.push('relayUrl (LOOMBOX_RELAY_URL)');
   if (!nodeId) missing.push('nodeId (LOOMBOX_NODE_ID)');
   if (!authToken) missing.push('authToken (LOOMBOX_AUTH_TOKEN)');
-  if (!amkText) missing.push('amk (LOOMBOX_AMK)');
+  // #386: exactly one of amk / recoveryCode is required — recoveryCode is
+  // the intended path (main.ts bootstraps the AMK from it), amk a raw
+  // override. Only missing when NEITHER is set; see NodeCliConfig.amk's doc
+  // comment for the precedence when both are.
+  if (!amkText && !recoveryCode) {
+    missing.push('amk (LOOMBOX_AMK) or recoveryCode (LOOMBOX_RECOVERY_CODE)');
+  }
   if (missing.length > 0) {
     throw new ConfigError(`missing required config: ${missing.join(', ')}`);
   }
 
   const accountId = env.LOOMBOX_ACCOUNT_ID ?? file.accountId;
   const deviceId = env.LOOMBOX_DEVICE_ID ?? file.deviceId ?? nodeId!;
-  const amk = decodeAmk(amkText!);
+  const amk = amkText ? decodeAmk(amkText) : undefined;
   const targets = env.LOOMBOX_TARGETS ? parseTargetsEnv(env.LOOMBOX_TARGETS) : file.targets;
   const stateDir = env.LOOMBOX_NODE_STATE_DIR ?? file.stateDir;
 
@@ -211,6 +243,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     authToken: authToken!,
     accountId,
     amk,
+    recoveryCode: amk ? undefined : recoveryCode,
     targets,
     sshTargets: file.sshTargets,
     stateDir,

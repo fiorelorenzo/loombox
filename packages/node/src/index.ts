@@ -49,6 +49,12 @@ export { NodeMcpSecretManager } from './mcp-secrets';
 export type { LoadNodeConfigOptions, NodeCliConfig } from './config';
 export { ConfigError, loadNodeConfig } from './config';
 
+// v1: recovery-code AMK bootstrap (SPEC §8 path 2; issue #386) — the
+// intended way a resident node obtains its account AMK, mirroring
+// `apps/web`'s `bootstrapAmkFromRecoveryCode` crypto path against the relay.
+export type { AmkBootstrapper, BootstrapAmkFromRecoveryCodeOptions } from './amk-bootstrap';
+export { bootstrapAmkFromRecoveryCode } from './amk-bootstrap';
+
 export type { ExecOptions, ExecResult, ExecutionTarget, SshTargetConfig } from './target';
 export { DEFAULT_LOCAL_TARGET } from './target';
 
