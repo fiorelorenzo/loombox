@@ -2183,6 +2183,101 @@ describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
   });
 });
 
+describe('RelayClient: listTargets (issue #383)', () => {
+  it("resolves with the account's targets, marked reachable while the announcing node stays connected", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-targets-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-targets-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      targets: [
+        { id: 'local', kind: 'local', label: 'This machine' },
+        { id: 'ssh_devbox', kind: 'ssh', label: 'devbox' },
+      ],
+    });
+    // Give the relay a beat to record the announce before the client asks.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-targets-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const targets = await client.listTargets();
+    expect(targets).toHaveLength(2);
+    expect(targets).toEqual(
+      expect.arrayContaining([
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          reachable: true,
+        },
+        {
+          nodeId: 'node_1',
+          targetId: 'ssh_devbox',
+          label: 'devbox',
+          kind: 'ssh',
+          reachable: true,
+        },
+      ]),
+    );
+  });
+
+  it("never resolves with another account's targets", async () => {
+    const amk = generateAmk();
+    const ownerAccountId = 'acct-targets-owner';
+    const intruderAccountId = 'acct-targets-intruder';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-targets-2',
+      devicePublicKey: randomBase64(),
+      authToken: ownerAccountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_owner',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: intruderAccountId,
+      deviceId: 'client-targets-intruder',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const targets = await client.listTargets();
+    expect(targets).toEqual([]);
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-targets-no-conn',
+      deviceId: 'client-targets-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.listTargets()).rejects.toThrow(/no open connection/);
+  });
+});
+
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
   it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
     const amk = generateAmk();

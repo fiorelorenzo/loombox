@@ -11,16 +11,20 @@
 # Runtime env (deploy/web/docker-compose.yml): ORIGIN (required -
 # adapter-node's CSRF/form-action check needs the real public origin behind a
 # reverse proxy, https://app.loombox.dev in prod), PORT/HOST (default
-# 3000/0.0.0.0 below, both overridable).
+# 3000/0.0.0.0 below, both overridable), PUBLIC_LOOMBOX_RELAY_URL (#381,
+# optional - the default relay a fresh visitor lands on; the app itself
+# already falls back to wss://relay.loombox.dev when this is unset, so it's
+# only worth setting here for a non-default deployment, e.g. staging against
+# a different relay).
 #
-# No relay URL env: the PWA has an in-UI "Relay URL" field (+page.svelte,
-# `RELAY_URL_STORAGE_KEY = 'loombox:relay-url'`, persisted to localStorage),
-# defaulting client-side to `ws://127.0.0.1:8787/ws` until the operator types
-# `wss://relay.loombox.dev`. There is no build-time/PUBLIC_ env hook for this
-# in the app today (SPEC's disposable v1 relay model - see the comment above
-# `DEFAULT_RELAY_URL` in that file), so this image does not invent one; a
-# deployed instance is a relay-URL-entry UI until pairing lands (see the repo
-# README's pending-work note).
+# PUBLIC_LOOMBOX_RELAY_URL is read via SvelteKit's `$env/dynamic/public`
+# (+page.svelte), NOT `$env/static/public` - deliberately a plain runtime env
+# var, not baked into the JS bundle at image-build time, so changing it (or
+# never setting it, relying on the built-in wss://relay.loombox.dev default)
+# never requires rebuilding this image. The PWA still also has an in-UI
+# "Relay URL" field (`RELAY_URL_STORAGE_KEY = 'loombox:relay-url'`,
+# persisted to localStorage) a self-hoster can point at their own relay,
+# which always overrides this default once set.
 #
 # Why the runtime stage keeps the full (dev+prod) node_modules instead of a
 # --prod-pruned install, unlike packages/relay/Dockerfile:

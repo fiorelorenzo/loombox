@@ -11,15 +11,24 @@ WebSocket - see `docs/deploy-relay.md` for the relay side.
   from `apps/web/Dockerfile`, published on `127.0.0.1:5186` and fronted by
   Caddy. No database, no secrets beyond `ORIGIN`.
 
-## Relay URL: not baked into this deploy
+## Relay URL default (#381)
 
-The PWA does not have a build-time or `PUBLIC_` env hook for a default relay
-URL today. It has an in-UI "Relay URL" field (`+page.svelte`) that persists
-to the browser's `localStorage` under `loombox:relay-url`, defaulting to
-`ws://127.0.0.1:8787/ws` until the operator types the real one. So after
-deploying this, open the app and enter `wss://relay.loombox.dev` in that
-field once per browser/device - this compose setup does not, and should not,
-hardcode it.
+A fresh visitor now lands on a real relay by default: `+page.svelte` reads
+`PUBLIC_LOOMBOX_RELAY_URL` via SvelteKit's `$env/dynamic/public` (a plain
+runtime env var, not baked into the JS bundle at image-build time) and falls
+back to `wss://relay.loombox.dev` when it's unset. `docker-compose.yml`
+already sets it to that same default, so there is nothing to configure for
+the normal deployment - it's only worth overriding for a non-default one
+(e.g. staging against a different relay):
+
+```bash
+PUBLIC_LOOMBOX_RELAY_URL=wss://staging-relay.loombox.dev docker compose up -d --build
+```
+
+The PWA still has an in-UI "Relay URL" field that persists to the browser's
+`localStorage` under `loombox:relay-url`; a self-hoster running their own
+relay can point it there per-browser/device, which always overrides this
+default once set.
 
 ## Prerequisites
 
@@ -65,14 +74,16 @@ app.loombox.dev {
 
 ## Configure
 
-No `.env` file is required - the only environment variable that matters is
-`ORIGIN`, which `deploy/web/docker-compose.yml` already defaults to
-`https://app.loombox.dev` (adapter-node needs the real public origin to pass
-its CSRF/form-action check behind a reverse proxy). Override it only if the
-app is ever deployed at a different hostname:
+No `.env` file is required - `deploy/web/docker-compose.yml` already
+defaults both environment variables that matter: `ORIGIN`
+(`https://app.loombox.dev`, adapter-node needs the real public origin to
+pass its CSRF/form-action check behind a reverse proxy) and
+`PUBLIC_LOOMBOX_RELAY_URL` (`wss://relay.loombox.dev`, see above). Override
+either only for a non-default deployment:
 
 ```bash
-ORIGIN=https://staging.loombox.dev docker compose up -d --build
+ORIGIN=https://staging.loombox.dev PUBLIC_LOOMBOX_RELAY_URL=wss://staging-relay.loombox.dev \
+  docker compose up -d --build
 ```
 
 ## Updating

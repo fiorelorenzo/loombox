@@ -15,6 +15,11 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: `${root}src/lib`,
+      // #381: `+page.svelte` reads `$env/dynamic/public`, a SvelteKit
+      // virtual module the plain `svelte()` plugin above doesn't provide
+      // (see the doc comment above) — aliased to a local stand-in so
+      // `svelte/server`'s `render()` in page.test.ts can still load it.
+      '$env/dynamic/public': `${root}vitest-stubs/env-dynamic-public.ts`,
     },
     // Component tests opt into `// @vitest-environment jsdom` per-file (see
     // e.g. CopyButton.test.ts); when they do, vite-plugin-svelte must also

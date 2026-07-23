@@ -47,8 +47,22 @@ export {
   wrappedAmkEnvelope,
 } from './devices';
 
-export type { TargetAnnounce, TargetDescriptor, TargetKind } from './targets';
-export { targetAnnounce, targetDescriptor, targetKind } from './targets';
+export type {
+  TargetAnnounce,
+  TargetDescriptor,
+  TargetKind,
+  TargetList,
+  TargetListEntry,
+  TargetListRequest,
+} from './targets';
+export {
+  targetAnnounce,
+  targetDescriptor,
+  targetKind,
+  targetList,
+  targetListEntry,
+  targetListRequest,
+} from './targets';
 
 export type {
   SessionAnnounceV1,
@@ -246,7 +260,14 @@ import {
   qrPairingResponse,
   wrappedAmkEnvelope,
 } from './devices';
-import { targetAnnounce, targetDescriptor, targetKind } from './targets';
+import {
+  targetAnnounce,
+  targetDescriptor,
+  targetKind,
+  targetList,
+  targetListEntry,
+  targetListRequest,
+} from './targets';
 import {
   sessionAnnounceV1,
   sessionCreate,
@@ -344,6 +365,9 @@ export const schemasV1 = {
   targetKind,
   targetDescriptor,
   targetAnnounce,
+  targetListEntry,
+  targetListRequest,
+  targetList,
   sessionMetaPublic,
   sessionWithPrivateEnvelope,
   sessionCreate,

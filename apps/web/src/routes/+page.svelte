@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
+  import { env as publicEnv } from '$env/dynamic/public';
   import type {
     AcpConfigOption,
     AcpPermissionOption,
@@ -54,12 +55,18 @@
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
 
-  // Disposable v1 relay (SPEC §12): no default deployment, so the operator
-  // points the PWA at whatever host/port the relay printed (loopback here;
-  // a phone on the tailnet types the tailnet URL). Better Auth's routes
+  // #381: `PUBLIC_LOOMBOX_RELAY_URL` (SvelteKit `$env/dynamic/public`, read
+  // from the deployed process's real environment — see deploy/web/README.md
+  // — not `$env/static/public`, since that would bake the value into the
+  // JS bundle at image-build time and require a rebuild to ever change it)
+  // sets the default a fresh visitor lands on, falling back to the hosted
+  // relay when the var isn't set at all (e.g. a bare local dev/test run). A
+  // self-hoster running their own relay still overrides it via the "Relay
+  // URL" field below, persisted client-side to `RELAY_URL_STORAGE_KEY`,
+  // which always wins over this default once set. Better Auth's routes
   // (`/api/auth/*`, SPEC §8) live on that same relay, on the http(s)
   // counterpart of this ws(s) URL.
-  const DEFAULT_RELAY_URL = 'ws://127.0.0.1:8787/ws';
+  const DEFAULT_RELAY_URL = publicEnv.PUBLIC_LOOMBOX_RELAY_URL || 'wss://relay.loombox.dev';
   const RELAY_URL_STORAGE_KEY = 'loombox:relay-url';
 
   /** `ws(s)://host:port/ws` -> `http(s)://host:port` — Better Auth is mounted on the relay's own Fastify server, not a separate host. */

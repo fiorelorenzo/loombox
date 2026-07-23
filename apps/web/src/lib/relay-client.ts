@@ -49,6 +49,8 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionUpdateEnvelopeV1,
+  type TargetList,
+  type TargetListEntry,
   type TerminalClosed,
   type TerminalClosedPayloadV1,
   type TerminalDataPayloadV1,
@@ -67,6 +69,8 @@ import {
   type ComposerAttachment,
 } from './attachments';
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
+
+export type { TargetListEntry } from '@loombox/protocol';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -672,6 +676,11 @@ export class RelayClient {
   >();
   /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalOutput}, fired with each decrypted `terminal_output` chunk as it arrives (never buffered here — see {@link TerminalClientState}'s doc comment for why). */
   private readonly terminalOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
+  /** requestId -> the pending {@link listTargets} call it belongs to (issue #383). `target_list` carries routing metadata only (no `privateEnvelope`), so unlike `pendingFsListRequests`/`pendingTerminalOpens` this resolves a `Promise` directly rather than feeding a reactive store — one caller, one answer, no decrypt step needed. */
+  private readonly pendingTargetListRequests = new Map<
+    string,
+    { resolve: (targets: TargetListEntry[]) => void; reject: (error: Error) => void }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -787,6 +796,41 @@ export class RelayClient {
   close(): void {
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  /**
+   * Asks the relay which nodes/targets exist for this account (issue #383),
+   * for a session-creation UI to populate — the client-facing counterpart
+   * of `target_announce`, which is node-to-relay only. Routing metadata
+   * only (`nodeId`/`targetId`/`label`/`kind`/`reachable`), never encrypted:
+   * `target_list` carries no `privateEnvelope`, so unlike `sendPrompt`/
+   * `fileTreeFor` there is nothing here to decrypt. Requires an open
+   * connection and rejects on a timeout, mirroring `escrowAmk`'s "loud
+   * rejection over a silently dropped request" — this is a deliberate,
+   * one-shot query a caller awaits, not best-effort live session traffic.
+   */
+  listTargets(timeoutMs = 5000): Promise<TargetListEntry[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list targets, no open connection'));
+    }
+    const requestId = generateId('targets');
+    return new Promise<TargetListEntry[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTargetListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for target_list'));
+      }, timeoutMs);
+      this.pendingTargetListRequests.set(requestId, {
+        resolve: (targets) => {
+          clearTimeout(timer);
+          resolve(targets);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
+    });
   }
 
   /**
@@ -1863,6 +1907,9 @@ export class RelayClient {
       case 'terminal_closed':
         this.handleTerminalClosed(message);
         return;
+      case 'target_list':
+        this.handleTargetList(message);
+        return;
       default:
         return;
     }
@@ -1991,6 +2038,22 @@ export class RelayClient {
       .catch((error: unknown) => {
         this.setFileTreeError(pending.sessionId, pending.path, errorMessage(error));
       });
+  }
+
+  /**
+   * The relay's reply to one of this client's own `target_list_request`s
+   * (issue #383). Unlike `fs_list_response`/`terminal_opened`, `target_list`
+   * is never fanned out to sibling devices (it answers a single client's own
+   * request), but the same "requestId not pending means it isn't mine"
+   * guard still applies, and matters once a stray/duplicate reply is
+   * possible (e.g. a slow relay answering after {@link listTargets}'s own
+   * timeout already rejected and cleaned up the entry).
+   */
+  private handleTargetList(message: TargetList): void {
+    const pending = this.pendingTargetListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingTargetListRequests.delete(message.requestId);
+    pending.resolve(message.targets);
   }
 
   /** Seals `{ path }` and sends the `fs_list_request` (SPEC §7.4; issue #171), tracking it in {@link pendingFsListRequests} so the eventual `fs_list_response` can be told apart from a sibling device's own request for the same session. */

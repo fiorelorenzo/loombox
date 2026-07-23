@@ -62,12 +62,20 @@ export interface DeviceStore {
   rotate(deviceId: string, newDevicePublicKey: string): Awaitable<void>;
 }
 
+/** One node's targets, plus the account that owns the connection which announced them (issue #383's account-scoping). */
+export interface AccountTargets {
+  nodeId: string;
+  targets: readonly TargetDescriptor[];
+}
+
 /** One node's currently-announced execution targets (SPEC §5.2), keyed by nodeId. */
 export interface TargetStore {
-  announce(nodeId: string, targets: readonly TargetDescriptor[]): void;
+  announce(nodeId: string, accountId: string, targets: readonly TargetDescriptor[]): void;
   /** Which nodeId owns a given targetId, for routing `session_create` (relay side of #66). */
   findNodeForTarget(targetId: string): string | undefined;
   listForNode(nodeId: string): readonly TargetDescriptor[];
+  /** Every node's targets this account owns (issue #383) — the relay's account-scoping for `target_list_request`, mirroring `SessionStore.listForAccount`'s isolation. */
+  listForAccount(accountId: string): readonly AccountTargets[];
 }
 
 /** A session's public routing metadata plus its opaque title/path envelope (the §8 metadata boundary). */
@@ -507,13 +515,15 @@ function createDeviceStore(): SyncDeviceStore {
 export function createTargetStore(): TargetStore {
   const byNode = new Map<string, TargetDescriptor[]>();
   const nodeByTarget = new Map<string, string>();
+  const accountByNode = new Map<string, string>();
   return {
-    announce(nodeId, targets) {
+    announce(nodeId, accountId, targets) {
       const previous = byNode.get(nodeId) ?? [];
       for (const target of previous) {
         if (nodeByTarget.get(target.id) === nodeId) nodeByTarget.delete(target.id);
       }
       byNode.set(nodeId, [...targets]);
+      accountByNode.set(nodeId, accountId);
       for (const target of targets) {
         nodeByTarget.set(target.id, nodeId);
       }
@@ -523,6 +533,13 @@ export function createTargetStore(): TargetStore {
     },
     listForNode(nodeId) {
       return byNode.get(nodeId) ?? [];
+    },
+    listForAccount(accountId) {
+      const result: AccountTargets[] = [];
+      for (const [nodeId, owner] of accountByNode) {
+        if (owner === accountId) result.push({ nodeId, targets: byNode.get(nodeId) ?? [] });
+      }
+      return result;
     },
   };
 }

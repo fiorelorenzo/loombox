@@ -3,8 +3,10 @@
 # Modeled on deploy/relay/docker-compose.yml: the app binds to a
 # loopback-published port and host Caddy fronts it with TLS. No database,
 # no secrets - the PWA is a static-ish adapter-node server that talks to a
-# relay over WebSocket; the relay URL is entered/persisted client-side in
-# the browser (see README.md), not baked in here.
+# relay over WebSocket. The default relay a fresh visitor lands on is
+# PUBLIC_LOOMBOX_RELAY_URL below (#381); an operator/self-hoster can still
+# override it per-browser via the in-UI "Relay URL" field, persisted client-
+# side (see README.md).
 #
 # Run from this directory (deploy/web/) so the build context resolves
 # correctly:
@@ -22,6 +24,11 @@ services:
       # adapter-node's CSRF/form-action check needs the real public origin
       # behind Caddy's reverse proxy.
       ORIGIN: ${ORIGIN:-https://app.loombox.dev}
+      # #381: the app already falls back to wss://relay.loombox.dev when
+      # this is unset, so this line is only here to make the prod value
+      # explicit and easy to override for a non-default deployment (e.g.
+      # staging against a different relay) without touching the image.
+      PUBLIC_LOOMBOX_RELAY_URL: ${PUBLIC_LOOMBOX_RELAY_URL:-wss://relay.loombox.dev}
     ports:
       # loopback-only publish; host Caddy reverse-proxies to this (prodbox
       # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).
