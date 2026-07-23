@@ -17,6 +17,7 @@ import {
 import { initialize, initializeResult } from './handshake';
 import { leaseRelease, leaseReleaseResult, leaseRequest, leaseResult } from './lease';
 import { presence, resyncMarker, resyncRequest } from './presence';
+import { provisionProgress, provisionTargetRequest, provisionTargetResult } from './provisioning';
 import {
   sessionAnnounceV1,
   sessionCreate,
@@ -85,6 +86,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   leaseRelease,
   leaseReleaseResult,
   attentionHint,
+  provisionTargetRequest,
+  provisionProgress,
+  provisionTargetResult,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

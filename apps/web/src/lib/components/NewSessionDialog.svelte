@@ -30,9 +30,11 @@
     client: NewSessionClient | undefined;
     onCreated: (sessionId: string) => void;
     onClose: () => void;
+    /** Opens the "Add target" wizard (issue #408) from the no-targets empty state below; omitted, that CTA simply doesn't render. */
+    onAddTarget?: () => void;
   }
 
-  const { open, client, onCreated, onClose }: Props = $props();
+  const { open, client, onCreated, onClose, onAddTarget }: Props = $props();
 
   let targets = $state<TargetListEntry[]>([]);
   let targetsLoading = $state(false);
@@ -143,9 +145,19 @@
       {:else if targetsError}
         <p class="error" role="alert">{targetsError}</p>
       {:else if targets.length === 0}
-        <p class="empty-state" data-testid="new-session-no-targets">
-          No nodes connected yet — start a loombox node pointed at this relay.
-        </p>
+        <div class="empty-state" data-testid="new-session-no-targets">
+          <p>No nodes connected yet — start a loombox node pointed at this relay.</p>
+          {#if onAddTarget}
+            <button
+              type="button"
+              class="add-target-cta"
+              onclick={onAddTarget}
+              data-testid="new-session-add-target-cta"
+            >
+              Add a target
+            </button>
+          {/if}
+        </div>
       {:else}
         <TargetPicker
           {targets}
@@ -249,11 +261,29 @@
   }
 
   .empty-state {
-    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
     padding: var(--space-md);
     border-radius: var(--radius-md);
     background: var(--color-fill-subtle);
     font-size: var(--text-small-size);
+  }
+
+  .empty-state p {
+    margin: 0;
+  }
+
+  .add-target-cta {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    font-weight: 600;
   }
 
   .session-form {

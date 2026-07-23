@@ -245,6 +245,23 @@ export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './mes
 export type { AttentionHint, AttentionHintClass } from './attention';
 export { attentionHint, attentionHintClass } from './attention';
 
+export type {
+  ProvisionProgress,
+  ProvisionStepIdV1,
+  ProvisionStepStatusV1,
+  ProvisionTargetHostInputV1,
+  ProvisionTargetRequest,
+  ProvisionTargetResult,
+} from './provisioning';
+export {
+  provisionProgress,
+  provisionStepIdV1,
+  provisionStepStatusV1,
+  provisionTargetHostInputV1,
+  provisionTargetRequest,
+  provisionTargetResult,
+} from './provisioning';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -341,6 +358,14 @@ import {
 } from './terminal';
 import { wireMessageV1 } from './message';
 import { attentionHint, attentionHintClass } from './attention';
+import {
+  provisionProgress,
+  provisionStepIdV1,
+  provisionStepStatusV1,
+  provisionTargetHostInputV1,
+  provisionTargetRequest,
+  provisionTargetResult,
+} from './provisioning';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -430,4 +455,10 @@ export const schemasV1 = {
   wireMessageV1,
   attentionHintClass,
   attentionHint,
+  provisionTargetHostInputV1,
+  provisionStepIdV1,
+  provisionStepStatusV1,
+  provisionTargetRequest,
+  provisionProgress,
+  provisionTargetResult,
 } as const;

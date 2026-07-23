@@ -15,7 +15,16 @@ import { defaultNodeStateDir } from './ssh/verify-and-persist';
 type JsonWebKey = webcrypto.JsonWebKey;
 
 const ECDH_ALGORITHM = { name: 'ECDH', namedCurve: 'P-256' } as const;
-const IDENTITY_FILE_NAME = 'identity.json';
+/**
+ * This identity file's bare name under a node's state dir — exported so a
+ * caller that needs to PRE-SEED a not-yet-running node's identity on a
+ * remote host (`./ssh/provision-and-pair.ts`'s zero-touch pairing, issue
+ * #408: the acting node writes this file to the freshly-provisioned
+ * target's own state dir over SSH, before that node's systemd unit ever
+ * starts) writes to the exact same bare name `NodeIdentityStore` itself
+ * reads from on first load — never a hardcoded duplicate string.
+ */
+export const IDENTITY_FILE_NAME = 'identity.json';
 const IDENTITY_SCHEMA_VERSION = 1;
 /** The OS-native keyring's `service` this identity is stored under (issue #118); `account` is scoped per store below (`NodeIdentityStore`'s own `stateDir`), so two nodes sharing one OS keyring session never collide. */
 const IDENTITY_KEYRING_SERVICE = 'loombox-node-identity';
@@ -29,12 +38,33 @@ export interface NodeIdentity {
   readonly publicKeyBase64: string;
 }
 
-interface PersistedIdentityFileV1 {
+export interface PersistedIdentityFileV1 {
   v: 1;
   /** JWK export of the ECDH P-256 private key (see this module's doc comment for the storage-backend decision). */
   privateKeyJwk: JsonWebKey;
   /** Base64 raw EC point for the matching public key, stored alongside rather than re-derived from the JWK on load. */
   publicKeyRaw: string;
+}
+
+/**
+ * Serializes `keyPair`/`publicKeyRaw` into the exact JSON string
+ * `NodeIdentityStore`'s own file-fallback `persist()` writes (and `load()`
+ * reads back) — extracted so `./ssh/provision-and-pair.ts` can pre-seed a
+ * not-yet-started remote node's identity file in the identical format
+ * without duplicating this shape, rather than hand-rolling a second
+ * "identity file" convention.
+ */
+export async function serializePersistedIdentityFile(
+  keyPair: EcdhKeyPair,
+  publicKeyRaw: Uint8Array,
+): Promise<string> {
+  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  const file: PersistedIdentityFileV1 = {
+    v: IDENTITY_SCHEMA_VERSION,
+    privateKeyJwk,
+    publicKeyRaw: Buffer.from(publicKeyRaw).toString('base64'),
+  };
+  return JSON.stringify(file);
 }
 
 export interface NodeIdentityStoreOptions {
@@ -175,13 +205,7 @@ export class NodeIdentityStore {
   }
 
   private async persist(keyPair: EcdhKeyPair, publicKeyRaw: Uint8Array): Promise<void> {
-    const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
-    const file: PersistedIdentityFileV1 = {
-      v: IDENTITY_SCHEMA_VERSION,
-      privateKeyJwk,
-      publicKeyRaw: Buffer.from(publicKeyRaw).toString('base64'),
-    };
-    const raw = JSON.stringify(file);
+    const raw = await serializePersistedIdentityFile(keyPair, publicKeyRaw);
 
     const osBackend = await this.getOsBackend();
     if (osBackend) {
