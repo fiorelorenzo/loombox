@@ -55,6 +55,7 @@
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
+  import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
@@ -142,6 +143,8 @@
 
   // The "New session" flow (SPEC §7.1; issue #385).
   let newSessionOpen = $state(false);
+  // The "Add target" zero-touch provision-and-pair wizard (SPEC §7.23; issue #408).
+  let addTargetOpen = $state(false);
 
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
@@ -522,6 +525,11 @@
   /** The "New session" flow's entry point (SPEC §7.1; issue #385) — wired to the sessions aside's CTA and the empty-state's own action. */
   function openNewSessionDialog(): void {
     newSessionOpen = true;
+  }
+
+  /** The "Add target" zero-touch provision-and-pair wizard's entry point (SPEC §7.23; issue #408) — wired to the sessions aside's CTA and `NewSessionDialog`'s own "no nodes connected yet" empty state. */
+  function openAddTargetWizard(): void {
+    addTargetOpen = true;
   }
 
   /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
@@ -1021,14 +1029,24 @@
           <div class="sessions-header">
             <h2>Sessions</h2>
             {#if status === 'open'}
-              <button
-                type="button"
-                class="new-session-button"
-                onclick={openNewSessionDialog}
-                data-testid="new-session-button"
-              >
-                New session
-              </button>
+              <div class="sessions-header-actions">
+                <button
+                  type="button"
+                  class="add-target-button"
+                  onclick={openAddTargetWizard}
+                  data-testid="add-target-button"
+                >
+                  Add target
+                </button>
+                <button
+                  type="button"
+                  class="new-session-button"
+                  onclick={openNewSessionDialog}
+                  data-testid="new-session-button"
+                >
+                  New session
+                </button>
+              </div>
             {/if}
           </div>
           {#if status === 'connecting' || status === 'idle'}
@@ -1254,7 +1272,13 @@
   {client}
   onCreated={handleSessionCreated}
   onClose={() => (newSessionOpen = false)}
+  onAddTarget={() => {
+    newSessionOpen = false;
+    openAddTargetWizard();
+  }}
 />
+
+<AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
 
 <style>
   main {
@@ -1578,11 +1602,28 @@
     margin: 0;
   }
 
+  .sessions-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
   .new-session-button {
     border: none;
     border-radius: var(--radius-md);
     background: var(--color-accent);
     color: var(--color-accent-contrast);
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .add-target-button {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
     padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
     font-size: var(--text-small-size);

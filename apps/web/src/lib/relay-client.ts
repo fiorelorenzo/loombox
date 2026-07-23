@@ -45,6 +45,9 @@ import {
   type Initialize,
   type NewDeviceBootstrapRequest,
   type PermissionRequest,
+  type ProvisionProgress,
+  type ProvisionTargetHostInputV1,
+  type ProvisionTargetResult,
   type SessionAnnounceV1,
   type SessionListV1,
   type SessionMetaPublic,
@@ -71,6 +74,13 @@ import {
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
 
 export type { TargetListEntry } from '@loombox/protocol';
+export type {
+  ProvisionProgress,
+  ProvisionStepIdV1,
+  ProvisionStepStatusV1,
+  ProvisionTargetHostInputV1,
+  ProvisionTargetResult,
+} from '@loombox/protocol';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -722,6 +732,24 @@ export class RelayClient {
     string,
     { resolve: (targets: TargetListEntry[]) => void; reject: (error: Error) => void }
   >();
+  /**
+   * requestId -> the pending {@link provisionTarget} call it belongs to
+   * (issue #408's zero-touch add-target wizard). `provision_progress`/
+   * `provision_target_result` carry routing metadata only (no
+   * `privateEnvelope` — SPEC §8's boundary: no secret ever crosses the
+   * relay for this flow, the AMK handoff happens node<->target over SSH),
+   * so like {@link pendingTargetListRequests} this resolves a `Promise`
+   * directly and streams progress via a plain callback, no decrypt step
+   * needed.
+   */
+  private readonly pendingProvisionRequests = new Map<
+    string,
+    {
+      onProgress?: (progress: ProvisionProgress) => void;
+      resolve: (result: ProvisionTargetResult) => void;
+      reject: (error: Error) => void;
+    }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -872,6 +900,75 @@ export class RelayClient {
         },
       });
       this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
+    });
+  }
+
+  /**
+   * Asks `nodeId` (the account's already-connected node — e.g. one
+   * `listTargets()` already reported) to provision-and-pair a brand-new
+   * `ssh:` target end-to-end (issue #408's zero-touch add-target wizard):
+   * `provision()` (#400) + the authenticated node-token mint (#401) + the
+   * AMK handoff (#399), behind the ONE confirmation the wizard already
+   * showed before calling this — there is no further human checkpoint on
+   * this call. `targetId` is caller-generated (mirrors `createSession`'s own
+   * client-generated `sessionId`): the id the new target is announced under
+   * once pairing succeeds.
+   *
+   * Routing metadata only, same boundary as `listTargets`/`sessionCreate`:
+   * nothing here is encrypted, and no secret (password, private key, the
+   * AMK itself) ever crosses the relay — the actual AMK handoff happens
+   * node<->target over its own SSH channel (see `@loombox/protocol`'s
+   * `provisioning.ts` doc comment).
+   *
+   * `onProgress` fires once per step as `provision_progress` arrives
+   * (`'started'`, then `'ok'`/`'failed'`) — the wizard's live-progress
+   * screen renders these directly. The returned promise resolves with the
+   * final `provision_target_result` whether it succeeded or failed (check
+   * `.ok`); it only REJECTS for a genuinely unusable call: no open
+   * connection, or a timeout with no result at all (a slow but eventually
+   * clean run must not appear to fail early — defaults to 5 minutes, far
+   * longer than `listTargets`' plain metadata query, since this drives a
+   * real multi-step SSH provisioning sequence on the node).
+   */
+  provisionTarget(
+    options: {
+      nodeId: string;
+      targetId: string;
+      host: ProvisionTargetHostInputV1;
+      onProgress?: (progress: ProvisionProgress) => void;
+    },
+    timeoutMs = 300_000,
+  ): Promise<ProvisionTargetResult> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot provision a target, no open connection'),
+      );
+    }
+    const requestId = generateId('provision');
+    return new Promise<ProvisionTargetResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingProvisionRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for provision_target_result'));
+      }, timeoutMs);
+      this.pendingProvisionRequests.set(requestId, {
+        onProgress: options.onProgress,
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'provision_target_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId: options.nodeId,
+        targetId: options.targetId,
+        host: options.host,
+      });
     });
   }
 
@@ -2030,6 +2127,12 @@ export class RelayClient {
       case 'target_list':
         this.handleTargetList(message);
         return;
+      case 'provision_progress':
+        this.handleProvisionProgress(message);
+        return;
+      case 'provision_target_result':
+        this.handleProvisionTargetResult(message);
+        return;
       default:
         return;
     }
@@ -2175,6 +2278,20 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /** One step of an in-flight `provisionTarget()` call streamed back (issue #408) — kept in the pending map (not deleted) since more steps/the final result follow. */
+  private handleProvisionProgress(message: ProvisionProgress): void {
+    const pending = this.pendingProvisionRequests.get(message.requestId);
+    pending?.onProgress?.(message);
+  }
+
+  /** The sequence's final outcome (issue #408) — settles and removes the pending call. */
+  private handleProvisionTargetResult(message: ProvisionTargetResult): void {
+    const pending = this.pendingProvisionRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingProvisionRequests.delete(message.requestId);
+    pending.resolve(message);
   }
 
   /** Seals `{ path }` and sends the `fs_list_request` (SPEC §7.4; issue #171), tracking it in {@link pendingFsListRequests} so the eventual `fs_list_response` can be told apart from a sibling device's own request for the same session. */

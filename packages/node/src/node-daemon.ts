@@ -29,6 +29,8 @@ import {
   type FsListRequestPayloadV1,
   type FsListResponsePayloadV1,
   type PromptInjectV1,
+  type ProvisionProgress,
+  type ProvisionTargetResult,
   type SessionCreate,
   type SessionMetaPublic,
   type TargetDescriptor,
@@ -1341,6 +1343,36 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * This node's own currently-held Account Master Key (SPEC §8). Exposed
+   * (unlike this device's ECDH private key, which this class never holds at
+   * all — see the class doc comment) for `./wire-provision-and-pair.ts`
+   * (issue #408): the zero-touch add-target flow wraps THIS same AMK for a
+   * freshly-provisioned target's device pubkey
+   * (`./ssh/amk-handoff-provision.ts`'s `writeWrappedAmkHandoff`) entirely
+   * within this process, over the target's own SSH transport — never sent
+   * to the relay in any form (SPEC §8's boundary).
+   */
+  get currentAmk(): Uint8Array {
+    return this.amk;
+  }
+
+  /**
+   * Streams one step's progress for an in-flight `provision_target_request`
+   * (issue #408) back to the relay, which fans it out to the requesting
+   * client — the wire-level counterpart to `./ssh/provision-and-pair.ts`'s
+   * own `onProgress` callback, called once per step by `./wire-provision-
+   * and-pair.ts`.
+   */
+  sendProvisionProgress(progress: Omit<ProvisionProgress, 'type' | 'protocolVersion'>): void {
+    this.relay.send({ type: 'provision_progress', protocolVersion: PROTOCOL_V1, ...progress });
+  }
+
+  /** The provision-and-pair sequence's final outcome (issue #408), sent once. */
+  sendProvisionResult(result: Omit<ProvisionTargetResult, 'type' | 'protocolVersion'>): void {
+    this.relay.send({ type: 'provision_target_result', protocolVersion: PROTOCOL_V1, ...result });
+  }
+
+  /**
    * Sends `device_revoke` (SPEC §8's revoke-and-rotate action). The caller
    * is responsible for the crypto: minting the new epoch
    * (`@loombox/crypto`'s `generateAmkEpoch`) and ECDH-wrapping it per
@@ -1385,6 +1417,19 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
+        return;
+      case 'provision_target_request':
+        // Issue #408's zero-touch add-target wizard: this node itself never
+        // owns the provisioning sequence (it needs this node's own ECDH
+        // private key to wrap the AMK handoff, which — like
+        // `'amk-epoch-pending'` above — this class deliberately never holds;
+        // see the class doc comment) — a caller wired up outside this class
+        // (`./wire-provision-and-pair.ts`, holding `NodeIdentityStore`'s
+        // identity) subscribes to this event and drives `./ssh/provision-
+        // and-pair.ts`, reporting back via `sendProvisionProgress`/
+        // `sendProvisionResult`. A no-op (message simply dropped) if nothing
+        // is listening, exactly like `'attachment_resolved'` above.
+        this.emit('provision_target_request', message);
         return;
       default:
         // Every other v1 message type (permission_response, config_option,
