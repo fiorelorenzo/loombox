@@ -11,11 +11,19 @@ import type {
  *
  * SPEC.md §16 ("Image hand-off — grounded inline base64 for both Claude
  * (`claude-agent-acp` `acp-agent.ts`)...") grounds Claude Code's ACP surface
- * in the `@zed-industries/claude-code-acp` bridge (the `claude-agent-acp`
- * project): it exposes its own CLI entrypoint, run via `npx`, which wraps the
+ * in the `@agentclientprotocol/claude-agent-acp` bridge: it exposes its own
+ * CLI entrypoint (`claude-agent-acp`), run via `npx`, which wraps the
  * `claude` CLI and speaks ACP JSON-RPC over stdio. This is the documented,
  * zero-install way to drive Claude Code as an ACP agent (no separate global
  * install required; `npx` resolves and caches the package on first run).
+ *
+ * This package used to spawn the predecessor `@zed-industries/claude-code-acp`
+ * package (issue #382); that package now prints a deprecation notice at
+ * startup pointing at this one — same maintainers, same ACP stdio bridge
+ * over the `claude` binary, only the package name and bin changed (`npm
+ * view` confirms `@agentclientprotocol/claude-agent-acp`'s `bin` entry is
+ * `claude-agent-acp`, replacing `claude-code-acp`), so the swap is a
+ * drop-in `npx -y <package>` rename with no other invocation change.
  *
  * The real `claude` binary can't be exercised headlessly in this dev
  * environment (see the integration test in this package), so this exact
@@ -23,10 +31,10 @@ import type {
  * #54 (human-gated).
  *
  * **Capability-check finding (issue #184's last acceptance bullet):**
- * whether `@zed-industries/claude-code-acp` actually advertises
+ * whether `@agentclientprotocol/claude-agent-acp` actually advertises
  * `promptCapabilities.image` at `initialize` time could not be verified in
  * this build environment — no real `claude` binary is installed, and this is
- * a network-isolated devbox, so `npx -y @zed-industries/claude-code-acp`
+ * a network-isolated devbox, so `npx -y @agentclientprotocol/claude-agent-acp`
  * cannot be run to inspect its live `initialize` response. SPEC.md §7.25
  * documents the working assumption (grounded in the `claude-agent-acp`
  * `acp-agent.ts` source): Claude Code builds inline base64 image blocks.
@@ -39,7 +47,7 @@ import type {
  * issue #54 (human-gated).
  */
 const CLAUDE_ACP_COMMAND = 'npx';
-const CLAUDE_ACP_ARGS = ['-y', '@zed-industries/claude-code-acp'];
+const CLAUDE_ACP_ARGS = ['-y', '@agentclientprotocol/claude-agent-acp'];
 
 /**
  * The Claude Code provider adapter (SPEC.md §5.5, issue #49): supplies the

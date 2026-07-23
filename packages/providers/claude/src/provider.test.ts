@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { claudeProvider } from './provider';
+import { claudeProvider, claudeProviderModule } from './provider';
 
 // The real `claude` binary (what claudeProvider.spawnConfig() actually
 // launches) can't be exercised headlessly in this dev environment, so this
@@ -45,10 +45,25 @@ describe('claudeProvider', () => {
     expect(claudeProvider.enrich(update)).toEqual(update);
   });
 
+  // Regression guard for issue #382: the predecessor package
+  // (`@zed-industries/claude-code-acp`) is deprecated and now prints a
+  // startup notice pointing at this maintained successor. Both the v0
+  // `claudeProvider` and v1 `claudeProviderModule` spawn configs must name
+  // it, via the same `npx -y <package>` launch pattern.
+  it('spawnConfig() launches the maintained @agentclientprotocol/claude-agent-acp bridge via npx', () => {
+    const spawnConfig = claudeProvider.spawnConfig({ cwd: '/tmp/example' });
+    expect(spawnConfig.command).toBe('npx');
+    expect(spawnConfig.args).toEqual(['-y', '@agentclientprotocol/claude-agent-acp']);
+
+    const moduleSpawnConfig = claudeProviderModule.spawnConfig({ cwd: '/tmp/example' });
+    expect(moduleSpawnConfig.command).toBe('npx');
+    expect(moduleSpawnConfig.args).toEqual(['-y', '@agentclientprotocol/claude-agent-acp']);
+  });
+
   it('drives a full prompt/response turn through the fixture ACP agent', async () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-claude-'));
 
-    // spawnConfig() names the real claude-code-acp bridge; swap in the
+    // spawnConfig() names the real claude-agent-acp bridge; swap in the
     // fixture's command/args here since the real bridge isn't runnable
     // headlessly, but exercise the same cwd claudeProvider would compute.
     const spawnConfig = claudeProvider.spawnConfig({ cwd: workDir });
