@@ -67,7 +67,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-sm);
+    flex-wrap: wrap;
+    gap: var(--space-xs) var(--space-sm);
     text-align: left;
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
@@ -77,8 +78,14 @@
     cursor: pointer;
   }
 
-  .target-option:hover:not(:disabled) {
+  .target-option:hover:not(:disabled),
+  .target-option:focus-visible {
     border-color: var(--color-accent);
+  }
+
+  .target-option:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .target-option.selected {
@@ -98,9 +105,20 @@
   .meta {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-xs);
     font-size: 0.7rem;
     opacity: 0.7;
+    min-width: 0;
+  }
+
+  .node-id {
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 9rem;
+    vertical-align: bottom;
   }
 
   .kind-badge {

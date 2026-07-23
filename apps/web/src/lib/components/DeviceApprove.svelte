@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import WovenLoader from './WovenLoader.svelte';
 
   /**
    * The device-authorization approval card (issue #387's `/device` route):
@@ -80,7 +81,12 @@
         disabled={userCode.trim() === '' || busy}
         data-testid="device-approve-submit"
       >
-        {busy ? 'Linking…' : 'Approve'}
+        {#if busy}
+          <WovenLoader label="Linking" />
+          Linking…
+        {:else}
+          Approve
+        {/if}
       </button>
       <button
         type="button"
@@ -119,7 +125,7 @@
     text-transform: uppercase;
   }
 
-  input:focus {
+  input:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
   }
@@ -130,6 +136,10 @@
   }
 
   button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
     border: none;
     border-radius: var(--radius-md);
     background: var(--color-accent);
@@ -137,6 +147,11 @@
     padding: var(--space-sm) var(--space-lg);
     cursor: pointer;
     font-weight: 600;
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   button.secondary {

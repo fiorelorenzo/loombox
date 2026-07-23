@@ -108,6 +108,46 @@ describe('NewSessionDialog (issue #385)', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('shows the woven-thread loading motif while listing targets (issue #274)', async () => {
+    let resolveTargets: (targets: typeof TARGETS) => void = () => {};
+    const client = fakeClient({
+      listTargets: vi.fn(
+        () =>
+          new Promise<typeof TARGETS>((resolve) => {
+            resolveTargets = resolve;
+          }),
+      ),
+    });
+    render(NewSessionDialog, {
+      props: { open: true, client, onCreated: vi.fn(), onClose: vi.fn() },
+    });
+
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+    resolveTargets(TARGETS);
+    await waitFor(() => expect(screen.getByTestId('target-option')).toBeTruthy());
+  });
+
+  it('shows the woven-thread loading motif on the submit button while creating', async () => {
+    let resolveCreate: (id: string) => void = () => {};
+    const client = fakeClient({
+      createSession: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveCreate = resolve;
+          }),
+      ),
+    });
+    render(NewSessionDialog, {
+      props: { open: true, client, onCreated: vi.fn(), onClose: vi.fn() },
+    });
+
+    await fillRequiredFields();
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+    resolveCreate('sess_new_1');
+  });
+
   it('Cancel closes without creating a session', async () => {
     const client = fakeClient();
     const onClose = vi.fn();

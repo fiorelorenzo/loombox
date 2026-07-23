@@ -35,4 +35,10 @@ describe('style-reference route (#195/#196: living token/type reference)', () =>
     const { body } = render(Page);
     expect(body).toContain('data-testid="theme-toggle"');
   });
+
+  it('demonstrates the woven-thread motif in both its loading and working states (#274)', () => {
+    const { body } = render(Page);
+    expect(body).toContain('woven-loader-loading');
+    expect(body).toContain('woven-loader-working');
+  });
 });

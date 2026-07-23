@@ -13,4 +13,12 @@ describe('shell +page.svelte', () => {
     // so strip tags before checking the rendered brand name reads intact.
     expect(body.replace(/<[^>]+>/g, '')).toContain(APP_NAME);
   });
+
+  it('shows the woven-thread loading motif (#274) while checking the session, pre-hydration', () => {
+    const { body } = render(Page);
+    // SSR never runs onMount, so authChecked stays false and the
+    // "checking session" state renders (mirrors routes/device's own SSR test).
+    expect(body).toContain('Checking session');
+    expect(body).toContain('data-testid="woven-loader"');
+  });
 });

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import WovenLoader from './WovenLoader.svelte';
+
   /**
    * A Recovery Code text entry + submit — the "new device" bootstrap half of
    * SPEC §8 path 2 (issue #384), and reused verbatim for the mismatched-AMK
@@ -55,7 +57,12 @@
     disabled={code.trim() === '' || busy}
     data-testid="recovery-code-entry-submit"
   >
-    {busy ? 'Verifying…' : submitLabel}
+    {#if busy}
+      <WovenLoader label="Verifying" />
+      Verifying…
+    {:else}
+      {submitLabel}
+    {/if}
   </button>
 </form>
 
@@ -81,12 +88,20 @@
     letter-spacing: 0.04em;
   }
 
-  input:focus {
+  input:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
   }
 
+  button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     align-self: flex-start;
     border: none;
     border-radius: var(--radius-md);

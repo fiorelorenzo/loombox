@@ -66,6 +66,7 @@ describe('DeviceApprove (#387)', () => {
     expect(approve.disabled).toBe(true);
     expect(approve.textContent).toMatch(/linking/i);
     expect((screen.getByTestId('device-deny-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
   });
 
   it('surfaces an error message', () => {

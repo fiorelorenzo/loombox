@@ -63,6 +63,7 @@
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
+  import WovenLoader from '$lib/components/WovenLoader.svelte';
 
   // #381: `PUBLIC_LOOMBOX_RELAY_URL` (SvelteKit `$env/dynamic/public`, read
   // from the deployed process's real environment — see deploy/web/README.md
@@ -907,7 +908,10 @@
 
   {#if !authChecked}
     <section class="connection">
-      <p class="empty">Checking session…</p>
+      <p class="empty loading-line">
+        <WovenLoader label="Checking session" />
+        Checking session…
+      </p>
     </section>
   {:else if !authSession}
     <section class="connection sign-in">
@@ -921,7 +925,12 @@
   {:else}
     <section class="connection">
       <span class="account">{authSession.accountId}</span>
-      <span class="status" data-status={status}>status: {status}</span>
+      <span class="status" data-status={status}>
+        {#if status === 'connecting'}
+          <WovenLoader label="Connecting to the relay" />
+        {/if}
+        status: {status}
+      </span>
       <button
         type="button"
         class="inbox-toggle"
@@ -975,6 +984,7 @@
       {#if escrowStatus !== 'idle'}
         <p class="escrow-status" role="status" data-testid="escrow-status">
           {#if escrowStatus === 'in-flight'}
+            <WovenLoader label="Securing your account key" />
             Securing your account key…
           {:else}
             Couldn't save your Recovery Code to the relay{escrowError ? `: ${escrowError}` : '.'} This
@@ -1022,7 +1032,10 @@
             {/if}
           </div>
           {#if status === 'connecting' || status === 'idle'}
-            <p class="empty">Loading sessions…</p>
+            <p class="empty loading-line">
+              <WovenLoader label="Loading sessions" />
+              Loading sessions…
+            </p>
           {:else if sessions.length === 0 && sessionDecryptFailures > 0}
             <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
               <p class="key-mismatch-title">This device's key can't read these sessions.</p>
@@ -1320,11 +1333,59 @@
   .connection input {
     flex: 1;
     min-width: 10rem;
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-fill-subtle);
+    color: inherit;
+    font: inherit;
+  }
+
+  .connection input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  /* A shared baseline for the connection bar's own plain buttons ("Sign in
+     with GitHub", "Jump to…", "Sign out") so they read as this app's UI
+     rather than the browser's default unstyled `<button>` — the toggle
+     buttons in this same bar (`.inbox-toggle`, `.notification-settings-
+     toggle`) already draw this exact look, this just extends it to the
+     rest instead of leaving them as an inconsistent outlier. */
+  .connection button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    border: 1px solid currentColor;
+    border-radius: var(--radius-md);
+    background: transparent;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    color: inherit;
+    font-size: var(--text-small-size);
+  }
+
+  .connection button:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .connection button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
     opacity: 0.7;
     font-size: var(--text-small-size);
+  }
+
+  .loading-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
   }
 
   .inbox-toggle {
@@ -1568,6 +1629,9 @@
   }
 
   .escrow-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
     margin: 0;
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
