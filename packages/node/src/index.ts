@@ -114,6 +114,24 @@ export {
   verifySshTarget,
 } from './ssh/verify-and-persist';
 
+// v2: composes every SPEC §7.23 ssh: provisioning primitive above into the
+// one "add this target and it provisions" flow, and its decommission
+// counterpart (issue #400) — the callable library operations a future
+// add-target wizard/RPC and the desktop app drive.
+export type {
+  DecommissionOptionsInput,
+  ProvisionOptions,
+  ProvisionResult,
+  ProvisionStep,
+  ProvisionStepId,
+  ResidentNodeConfig,
+  ResidentNodeInstallStep,
+  RuntimeBootstrapStep,
+  SupervisorInstallStep,
+  VerifyAndPersistStep,
+} from './ssh/provision-target';
+export { buildResidentNodeEnvironment, decommission, provision } from './ssh/provision-target';
+
 // Moved into @loombox/crypto so a node and a client/PWA share one seal/open/
 // derive implementation (SPEC §8, §16); re-exported here for callers that
 // previously imported these from @loombox/node.
