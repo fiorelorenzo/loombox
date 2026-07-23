@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { codexProvider } from './provider';
+import { codexProvider, codexProviderModule } from './provider';
 
 // The real `codex` binary (what codexProvider.spawnConfig() actually
 // launches) can't be exercised headlessly in this dev environment, so this
@@ -43,6 +43,23 @@ describe('codexProvider', () => {
 
     const update: AcpUpdate = { kind: 'agent_message_chunk', messageId: 'm1', text: 'hi' };
     expect(codexProvider.enrich(update)).toEqual(update);
+  });
+
+  // Regression guard mirroring the Claude adapter's own guard against
+  // `@zed-industries/claude-code-acp`'s deprecation (issue #382): the
+  // predecessor `@zed-industries/codex-acp` package name must never
+  // silently creep back in. Both the v0 `codexProvider` and v1
+  // `codexProviderModule` spawn configs must name the maintained
+  // `@agentclientprotocol/` package, via the same `npx -y <package>` launch
+  // pattern.
+  it('spawnConfig() launches the maintained @agentclientprotocol/codex-acp bridge via npx', () => {
+    const spawnConfig = codexProvider.spawnConfig({ cwd: '/tmp/example' });
+    expect(spawnConfig.command).toBe('npx');
+    expect(spawnConfig.args).toEqual(['-y', '@agentclientprotocol/codex-acp']);
+
+    const moduleSpawnConfig = codexProviderModule.spawnConfig({ cwd: '/tmp/example' });
+    expect(moduleSpawnConfig.command).toBe('npx');
+    expect(moduleSpawnConfig.args).toEqual(['-y', '@agentclientprotocol/codex-acp']);
   });
 
   it('drives a full prompt/response turn through the fixture ACP agent', async () => {
