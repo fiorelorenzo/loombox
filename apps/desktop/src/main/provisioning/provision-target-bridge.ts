@@ -1,12 +1,17 @@
-import {
-  provision,
-  type ProvisionOptions,
-  type ProvisionResult,
-  type ProvisionStep,
-  type SshTargetConfig,
+import type {
+  ProvisionOptions,
+  ProvisionResult,
+  ProvisionStep,
+  SshTargetConfig,
 } from '@loombox/node';
 
 import type { ProvisionProgressStep, ProvisionTargetResult } from '../../shared/bridge';
+
+// `@loombox/node`'s barrel eagerly loads native modules (@napi-rs/keyring,
+// node-pty) whose prebuilt binaries match Node's ABI, not Electron's, which
+// would crash the main process at startup. We only need `provision` when the
+// user actually provisions a target, so load it lazily via a dynamic import
+// to keep app launch free of any native-module load (issue #403 follow-up).
 
 /**
  * Everything {@link runProvisionTarget} needs to actually drive
@@ -50,6 +55,7 @@ export async function runProvisionTarget(
   target: SshTargetConfig,
   deps: ProvisionTargetDeps,
 ): Promise<ProvisionTargetResult> {
+  const { provision } = await import('@loombox/node');
   const result: ProvisionResult = await provision(target, deps);
   return {
     ok: result.ok,
