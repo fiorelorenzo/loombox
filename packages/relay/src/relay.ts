@@ -211,6 +211,15 @@ export interface CreateRelayOptions {
   deviceAuth?: {
     appUrl?: string;
   };
+  /**
+   * How long a `provision_target_request`'s per-requestId routing entry
+   * (#410 — see the `pendingProvisionRequests` doc comment below) survives
+   * without a final `provision_target_result`, before the relay drops it on
+   * its own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_PROVISION_REQUEST_TTL_MS}; tests lower it to keep
+   * expiry-then-reuse assertions fast, exactly like `leaseTtlMs` above.
+   */
+  provisionRequestTtlMs?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -225,6 +234,8 @@ export const DEFAULT_MAX_ACCOUNT_STORAGE_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_LEASE_TTL_MS = 30_000;
 /** Sane default for {@link CreateRelayOptions.leaseTtlMs}'s `max` — 5 minutes, long enough for a slow renew cycle to catch up, short enough that a crashed/misbehaving node's session becomes reclaimable in a bounded time even if it requested an enormous TTL. */
 export const DEFAULT_MAX_LEASE_TTL_MS = 5 * 60_000;
+/** Sane default for {@link CreateRelayOptions.provisionRequestTtlMs} — 10 minutes, generous because the underlying provision-and-pair sequence (runtime bootstrap + package installs over SSH, #400) can genuinely take a while; this only guards against a genuinely abandoned/crashed run leaking its routing entry forever (#410). */
+export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -245,7 +256,40 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const maxLeaseTtlMs = opts.leaseTtlMs?.max ?? DEFAULT_MAX_LEASE_TTL_MS;
   const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
   const pushSender = opts.push ? (opts.push.sender ?? createWebPushSender()) : undefined;
+  const provisionRequestTtlMs = opts.provisionRequestTtlMs ?? DEFAULT_PROVISION_REQUEST_TTL_MS;
+
+  /**
+   * #410: routes a node's `provision_progress`/`provision_target_result`
+   * back to the client whose `provision_target_request` this requestId
+   * belongs to. There is no sessionId to fan out through yet — the whole
+   * point of provisioning is that the target doesn't exist until it
+   * succeeds — so this is its own small in-memory routing table instead of
+   * `store.sessions`/the fan-out backend, exactly like
+   * `registry.nodeConnectionsByNodeId` is its own table for nodeId
+   * routing. Populated in the `provision_target_request` handler below,
+   * consumed in the `provision_progress`/`provision_target_result`
+   * handlers, and cleaned up in exactly three places so it never leaks: the
+   * final `provision_target_result`, the requesting client's own
+   * disconnect (`dropConnection`), and the TTL timer set here
+   * (`provisionRequestTtlMs`). Never persisted — purely routing metadata
+   * for a request that is currently in flight.
+   */
+  const pendingProvisionRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingProvisionRequest(requestId: string): void {
+    const pending = pendingProvisionRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingProvisionRequests.delete(requestId);
+  }
+
   app.addHook('onClose', async () => {
+    for (const requestId of [...pendingProvisionRequests.keys()]) {
+      clearPendingProvisionRequest(requestId);
+    }
     await fanOutBackend.close();
   });
   const baseResolveAccountId: AccountResolver =
@@ -903,6 +947,40 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'lease_release':
         await handleLeaseRelease(connection, message);
         return;
+      case 'provision_progress': {
+        // #410: streamed back to the requesting client only, via the
+        // per-requestId routing table populated in
+        // `provision_target_request` above — never fanned out account-wide.
+        // Account-scoped like every lookup in this file: a requestId whose
+        // owning client belongs to a different account than this replying
+        // node is treated the same as an unknown requestId.
+        const pending = pendingProvisionRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: provision_progress for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        return;
+      }
+      case 'provision_target_result': {
+        // The sequence's terminal message (success or the step it failed
+        // at) — delivered exactly like provision_progress above, then the
+        // routing entry is retired: this requestId is done either way.
+        const pending = pendingProvisionRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: provision_target_result for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingProvisionRequest(message.requestId);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -990,6 +1068,34 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'provision_target_request': {
+        // #410: the same account-scoped connection lookup as session_create
+        // above, just addressed directly by nodeId — there is no existing
+        // target to resolve through yet, since provisioning one is the
+        // whole point (SPEC §7.23).
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: provision_target_request for unknown/foreign node',
+          );
+          return;
+        }
+        // A resent/reused requestId replaces whatever routing entry it had
+        // before, same "last one wins" convention as
+        // `registry.nodeConnectionsByNodeId` above.
+        clearPendingProvisionRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: provision_target_request routing entry expired before a final result arrived',
+          );
+          pendingProvisionRequests.delete(message.requestId);
+        }, provisionRequestTtlMs);
+        pendingProvisionRequests.set(message.requestId, { clientConnection: connection, timeout });
         sendDirect(nodeConnection, message);
         return;
       }
@@ -1117,6 +1223,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // local client cares about a given session anymore.
       for (const unsubscribe of connection.fanOutUnsubscribes.values()) unsubscribe();
       connection.fanOutUnsubscribes.clear();
+      // #410: a disconnected client is no longer a valid delivery target for
+      // any provisioning request it started — drop its routing entry now
+      // rather than leave it to the TTL timer.
+      for (const [requestId, pending] of pendingProvisionRequests) {
+        if (pending.clientConnection === connection) clearPendingProvisionRequest(requestId);
+      }
     }
   }
 
