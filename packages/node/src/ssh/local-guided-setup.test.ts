@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
 import { startRelay, type StartedRelay } from '@loombox/relay';
@@ -12,6 +12,7 @@ import { AgentSupervisor } from '@loombox/supervisor';
 import { generateAmk } from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from '../node-daemon';
+import type { AccountIdResolver } from '../resolve-account-id';
 import { runLocalGuidedSetup } from './local-guided-setup';
 
 const execFileAsync = promisify(execFile);
@@ -168,5 +169,69 @@ describe('runLocalGuidedSetup (issue #91)', () => {
     expect(result.sessionId).toBeUndefined();
     // Registration itself must have succeeded before the session step ran.
     expect(result.node?.isConnected).toBe(true);
+  });
+
+  it('resolves accountId from authToken via resolveAccountId rather than defaulting it to authToken itself (issue #380/#406)', async () => {
+    const authToken = 'token-guided-5';
+    const resolvedAccountId = 'resolved-guided-5';
+    // A resolver whose result genuinely differs from authToken: were the old
+    // `accountId ?? authToken` stand-in still in place, the daemon below
+    // would be constructed with the wrong accountId and this spy would never
+    // observe (relayUrl, authToken) actually flowing through it.
+    const resolveAccountId = vi.fn<AccountIdResolver>().mockResolvedValue(resolvedAccountId);
+
+    let observedAccountId: string | undefined;
+    const result = await runLocalGuidedSetup({
+      relayUrl: relay.url,
+      nodeId: 'node-guided-5',
+      authToken,
+      // No explicit accountId — must be resolved.
+      amk: generateAmk(),
+      stateDir: nodeStateDir,
+      projectPath,
+      provider: 'test-echo',
+      resolveAccountId,
+      nodeFactory: (options) => {
+        observedAccountId = options.accountId;
+        return createNode({
+          ...options,
+          supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+        });
+      },
+    });
+    node = result.node;
+
+    expect(resolveAccountId).toHaveBeenCalledExactlyOnceWith(relay.url, authToken);
+    expect(observedAccountId).toBe(resolvedAccountId);
+    expect(observedAccountId).not.toBe(authToken);
+    expect(result.ok).toBe(true);
+  });
+
+  it('reports a failed register_node step when accountId resolution itself fails, without ever constructing a node', async () => {
+    const resolveAccountId = vi
+      .fn<AccountIdResolver>()
+      .mockRejectedValue(new Error('not a valid session'));
+    let nodeFactoryCalled = false;
+
+    const result = await runLocalGuidedSetup({
+      relayUrl: relay.url,
+      nodeId: 'node-guided-6',
+      authToken: 'token-guided-6',
+      amk: generateAmk(),
+      stateDir: nodeStateDir,
+      projectPath,
+      resolveAccountId,
+      nodeFactory: (options) => {
+        nodeFactoryCalled = true;
+        return createNode(options);
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.map((s) => s.step)).toEqual(['configure_relay', 'register_node']);
+    expect(result.steps[1]?.ok).toBe(false);
+    expect(result.steps[1]?.message).toMatch(/not a valid session/);
+    expect(result.node).toBeUndefined();
+    expect(nodeFactoryCalled).toBe(false);
   });
 });
