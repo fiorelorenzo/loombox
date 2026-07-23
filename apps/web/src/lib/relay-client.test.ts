@@ -3102,3 +3102,227 @@ describe('RelayClient: recovery-code AMK escrow + new-device bootstrap (SPEC §8
     await expect(client.escrowAmk(generateRecoveryCode())).rejects.toThrow();
   });
 });
+
+describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
+  it('sends a session_create matching the wire schema, waits for the node-created session to appear, then sends the starting prompt as a follow-up', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_create_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-create-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const createPromise = client.createSession({
+      targetId: 'local',
+      provider: 'claude',
+      projectPath: '/home/dev/project',
+      title: 'my new session',
+      prompt: 'get started please',
+    });
+
+    const createMessage = (await node.waitFor((m) => m.type === 'session_create')) as {
+      type: 'session_create';
+      protocolVersion: typeof PROTOCOL_V1;
+      sessionId: string;
+      targetId: string;
+      provider: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+    expect(Object.keys(createMessage).sort()).toEqual(
+      ['privateEnvelope', 'protocolVersion', 'provider', 'sessionId', 'targetId', 'type'].sort(),
+    );
+    expect(createMessage.targetId).toBe('local');
+    expect(createMessage.provider).toBe('claude');
+
+    const sessionKey = await deriveNodeSessionKey(amk, accountId, createMessage.sessionId);
+    const decryptedMeta = await nodeOpen<{ title: string; projectPath: string }>(
+      createMessage.sessionId,
+      createMessage.privateEnvelope,
+      sessionKey,
+    );
+    expect(decryptedMeta).toEqual({ title: 'my new session', projectPath: '/home/dev/project' });
+
+    // Simulate the node: creates the session, then announces it (mirrors
+    // `NodeDaemon.handleSessionCreate`/`announce`).
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: makeSessionMeta({
+        id: createMessage.sessionId,
+        nodeId: 'node_create_1',
+        targetId: 'local',
+        accountId,
+        provider: 'claude',
+      }),
+      privateEnvelope: createMessage.privateEnvelope,
+    });
+
+    const sessionId = await createPromise;
+    expect(sessionId).toBe(createMessage.sessionId);
+    expect(get(client.sessions).some((session) => session.id === sessionId)).toBe(true);
+
+    const promptMessage = (await node.waitFor(
+      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).sessionId === sessionId,
+    )) as PromptInjectV1;
+    const promptPayload = await nodeOpen<{ text: string }>(
+      sessionId,
+      promptMessage.envelope,
+      sessionKey,
+    );
+    expect(promptPayload.text).toBe('get started please');
+  });
+
+  it('creates a promptless session when no starting prompt is given', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_create_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-create-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const createPromise = client.createSession({
+      targetId: 'local',
+      provider: 'claude',
+      projectPath: '/home/dev/project-2',
+    });
+
+    const createMessage = (await node.waitFor((m) => m.type === 'session_create')) as {
+      sessionId: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: makeSessionMeta({
+        id: createMessage.sessionId,
+        nodeId: 'node_create_2',
+        targetId: 'local',
+        accountId,
+        provider: 'claude',
+      }),
+      privateEnvelope: createMessage.privateEnvelope,
+    });
+
+    await createPromise;
+    // Give any errant send a beat to arrive, then confirm none did.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(node.messages.some((m) => m.type === 'prompt_inject')).toBe(false);
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-create-session-no-conn',
+      deviceId: 'client-create-no-conn',
+    });
+    await expect(
+      client.createSession({ targetId: 'local', provider: 'claude', projectPath: '/proj' }),
+    ).rejects.toThrow(/not connected/);
+  });
+
+  it('times out with a clear error if the node never creates/announces the session', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-create-session-timeout',
+      deviceId: 'client-create-timeout',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(
+      client.createSession({
+        targetId: 'nonexistent-target',
+        provider: 'claude',
+        projectPath: '/proj',
+        timeoutMs: 300,
+      }),
+    ).rejects.toThrow(/timed out/);
+  });
+});
+
+describe('RelayClient: sessionDecryptFailures (issue #384 mismatched-AMK state)', () => {
+  it('counts sessions the current AMK could not decrypt in the latest session_list snapshot, distinct from a genuinely empty list', async () => {
+    const wrongAmk = generateAmk();
+    const rightAmk = generateAmk();
+    const accountId = 'acct-mismatch-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-mismatch-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_mismatch_1', accountId });
+    // Sealed under the RIGHT AMK's derived key — this client will connect
+    // with the WRONG one, exactly like a second browser that never went
+    // through this account's recovery-code onboarding.
+    const rightKey = await deriveNodeSessionKey(rightAmk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'unreadable', projectPath: '/proj' },
+      rightKey,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk: wrongAmk,
+      accountId,
+      deviceId: 'client-mismatch-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await waitForStore(client.sessionDecryptFailures, (count) => count > 0);
+    expect(get(client.sessionDecryptFailures)).toBe(1);
+    expect(get(client.sessions)).toEqual([]);
+  });
+
+  it('stays 0 for an account that genuinely has no sessions', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-mismatch-none',
+      deviceId: 'client-mismatch-none',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => Array.isArray(value));
+    expect(get(client.sessionDecryptFailures)).toBe(0);
+  });
+});

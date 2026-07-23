@@ -583,6 +583,34 @@ function safeRevokeObjectUrl(url: string): void {
   }
 }
 
+/** Options for {@link RelayClient.createSession}. */
+export interface CreateSessionOptions {
+  /**
+   * Which of the account's targets (SPEC §7.1's "choosing a node, a target")
+   * this session runs on — picked from {@link RelayClient.listTargets}'s
+   * `TargetListEntry.targetId`. The wire's `session_create` carries no
+   * separate `nodeId` field; the relay itself resolves `targetId` to its
+   * owning node (`packages/relay/src/relay.ts`'s `session_create` case), so
+   * this is the only routing input this method needs.
+   */
+  targetId: string;
+  /** SPEC §7.1's provider choice (Claude Code/Codex) — sent verbatim; the node decides how to interpret it. v1 scope only ever wires up `'claude'` (the locked v1 decision), but this method itself stays provider-agnostic. */
+  provider: string;
+  /** The project folder this session opens in (SPEC §7.1) — travels only inside the encrypted `privateEnvelope` below, never in the clear (SPEC §8's metadata boundary). */
+  projectPath: string;
+  /** This session's display title (SPEC §7.24's session list). Defaults to `projectPath` itself when omitted — unlike `NodeDaemon.createSession`'s own node-direct API, the relay's `session_create` handler uses this title verbatim with no server-side default. */
+  title?: string;
+  /** An optional starting prompt (SPEC §7.1): sent as an ordinary follow-up (the same path {@link sendPrompt} uses) once the session is confirmed created — `session_create`'s wire schema has no inline prompt field of its own. Omit to create an empty session with nothing said yet. */
+  prompt?: string;
+  /** Overrides the generated session id — an escape hatch for a test asserting a fixed id; real callers should omit this and let this method generate one. */
+  sessionId?: string;
+  /** How long to wait for the created session to actually appear in {@link sessions} (see this method's doc comment for why a wait is needed at all) before giving up. Defaults to 10s. */
+  timeoutMs?: number;
+}
+
+/** Default for {@link CreateSessionOptions.timeoutMs}. */
+const DEFAULT_CREATE_SESSION_TIMEOUT_MS = 10_000;
+
 /**
  * Owns one outbound WebSocket connection from the PWA to the v1 relay (SPEC
  * §5.4 "list sessions ... view live output", §7.3 "send follow-up prompts",
@@ -625,6 +653,18 @@ function safeRevokeObjectUrl(url: string): void {
 export class RelayClient {
   readonly status: Readable<ConnectionStatus>;
   readonly sessions: Readable<ClientSessionMeta[]>;
+  /**
+   * How many sessions the most recent `session_list` snapshot carried that
+   * this device's AMK failed to decrypt (issue #384's "mismatched-AMK
+   * failure" state) — reset to the new count on every fresh snapshot, not
+   * accumulated across them. `handleSessionList` already dropped those
+   * entries silently (a `console.warn` and nothing else) before this store
+   * existed; a UI now has something to distinguish "this account genuinely
+   * has zero sessions" from "this device's key can't read the sessions that
+   * exist" (both render as an empty {@link sessions} list otherwise) without
+   * this class throwing or guessing at *why* a decrypt failed.
+   */
+  readonly sessionDecryptFailures: Readable<number>;
 
   private readonly options: RelayClientOptions;
   private readonly amk: Uint8Array;
@@ -635,6 +675,7 @@ export class RelayClient {
   private readonly WebSocketCtor: WebSocketConstructor;
   private readonly statusStore: Writable<ConnectionStatus>;
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
+  private readonly sessionDecryptFailuresStore: Writable<number> = writable(0);
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
@@ -706,6 +747,7 @@ export class RelayClient {
     this.sessionsStore = writable<ClientSessionMeta[]>([]);
     this.status = this.statusStore;
     this.sessions = this.sessionsStore;
+    this.sessionDecryptFailures = this.sessionDecryptFailuresStore;
 
     // Reloads whatever this account's outbox already had persisted (issue
     // #130's "outbox survives a full page reload") — fire-and-forget since
@@ -856,6 +898,84 @@ export class RelayClient {
       protocolVersion: PROTOCOL_V1,
       wrappedAmk: packWrappedAmkForWire(wrapped),
     });
+  }
+
+  /**
+   * Asks the account's node to start a new session (SPEC §7.1; issue #385):
+   * seals `{ title, projectPath }` into `session_create`'s `privateEnvelope`
+   * (the exact same `SessionPrivateMeta` shape `session_announce`/
+   * `session_list` decrypt to) and sends it, addressed by `targetId` — the
+   * relay resolves that to the owning node itself
+   * (`packages/relay/src/relay.ts`'s `session_create` case), so this method
+   * never needs to know which node owns it.
+   *
+   * `session_create` has no direct acknowledgement on the wire (mirrors
+   * `packages/node/src/node-daemon.test.ts`'s `waitForSessionInList` helper,
+   * which this polling loop is the client-side counterpart of): the node
+   * creates the session asynchronously (after its own decrypt), then
+   * announces it, but only to clients already subscribed — which this one
+   * isn't yet for a session id it just invented. So this method polls
+   * `session_list_request` (the same account-scoped snapshot `connect()`
+   * itself requests on open) until the new session shows up in
+   * {@link sessions}, and only then, if `prompt` was given, sends it as an
+   * ordinary follow-up via {@link sendPrompt} — sending it any earlier risks
+   * the relay's `prompt_inject` handler silently dropping it for a session
+   * id it doesn't know about yet (`packages/relay/src/relay.ts` warns and
+   * returns, exactly like an unknown/foreign session_resume).
+   *
+   * Requires an open connection, same as {@link escrowAmk}/{@link listTargets}:
+   * a deliberate one-shot action a caller awaits, not best-effort live
+   * session traffic, so a caller that isn't connected gets a loud rejection
+   * instead of a silently dropped request.
+   */
+  async createSession(options: CreateSessionOptions): Promise<string> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient.createSession: not connected to the relay');
+    }
+    const sessionId = options.sessionId ?? generateId('session');
+    const privateMeta: SessionPrivateMeta = {
+      title: options.title?.trim() || options.projectPath,
+      projectPath: options.projectPath,
+    };
+    const key = await this.getSessionKey(sessionId);
+    const privateEnvelope = await sealJson(sessionId, privateMeta, key);
+    this.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: options.targetId,
+      provider: options.provider,
+      privateEnvelope,
+    });
+
+    await this.waitForSessionCreated(
+      sessionId,
+      options.timeoutMs ?? DEFAULT_CREATE_SESSION_TIMEOUT_MS,
+    );
+
+    if (options.prompt && options.prompt.trim() !== '') {
+      this.sendPrompt(sessionId, options.prompt);
+    }
+
+    return sessionId;
+  }
+
+  /** Polls the account-scoped snapshot until `sessionId` appears in {@link sessions}, or times out — see {@link createSession}'s doc comment for why a just-created session can't simply be awaited off a direct response. */
+  private async waitForSessionCreated(sessionId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (get(this.sessionsStore).some((session) => session.id === sessionId)) return;
+      if (!this.isSocketOpen()) {
+        throw new Error(
+          `RelayClient.createSession: connection closed while waiting for session ${sessionId} to appear`,
+        );
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`RelayClient.createSession: timed out waiting for session ${sessionId}`);
+      }
+      this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
   }
 
   /**
@@ -1931,6 +2051,7 @@ export class RelayClient {
           (session): session is ClientSessionMeta => session !== undefined,
         );
         this.sessionsStore.set(sessions);
+        this.sessionDecryptFailuresStore.set(results.length - sessions.length);
         this.syncInboxTracking(sessions);
       })
       .catch(() => {
