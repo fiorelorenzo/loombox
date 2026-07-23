@@ -10,7 +10,7 @@ import type { AcpToolCallUpdate } from '@loombox/providers-core';
  * briefly double-renders it (issue #184's "suppressed from the generic
  * ToolKind fallback... no duplicate rendering during streaming" bullet).
  *
- * Real Claude Code / claude-code-acp tool-call titles aren't confirmed
+ * Real Claude Code / claude-agent-acp tool-call titles aren't confirmed
  * offline in this environment (no real binary, §16's "verify at build
  * time" caveat) — matched as a case-insensitive *prefix*, on the working
  * assumption a real title reads like `"Edit(src/foo.ts)"` rather than the

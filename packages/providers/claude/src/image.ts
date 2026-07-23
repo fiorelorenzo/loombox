@@ -11,7 +11,7 @@ import { sniffImageMimeType } from '@loombox/providers-core';
  * here) and returns a content block or `undefined`, never touches
  * `node:fs`.
  *
- * Capability check: whether the real `@zed-industries/claude-code-acp`
+ * Capability check: whether the real `@agentclientprotocol/claude-agent-acp`
  * bridge actually advertises `promptCapabilities.image` could not be
  * confirmed in this environment (no real binary install, no verified
  * outbound network reach — see `provider.ts`'s header comment). This
