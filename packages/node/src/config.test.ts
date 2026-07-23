@@ -37,10 +37,10 @@ describe('loadNodeConfig', () => {
       expect(config.amk).toHaveLength(32);
     });
 
-    it('defaults deviceId to nodeId and accountId to authToken when unset', () => {
+    it('defaults deviceId to nodeId, and leaves accountId unset (issue #380: no more defaulting it to authToken)', () => {
       const config = loadNodeConfig({ env: BASE_ENV, argv: [] });
       expect(config.deviceId).toBe('devbox-node');
-      expect(config.accountId).toBe('test-auth-token');
+      expect(config.accountId).toBeUndefined();
     });
 
     it('honors an explicit deviceId/accountId over the defaults', () => {

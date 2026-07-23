@@ -5,12 +5,21 @@ import { wireAmkEpochAdoption } from './amk-epoch';
 import { loadNodeConfig, type LoadNodeConfigOptions } from './config';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
+import { resolveAccountIdViaRelay, type AccountIdResolver } from './resolve-account-id';
 import { DEFAULT_LOCAL_TARGET } from './target';
 import type { WebSocketConstructor } from './relay-connection';
 
 export interface StartOptions extends LoadNodeConfigOptions {
   /** Test-only: overrides the global `WebSocket` `NodeDaemon` connects with. Never set in production. */
   webSocketImpl?: WebSocketConstructor;
+  /**
+   * Resolves this node's `accountId` from its bearer token when the config
+   * doesn't set one explicitly (`LOOMBOX_ACCOUNT_ID`/the config file's
+   * `accountId`) — issue #380. Defaults to {@link resolveAccountIdViaRelay},
+   * a real HTTP call against the relay's Better Auth. Tests inject a stub so
+   * they never need a real Better Auth login flow just to start a node.
+   */
+  resolveAccountId?: AccountIdResolver;
 }
 
 export interface StartedNode {
@@ -39,9 +48,20 @@ export interface StartedNode {
  * Never hardcodes a secret: every credential (`authToken`, the AMK) comes
  * from `loadNodeConfig`, which itself only ever reads env vars or a config
  * file the operator provides.
+ *
+ * `accountId` itself is never defaulted from `authToken` (issue #380 — that
+ * stale pre-Better-Auth stand-in made a live relay silently drop every
+ * session, since the relay independently resolves the *real* accountId from
+ * the same bearer token and only accepts sessions whose claimed accountId
+ * matches). When `loadNodeConfig` doesn't return an explicit one, it's
+ * resolved here via `resolveAccountId` (real Better Auth `getSession` by
+ * default) — which throws rather than let this node start up scoped to the
+ * wrong account.
  */
 export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const config = loadNodeConfig(options);
+  const resolveAccountId = options.resolveAccountId ?? resolveAccountIdViaRelay;
+  const accountId = config.accountId ?? (await resolveAccountId(config.relayUrl, config.authToken));
 
   const identityStore = new NodeIdentityStore({ stateDir: config.stateDir });
   const identity = await identityStore.loadOrCreate();
@@ -52,7 +72,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     deviceId: config.deviceId,
     devicePublicKey: identity.publicKeyBase64,
     authToken: config.authToken,
-    accountId: config.accountId,
+    accountId,
     amk: config.amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
@@ -69,7 +89,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
   // class's doc comment), so it's the one place that can actually unwrap a
   // pending rewrapped-AMK-epoch envelope the daemon surfaces via
   // `'amk-epoch-pending'`.
-  wireAmkEpochAdoption(node, identity, config.accountId, config.deviceId);
+  wireAmkEpochAdoption(node, identity, accountId, config.deviceId);
 
   const targetIds = (config.targets ?? [DEFAULT_LOCAL_TARGET]).map((target) => target.id);
   console.log(

@@ -27,8 +27,20 @@ export interface NodeCliConfig {
   deviceId: string;
   /** Opaque Better Auth bearer token. */
   authToken: string;
-  /** The account this node's sessions are scoped under; defaults to `authToken` (see `NodeDaemonOptions.accountId`'s doc comment for why those currently must match). */
-  accountId: string;
+  /**
+   * The account this node's sessions are scoped under
+   * (`NodeDaemonOptions.accountId`). `undefined` when not explicitly set via
+   * `LOOMBOX_ACCOUNT_ID`/the config file's `accountId` — this function
+   * deliberately no longer defaults it to `authToken` (issue #380: that
+   * stale stand-in from before Better Auth landed made a real node's
+   * sessions get silently dropped by a live relay, which resolves the
+   * *real* accountId from the bearer token itself and only accepts sessions
+   * whose claimed accountId matches). The caller (`main.ts`'s `start()`)
+   * is responsible for resolving the real accountId from `authToken` (the
+   * same Better Auth `getSession` resolution the relay and the web client
+   * use) whenever this is left unset.
+   */
+  accountId?: string;
   /** This account's 256-bit Account Master Key, decoded from base64. */
   amk: Uint8Array;
   /** Execution targets this node exposes, beyond the always-available `local` one; `undefined` lets `NodeDaemon` fall back to its own `[DEFAULT_LOCAL_TARGET]` default. */
@@ -45,6 +57,7 @@ interface NodeConfigFile {
   nodeId?: string;
   deviceId?: string;
   authToken?: string;
+  /** See {@link NodeCliConfig.accountId} — an explicit override; when absent the caller must resolve it from `authToken` instead. */
   accountId?: string;
   amk?: string;
   targets?: TargetDescriptor[];
@@ -143,7 +156,9 @@ export interface LoadNodeConfigOptions {
  * - `LOOMBOX_NODE_ID` (required)
  * - `LOOMBOX_DEVICE_ID` (optional, defaults to `nodeId`)
  * - `LOOMBOX_AUTH_TOKEN` (required)
- * - `LOOMBOX_ACCOUNT_ID` (optional, defaults to `authToken`)
+ * - `LOOMBOX_ACCOUNT_ID` (optional; explicit override. Left unset, the
+ *   returned config's `accountId` is `undefined` and the caller must resolve
+ *   the real one from `authToken` — issue #380, see {@link NodeCliConfig.accountId})
  * - `LOOMBOX_AMK` (required; base64, must decode to 32 bytes)
  * - `LOOMBOX_TARGETS` (optional; a JSON array of `TargetDescriptor`)
  * - `LOOMBOX_NODE_STATE_DIR` (optional; overrides where node state — the
@@ -183,7 +198,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     throw new ConfigError(`missing required config: ${missing.join(', ')}`);
   }
 
-  const accountId = env.LOOMBOX_ACCOUNT_ID ?? file.accountId ?? authToken!;
+  const accountId = env.LOOMBOX_ACCOUNT_ID ?? file.accountId;
   const deviceId = env.LOOMBOX_DEVICE_ID ?? file.deviceId ?? nodeId!;
   const amk = decodeAmk(amkText!);
   const targets = env.LOOMBOX_TARGETS ? parseTargetsEnv(env.LOOMBOX_TARGETS) : file.targets;
