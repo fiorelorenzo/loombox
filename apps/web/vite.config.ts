@@ -14,6 +14,13 @@ export default defineConfig({
     sveltekit(),
     SvelteKitPWA({
       registerType: 'autoUpdate',
+      // Do NOT auto-inject the SW-registration <script> into the HTML head
+      // (vite-pwa's default 'auto'): that registers the service worker
+      // independently of app code, so it can't be gated. Registration is
+      // done explicitly via useRegisterSW in +layout.svelte, which skips it
+      // (and tears down any existing SW) inside the Electron desktop shell,
+      // where the SW breaks workbox's postMessage and hangs the app.
+      injectRegister: false,
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'service-worker.ts',
