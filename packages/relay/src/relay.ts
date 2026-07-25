@@ -271,6 +271,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         reply
           .header('Access-Control-Allow-Origin', origin)
           .header('Access-Control-Allow-Credentials', 'true')
+          // Better Auth's Bearer plugin returns the session token in a custom
+          // `set-auth-token` response header; the browser only lets the app
+          // read it cross-origin when it's explicitly exposed. Without this
+          // the client can't capture/persist the token after sign-in, so it
+          // loops back to the login screen despite a valid session.
+          .header('Access-Control-Expose-Headers', 'set-auth-token')
           .header('Vary', 'Origin');
         if (request.method === 'OPTIONS') {
           await reply
