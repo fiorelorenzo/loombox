@@ -29,8 +29,16 @@
    * surface direction calls for; the active row reads as a 2px accent
    * left-bar + subtle tint (accent-for-meaning, never a filled block),
    * echoing the session-row convention documented in the brief's §4.
+   *
+   * Deck migration (redesign v2 §2 "Icon system", issue #472): the two
+   * inline, one-off SVG glyphs above are replaced by the shared bespoke
+   * `Icon` component (`sessions` for a session row, `command` — the
+   * physical ⌘-key glyph, apt for a command-palette action row — for an
+   * action row), so the palette's rows draw from the same hand-drawn set
+   * as everywhere else instead of maintaining their own stroke paths.
    */
   import { fuzzyFilter } from '$lib/fuzzy';
+  import Icon from './icons/Icon.svelte';
   import Dialog from './ui/Dialog.svelte';
 
   export interface CommandPaletteSession {
@@ -158,25 +166,11 @@
           onclick={() => activate(entry)}
           data-testid="command-palette-item"
         >
-          <span class="entry-icon" aria-hidden="true">
-            {#if entry.kind === 'session'}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M4 5.5h12a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8l-3 2.5v-2.5H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"
-                />
-              </svg>
-            {:else}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M11 3 5 11h4l-1 6 6-8h-4l1-6Z"
-                />
-              </svg>
-            {/if}
-          </span>
+          {#if entry.kind === 'session'}
+            <Icon name="sessions" class="entry-icon" />
+          {:else}
+            <Icon name="command" class="entry-icon" />
+          {/if}
           <span class="sr-only">{entry.kind === 'session' ? 'Session' : 'Action'}</span>
           {#if entry.kind === 'session'}
             <span class="label">{entry.session.title}</span>
@@ -288,20 +282,18 @@
     border-left-color: var(--color-accent);
   }
 
-  .entry-icon {
+  /* `:global` — the `entry-icon` class lands on the `<svg>` `Icon.svelte`
+     (a child component) renders, which carries `Icon`'s own scope hash,
+     not this file's, so a plain (non-`:global`) selector would never
+     match (same rationale `+page.svelte`'s `.rail-icon` documents). */
+  :global(.entry-icon) {
     flex-shrink: 0;
-    display: inline-flex;
     width: 1.125rem;
     height: 1.125rem;
     color: var(--color-text-secondary);
   }
 
-  .entry-icon svg {
-    width: 100%;
-    height: 100%;
-  }
-
-  .palette-item.active .entry-icon {
+  .palette-item.active :global(.entry-icon) {
     color: var(--color-accent);
   }
 
