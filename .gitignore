@@ -19,3 +19,8 @@ deploy/relay/backups/
 # Ephemeral agent/orchestration worktrees (Workflow tool, emdash)
 .claude/worktrees/
 .emdash/worktrees/
+
+# temporary UI-audit artifacts (redesign v3)
+apps/web/.audit/
+apps/web/test-results/
+apps/web/tests-e2e/zz-audit-screens.spec.ts
