@@ -24,6 +24,27 @@
    * `bootstrapAmk` is injectable (defaults to the real
    * `bootstrapAmkFromRecoveryCode`) purely for hermetic component tests —
    * mirrors `CopyButton`'s `copyFn` pattern.
+   *
+   * Restyle (redesign brief `docs/design/redesign.md` §6, issue #430): the
+   * "first impression" surface, so it earns the `floating` elevation tier
+   * (§3) and the EmptyState-language dimmed `BrandMark` (§4/§6) anchored
+   * above the step content. The `choose`/`first-device`/`new-device` mode
+   * switch, previously an instant `if/else` swap, now gets the
+   * `--duration-slow` "page-level narrative" crossfade (§2's motion table)
+   * via a `{#key mode}`-scoped entrance animation — kept to a plain CSS
+   * `animation` (not a Svelte `transition:`) deliberately, so a mode change
+   * swaps the DOM synchronously (no delayed-outro races with this
+   * component's existing synchronous test assertions) while still reading
+   * as motion to a sighted user; `prefers-reduced-motion` support falls out
+   * of `tokens.css`'s existing global `--duration-slow: 0ms` override, the
+   * same mechanism every other primitive here relies on. The choice cards
+   * keep their own hand-rolled styling (matching `Card`'s `raised` tier +
+   * `Button`'s hover/press motion) rather than importing those primitives,
+   * since both existing tests query their exact
+   * `onboarding-choose-first-device`/`onboarding-choose-new-device`
+   * `data-testid`s and the primitives hardcode their own; "Back" has no
+   * such constraint (its test queries visible text), so it composes the
+   * real `Button` primitive.
    */
   import { generateAmk, generateRecoveryCode } from '@loombox/crypto';
   import {
@@ -31,6 +52,8 @@
     type BootstrapAmkResult,
     type WebSocketConstructor,
   } from '$lib/relay-client';
+  import BrandMark from './BrandMark.svelte';
+  import Button from './ui/Button.svelte';
   import RecoveryCodeCard from './RecoveryCodeCard.svelte';
   import RecoveryCodeEntryForm from './RecoveryCodeEntryForm.svelte';
 
@@ -124,86 +147,126 @@
 </script>
 
 <section class="onboarding-gate" data-testid="onboarding-gate">
-  {#if mode === 'choose'}
-    <h2>Set up this device</h2>
-    <p class="intro">
-      loombox encrypts every session end-to-end. This browser needs its own copy of your account's
-      key before it can read anything.
-    </p>
-    <div class="choice-row">
-      <button
-        type="button"
-        class="choice-card"
-        onclick={chooseFirstDevice}
-        data-testid="onboarding-choose-first-device"
-      >
-        <strong>This is my first device</strong>
-        <span>Generate a new account key and a Recovery Code to add more devices later.</span>
-      </button>
-      <button
-        type="button"
-        class="choice-card"
-        onclick={chooseNewDevice}
-        data-testid="onboarding-choose-new-device"
-      >
-        <strong>I already have loombox on another device</strong>
-        <span>Enter the Recovery Code you saved there to unlock this account here.</span>
-      </button>
+  <BrandMark class="onboarding-gate-mark" />
+  {#key mode}
+    <div class="onboarding-step">
+      {#if mode === 'choose'}
+        <h2>Set up this device</h2>
+        <p class="intro">
+          loombox encrypts every session end-to-end. This browser needs its own copy of your
+          account's key before it can read anything.
+        </p>
+        <div class="choice-row">
+          <button
+            type="button"
+            class="choice-card"
+            onclick={chooseFirstDevice}
+            data-testid="onboarding-choose-first-device"
+          >
+            <strong>This is my first device</strong>
+            <span>Generate a new account key and a Recovery Code to add more devices later.</span>
+          </button>
+          <button
+            type="button"
+            class="choice-card"
+            onclick={chooseNewDevice}
+            data-testid="onboarding-choose-new-device"
+          >
+            <strong>I already have loombox on another device</strong>
+            <span>Enter the Recovery Code you saved there to unlock this account here.</span>
+          </button>
+        </div>
+      {:else if mode === 'first-device'}
+        <h2>Save your Recovery Code</h2>
+        <p class="intro">
+          This code is the only way to add another device or recover your account if this one is
+          lost.
+        </p>
+        {#if firstDeviceCode}
+          <RecoveryCodeCard
+            code={firstDeviceCode}
+            busy={firstDeviceBusy}
+            error={firstDeviceError}
+            onConfirmed={handleFirstDeviceConfirmed}
+          />
+        {/if}
+        {#if !firstDeviceBusy}
+          <Button variant="ghost" size="sm" class="back-link" onclick={backToChoice}>Back</Button>
+        {/if}
+      {:else if mode === 'new-device'}
+        <h2>Enter your Recovery Code</h2>
+        <p class="intro">
+          Paste or type the Recovery Code you saved when you set up your first device.
+        </p>
+        <RecoveryCodeEntryForm
+          busy={newDeviceBusy}
+          error={newDeviceError}
+          submitLabel="Unlock this device"
+          onSubmit={handleNewDeviceSubmit}
+        />
+        {#if !newDeviceBusy}
+          <Button variant="ghost" size="sm" class="back-link" onclick={backToChoice}>Back</Button>
+        {/if}
+      {/if}
     </div>
-  {:else if mode === 'first-device'}
-    <h2>Save your Recovery Code</h2>
-    <p class="intro">
-      This code is the only way to add another device or recover your account if this one is lost.
-    </p>
-    {#if firstDeviceCode}
-      <RecoveryCodeCard
-        code={firstDeviceCode}
-        busy={firstDeviceBusy}
-        error={firstDeviceError}
-        onConfirmed={handleFirstDeviceConfirmed}
-      />
-    {/if}
-    {#if !firstDeviceBusy}
-      <button type="button" class="back-link" onclick={backToChoice}>Back</button>
-    {/if}
-  {:else if mode === 'new-device'}
-    <h2>Enter your Recovery Code</h2>
-    <p class="intro">
-      Paste or type the Recovery Code you saved when you set up your first device.
-    </p>
-    <RecoveryCodeEntryForm
-      busy={newDeviceBusy}
-      error={newDeviceError}
-      submitLabel="Unlock this device"
-      onSubmit={handleNewDeviceSubmit}
-    />
-    {#if !newDeviceBusy}
-      <button type="button" class="back-link" onclick={backToChoice}>Back</button>
-    {/if}
-  {/if}
+  {/key}
 </section>
 
 <style>
+  /* floating tier (redesign brief §3): the one card nothing else competes
+     with while it's on screen. */
   .onboarding-gate {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-lg);
     max-width: 32rem;
     margin: var(--space-2xl) auto;
     padding: var(--space-xl);
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-border-strong);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* EmptyState's dimmed-BrandMark language (redesign brief §4/§6), anchored
+     above the step content so it stays put while the step below crossfades. */
+  .onboarding-gate :global(.onboarding-gate-mark) {
+    align-self: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    opacity: 0.16;
+    color: var(--color-text-primary);
+  }
+
+  .onboarding-step {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    animation: onboarding-step-in var(--duration-slow) var(--ease-beat);
+  }
+
+  @keyframes onboarding-step-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   h2 {
     margin: 0;
+    text-align: center;
   }
 
   .intro {
     margin: 0;
     color: var(--color-text-secondary);
     font-size: var(--text-small-size);
+    text-align: center;
   }
 
   .choice-row {
@@ -212,17 +275,25 @@
     gap: var(--space-sm);
   }
 
+  /* raised tier (redesign brief §3), hand-rolled rather than composing
+     `Card`: this test queries a fixed `data-testid`, which `Card` can't
+     take on (see the file doc comment). */
   .choice-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
     text-align: left;
     padding: var(--space-md);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     border: 1px solid var(--color-border);
     background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
     color: inherit;
     cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-beat),
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
   .choice-card:hover,
@@ -231,19 +302,22 @@
     background: var(--color-accent-subtle);
   }
 
-  .choice-card span {
-    font-size: var(--text-small-size);
-    opacity: 0.75;
+  /* tension-press (redesign brief §2): no bounce/overshoot. */
+  .choice-card:active {
+    transform: scale(0.99);
   }
 
-  .back-link {
-    align-self: flex-start;
-    border: none;
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    padding: 0;
+  .choice-card:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .choice-card span {
     font-size: var(--text-small-size);
-    text-decoration: underline;
+    color: var(--color-text-secondary);
+  }
+
+  .onboarding-gate :global(.back-link) {
+    align-self: flex-start;
   }
 </style>

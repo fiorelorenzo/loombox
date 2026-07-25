@@ -62,6 +62,10 @@
     type FocusTarget as TargetStatusFocusTarget,
   } from '$lib/components/TargetStatusView.svelte';
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+  import Card from '$lib/components/ui/Card.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
@@ -1090,12 +1094,23 @@
       </p>
     </section>
   {:else if !authSession}
+    <!-- Signed-out sign-in gate (redesign brief §4/§6, issue #430): the
+         other half of "the first impression" alongside the header's full
+         `BrandLockup` above — an `EmptyState` (its dimmed-`BrandMark`
+         language) carrying the one primary `Button` CTA, with the
+         self-hoster's Relay URL override de-emphasized below it. -->
     <section class="connection sign-in">
-      <label for="relay-url">Relay URL</label>
-      <input id="relay-url" type="text" bind:value={relayUrl} />
-      <button type="button" onclick={signInWithGithub}>Sign in with GitHub</button>
+      <EmptyState message="Sign in to load your sessions and connect to your nodes.">
+        {#snippet cta()}
+          <Button variant="primary" onclick={signInWithGithub}>Sign in with GitHub</Button>
+        {/snippet}
+      </EmptyState>
+      <div class="relay-url-row">
+        <label for="relay-url">Relay URL</label>
+        <input id="relay-url" type="text" bind:value={relayUrl} />
+      </div>
       {#if authError}
-        <p class="error" role="alert">{authError}</p>
+        <ErrorNotice message={authError} />
       {/if}
     </section>
   {:else if onboardingNeeded}
@@ -1310,15 +1325,32 @@
     </header>
 
     {#if escrowStatus !== 'idle'}
-      <p class="escrow-status" role="status" data-testid="escrow-status">
+      <!-- The first-device escrow round trip (redesign brief §6, issue
+           #430): a real `Card` for the in-flight wait, with the
+           `thread-draw-fill-loop` sweep the brief names directly for
+           "the escrow/pairing in-flight state"; a real `ErrorNotice` if it
+           fails, rather than a bare tinted paragraph either way. -->
+      <div
+        class="escrow-status"
+        data-testid="escrow-status"
+        role={escrowStatus === 'in-flight' ? 'status' : undefined}
+      >
         {#if escrowStatus === 'in-flight'}
-          <WovenLoader label="Securing your account key" />
-          Securing your account key…
+          <Card elevation="raised" padding="sm">
+            <div class="escrow-inflight-row">
+              <WovenLoader label="Securing your account key" />
+              <span>Securing your account key…</span>
+            </div>
+            <span class="in-flight-track" aria-hidden="true">
+              <span class="thread-draw-fill-loop in-flight-bar"></span>
+            </span>
+          </Card>
         {:else}
-          Couldn't save your Recovery Code to the relay{escrowError ? `: ${escrowError}` : '.'} This device
-          still works, but recovering this account elsewhere may not until it does.
+          <ErrorNotice
+            message={`Couldn't save your Recovery Code to the relay${escrowError ? `: ${escrowError}` : '.'} This device still works, but recovering this account elsewhere may not until it does.`}
+          />
         {/if}
-      </p>
+      </div>
     {/if}
     {#if authError}
       <p class="error" role="alert">{authError}</p>
@@ -1893,6 +1925,33 @@
     gap: var(--space-sm);
   }
 
+  /* The sign-in gate (redesign brief §4/§6) stacks its `EmptyState` +
+     Relay URL override as a centered column instead of `.connection`'s
+     default flex-wrap row — two classes on the one element gives this
+     higher specificity than the bare `.connection` rule above without
+     touching the other screens that still use `.connection` alone. */
+  .connection.sign-in {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-lg);
+  }
+
+  .relay-url-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+  }
+
+  .relay-url-row label {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
+  .relay-url-row input {
+    max-width: 24rem;
+  }
+
   .connection input {
     flex: 1;
     min-width: 10rem;
@@ -2095,15 +2154,36 @@
     margin-inline: var(--space-lg);
   }
 
+  /* Layout-only wrapper now — the in-flight/error chrome itself comes from
+     the nested `Card`/`ErrorNotice` (redesign brief §4/§6, issue #430). */
   .escrow-status {
+    margin: var(--space-sm) 0 0;
+    font-size: var(--text-small-size);
+  }
+
+  .escrow-inflight-row {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-    margin: var(--space-sm) 0 0;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
+  }
+
+  /* thread-draw for the escrow in-flight state (redesign brief §6's
+     "thread-draw for the escrow/pairing in-flight state"). */
+  .in-flight-track {
+    display: block;
+    width: 100%;
+    max-width: 12rem;
+    height: 2px;
+    margin-top: var(--space-xs);
+    border-radius: var(--radius-full);
     background: var(--color-fill-subtle);
-    font-size: var(--text-small-size);
+    overflow: hidden;
+  }
+
+  .in-flight-bar {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
   }
 
   /* ------------------------------------------------------------------ */

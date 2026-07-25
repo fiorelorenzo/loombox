@@ -22,6 +22,9 @@
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import DeviceApprove from '$lib/components/DeviceApprove.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+  import Card from '$lib/components/ui/Card.svelte';
+  import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
 
   const DEFAULT_RELAY_URL = publicEnv.PUBLIC_LOOMBOX_RELAY_URL || 'wss://relay.loombox.dev';
   const RELAY_URL_STORAGE_KEY = 'loombox:relay-url';
@@ -137,7 +140,7 @@
     <p>{APP_TAGLINE}</p>
   </header>
 
-  <section class="device-approve-card">
+  <Card elevation="floating" padding="lg" class="device-approve-card">
     <h2>Link a device</h2>
 
     {#if !authChecked}
@@ -148,9 +151,9 @@
     {:else if !authSession}
       <div class="sign-in">
         <p>Sign in to approve this device.</p>
-        <button type="button" onclick={signInWithGithub}>Sign in with GitHub</button>
+        <Button variant="primary" onclick={signInWithGithub}>Sign in with GitHub</Button>
         {#if authError}
-          <p class="error" role="alert">{authError}</p>
+          <ErrorNotice message={authError} />
         {/if}
       </div>
     {:else}
@@ -164,7 +167,7 @@
         {error}
       />
     {/if}
-  </section>
+  </Card>
 </main>
 
 <style>
@@ -182,17 +185,20 @@
     margin: var(--space-2xs) 0 0;
   }
 
-  .device-approve-card {
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
+  /* `Card` renders its own outer element in its own component scope (see
+     that file's `Card`-vs-`className` doc comment); `:global()` here is the
+     documented way to reach it, mirroring `EmptyState`'s own doc comment
+     for the identical situation — this route has no other
+     `.device-approve-card`-classed element, so an unscoped `:global()` is
+     safe here (unlike `RecoveryCodeCard.svelte`, which narrows it under a
+     local ancestor class). */
+  :global(.device-approve-card) {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
   }
 
-  .device-approve-card h2 {
+  :global(.device-approve-card) h2 {
     margin: 0;
   }
 
@@ -209,21 +215,6 @@
     align-items: flex-start;
   }
 
-  .sign-in button {
-    border: none;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .sign-in button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
   .empty {
     color: var(--color-text-muted);
   }
@@ -233,11 +224,5 @@
     align-items: center;
     gap: var(--space-xs);
     margin: 0;
-  }
-
-  .error {
-    margin: 0;
-    color: var(--color-danger);
-    font-size: var(--text-small-size);
   }
 </style>

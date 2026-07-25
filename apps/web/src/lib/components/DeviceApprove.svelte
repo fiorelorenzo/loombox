@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import WovenLoader from './WovenLoader.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
+  import StatusDot from './ui/StatusDot.svelte';
 
   /**
    * The device-authorization approval card (issue #387's `/device` route):
@@ -11,6 +13,16 @@
    * caller (`routes/device/+page.svelte`) owns the actual relay call and
    * thus owns `busy`/`outcome`, so this stays trivially testable without a
    * relay.
+   *
+   * Restyle (redesign brief §4/§6, issue #430): Approve/Deny are hand-rolled
+   * to match `Button`'s `primary`/`secondary` look 1:1 (the existing test
+   * queries fixed `device-approve-submit`/`device-deny-submit` ids `Button`
+   * can't take), Approve gets a `thread-draw-fill-loop` sweep while busy —
+   * this component IS the pairing surface the brief's "thread-draw for the
+   * escrow/pairing in-flight state" (§6) names directly — the error
+   * surfaces via the real `ErrorNotice` primitive, and the terminal
+   * approved/denied states lead with a `StatusDot` (success/danger) per the
+   * brief's "StatusDot for state."
    */
   interface Props {
     /** Pre-filled from `?user_code=`, if the node's `verification_uri_complete` was followed; still editable. */
@@ -49,13 +61,19 @@
 
 {#if outcome === 'approved'}
   <div class="device-approve-outcome" data-testid="device-approve-outcome-approved">
-    <p>This device is linked to your account.</p>
-    <p class="hint">You can close this tab and return to the node.</p>
+    <StatusDot tone="success" size="md" label="Linked" />
+    <div class="device-approve-outcome-copy">
+      <p>This device is linked to your account.</p>
+      <p class="hint">You can close this tab and return to the node.</p>
+    </div>
   </div>
 {:else if outcome === 'denied'}
   <div class="device-approve-outcome" data-testid="device-approve-outcome-denied">
-    <p>Request denied.</p>
-    <p class="hint">The node was not linked to your account.</p>
+    <StatusDot tone="danger" size="md" label="Denied" />
+    <div class="device-approve-outcome-copy">
+      <p>Request denied.</p>
+      <p class="hint">The node was not linked to your account.</p>
+    </div>
   </div>
 {:else}
   <form class="device-approve-form" onsubmit={handleApprove}>
@@ -73,11 +91,12 @@
       data-testid="device-user-code-input"
     />
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <ErrorNotice message={error} />
     {/if}
     <div class="device-approve-actions">
       <button
         type="submit"
+        class="approve-button"
         disabled={userCode.trim() === '' || busy}
         data-testid="device-approve-submit"
       >
@@ -90,7 +109,7 @@
       </button>
       <button
         type="button"
-        class="secondary"
+        class="deny-button"
         disabled={userCode.trim() === '' || busy}
         onclick={handleDeny}
         data-testid="device-deny-submit"
@@ -98,6 +117,11 @@
         Deny
       </button>
     </div>
+    {#if busy}
+      <span class="in-flight-track" aria-hidden="true">
+        <span class="thread-draw-fill-loop in-flight-bar"></span>
+      </span>
+    {/if}
   </form>
 {/if}
 
@@ -110,7 +134,7 @@
 
   label {
     font-size: var(--text-small-size);
-    opacity: 0.8;
+    color: var(--color-text-secondary);
   }
 
   input {
@@ -123,10 +147,11 @@
     letter-spacing: 0.08em;
     text-align: center;
     text-transform: uppercase;
+    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
   input:focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: 1px;
   }
 
@@ -135,43 +160,97 @@
     gap: var(--space-sm);
   }
 
-  button {
+  /* primary Button look (redesign brief §4), hand-rolled — see file doc
+     comment for why this can't just compose `Button`. */
+  .approve-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-xs);
-    border: none;
+    border: 1px solid transparent;
     border-radius: var(--radius-md);
     background: var(--color-accent);
     color: var(--color-accent-contrast);
     padding: var(--space-sm) var(--space-lg);
     cursor: pointer;
     font-weight: 600;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
-  button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+  .approve-button:not(:disabled):hover {
+    background: var(--color-accent-hover);
   }
 
-  button.secondary {
+  .approve-button:not(:disabled):active {
+    background: var(--color-accent-active);
+    transform: scale(0.98);
+  }
+
+  /* secondary Button look (redesign brief §4). */
+  .deny-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-primary);
+    padding: var(--space-sm) var(--space-lg);
+    cursor: pointer;
+    font-weight: 600;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
+  }
+
+  .deny-button:not(:disabled):hover {
     background: var(--color-fill-subtle);
-    color: inherit;
-    border: 1px solid var(--color-border);
   }
 
-  button:disabled {
-    opacity: 0.5;
+  .deny-button:not(:disabled):active {
+    background: var(--color-fill);
+    transform: scale(0.98);
+  }
+
+  .approve-button:focus-visible,
+  .deny-button:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .approve-button:disabled,
+  .deny-button:disabled {
+    opacity: 0.55;
     cursor: not-allowed;
   }
 
-  .error {
-    margin: 0;
-    color: var(--color-danger);
-    font-size: var(--text-small-size);
+  /* thread-draw for the pairing in-flight state (redesign brief §6): this
+     component IS the escrow/pairing surface the brief names directly. */
+  .in-flight-track {
+    display: block;
+    width: 100%;
+    max-width: 12rem;
+    height: 2px;
+    border-radius: var(--radius-full);
+    background: var(--color-fill-subtle);
+    overflow: hidden;
+  }
+
+  .in-flight-bar {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
   }
 
   .device-approve-outcome {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .device-approve-outcome-copy {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
