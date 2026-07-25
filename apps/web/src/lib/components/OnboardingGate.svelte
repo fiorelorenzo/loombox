@@ -37,14 +37,20 @@
    * component's existing synchronous test assertions) while still reading
    * as motion to a sighted user; `prefers-reduced-motion` support falls out
    * of `tokens.css`'s existing global `--duration-slow: 0ms` override, the
-   * same mechanism every other primitive here relies on. The choice cards
-   * keep their own hand-rolled styling (matching `Card`'s `raised` tier +
-   * `Button`'s hover/press motion) rather than importing those primitives,
-   * since both existing tests query their exact
-   * `onboarding-choose-first-device`/`onboarding-choose-new-device`
-   * `data-testid`s and the primitives hardcode their own; "Back" has no
-   * such constraint (its test queries visible text), so it composes the
-   * real `Button` primitive.
+   * same mechanism every other primitive here relies on.
+   *
+   * Deck migration (redesign v2 design spec, issue #473): "Back" already
+   * composed the real `Button` primitive. The two choice cards stay their
+   * own hand-rolled compound elements (a bold title plus a description line,
+   * `Card`'s `raised` tier, an accent-border hover) rather than importing
+   * `Button` — the same call `AppearanceSettings.svelte`'s Style/Theme/
+   * Accent option buttons make: they're a selectable-option idiom, not a
+   * plain call-to-action, so forcing them through `Button`'s single-line
+   * variant styling would read as a different, worse control. `Button`'s
+   * `dataTestId` override (issue #479) would let them keep their exact
+   * `onboarding-choose-first-device`/`onboarding-choose-new-device` test ids
+   * if that changes later, but the visual mismatch is the actual reason they
+   * stay bespoke here.
    */
   import { generateAmk, generateRecoveryCode } from '@loombox/crypto';
   import {
