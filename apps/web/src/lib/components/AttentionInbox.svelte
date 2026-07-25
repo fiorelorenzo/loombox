@@ -30,10 +30,21 @@
    * backed by the exact same `RelayClient.sendPrompt`/`prompt_inject` path a
    * session's own composer form uses, so replying from the inbox is not a
    * second, divergent "send" path.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §3/§4/§6,
+   * issue #436): rows stay a quiet left-edge color stripe keyed by
+   * `data-kind` rather than a tinted background, so a long inbox stays
+   * scannable (`PermissionCard` is the one deliberate exception — it keeps
+   * its own full `floating` tier untouched, per the redesign brief's
+   * elevation ladder). The empty state adopts the shared `EmptyState`
+   * primitive; rows get a capped, staggered `beat-in` reveal. All
+   * `data-testid`s, DOM structure the tests query, and every callback
+   * contract are unchanged.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { AttentionInboxItem } from '../relay-client';
   import PermissionCard from './PermissionCard.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
 
   interface Props {
     items: AttentionInboxItem[];
@@ -100,7 +111,7 @@
 
 <div class="attention-inbox" data-testid="attention-inbox">
   {#if items.length === 0}
-    <p class="empty">Nothing needs your attention.</p>
+    <EmptyState message="Nothing needs your attention." />
   {:else}
     <ul>
       {#each items as item (itemKey(item))}
@@ -161,11 +172,6 @@
     gap: var(--space-sm);
   }
 
-  .empty {
-    opacity: 0.6;
-    margin: 0;
-  }
-
   ul {
     list-style: none;
     margin: 0;
@@ -175,14 +181,58 @@
     gap: var(--space-sm);
   }
 
+  /* Flat elevation tier (redesign brief §3): a list row is quiet chrome,
+     not a boxed card — a left-edge color stripe carries the per-kind
+     signal instead of a tinted background, so a long inbox stays
+     scannable. `PermissionCard` (rendered inline below) keeps its own
+     full `floating` tier untouched. */
   .item {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--color-border);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
     border-left-width: var(--space-2xs);
     border-radius: var(--radius-lg);
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat);
+    /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
+       20ms/item, capped at 5 rows. */
+    animation: beat-in var(--duration-base) var(--ease-beat) both;
+  }
+
+  .item:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .item:nth-child(2) {
+    animation-delay: 20ms;
+  }
+
+  .item:nth-child(3) {
+    animation-delay: 40ms;
+  }
+
+  .item:nth-child(4) {
+    animation-delay: 60ms;
+  }
+
+  .item:nth-child(n + 5) {
+    animation-delay: 80ms;
+  }
+
+  @keyframes beat-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   /* Each class gets its own border-left color, in addition to the
@@ -216,15 +266,37 @@
   }
 
   .kind-badge {
-    font-size: 0.7rem;
+    font-size: var(--text-small-size);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
-    opacity: 0.8;
     padding: var(--space-3xs) var(--space-xs);
     border: 1px solid currentColor;
     border-radius: var(--radius-full);
     white-space: nowrap;
+    /* Text is colored to match the row's left-edge stripe (below) — a
+       quiet, still-legible reinforcement, never a filled background. */
+    color: var(--color-text-secondary);
+  }
+
+  .item[data-kind='permission'] .kind-badge {
+    color: var(--color-warning);
+  }
+
+  .item[data-kind='awaiting_input'] .kind-badge {
+    color: var(--color-accent);
+  }
+
+  .item[data-kind='session_outcome'] .kind-badge {
+    color: var(--color-success);
+  }
+
+  .item[data-kind='ci_failure'] .kind-badge {
+    color: var(--color-danger);
+  }
+
+  .item[data-kind='review_request'] .kind-badge {
+    color: var(--color-info);
   }
 
   .open {
@@ -234,6 +306,7 @@
     gap: var(--space-3xs);
     background: transparent;
     border: none;
+    border-radius: var(--radius-sm);
     padding: 0;
     cursor: pointer;
     text-align: left;
@@ -241,13 +314,18 @@
     font: inherit;
   }
 
+  .open:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
   .open small {
-    opacity: 0.6;
+    color: var(--color-text-secondary);
   }
 
   .need {
     font-size: var(--text-small-size);
-    opacity: 0.75;
+    color: var(--color-text-secondary);
   }
 
   .reply {
@@ -264,15 +342,40 @@
     color: inherit;
     padding: var(--space-2xs) var(--space-sm);
     font: inherit;
+    transition: border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .reply input:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    border-color: var(--color-border-strong);
   }
 
   .reply button {
     border-radius: var(--radius-md);
-    border: 1px solid currentColor;
+    border: 1px solid var(--color-border-strong);
     background: transparent;
     color: inherit;
     padding: var(--space-2xs) var(--space-md);
     cursor: pointer;
     font: inherit;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
+  }
+
+  .reply button:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  /* tension-press (redesign brief §2): darken + scale(0.98), no bounce. */
+  .reply button:active {
+    background: var(--color-fill);
+    transform: scale(0.98);
+  }
+
+  .reply button:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 </style>
