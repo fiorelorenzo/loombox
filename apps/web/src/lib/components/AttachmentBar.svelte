@@ -15,8 +15,21 @@
    * button for `'failed'` (issue #155's manual retry control), or the
    * rejection/failure message for `'rejected'`/`'failed'`. Every chip has a
    * remove (×) control.
+   *
+   * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439): "collapses
+   * to a paperclip IconButton that only expands into a chip row once
+   * something's attached" — the trigger is now icon-only (adopts the shared
+   * `IconButton` primitive; no fixed testid collision since this component's
+   * own load-bearing testids/labels are all preserved verbatim), and Retry
+   * adopts the shared `Button` (`danger`/`sm`) — neither needs an attribute
+   * `IconButton`/`Button` can't pass through, unlike this file's own root
+   * drop-zone (which keeps its hand-rolled markup: it needs the raw
+   * `ondrop`/`ondragover`/`ondragleave`/`onpaste` handlers on the exact
+   * element `attachment-bar`'s tests target).
    */
   import type { ComposerAttachment } from '../attachments';
+  import Button from './ui/Button.svelte';
+  import IconButton from './ui/IconButton.svelte';
 
   interface Props {
     attachments: ComposerAttachment[];
@@ -88,7 +101,22 @@
     aria-label="Attach images"
     onchange={handleInputChange}
   />
-  <button type="button" class="pick-button" onclick={pickFiles}>Attach image</button>
+  <IconButton label="Attach image" onclick={pickFiles} class="pick-button">
+    <svg
+      viewBox="0 0 20 20"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path
+        d="M14.5 7.5 8.4 13.6a3 3 0 0 1-4.24-4.25L10.4 3.1a2 2 0 0 1 2.83 2.83l-6.01 6.01a1 1 0 0 1-1.42-1.41l5.31-5.31"
+      />
+    </svg>
+  </IconButton>
 
   {#if attachments.length > 0}
     <ul class="chips">
@@ -116,24 +144,24 @@
           </div>
 
           {#if attachment.status === 'failed'}
-            <button
-              type="button"
+            <Button
+              variant="danger"
+              size="sm"
               class="retry"
               onclick={() => onRetry(attachment.id)}
-              aria-label={`Retry ${attachment.name}`}
+              ariaLabel={`Retry ${attachment.name}`}
             >
               Retry
-            </button>
+            </Button>
           {/if}
 
-          <button
-            type="button"
-            class="remove"
+          <IconButton
+            label={`Remove ${attachment.name}`}
             onclick={() => onRemove(attachment.id)}
-            aria-label={`Remove ${attachment.name}`}
+            class="remove"
           >
             ×
-          </button>
+          </IconButton>
         </li>
       {/each}
     </ul>
@@ -146,28 +174,21 @@
     flex-wrap: wrap;
     align-items: flex-start;
     gap: var(--space-sm);
-    padding: var(--space-2xs);
-    border: 1px dashed transparent;
     border-radius: var(--radius-lg);
+    transition: background-color var(--duration-fast) var(--ease-beat);
   }
 
   .attachment-bar.drag-active {
-    border-color: var(--color-accent);
     background: var(--color-accent-subtle);
+    outline: 1px dashed var(--color-accent);
+    outline-offset: 2px;
   }
 
   .file-input {
     display: none;
   }
 
-  .pick-button {
-    border: 1px solid var(--color-border-strong);
-    background: transparent;
-    color: inherit;
-    border-radius: var(--radius-md);
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
+  :global(.pick-button) {
     align-self: center;
   }
 
@@ -185,9 +206,22 @@
     align-items: center;
     gap: var(--space-xs);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border-radius: var(--radius-lg);
     padding: var(--space-2xs) var(--space-xs);
     max-width: 16rem;
+    animation: chip-in var(--duration-base) var(--ease-beat) both;
+  }
+
+  @keyframes chip-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .chip.failed {
@@ -222,39 +256,24 @@
 
   .status {
     font-size: 0.7rem;
-    opacity: 0.7;
+    color: var(--color-text-secondary);
   }
 
   .status.error {
     color: var(--color-danger);
-    opacity: 1;
     white-space: normal;
   }
 
-  .retry {
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
-    background: transparent;
-    border-radius: var(--radius-sm);
-    padding: var(--space-3xs) var(--space-xs);
-    cursor: pointer;
-    font-size: 0.7rem;
+  :global(.retry) {
     flex-shrink: 0;
   }
 
-  .remove {
-    border: none;
-    background: transparent;
-    color: inherit;
+  :global(.remove) {
+    flex-shrink: 0;
     opacity: 0.6;
-    cursor: pointer;
-    font-size: 0.9rem;
-    line-height: 1;
-    flex-shrink: 0;
-    padding: 0 var(--space-2xs);
   }
 
-  .remove:hover {
+  :global(.remove:hover) {
     opacity: 1;
   }
 </style>
