@@ -17,20 +17,32 @@ import { createTray } from './tray';
  */
 
 const TRAY_ICON_PATH = path.join(__dirname, '../../assets/tray-iconTemplate.png');
+const APP_ICON_PATH = path.join(__dirname, '../../assets/icon.png');
 
 let isQuitting = false;
 app.on('before-quit', () => {
   isQuitting = true;
 });
 
-// Menubar-only app: no Dock icon, no window shown until the tray/dock
-// re-activates it (macOS convention for a background utility app).
-app.dock?.hide();
-
 void app.whenReady().then(() => {
+  // loombox has a real cockpit window, so it lives in the Dock like a normal
+  // app (the tray stays too). We deliberately do NOT `app.dock.hide()`: the
+  // menubar-only convention hid the Dock icon entirely, but the app is used
+  // as a full window, not a background utility. In dev (`electron .`) the Dock
+  // would otherwise show the generic Electron icon, so set the loombox mark
+  // explicitly (a packaged build also carries it via the bundle's .icns).
+  app.dock?.setIcon(APP_ICON_PATH);
+
   const window = createMainWindow({
     url: resolvePwaUrl(),
     isQuitting: () => isQuitting,
+  });
+
+  // Clicking the Dock icon (or app re-activation) re-shows the window, since
+  // closing it only hides it (see `./window.ts`). Standard macOS behavior.
+  app.on('activate', () => {
+    window.show();
+    window.focus();
   });
 
   createTray({
