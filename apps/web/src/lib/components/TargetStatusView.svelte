@@ -36,12 +36,26 @@
    * `EmptyState`/`ErrorNotice` primitives. All `data-testid`s, DOM
    * structure the tests query, `focusTarget` highlighting, and every
    * callback contract are unchanged.
+   *
+   * Deck migration (redesign v2 §2 "one button language" / issue #466):
+   * the Refresh/Close header actions now render through the real `ui/Button`
+   * rather than hand-styled `.header-btn` markup — `Button`/`IconButton`'s
+   * `dataTestId` override (issue #460) lets them keep their existing
+   * `target-status-refresh`/`target-status-close` selectors. The health
+   * badge also gains a shape-coded glyph from the bespoke icon set
+   * (`health-ok`/`health-warn`/`health-danger`) next to its `StatusDot`, so
+   * the state reads by shape as well as color (no icon is drawn for the
+   * neutral `no-data` state, which has none in the set — the dot alone
+   * still carries it). Every remaining literal color/spacing/radius value
+   * in this file's own styles is now a token.
    */
   import type { TargetHealth, TargetListEntry } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Button from './ui/Button.svelte';
+  import { Icon, type IconName } from './icons';
 
   export interface FocusTarget {
     nodeId: string;
@@ -110,6 +124,14 @@
     healthy: 'success',
   };
 
+  /** Pairs the badge's `StatusDot` with a shape-distinct glyph from the bespoke icon set, so the state doesn't rely on color alone — `no-data` has no dedicated icon in the set and falls back to the dot only. */
+  const HEALTH_ICONS: Partial<Record<HealthState, IconName>> = {
+    'node-offline': 'health-danger',
+    unreachable: 'health-danger',
+    overloaded: 'health-warn',
+    healthy: 'health-ok',
+  };
+
   function meterLevel(percent: number): 'ok' | 'elevated' | 'high' {
     if (percent >= OVERLOAD_PERCENT) return 'high';
     if (percent >= 75) return 'elevated';
@@ -137,14 +159,11 @@
   <div class="header">
     <h2>Nodes &amp; targets</h2>
     <div class="header-actions">
-      <button
-        type="button"
-        class="header-btn"
-        onclick={onRefresh}
-        data-testid="target-status-refresh">Refresh</button
+      <Button variant="secondary" size="sm" onclick={onRefresh} dataTestId="target-status-refresh"
+        >Refresh</Button
       >
-      <button type="button" class="header-btn" onclick={onClose} data-testid="target-status-close"
-        >Close</button
+      <Button variant="secondary" size="sm" onclick={onClose} dataTestId="target-status-close"
+        >Close</Button
       >
     </div>
   </div>
@@ -164,6 +183,7 @@
     <ul class="target-rows">
       {#each targets as target (rowKey(target))}
         {@const state = healthState(target)}
+        {@const icon = HEALTH_ICONS[state]}
         <li class="target-row" data-testid="target-status-row">
           <div
             data-testid={`target-status-row-${rowKey(target)}`}
@@ -180,7 +200,7 @@
                   tone={HEALTH_TONES[state]}
                   label={HEALTH_LABELS[state]}
                   size="sm"
-                />{HEALTH_LABELS[state]}</span
+                />{#if icon}<Icon name={icon} />{/if}{HEALTH_LABELS[state]}</span
               >
             </div>
 
@@ -265,39 +285,6 @@
   .header-actions {
     display: flex;
     gap: var(--space-xs);
-  }
-
-  /* Hand-styled to match `Button`'s secondary visual language (redesign
-     brief §4) — kept as plain buttons, not the shared component, so the
-     `target-status-refresh`/`target-status-close` `data-testid`s stay on
-     the actual clickable element the tests query. */
-  .header-btn {
-    padding: var(--space-2xs) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-strong);
-    background: transparent;
-    color: var(--color-text-primary);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .header-btn:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  /* tension-press (redesign brief §2). */
-  .header-btn:active {
-    background: var(--color-fill);
-    transform: scale(0.98);
-  }
-
-  .header-btn:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .loading-state {
@@ -430,7 +417,7 @@
 
   .meter-row {
     display: grid;
-    grid-template-columns: 2.5rem 1fr auto;
+    grid-template-columns: var(--space-3xl) 1fr auto;
     align-items: center;
     gap: var(--space-xs);
     font-size: var(--text-small-size);
@@ -441,7 +428,7 @@
   }
 
   .meter {
-    height: 0.4rem;
+    height: var(--space-xs);
     border-radius: var(--radius-full);
     background: var(--color-fill);
     overflow: hidden;
