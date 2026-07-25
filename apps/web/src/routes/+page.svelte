@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { cubicOut } from 'svelte/easing';
+  import type { TransitionConfig } from 'svelte/transition';
   import { env as publicEnv } from '$env/dynamic/public';
   import type {
     AcpConfigOption,
@@ -33,7 +35,11 @@
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
-  import { isNarrowViewport, TABLET_VIEWPORT_BREAKPOINT_PX } from '$lib/viewport';
+  import {
+    isNarrowViewport,
+    TABLET_VIEWPORT_BREAKPOINT_PX,
+    WIDE_VIEWPORT_BREAKPOINT_PX,
+  } from '$lib/viewport';
   import { resolvePendingPushAction } from '$lib/push-action-routing';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import {
@@ -52,6 +58,7 @@
   import CopyButton from '$lib/components/CopyButton.svelte';
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
+  import Icon from '$lib/components/icons/Icon.svelte';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
@@ -67,6 +74,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
+  import Overlay from '$lib/components/ui/Overlay.svelte';
   import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
@@ -179,6 +187,8 @@
   /** The Drawer's persistent-column mode at `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` and above (redesign brief §1's "toggle, persisted per-user"); below that width this is ignored and the Drawer is always an overlay/bottom-sheet — see this file's style block. Restored from `localStorage` in `onMount` below. */
   let drawerPinned = $state(false);
   const DRAWER_PINNED_STORAGE_KEY = 'loombox:drawer-pinned';
+  /** True at/below `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` (1280px), where `drawerPinned` is ignored and the Drawer is always an overlay/bottom-sheet (see `WIDE_VIEWPORT_BREAKPOINT_PX`'s own doc comment) — a live `matchMedia` read, subscribed in `onMount` below, mirroring `sessionsSheetViewport`'s identical pattern for the Sessions column's own breakpoint. Drives `drawerIsOverlay` below, which is what decides whether the Drawer renders through the shared `Overlay` primitive (issue #462's backdrop-click/Escape close). */
+  let drawerNarrowViewport = $state(false);
   /** The mobile/tablet Sessions sheet (redesign brief §1's "<768px ... full-height sheet reached via a header 'Sessions' affordance, dismissed on pick"); a no-op at wider viewports where the Sessions column is always visible inline. */
   let sessionsSheetOpen = $state(false);
   /** The cockpit header's account/settings menu (redesign brief §1's "one account/settings menu"). */
@@ -193,6 +203,19 @@
   function toggleDrawer(tab: DrawerTab): void {
     activeDrawer = activeDrawer === tab ? null : tab;
   }
+
+  /**
+   * Whether the Drawer is currently rendering as an overlay (true) rather
+   * than a persistent pinned column (false) — the shared `Overlay` primitive
+   * (issue #462) only wraps the Drawer in the former case, since a pinned
+   * column is part of the layout, not a dismissible overlay (no backdrop, no
+   * Escape-to-close). Mirrors `drawerPinned`'s own doc comment: pinning only
+   * takes effect at/above `--bp-wide`, so a narrow viewport is always an
+   * overlay regardless of the pin preference.
+   */
+  const drawerIsOverlay = $derived(
+    activeDrawer !== null && (!drawerPinned || drawerNarrowViewport),
+  );
 
   /**
    * The Sessions column's own drag-resize + collapse-to-selvage (redesign
@@ -1143,6 +1166,55 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
+  /**
+   * The active-toggle visual (redesign v2 §2 "shell button consolidation",
+   * issue #462): every hand-rolled `.foo-toggle`/`.drawer-tab`/`.active`
+   * ruleset this file used to define per button collapses into ONE shared
+   * `warp-toggle-active` class (see this file's own stylesheet) layered on
+   * top of the shared `Button` primitive via its `class` prop — `Button`
+   * itself has no notion of a persisted "pressed" visual (only `IconButton`
+   * does, via `pressed`/`aria-pressed`), so a plain text toggle button still
+   * needs *some* way to show which tab/panel is currently open.
+   */
+  function toggleActiveClass(active: boolean): string {
+    return active ? 'warp-toggle-active' : '';
+  }
+
+  /**
+   * The Drawer's own enter/exit motion (redesign brief §1: "drawer/sheet
+   * slide", `tokens.css`'s `--duration-base`/`--ease-shuttle`) — needed now
+   * that the overlay-mode Drawer mounts/unmounts through the shared
+   * `Overlay` primitive (issue #462) rather than staying permanently mounted
+   * and CSS-transform-toggled, mirroring `Dialog.svelte`'s own `panelLift`
+   * (a JS-driven transition is the only way to animate an element's
+   * disappearance from a `{#if}` block). Slides along the same axis the
+   * Drawer's own CSS breakpoint uses — vertical (`translateY`, bottom sheet)
+   * below `--bp-tablet`, horizontal (`translateX`, right-edge column)
+   * otherwise — reusing `sessionsSheetViewport` (the Sessions column's own
+   * subscription to that exact breakpoint) rather than a second one.
+   * `cubicOut` approximates `--ease-shuttle`'s fast-out-settles for this
+   * JS-driven transition, same convention/caveat as `Dialog.svelte`'s
+   * `panelLift` doc comment. Reduced motion is read live via `matchMedia` at
+   * the moment the transition starts (jsdom never evaluates the media query,
+   * so this is a no-op — and never invoked at all — under SSR/vitest).
+   */
+  function drawerSlide(_node: Element): TransitionConfig {
+    // Pinned-column mode has no motion at all (it's part of the layout, not
+    // a dismissible overlay) — only the overlay-mode mount/unmount animates.
+    if (!drawerIsOverlay) return { duration: 0, css: () => '' };
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const duration = reduced ? 0 : 220; // tokens.css --duration-base
+    const axis = sessionsSheetViewport ? 'Y' : 'X';
+    return {
+      duration,
+      easing: cubicOut,
+      css: (t: number) => `transform: translate${axis}(${100 * (1 - t)}%); opacity: ${t};`,
+    };
+  }
+
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     if (paletteOpen) return;
@@ -1234,6 +1306,12 @@
       TABLET_VIEWPORT_BREAKPOINT_PX,
     ).subscribe((value) => (sessionsSheetViewport = value));
 
+    // The Drawer's own pin-eligibility breakpoint (redesign brief §1, issue
+    // #462) — see `drawerNarrowViewport`'s own doc comment.
+    const unsubscribeDrawerNarrowViewport = isNarrowViewport(WIDE_VIEWPORT_BREAKPOINT_PX).subscribe(
+      (value) => (drawerNarrowViewport = value),
+    );
+
     // Restores an operator-customized relay URL before constructing
     // `authStore` against it, so a self-hoster who edits this field, then
     // signs in (a full-page OAuth redirect that reloads this component from
@@ -1290,6 +1368,7 @@
       unsubscribeAuthSession();
       unsubscribeNarrow();
       unsubscribeSessionsSheetViewport();
+      unsubscribeDrawerNarrowViewport();
       disconnect();
     };
   });
@@ -1309,26 +1388,24 @@
       <div class="header-actions">
         <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
              label, not an icon glyph, states the toggle's current mode. -->
-        <button
-          type="button"
-          class="theme-toggle"
+        <Button
+          variant="secondary"
+          size="sm"
           onclick={() => themeStore.toggleTheme()}
-          title={`Theme: ${themePreference}`}
-          aria-label={`Switch theme (currently ${themePreference})`}
-          data-testid="theme-toggle"
-          data-theme-preference={themePreference}
+          ariaLabel={`Switch theme (currently ${themePreference})`}
+          dataTestId="theme-toggle"
         >
           {themePreference}
-        </button>
-        <button
-          type="button"
-          class="appearance-toggle"
-          class:active={activeDrawer === 'settings'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          class={toggleActiveClass(activeDrawer === 'settings')}
           onclick={() => toggleDrawer('settings')}
-          data-testid="appearance-settings-toggle"
+          dataTestId="appearance-settings-toggle"
         >
           Appearance
-        </button>
+        </Button>
       </div>
     </header>
 
@@ -1376,50 +1453,51 @@
         {/if}
         status: {status}
       </span>
-      <button
-        type="button"
-        class="inbox-toggle"
-        class:active={activeDrawer === 'inbox'}
+      <Button
+        variant="ghost"
+        size="sm"
+        class={toggleActiveClass(activeDrawer === 'inbox')}
         onclick={() => toggleDrawer('inbox')}
-        data-testid="inbox-toggle"
+        dataTestId="inbox-toggle"
       >
         Inbox
         {#if attentionInboxItems.length > 0}
           <span class="inbox-count" data-testid="inbox-count">{attentionInboxItems.length}</span>
         {/if}
-      </button>
-      <button
-        type="button"
-        class="target-status-toggle"
-        class:active={activeDrawer === 'targets'}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        class={toggleActiveClass(activeDrawer === 'targets')}
         onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
-        data-testid="target-status-toggle"
+        dataTestId="target-status-toggle"
       >
         Nodes &amp; targets
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
         onclick={() => (paletteOpen = true)}
-        data-testid="command-palette-toggle"
+        dataTestId="command-palette-toggle"
       >
         Jump to… (Ctrl/Cmd+K)
-      </button>
-      <button type="button" onclick={signOut}>Sign out</button>
+      </Button>
+      <Button variant="ghost" size="sm" onclick={signOut}>Sign out</Button>
       {#if deviceId}
         <PushNotificationToggle
           relayBaseUrl={relayHttpBaseUrl(relayUrl)}
           authToken={authSession.token}
           {deviceId}
         />
-        <button
-          type="button"
-          class="notification-settings-toggle"
-          class:active={activeDrawer === 'settings'}
+        <Button
+          variant="ghost"
+          size="sm"
+          class={toggleActiveClass(activeDrawer === 'settings')}
           onclick={() => toggleDrawer('settings')}
-          data-testid="notification-settings-toggle"
+          dataTestId="notification-settings-toggle"
         >
           Mute &amp; quiet hours
-        </button>
+        </Button>
       {/if}
       {#if authError}
         <p class="error" role="alert">{authError}</p>
@@ -1456,12 +1534,13 @@
              runs continuously once connected, not only while the Drawer's
              "targets" tab happens to be open. -->
         {#if targetHealthDots.length > 0}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             class="target-health-cluster"
             onclick={() => openTargetStatus()}
-            data-testid="target-health-cluster"
-            title="Nodes &amp; targets"
+            ariaLabel="Nodes &amp; targets"
+            dataTestId="target-health-cluster"
           >
             {#each targetHealthDots.slice(0, 6) as dot (dot.key)}
               <!-- TODO(redesign wave 2): replace with <StatusDot>. -->
@@ -1470,7 +1549,7 @@
             {#if targetHealthDots.length > 6}
               <span class="target-dot-overflow">+{targetHealthDots.length - 6}</span>
             {/if}
-          </button>
+          </Button>
         {/if}
       </div>
 
@@ -1483,16 +1562,18 @@
         >
           <span class="sr-only">status: {status}</span>
         </span>
-        <button
-          type="button"
-          class="command-trigger"
+        <IconButton
+          label="Jump to… (Ctrl/Cmd+K)"
           onclick={() => (paletteOpen = true)}
-          data-testid="command-palette-toggle"
+          dataTestId="command-palette-toggle"
         >
-          <span aria-hidden="true">⌘K</span>
-          <span class="sr-only">Jump to…</span>
-        </button>
+          <Icon name="command" />
+        </IconButton>
         <div class="account-menu">
+          <!-- `aria-haspopup`/`aria-expanded` on a disclosure trigger aren't
+               attributes the shared `Button` primitive forwards — kept as a
+               plain button rather than dropping real, load-bearing a11y
+               semantics for the sake of consolidation. -->
           <button
             type="button"
             class="account-menu-trigger"
@@ -1503,80 +1584,63 @@
           >
             {authSession.accountId}
           </button>
-          {#if accountMenuOpen}
-            <button
-              type="button"
-              class="account-menu-backdrop"
-              aria-label="Close menu"
-              onclick={() => (accountMenuOpen = false)}
-            ></button>
-            <div class="account-menu-dropdown" role="menu" data-testid="account-menu">
-              <button
-                type="button"
-                role="menuitem"
-                onclick={() => {
-                  setActiveDrawer('settings');
-                  accountMenuOpen = false;
-                }}
-              >
-                Appearance
-              </button>
-              {#if deviceId}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    setActiveDrawer('settings');
-                    accountMenuOpen = false;
-                  }}
-                  data-testid="notification-settings-toggle"
-                >
-                  Notifications
-                </button>
-              {/if}
-              <button
-                type="button"
-                role="menuitem"
-                onclick={() => {
-                  openTargetStatus();
-                  accountMenuOpen = false;
-                }}
-                data-testid="target-status-toggle"
-              >
-                Nodes &amp; targets
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onclick={() => {
-                  setActiveDrawer('inbox');
-                  accountMenuOpen = false;
-                }}
-                data-testid="inbox-toggle"
-              >
-                Inbox
-                {#if attentionInboxItems.length > 0}
-                  <span class="inbox-count" data-testid="inbox-count"
-                    >{attentionInboxItems.length}</span
-                  >
-                {/if}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                class="danger"
-                onclick={() => {
-                  accountMenuOpen = false;
-                  void signOut();
-                }}
-              >
-                Sign out
-              </button>
-            </div>
-          {/if}
         </div>
       </div>
     </header>
+
+    <!-- The account menu's dropdown (redesign v2 §2 "Drawer that closes + IA
+         cleanup", issue #462): rendered through the shared `Overlay`
+         primitive, as a sibling of `.warp-header` rather than nested inside
+         it — `.warp-header`'s own `position: sticky` + `z-index` establishes
+         a stacking context that used to cap the dropdown's effective z-index
+         below the Drawer's, regardless of its own (higher) local z-index.
+         Sharing one overlay root at the top level fixes that. IA cleanup:
+         this menu is identity-only now — Sign out and an Appearance
+         shortcut; Notifications/Nodes & targets/Inbox are all reachable from
+         the rail (or the Settings Drawer tab) already, so they're gone from
+         here rather than duplicated. -->
+    <Overlay
+      open={accountMenuOpen}
+      onClose={() => (accountMenuOpen = false)}
+      zIndex="--z-overlay"
+      class="account-menu-backdrop"
+      testid="account-menu-backdrop"
+    >
+      <!-- The click handler is only a guard against `Overlay`'s own
+           backdrop-click-to-close bubbling past this panel (mirrors
+           `Dialog.svelte`'s identical stop-propagation guard on its own
+           panel) — every real interaction here is a child button. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div
+        class="account-menu-dropdown"
+        role="menu"
+        data-testid="account-menu"
+        onclick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => {
+            setActiveDrawer('settings');
+            accountMenuOpen = false;
+          }}
+        >
+          Appearance
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          class="danger"
+          onclick={() => {
+            accountMenuOpen = false;
+            void signOut();
+          }}
+        >
+          Sign out
+        </button>
+      </div>
+    </Overlay>
 
     {#if escrowStatus !== 'idle'}
       <!-- The first-device escrow round trip (redesign brief §6, issue
@@ -1619,8 +1683,7 @@
           onclick={() => (sessionsSheetOpen = !sessionsSheetOpen)}
           data-testid="rail-sessions"
         >
-          <!-- TODO(redesign wave 2/5): replace these letter glyphs with the real icon set (SPEC brief §5). -->
-          <span class="rail-icon" aria-hidden="true">S</span>
+          <Icon name="sessions" class="rail-icon" />
           <span class="rail-label">Sessions</span>
         </button>
         <button
@@ -1630,7 +1693,7 @@
           onclick={() => toggleDrawer('inbox')}
           data-testid="rail-inbox"
         >
-          <span class="rail-icon" aria-hidden="true">I</span>
+          <Icon name="inbox" class="rail-icon" />
           <span class="rail-label">Inbox</span>
           {#if attentionInboxItems.length > 0}
             <span class="rail-badge" data-testid="rail-inbox-badge"
@@ -1645,7 +1708,7 @@
           onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
           data-testid="rail-targets"
         >
-          <span class="rail-icon" aria-hidden="true">N</span>
+          <Icon name="targets" class="rail-icon" />
           <span class="rail-label">Nodes &amp; targets</span>
           {#if hasUnhealthyTarget}
             <span
@@ -1661,7 +1724,7 @@
           onclick={() => (paletteOpen = true)}
           data-testid="rail-command"
         >
-          <span class="rail-icon" aria-hidden="true">⌘</span>
+          <Icon name="command" class="rail-icon" />
           <span class="rail-label">Command</span>
         </button>
         <div class="rail-spacer"></div>
@@ -1672,7 +1735,7 @@
           onclick={() => toggleDrawer('settings')}
           data-testid="rail-settings"
         >
-          <span class="rail-icon" aria-hidden="true">⚙</span>
+          <Icon name="settings" class="rail-icon" />
           <span class="rail-label">Settings</span>
         </button>
       </nav>
@@ -1736,16 +1799,16 @@
               </span>
             </span>
           </button>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             class="session-target-status-link"
-            title={`View status for target ${session.targetId}`}
-            aria-label={`View status for target ${session.targetId}`}
+            ariaLabel={`View status for target ${session.targetId}`}
             onclick={() => openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
-            data-testid="session-target-status-link"
+            dataTestId="session-target-status-link"
           >
             Target status
-          </button>
+          </Button>
         </li>
       {/snippet}
 
@@ -1790,22 +1853,22 @@
           {/if}
           <div class="sessions-header-actions">
             {#if !sessionsRailCollapsed && status === 'open'}
-              <button
-                type="button"
-                class="add-target-button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onclick={openAddTargetWizard}
-                data-testid="add-target-button"
+                dataTestId="add-target-button"
               >
                 Add target
-              </button>
-              <button
-                type="button"
-                class="new-session-button"
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 onclick={openNewSessionDialog}
-                data-testid="new-session-button"
+                dataTestId="new-session-button"
               >
                 New session
-              </button>
+              </Button>
             {/if}
             <!-- TODO(redesign wave 2/5): replace this chevron glyph with the real icon set (SPEC brief §5). -->
             <IconButton
@@ -1845,14 +1908,13 @@
           {:else if sessions.length === 0}
             <EmptyState message="No sessions yet. Start one to connect an agent to a project.">
               {#snippet cta()}
-                <button
-                  type="button"
-                  class="empty-sessions-cta"
+                <Button
+                  variant="primary"
                   onclick={openNewSessionDialog}
-                  data-testid="new-session-empty-cta"
+                  dataTestId="new-session-empty-cta"
                 >
                   Start your first session
-                </button>
+                </Button>
               {/snippet}
             </EmptyState>
           {:else if groupSessionsByTarget}
@@ -1865,11 +1927,12 @@
                   aria-expanded={!collapsedGroupKeys.has(group.key)}
                   data-testid="session-group-header"
                 >
-                  <span
-                    class="session-group-chevron"
-                    class:collapsed={collapsedGroupKeys.has(group.key)}
-                    aria-hidden="true">▾</span
-                  >
+                  <Icon
+                    name="collapse-chevron"
+                    class={collapsedGroupKeys.has(group.key)
+                      ? 'session-group-chevron collapsed'
+                      : 'session-group-chevron'}
+                  />
                   <span class="session-group-label">{group.label}</span>
                   <span class="session-group-count">{group.sessions.length}</span>
                 </button>
@@ -1926,33 +1989,33 @@
               label="Export transcript"
               copyFn={exportTranscript}
             />
-            <button
-              type="button"
-              class="file-tree-toggle"
-              class:active={activeDrawer === 'files'}
+            <Button
+              variant="ghost"
+              size="sm"
+              class={toggleActiveClass(activeDrawer === 'files')}
               onclick={() => toggleDrawer('files')}
-              data-testid="file-tree-toggle"
+              dataTestId="file-tree-toggle"
             >
               Files
-            </button>
-            <button
-              type="button"
-              class="terminal-toggle"
-              class:active={activeDrawer === 'terminal'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              class={toggleActiveClass(activeDrawer === 'terminal')}
               onclick={() => toggleDrawer('terminal')}
-              data-testid="terminal-toggle"
+              dataTestId="terminal-toggle"
             >
               Terminal
-            </button>
-            <button
-              type="button"
-              class="project-config-toggle"
-              class:active={activeDrawer === 'config'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              class={toggleActiveClass(activeDrawer === 'config')}
               onclick={() => toggleDrawer('config')}
-              data-testid="project-config-toggle"
+              dataTestId="project-config-toggle"
             >
               Config
-            </button>
+            </Button>
           </div>
 
           <ol class="items">
@@ -2059,83 +2122,99 @@
         {/if}
       </section>
 
-      <!-- The Drawer (redesign brief §1/§7): replaces the six independently-
-           toggled inline panels with tabs of one component, one tab visible
-           at a time. Overlay by default (<1280px, or unpinned); pinnable as
-           a persistent third column at >=1280px (`--bp-wide`) via
-           `drawerPinned`. -->
-      <aside
-        class="drawer"
-        class:drawer-open={activeDrawer !== null}
-        class:drawer-pinned={drawerPinned}
-        aria-hidden={activeDrawer === null}
-        data-testid="drawer"
-      >
-        {#if activeDrawer !== null}
+      <!-- The Drawer (redesign brief §1/§7; issue #462): replaces the six
+           independently-toggled inline panels with tabs of one component,
+           one tab visible at a time. Overlay by default (<1280px, or
+           unpinned) — rendered through the shared `Overlay` primitive
+           (backdrop-click/Escape close, same z-index tier as the account
+           menu); pinnable as a persistent third column at >=1280px
+           (`--bp-wide`) via `drawerPinned`, in which case there's no
+           backdrop/Escape at all (it's part of the layout, not a
+           dismissible overlay) — see `drawerIsOverlay`'s own doc comment. -->
+      {#snippet drawerPanel(authSession: StoredAuthSession)}
+        <!-- The click handler is only a guard against `Overlay`'s own
+             backdrop-click-to-close bubbling past this panel when in
+             overlay mode (mirrors `Dialog.svelte`'s identical
+             stop-propagation guard on its own panel; a no-op, but
+             harmless, in pinned mode where there's no backdrop to guard
+             against) — every real interaction here is a child control. -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <aside
+          class="drawer"
+          class:drawer-pinned={!drawerIsOverlay}
+          data-testid="drawer"
+          onclick={(event) => event.stopPropagation()}
+          in:drawerSlide
+          out:drawerSlide
+        >
           <div class="drawer-header">
             <div class="drawer-tabs" role="tablist" aria-label="Panels">
-              <button
-                type="button"
-                class="drawer-tab"
-                class:active={activeDrawer === 'inbox'}
+              <Button
+                variant="ghost"
+                size="sm"
+                class={toggleActiveClass(activeDrawer === 'inbox')}
                 onclick={() => setActiveDrawer('inbox')}
-                data-testid="drawer-tab-inbox"
+                dataTestId="drawer-tab-inbox"
               >
                 Inbox
-              </button>
-              <button
-                type="button"
-                class="drawer-tab"
-                class:active={activeDrawer === 'targets'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                class={toggleActiveClass(activeDrawer === 'targets')}
                 onclick={() => setActiveDrawer('targets')}
-                data-testid="drawer-tab-targets"
+                dataTestId="drawer-tab-targets"
               >
                 Nodes &amp; targets
-              </button>
+              </Button>
               {#if selectedSessionId}
-                <button
-                  type="button"
-                  class="drawer-tab"
-                  class:active={activeDrawer === 'files'}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class={toggleActiveClass(activeDrawer === 'files')}
                   onclick={() => setActiveDrawer('files')}
-                  data-testid="drawer-tab-files"
+                  dataTestId="drawer-tab-files"
                 >
                   Files
-                </button>
-                <button
-                  type="button"
-                  class="drawer-tab"
-                  class:active={activeDrawer === 'terminal'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class={toggleActiveClass(activeDrawer === 'terminal')}
                   onclick={() => setActiveDrawer('terminal')}
-                  data-testid="drawer-tab-terminal"
+                  dataTestId="drawer-tab-terminal"
                 >
                   Terminal
-                </button>
-                <button
-                  type="button"
-                  class="drawer-tab"
-                  class:active={activeDrawer === 'config'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class={toggleActiveClass(activeDrawer === 'config')}
                   onclick={() => setActiveDrawer('config')}
-                  data-testid="drawer-tab-config"
+                  dataTestId="drawer-tab-config"
                 >
                   Config
-                </button>
+                </Button>
               {/if}
-              <button
-                type="button"
-                class="drawer-tab"
-                class:active={activeDrawer === 'settings'}
+              <Button
+                variant="ghost"
+                size="sm"
+                class={toggleActiveClass(activeDrawer === 'settings')}
                 onclick={() => setActiveDrawer('settings')}
-                data-testid="drawer-tab-settings"
+                dataTestId="drawer-tab-settings"
               >
                 Settings
-              </button>
+              </Button>
             </div>
             <div class="drawer-header-actions">
               <!-- Redesign brief §1: pinnable as a persistent column at
                    >=1280px only — the toggle itself is always reachable,
-                   but has no visible effect below that width (see
-                   `<style>`'s `--bp-wide` media query). -->
+                   but has no visible effect below that width. `aria-pressed`
+                   on a *text* toggle isn't something either shared primitive
+                   supports (`Button` has no pressed state; `IconButton`
+                   hides visible text), so this one stays a plain button
+                   rather than lose that a11y semantic. -->
               <button
                 type="button"
                 class="drawer-pin-toggle"
@@ -2147,15 +2226,13 @@
               >
                 Pin
               </button>
-              <button
-                type="button"
-                class="drawer-close"
+              <IconButton
+                label="Close panel"
                 onclick={() => setActiveDrawer(null)}
-                data-testid="drawer-close"
-                aria-label="Close panel"
+                dataTestId="drawer-close"
               >
-                Close
-              </button>
+                <Icon name="close" />
+              </IconButton>
             </div>
           </div>
 
@@ -2224,8 +2301,22 @@
               </div>
             {/if}
           </div>
-        {/if}
-      </aside>
+        </aside>
+      {/snippet}
+
+      {#if drawerIsOverlay}
+        <Overlay
+          open={activeDrawer !== null}
+          onClose={() => setActiveDrawer(null)}
+          zIndex="--z-overlay"
+          class="drawer-backdrop"
+          testid="drawer-backdrop"
+        >
+          {@render drawerPanel(authSession)}
+        </Overlay>
+      {:else if activeDrawer !== null}
+        {@render drawerPanel(authSession)}
+      {/if}
     </div>
   {/if}
 </main>
@@ -2309,24 +2400,18 @@
     gap: var(--space-2xs);
   }
 
-  .theme-toggle,
-  .appearance-toggle {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-  }
-
-  .theme-toggle {
-    text-transform: capitalize;
-  }
-
-  .appearance-toggle.active {
+  /* The active-toggle visual shared by every consolidated `Button`-based
+     toggle in this file (issue #462) — see `toggleActiveClass`'s own doc
+     comment. `Button` itself has no persisted "pressed" visual (only
+     `IconButton` does via `pressed`/`aria-pressed`), so a plain text toggle
+     button needs this instead. `:global` because `class` lands on the
+     `<button>` `Button.svelte` renders, not an element `+page.svelte`
+     renders directly (same reason `Dialog.svelte`'s `:global(.dialog-backdrop)`
+     exists). */
+  :global(.warp-toggle-active) {
     background: var(--color-accent-subtle);
     border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 
   .appearance-settings-panel {
@@ -2434,24 +2519,6 @@
     gap: var(--space-xs);
   }
 
-  .inbox-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .inbox-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
   .inbox-count {
     display: inline-flex;
     align-items: center;
@@ -2465,24 +2532,6 @@
     font-size: 0.7rem;
     font-family: var(--font-mono);
     font-feature-settings: var(--font-feature-tabular);
-  }
-
-  .target-status-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .target-status-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
   }
 
   .session-row {
@@ -2528,62 +2577,12 @@
     min-width: 0;
   }
 
-  .session-target-status-link {
+  /* `:global` — `class` here lands on the `<button>` `Button.svelte` (a
+     child component) renders, which carries `Button`'s own scope hash, not
+     this file's, so a plain (non-`:global`) selector would never match. */
+  :global(.session-target-status-link) {
     flex-shrink: 0;
     align-self: center;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: inherit;
-    opacity: 0.7;
-    padding: var(--space-3xs) var(--space-2xs);
-    font-size: 0.65rem;
-    cursor: pointer;
-  }
-
-  .session-target-status-link:hover,
-  .session-target-status-link:focus-visible {
-    opacity: 1;
-    border-color: var(--color-accent);
-  }
-
-  .notification-settings-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .notification-settings-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .file-tree-toggle,
-  .terminal-toggle,
-  .project-config-toggle {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .file-tree-toggle.active,
-  .terminal-toggle.active,
-  .project-config-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
   }
 
   .account {
@@ -2701,20 +2700,18 @@
      Drawer. TODO(redesign wave 2): replace `.target-dot` with a real
      <StatusDot> component (thread-draw pulse while `working`, etc.) — this
      is a minimal inline placeholder for the foundation shell. */
-  .target-health-cluster {
-    display: inline-flex;
-    align-items: center;
+  /* `:global` — `class` here lands on the `<button>` `Button.svelte` (a
+     child component) renders, which carries `Button`'s own scope hash, not
+     this file's, so a plain (non-`:global`) selector would never match
+     (same reason as `.session-target-status-link` above). */
+  :global(.target-health-cluster) {
     gap: var(--space-3xs);
-    border: 1px solid var(--color-border);
+    border-color: var(--color-border);
     border-radius: var(--radius-full);
-    background: transparent;
-    padding: var(--space-3xs) var(--space-sm);
-    cursor: pointer;
-    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
-  .target-health-cluster:hover,
-  .target-health-cluster:focus-visible {
+  :global(.target-health-cluster:hover),
+  :global(.target-health-cluster:focus-visible) {
     border-color: var(--color-border-strong);
   }
 
@@ -2777,24 +2774,6 @@
     border: 0;
   }
 
-  .command-trigger {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: var(--text-small-size);
-  }
-
-  .command-trigger:hover,
-  .command-trigger:focus-visible {
-    background: var(--color-fill-subtle);
-  }
-
   .account-menu {
     position: relative;
   }
@@ -2818,24 +2797,28 @@
     border-color: var(--color-accent);
   }
 
-  .account-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: var(--z-overlay);
-    border: none;
-    background: transparent;
-    cursor: default;
+  /* The backdrop itself (position/z-index/dim) is `Overlay`'s own concern
+     now (issue #462) — this `:global` only lays out where the dropdown
+     panel sits within it. `:global` because `Overlay` (a child component)
+     renders the element this class lands on, not `+page.svelte` directly,
+     the same reason `Dialog.svelte`'s own `:global(.dialog-backdrop)`
+     exists. Anchored with `position: fixed` (not `absolute` relative to the
+     trigger) since the dropdown is now a sibling of `.warp-header`, not
+     nested inside it — see the template's own doc comment on why. `top:
+     3.5rem` mirrors `.drawer`'s identical assumption about the header's
+     rendered height. */
+  :global(.account-menu-backdrop) {
+    display: flex;
+    justify-content: flex-end;
+    padding: 3.5rem var(--space-lg) 0 0;
   }
 
   .account-menu-dropdown {
-    position: absolute;
-    top: calc(100% + var(--space-2xs));
-    right: 0;
-    z-index: var(--z-modal);
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
     min-width: 12rem;
+    height: fit-content;
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-lg);
     background: var(--color-surface-raised);
@@ -2918,14 +2901,12 @@
     color: var(--color-accent);
   }
 
-  .rail-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  /* `:global` — `class` here lands on the `<svg>` `Icon.svelte` (a child
+     component) renders, which carries `Icon`'s own scope hash, not this
+     file's, so a plain (non-`:global`) selector would never match. */
+  :global(.rail-icon) {
     width: 1.25rem;
     height: 1.25rem;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
   }
 
   .rail-label {
@@ -3011,28 +2992,6 @@
     gap: var(--space-xs);
   }
 
-  .new-session-button {
-    border: none;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-  }
-
-  .add-target-button {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-  }
-
   .sessions-content {
     flex: 1;
     min-height: 0;
@@ -3064,38 +3023,6 @@
 
   .sessions-resize-handle:focus-visible {
     outline: none;
-  }
-
-  /* The empty-state's own CTA (redesign brief §4's `EmptyState` primitive) —
-     hand-styled to match `Button`'s primary variant rather than importing
-     it, so this keeps its own fixed `new-session-empty-cta` testid (see
-     this file's own doc comment on adopting shared primitives). */
-  .empty-sessions-cta {
-    border: 1px solid var(--color-accent);
-    border-radius: var(--radius-md);
-    background: var(--color-accent-subtle);
-    color: var(--color-accent);
-    padding: var(--space-sm) var(--space-md);
-    cursor: pointer;
-    font-weight: 600;
-    font-size: var(--text-small-size);
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .empty-sessions-cta:hover {
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-  }
-
-  .empty-sessions-cta:active {
-    transform: scale(0.98);
-  }
-
-  .empty-sessions-cta:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .key-mismatch {
@@ -3157,13 +3084,15 @@
     color: var(--color-text-primary);
   }
 
-  .session-group-chevron {
-    display: inline-flex;
+  /* `:global` — `class` here lands on the `<svg>` `Icon.svelte` (a child
+     component) renders, which carries `Icon`'s own scope hash, not this
+     file's, so a plain (non-`:global`) selector would never match. */
+  :global(.session-group-chevron) {
     flex-shrink: 0;
     transition: transform var(--duration-fast) var(--ease-beat);
   }
 
-  .session-group-chevron.collapsed {
+  :global(.session-group-chevron.collapsed) {
     transform: rotate(-90deg);
   }
 
@@ -3549,12 +3478,6 @@
     background: var(--color-surface-raised);
     border-left: 1px solid var(--color-border-strong);
     box-shadow: var(--shadow-lg);
-    transform: translateX(100%);
-    transition: transform var(--duration-base) var(--ease-shuttle);
-  }
-
-  .drawer.drawer-open {
-    transform: translateX(0);
   }
 
   .drawer-header {
@@ -3574,31 +3497,6 @@
     min-width: 0;
   }
 
-  .drawer-tab {
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    opacity: 0.7;
-    padding: var(--space-3xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    white-space: nowrap;
-  }
-
-  .drawer-tab:hover,
-  .drawer-tab:focus-visible {
-    opacity: 1;
-    background: var(--color-fill-subtle);
-  }
-
-  .drawer-tab.active {
-    opacity: 1;
-    border-color: var(--color-accent);
-    background: var(--color-accent-subtle);
-    color: var(--color-accent);
-  }
-
   .drawer-header-actions {
     display: flex;
     align-items: center;
@@ -3606,8 +3504,7 @@
     flex-shrink: 0;
   }
 
-  .drawer-pin-toggle,
-  .drawer-close {
+  .drawer-pin-toggle {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: transparent;
@@ -3760,11 +3657,6 @@
       height: 60vh;
       border-left: none;
       border-top: 1px solid var(--color-border-strong);
-      transform: translateY(100%);
-    }
-
-    .drawer.drawer-open {
-      transform: translateY(0);
     }
   }
 
@@ -3775,16 +3667,22 @@
     .drawer-pin-toggle {
       display: inline-flex;
     }
+  }
 
-    .drawer.drawer-pinned.drawer-open {
-      position: static;
-      top: auto;
-      width: 22rem;
-      flex-shrink: 0;
-      height: auto;
-      transform: none;
-      box-shadow: none;
-      border-left: 1px solid var(--color-border);
-    }
+  /* The pinned static-column state itself (issue #462): applied by JS
+     (`drawerIsOverlay`'s own doc comment) rather than gated behind the
+     `--bp-wide` media query above — `drawerIsOverlay` already accounts for
+     that exact breakpoint via `drawerNarrowViewport`, so this class is only
+     ever present when pinning is genuinely in effect, and no `{#if
+     drawer-open}` combinator is needed either now that the Drawer only
+     mounts at all while `activeDrawer` is non-null (see the template). */
+  .drawer-pinned {
+    position: static;
+    top: auto;
+    width: 22rem;
+    flex-shrink: 0;
+    height: auto;
+    box-shadow: none;
+    border-left: 1px solid var(--color-border);
   }
 </style>
