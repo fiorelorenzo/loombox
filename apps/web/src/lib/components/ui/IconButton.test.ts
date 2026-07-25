@@ -70,4 +70,20 @@ describe('IconButton (issue #428 Warp Deck shared UI primitives)', () => {
     render(IconButton, { props: { label: 'Inbox', children: iconSnippet() } });
     expect(screen.queryByTestId('ui-icon-button-badge')).toBeNull();
   });
+
+  it('defaults data-testid to "ui-icon-button" but lets a caller override it (issue #460)', () => {
+    render(IconButton, { props: { label: 'Refresh', children: iconSnippet() } });
+    expect(screen.getByTestId('ui-icon-button')).toBeTruthy();
+
+    cleanup();
+    render(IconButton, {
+      props: {
+        label: 'Reconnect target',
+        dataTestId: 'target-status-reconnect-button',
+        children: iconSnippet(),
+      },
+    });
+    expect(screen.queryByTestId('ui-icon-button')).toBeNull();
+    expect(screen.getByTestId('target-status-reconnect-button')).toBeTruthy();
+  });
 });

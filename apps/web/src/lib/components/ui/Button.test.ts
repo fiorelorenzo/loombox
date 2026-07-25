@@ -73,4 +73,17 @@ describe('Button (issue #428 Warp Deck shared UI primitives)', () => {
     render(Button, { props: { children: textSnippet('Go'), class: 'my-extra' } });
     expect(screen.getByTestId('ui-button').classList.contains('my-extra')).toBe(true);
   });
+
+  it('defaults data-testid to "ui-button" but lets a caller override it (issue #460)', () => {
+    render(Button, { props: { children: textSnippet('Go') } });
+    expect(screen.getByTestId('ui-button')).toBeTruthy();
+
+    cleanup();
+    render(Button, {
+      props: { children: textSnippet('Save theme'), dataTestId: 'appearance-save-button' },
+    });
+    expect(screen.queryByTestId('ui-button')).toBeNull();
+    const overridden = screen.getByTestId('appearance-save-button');
+    expect(overridden.textContent).toContain('Save theme');
+  });
 });
