@@ -16,8 +16,14 @@
  *
  * Replaces the letter/unicode placeholders named in #457: the rail's S/I/N
  * spans, the `⌘K` glyph, the session-group `▾` chevron, tool-call glyphs,
- * file/folder marks, attach/copy icons. Call-site swaps are out of scope
- * here (wave 2/3 issues) — this ships only the shared set.
+ * file/folder marks, attach/copy icons.
+ *
+ * Redesign v3 (§3.7, issue #502) redraws the three glyphs the audit found
+ * didn't carry their concept at rail/tab-bar size — `sessions` read as a
+ * speech bubble, `inbox` as a download arrow, `command` as a plain "add"
+ * cross — and adds the names the rest of the redesign consumes (chevron,
+ * search, overflow, plus, refresh, check, alert, terminal, pin). Additive
+ * and redraws only: every name that shipped in #457 still resolves.
  */
 
 export const ICON_NAMES = [
@@ -27,16 +33,25 @@ export const ICON_NAMES = [
   'command',
   'settings',
   'collapse-chevron',
+  'chevron-down',
+  'search',
+  'more',
+  'plus',
+  'refresh',
+  'check',
+  'alert',
   'health-ok',
   'health-warn',
   'health-danger',
   'tool-bash',
   'tool-edit',
   'tool-generic',
+  'terminal',
   'file',
   'folder',
   'attach',
   'copy',
+  'pin',
   'close',
 ] as const;
 
@@ -56,16 +71,22 @@ export const FALLBACK_ICON_PATHS: readonly string[] = ['M32 14 L50 32 L32 50 L14
  * convention applied once at the `<svg>` root by `Icon.svelte`.
  */
 export const ICON_PATHS: Record<IconName, readonly string[]> = {
-  // A speech bubble with a tail plus two text lines — "Sessions" (the
-  // rail's conversation list).
+  // Three rows of a leading marker plus a text line — a stacked list of
+  // conversation threads, the exact anatomy of a session row (3.2)
+  // repeated three times — "Sessions".
   sessions: [
-    'M22 14 H42 A8 8 0 0 1 50 22 V34 A8 8 0 0 1 42 42 H28 L20 50 L24 42 H22 A8 8 0 0 1 14 34 V22 A8 8 0 0 1 22 14 Z',
-    'M20 24 H44',
-    'M20 32 H36',
+    'M14 18 A4 4 0 1 0 22 18 A4 4 0 1 0 14 18',
+    'M28 18 H48',
+    'M14 32 A4 4 0 1 0 22 32 A4 4 0 1 0 14 32',
+    'M28 32 H44',
+    'M14 46 A4 4 0 1 0 22 46 A4 4 0 1 0 14 46',
+    'M28 46 H40',
   ],
 
-  // An open tray with an arrow feeding into its notch — "Inbox".
-  inbox: ['M14 30 H24 L28 38 H36 L40 30 H50 V48 H14 Z', 'M32 12 V30', 'M24 22 L32 30 L40 22'],
+  // An open tray with a notched rim — "Inbox". No feed arrow: a tray
+  // reads as a tray on its own, the arrow was what made it read as
+  // "download" instead.
+  inbox: ['M12 26 H24 L28 34 H36 L40 26 H52 V50 H12 Z'],
 
   // Three connected nodes — "Targets/Nodes".
   targets: [
@@ -77,13 +98,12 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
     'M22 46 H42',
   ],
 
-  // The four-loop "command" glyph (mirrors the physical ⌘ key) —
-  // "Command palette".
+  // The four-loop "command"/⌘ glyph, traced as one continuous outline
+  // (outer loop edges and the inner crossbar in a single closed path) so
+  // it reads as four loops joined by a bridge rather than — at rail size —
+  // a thick plus sign wearing rounded corners.
   command: [
-    'M26 26 V19 A6.5 6.5 0 1 1 38 19 V26',
-    'M38 26 H45 A6.5 6.5 0 1 1 45 38 H38',
-    'M38 38 V45 A6.5 6.5 0 1 1 26 45 V38',
-    'M26 38 H19 A6.5 6.5 0 1 1 19 26 H26',
+    'M48 8 A8 8 0 0 0 40 16 V48 A8 8 0 0 0 48 56 A8 8 0 0 0 56 48 A8 8 0 0 0 48 40 H16 A8 8 0 0 0 8 48 A8 8 0 0 0 16 56 A8 8 0 0 0 24 48 V16 A8 8 0 0 0 16 8 A8 8 0 0 0 8 16 A8 8 0 0 0 16 24 H48 A8 8 0 0 0 56 16 A8 8 0 0 0 48 8 Z',
   ],
 
   // A gear (outer ring + hub + eight teeth) — "Settings".
@@ -104,6 +124,33 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // caller's CSS for expanded/collapsed states, same convention as the
   // `▾`/`▸` glyph it replaces).
   'collapse-chevron': ['M18 26 L32 40 L46 26'],
+
+  // A single open chevron pointing down — a fixed-orientation disclosure
+  // indicator (unlike `collapse-chevron`, this one is never rotated).
+  'chevron-down': ['M16 24 L32 40 L48 24'],
+
+  // A magnifying glass — search/filter.
+  search: ['M16 28 A12 12 0 1 0 40 28 A12 12 0 1 0 16 28', 'M37 37 L50 50'],
+
+  // Three round dots in a row (drawn as zero-length round-capped strokes,
+  // same trick as `health-warn`'s exclamation dot) — the horizontal
+  // overflow/"more" affordance.
+  more: ['M18 32 L18 32.1', 'M32 32 L32 32.1', 'M46 32 L46 32.1'],
+
+  // A plain cross — add/new.
+  plus: ['M32 14 V50', 'M14 32 H50'],
+
+  // An almost-complete ring left open on one side, with an arrowhead at
+  // the open end — refresh/retry.
+  refresh: ['M42 20 A18 18 0 1 0 42 44', 'M34 15 L42 20 L46 11'],
+
+  // A single checkmark — confirmation/success.
+  check: ['M15 33 L27 45 L49 19'],
+
+  // A triangle with an exclamation mark — generic warning/error affordance
+  // (distinct from `health-warn`, which is specifically a target/node
+  // state; this is the one connection-chip/notice icon uses).
+  alert: ['M32 11 L54 49 H10 Z', 'M32 24 V37', 'M32 43 L32 43.1'],
 
   // A ring with a checkmark — healthy target/node.
   'health-ok': ['M16 32 A16 16 0 1 0 48 32 A16 16 0 1 0 16 32', 'M23 33 L29 40 L43 24'],
@@ -127,6 +174,11 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // A wrench (open jaw + shaft) — any other/generic tool call.
   'tool-generic': ['M40 14 A9 9 0 1 0 48 26', 'M44 22 L18 48', 'M14 44 L22 52'],
 
+  // Same terminal-frame anatomy as `tool-bash` (frame, prompt caret,
+  // cursor) under its own name for surfaces that mean "open a terminal"
+  // rather than "this was a bash tool call".
+  terminal: ['M12 15 H52 V49 H12 Z', 'M20 27 L28 33 L20 39', 'M31 41 H41'],
+
   // A page with a folded corner plus two content lines — a file reference.
   file: ['M18 12 H38 L46 20 V52 H18 Z', 'M38 12 V20 H46', 'M24 30 H40', 'M24 38 H36'],
 
@@ -138,6 +190,9 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
 
   // Two overlapping squares — the copy affordance.
   copy: ['M26 14 H46 V34 H26 Z', 'M14 26 H34 V46 H14 Z'],
+
+  // A pushpin — pin/unpin affordance.
+  pin: ['M26 12 H38 L36 24 L46 36 H18 L28 24 Z', 'M32 36 V52'],
 
   // An X — close/dismiss.
   close: ['M18 18 L46 46', 'M46 18 L18 46'],

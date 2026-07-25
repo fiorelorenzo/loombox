@@ -41,6 +41,12 @@
     WIDE_VIEWPORT_BREAKPOINT_PX,
   } from '$lib/viewport';
   import { resolvePendingPushAction } from '$lib/push-action-routing';
+  import {
+    SESSION_STATUS_LABELS,
+    SESSION_STATUS_TONES,
+    SESSION_STATUS_UNKNOWN_LABEL,
+  } from '$lib/session-status';
+  import { fuzzyFilter } from '$lib/fuzzy';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import {
     createLocalStorageNotificationPreferencesStorage,
@@ -59,6 +65,7 @@
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
+  import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
   import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
   import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
@@ -184,15 +191,76 @@
    */
   type DrawerTab = 'inbox' | 'targets' | 'files' | 'terminal' | 'config' | 'settings';
   let activeDrawer = $state<DrawerTab | null>(null);
+
+  /**
+   * The Drawer's tab strip, as data (redesign v3 design spec §3.6). Six
+   * hand-written `<Button variant="ghost">`s used to wrap onto two rows and
+   * distinguish the active tab by an underline alone; one loop over this
+   * list gives every tab the same icon + label anatomy and one active
+   * treatment. `files`/`terminal`/`config` are session-scoped and drop out
+   * when nothing is selected, exactly as before.
+   */
+  const DRAWER_TABS: { id: DrawerTab; label: string; icon: IconName; sessionScoped: boolean }[] = [
+    { id: 'inbox', label: 'Inbox', icon: 'inbox', sessionScoped: false },
+    { id: 'targets', label: 'Nodes & targets', icon: 'targets', sessionScoped: false },
+    { id: 'files', label: 'Files', icon: 'file', sessionScoped: true },
+    { id: 'terminal', label: 'Terminal', icon: 'terminal', sessionScoped: true },
+    { id: 'config', label: 'Config', icon: 'settings', sessionScoped: true },
+    { id: 'settings', label: 'Settings', icon: 'settings', sessionScoped: false },
+  ];
+  const drawerTabs = $derived(
+    DRAWER_TABS.filter((tab) => !tab.sessionScoped || selectedSessionId !== undefined),
+  );
   /** The Drawer's persistent-column mode at `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` and above (redesign brief §1's "toggle, persisted per-user"); below that width this is ignored and the Drawer is always an overlay/bottom-sheet — see this file's style block. Restored from `localStorage` in `onMount` below. */
   let drawerPinned = $state(false);
   const DRAWER_PINNED_STORAGE_KEY = 'loombox:drawer-pinned';
   /** True at/below `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` (1280px), where `drawerPinned` is ignored and the Drawer is always an overlay/bottom-sheet (see `WIDE_VIEWPORT_BREAKPOINT_PX`'s own doc comment) — a live `matchMedia` read, subscribed in `onMount` below, mirroring `sessionsSheetViewport`'s identical pattern for the Sessions column's own breakpoint. Drives `drawerIsOverlay` below, which is what decides whether the Drawer renders through the shared `Overlay` primitive (issue #462's backdrop-click/Escape close). */
   let drawerNarrowViewport = $state(false);
-  /** The mobile/tablet Sessions sheet (redesign brief §1's "<768px ... full-height sheet reached via a header 'Sessions' affordance, dismissed on pick"); a no-op at wider viewports where the Sessions column is always visible inline. */
+  /** The mobile/tablet sidebar sheet (redesign v3 design spec §3.1): below `--bp-tablet` the sidebar is a dismissible full-height sheet reached from the bottom tab bar; a no-op at wider viewports where it is always an inline column. */
   let sessionsSheetOpen = $state(false);
-  /** The cockpit header's account/settings menu (redesign brief §1's "one account/settings menu"). */
+  /**
+   * The sidebar's account menu (redesign v3 design spec §3.1). An ANCHORED
+   * popover, not an `Overlay`: a two-item menu has no business dimming the
+   * whole app behind a modal scrim, which is what the v2 header menu did.
+   * Dismissal is a `pointerdown` listener on `window` plus Escape, both
+   * registered only while it is open.
+   */
   let accountMenuOpen = $state(false);
+  /** The sidebar's "New session" split-button menu (Add target / Connect a node) — same anchored-popover treatment as {@link accountMenuOpen}. */
+  let newSessionMenuOpen = $state(false);
+  /** Which session row's `⋯` menu is open, if any — keyed by session id so only one row menu exists at a time. */
+  let sessionRowMenuFor = $state<string | undefined>(undefined);
+  /** The sidebar's session filter query (redesign v3 design spec §3.1) — client-side only, over the same `fuzzyFilter` the command palette uses. */
+  let sessionFilter = $state('');
+
+  /**
+   * Closes every anchored popover in the sidebar. Called from the shared
+   * `pointerdown`/Escape handlers and before opening a different one, so two
+   * popovers can never be open at once (they overlap in the same corner).
+   */
+  function closeSidebarMenus(): void {
+    accountMenuOpen = false;
+    newSessionMenuOpen = false;
+    sessionRowMenuFor = undefined;
+  }
+
+  const anySidebarMenuOpen = $derived(
+    accountMenuOpen || newSessionMenuOpen || sessionRowMenuFor !== undefined,
+  );
+
+  /**
+   * Dismisses an anchored popover on a pointerdown anywhere outside it.
+   * Bound on `window` (capture phase off) only while one is open; the menus
+   * themselves stop propagation on their own root, and each trigger toggles
+   * its own state on `click`, which fires after this `pointerdown` — hence
+   * the `data-sidebar-menu` opt-out marker rather than a naive close-all.
+   */
+  function handleWindowPointerDown(event: PointerEvent): void {
+    if (!anySidebarMenuOpen) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-sidebar-menu]')) return;
+    closeSidebarMenus();
+  }
 
   /** Sets (or closes, via `null`) the Drawer's one open tab. */
   function setActiveDrawer(tab: DrawerTab | null): void {
@@ -436,28 +504,48 @@
     sessionStatuses.clear();
   }
 
+  // Persistence for the four client-side UI preferences below (relay URL,
+  // Drawer pin, Sessions width/collapsed) is gated on this flag because in
+  // Svelte 5 `onMount` is itself just another user effect, scheduled in
+  // DECLARATION order alongside `$effect` — these effects are declared
+  // above `onMount`, so on a fresh load they used to run FIRST and write
+  // each preference's compile-time default over the persisted value before
+  // `onMount` ever got to read it back (a self-hoster's relay URL, a pinned
+  // Drawer, and a resized/collapsed Sessions column were all silently lost
+  // on every reload). `onMount` flips this once it has restored, after
+  // which every later change persists exactly as before.
+  let preferencesRestored = false;
+
   // Persists an operator-edited relay URL as soon as it changes (not just on
   // submit) so it survives the full-page reload a real OAuth redirect does —
   // see `onMount`'s restore of the same key. `$effect` is client/DOM-only in
   // Svelte 5 (never runs during `routes/page.test.ts`'s SSR render).
   $effect(() => {
-    localStorage.setItem(RELAY_URL_STORAGE_KEY, relayUrl);
+    const value = relayUrl;
+    if (!preferencesRestored) return;
+    localStorage.setItem(RELAY_URL_STORAGE_KEY, value);
   });
 
   // Persists the Drawer's pinned-column preference (redesign brief §1)
   // the same way — see `onMount`'s restore of the same key below.
   $effect(() => {
-    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, drawerPinned ? '1' : '0');
+    const value = drawerPinned;
+    if (!preferencesRestored) return;
+    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, value ? '1' : '0');
   });
 
   // Persists the Sessions column's own drag-resized width + collapsed-to-
   // selvage preference (redesign brief §1, issue #438) — see `onMount`'s
   // restore of the same two keys below.
   $effect(() => {
-    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(sessionsWidthPx));
+    const value = sessionsWidthPx;
+    if (!preferencesRestored) return;
+    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(value));
   });
   $effect(() => {
-    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, sessionsCollapsed ? '1' : '0');
+    const value = sessionsCollapsed;
+    if (!preferencesRestored) return;
+    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, value ? '1' : '0');
   });
 
   const planCollapsed = $derived(
@@ -480,10 +568,6 @@
     !narrowViewport || composerToolbarExpanded || attachments.length > 0,
   );
 
-  /** The redesign brief's header title zone: "current session title once selected" (§1). */
-  const selectedSessionTitle = $derived(
-    sessions.find((session) => session.id === selectedSessionId)?.title,
-  );
   /**
    * True once the full four-zone Warp Deck shell (rail/sessions/canvas/
    * drawer, redesign brief §1) should render instead of the plain lockup
@@ -494,6 +578,44 @@
    */
   const cockpitReady = $derived(!!authSession && onboardingNeeded === false);
 
+  /** The selected session itself — the header's breadcrumb needs its project/target, not just its title. */
+  const selectedSession = $derived(sessions.find((session) => session.id === selectedSessionId));
+
+  /**
+   * What the sidebar's account row calls the signed-in person (spec §3.1 /
+   * defect A2): their name, else their email, else — only when the identity
+   * provider gave neither — the raw account id, which is what every build
+   * before this one showed unconditionally.
+   */
+  const accountLabel = $derived(
+    authSession?.displayName ?? authSession?.email ?? authSession?.accountId ?? '',
+  );
+  const accountInitial = $derived(accountLabel.charAt(0).toUpperCase() || '?');
+
+  /**
+   * The header's connection state (redesign v3 design spec §3.3). Rendered
+   * ONLY when the connection is not healthy: a permanently green dot in the
+   * app's highest-attention corner spent those pixels saying nothing, so a
+   * healthy connection now shows nothing at all and every other state gets
+   * a labelled chip with a retry.
+   */
+  const connectionNotice = $derived.by(
+    (): { tone: StatusTone; label: string; retry: boolean } | undefined => {
+      switch (status) {
+        case 'open':
+          return undefined;
+        case 'connecting':
+          return { tone: 'warning', label: 'Connecting…', retry: false };
+        case 'closed':
+          return { tone: 'warning', label: 'Reconnecting…', retry: true };
+        case 'error':
+          return { tone: 'danger', label: 'Offline', retry: true };
+        default:
+          return { tone: 'neutral', label: 'Not connected', retry: false };
+      }
+    },
+  );
+
   // Most logic (the WS connection, the E2E-encrypted session list, the
   // transcript decrypt+reduce, the permission queue, config options, and the
   // composer's send path) lives in $lib/relay-client.ts, unit-tested there
@@ -503,7 +625,14 @@
   // widgets, the diff viewer, the inline plan card, the permission FIFO
   // queue bar, and the config bar, each unit-tested on its own against fixed
   // fixtures rather than through this page.
-  let client: RelayClient | undefined;
+  /**
+   * `$state`, not a plain `let`: the template gates the Terminal drawer
+   * panel on `client` and hands it to `NewSessionDialog`/`AddTargetWizard`,
+   * so a plain assignment in `connect()` left those surfaces looking at a
+   * stale `undefined` — the Svelte compiler has been warning about exactly
+   * this (`non_reactive_update`) since the runes migration.
+   */
+  let client = $state<RelayClient | undefined>(undefined);
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
   let unsubscribeSessionDecryptFailures: (() => void) | undefined;
@@ -672,6 +801,19 @@
     } else {
       onboardingNeeded = true;
     }
+  }
+
+  /**
+   * The header connection chip's retry (redesign v3 design spec §3.3). The
+   * old header rendered connection state as an unlabelled dot with no way
+   * to act on it; a bad state now says what it is and offers the one thing
+   * a user can do about it — tear the dead client down and dial again from
+   * scratch, exactly what a reload used to be needed for.
+   */
+  function retryConnection(): void {
+    if (!authSession) return;
+    disconnect();
+    beginSessionFor(authSession);
   }
 
   /** `OnboardingGate`'s first-device path (issue #384): persists the freshly generated AMK, defers escrowing its Recovery Code until `connect()`'s own client reaches `'open'` (see that function's doc comment), then proceeds into the cockpit. */
@@ -1068,12 +1210,27 @@
     return target?.label ?? session.targetId;
   }
 
-  const groupSessionsByTarget = $derived(new Set(sessions.map(sessionTargetKey)).size > 1);
+  /**
+   * The sessions the sidebar actually lists (redesign v3 design spec §3.1's
+   * filter row). Matched over title + project path + target id through the
+   * same `fuzzyFilter` the command palette uses, so typing `pitch` or
+   * `build-server` narrows the list the way typing it into ⌘K would. An
+   * empty query returns everything in its original order.
+   */
+  const visibleSessions = $derived(
+    fuzzyFilter(
+      sessions,
+      sessionFilter,
+      (session) => `${session.title} ${session.projectPath} ${session.targetId}`,
+    ),
+  );
+
+  const groupSessionsByTarget = $derived(new Set(visibleSessions.map(sessionTargetKey)).size > 1);
 
   const sessionGroups = $derived.by((): SessionGroup[] => {
     if (!groupSessionsByTarget) return [];
     const groups = new SvelteMap<string, SessionGroup>();
-    for (const session of sessions) {
+    for (const session of visibleSessions) {
       const key = sessionTargetKey(session);
       let group = groups.get(key);
       if (!group) {
@@ -1105,6 +1262,19 @@
   }
 
   /**
+   * The last path segment of a session's `projectPath` — what the sidebar
+   * row's meta line shows (redesign v3 design spec §3.2). The full path is
+   * both too long for a 17rem column and the least distinguishing part of
+   * it: two sessions in the same checkout differ by their target, not by
+   * `/Users/lorenzo/Progetti/`. The full path stays reachable through the
+   * row's title attribute and its `⋯` menu.
+   */
+  function projectName(projectPath: string): string {
+    const trimmed = projectPath.replace(/\/+$/, '');
+    return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed || projectPath;
+  }
+
+  /**
    * A short relative-time string for the row's last-activity detail
    * (redesign brief §1's row content). `ClientSessionMeta.createdAt` is the
    * one timestamp already flowing into this list without adding a new
@@ -1123,22 +1293,9 @@
     return `${Math.round(ageMs / 86_400_000)}d ago`;
   }
 
-  /** Maps `AcpSessionStatus` onto the shared `StatusDot` tone vocabulary — the same four colors the row's existing `.status-badge` text already carries (see its own CSS below), just also driving the dot. */
-  const SESSION_STATUS_TONES: Record<AcpSessionStatus, StatusTone> = {
-    working: 'info',
-    awaiting_input: 'neutral',
-    permission_required: 'warning',
-    error: 'danger',
-    exited: 'neutral',
-  };
-
-  const SESSION_STATUS_LABELS: Record<AcpSessionStatus, string> = {
-    working: 'Working',
-    awaiting_input: 'Awaiting input',
-    permission_required: 'Permission required',
-    error: 'Error',
-    exited: 'Exited',
-  };
+  // Session status wording/tones now live in `$lib/session-status.ts` — see
+  // that module's doc comment (the sidebar, the palette and the attention
+  // inbox all describe the same five states and used to disagree).
 
   /**
    * Pushes the current mute/quiet-hours preferences, plus this device's
@@ -1181,6 +1338,21 @@
   }
 
   /**
+   * Keeps the Drawer's active tab visible (redesign v3 design spec §3.6).
+   * The tab strip is one horizontally-scrolling row rather than two wrapped
+   * ones, so with six tabs in a 26rem panel the selected one can start off
+   * screen — reachable, but invisible, which is worse than the wrapping it
+   * replaced. Re-runs whenever `active` flips, because an attachment's
+   * argument is part of its reactive dependency set.
+   */
+  function revealActiveTab(active: boolean) {
+    return (node: Element) => {
+      if (!active) return;
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    };
+  }
+
+  /**
    * The Drawer's own enter/exit motion (redesign brief §1: "drawer/sheet
    * slide", `tokens.css`'s `--duration-base`/`--ease-shuttle`) — needed now
    * that the overlay-mode Drawer mounts/unmounts through the shared
@@ -1217,6 +1389,14 @@
 
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
+    // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
+    // menu has no business dimming the app), so Escape is handled here
+    // rather than by `Overlay`'s own window handler.
+    if (event.key === 'Escape' && anySidebarMenuOpen) {
+      event.preventDefault();
+      closeSidebarMenus();
+      return;
+    }
     if (paletteOpen) return;
     if (isModShortcut(event, 'k')) {
       event.preventDefault();
@@ -1336,6 +1516,11 @@
     const persistedSessionsCollapsed = localStorage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY);
     if (persistedSessionsCollapsed) sessionsCollapsed = persistedSessionsCollapsed === '1';
 
+    // Every preference above is now the persisted one, so the four
+    // persistence effects declared near the top of this component may
+    // start writing (see `preferencesRestored`'s own doc comment).
+    preferencesRestored = true;
+
     const store = ensureAuthStore();
 
     const unsubscribeAuthSession = store.session.subscribe((value) => {
@@ -1374,7 +1559,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} onpointerdown={handleWindowPointerDown} />
 
 <main class:cockpit={cockpitReady}>
   {#if !cockpitReady}
@@ -1445,64 +1630,24 @@
       {/if}
     </section>
   {:else if onboardingNeeded}
+    <!-- Onboarding (redesign v3 design spec §3.1): the cockpit's own chrome
+         used to be duplicated here as a row of ghost buttons — Inbox, Nodes
+         & targets, Jump to…, Mute & quiet hours — none of which has anything
+         to act on before this device even holds the account key. What is
+         left is identity, live connection state, and the way out. -->
     <section class="connection">
       <span class="account">{authSession.accountId}</span>
       <span class="status" data-status={status}>
         {#if status === 'connecting'}
           <WovenLoader label="Connecting to the relay" />
         {/if}
-        status: {status}
+        {connectionNotice?.label ?? 'Connected'}
       </span>
-      <Button
-        variant="ghost"
-        size="sm"
-        class={toggleActiveClass(activeDrawer === 'inbox')}
-        onclick={() => toggleDrawer('inbox')}
-        dataTestId="inbox-toggle"
-      >
-        Inbox
-        {#if attentionInboxItems.length > 0}
-          <span class="inbox-count" data-testid="inbox-count">{attentionInboxItems.length}</span>
-        {/if}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        class={toggleActiveClass(activeDrawer === 'targets')}
-        onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
-        dataTestId="target-status-toggle"
-      >
-        Nodes &amp; targets
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={() => (paletteOpen = true)}
-        dataTestId="command-palette-toggle"
-      >
-        Jump to… (Ctrl/Cmd+K)
-      </Button>
       <Button variant="ghost" size="sm" onclick={signOut}>Sign out</Button>
-      {#if deviceId}
-        <PushNotificationToggle
-          relayBaseUrl={relayHttpBaseUrl(relayUrl)}
-          authToken={authSession.token}
-          {deviceId}
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          class={toggleActiveClass(activeDrawer === 'settings')}
-          onclick={() => toggleDrawer('settings')}
-          dataTestId="notification-settings-toggle"
-        >
-          Mute &amp; quiet hours
-        </Button>
-      {/if}
-      {#if authError}
-        <p class="error" role="alert">{authError}</p>
-      {/if}
     </section>
+    {#if authError}
+      <ErrorNotice message={authError} />
+    {/if}
 
     <OnboardingGate
       accountId={authSession.accountId}
@@ -1512,377 +1657,258 @@
       onNewDevice={handleNewDeviceOnboarded}
     />
   {:else}
-    <!-- The Warp Deck cockpit (redesign brief §1, issue #427): a sticky
-         3-zone header, then a rail/sessions/canvas/drawer row filling the
-         rest of the viewport. -->
-    <header class="warp-header">
-      <div class="warp-header-zone warp-header-left">
-        <h1 class="cockpit-brand">
-          <BrandMark decorative={false} label="loombox" />
-        </h1>
-        {#if selectedSessionTitle}
-          <span class="session-title" data-testid="cockpit-session-title"
-            >{selectedSessionTitle}</span
-          >
-        {/if}
-      </div>
+    <!-- The cockpit (redesign v3 design spec §3.1-§3.4): ONE sidebar (brand,
+         primary action, filter, sessions, secondary nav, account) beside a
+         workspace (context header + canvas), with the Drawer as the only
+         other content surface. This replaces v2's icon rail + Sessions
+         column + three-zone header, which was two navigations and a dead
+         "Sessions" rail item that did nothing above 1024px. -->
 
-      <div class="warp-header-zone warp-header-center">
-        <!-- The compact, always-visible target-health StatusDot cluster
-             (redesign brief §0/§1/§6): glanceable node/target health without
-             opening the Drawer. Fed by `startTargetStatusPolling`, which
-             runs continuously once connected, not only while the Drawer's
-             "targets" tab happens to be open. -->
-        {#if targetHealthDots.length > 0}
-          <Button
-            variant="ghost"
-            size="sm"
-            class="target-health-cluster"
-            onclick={() => openTargetStatus()}
-            ariaLabel="Nodes &amp; targets"
-            dataTestId="target-health-cluster"
-          >
-            {#each targetHealthDots.slice(0, 6) as dot (dot.key)}
-              <!-- TODO(redesign wave 2): replace with <StatusDot>. -->
-              <span class="target-dot" data-state={dot.state} title={dot.label}></span>
-            {/each}
-            {#if targetHealthDots.length > 6}
-              <span class="target-dot-overflow">+{targetHealthDots.length - 6}</span>
-            {/if}
-          </Button>
-        {/if}
-      </div>
-
-      <div class="warp-header-zone warp-header-right">
-        <span
-          class="connection-dot"
-          data-status={status}
-          title={`status: ${status}`}
-          data-testid="connection-status-dot"
-        >
-          <span class="sr-only">status: {status}</span>
-        </span>
-        <IconButton
-          label="Jump to… (Ctrl/Cmd+K)"
-          onclick={() => (paletteOpen = true)}
-          dataTestId="command-palette-toggle"
-        >
-          <Icon name="command" />
-        </IconButton>
-        <div class="account-menu">
-          <!-- `aria-haspopup`/`aria-expanded` on a disclosure trigger aren't
-               attributes the shared `Button` primitive forwards — kept as a
-               plain button rather than dropping real, load-bearing a11y
-               semantics for the sake of consolidation. -->
-          <button
-            type="button"
-            class="account-menu-trigger"
-            aria-haspopup="menu"
-            aria-expanded={accountMenuOpen}
-            onclick={() => (accountMenuOpen = !accountMenuOpen)}
-            data-testid="account-menu-toggle"
-          >
-            {authSession.accountId}
-          </button>
-        </div>
-      </div>
-    </header>
-
-    <!-- The account menu's dropdown (redesign v2 §2 "Drawer that closes + IA
-         cleanup", issue #462): rendered through the shared `Overlay`
-         primitive, as a sibling of `.warp-header` rather than nested inside
-         it — `.warp-header`'s own `position: sticky` + `z-index` establishes
-         a stacking context that used to cap the dropdown's effective z-index
-         below the Drawer's, regardless of its own (higher) local z-index.
-         Sharing one overlay root at the top level fixes that. IA cleanup:
-         this menu is identity-only now — Sign out and an Appearance
-         shortcut; Notifications/Nodes & targets/Inbox are all reachable from
-         the rail (or the Settings Drawer tab) already, so they're gone from
-         here rather than duplicated. -->
-    <Overlay
-      open={accountMenuOpen}
-      onClose={() => (accountMenuOpen = false)}
-      zIndex="--z-overlay"
-      class="account-menu-backdrop"
-      testid="account-menu-backdrop"
-    >
-      <!-- The click handler is only a guard against `Overlay`'s own
-           backdrop-click-to-close bubbling past this panel (mirrors
-           `Dialog.svelte`'s identical stop-propagation guard on its own
-           panel) — every real interaction here is a child button. -->
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_interactive_supports_focus -->
-      <div
-        class="account-menu-dropdown"
-        role="menu"
-        data-testid="account-menu"
-        onclick={(event) => event.stopPropagation()}
+    <!-- One row's markup, shared between the flat list and the grouped list
+         below so neither copy can drift from the other. -->
+    {#snippet sessionRow(session: ClientSessionMeta)}
+      {@const sessionStatus = sessionStatuses.get(session.id)}
+      {@const needsAttention = sessionsNeedingAttention.has(session.id)}
+      {@const statusLabel = sessionStatus
+        ? SESSION_STATUS_LABELS[sessionStatus]
+        : SESSION_STATUS_UNKNOWN_LABEL}
+      <li
+        class="session-row"
+        class:menu-open={sessionRowMenuFor === session.id}
+        data-testid="session-row-item"
       >
         <button
           type="button"
-          role="menuitem"
-          onclick={() => {
-            setActiveDrawer('settings');
-            accountMenuOpen = false;
-          }}
+          class="session"
+          class:selected={session.id === selectedSessionId}
+          onclick={() => selectSession(session.id)}
+          title={`${session.title}\n${session.projectPath} · ${session.targetId}\n${statusLabel}`}
         >
-          Appearance
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          class="danger"
-          onclick={() => {
-            accountMenuOpen = false;
-            void signOut();
-          }}
-        >
-          Sign out
-        </button>
-      </div>
-    </Overlay>
-
-    {#if escrowStatus !== 'idle'}
-      <!-- The first-device escrow round trip (redesign brief §6, issue
-           #430): a real `Card` for the in-flight wait, with the
-           `thread-draw-fill-loop` sweep the brief names directly for
-           "the escrow/pairing in-flight state"; a real `ErrorNotice` if it
-           fails, rather than a bare tinted paragraph either way. -->
-      <div
-        class="escrow-status"
-        data-testid="escrow-status"
-        role={escrowStatus === 'in-flight' ? 'status' : undefined}
-      >
-        {#if escrowStatus === 'in-flight'}
-          <Card elevation="raised" padding="sm">
-            <div class="escrow-inflight-row">
-              <WovenLoader label="Securing your account key" />
-              <span>Securing your account key…</span>
-            </div>
-            <span class="in-flight-track" aria-hidden="true">
-              <span class="thread-draw-fill-loop in-flight-bar"></span>
+          <span class="session-status" data-testid="session-status-badge">
+            <StatusDot
+              tone={sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
+              pulse={sessionStatus === 'working'}
+              label={statusLabel}
+              size="sm"
+            />
+          </span>
+          <span class="session-main">
+            <span class="session-title-row">
+              <strong>{session.title}</strong>
+              {#if needsAttention}
+                <span
+                  class="session-attention-dot"
+                  data-testid="session-attention-dot"
+                  aria-hidden="true"
+                ></span>
+                <span class="sr-only">Needs attention</span>
+              {/if}
             </span>
-          </Card>
-        {:else}
-          <ErrorNotice
-            message={`Couldn't save your Recovery Code to the relay${escrowError ? `: ${escrowError}` : '.'} This device still works, but recovering this account elsewhere may not until it does.`}
+            <span class="session-meta">
+              {projectName(session.projectPath)} · {session.targetId}
+            </span>
+          </span>
+          <span class="session-activity font-mono" data-testid="session-activity"
+            >{formatSessionActivity(session.createdAt)}</span
+          >
+        </button>
+        <!-- The row's actions used to be one permanently visible "Target
+             status" button, wide enough to squeeze the title down to a
+             single character. They live behind a hover/focus-revealed `⋯`
+             now (spec §3.2). `data-sidebar-menu` opts this subtree out of
+             the window-level dismiss handler. -->
+        <div class="session-row-actions" data-sidebar-menu>
+          <IconButton
+            label={`More actions for ${session.title}`}
+            class="session-row-more"
+            dataTestId="session-row-more"
+            onclick={() => {
+              const wasOpen = sessionRowMenuFor === session.id;
+              closeSidebarMenus();
+              sessionRowMenuFor = wasOpen ? undefined : session.id;
+            }}
+          >
+            <Icon name="more" />
+          </IconButton>
+          {#if sessionRowMenuFor === session.id}
+            <div class="popover-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="session-target-status-link"
+                onclick={() => {
+                  closeSidebarMenus();
+                  openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId });
+                }}
+              >
+                Target status
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onclick={() => {
+                  closeSidebarMenus();
+                  void copyToClipboard(session.projectPath);
+                }}
+              >
+                Copy project path
+              </button>
+            </div>
+          {/if}
+        </div>
+      </li>
+    {/snippet}
+
+    <!-- The collapsed sidebar's icon-only row: avatar + status dot only. -->
+    {#snippet selvageSessionRow(session: ClientSessionMeta)}
+      {@const sessionStatus = sessionStatuses.get(session.id)}
+      {@const statusLabel = sessionStatus
+        ? SESSION_STATUS_LABELS[sessionStatus]
+        : SESSION_STATUS_UNKNOWN_LABEL}
+      <li>
+        <button
+          type="button"
+          class="selvage-session"
+          class:selected={session.id === selectedSessionId}
+          class:needs-attention={sessionsNeedingAttention.has(session.id)}
+          onclick={() => selectSession(session.id)}
+          title={`${session.title} — ${statusLabel}`}
+          aria-label={`${session.title} — ${statusLabel}`}
+          data-testid="selvage-session"
+        >
+          <span class="selvage-avatar" aria-hidden="true">{sessionInitial(session)}</span>
+          <StatusDot
+            tone={sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
+            pulse={sessionStatus === 'working'}
+            label={statusLabel}
+            size="sm"
+            class="selvage-status-dot"
           />
-        {/if}
-      </div>
-    {/if}
-    {#if authError}
-      <p class="error" role="alert">{authError}</p>
-    {/if}
+        </button>
+      </li>
+    {/snippet}
 
-    <div class="warp-body">
-      <nav class="rail" aria-label="Primary">
-        <button
-          type="button"
-          class="rail-item"
-          class:active={sessionsSheetOpen}
-          onclick={() => (sessionsSheetOpen = !sessionsSheetOpen)}
-          data-testid="rail-sessions"
-        >
-          <Icon name="sessions" class="rail-icon" />
-          <span class="rail-label">Sessions</span>
-        </button>
-        <button
-          type="button"
-          class="rail-item"
-          class:active={activeDrawer === 'inbox'}
-          onclick={() => toggleDrawer('inbox')}
-          data-testid="rail-inbox"
-        >
-          <Icon name="inbox" class="rail-icon" />
-          <span class="rail-label">Inbox</span>
-          {#if attentionInboxItems.length > 0}
-            <span class="rail-badge" data-testid="rail-inbox-badge"
-              >{attentionInboxItems.length}</span
-            >
-          {/if}
-        </button>
-        <button
-          type="button"
-          class="rail-item"
-          class:active={activeDrawer === 'targets'}
-          onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
-          data-testid="rail-targets"
-        >
-          <Icon name="targets" class="rail-icon" />
-          <span class="rail-label">Nodes &amp; targets</span>
-          {#if hasUnhealthyTarget}
-            <span
-              class="rail-badge rail-badge-dot"
-              data-testid="rail-targets-badge"
-              aria-hidden="true"
-            ></span>
-          {/if}
-        </button>
-        <button
-          type="button"
-          class="rail-item"
-          onclick={() => (paletteOpen = true)}
-          data-testid="rail-command"
-        >
-          <Icon name="command" class="rail-icon" />
-          <span class="rail-label">Command</span>
-        </button>
-        <div class="rail-spacer"></div>
-        <button
-          type="button"
-          class="rail-item"
-          class:active={activeDrawer === 'settings'}
-          onclick={() => toggleDrawer('settings')}
-          data-testid="rail-settings"
-        >
-          <Icon name="settings" class="rail-icon" />
-          <span class="rail-label">Settings</span>
-        </button>
-      </nav>
-
+    <div class="shell">
       {#if sessionsSheetOpen}
         <button
           type="button"
-          class="sessions-backdrop"
+          class="sidebar-backdrop"
           aria-label="Close sessions"
           onclick={() => (sessionsSheetOpen = false)}
         ></button>
       {/if}
 
-      <!-- A single row's markup (redesign brief §1/§4, issue #438: StatusDot
-           + first-letter avatar + title + last-activity + attention
-           affordance), shared between the flat list and the grouped-by-
-           target list below so neither copy can drift from the other. -->
-      {#snippet sessionRow(session: ClientSessionMeta)}
-        {@const sessionStatus = sessionStatuses.get(session.id)}
-        {@const needsAttention = sessionsNeedingAttention.has(session.id)}
-        <li class="session-row" data-testid="session-row-item">
-          <button
-            type="button"
-            class="session"
-            class:selected={session.id === selectedSessionId}
-            onclick={() => selectSession(session.id)}
-          >
-            <span class="session-avatar" aria-hidden="true">{sessionInitial(session)}</span>
-            <span class="session-main">
-              <span class="session-title-row">
-                <strong>{session.title}</strong>
-                {#if needsAttention}
-                  <span
-                    class="session-attention-dot"
-                    data-testid="session-attention-dot"
-                    aria-hidden="true"
-                  ></span>
-                  <span class="sr-only">Needs attention</span>
-                {/if}
-                {#if sessionStatus}
-                  <span
-                    class="status-badge"
-                    data-status={sessionStatus}
-                    data-testid="session-status-badge"
-                  >
-                    <StatusDot
-                      tone={SESSION_STATUS_TONES[sessionStatus]}
-                      pulse={sessionStatus === 'working'}
-                      label={SESSION_STATUS_LABELS[sessionStatus]}
-                      size="sm"
-                    />
-                    {sessionStatus}
-                  </span>
-                {/if}
-              </span>
-              <span class="session-meta-row">
-                <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
-                <span class="session-activity font-mono" data-testid="session-activity"
-                  >{formatSessionActivity(session.createdAt)}</span
-                >
-              </span>
-            </span>
-          </button>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="session-target-status-link"
-            ariaLabel={`View status for target ${session.targetId}`}
-            onclick={() => openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
-            dataTestId="session-target-status-link"
-          >
-            Target status
-          </Button>
-        </li>
-      {/snippet}
-
-      <!-- The icon-only "selvage rail" row (redesign brief §1: "status dot
-           + first-letter avatar, tooltip on hover"). -->
-      {#snippet selvageSessionRow(session: ClientSessionMeta)}
-        {@const sessionStatus = sessionStatuses.get(session.id)}
-        <li>
-          <button
-            type="button"
-            class="selvage-session"
-            class:selected={session.id === selectedSessionId}
-            class:needs-attention={sessionsNeedingAttention.has(session.id)}
-            onclick={() => selectSession(session.id)}
-            title={session.title}
-            aria-label={session.title}
-            data-testid="selvage-session"
-          >
-            <span class="selvage-avatar" aria-hidden="true">{sessionInitial(session)}</span>
-            <StatusDot
-              tone={sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
-              pulse={sessionStatus === 'working'}
-              label={sessionStatus ? SESSION_STATUS_LABELS[sessionStatus] : 'No status yet'}
-              size="sm"
-              class="selvage-status-dot"
-            />
-          </button>
-        </li>
-      {/snippet}
-
       <aside
-        class="sessions"
+        class="sidebar"
         class:sheet-open={sessionsSheetOpen}
         class:collapsed={sessionsRailCollapsed}
         class:resizing={sessionsResizing}
         style={sessionsSheetViewport ? undefined : `width: ${sessionsColumnWidthPx}px`}
         data-testid="sessions-column"
       >
-        <div class="sessions-header">
-          {#if !sessionsRailCollapsed}
-            <h2>Sessions</h2>
-          {/if}
-          <div class="sessions-header-actions">
-            {#if !sessionsRailCollapsed && status === 'open'}
-              <Button
-                variant="secondary"
-                size="sm"
-                onclick={openAddTargetWizard}
-                dataTestId="add-target-button"
-              >
-                Add target
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onclick={openNewSessionDialog}
-                dataTestId="new-session-button"
-              >
-                New session
-              </Button>
+        <div class="sidebar-brand">
+          <h1 class="sidebar-brand-mark">
+            {#if sessionsRailCollapsed}
+              <BrandMark decorative={false} label="loombox" />
+            {:else}
+              <BrandLockup />
             {/if}
-            <!-- TODO(redesign wave 2/5): replace this chevron glyph with the real icon set (SPEC brief §5). -->
-            <IconButton
-              label={sessionsCollapsed ? 'Expand sessions' : 'Collapse sessions'}
-              pressed={sessionsCollapsed}
-              onclick={toggleSessionsCollapsed}
-              class="sessions-collapse-toggle"
-            >
-              <span aria-hidden="true">{sessionsCollapsed ? '»' : '«'}</span>
-            </IconButton>
-          </div>
+          </h1>
+          <IconButton
+            label={sessionsCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            pressed={sessionsCollapsed}
+            onclick={toggleSessionsCollapsed}
+            class="sidebar-collapse-toggle"
+            dataTestId="sidebar-collapse-toggle"
+          >
+            <Icon name="collapse-chevron" class={sessionsCollapsed ? 'flip' : ''} />
+          </IconButton>
         </div>
 
-        <div class="sessions-content">
+        {#if status === 'open'}
+          <div class="sidebar-actions" data-sidebar-menu>
+            {#if sessionsRailCollapsed}
+              <IconButton
+                label="New session"
+                onclick={openNewSessionDialog}
+                dataTestId="new-session-button"
+                class="sidebar-new-icon"
+              >
+                <Icon name="plus" />
+              </IconButton>
+            {:else}
+              <!-- One primary action, not two competing ones: "Add target" is
+                   a once-per-machine setup step and belongs in the split
+                   menu, not beside the thing you do twenty times a day
+                   (spec §3.1). -->
+              <div class="split-button">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  fullWidth
+                  onclick={openNewSessionDialog}
+                  dataTestId="new-session-button"
+                  class="split-button-main"
+                >
+                  New session
+                </Button>
+                <IconButton
+                  label="More ways to start"
+                  pressed={newSessionMenuOpen}
+                  class="split-button-more"
+                  dataTestId="new-session-menu-toggle"
+                  onclick={() => {
+                    const wasOpen = newSessionMenuOpen;
+                    closeSidebarMenus();
+                    newSessionMenuOpen = !wasOpen;
+                  }}
+                >
+                  <Icon name="chevron-down" />
+                </IconButton>
+              </div>
+              {#if newSessionMenuOpen}
+                <div class="popover-menu popover-below" role="menu" data-testid="new-session-menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="add-target-button"
+                    onclick={() => {
+                      closeSidebarMenus();
+                      openAddTargetWizard();
+                    }}
+                  >
+                    Add a target
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      closeSidebarMenus();
+                      openTargetStatus();
+                    }}
+                  >
+                    Nodes &amp; targets
+                  </button>
+                </div>
+              {/if}
+            {/if}
+          </div>
+        {/if}
+
+        {#if !sessionsRailCollapsed && sessions.length > 0}
+          <div class="sidebar-filter">
+            <Icon name="search" class="sidebar-filter-icon" />
+            <input
+              type="search"
+              bind:value={sessionFilter}
+              placeholder="Filter sessions…"
+              aria-label="Filter sessions"
+              data-testid="session-filter"
+            />
+          </div>
+        {/if}
+
+        <div class="sidebar-sessions">
           {#if sessionsRailCollapsed}
             <ul class="selvage-list" data-testid="selvage-session-list">
               {#each sessions as session (session.id)}
@@ -1917,6 +1943,10 @@
                 </Button>
               {/snippet}
             </EmptyState>
+          {:else if visibleSessions.length === 0}
+            <p class="empty" data-testid="session-filter-empty">
+              No session matches “{sessionFilter}”.
+            </p>
           {:else if groupSessionsByTarget}
             {#each sessionGroups as group (group.key)}
               <div class="session-group">
@@ -1947,27 +1977,121 @@
             {/each}
           {:else}
             <ul>
-              {#each sessions as session (session.id)}
+              {#each visibleSessions as session (session.id)}
                 {@render sessionRow(session)}
               {/each}
             </ul>
           {/if}
         </div>
 
+        <nav class="sidebar-nav" aria-label="Secondary">
+          <button
+            type="button"
+            class="sidebar-nav-item"
+            class:active={activeDrawer === 'inbox'}
+            onclick={() => toggleDrawer('inbox')}
+            data-testid="inbox-toggle"
+          >
+            <Icon name="inbox" class="sidebar-nav-icon" />
+            <span class="sidebar-nav-label">Inbox</span>
+            {#if attentionInboxItems.length > 0}
+              <span class="sidebar-nav-badge" data-testid="inbox-count"
+                >{attentionInboxItems.length}</span
+              >
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="sidebar-nav-item"
+            class:active={activeDrawer === 'targets'}
+            onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
+            data-testid="target-status-toggle"
+          >
+            <Icon name="targets" class="sidebar-nav-icon" />
+            <span class="sidebar-nav-label">Nodes &amp; targets</span>
+            {#if hasUnhealthyTarget}
+              <span
+                class="sidebar-nav-badge sidebar-nav-badge-dot"
+                data-testid="targets-health-badge"
+                aria-hidden="true"
+              ></span>
+              <span class="sr-only">Some targets need attention</span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="sidebar-nav-item"
+            class:active={activeDrawer === 'settings'}
+            onclick={() => toggleDrawer('settings')}
+            data-testid="settings-toggle"
+          >
+            <Icon name="settings" class="sidebar-nav-icon" />
+            <span class="sidebar-nav-label">Settings</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-account" data-sidebar-menu>
+          {#if accountMenuOpen}
+            <div class="popover-menu popover-above" role="menu" data-testid="account-menu">
+              <p class="popover-heading">Signed in as</p>
+              <p class="popover-identity">{accountLabel}</p>
+              {#if authSession.email && authSession.email !== accountLabel}
+                <p class="popover-identity-secondary">{authSession.email}</p>
+              {/if}
+              <button
+                type="button"
+                role="menuitem"
+                onclick={() => {
+                  closeSidebarMenus();
+                  setActiveDrawer('settings');
+                }}
+              >
+                Appearance &amp; settings
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                class="danger"
+                onclick={() => {
+                  closeSidebarMenus();
+                  void signOut();
+                }}
+              >
+                Sign out
+              </button>
+            </div>
+          {/if}
+          <button
+            type="button"
+            class="account-trigger"
+            aria-haspopup="menu"
+            aria-expanded={accountMenuOpen}
+            onclick={() => {
+              const wasOpen = accountMenuOpen;
+              closeSidebarMenus();
+              accountMenuOpen = !wasOpen;
+            }}
+            data-testid="account-menu-toggle"
+          >
+            <span class="account-avatar" aria-hidden="true">{accountInitial}</span>
+            <span class="account-name">{accountLabel}</span>
+            <Icon name="more" class="account-chevron" />
+          </button>
+        </div>
+
         {#if !sessionsRailCollapsed}
-          <!-- A focusable, draggable `separator` (redesign brief §1's
-               drag-resize handle) is the WAI-ARIA APG's own "Window
-               Splitter" pattern — a deliberate exception to the usual
+          <!-- A focusable, draggable `separator` is the WAI-ARIA APG's own
+               "Window Splitter" pattern — a deliberate exception to the usual
                noninteractive-role rule, mirroring `PermissionCard.svelte`'s
                identical pair of ignores for its own keyboard-focusable
                `group`. -->
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
-            class="sessions-resize-handle"
+            class="sidebar-resize-handle"
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize sessions column"
+            aria-label="Resize sidebar"
             aria-valuenow={sessionsWidthPx}
             aria-valuemin={MIN_SESSIONS_WIDTH_PX}
             aria-valuemax={MAX_SESSIONS_WIDTH_PX}
@@ -1979,165 +2103,253 @@
         {/if}
       </aside>
 
-      <section class="canvas">
-        {#if !selectedSessionId}
-          <p class="empty">Select a session to view its live transcript.</p>
-        {:else}
-          <div class="transcript-toolbar">
-            <CopyButton
-              text={transcript ? exportTranscriptText(transcript) : ''}
-              label="Export transcript"
-              copyFn={exportTranscript}
-            />
-            <Button
-              variant="ghost"
-              size="sm"
-              class={toggleActiveClass(activeDrawer === 'files')}
-              onclick={() => toggleDrawer('files')}
-              dataTestId="file-tree-toggle"
-            >
-              Files
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              class={toggleActiveClass(activeDrawer === 'terminal')}
-              onclick={() => toggleDrawer('terminal')}
-              dataTestId="terminal-toggle"
-            >
-              Terminal
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              class={toggleActiveClass(activeDrawer === 'config')}
-              onclick={() => toggleDrawer('config')}
-              dataTestId="project-config-toggle"
-            >
-              Config
-            </Button>
-          </div>
-
-          <ol class="items">
-            {#each transcript?.items ?? [] as item (item.id)}
-              <li>
-                {#if item.type === 'message'}
-                  <MessageItem
-                    {item}
-                    thinking={item.kind === 'agent_thought_chunk' && transcript
-                      ? isThoughtStillThinking(transcript, item.turnId)
-                      : false}
-                    turnActive={transcript?.turnActive ?? false}
-                  />
-                {:else}
-                  <ToolCallRow
-                    {item}
-                    awaitingPermission={permissionHead?.toolCall.id === item.id}
-                  />
-                {/if}
-              </li>
-            {/each}
-          </ol>
-
-          {#if transcript && transcript.plan.length > 0}
-            <PlanCard
-              entries={transcript.plan}
-              collapsed={planCollapsed}
-              onToggle={togglePlanCollapsed}
-            />
-          {/if}
-
-          <QueuedPromptBar prompts={queuedPrompts} />
-
-          {#if staleNotice}
-            <p class="stale-notice" role="status" data-testid="stale-permission-notice">
-              {staleNotice.message}
-            </p>
-          {/if}
-
-          <PermissionQueueBar
-            sessionId={selectedSessionId}
-            queue={permissionQueue}
-            onResolve={resolvePermission}
-            onStop={stopSession}
-            narrow={narrowViewport}
-          />
-
-          <!-- The composer's own mini-toolbar (redesign brief §1/§6, issue
-               #439): ConfigBar's mode toggle + context/cost meter and
-               AttachmentBar's attach trigger/chip row share one quiet strip
-               directly above the composer, collapsing under a single "···"
-               below `--bp-mobile`/480px (`narrowViewport`) — see
-               `composerToolbarVisible`'s own doc comment for the
-               force-expand-when-attaching exception. -->
-          <div class="composer-toolbar" data-testid="composer-toolbar">
-            {#if composerToolbarVisible}
-              <div class="composer-toolbar-controls" data-testid="composer-toolbar-controls">
-                <AttachmentBar
-                  {attachments}
-                  onFiles={attachFiles}
-                  onRetry={retryAttachment}
-                  onRemove={removeAttachment}
-                />
-                <ConfigBar
-                  options={configOptions}
-                  usage={transcript?.usage}
-                  cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-                  onChange={changeConfigOption}
-                />
-              </div>
-            {/if}
-            {#if narrowViewport}
-              <IconButton
-                label={composerToolbarExpanded ? 'Hide composer options' : 'More composer options'}
-                pressed={composerToolbarExpanded}
-                onclick={() => (composerToolbarExpanded = !composerToolbarExpanded)}
-                class="composer-toolbar-expand"
+      <div class="workspace">
+        <!-- Two zones, not three (spec §3.3): the selected session's context
+             on the left, its own controls on the right. The brand and the
+             account moved into the sidebar; the always-green connection dot
+             is gone, replaced by a chip that only appears when there is
+             something wrong and something to do about it. -->
+        <header class="topbar">
+          <div class="topbar-context">
+            {#if selectedSession}
+              <span class="topbar-title" data-testid="cockpit-session-title"
+                >{selectedSession.title}</span
               >
-                ···
-              </IconButton>
+              <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                {projectName(selectedSession.projectPath)}
+                <span aria-hidden="true">·</span>
+                {selectedSession.targetId}
+              </span>
+            {:else}
+              <span class="topbar-title topbar-title-muted">No session selected</span>
             {/if}
           </div>
 
-          <form class="composer" onsubmit={submitPrompt}>
-            <div class="composer-row">
-              <textarea
-                bind:this={composerTextarea}
-                bind:value={draft}
-                oninput={handleComposerInput}
-                onkeydown={handleComposerKeydown}
-                placeholder="Send a follow-up prompt… (type @ to reference a file)"
-                aria-label="Follow-up prompt"
-                rows="1"
-                data-testid="composer-input"></textarea>
-              <div class="composer-actions">
-                <TurnStopControl
-                  turnActive={transcript?.turnActive ?? false}
-                  onStop={stopSession}
+          <div class="topbar-actions">
+            {#if connectionNotice}
+              <span
+                class="connection-chip"
+                data-tone={connectionNotice.tone}
+                data-testid="connection-status-chip"
+                role="status"
+              >
+                <StatusDot
+                  tone={connectionNotice.tone}
+                  pulse={status === 'connecting' || status === 'closed'}
+                  label={connectionNotice.label}
+                  size="sm"
                 />
-                <Button type="submit" disabled={sendDisabled} ariaLabel="Send prompt">Send</Button>
-              </div>
-            </div>
-          </form>
-        {/if}
-      </section>
+                {connectionNotice.label}
+                {#if connectionNotice.retry}
+                  <button type="button" onclick={retryConnection} data-testid="connection-retry">
+                    Retry
+                  </button>
+                {/if}
+              </span>
+            {/if}
 
-      <!-- The Drawer (redesign brief §1/§7; issue #462): replaces the six
-           independently-toggled inline panels with tabs of one component,
-           one tab visible at a time. Overlay by default (<1280px, or
-           unpinned) — rendered through the shared `Overlay` primitive
-           (backdrop-click/Escape close, same z-index tier as the account
-           menu); pinnable as a persistent third column at >=1280px
-           (`--bp-wide`) via `drawerPinned`, in which case there's no
-           backdrop/Escape at all (it's part of the layout, not a
-           dismissible overlay) — see `drawerIsOverlay`'s own doc comment. -->
+            {#if selectedSessionId}
+              <IconButton
+                label="Files"
+                pressed={activeDrawer === 'files'}
+                onclick={() => toggleDrawer('files')}
+                dataTestId="file-tree-toggle"
+              >
+                <Icon name="file" />
+              </IconButton>
+              <IconButton
+                label="Terminal"
+                pressed={activeDrawer === 'terminal'}
+                onclick={() => toggleDrawer('terminal')}
+                dataTestId="terminal-toggle"
+              >
+                <Icon name="terminal" />
+              </IconButton>
+              <IconButton
+                label="Project config"
+                pressed={activeDrawer === 'config'}
+                onclick={() => toggleDrawer('config')}
+                dataTestId="project-config-toggle"
+              >
+                <Icon name="settings" />
+              </IconButton>
+              <CopyButton
+                text={transcript ? exportTranscriptText(transcript) : ''}
+                label="Export transcript"
+                copyFn={exportTranscript}
+              />
+            {/if}
+            <IconButton
+              label="Jump to… (Ctrl/Cmd+K)"
+              onclick={() => (paletteOpen = true)}
+              dataTestId="command-palette-toggle"
+            >
+              <Icon name="command" />
+            </IconButton>
+          </div>
+        </header>
+
+        {#if authError}
+          <div class="workspace-notice">
+            <ErrorNotice message={authError} />
+          </div>
+        {/if}
+
+        {#if escrowStatus !== 'idle'}
+          <!-- The first-device escrow round trip (redesign brief §6, issue
+               #430): a real `Card` for the in-flight wait, with the
+               `thread-draw-fill-loop` sweep the brief names directly; a real
+               `ErrorNotice` if it fails. -->
+          <div
+            class="workspace-notice escrow-status"
+            data-testid="escrow-status"
+            role={escrowStatus === 'in-flight' ? 'status' : undefined}
+          >
+            {#if escrowStatus === 'in-flight'}
+              <Card elevation="raised" padding="sm">
+                <div class="escrow-inflight-row">
+                  <WovenLoader label="Securing your account key" />
+                  <span>Securing your account key…</span>
+                </div>
+                <span class="in-flight-track" aria-hidden="true">
+                  <span class="thread-draw-fill-loop in-flight-bar"></span>
+                </span>
+              </Card>
+            {:else}
+              <ErrorNotice
+                message={`Couldn't save your Recovery Code to the relay${escrowError ? `: ${escrowError}` : '.'} This device still works, but recovering this account elsewhere may not until it does.`}
+              />
+            {/if}
+          </div>
+        {/if}
+
+        <section class="canvas">
+          {#if !selectedSessionId}
+            <EmptyState
+              message="Pick a session on the left to follow its live transcript, or start a new one."
+            />
+          {:else}
+            <ol class="items">
+              {#each transcript?.items ?? [] as item (item.id)}
+                <li>
+                  {#if item.type === 'message'}
+                    <MessageItem
+                      {item}
+                      thinking={item.kind === 'agent_thought_chunk' && transcript
+                        ? isThoughtStillThinking(transcript, item.turnId)
+                        : false}
+                      turnActive={transcript?.turnActive ?? false}
+                    />
+                  {:else}
+                    <ToolCallRow
+                      {item}
+                      awaitingPermission={permissionHead?.toolCall.id === item.id}
+                    />
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+
+            <div class="canvas-footer">
+              {#if transcript && transcript.plan.length > 0}
+                <PlanCard
+                  entries={transcript.plan}
+                  collapsed={planCollapsed}
+                  onToggle={togglePlanCollapsed}
+                />
+              {/if}
+
+              <QueuedPromptBar prompts={queuedPrompts} />
+
+              {#if staleNotice}
+                <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+                  {staleNotice.message}
+                </p>
+              {/if}
+
+              <PermissionQueueBar
+                sessionId={selectedSessionId}
+                queue={permissionQueue}
+                onResolve={resolvePermission}
+                onStop={stopSession}
+                narrow={narrowViewport}
+              />
+
+              <!-- The composer's own mini-toolbar (redesign brief §1/§6, issue
+                   #439): ConfigBar's mode toggle + context/cost meter and
+                   AttachmentBar's attach trigger/chip row share one quiet strip
+                   directly above the composer, collapsing under a single "···"
+                   below `--bp-mobile`/480px (`narrowViewport`). -->
+              <div class="composer-toolbar" data-testid="composer-toolbar">
+                {#if composerToolbarVisible}
+                  <div class="composer-toolbar-controls" data-testid="composer-toolbar-controls">
+                    <AttachmentBar
+                      {attachments}
+                      onFiles={attachFiles}
+                      onRetry={retryAttachment}
+                      onRemove={removeAttachment}
+                    />
+                    <ConfigBar
+                      options={configOptions}
+                      usage={transcript?.usage}
+                      cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+                      onChange={changeConfigOption}
+                    />
+                  </div>
+                {/if}
+                {#if narrowViewport}
+                  <IconButton
+                    label={composerToolbarExpanded
+                      ? 'Hide composer options'
+                      : 'More composer options'}
+                    pressed={composerToolbarExpanded}
+                    onclick={() => (composerToolbarExpanded = !composerToolbarExpanded)}
+                    class="composer-toolbar-expand"
+                  >
+                    <Icon name="more" />
+                  </IconButton>
+                {/if}
+              </div>
+
+              <form class="composer" onsubmit={submitPrompt}>
+                <div class="composer-row">
+                  <textarea
+                    bind:this={composerTextarea}
+                    bind:value={draft}
+                    oninput={handleComposerInput}
+                    onkeydown={handleComposerKeydown}
+                    placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                    aria-label="Follow-up prompt"
+                    rows="1"
+                    data-testid="composer-input"></textarea>
+                  <div class="composer-actions">
+                    <TurnStopControl
+                      turnActive={transcript?.turnActive ?? false}
+                      onStop={stopSession}
+                    />
+                    <Button type="submit" disabled={sendDisabled} ariaLabel="Send prompt"
+                      >Send</Button
+                    >
+                  </div>
+                </div>
+                <p class="composer-hint" aria-hidden="true">
+                  <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+                </p>
+              </form>
+            </div>
+          {/if}
+        </section>
+      </div>
+
+      <!-- The Drawer (redesign brief §1/§7; issue #462): the ONE content
+           surface besides the canvas. Overlay by default (<1280px, or
+           unpinned) through the shared `Overlay` primitive; pinnable as a
+           persistent third column at >=1280px (`--bp-wide`). -->
       {#snippet drawerPanel(authSession: StoredAuthSession)}
         <!-- The click handler is only a guard against `Overlay`'s own
              backdrop-click-to-close bubbling past this panel when in
              overlay mode (mirrors `Dialog.svelte`'s identical
-             stop-propagation guard on its own panel; a no-op, but
-             harmless, in pinned mode where there's no backdrop to guard
-             against) — every real interaction here is a child control. -->
+             stop-propagation guard on its own panel). -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <aside
@@ -2150,82 +2362,32 @@
         >
           <div class="drawer-header">
             <div class="drawer-tabs" role="tablist" aria-label="Panels">
-              <Button
-                variant="ghost"
-                size="sm"
-                class={toggleActiveClass(activeDrawer === 'inbox')}
-                onclick={() => setActiveDrawer('inbox')}
-                dataTestId="drawer-tab-inbox"
-              >
-                Inbox
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                class={toggleActiveClass(activeDrawer === 'targets')}
-                onclick={() => setActiveDrawer('targets')}
-                dataTestId="drawer-tab-targets"
-              >
-                Nodes &amp; targets
-              </Button>
-              {#if selectedSessionId}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class={toggleActiveClass(activeDrawer === 'files')}
-                  onclick={() => setActiveDrawer('files')}
-                  dataTestId="drawer-tab-files"
+              {#each drawerTabs as tab (tab.id)}
+                <button
+                  type="button"
+                  role="tab"
+                  class="drawer-tab"
+                  class:active={activeDrawer === tab.id}
+                  aria-selected={activeDrawer === tab.id}
+                  onclick={() => setActiveDrawer(tab.id)}
+                  data-testid={`drawer-tab-${tab.id}`}
+                  {@attach revealActiveTab(activeDrawer === tab.id)}
                 >
-                  Files
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class={toggleActiveClass(activeDrawer === 'terminal')}
-                  onclick={() => setActiveDrawer('terminal')}
-                  dataTestId="drawer-tab-terminal"
-                >
-                  Terminal
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class={toggleActiveClass(activeDrawer === 'config')}
-                  onclick={() => setActiveDrawer('config')}
-                  dataTestId="drawer-tab-config"
-                >
-                  Config
-                </Button>
-              {/if}
-              <Button
-                variant="ghost"
-                size="sm"
-                class={toggleActiveClass(activeDrawer === 'settings')}
-                onclick={() => setActiveDrawer('settings')}
-                dataTestId="drawer-tab-settings"
-              >
-                Settings
-              </Button>
+                  <Icon name={tab.icon} class="drawer-tab-icon" />
+                  <span>{tab.label}</span>
+                </button>
+              {/each}
             </div>
             <div class="drawer-header-actions">
-              <!-- Redesign brief §1: pinnable as a persistent column at
-                   >=1280px only — the toggle itself is always reachable,
-                   but has no visible effect below that width. `aria-pressed`
-                   on a *text* toggle isn't something either shared primitive
-                   supports (`Button` has no pressed state; `IconButton`
-                   hides visible text), so this one stays a plain button
-                   rather than lose that a11y semantic. -->
-              <button
-                type="button"
-                class="drawer-pin-toggle"
-                class:active={drawerPinned}
-                aria-pressed={drawerPinned}
+              <IconButton
+                label={drawerPinned ? 'Unpin panel' : 'Pin panel'}
+                pressed={drawerPinned}
                 onclick={() => (drawerPinned = !drawerPinned)}
-                data-testid="drawer-pin-toggle"
-                title={drawerPinned ? 'Unpin panel' : 'Pin panel'}
+                class="drawer-pin-toggle"
+                dataTestId="drawer-pin-toggle"
               >
-                Pin
-              </button>
+                <Icon name="pin" />
+              </IconButton>
               <IconButton
                 label="Close panel"
                 onclick={() => setActiveDrawer(null)}
@@ -2251,7 +2413,6 @@
                 error={targetStatusError}
                 focusTarget={targetStatusFocus}
                 onRefresh={refreshTargetStatus}
-                onClose={closeTargetStatus}
               />
             {:else if activeDrawer === 'files' && selectedSessionId}
               <div class="drawer-panel-inner" data-testid="file-tree-panel-wrapper">
@@ -2318,6 +2479,66 @@
         {@render drawerPanel(authSession)}
       {/if}
     </div>
+
+    <!-- Below `--bp-desktop` the sidebar becomes a sheet and this bar is the
+         primary navigation. It deliberately sits ABOVE the sheet's own
+         backdrop so the tab that opened the sheet can also close it — the v2
+         rail was covered by that backdrop, which made the sheet a one-way
+         door on touch. -->
+    <nav class="tabbar" aria-label="Primary">
+      <button
+        type="button"
+        class="tabbar-item"
+        class:active={sessionsSheetOpen}
+        onclick={() => (sessionsSheetOpen = !sessionsSheetOpen)}
+        data-testid="tabbar-sessions"
+      >
+        <Icon name="sessions" class="tabbar-icon" />
+        <span>Sessions</span>
+      </button>
+      <button
+        type="button"
+        class="tabbar-item"
+        class:active={activeDrawer === 'inbox'}
+        onclick={() => toggleDrawer('inbox')}
+        data-testid="tabbar-inbox"
+      >
+        <Icon name="inbox" class="tabbar-icon" />
+        <span>Inbox</span>
+        {#if attentionInboxItems.length > 0}
+          <span class="tabbar-badge">{attentionInboxItems.length}</span>
+        {/if}
+      </button>
+      <button
+        type="button"
+        class="tabbar-item"
+        class:active={activeDrawer === 'targets'}
+        onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
+        data-testid="tabbar-targets"
+      >
+        <Icon name="targets" class="tabbar-icon" />
+        <span>Nodes</span>
+      </button>
+      <button
+        type="button"
+        class="tabbar-item"
+        onclick={() => (paletteOpen = true)}
+        data-testid="tabbar-command"
+      >
+        <Icon name="command" class="tabbar-icon" />
+        <span>Command</span>
+      </button>
+      <button
+        type="button"
+        class="tabbar-item"
+        class:active={activeDrawer === 'settings'}
+        onclick={() => toggleDrawer('settings')}
+        data-testid="tabbar-settings"
+      >
+        <Icon name="settings" class="tabbar-icon" />
+        <span>Settings</span>
+      </button>
+    </nav>
   {/if}
 </main>
 
@@ -2362,15 +2583,21 @@
     padding: var(--space-lg);
   }
 
-  /* The Warp Deck cockpit (redesign brief `docs/design/redesign.md` §1,
-     issue #427) resets the plain stacked-column padding/gap above in favor
-     of a sticky header plus a rail/sessions/canvas/drawer row that fills
-     the rest of the viewport edge-to-edge; the pre-cockpit screens
-     (checking session/sign-in/onboarding) keep the original padded,
-     centered column layout untouched. */
+  /* The cockpit (redesign v3 design spec §3.1) resets the plain stacked-
+     column padding/gap above in favour of a sidebar + workspace row that
+     fills the viewport edge to edge; the pre-cockpit screens (checking
+     session / sign-in / onboarding) keep the original padded, centered
+     column layout untouched.
+
+     `height`, not `min-height`: the sidebar's own footer (secondary nav +
+     account) is pinned to the bottom of a column that must therefore END at
+     the viewport, and `min-height` lets a tall transcript push it off the
+     bottom of the screen instead. */
   main.cockpit {
+    height: 100dvh;
     gap: 0;
     padding: 0;
+    overflow: hidden;
   }
 
   .header-lockup {
@@ -2519,25 +2746,334 @@
     gap: var(--space-xs);
   }
 
-  .inbox-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.2rem;
-    height: 1.2rem;
-    padding: 0 var(--space-2xs);
-    border-radius: var(--radius-full);
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-    font-size: 0.7rem;
+  .account {
     font-family: var(--font-mono);
-    font-feature-settings: var(--font-feature-tabular);
+    font-size: var(--text-small-size);
+    opacity: 0.8;
+  }
+
+  /* Layout-only wrapper — the in-flight/error chrome itself comes from the
+     nested `Card`/`ErrorNotice` (redesign brief §4/§6, issue #430). */
+  .escrow-status {
+    font-size: var(--text-small-size);
+  }
+
+  .escrow-inflight-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  /* thread-draw for the escrow in-flight state (redesign brief §6's
+     "thread-draw for the escrow/pairing in-flight state"). */
+  .in-flight-track {
+    display: block;
+    width: 100%;
+    max-width: 12rem;
+    height: 2px;
+    margin-top: var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--color-fill-subtle);
+    overflow: hidden;
+  }
+
+  .in-flight-bar {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ================================================================== */
+  /* The cockpit shell (redesign v3 design spec §3.1-§3.6): sidebar +     */
+  /* workspace + drawer, filling the viewport edge to edge.               */
+  /* ================================================================== */
+
+  .shell {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Sidebar                                                             */
+  /* ------------------------------------------------------------------ */
+
+  .sidebar {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+    width: var(--sidebar-width);
+    background: var(--color-rail);
+    border-right: 1px solid var(--color-border);
+    transition: width var(--duration-base) var(--ease-shuttle);
+  }
+
+  .sidebar.resizing {
+    transition: none;
+  }
+
+  .sidebar.collapsed {
+    width: var(--sidebar-width-collapsed);
+  }
+
+  .sidebar-brand {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    height: 3rem;
+    padding: 0 var(--space-sm) 0 var(--space-md);
+    flex-shrink: 0;
+  }
+
+  .sidebar-brand-mark {
+    margin: 0;
+    min-width: 0;
+    font-size: var(--text-body-size);
+    line-height: 1;
+  }
+
+  /* Collapsed, the brand row stacks: the mark on top, the EXPAND control
+     right under it. Hiding the control here (the first cut of this rewrite
+     did) makes collapsing a one-way door — the only way back was clearing
+     `loombox:sessions-collapsed` by hand. */
+  .sidebar.collapsed .sidebar-brand {
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-2xs);
+    height: auto;
+    padding: var(--space-sm) 0;
+  }
+
+  /* Expanded, the control is quiet until the sidebar is hovered or holds
+     focus — it is a preference, not a primary action. It is always visible
+     while collapsed (see above) and on a coarse pointer, which has no
+     hover to reveal it with. */
+  .sidebar:not(.collapsed):not(:hover):not(:focus-within)
+    .sidebar-brand
+    :global(.sidebar-collapse-toggle) {
+    opacity: 0;
+  }
+
+  @media (hover: none) {
+    .sidebar .sidebar-brand :global(.sidebar-collapse-toggle) {
+      opacity: 1;
+    }
+  }
+
+  .sidebar-brand :global(.sidebar-collapse-toggle) {
+    transition: opacity var(--duration-fast) var(--ease-beat);
+  }
+
+  .sidebar-brand :global(.icon.flip) {
+    transform: scaleX(-1);
+  }
+
+  .sidebar-actions {
+    position: relative;
+    padding: var(--space-2xs) var(--space-md) var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .sidebar.collapsed .sidebar-actions {
+    display: flex;
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  /* One primary action with a split affordance, rather than two buttons of
+     near-equal weight that both wrapped onto two lines in a 17rem column
+     (spec §3.1 / defect B2). */
+  .split-button {
+    display: flex;
+    align-items: stretch;
+    gap: 1px;
+  }
+
+  .split-button :global(.split-button-main) {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .split-button :global(.split-button-more) {
+    flex-shrink: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
+  .split-button :global(.split-button-more:hover) {
+    background: var(--color-accent-hover);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Anchored popovers — no scrim, unlike the v2 account menu, which dimmed */
+  /* the entire app behind a two-item list (spec §3.1 / defect A3).        */
+  /* ------------------------------------------------------------------ */
+
+  .popover-menu {
+    position: absolute;
+    z-index: var(--z-raised);
+    min-width: 12rem;
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-2xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .popover-below {
+    top: calc(100% - var(--space-2xs));
+    left: var(--space-md);
+    right: var(--space-md);
+  }
+
+  .popover-above {
+    bottom: calc(100% + var(--space-2xs));
+    left: var(--space-sm);
+    right: var(--space-sm);
+  }
+
+  .popover-heading {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm) 0;
+    font-size: var(--text-caption-size);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+  }
+
+  .popover-identity {
+    margin: 0;
+    padding: 0 var(--space-sm);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .popover-identity-secondary {
+    margin: 0;
+    padding: 0 var(--space-sm);
+    font-size: var(--text-caption-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The identity block is separated from the actions by one hairline,
+     whichever of the two identity lines happens to be last. */
+  .popover-above p:last-of-type {
+    padding-bottom: var(--space-2xs);
+    margin-bottom: var(--space-2xs);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .popover-menu button {
+    text-align: left;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  .popover-menu button:hover,
+  .popover-menu button:focus-visible {
+    background: var(--color-fill-subtle);
+  }
+
+  .popover-menu button.danger {
+    color: var(--color-danger);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Filter + session list                                               */
+  /* ------------------------------------------------------------------ */
+
+  .sidebar-filter {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin: 0 var(--space-md) var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .sidebar-filter :global(.sidebar-filter-icon) {
+    position: absolute;
+    left: var(--space-sm);
+    color: var(--color-text-muted);
+    pointer-events: none;
+  }
+
+  .sidebar-filter input {
+    width: 100%;
+    padding: var(--space-2xs) var(--space-sm) var(--space-2xs) var(--space-2xl);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-small-size);
+  }
+
+  .sidebar-filter input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .sidebar-filter input:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    border-color: var(--color-border);
+  }
+
+  .sidebar-sessions {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--space-sm) var(--space-sm);
+  }
+
+  .sidebar.collapsed .sidebar-sessions {
+    padding-inline: var(--space-2xs);
+  }
+
+  .sidebar-sessions ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
 
   .session-row {
+    position: relative;
     display: flex;
-    align-items: stretch;
-    gap: var(--space-2xs);
+    align-items: center;
     /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
        20ms/item, capped at 5 rows — mirrors `AttentionInbox`'s own
        identical treatment. */
@@ -2572,623 +3108,68 @@
     }
   }
 
-  .session-row .session {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* `:global` — `class` here lands on the `<button>` `Button.svelte` (a
-     child component) renders, which carries `Button`'s own scope hash, not
-     this file's, so a plain (non-`:global`) selector would never match. */
-  :global(.session-target-status-link) {
-    flex-shrink: 0;
-    align-self: center;
-  }
-
-  .account {
-    font-family: var(--font-mono);
-    font-size: var(--text-small-size);
-    opacity: 0.8;
-  }
-
-  .error {
-    color: var(--color-danger);
-    margin: 0;
-    font-size: var(--text-small-size);
-    width: 100%;
-  }
-
-  /* The pre-cockpit `.error` above sits inside a padded `.connection` row;
-     the cockpit's own top-level error/escrow banners are direct children
-     of the now-unpadded `main.cockpit`, so they need their own inline
-     margin to line up with the header/rail/canvas content around them. */
-  main.cockpit > .escrow-status,
-  main.cockpit > .error {
-    margin-inline: var(--space-lg);
-  }
-
-  /* Layout-only wrapper now — the in-flight/error chrome itself comes from
-     the nested `Card`/`ErrorNotice` (redesign brief §4/§6, issue #430). */
-  .escrow-status {
-    margin: var(--space-sm) 0 0;
-    font-size: var(--text-small-size);
-  }
-
-  .escrow-inflight-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  /* thread-draw for the escrow in-flight state (redesign brief §6's
-     "thread-draw for the escrow/pairing in-flight state"). */
-  .in-flight-track {
-    display: block;
-    width: 100%;
-    max-width: 12rem;
-    height: 2px;
-    margin-top: var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-fill-subtle);
-    overflow: hidden;
-  }
-
-  .in-flight-bar {
-    display: block;
-    height: 100%;
-    background: var(--color-accent);
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* The cockpit's 3-zone sticky header (redesign brief §1)               */
-  /* ------------------------------------------------------------------ */
-
-  .warp-header {
-    position: sticky;
-    top: 0;
-    z-index: var(--z-sticky);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-lg);
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-bg);
-  }
-
-  .warp-header-zone {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    min-width: 0;
-  }
-
-  .warp-header-left,
-  .warp-header-right {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .warp-header-right {
-    justify-content: flex-end;
-  }
-
-  .warp-header-center {
-    flex: 0 0 auto;
-  }
-
-  .cockpit-brand {
-    display: flex;
-    align-items: center;
-    margin: 0;
-    color: var(--color-accent);
-    font-size: 1.4rem;
-    flex-shrink: 0;
-  }
-
-  .session-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    opacity: 0.85;
-  }
-
-  /* The compact, always-visible target-health StatusDot cluster (redesign
-     brief §0/§1/§6): glanceable node/target health without opening the
-     Drawer. TODO(redesign wave 2): replace `.target-dot` with a real
-     <StatusDot> component (thread-draw pulse while `working`, etc.) — this
-     is a minimal inline placeholder for the foundation shell. */
-  /* `:global` — `class` here lands on the `<button>` `Button.svelte` (a
-     child component) renders, which carries `Button`'s own scope hash, not
-     this file's, so a plain (non-`:global`) selector would never match
-     (same reason as `.session-target-status-link` above). */
-  :global(.target-health-cluster) {
-    gap: var(--space-3xs);
-    border-color: var(--color-border);
-    border-radius: var(--radius-full);
-  }
-
-  :global(.target-health-cluster:hover),
-  :global(.target-health-cluster:focus-visible) {
-    border-color: var(--color-border-strong);
-  }
-
-  .target-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .target-dot[data-state='healthy'] {
-    background: var(--color-success);
-  }
-
-  .target-dot[data-state='overloaded'] {
-    background: var(--color-warning);
-  }
-
-  .target-dot[data-state='unreachable'] {
-    background: var(--color-danger);
-  }
-
-  .target-dot-overflow {
-    font-size: 0.65rem;
-    opacity: 0.7;
-    font-family: var(--font-mono);
-  }
-
-  .connection-dot {
-    display: inline-flex;
-    width: 0.55rem;
-    height: 0.55rem;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .connection-dot[data-status='open'] {
-    background: var(--color-success);
-  }
-
-  .connection-dot[data-status='connecting'] {
-    background: var(--color-warning);
-  }
-
-  .connection-dot[data-status='error'] {
-    background: var(--color-danger);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .account-menu {
-    position: relative;
-  }
-
-  .account-menu-trigger {
-    max-width: 10rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: var(--text-small-size);
-  }
-
-  .account-menu-trigger[aria-expanded='true'] {
-    border-color: var(--color-accent);
-  }
-
-  /* The backdrop itself (position/z-index/dim) is `Overlay`'s own concern
-     now (issue #462) — this `:global` only lays out where the dropdown
-     panel sits within it. `:global` because `Overlay` (a child component)
-     renders the element this class lands on, not `+page.svelte` directly,
-     the same reason `Dialog.svelte`'s own `:global(.dialog-backdrop)`
-     exists. Anchored with `position: fixed` (not `absolute` relative to the
-     trigger) since the dropdown is now a sibling of `.warp-header`, not
-     nested inside it — see the template's own doc comment on why. `top:
-     3.5rem` mirrors `.drawer`'s identical assumption about the header's
-     rendered height. */
-  :global(.account-menu-backdrop) {
-    display: flex;
-    justify-content: flex-end;
-    padding: 3.5rem var(--space-lg) 0 0;
-  }
-
-  .account-menu-dropdown {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-    min-width: 12rem;
-    height: fit-content;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-lg);
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-lg);
-    padding: var(--space-2xs);
-  }
-
-  .account-menu-dropdown button {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-xs) var(--space-sm);
-    cursor: pointer;
-    text-align: left;
-    font-size: var(--text-small-size);
-  }
-
-  .account-menu-dropdown button:hover,
-  .account-menu-dropdown button:focus-visible {
-    background: var(--color-fill-subtle);
-  }
-
-  .account-menu-dropdown button.danger {
-    color: var(--color-danger);
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* The four-zone body: Rail | Sessions | Canvas | Drawer (redesign      */
-  /* brief §1)                                                            */
-  /* ------------------------------------------------------------------ */
-
-  .warp-body {
-    position: relative;
-    display: flex;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .rail {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    flex-shrink: 0;
-    width: 3.5rem;
-    border-right: 1px solid var(--color-border);
-    padding: var(--space-sm) 0;
-  }
-
-  .rail-item {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-3xs);
-    border: none;
-    border-left: 2px solid transparent;
-    background: transparent;
-    color: inherit;
-    padding: var(--space-sm) var(--space-2xs);
-    cursor: pointer;
-    opacity: 0.75;
-  }
-
-  .rail-item:hover,
-  .rail-item:focus-visible {
-    opacity: 1;
-    background: var(--color-fill-subtle);
-  }
-
-  /* Selected rail item reads via a 2px accent left-bar, never a filled
-     background (redesign brief §1: "keeping the rail visually quiet"). */
-  .rail-item.active {
-    opacity: 1;
-    border-left-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-
-  /* `:global` — `class` here lands on the `<svg>` `Icon.svelte` (a child
-     component) renders, which carries `Icon`'s own scope hash, not this
-     file's, so a plain (non-`:global`) selector would never match. */
-  :global(.rail-icon) {
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .rail-label {
-    font-size: 0.6rem;
-    text-align: center;
-    line-height: 1;
-  }
-
-  .rail-badge {
-    position: absolute;
-    top: var(--space-3xs);
-    right: var(--space-3xs);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1rem;
-    height: 1rem;
-    padding: 0 var(--space-3xs);
-    border-radius: var(--radius-full);
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-    font-size: 0.6rem;
-    font-family: var(--font-mono);
-  }
-
-  .rail-badge-dot {
-    min-width: 0.5rem;
-    width: 0.5rem;
-    height: 0.5rem;
-    padding: 0;
-    background: var(--color-danger);
-  }
-
-  .rail-spacer {
-    flex: 1;
-  }
-
-  .sessions-backdrop {
-    display: none;
-  }
-
-  /* Drag-resizable width + collapse-to-selvage (redesign brief §1, issue
-     #438). Width itself comes from the inline `style` binding
-     (`sessionsColumnWidthPx`); the `transition` here only smooths a
-     collapse/expand toggle — `.resizing` suppresses it during an active
-     drag so the column tracks the pointer instead of visibly lagging. */
-  .sessions {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    min-width: 0;
-    border-right: 1px solid var(--color-border);
-    transition: width var(--duration-fast) var(--ease-beat);
-  }
-
-  .sessions.resizing {
-    transition: none;
-  }
-
-  .sessions-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    padding: var(--space-lg) var(--space-lg) var(--space-sm);
-    flex-shrink: 0;
-  }
-
-  .sessions.collapsed .sessions-header {
-    justify-content: center;
-    padding: var(--space-lg) var(--space-2xs) var(--space-sm);
-  }
-
-  .sessions-header h2 {
-    font-size: 1rem;
-    margin: 0;
-  }
-
-  .sessions-header-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  .sessions-content {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 0 var(--space-lg) var(--space-lg);
-  }
-
-  .sessions.collapsed .sessions-content {
-    padding: 0 var(--space-2xs) var(--space-lg);
-  }
-
-  /* The drag handle itself — a thin hit target straddling the column's
-     right edge (redesign brief §1's "drag-resizable width"). */
-  .sessions-resize-handle {
-    position: absolute;
-    top: 0;
-    right: -0.25rem;
-    bottom: 0;
-    width: 0.5rem;
-    cursor: col-resize;
-    touch-action: none;
-    z-index: var(--z-raised);
-  }
-
-  .sessions-resize-handle:hover,
-  .sessions-resize-handle:focus-visible {
-    background: var(--color-accent-subtle);
-  }
-
-  .sessions-resize-handle:focus-visible {
-    outline: none;
-  }
-
-  .key-mismatch {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-danger-subtle);
-  }
-
-  .key-mismatch-title {
-    margin: 0;
-    font-weight: 600;
-    color: var(--color-danger);
-  }
-
-  .key-mismatch .hint {
-    margin: 0;
-    font-size: var(--text-small-size);
-    opacity: 0.85;
-  }
-
-  .sessions ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  /* Target/node group headers (redesign brief §1/§4, issue #438): mono,
-     small-caps, collapsible — shown only once more than one target is
-     active (`groupSessionsByTarget`), otherwise the list stays flat. */
-  .session-group + .session-group {
-    margin-top: var(--space-md);
-  }
-
-  .session-group-header {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    gap: var(--space-xs);
-    border: none;
-    background: transparent;
-    color: var(--color-text-secondary);
-    padding: var(--space-2xs);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-variant-caps: small-caps;
-    font-size: var(--text-small-size);
-    letter-spacing: 0.03em;
-    transition: color var(--duration-fast) var(--ease-beat);
-  }
-
-  .session-group-header:hover,
-  .session-group-header:focus-visible {
-    color: var(--color-text-primary);
-  }
-
-  /* `:global` — `class` here lands on the `<svg>` `Icon.svelte` (a child
-     component) renders, which carries `Icon`'s own scope hash, not this
-     file's, so a plain (non-`:global`) selector would never match. */
-  :global(.session-group-chevron) {
-    flex-shrink: 0;
-    transition: transform var(--duration-fast) var(--ease-beat);
-  }
-
-  :global(.session-group-chevron.collapsed) {
-    transform: rotate(-90deg);
-  }
-
-  .session-group-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .session-group-count {
-    flex-shrink: 0;
-    margin-left: auto;
-    opacity: 0.7;
-    font-variant-caps: normal;
-  }
-
-  /* Rows (redesign brief §4): quiet hairline-divided, not boxed cards;
-     selected/active state is a 2px left accent bar + subtle background
-     tint, echoing a highlighted thread on a warp rather than a "selected
-     card" pattern. */
   .session {
-    width: 100%;
-    text-align: left;
-    display: flex;
-    align-items: flex-start;
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
     gap: var(--space-sm);
-    padding: var(--space-sm);
+    text-align: left;
+    padding: var(--space-xs) var(--space-sm);
+    border: none;
     border-radius: var(--radius-md);
-    border-left: 2px solid transparent;
     background: transparent;
+    color: inherit;
     cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat);
+    transition: background-color var(--duration-fast) var(--ease-beat);
   }
 
-  .session:hover:not(.selected) {
+  .session:hover {
     background: var(--color-fill-subtle);
   }
 
   .session.selected {
-    border-left-color: var(--color-accent);
-    background: var(--color-accent-subtle);
+    background: var(--color-fill);
   }
 
-  .session-avatar {
-    flex-shrink: 0;
-    display: flex;
+  .session:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: calc(var(--focus-ring-offset) * -1);
+  }
+
+  .session-status {
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
-    margin-top: var(--space-3xs);
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    color: var(--color-text-secondary);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 600;
   }
 
   .session-main {
-    flex: 1;
-    min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--space-3xs);
-  }
-
-  .session small {
-    opacity: 0.6;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
+    min-width: 0;
+    gap: 1px;
   }
 
   .session-title-row {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
+    gap: var(--space-2xs);
     min-width: 0;
   }
 
   .session-title-row strong {
-    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: var(--text-body-size);
+    font-weight: 500;
   }
 
-  /* The row's "needs attention" affordance (redesign brief's row content,
-     issue #438) — a session with a pending item in the cross-project
-     attention inbox, distinct from (and additional to) the session's own
-     ACP status. */
+  .session.selected .session-title-row strong {
+    color: var(--color-text-primary);
+  }
+
   .session-attention-dot {
     flex-shrink: 0;
     width: 0.4rem;
@@ -3197,65 +3178,122 @@
     background: var(--color-warning);
   }
 
-  .session-meta-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-xs);
-    min-width: 0;
-  }
-
-  .session-meta-row small {
-    flex: 1;
-    min-width: 0;
+  .session-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
   }
 
   .session-activity {
     flex-shrink: 0;
-    opacity: 0.55;
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+    font-feature-settings: var(--font-feature-tabular);
   }
 
-  /* Session-status badge (SPEC §7.13/§7.24; issue #126) — a neutral default,
-     overridden per status so a glance at the list shows what needs
-     attention. Redesign brief §4/issue #438: now also carries a `StatusDot`
-     alongside its text, mirroring `TargetStatusView.svelte`'s own health
-     badge (dot + label together, never color alone). */
-  .status-badge {
-    display: inline-flex;
+  /* The `⋯` menu replaces the permanently visible "Target status" button
+     that used to squeeze the title down to one character (defect B3). It
+     covers the activity time on hover rather than reserving its own column,
+     so the row's width budget goes entirely to the title. */
+  .session-row-actions {
+    position: absolute;
+    right: var(--space-2xs);
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .session-row:hover .session-row-actions,
+  .session-row:focus-within .session-row-actions,
+  .session-row.menu-open .session-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-row-actions .popover-menu {
+    top: calc(100% + var(--space-2xs));
+    right: 0;
+  }
+
+  /* A coarse pointer has no hover: the row menu stays visible there. */
+  @media (hover: none) {
+    .session-row-actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  .session-group + .session-group {
+    margin-top: var(--space-sm);
+  }
+
+  .session-group-header {
+    width: 100%;
+    display: flex;
     align-items: center;
-    flex-shrink: 0;
-    gap: var(--space-3xs);
-    font-size: 0.65rem;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: var(--text-caption-size);
     text-transform: uppercase;
-    letter-spacing: 0.02em;
-    padding: var(--space-3xs) var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    opacity: 0.85;
+    letter-spacing: 0.06em;
   }
 
-  .status-badge[data-status='working'] {
-    background: var(--color-accent-subtle);
-    color: var(--color-accent);
+  .session-group-header:hover {
+    color: var(--color-text-secondary);
   }
 
-  .status-badge[data-status='permission_required'] {
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
+  :global(.session-group-chevron) {
+    transform: rotate(0deg);
+    transition: transform var(--duration-fast) var(--ease-beat);
   }
 
-  .status-badge[data-status='error'] {
-    background: var(--color-danger-subtle);
+  :global(.session-group-chevron.collapsed) {
+    transform: rotate(-90deg);
+  }
+
+  .session-group-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+
+  .session-group-count {
+    font-feature-settings: var(--font-feature-tabular);
+  }
+
+  .key-mismatch {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+  }
+
+  .key-mismatch-title {
+    margin: 0;
+    font-weight: 500;
     color: var(--color-danger);
   }
 
-  .status-badge[data-status='exited'] {
-    background: var(--color-fill);
+  .key-mismatch .hint {
+    margin: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
   }
 
-  /* The icon-only "selvage rail" (redesign brief §1: "status dot +
-     first-letter avatar, tooltip on hover"). */
+  /* ------------------------------------------------------------------ */
+  /* Collapsed sidebar: icon-only session rail                            */
+  /* ------------------------------------------------------------------ */
+
   .selvage-list {
     list-style: none;
     margin: 0;
@@ -3271,55 +3309,301 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2.75rem;
-    height: 2.75rem;
+    width: 2rem;
+    height: 2rem;
     border: 1px solid transparent;
     border-radius: var(--radius-md);
-    background: transparent;
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .selvage-session:hover {
     background: var(--color-fill-subtle);
-  }
-
-  .selvage-session:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
+    color: inherit;
+    cursor: pointer;
+    padding: 0;
   }
 
   .selvage-session.selected {
     border-color: var(--color-accent);
-    background: var(--color-accent-subtle);
   }
 
-  .selvage-session.needs-attention .selvage-avatar {
-    box-shadow: 0 0 0 2px var(--color-warning);
+  .selvage-session.needs-attention::after {
+    content: '';
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--radius-full);
+    background: var(--color-warning);
   }
 
   .selvage-avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    color: var(--color-text-secondary);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-small-size);
     font-weight: 600;
   }
 
-  /* `StatusDot`'s `class` prop lands inside its own component scope — see
-     `EmptyState`'s identical `:global()`-under-a-local-ancestor pattern. */
   .selvage-session :global(.selvage-status-dot) {
     position: absolute;
-    bottom: 0.3rem;
-    right: 0.3rem;
+    bottom: -2px;
+    right: -2px;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Sidebar footer: secondary nav + account                              */
+  /* ------------------------------------------------------------------ */
+
+  .sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: var(--space-sm) var(--space-sm) var(--space-2xs);
+    border-top: 1px solid var(--color-border-subtle);
+    flex-shrink: 0;
+  }
+
+  .sidebar-nav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    padding: var(--space-xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    text-align: left;
+  }
+
+  .sidebar-nav-item:hover {
+    background: var(--color-fill-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .sidebar-nav-item.active {
+    background: var(--color-fill);
+    color: var(--color-text-primary);
+  }
+
+  .sidebar-nav-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sidebar-nav-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    padding: 0 var(--space-2xs);
+    border-radius: var(--radius-full);
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
+    font-size: var(--text-caption-size);
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feature-tabular);
+  }
+
+  .sidebar-nav-badge-dot {
+    min-width: 0.45rem;
+    width: 0.45rem;
+    height: 0.45rem;
+    padding: 0;
+    background: var(--color-warning);
+  }
+
+  .sidebar-account {
+    position: relative;
+    padding: 0 var(--space-sm) var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .account-trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .account-trigger:hover,
+  .account-trigger[aria-expanded='true'] {
+    background: var(--color-fill-subtle);
+  }
+
+  .account-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .account-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .sidebar.collapsed .sidebar-nav-label,
+  .sidebar.collapsed .account-name,
+  .sidebar.collapsed :global(.account-chevron),
+  .sidebar.collapsed .sidebar-nav-badge:not(.sidebar-nav-badge-dot) {
+    display: none;
+  }
+
+  .sidebar.collapsed .sidebar-nav-item,
+  .sidebar.collapsed .account-trigger {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: var(--z-raised);
+  }
+
+  .sidebar-resize-handle:hover,
+  .sidebar-resize-handle:focus-visible {
+    background: var(--color-accent-subtle);
+    outline: none;
+  }
+
+  .sidebar-backdrop {
+    display: none;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Workspace: context header + canvas                                   */
+  /* ------------------------------------------------------------------ */
+
+  .workspace {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    height: 3rem;
+    flex-shrink: 0;
+    padding: 0 var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .topbar-context {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .topbar-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-body-size);
+    font-weight: 500;
+  }
+
+  .topbar-title-muted {
+    color: var(--color-text-muted);
+    font-weight: 400;
+  }
+
+  .topbar-breadcrumb {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  /* Rendered only when the connection is NOT healthy (spec §3.3): the v2
+     header spent its highest-attention pixels on a permanently green,
+     unlabelled dot that said nothing and offered nothing. */
+  .connection-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-xs);
+    margin-right: var(--space-2xs);
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption-size);
+  }
+
+  .connection-chip[data-tone='warning'] {
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
+  }
+
+  .connection-chip[data-tone='danger'] {
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
+  }
+
+  .connection-chip[data-tone='neutral'] {
+    background: var(--color-fill-subtle);
+    color: var(--color-text-muted);
+  }
+
+  .connection-chip button {
+    border: none;
+    background: transparent;
+    color: inherit;
+    padding: 0 var(--space-2xs);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  /* Same measure and centring as `.items` below, so a banner does not run
+     the full 1920px canvas while everything under it is capped. */
+  .workspace-notice {
+    width: 100%;
+    max-width: calc(var(--measure) + var(--space-lg) * 2);
+    margin-inline: auto;
+    padding: var(--space-sm) var(--space-lg) 0;
   }
 
   .canvas {
@@ -3328,73 +3612,64 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    gap: var(--space-sm);
     padding: var(--space-lg);
+    gap: var(--space-md);
   }
 
-  .transcript-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    border-bottom: 1px solid var(--color-border);
-    padding-bottom: var(--space-xs);
-  }
-
+  /* A readable measure (spec §3.4 / defect C3): transcript prose used to
+     run the full 1440-1920px canvas, ~150 characters a line. Code, diffs
+     and terminal output opt into `--measure-wide` from their own
+     components. */
   .items {
     flex: 1;
+    width: 100%;
+    max-width: var(--measure);
+    margin-inline: auto;
     overflow-y: auto;
     list-style: none;
-    margin: 0;
     padding: 0;
+    margin-block: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
   }
 
-  /* The composer's own mini-toolbar (redesign brief §1/§6, issue #439):
-     ConfigBar + AttachmentBar's trigger/chip row share one quiet strip
-     directly above the composer, collapsing under a single "···"
-     affordance below --bp-mobile/480px (`composerToolbarVisible`'s own
-     force-expand-while-attaching exception lives in the script above). */
+  .canvas-footer {
+    width: 100%;
+    max-width: var(--measure);
+    margin-inline: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    flex-shrink: 0;
+  }
+
   .composer-toolbar {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--space-sm);
   }
 
   .composer-toolbar-controls {
-    flex: 1;
-    min-width: 0;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-lg);
-    background: var(--color-surface);
-  }
-
-  :global(.composer-toolbar-expand) {
-    flex-shrink: 0;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .composer {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
+    gap: var(--space-2xs);
   }
 
-  /* Considered prompt input (redesign brief §4 "Inputs"): flat style, no
-     inner shadow — the wrapper's own border strengthens on focus-within
-     rather than a colored glow on the textarea itself. */
   .composer-row {
     display: flex;
     align-items: flex-end;
     gap: var(--space-sm);
-    padding: var(--space-xs);
+    padding: var(--space-sm);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     background: var(--color-surface);
@@ -3408,32 +3683,22 @@
   .composer-row textarea {
     flex: 1;
     min-width: 0;
+    max-height: 40vh;
     resize: none;
     border: none;
     background: transparent;
     color: inherit;
-    font-family: var(--font-ui);
-    font-size: var(--text-body-size);
-    line-height: 1.45;
-    padding: var(--space-sm) var(--space-xs);
-    /* 1-8 rows (redesign brief §4): auto-grows via this file's own
-       `autoGrowComposer`, capped here so growth past ~8 lines scrolls
-       internally instead of pushing the composer's own actions off-canvas. */
-    max-height: 13rem;
-    overflow-y: auto;
+    font: inherit;
+    line-height: var(--text-body-line);
   }
 
   .composer-row textarea::placeholder {
     color: var(--color-text-muted);
   }
 
-  .composer-row textarea:focus {
-    outline: none;
-  }
-
+  .composer-row textarea:focus,
   .composer-row textarea:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: calc(-1 * var(--focus-ring-offset));
+    outline: none;
   }
 
   .composer-actions {
@@ -3441,43 +3706,50 @@
     align-items: center;
     gap: var(--space-xs);
     flex-shrink: 0;
-    padding-bottom: var(--space-2xs);
+  }
+
+  .composer-hint {
+    margin: 0;
+    text-align: right;
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+  }
+
+  .composer-hint kbd {
+    font-family: var(--font-mono);
+    font-size: inherit;
   }
 
   .empty {
-    opacity: 0.6;
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
-  /* Stale approve/deny discard note (SPEC §7.3; issue #131). */
   .stale-notice {
     margin: 0;
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-md);
     background: var(--color-warning-subtle);
-    font-size: 0.8rem;
+    color: var(--color-warning);
+    font-size: var(--text-small-size);
   }
 
   /* ------------------------------------------------------------------ */
-  /* The Drawer (redesign brief §1/§7): one component, tabs, one tab      */
-  /* visible at a time — replaces the six independently-toggled inline    */
-  /* panels. Overlay by default; pinnable as a persistent third column at */
-  /* >=1280px (`--bp-wide`) via `drawerPinned`. Below 768px it becomes a   */
-  /* bottom sheet instead (see the media query at the bottom of this      */
-  /* file).                                                                */
+  /* Drawer                                                              */
   /* ------------------------------------------------------------------ */
 
   .drawer {
     position: fixed;
-    top: 3.5rem;
+    top: 0;
     right: 0;
     bottom: 0;
-    z-index: var(--z-overlay);
+    width: min(26rem, 90vw);
     display: flex;
     flex-direction: column;
-    width: min(24rem, 100vw);
-    background: var(--color-surface-raised);
+    background: var(--color-surface);
     border-left: 1px solid var(--color-border-strong);
     box-shadow: var(--shadow-lg);
+    z-index: var(--z-overlay);
   }
 
   .drawer-header {
@@ -3485,46 +3757,59 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
+    padding: var(--space-2xs) var(--space-sm);
     border-bottom: 1px solid var(--color-border);
     flex-shrink: 0;
   }
 
+  /* One scrolling row, never two wrapped ones (spec §3.6 / defect D1). */
   .drawer-tabs {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
+    align-items: center;
+    gap: var(--space-3xs);
     min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .drawer-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .drawer-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+    padding: var(--space-2xs) var(--space-xs);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    white-space: nowrap;
+  }
+
+  .drawer-tab:hover {
+    color: var(--color-text-primary);
+  }
+
+  .drawer-tab.active {
+    background: var(--color-fill);
+    color: var(--color-text-primary);
   }
 
   .drawer-header-actions {
     display: flex;
     align-items: center;
-    gap: var(--space-2xs);
+    gap: var(--space-3xs);
     flex-shrink: 0;
   }
 
-  .drawer-pin-toggle {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-3xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-  }
-
-  /* Only meaningful — and only shown — at >=1280px (`--bp-wide`), where the
-     Drawer can actually become a persistent column; see the media query
-     below. Below that width pinning would have no visible effect. */
-  .drawer-pin-toggle {
+  /* Pinning only has an effect at `--bp-wide` and above. */
+  .drawer-header-actions :global(.drawer-pin-toggle) {
     display: none;
-  }
-
-  .drawer-pin-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
 
   .drawer-content {
@@ -3535,124 +3820,152 @@
   }
 
   .drawer-panel-inner {
-    min-width: 0;
+    height: 100%;
   }
 
   .drawer-panel-terminal {
-    height: 100%;
+    display: flex;
     min-height: 20rem;
   }
 
   .settings-tab {
     display: flex;
     flex-direction: column;
-    gap: var(--space-lg);
+    gap: var(--space-xl);
   }
 
   .settings-section h3 {
+    margin: 0 0 var(--space-sm);
     font-size: var(--text-small-size);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.7;
-    margin: 0 0 var(--space-sm);
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
   }
 
   /* ------------------------------------------------------------------ */
-  /* Responsive collapse (redesign brief §1)                              */
+  /* Mobile tab bar                                                      */
   /* ------------------------------------------------------------------ */
 
-  /* Below `--bp-desktop`/`DESKTOP_VIEWPORT_BREAKPOINT_PX` (1024px): the
-     rail collapses to a bottom tab bar. */
+  .tabbar {
+    display: none;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Responsive                                                          */
+  /* ------------------------------------------------------------------ */
+
+  /* Below `--bp-desktop` (1024px) the sidebar becomes a sheet and the tab
+     bar takes over primary navigation. */
   @media (max-width: 1023px) {
-    .rail {
+    .tabbar {
       position: fixed;
       left: 0;
       right: 0;
       bottom: 0;
-      top: auto;
-      z-index: var(--z-sticky);
-      width: auto;
+      /* Deliberately ABOVE the sheet and its backdrop (`--z-overlay` vs the
+         sheet's `--z-sticky`): the v2 rail sat underneath, so the tab that
+         opened the sessions sheet could not close it again (defect B9). */
+      z-index: var(--z-overlay);
+      display: flex;
       height: 3.5rem;
-      flex-direction: row;
       align-items: stretch;
       justify-content: space-around;
-      border-right: none;
       border-top: 1px solid var(--color-border);
-      background: var(--color-bg);
-      padding: 0;
+      background: var(--color-rail);
     }
 
-    .rail-item {
+    .tabbar-item {
+      position: relative;
       flex: 1;
-      border-left: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-3xs);
+      border: none;
       border-top: 2px solid transparent;
-      padding: var(--space-2xs);
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      font-size: var(--text-caption-size);
     }
 
-    .rail-item.active {
-      border-left-color: transparent;
+    .tabbar-item.active {
       border-top-color: var(--color-accent);
+      color: var(--color-accent);
     }
 
-    .rail-spacer {
-      display: none;
+    .tabbar-badge {
+      position: absolute;
+      top: var(--space-2xs);
+      left: 55%;
+      min-width: 1rem;
+      padding: 0 var(--space-3xs);
+      border-radius: var(--radius-full);
+      background: var(--color-warning);
+      color: var(--color-text-inverse);
+      font-size: var(--text-caption-size);
+      font-feature-settings: var(--font-feature-tabular);
     }
 
-    .warp-body {
+    .shell {
       padding-bottom: 3.5rem;
     }
-  }
 
-  /* Below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px): Sessions
-     becomes a dismissible full-height sheet, and the Drawer becomes a
-     bottom sheet instead of a right-edge overlay column. */
-  @media (max-width: 767px) {
-    .session-title {
-      display: none;
-    }
-
-    .sessions {
+    .sidebar {
       position: fixed;
-      inset: 0;
-      z-index: var(--z-modal);
-      width: 100%;
-      border-right: none;
-      background: var(--color-bg);
+      top: 0;
+      bottom: 3.5rem;
+      left: 0;
+      z-index: var(--z-sticky);
+      width: min(20rem, 85vw) !important;
       transform: translateX(-100%);
       transition: transform var(--duration-base) var(--ease-shuttle);
     }
 
-    .sessions.sheet-open {
+    .sidebar.sheet-open {
       transform: translateX(0);
     }
 
-    /* The drag-resize handle and collapse-to-selvage toggle are both a
-       wide-viewport concept (redesign brief §1) — below this width Sessions
-       is always the full sheet above, `sessionsSheetViewport` already keeps
-       the JS side from ever rendering the selvage rail here too. `IconButton`'s
-       `class` prop lands inside its own component scope, same as
-       `.selvage-session :global(.selvage-status-dot)` below — see
-       `EmptyState`'s identical `:global()`-under-a-local-ancestor pattern. */
-    .sessions-resize-handle,
-    .sessions-header-actions :global(.sessions-collapse-toggle) {
-      display: none;
-    }
-
-    .sessions-backdrop {
+    .sidebar-backdrop {
       display: block;
       position: fixed;
-      inset: 0;
-      z-index: calc(var(--z-modal) - 1);
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 3.5rem;
+      z-index: calc(var(--z-sticky) - 1);
       border: none;
       background: var(--color-overlay);
       cursor: default;
+    }
+
+    /* Drag-resize and collapse-to-rail are wide-viewport concepts. */
+    .sidebar-resize-handle,
+    .sidebar-brand :global(.sidebar-collapse-toggle) {
+      display: none;
+    }
+  }
+
+  /* Below `--bp-tablet` (768px) the Drawer becomes a bottom sheet. */
+  @media (max-width: 767px) {
+    .topbar {
+      padding-inline: var(--space-md);
+    }
+
+    .topbar-breadcrumb {
+      display: none;
+    }
+
+    .canvas {
+      padding: var(--space-md);
     }
 
     .drawer {
       top: auto;
       left: 0;
       right: 0;
-      bottom: 0;
+      bottom: 3.5rem;
       width: 100%;
       height: 60vh;
       border-left: none;
@@ -3660,28 +3973,21 @@
     }
   }
 
-  /* At `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` (1280px) and above: the
-     Drawer can be pinned as a persistent third column instead of an
-     overlay (redesign brief §1's "power user" escape hatch). */
+  /* At `--bp-wide` (1280px) and above the Drawer can be pinned as a
+     persistent third column instead of an overlay. */
   @media (min-width: 1280px) {
-    .drawer-pin-toggle {
+    .drawer-header-actions :global(.drawer-pin-toggle) {
       display: inline-flex;
     }
   }
 
   /* The pinned static-column state itself (issue #462): applied by JS
      (`drawerIsOverlay`'s own doc comment) rather than gated behind the
-     `--bp-wide` media query above — `drawerIsOverlay` already accounts for
-     that exact breakpoint via `drawerNarrowViewport`, so this class is only
-     ever present when pinning is genuinely in effect, and no `{#if
-     drawer-open}` combinator is needed either now that the Drawer only
-     mounts at all while `activeDrawer` is non-null (see the template). */
+     `--bp-wide` media query above. */
   .drawer-pinned {
     position: static;
-    top: auto;
-    width: 22rem;
+    width: 24rem;
     flex-shrink: 0;
-    height: auto;
     box-shadow: none;
     border-left: 1px solid var(--color-border);
   }

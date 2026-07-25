@@ -23,6 +23,8 @@
   import DiffViewer from './DiffViewer.svelte';
   import Button from './ui/Button.svelte';
   import StatusDot from './ui/StatusDot.svelte';
+  import Icon from './icons/Icon.svelte';
+  import { classifyRawInput } from '$lib/tool-widgets';
   import { triggerHapticFeedback } from '$lib/haptics';
 
   /** Below this many options, there's nothing to collapse into an overflow menu even on a narrow viewport. */
@@ -85,10 +87,7 @@
     onResolve(option);
   }
 
-  function rawInputText(rawInput: unknown): string | undefined {
-    if (rawInput === undefined) return undefined;
-    return typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput, null, 2);
-  }
+  const rawInputRender = $derived(classifyRawInput(request.toolCall.rawInput));
 
   function contentText(content: unknown): string | undefined {
     if (content === undefined) return undefined;
@@ -162,8 +161,24 @@
       />
     {:else if contentText(request.toolCall.content)}
       <pre class="field content">{contentText(request.toolCall.content)}</pre>
-    {:else if rawInputText(request.toolCall.rawInput)}
-      <pre class="field raw-input">{rawInputText(request.toolCall.rawInput)}</pre>
+    {:else if rawInputRender?.kind === 'command'}
+      <pre
+        class="field command"
+        data-testid="permission-raw-input-command">{rawInputRender.command}</pre>
+    {:else if rawInputRender?.kind === 'path'}
+      <p class="field path-field" data-testid="permission-raw-input-path">
+        <Icon name="file" />
+        <span class="path-text">{rawInputRender.path}</span>
+      </p>
+    {:else if rawInputRender?.kind === 'entries'}
+      <dl class="field raw-input-entries" data-testid="permission-raw-input-entries">
+        {#each rawInputRender.entries as entry (entry.key)}
+          <div class="raw-input-entry">
+            <dt>{entry.key}</dt>
+            <dd>{entry.value}</dd>
+          </div>
+        {/each}
+      </dl>
     {/if}
 
     {#if locationsText(request.toolCall.locations)}
@@ -297,6 +312,41 @@
     white-space: pre-wrap;
     font-size: var(--text-small-size);
     font-family: var(--font-mono);
+  }
+
+  .path-field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    white-space: nowrap;
+  }
+
+  .path-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .raw-input-entries {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    white-space: normal;
+  }
+
+  .raw-input-entry {
+    display: flex;
+    gap: var(--space-xs);
+  }
+
+  .raw-input-entry dt {
+    flex-shrink: 0;
+    opacity: 0.65;
+  }
+
+  .raw-input-entry dd {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   .locations {

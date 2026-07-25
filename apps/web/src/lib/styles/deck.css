@@ -1,25 +1,27 @@
 /*
- * Deck — the default Style (redesign v2 design spec §0/§1, issue #458).
- * Mission-control / terminal register. Carries every `--color-*` custom
- * property `tokens.css` used to define directly on `:root`, now scoped to
- * this Style, plus three Deck-only texture tokens (`--bg-grid`,
- * `--scanline`, `--azure-glow`) wave 2/3 will consume.
+ * loombox color palette (redesign v3 design spec §3.7, issue #502).
+ * Mission-control/terminal register: cool near-black in dark, a cool
+ * crisp paper in light, azure as the default "thread" accent. This is
+ * the ONLY palette the app ships — the earlier "Style" axis (Deck/Loom/
+ * Studio, a picker that only ever changed hue, never density or shape)
+ * is gone; see the redesign v3 design spec §1/§3.7 and issue #502.
+ * `tokens.css` owns the palette-agnostic structural layer (spacing,
+ * radius, shadow, z-index, motion, focus-ring geometry, breakpoints);
+ * this file owns every `--color-*` custom property, plus three texture
+ * tokens (`--bg-grid`, `--scanline`, `--azure-glow`) wave 2/3 will
+ * consume.
  *
- * Selector shape: the dark block below matches on BOTH a bare `:root` and
- * `:root[data-style='deck']`. The bare `:root` branch is what makes Deck
- * the default before `style.ts`'s `init()` has run client-side (there is
- * no `data-style` attribute at all during SSR/first paint) — it has the
- * *lowest* specificity of any Style rule here on purpose, so `loom.css`/
- * `studio.css`'s own `[data-style='loom'|'studio']`-qualified rules (a
- * strictly higher specificity, an attribute selector ON TOP of `:root`)
- * reliably win the moment either is actually selected, regardless of CSS
- * import order. This mirrors `tokens.css`'s own dark/light convention,
- * where the bare `:root` is the default and `[data-theme='light']` (more
- * specific) overrides it — see that file's doc comment.
+ * Dark is the default and lives directly on a bare `:root` — no
+ * attribute needed, there being only one palette now. Light is either
+ * an explicit `[data-theme='light']` choice or, before any explicit
+ * choice exists, a `prefers-color-scheme: light` fallback — exactly
+ * `tokens.css`'s own dark/light convention (see that file's doc
+ * comment). Light is independently art-directed (not a lightened copy
+ * of dark); see its own block's doc comment below for the redesign v3
+ * contrast work.
  */
 
-:root,
-:root[data-style='deck'] {
+:root {
   color-scheme: dark;
 
   /* -------------------------------------------------------------- */
@@ -31,8 +33,8 @@
   --color-rail: #08090b;
   --color-overlay: rgb(5 6 8 / 72%);
 
-  /* Hairline scale — Deck's "9%/16%" whites over the near-black bg,
-     extended with a third, stronger tier at the same rate of increase
+  /* Hairline scale — "9%/16%" whites over the near-black bg, extended
+     with a third, stronger tier at the same rate of increase
      tokens.css's old slate scale used (each tier ~1.7-1.8x the previous). */
   --color-border-subtle: rgb(255 255 255 / 9%);
   --color-border: rgb(255 255 255 / 16%);
@@ -49,11 +51,10 @@
   --color-text-inverse: #0a0c0f;
 
   /* -------------------------------------------------------------- */
-  /* Brand accent — the "thread" (SPEC §4). Azure is Deck's default    */
+  /* Brand accent — the "thread" (SPEC §4). Azure is the default       */
   /* preset ground (issue #376); these five values are the pre-JS/no-  */
-  /* choice-yet fallback only — `$lib/accent.ts` overrides them at        */
-  /* runtime via `deriveAccentPalette`, same mechanism as before, just     */
-  /* now layered on top of a Style instead of a single fixed palette.      */
+  /* choice-yet fallback only — `$lib/accent.ts` overrides them at      */
+  /* runtime via `deriveAccentPalette`, same mechanism as before.        */
   /* -------------------------------------------------------------- */
   --color-accent: #3b9df7;
   --color-accent-hover: #3690e3;
@@ -84,9 +85,9 @@
   --color-focus-ring: var(--color-border-strong);
 
   /* -------------------------------------------------------------- */
-  /* Texture — Deck's mission-control surface treatment. Faint on      */
-  /* purpose (a hint of grid/scanline, never a loud pattern). Unused     */
-  /* until wave 2/3 applies them to the canvas/rail chrome.               */
+  /* Texture — mission-control surface treatment. Faint on purpose     */
+  /* (a hint of grid/scanline, never a loud pattern). Unused until      */
+  /* wave 2/3 applies them to the canvas/rail chrome.                    */
   /* -------------------------------------------------------------- */
   --bg-grid:
     repeating-linear-gradient(
@@ -113,35 +114,61 @@
 }
 
 /*
- * Deck light ("crisp paper") — independently art-directed per Lorenzo's
- * decision (design spec §1: "Deck light must be independently art-directed
- * ... NOT derived from dark"), not a lightened copy of the block above. A
- * cool, crisp white rather than tokens.css's old warm paper, with real
- * surface separation (three distinct tiers: bg / surface / surface-raised)
- * and sharper ink. Same dual-selector story as tokens.css's own dark/light
- * split: the media query covers "no explicit theme choice yet", the
- * `[data-theme='light']` attribute is the explicit, persisted one.
+ * Light ("crisp paper", redesign v3 design spec §3.7, issue #502) — a
+ * cooler, distinctly separated palette, independently art-directed, not
+ * a lightened copy of the dark block above. The pre-#502 version had
+ * `--color-bg`/`--color-surface`/`--color-rail` at
+ * `#eef1f5`/`#ffffff`/`#e2e6ec` with 7%/14% hairlines — a ~9-point
+ * lightness span across all three neutrals, so the canvas, cards and
+ * sidebar melted into one plane (see `apps/web/.audit/13-deck-light.png`
+ * and issue #502's audit findings, E2). Retuned for real separation:
+ *
+ *  - `--color-bg` (canvas): cooler and a shade darker than before.
+ *  - `--color-surface`: genuinely lighter than the canvas.
+ *  - `--color-surface-raised`: pure white, reserved for the most
+ *    prominent floating tier (PermissionCard/Dialog/Command Palette per
+ *    the elevation ladder in `/style-reference`) — the brightest plane,
+ *    same "higher tier reads lighter" convention the dark block above
+ *    uses, just capped at white since light mode can't go past it.
+ *  - `--color-rail`: clearly DARKER than the canvas, so the merged
+ *    sidebar (design spec §3.1) reads as a shell rather than a wash.
+ *  - Hairlines boosted from 7/14/24% to 18/28/38% so they actually show
+ *    on paper.
+ *  - Text-muted and the four semantic status colors are darkened (kept
+ *    in-hue) to clear real contrast minimums against both `--color-bg`
+ *    and `--color-surface` — the old values fell as low as 3.6:1 (see
+ *    issue #502's PR description for the full measured ratio table).
+ *    `--color-accent`/its hover/active/subtle/contrast siblings and
+ *    `--azure-glow` are deliberately UNCHANGED: they mirror
+ *    `$lib/accent-presets.ts`'s `azure.light` preset exactly, so the
+ *    pre-hydration fallback never flashes a different blue than the
+ *    preset JS applies a moment later.
+ *
+ * Two ways in on purpose, same as `tokens.css`'s own dark/light split:
+ *  - `prefers-color-scheme: light` covers a first-ever visit before any
+ *    explicit choice exists (no `data-theme` attribute yet).
+ *  - `[data-theme='light']` is the explicit, persisted choice `theme.ts`
+ *    writes onto `<html>`, and always wins over the media query.
  */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme]),
-  :root[data-style='deck']:not([data-theme]) {
+  :root:not([data-theme]) {
     color-scheme: light;
 
-    --color-bg: #eef1f5;
-    --color-surface: #ffffff;
-    --color-surface-raised: #f7f9fc;
-    --color-rail: #e2e6ec;
+    --color-bg: #e3e7ef;
+    --color-surface: #fafbfd;
+    --color-surface-raised: #ffffff;
+    --color-rail: #c7ced9;
     --color-overlay: rgb(10 14 20 / 40%);
 
-    --color-border-subtle: rgb(15 23 35 / 7%);
-    --color-border: rgb(15 23 35 / 14%);
-    --color-border-strong: rgb(15 23 35 / 24%);
+    --color-border-subtle: rgb(15 23 35 / 18%);
+    --color-border: rgb(15 23 35 / 28%);
+    --color-border-strong: rgb(15 23 35 / 38%);
     --color-fill-subtle: rgb(15 23 35 / 5%);
     --color-fill: rgb(15 23 35 / 10%);
 
     --color-text-primary: #10141a;
     --color-text-secondary: #454b57;
-    --color-text-muted: #767c87;
+    --color-text-muted: #5a6270;
     --color-text-inverse: #0a0c0f;
 
     --color-accent: #1f7fd0;
@@ -151,14 +178,14 @@
     --color-accent-contrast: #0a0a0a;
     --azure-glow: rgb(31 127 208 / 32%);
 
-    --color-success: #1f8f62;
-    --color-success-subtle: rgb(31 143 98 / 12%);
-    --color-warning: #9a6c0d;
-    --color-warning-subtle: rgb(154 108 13 / 12%);
-    --color-danger: #c23b41;
-    --color-danger-subtle: rgb(194 59 65 / 12%);
-    --color-info: #2568a8;
-    --color-info-subtle: rgb(37 104 168 / 12%);
+    --color-success: #14754e;
+    --color-success-subtle: rgb(20 117 78 / 12%);
+    --color-warning: #885e08;
+    --color-warning-subtle: rgb(136 94 8 / 12%);
+    --color-danger: #be3138;
+    --color-danger-subtle: rgb(190 49 56 / 12%);
+    --color-info: #246d94;
+    --color-info-subtle: rgb(36 109 148 / 12%);
 
     --color-focus-ring: var(--color-border-strong);
 
@@ -187,25 +214,24 @@
   }
 }
 
-:root[data-theme='light'],
-:root[data-style='deck'][data-theme='light'] {
+:root[data-theme='light'] {
   color-scheme: light;
 
-  --color-bg: #eef1f5;
-  --color-surface: #ffffff;
-  --color-surface-raised: #f7f9fc;
-  --color-rail: #e2e6ec;
+  --color-bg: #e3e7ef;
+  --color-surface: #fafbfd;
+  --color-surface-raised: #ffffff;
+  --color-rail: #c7ced9;
   --color-overlay: rgb(10 14 20 / 40%);
 
-  --color-border-subtle: rgb(15 23 35 / 7%);
-  --color-border: rgb(15 23 35 / 14%);
-  --color-border-strong: rgb(15 23 35 / 24%);
+  --color-border-subtle: rgb(15 23 35 / 18%);
+  --color-border: rgb(15 23 35 / 28%);
+  --color-border-strong: rgb(15 23 35 / 38%);
   --color-fill-subtle: rgb(15 23 35 / 5%);
   --color-fill: rgb(15 23 35 / 10%);
 
   --color-text-primary: #10141a;
   --color-text-secondary: #454b57;
-  --color-text-muted: #767c87;
+  --color-text-muted: #5a6270;
   --color-text-inverse: #0a0c0f;
 
   --color-accent: #1f7fd0;
@@ -215,14 +241,14 @@
   --color-accent-contrast: #0a0a0a;
   --azure-glow: rgb(31 127 208 / 32%);
 
-  --color-success: #1f8f62;
-  --color-success-subtle: rgb(31 143 98 / 12%);
-  --color-warning: #9a6c0d;
-  --color-warning-subtle: rgb(154 108 13 / 12%);
-  --color-danger: #c23b41;
-  --color-danger-subtle: rgb(194 59 65 / 12%);
-  --color-info: #2568a8;
-  --color-info-subtle: rgb(37 104 168 / 12%);
+  --color-success: #14754e;
+  --color-success-subtle: rgb(20 117 78 / 12%);
+  --color-warning: #885e08;
+  --color-warning-subtle: rgb(136 94 8 / 12%);
+  --color-danger: #be3138;
+  --color-danger-subtle: rgb(190 49 56 / 12%);
+  --color-info: #246d94;
+  --color-info-subtle: rgb(36 109 148 / 12%);
 
   --color-focus-ring: var(--color-border-strong);
 
@@ -254,7 +280,6 @@
    above — declared so `[data-theme="dark"]` is a valid, matched selector in
    its own right rather than relying on absence-of-light (mirrors
    tokens.css's own `[data-theme="dark"]` rule). */
-:root[data-theme='dark'],
-:root[data-style='deck'][data-theme='dark'] {
+:root[data-theme='dark'] {
   color-scheme: dark;
 }

@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { TranscriptToolCallItem } from '@loombox/providers-core';
 import {
   bashCommand,
+  classifyRawInput,
   isTodoInput,
   resolveToolWidgetKind,
   toolCallOutputText,
+  TOOL_CALL_STATUS_LABELS,
+  TOOL_CALL_STATUS_TONES,
 } from './tool-widgets';
 
 function toolCallItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptToolCallItem {
@@ -90,5 +93,69 @@ describe('toolCallOutputText', () => {
 
   it('returns "" for undefined content', () => {
     expect(toolCallOutputText(undefined)).toBe('');
+  });
+});
+
+describe('classifyRawInput', () => {
+  it('classifies a command field as a command line', () => {
+    expect(classifyRawInput({ command: 'pnpm test' })).toEqual({
+      kind: 'command',
+      command: 'pnpm test',
+    });
+  });
+
+  it('classifies a lone string as a command line', () => {
+    expect(classifyRawInput('ls -la')).toEqual({ kind: 'command', command: 'ls -la' });
+  });
+
+  it('classifies a single path-like field as a path', () => {
+    expect(classifyRawInput({ path: 'src/foo.ts' })).toEqual({
+      kind: 'path',
+      path: 'src/foo.ts',
+    });
+  });
+
+  it('falls back to a formatted key/value entry list for an unrecognised object, never a JSON blob', () => {
+    const result = classifyRawInput({ pattern: 'TODO' });
+    expect(result).toEqual({ kind: 'entries', entries: [{ key: 'pattern', value: 'TODO' }] });
+    expect(JSON.stringify(result)).not.toContain('{\\"');
+  });
+
+  it('formats every entry value, never leaving a nested object as a raw JSON string the caller has to parse back out', () => {
+    const result = classifyRawInput({ recursive: true, maxDepth: 2 });
+    expect(result).toEqual({
+      kind: 'entries',
+      entries: [
+        { key: 'recursive', value: 'true' },
+        { key: 'maxDepth', value: '2' },
+      ],
+    });
+  });
+
+  it('returns undefined for an empty object, an empty string, undefined, or null', () => {
+    expect(classifyRawInput({})).toBeUndefined();
+    expect(classifyRawInput('')).toBeUndefined();
+    expect(classifyRawInput(undefined)).toBeUndefined();
+    expect(classifyRawInput(null)).toBeUndefined();
+  });
+});
+
+describe('TOOL_CALL_STATUS_TONES / TOOL_CALL_STATUS_LABELS', () => {
+  it('maps every AcpToolCallStatus onto the StatusTone vocabulary with a human label, never the raw enum', () => {
+    const statuses: Array<keyof typeof TOOL_CALL_STATUS_TONES> = [
+      'pending',
+      'in_progress',
+      'completed',
+      'failed',
+    ];
+    for (const status of statuses) {
+      expect(TOOL_CALL_STATUS_TONES[status]).toBeTruthy();
+      expect(TOOL_CALL_STATUS_LABELS[status]).toBeTruthy();
+      expect(TOOL_CALL_STATUS_LABELS[status]).not.toBe(status);
+    }
+    expect(TOOL_CALL_STATUS_TONES.completed).toBe('success');
+    expect(TOOL_CALL_STATUS_TONES.failed).toBe('danger');
+    expect(TOOL_CALL_STATUS_TONES.in_progress).toBe('info');
+    expect(TOOL_CALL_STATUS_TONES.pending).toBe('neutral');
   });
 });

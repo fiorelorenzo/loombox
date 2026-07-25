@@ -43,8 +43,8 @@
    * composed the real `Button` primitive. The two choice cards stay their
    * own hand-rolled compound elements (a bold title plus a description line,
    * `Card`'s `raised` tier, an accent-border hover) rather than importing
-   * `Button` — the same call `AppearanceSettings.svelte`'s Style/Theme/
-   * Accent option buttons make: they're a selectable-option idiom, not a
+   * `Button` — the same call `AppearanceSettings.svelte`'s Theme/Accent
+   * option buttons make: they're a selectable-option idiom, not a
    * plain call-to-action, so forcing them through `Button`'s single-line
    * variant styling would read as a different, worse control. `Button`'s
    * `dataTestId` override (issue #479) would let them keep their exact

@@ -23,6 +23,7 @@
  * identical rationale/pattern this mirrors.
  */
 import { aesGcmDecrypt, aesGcmEncrypt, AES_GCM_IV_BYTES, importAesGcmKey } from './aead';
+import { base64ToBytes, bytesToBase64 } from './base64';
 
 /** 160 bits of CSPRNG entropy per Recovery Code — comfortably beyond brute-force reach with no server-side rate limiter (SPEC §16: "adapted... so no enclave-based rate limiter is required"). */
 export const RECOVERY_CODE_BYTES = 20;
@@ -179,19 +180,6 @@ export async function unwrapAmkWithRecoveryCode(
   return aesGcmDecrypt(key, blob.iv, blob.ciphertext, new TextEncoder().encode(accountId));
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function fromBase64(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 /**
  * Packs a {@link WrappedAmkBlob} into the single opaque base64 string the
  * wire's `amk_escrow`/`new_device_bootstrap_response` `wrappedAmk` field
@@ -219,12 +207,12 @@ export function packWrappedAmkForWire(blob: WrappedAmkBlob): string {
   bytes.set(blob.iv, offset);
   offset += blob.iv.byteLength;
   bytes.set(blob.ciphertext, offset);
-  return toBase64(bytes);
+  return bytesToBase64(bytes);
 }
 
 /** Inverse of {@link packWrappedAmkForWire}. Throws on a malformed or unsupported-version blob. */
 export function unpackWrappedAmkFromWire(wire: string): WrappedAmkBlob {
-  const bytes = fromBase64(wire);
+  const bytes = base64ToBytes(wire);
   if (bytes.byteLength < 2) {
     throw new Error('@loombox/crypto: malformed wrapped-AMK blob');
   }

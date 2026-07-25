@@ -27,6 +27,14 @@
    * reserved for the one thing actually happening right now, never chrome)
    * instead of relying on font-weight alone, so the two checklist-shaped
    * widgets read as one consistent family.
+   *
+   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
+   * §3.4 "Canvas and transcript" — "keep the shape"): the card itself keeps
+   * its raised-tier box (unlike messages/tool calls, which dropped theirs),
+   * but now sits behind a `.plan-gutter` spacer the same `var(--gutter)`
+   * width as every other row's gutter, so its left edge lines up with the
+   * rest of the timeline's content column instead of reading as a foreign
+   * card flush against the canvas edge.
    */
   import type { AcpPlanEntry } from '@loombox/providers-core';
   import CopyButton from './CopyButton.svelte';
@@ -47,44 +55,67 @@
   );
 </script>
 
-<div class="plan-card" class:active data-testid="plan-card">
-  <button
-    type="button"
-    class="plan-header"
-    onclick={onToggle}
-    aria-expanded={!collapsed}
-    aria-label={collapsed ? 'Expand plan' : 'Collapse plan'}
-  >
-    <span class="chevron">{collapsed ? '▸' : '▾'}</span>
-    <span class="title">Plan</span>
-    <span class="progress">{completedCount}/{entries.length}</span>
-    {#if active}
-      <span class="shimmer" data-testid="plan-shimmer">
-        <StatusDot tone="info" pulse label="Plan in progress" />
-      </span>
-    {/if}
-  </button>
+<div class="plan-row">
+  <div class="plan-gutter" aria-hidden="true"></div>
+  <div class="plan-card" class:active data-testid="plan-card">
+    <button
+      type="button"
+      class="plan-header"
+      onclick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={collapsed ? 'Expand plan' : 'Collapse plan'}
+    >
+      <span class="chevron">{collapsed ? '▸' : '▾'}</span>
+      <span class="title">Plan</span>
+      <span class="progress">{completedCount}/{entries.length}</span>
+      {#if active}
+        <span class="shimmer" data-testid="plan-shimmer">
+          <StatusDot tone="info" pulse label="Plan in progress" />
+        </span>
+      {/if}
+    </button>
 
-  {#if !collapsed}
-    <ol class="plan-entries">
-      {#each entries as entry, index (index)}
-        <li class={entry.status}>
-          <span class="checkbox" aria-hidden="true">{entry.status === 'completed' ? '☑' : '☐'}</span
-          >
-          <span class="content">{entry.content}</span>
-        </li>
-      {/each}
-    </ol>
-    <div class="plan-actions">
-      <CopyButton text={copyText} label="Copy plan" />
-    </div>
-  {/if}
+    {#if !collapsed}
+      <ol class="plan-entries">
+        {#each entries as entry, index (index)}
+          <li class={entry.status}>
+            <span class="checkbox" aria-hidden="true"
+              >{entry.status === 'completed' ? '☑' : '☐'}</span
+            >
+            <span class="content">{entry.content}</span>
+          </li>
+        {/each}
+      </ol>
+      <div class="plan-actions">
+        <CopyButton text={copyText} label="Copy plan" revealOnHover />
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
+  /* Gutter alignment (redesign v3 design spec §3.4): a spacer the same
+     width as every other row's role/kind glyph column, so the card's left
+     edge lines up with the rest of the timeline's content instead of
+     starting flush at the canvas edge. */
+  .plan-row {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .plan-gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
+  }
+
   /* raised tier (elevation ladder §3): PlanCard is named directly in the
-     ladder's table. */
+     ladder's table — the one transcript item that keeps its box (redesign
+     v3 §3.4 "keep the shape"). */
   .plan-card {
+    flex: 1;
+    min-width: 0;
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
@@ -190,6 +221,14 @@
     display: flex;
     justify-content: flex-end;
     padding: 0 var(--space-sm) var(--space-xs);
+  }
+
+  /* Copy affordance reveals on card hover/focus-within (redesign v3 §3.4
+     "Copy affordances"); see CopyButton.svelte's `revealOnHover` doc
+     comment for why this lives here rather than in the shared button. */
+  .plan-card:hover :global(.copy-button-reveal),
+  .plan-card:focus-within :global(.copy-button-reveal) {
+    opacity: 1;
   }
 
   /* Touch-optimized plan controls (SPEC.md §7.3, issue #133): the plan

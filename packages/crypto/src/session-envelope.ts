@@ -1,5 +1,6 @@
 import type { EncryptedEnvelope } from '@loombox/protocol';
 import type { CryptoKey } from './webcrypto-types';
+import { base64ToBytes, bytesToBase64 } from './base64';
 import { decryptEnvelope, encryptEnvelope, type Envelope } from './envelope';
 
 /**
@@ -23,8 +24,8 @@ const ENCRYPTION_ALG = 'AES-256-GCM' as const;
 export function envelopeToWire(envelope: Envelope): EncryptedEnvelope {
   return {
     resourceId: envelope.resourceId,
-    iv: Buffer.from(envelope.iv).toString('base64'),
-    ciphertext: Buffer.from(envelope.ciphertext).toString('base64'),
+    iv: bytesToBase64(envelope.iv),
+    ciphertext: bytesToBase64(envelope.ciphertext),
     alg: ENCRYPTION_ALG,
   };
 }
@@ -33,8 +34,8 @@ export function envelopeToWire(envelope: Envelope): EncryptedEnvelope {
 export function envelopeFromWire(wire: EncryptedEnvelope): Envelope {
   return {
     resourceId: wire.resourceId,
-    iv: new Uint8Array(Buffer.from(wire.iv, 'base64')),
-    ciphertext: new Uint8Array(Buffer.from(wire.ciphertext, 'base64')),
+    iv: base64ToBytes(wire.iv),
+    ciphertext: base64ToBytes(wire.ciphertext),
   };
 }
 

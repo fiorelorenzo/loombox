@@ -43,6 +43,14 @@
    * `data-testid` (its `inputTestId` override), so this component's own
    * `canSubmit`/`handleSubmit` and this file's existing tests are
    * unaffected by the swap.
+   *
+   * Deck v3 restyle (redesign v3 design spec §3.5, issue #502): the
+   * Provider field's native `<select>` gives way to the shared `ui/Select`
+   * primitive (a button + anchored listbox) — the only native `<select>`
+   * this file ever had, and one of the last two in the app alongside
+   * `ConfigBar`'s. `PROVIDER_OPTIONS` is the one-entry list `Select` reads;
+   * `selectedProvider` keeps its exact name/default so `canSubmit`/
+   * `handleSubmit` and this file's existing tests are unaffected.
    */
   import type { CreateSessionOptions, TargetListEntry } from '$lib/relay-client';
   import DirectoryPicker, { type DirectoryPickerClient } from './DirectoryPicker.svelte';
@@ -52,6 +60,7 @@
   import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Select, { type SelectOption } from './ui/Select.svelte';
 
   export interface NewSessionClient extends DirectoryPickerClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
@@ -73,6 +82,8 @@
   let targetsLoading = $state(false);
   let targetsError = $state<string | undefined>(undefined);
   let selectedTargetId = $state<string | undefined>(undefined);
+  /** The only provider option today (this file's own doc comment above: SPEC's locked "Claude-only" v1 call) — shown as a real `Select` rather than hidden, so the field is honest about being extensible later without pretending there's a choice yet. */
+  const PROVIDER_OPTIONS: SelectOption[] = [{ id: 'claude', label: 'Claude Code' }];
   let selectedProvider = $state('claude');
   let projectPath = $state('');
   let title = $state('');
@@ -182,14 +193,14 @@
   {/if}
 
   <form class="session-form" onsubmit={handleSubmit}>
-    <label for="new-session-provider">Provider</label>
-    <select
-      id="new-session-provider"
-      bind:value={selectedProvider}
-      data-testid="new-session-provider"
-    >
-      <option value="claude">Claude Code</option>
-    </select>
+    <span class="field-label">Provider</span>
+    <Select
+      value={selectedProvider}
+      options={PROVIDER_OPTIONS}
+      onChange={(id) => (selectedProvider = id)}
+      label="Provider"
+      dataTestId="new-session-provider"
+    />
 
     <span class="field-label" id="new-session-project-path-label">Project folder</span>
     <div role="group" aria-labelledby="new-session-project-path-label">
@@ -275,7 +286,6 @@
   }
 
   .session-form input,
-  .session-form select,
   .session-form textarea {
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
@@ -289,7 +299,6 @@
   }
 
   .session-form input:focus-visible,
-  .session-form select:focus-visible,
   .session-form textarea:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);

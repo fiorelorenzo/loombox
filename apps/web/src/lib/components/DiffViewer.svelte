@@ -13,6 +13,14 @@
    * itself adopts the elevation ladder's "raised" tier; the header keeps
    * its own slightly-darker fill as a toolbar strip for path/stats/copy,
    * legible against either surrounding surface.
+   *
+   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
+   * §3.4 "Canvas and transcript"): capped at `--measure-wide` on a wide
+   * viewport rather than stretching edge-to-edge, and `min-width: 0` so it
+   * can actually shrink inside a flex-column ancestor (`EditWriteWidget`'s
+   * `.content`) instead of forcing the whole row wider than the viewport —
+   * the card scrolls its own long lines horizontally (`.diff-lines`'s
+   * `overflow-x: auto`) rather than overflowing the page on a narrow one.
    */
   import { computeLineDiff, languageForPath, type DiffLine } from '$lib/diff';
   import CopyButton from './CopyButton.svelte';
@@ -48,7 +56,7 @@
         <span class="removed">-{removed}</span>
       </span>
     {/if}
-    <CopyButton text={copyText} label={`Copy diff for ${path}`} />
+    <CopyButton text={copyText} label={`Copy diff for ${path}`} revealOnHover />
   </div>
 
   {#if hasText}
@@ -72,7 +80,10 @@
 </div>
 
 <style>
-  /* raised tier (elevation ladder §3). */
+  /* raised tier (elevation ladder §3). Capped at --measure-wide (redesign
+     v3 §3.4) and always allowed to shrink below its content's intrinsic
+     width inside a flex/grid ancestor, so a long monospace line scrolls
+     within `.diff-lines` instead of pushing the card past the viewport. */
   .diff-viewer {
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
@@ -80,6 +91,9 @@
     box-shadow: var(--shadow-sm);
     overflow: hidden;
     font-size: var(--text-code-size);
+    width: 100%;
+    max-width: var(--measure-wide);
+    min-width: 0;
   }
 
   .diff-header {
@@ -114,10 +128,13 @@
     padding: 0;
     font-family: var(--font-mono);
     overflow-x: auto;
+    max-width: 100%;
   }
 
   .diff-lines li {
     display: flex;
+    width: fit-content;
+    min-width: 100%;
     white-space: pre;
     padding: 0 var(--space-sm);
   }
@@ -150,5 +167,13 @@
     padding: var(--space-sm);
     opacity: 0.75;
     margin: 0;
+  }
+
+  /* Copy affordance reveals on card hover/focus-within (redesign v3 §3.4
+     "Copy affordances"); see CopyButton.svelte's `revealOnHover` doc
+     comment for why this lives here rather than in the shared button. */
+  .diff-viewer:hover :global(.copy-button-reveal),
+  .diff-viewer:focus-within :global(.copy-button-reveal) {
+    opacity: 1;
   }
 </style>

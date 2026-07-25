@@ -27,12 +27,17 @@
    * goes false — the real `turn_ended` signal, so nothing is ever left
    * partially revealed once a turn settles.
    *
-   * Warp Deck restyle (`docs/design/redesign.md` §6, issue #432): the root
-   * `.message-item` is itself the flex item that drives role-based
-   * alignment (fixing the old dead `align-self` rule, which needed a flex
-   * *parent* it never had) — `user` turns right-align a real accent-subtle
-   * bubble capped at ~70ch; `agent`/`thought` rows stay left-aligned, full
-   * width, `flat`-tier (elevation ladder §3). A plain CSS `animation`
+   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
+   * §3.4 "Canvas and transcript" — one timeline metaphor): the root
+   * `.message-item` is a full-width row split into a fixed `.gutter`
+   * (`var(--gutter)`) carrying the role glyph, and `.content` flowing in
+   * the remaining width — never a bubble, never right-aligned, never an
+   * uppercase `USER`/`AGENT`/`THOUGHT` word in the content flow. The role
+   * lives as the gutter glyph (decorative) plus an `sr-only` label right
+   * beside it, and `user` is told apart from `agent` with a hairline/tint
+   * on the gutter itself, never a different box — the old right-aligned
+   * accent-subtle bubble and the agent's full-width "card" look are both
+   * gone; every row reads the same shape. A plain CSS `animation`
    * (`beat-in`, `--duration-base`/`--ease-beat`) plays once when the root
    * element is first mounted into the keyed `{#each item.id}` list and
    * never replays on the in-place prop updates that stream text into the
@@ -129,44 +134,46 @@
 <div
   class="message-item"
   class:user={role === 'user'}
+  class:agent={role === 'agent'}
   class:thought={role === 'thought'}
   data-testid="message-item"
 >
-  <div class="row">
-    <span class="role">{role}</span>
+  <div class="gutter">
+    <span class="glyph" aria-hidden="true"></span>
+    <span class="sr-only">{role}</span>
+  </div>
+  <div class="content">
     {#if role === 'thought'}
       {#if thinking}
         <WovenLoader size="sm" variant="working" label="Agent thinking" />
       {/if}
       <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
-    {/if}
-    {#if role === 'thought' && !expanded}
-      <button type="button" class="expand" onclick={() => (expanded = true)}>
-        <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
-        Show thought
-      </button>
-    {:else if role === 'thought'}
-      <p class="text thought-body" data-testid="thought-body">{displayText}</p>
+      {#if !expanded}
+        <button type="button" class="expand" onclick={() => (expanded = true)}>
+          <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
+          Show thought
+        </button>
+      {:else}
+        <p class="text thought-body" data-testid="thought-body">{displayText}</p>
+      {/if}
     {:else}
       <p class="text" data-testid="message-text">{displayText}</p>
     {/if}
-    <CopyButton text={itemCopyText(item)} label={`Copy ${role} message`} />
+    <div class="copy-row">
+      <CopyButton text={itemCopyText(item)} label={`Copy ${role} message`} revealOnHover />
+    </div>
   </div>
 </div>
 
 <style>
-  /* The root is the actual flex item that drives alignment (fixes the old
-     dead `align-self` rule — that needed a flex *parent*, which the
-     `<li>` wrapper in the transcript list never provided). */
+  /* One timeline metaphor (redesign v3 design spec §3.4): a fixed gutter
+     plus content, the identical shape for every role — never a bubble,
+     never a right-aligned exception. */
   .message-item {
     display: flex;
+    align-items: flex-start;
     width: 100%;
-    justify-content: flex-start;
     animation: beat-in var(--duration-base) var(--ease-beat) both;
-  }
-
-  .message-item.user {
-    justify-content: flex-end;
   }
 
   @keyframes beat-in {
@@ -180,42 +187,55 @@
     }
   }
 
-  .row {
+  .gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
+    display: flex;
+    justify-content: center;
+    padding-top: var(--space-sm);
+  }
+
+  .glyph {
+    width: var(--space-xs);
+    height: var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--color-text-muted);
+  }
+
+  /* Distinguish user from agent with a hairline/tint on the gutter itself
+     — never a different box (the old right-aligned accent-subtle bubble,
+     and the agent's competing full-width "card" look, are both gone). */
+  .message-item.user .gutter {
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
+  }
+
+  .message-item.user .glyph {
+    background: var(--color-accent);
+  }
+
+  .message-item.thought .glyph {
+    opacity: 0.5;
+  }
+
+  .content {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: flex-start;
     gap: var(--space-xs);
-    max-width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-lg);
-    /* flat tier (elevation ladder §3): agent/thought rows are plain,
-       full-width, conversational text — not a boxed card. */
-    background: var(--color-surface);
-    border: 1px solid var(--color-border-subtle);
+    padding: var(--space-sm) 0;
   }
 
-  /* User turns: a real right-aligned accent-subtle bubble, capped so a
-     one-line reply doesn't stretch across the whole canvas. */
-  .message-item.user .row {
-    max-width: min(70ch, 100%);
-    background: var(--color-accent-subtle);
-    border-color: transparent;
-  }
-
-  .message-item.thought .row {
+  /* Thoughts stay a single quiet row — muted and italic, never a pill
+     boxed on its own (redesign v3 design spec §3.4 "Thoughts"). */
+  .message-item.thought .content {
     opacity: 0.65;
     font-style: italic;
   }
 
-  .role {
-    flex-shrink: 0;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    opacity: 0.6;
-    padding-top: var(--space-3xs);
-  }
-
   .text {
     flex: 1;
+    min-width: 0;
     margin: 0;
     white-space: pre-wrap;
   }
@@ -261,5 +281,30 @@
 
   :global(.expand-icon) {
     flex-shrink: 0;
+  }
+
+  .copy-row {
+    flex-shrink: 0;
+  }
+
+  /* Copy affordances reveal on row hover/focus-within rather than sitting
+     permanently visible (redesign v3 design spec §3.4 "Copy affordances");
+     `CopyButton`'s own `revealOnHover` opts into this, and stays visible
+     under `(hover: none)` regardless (see CopyButton.svelte). */
+  .message-item:hover :global(.copy-button-reveal),
+  .message-item:focus-within :global(.copy-button-reveal) {
+    opacity: 1;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

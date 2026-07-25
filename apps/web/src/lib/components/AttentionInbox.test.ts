@@ -190,11 +190,11 @@ describe('AttentionInbox: session-outcome class (issue #167, SPEC §7.13)', () =
 
     expect(rows[0].dataset.kind).toBe('session_outcome');
     expect(within(rows[0]).getByText('Finished: end_turn')).toBeTruthy();
-    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Finished');
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Exited');
 
     expect(rows[1].dataset.kind).toBe('session_outcome');
     expect(within(rows[1]).getByTestId('attention-inbox-need').textContent).toBe('Errored');
-    expect(within(rows[1]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Errored');
+    expect(within(rows[1]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Error');
 
     expect(screen.queryAllByTestId('permission-card')).toHaveLength(0);
     expect(screen.queryAllByTestId('attention-inbox-reply')).toHaveLength(0);

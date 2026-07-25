@@ -1,22 +1,21 @@
 /*
- * loombox structural design tokens (issue #195, SPEC.md §4 "Visual style";
- * split from the color palette by issue #458's Style-system architecture).
+ * loombox structural design tokens (issue #195, SPEC.md §4 "Visual style").
  *
- * This file is now deliberately COLOR-FREE: every `--color-*` custom
- * property (background/surface/border/text ramps, the accent "thread", and
- * the semantic status set) moved to `styles/deck.css` (and its siblings
- * `loom.css`/`studio.css`) — see this redesign's design spec §1 ("Token
- * layers") and issue #458. What stays here is the "style-agnostic
- * structural" layer every Style shares: spacing, radius, shadow, z-index,
- * motion (duration/ease), focus-ring geometry, and breakpoints. Components
- * still read every value through a custom property, never a hardcoded
- * number — retuning the shared structural scale is one edit here; retuning
- * a Style's palette is one edit in that Style's own CSS file.
+ * This file is deliberately COLOR-FREE: every `--color-*` custom property
+ * (background/surface/border/text ramps, the accent "thread", and the
+ * semantic status set) lives in `styles/deck.css`, the single palette this
+ * app ships (redesign v3 design spec §3.7, issue #502 — the earlier
+ * Deck/Loom/Studio "Style" axis was deleted, not kept as dead options).
+ * What stays here is the palette-agnostic structural layer: spacing,
+ * radius, shadow, z-index, motion (duration/ease), focus-ring geometry,
+ * layout measures, and breakpoints. Components still read every value
+ * through a custom property, never a hardcoded number — retuning the
+ * shared structural scale is one edit here; retuning the palette is one
+ * edit in `deck.css`.
  *
- * Shadows keep their own dark/light variance in THIS file (not per-Style):
- * elevation is a theme (dark/light) concern, not a Style (deck/loom/studio)
- * one — a soft dark shadow reads right on any dark Style, a crisp light one
- * on any light Style. `color-scheme` lives here for the same reason.
+ * Shadows keep their own dark/light variance in THIS file (elevation is a
+ * theme concern): a soft dark shadow reads right in dark, a tight, darker-
+ * tinted one in light. `color-scheme` lives here for the same reason.
  */
 
 :root {
@@ -44,6 +43,19 @@
   --radius-lg: 0.5rem;
   --radius-xl: 0.75rem;
   --radius-full: 999px;
+
+  /* ---------------------------------------------------------------- */
+  /* Layout measures (redesign v3 design spec §3.1/§3.4). Structural,   */
+  /* not palette: how wide a column of prose may get before it stops    */
+  /* being readable, how wide the sidebar starts, and how much room the */
+  /* transcript's role gutter reserves. Components read these instead   */
+  /* of inventing their own magic widths.                               */
+  /* ---------------------------------------------------------------- */
+  --measure: 90ch; /* long-form prose in the transcript */
+  --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
+  --gutter: 2rem; /* the transcript timeline's role-glyph column */
+  --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
+  --sidebar-width-collapsed: 3.5rem;
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */
@@ -88,11 +100,10 @@
   --ease-exit: cubic-bezier(0.4, 0, 1, 1); /* exits: accelerate out, never lingers */
 
   /* Focus ring geometry: width/offset are structural (a plain pixel
-     measurement, shared by every Style). The ring's COLOR is not — it's
-     defined per-Style, right next to that Style's `--color-border-strong`
-     (deliberately NOT the accent color — the accent stays reserved for
-     meaning, never chrome, per the redesign brief's discipline — see each
-     Style's own CSS file). */
+     measurement, shared app-wide). The ring's COLOR is not — it's defined
+     in `deck.css`, right next to `--color-border-strong` (deliberately
+     NOT the accent color — the accent stays reserved for meaning, never
+     chrome, per the redesign brief's discipline — see that file). */
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
 
@@ -128,32 +139,39 @@
 }
 
 /*
- * Light variant ("paper") — shadow/color-scheme only now; the rest of what
- * used to live here (bg/surface/border/text/accent/status) is each Style's
- * own concern. Two ways in on purpose, same as before:
+ * Light variant ("paper") — shadow/color-scheme only here; bg/surface/
+ * border/text/accent/status live in `deck.css`'s own light block (the
+ * single palette this app ships — see that file's doc comment). Two ways
+ * in on purpose, same as before:
  *  - `prefers-color-scheme: light` covers a first-ever visit before any
  *    explicit choice exists (no `data-theme` attribute yet).
  *  - `[data-theme="light"]` is the explicit, persisted choice `theme.ts`
  *    writes onto `<html>`, and always wins over the media query (it's the
  *    more specific selector and also comes second in source order for
  *    `[data-theme="dark"]` vs the media query below).
+ *
+ * Shadows are re-tuned tight and dark for redesign v3 (issue #502) rather
+ * than being a low-opacity copy of the dark theme's own shadow geometry:
+ * shorter blur radii and a cool near-black tint (matching `deck.css`'s
+ * light hairlines) at roughly double the old alpha, so elevation actually
+ * reads against a light surface instead of washing out.
  */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
 
-    --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
-    --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);
-    --shadow-lg: 0 12px 32px rgb(23 20 15 / 14%);
+    --shadow-sm: 0 1px 2px rgb(15 23 35 / 16%);
+    --shadow-md: 0 3px 8px rgb(15 23 35 / 20%);
+    --shadow-lg: 0 8px 22px rgb(15 23 35 / 26%);
   }
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
 
-  --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
-  --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);
-  --shadow-lg: 0 12px 32px rgb(23 20 15 / 14%);
+  --shadow-sm: 0 1px 2px rgb(15 23 35 / 16%);
+  --shadow-md: 0 3px 8px rgb(15 23 35 / 20%);
+  --shadow-lg: 0 8px 22px rgb(15 23 35 / 26%);
 }
 
 /* Explicit dark choice always resolves back to the (identical) `:root`

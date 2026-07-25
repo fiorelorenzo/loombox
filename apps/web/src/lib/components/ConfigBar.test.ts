@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core';
@@ -55,11 +55,12 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     expect(screen.getByText('Reasoning Budget')).toBeTruthy();
   });
 
-  it('a user change calls onChange with the category and chosen option id (select control)', async () => {
+  it('a user change calls onChange with the category and chosen option id (Select control)', async () => {
     const onChange = vi.fn();
     render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
-    const select = screen.getByTestId('config-option-model').querySelector('select')!;
-    await fireEvent.change(select, { target: { value: 'opus' } });
+    const trigger = within(screen.getByTestId('config-option-model')).getByRole('combobox');
+    await fireEvent.click(trigger);
+    await fireEvent.click(screen.getByRole('option', { name: 'Opus' }));
     expect(onChange).toHaveBeenCalledWith('model', 'opus');
   });
 

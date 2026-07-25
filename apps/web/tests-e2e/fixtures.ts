@@ -54,6 +54,7 @@ async function bridgeRelayCors(page: Page, relayHttpBaseUrl: string): Promise<vo
         status: 204,
         headers: {
           'access-control-allow-origin': origin,
+          'access-control-allow-credentials': 'true',
           'access-control-allow-methods': 'GET,POST,OPTIONS',
           'access-control-allow-headers': 'authorization,content-type',
         },
@@ -66,6 +67,10 @@ async function bridgeRelayCors(page: Page, relayHttpBaseUrl: string): Promise<vo
       headers: {
         ...response.headers(),
         'access-control-allow-origin': origin,
+        // Better Auth's client sends `credentials: 'include'`, so the
+        // browser rejects the response — and logs a CORS error on every
+        // run — unless this is present alongside a concrete origin.
+        'access-control-allow-credentials': 'true',
       },
     });
   });

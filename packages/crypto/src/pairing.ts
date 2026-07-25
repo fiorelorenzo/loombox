@@ -34,6 +34,7 @@ import {
 } from './ecdh';
 import type { Envelope } from './envelope';
 import { decryptEnvelope, encryptEnvelope } from './envelope';
+import { base64UrlToBytes, bytesToBase64Url } from './base64';
 import { deriveChild } from './key-tree';
 import { importAesGcmKey } from './aead';
 
@@ -211,12 +212,12 @@ export function encodePairingOfferForQr(offer: PairingOffer): string {
   buffer[9] = pairingCodeBytes.byteLength;
   buffer.set(pairingCodeBytes, 10);
   buffer.set(offer.existingDevicePublicKey, 10 + pairingCodeBytes.byteLength);
-  return Buffer.from(buffer).toString('base64url');
+  return bytesToBase64Url(buffer);
 }
 
 /** Unpacks a {@link PairingOffer} previously encoded by {@link encodePairingOfferForQr}. */
 export function decodePairingOfferFromQr(payload: string): PairingOffer {
-  const buffer = new Uint8Array(Buffer.from(payload, 'base64url'));
+  const buffer = base64UrlToBytes(payload);
   if (buffer.byteLength < 10) {
     throw new Error('@loombox/crypto: malformed pairing QR payload');
   }

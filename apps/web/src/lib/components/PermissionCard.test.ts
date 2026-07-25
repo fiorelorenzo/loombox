@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PendingPermissionRequest } from '@loombox/providers-core';
@@ -26,13 +26,49 @@ const request: PendingPermissionRequest = {
 };
 
 describe('PermissionCard: rendering', () => {
-  it('renders fields straight off toolCall (title, rawInput) and every option by its own provider-given name', () => {
+  it('renders fields straight off toolCall (title) and every option by its own provider-given name', () => {
     render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });
     expect(screen.getByText('Edit src/foo.ts')).toBeTruthy();
-    expect(screen.getByText(/"path": "src\/foo.ts"/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Allow once/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Allow all edits/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Deny/ })).toBeTruthy();
+  });
+
+  it('renders a lone path-shaped rawInput as a path, not raw JSON (redesign v3 spec §2 C7)', () => {
+    render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });
+    expect(screen.getByTestId('permission-raw-input-path').textContent).toContain('src/foo.ts');
+  });
+
+  it('renders a command rawInput as a single mono command line', () => {
+    const withCommand: PendingPermissionRequest = {
+      ...request,
+      toolCall: { ...request.toolCall, rawInput: { command: 'pnpm -r test' } },
+    };
+    render(PermissionCard, {
+      props: { request: withCommand, actionable: true, onResolve: vi.fn() },
+    });
+    expect(screen.getByTestId('permission-raw-input-command').textContent).toContain(
+      'pnpm -r test',
+    );
+  });
+
+  it('renders an unrecognized rawInput object as a formatted key/value list, never as raw JSON (redesign v3 spec §2 C7)', () => {
+    const withObject: PendingPermissionRequest = {
+      ...request,
+      toolCall: {
+        ...request.toolCall,
+        rawInput: { pattern: 'TODO', recursive: true },
+      },
+    };
+    const { container } = render(PermissionCard, {
+      props: { request: withObject, actionable: true, onResolve: vi.fn() },
+    });
+    const list = screen.getByTestId('permission-raw-input-entries');
+    expect(within(list).getByText('pattern')).toBeTruthy();
+    expect(within(list).getByText('TODO')).toBeTruthy();
+    expect(within(list).getByText('recursive')).toBeTruthy();
+    expect(within(list).getByText('true')).toBeTruthy();
+    expect(container.textContent).not.toContain('{"');
   });
 
   it('renders a diff via DiffViewer when the toolCall carries one', () => {

@@ -86,7 +86,6 @@
   .queue-meta {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-sm);
   }
 
@@ -94,11 +93,12 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-3xs) var(--space-sm);
+    padding: var(--space-2xs) var(--space-md);
     border-radius: var(--radius-full);
     background: var(--color-warning-subtle);
     color: var(--color-text-secondary);
     font-size: var(--text-small-size);
     font-weight: 600;
+    line-height: 1;
   }
 </style>

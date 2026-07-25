@@ -67,6 +67,64 @@ describe('Overlay (issue #461 shared overlay root)', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // The regression that matters: the account menu and the Drawer leave
+  // focus on their trigger button in the header, OUTSIDE the overlay
+  // subtree, so a keydown listener bound to the backdrop element never saw
+  // the event and Escape did nothing on the two surfaces the IA cleanup
+  // added it for.
+  it('pressing Escape while focus is outside the overlay still calls onClose', async () => {
+    const onClose = vi.fn();
+    render(Overlay, {
+      props: {
+        open: true,
+        onClose,
+        children: contentSnippet('Content'),
+        reducedMotion: true,
+      },
+    });
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('with two overlays open, Escape closes only the top-most one', async () => {
+    const closeUnder = vi.fn();
+    const closeOver = vi.fn();
+    render(Overlay, {
+      props: {
+        open: true,
+        onClose: closeUnder,
+        children: contentSnippet('Under'),
+        reducedMotion: true,
+      },
+    });
+    render(Overlay, {
+      props: {
+        open: true,
+        onClose: closeOver,
+        children: contentSnippet('Over'),
+        reducedMotion: true,
+      },
+    });
+
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(closeOver).toHaveBeenCalledTimes(1);
+    expect(closeUnder).not.toHaveBeenCalled();
+  });
+
+  it('ignores other keys', async () => {
+    const onClose = vi.fn();
+    render(Overlay, {
+      props: {
+        open: true,
+        onClose,
+        children: contentSnippet('Content'),
+        reducedMotion: true,
+      },
+    });
+    await fireEvent.keyDown(document.body, { key: 'Enter' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('draws the backdrop at the given z-index token, defaulting to --z-overlay', () => {
     const { rerender } = render(Overlay, {
       props: {

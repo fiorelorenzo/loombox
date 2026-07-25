@@ -1,60 +1,60 @@
 <script lang="ts">
   /**
    * The appearance settings panel (issues #195/#376's settings surface):
-   * style preference (Deck/Loom/Studio — redesign v2 design spec §1, issue
-   * #463), theme preference (system/dark/light — the header's own toggle
-   * already cycles dark/light; this surfaces all three as explicit,
-   * individually selectable choices), and the accent preset/custom picker.
-   * A plain form over `$lib/style.ts`/`$lib/theme.ts`/`$lib/accent.ts`'s
-   * stores — this component owns no theming logic itself, only
-   * reads/writes the three module-level singleton stores directly (unlike
-   * `NotificationPreferences.svelte`'s injectable-storage pattern, there is
-   * exactly one `styleStore`/`themeStore`/`accentStore` instance app-wide,
-   * the same ones the header's own theme toggle already talks to).
-   * Selecting anything applies live (every store applies to the DOM
-   * synchronously on every `set*` call) and persists to localStorage.
+   * theme preference (system/dark/light — the header's own toggle already
+   * cycles dark/light; this surfaces all three as explicit, individually
+   * selectable choices) and the accent preset/custom picker. A plain form
+   * over `$lib/theme.ts`/`$lib/accent.ts`'s stores — this component owns
+   * no theming logic itself, only reads/writes the two module-level
+   * singleton stores directly (unlike `NotificationPreferences.svelte`'s
+   * injectable-storage pattern, there is exactly one `themeStore`/
+   * `accentStore` instance app-wide, the same ones the header's own theme
+   * toggle already talks to). Selecting anything applies live (every store
+   * applies to the DOM synchronously on every `set*` call) and persists to
+   * localStorage.
+   *
+   * The Style picker (Deck/Loom/Studio) that used to sit above Theme is
+   * gone (redesign v3 design spec §3.7, issue #502): the audit found the
+   * three "Styles" only ever differed by hue, never density or shape, so
+   * they were cut to the one palette rather than shipped as dead options —
+   * see `$lib/styles/deck.css`'s doc comment.
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4/§6,
    * issue #434): grouped onto `Card elevation="raised"` (the tier the
-   * brief's elevation table assigns to config cards), with the
-   * style/theme/accent pickers made tactile (hover lift, a settle-in
-   * "beat" on selection). The style/theme option and accent-swatch
-   * `<button>`s keep their exact `data-testid`/`aria-pressed` contract
-   * from before this restyle — they are NOT swapped for the shared
-   * `Button`/`IconButton` primitives, because both primitives hardcode
-   * their own `data-testid` ("ui-button"/"ui-icon-button") with no
-   * override, and this panel's per-option testids are load-bearing for its
-   * tests. Instead they're hand-styled to the same visual language (radius,
-   * transitions, `--color-focus-ring` focus, `tension-press` on `:active`)
-   * so the result reads as the same system without breaking the test
-   * contract.
+   * brief's elevation table assigns to config cards), with the theme/
+   * accent pickers made tactile (hover lift, a settle-in "beat" on
+   * selection). The theme option `<button>`s keep their exact
+   * `data-testid`/`aria-pressed` contract from before this restyle —
+   * intentionally NOT swapped for the shared `Button` primitive: its
+   * per-option testids are load-bearing for this panel's tests, and while
+   * `Button`/`IconButton` gained an overridable `dataTestId` since (issue
+   * #460), they're still hand-styled here to the same visual language
+   * (radius, transitions, `--color-focus-ring` focus, `tension-press` on
+   * `:active`) so the result reads as the same system without a rename.
+   * The accent swatches (redesign v3 issue #502 re-check) stay purpose-
+   * built for the same `dataTestId` reason, plus one `Button`/`IconButton`
+   * genuinely can't absorb: each swatch's fill IS a specific preset hex, a
+   * per-instance dynamic value neither primitive's fixed prop surface
+   * accepts, and duplicating `$lib/accent-presets.ts`'s hex table into
+   * this file's CSS would trade one bypass for a worse one (a second,
+   * driftable copy of the preset colors). They still draw from the exact
+   * same tokens (`--radius-full`, `--color-focus-ring`, `--duration-fast`/
+   * `--ease-beat`/`--ease-shuttle`) `IconButton` itself uses, and the fill
+   * is set via Svelte's `style:` property binding, not a string-templated
+   * `style` attribute.
    */
   import { accentStore, isValidAccentHex } from '$lib/accent';
   import { ACCENT_PRESET_KEYS, ACCENT_PRESET_LABELS, ACCENT_PRESETS } from '$lib/accent-presets';
-  import { styleStore, type StylePreference } from '$lib/style';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import Card from './ui/Card.svelte';
 
   const accentSelection = accentStore.selection;
   const themePreference = themeStore.preference;
-  const stylePreference = styleStore.preference;
 
   const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
     { value: 'system', label: 'System' },
     { value: 'dark', label: 'Dark' },
     { value: 'light', label: 'Light' },
-  ];
-
-  // Style section (redesign v2 design spec §1, issue #463): Deck/Loom/Studio
-  // are three full visual languages, orthogonal to theme/accent above. Only
-  // Deck is fully art-directed today (Loom/Studio are stubs that inherit
-  // Deck's tokens until their own wave lands), but all three are selectable
-  // now so the store + persistence + live `data-style` flip are exercised
-  // end to end.
-  const STYLE_OPTIONS: { value: StylePreference; label: string }[] = [
-    { value: 'deck', label: 'Deck' },
-    { value: 'loom', label: 'Loom' },
-    { value: 'studio', label: 'Studio' },
   ];
 
   // Seeded from whatever's already selected so the color input never shows
@@ -73,46 +73,6 @@
 </script>
 
 <div class="appearance-settings" data-testid="appearance-settings">
-  <Card elevation="raised" padding="md" class="settings-card">
-    <section class="style-section">
-      <h3>Style</h3>
-      <div class="style-options" role="radiogroup" aria-label="Style">
-        {#each STYLE_OPTIONS as option (option.value)}
-          <button
-            type="button"
-            class="style-option"
-            class:selected={$stylePreference === option.value}
-            aria-pressed={$stylePreference === option.value}
-            onclick={() => styleStore.setStyle(option.value)}
-            data-testid={`style-option-${option.value}`}
-          >
-            <span class="style-option-icon" aria-hidden="true">
-              {#if option.value === 'deck'}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <rect x="2.5" y="4" width="15" height="12" rx="1.5" />
-                  <path d="M5.5 8 8 10l-2.5 2" stroke-linecap="round" stroke-linejoin="round" />
-                  <path d="M9.5 12h5" stroke-linecap="round" />
-                </svg>
-              {:else if option.value === 'loom'}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M2.5 6h15M2.5 10h15M2.5 14h15" stroke-linecap="round" />
-                  <path d="M6 3v14M10 3v14M14 3v14" stroke-linecap="round" opacity="0.6" />
-                </svg>
-              {:else}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <rect x="2.5" y="2.5" width="15" height="15" rx="2" />
-                  <circle cx="7.2" cy="7.2" r="1.4" fill="currentColor" stroke="none" />
-                  <path d="M2.5 13.5 7 9l3 3 3.5-4 4 4.5" stroke-linejoin="round" />
-                </svg>
-              {/if}
-            </span>
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </section>
-  </Card>
-
   <Card elevation="raised" padding="md" class="settings-card">
     <section class="theme-section">
       <h3>Theme</h3>
@@ -167,7 +127,7 @@
             class="accent-swatch"
             class:selected={isSelected}
             aria-pressed={isSelected}
-            style={`background: ${ACCENT_PRESETS[key].dark};`}
+            style:background={ACCENT_PRESETS[key].dark}
             onclick={() => accentStore.setPreset(key)}
             data-testid={`accent-preset-${key}`}
             title={ACCENT_PRESET_LABELS[key]}
@@ -213,7 +173,6 @@
     font-size: var(--text-small-size);
   }
 
-  .style-section,
   .theme-section,
   .accent-section {
     display: flex;
@@ -224,21 +183,20 @@
   h3 {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
   }
 
-  .style-options,
   .theme-options {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);
   }
 
-  .style-option,
   .theme-option {
     display: inline-flex;
     align-items: center;
@@ -258,37 +216,31 @@
       transform var(--duration-instant) var(--ease-beat);
   }
 
-  .style-option-icon,
   .theme-option-icon {
     display: inline-flex;
     width: 1rem;
     height: 1rem;
   }
 
-  .style-option-icon svg,
   .theme-option-icon svg {
     width: 100%;
     height: 100%;
   }
 
-  .style-option:hover,
   .theme-option:hover {
     border-color: var(--color-border-strong);
     background: var(--color-fill-subtle);
   }
 
-  .style-option:active,
   .theme-option:active {
     transform: scale(0.98);
   }
 
-  .style-option:focus-visible,
   .theme-option:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
   }
 
-  .style-option.selected,
   .theme-option.selected {
     background: var(--color-accent-subtle);
     border-color: var(--color-accent);
@@ -402,7 +354,6 @@
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), same breakpoint
      `NotificationPreferences.svelte` uses. */
   @media (pointer: coarse) {
-    .style-option,
     .theme-option,
     .custom-accent {
       min-height: 2.75rem;

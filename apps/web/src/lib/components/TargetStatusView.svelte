@@ -38,10 +38,11 @@
    * callback contract are unchanged.
    *
    * Deck migration (redesign v2 §2 "one button language" / issue #466):
-   * the Refresh/Close header actions now render through the real `ui/Button`
-   * rather than hand-styled `.header-btn` markup — `Button`/`IconButton`'s
-   * `dataTestId` override (issue #460) lets them keep their existing
-   * `target-status-refresh`/`target-status-close` selectors. The health
+   * the Refresh header action rendered through the real `ui/Button`
+   * rather than hand-styled `.header-btn` markup, using `Button`'s
+   * `dataTestId` override (issue #460) to keep its existing
+   * `target-status-refresh` selector — since replaced by an `IconButton`
+   * below (redesign v3). The health
    * badge also gains a shape-coded glyph from the bespoke icon set
    * (`health-ok`/`health-warn`/`health-danger`) next to its `StatusDot`, so
    * the state reads by shape as well as color (no icon is drawn for the
@@ -63,6 +64,13 @@
    * comment for what "prefilled from the target being edited" honestly
    * means given `TargetListEntry` never carries a target's connection
    * recipe (SPEC §8's crypto boundary).
+   *
+   * Panel chrome (redesign v3 design spec §3.6 `D2`): this view no longer
+   * repeats its own "Nodes & targets" title or a Close action — the
+   * Drawer that hosts it already renders both — so its own header
+   * collapses to just the Refresh action, now a compact `IconButton`
+   * rather than a labeled `Button`. `onClose` is gone from its props;
+   * the caller (`+page.svelte`'s Drawer) owns closing the panel.
    */
   import type {
     DecommissionTargetResponse,
@@ -75,6 +83,7 @@
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Button from './ui/Button.svelte';
+  import IconButton from './ui/IconButton.svelte';
   import { Icon, type IconName } from './icons';
   import AddTargetWizard, {
     type AddTargetClient,
@@ -105,14 +114,13 @@
     loading: boolean;
     error: string | undefined;
     onRefresh: () => void;
-    onClose: () => void;
     /** A specific node/target to highlight (issue #269's "a stalled session's view links back to this status view for its target") — e.g. `+page.svelte` sets this from the session row the user clicked through from. */
     focusTarget?: FocusTarget;
     /** Enables the per-target Reconnect/Update/Remove/Edit actions (redesign v2 §3.3; issue #476) — omit to keep this view exactly as read-only as before. */
     client?: TargetActionsClient;
   }
 
-  const { targets, loading, error, onRefresh, onClose, focusTarget, client }: Props = $props();
+  const { targets, loading, error, onRefresh, focusTarget, client }: Props = $props();
 
   /** In-flight Update/Remove calls, keyed by {@link rowKey} — disables that row's own buttons and drives `Button`'s `loading` state without a page-wide spinner. `SvelteSet` (not a plain `Set` wrapped in `$state`, mirrors `FileTreePanel.svelte`'s own `expandedPaths`) so `.add`/`.delete` are reactive in place, no reassignment needed. */
   const busyKeys = new SvelteSet<string>();
@@ -284,15 +292,13 @@
 
 <section class="target-status-view" data-testid="target-status-view">
   <div class="header">
-    <h2>Nodes &amp; targets</h2>
-    <div class="header-actions">
-      <Button variant="secondary" size="sm" onclick={onRefresh} dataTestId="target-status-refresh"
-        >Refresh</Button
-      >
-      <Button variant="secondary" size="sm" onclick={onClose} dataTestId="target-status-close"
-        >Close</Button
-      >
-    </div>
+    <IconButton
+      label="Refresh nodes and targets"
+      onclick={onRefresh}
+      dataTestId="target-status-refresh"
+    >
+      <Icon name="refresh" />
+    </IconButton>
   </div>
 
   {#if error}
@@ -305,7 +311,9 @@
       Checking node/target status…
     </p>
   {:else if targets.length === 0}
-    <EmptyState message="No nodes/targets connected yet." />
+    <EmptyState
+      message="No nodes or targets connected yet. Add a target or connect a node from the sidebar to get started."
+    />
   {:else}
     <ul class="target-rows">
       {#each targets as target (rowKey(target))}
@@ -481,22 +489,7 @@
 
   .header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .header h2 {
-    margin: 0;
-    font-size: var(--text-title-size);
-    line-height: var(--text-title-line);
-    font-weight: var(--text-title-weight);
-    color: var(--color-text-primary);
-  }
-
-  .header-actions {
-    display: flex;
-    gap: var(--space-xs);
+    justify-content: flex-end;
   }
 
   .loading-state {

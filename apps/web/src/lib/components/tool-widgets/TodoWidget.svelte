@@ -5,9 +5,14 @@
    * (`$lib/tool-widgets.ts`'s `isTodoInput`) since ACP carries no tool-name
    * field to match on directly.
    *
-   * Warp Deck restyle (docs/design/redesign.md, issue #432): adopts the
-   * elevation ladder's "raised" tier, hand-styled to match `Card`'s recipe
-   * so the todo-widget testid stays on this component's own root element.
+   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
+   * §3.4 "One tool-call anatomy"): the outer frame is now the same
+   * gutter-plus-content row every tool-call widget uses (`GenericToolRow`
+   * / `BashWidget` / `EditWriteWidget`), not its own raised card. Status is
+   * a `StatusDot` + short label, never the raw enum. The header toggles
+   * the checklist body's expand/collapse, defaulting open. The per-entry
+   * ☑/☐ marks are unaffected (out of this pass's scope, matching
+   * `PlanCard`'s identical, untouched marker convention).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws a shared glyph next to the title, same
@@ -15,14 +20,13 @@
    * "todo" glyph in `icon-paths.ts` yet (its `IconName` union only has
    * `tool-bash`/`tool-edit`/`tool-generic`), so this borrows `tool-generic`
    * as an interim stand-in — a purpose-built checklist glyph is a natural
-   * follow-up for whoever next touches the icon set. The per-entry ☑/☐
-   * marks below are unaffected (out of this issue's scope, matching
-   * `PlanCard`'s identical, untouched marker convention).
+   * follow-up for whoever next touches the icon set.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
-  import { isTodoInput } from '$lib/tool-widgets';
+  import { isTodoInput, TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import Icon from '../icons/Icon.svelte';
+  import StatusDot from '../ui/StatusDot.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -32,39 +36,111 @@
   // resolveToolWidgetKind only routes here when isTodoInput(item.rawInput) is true.
   const todos = $derived(isTodoInput(item.rawInput) ? item.rawInput.todos : []);
   const copyText = $derived(todos.map((todo) => `[${todo.status}] ${todo.content}`).join('\n'));
+
+  let expanded = $state(true);
+  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
+  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
 </script>
 
 <div class="todo-widget" data-testid="todo-widget">
-  <div class="header">
+  <div class="gutter" aria-hidden="true">
     <Icon name="tool-generic" class="type-icon" />
-    <span class="title">Todo list</span>
-    <CopyButton text={copyText} label="Copy todo list" />
   </div>
-  <ul class="todos">
-    {#each todos as todo, index (index)}
-      <li class={todo.status}>
-        <span class="checkbox" aria-hidden="true">{todo.status === 'completed' ? '☑' : '☐'}</span>
-        <span class="content">{todo.content}</span>
-      </li>
-    {/each}
-  </ul>
+  <div class="content">
+    <div class="header-line">
+      <button
+        type="button"
+        class="row-header"
+        onclick={() => (expanded = !expanded)}
+        aria-expanded={expanded}
+      >
+        <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+        <span class="title">Todo list</span>
+        {#if statusTone && statusLabel}
+          <span class="status">
+            <StatusDot tone={statusTone} label={statusLabel} size="sm" />
+            <span class="status-label" aria-hidden="true">{statusLabel}</span>
+          </span>
+        {/if}
+      </button>
+      <div class="copy-row">
+        <CopyButton text={copyText} label="Copy todo list" revealOnHover />
+      </div>
+    </div>
+    {#if expanded}
+      <ul class="todos">
+        {#each todos as todo, index (index)}
+          <li class={todo.status}>
+            <span class="checkbox" aria-hidden="true"
+              >{todo.status === 'completed' ? '☑' : '☐'}</span
+            >
+            <span class="todo-text">{todo.content}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
 </div>
 
 <style>
-  /* raised tier (elevation ladder §3). */
   .todo-widget {
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
-    padding: var(--space-sm) 0.7rem;
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    min-width: 0;
     font-size: var(--text-small-size);
   }
 
-  .header {
+  .gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
+    display: flex;
+    justify-content: center;
+    padding-top: var(--space-2xs);
+  }
+
+  .content {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-2xs) 0;
+  }
+
+  .header-line {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+  }
+
+  .row-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row-header:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    border-radius: var(--radius-sm);
+  }
+
+  :global(.disclosure-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .row-header[aria-expanded='false'] :global(.disclosure-icon) {
+    transform: rotate(-90deg);
   }
 
   :global(.type-icon) {
@@ -75,6 +151,31 @@
   .title {
     flex: 1;
     font-weight: 600;
+  }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+    font-weight: 400;
+  }
+
+  .status-label {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
+  .copy-row {
+    flex-shrink: 0;
+  }
+
+  /* Copy affordances reveal on row hover/focus-within (redesign v3 §3.4
+     "Copy affordances"); see CopyButton.svelte's `revealOnHover` doc
+     comment for why this lives here rather than in the shared button. */
+  .todo-widget:hover :global(.copy-button-reveal),
+  .todo-widget:focus-within :global(.copy-button-reveal) {
+    opacity: 1;
   }
 
   .todos {
@@ -99,7 +200,7 @@
     color: var(--color-success);
   }
 
-  .todos li.completed .content {
+  .todos li.completed .todo-text {
     opacity: 0.55;
     text-decoration: line-through;
   }
@@ -123,7 +224,7 @@
     background: var(--color-accent);
   }
 
-  .todos li.in_progress .content {
+  .todos li.in_progress .todo-text {
     font-weight: 600;
   }
 </style>

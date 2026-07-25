@@ -1,3 +1,14 @@
+<script lang="ts" module>
+  /**
+   * Every currently-open {@link Overlay}, in open order — the last entry is
+   * the top-most one and the only one an Escape keypress may close, so a
+   * Dialog opened over a pinned Drawer closes one layer per press instead
+   * of both at once. Module scope (not per-instance) because that ordering
+   * is a property of the app's overlay stack, not of any one overlay.
+   */
+  const escapeStack: symbol[] = [];
+</script>
+
 <script lang="ts">
   /**
    * The shared overlay root (redesign v2 design spec §2 "Drawer that closes
@@ -13,6 +24,14 @@
    * here — that stays `Dialog`'s own job (a generic overlay has no fixed
    * notion of "the panel's focusable elements"; a caller that needs a focus
    * trap keeps owning it on its own content, same as `Dialog` still does).
+   *
+   * Escape is bound on `window`, not on the backdrop element. A keydown
+   * listener on the backdrop `div` only fires when focus is already INSIDE
+   * the overlay — true for `Dialog` (it focus-traps its panel), false for
+   * every other caller: the account menu and the Drawer both leave focus on
+   * their trigger button up in the header, outside the overlay subtree, so
+   * "press Escape to close" silently did nothing for exactly the two
+   * surfaces the IA cleanup added it for.
    *
    * Backdrop fade mirrors `Dialog`'s previous inline transition exactly
    * (`--duration-fast` cubic-out fade) so pulling it out here is a pure
@@ -54,6 +73,18 @@
     testid = 'overlay-backdrop',
   }: Props = $props();
 
+  /** This instance's identity in {@link escapeStack} — see that constant's doc comment. */
+  const token = Symbol('overlay');
+
+  $effect(() => {
+    if (!open) return;
+    escapeStack.push(token);
+    return () => {
+      const index = escapeStack.lastIndexOf(token);
+      if (index !== -1) escapeStack.splice(index, 1);
+    };
+  });
+
   function reduced(): boolean {
     return (
       reducedMotion ||
@@ -69,11 +100,14 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (!open || event.key !== 'Escape') return;
+    if (escapeStack[escapeStack.length - 1] !== token) return;
     event.preventDefault();
     onClose();
   }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 {#if open}
   <div
@@ -81,7 +115,6 @@
     style={`z-index: var(${zIndex});`}
     role="presentation"
     onclick={onClose}
-    onkeydown={handleKeydown}
     in:backdropFade
     out:backdropFade
     data-testid={testid}

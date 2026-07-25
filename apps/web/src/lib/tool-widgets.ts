@@ -1,4 +1,5 @@
-import type { TranscriptToolCallItem } from '@loombox/providers-core';
+import type { AcpToolCallStatus, TranscriptToolCallItem } from '@loombox/providers-core';
+import { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
 
 /**
  * The tier-1 bespoke tool-call widget table (SPEC.md §7.24 "Tool calls, two
@@ -60,3 +61,81 @@ export function toolCallOutputText(content: unknown): string {
   if (typeof content === 'string') return content;
   return JSON.stringify(content, null, 2);
 }
+
+/** One key/value row of a formatted `rawInput` fallback (see {@link classifyRawInput}). */
+export interface RawInputEntry {
+  key: string;
+  value: string;
+}
+
+/**
+ * How an unrecognized tool call's `rawInput` renders (redesign v3 design
+ * spec §2 `C7` / §3.4 "widget registry"): a `command` field renders as a
+ * single mono command line, a lone `path`-like field renders as a path,
+ * and anything else renders as a formatted key/value list — raw
+ * `JSON.stringify` output is never shown. Shared by `PermissionCard` (the
+ * composer-site approval card) and any transcript tool-call row that
+ * falls through to a generic render, so both surfaces agree on one
+ * classification instead of two.
+ */
+export type RawInputRender =
+  | { kind: 'command'; command: string }
+  | { kind: 'path'; path: string }
+  | { kind: 'entries'; entries: RawInputEntry[] };
+
+const RAW_INPUT_PATH_KEYS = ['path', 'file_path', 'filePath', 'filename', 'uri'];
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function formatRawInputValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+export function classifyRawInput(rawInput: unknown): RawInputRender | undefined {
+  if (typeof rawInput === 'string') {
+    return rawInput.trim() === '' ? undefined : { kind: 'command', command: rawInput };
+  }
+  if (!isPlainRecord(rawInput)) return undefined;
+  const entries = Object.entries(rawInput);
+  if (entries.length === 0) return undefined;
+  const command = rawInput.command;
+  if (typeof command === 'string') return { kind: 'command', command };
+  if (entries.length === 1) {
+    const [key, value] = entries[0];
+    if (RAW_INPUT_PATH_KEYS.includes(key) && typeof value === 'string') {
+      return { kind: 'path', path: value };
+    }
+  }
+  return {
+    kind: 'entries',
+    entries: entries.map(([key, value]) => ({ key, value: formatRawInputValue(value) })),
+  };
+}
+
+/**
+ * Maps a tool call's `AcpToolCallStatus` onto the shared `StatusDot` tone
+ * vocabulary (redesign v3 design spec §3.4 "one tool-call anatomy": status
+ * is a `StatusDot` + short label, never grey body text quoting the raw
+ * enum — mirrors `$lib/session-status.ts`'s identical discipline for
+ * session status).
+ */
+export const TOOL_CALL_STATUS_TONES: Record<AcpToolCallStatus, StatusTone> = {
+  pending: 'neutral',
+  in_progress: 'info',
+  completed: 'success',
+  failed: 'danger',
+};
+
+/** Short, human status wording for a tool call — never the raw enum. */
+export const TOOL_CALL_STATUS_LABELS: Record<AcpToolCallStatus, string> = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  failed: 'Failed',
+};

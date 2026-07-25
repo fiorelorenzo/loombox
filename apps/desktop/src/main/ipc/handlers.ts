@@ -43,6 +43,15 @@ export interface BridgeHandlerDeps {
   app: LoginItemApp & AppVersionSource;
   /** Overrides `resolveProvisionTargetDeps()`'s own (currently always-`undefined`) result — tests inject real deps against a `FakeTransport`; production leaves this unset until #398/#399 land. */
   provisionTargetDeps?: ProvisionTargetDeps;
+  /**
+   * Overrides `../ssh-candidates.ts`'s real discovery. Production leaves it
+   * unset. Tests MUST set it: the real implementation reads the developer's
+   * own `~/.ssh/config`, so a test that lets it through asserts against
+   * whatever hosts happen to be on the machine running it — green on a bare
+   * CI runner, red on any machine with SSH hosts configured, which is
+   * exactly how this suite came to fail only locally.
+   */
+  listSshHostCandidates?: () => Promise<ListSshHostCandidatesResult>;
 }
 
 /** Registers every {@link BRIDGE_CHANNELS} entry on `ipcMain`, delegating to the already-tested pieces in `../local-node/`, `../provisioning/`, `../ssh-candidates.ts`, and `../status.ts` — this file only wires them to channel names. */
@@ -50,7 +59,7 @@ export function registerBridgeHandlers(ipcMain: IpcMainLike, deps: BridgeHandler
   ipcMain.handle(
     BRIDGE_CHANNELS.listSshHostCandidates,
     async (): Promise<ListSshHostCandidatesResult> => {
-      return listSshHostCandidates();
+      return (deps.listSshHostCandidates ?? listSshHostCandidates)();
     },
   );
 

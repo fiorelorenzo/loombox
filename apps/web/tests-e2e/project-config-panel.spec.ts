@@ -1,9 +1,3 @@
-// TODO(e2e session flow): fixme until the browser auth+connect+session-select
-// path (getSession via the CORS bridge, WS connect, auto-select) is debugged
-// with an interactive browser (unavailable on the headless devbox). The
-// underlying logic is covered by vitest (`ProjectConfigPanel.test.ts`,
-// `McpServerConfigPanel.test.ts`, `PluginConfigPanel.test.ts`); the
-// pwa-shell e2e specs pass.
 import { expect, test } from './fixtures';
 
 /**
@@ -15,13 +9,22 @@ import { expect, test } from './fixtures';
  * for a real selected session, and that a quick-added preset produces a
  * real, visible config record rather than only working in an isolated
  * component test.
+ *
+ * Both tests take the `loombox` fixture even where they never name it
+ * again: Playwright only sets a fixture up for a test that asks for it, and
+ * this one is what stands the relay up and seeds the bearer token + AMK
+ * before the first navigation. Taking only `page` lands on the signed-out
+ * gate pointed at the PUBLIC relay — which is why this suite sat at
+ * `describe.fixme` blaming the headless devbox.
  */
-test.describe.fixme('Project config surface (issue #366)', () => {
-  test('opens from the transcript toolbar, quick-adds an MCP preset, and shows the resulting server record', async ({
+test.describe('Project config surface (issue #366)', () => {
+  test('opens from the header, quick-adds an MCP preset, and shows the resulting server record', async ({
     page,
+    loombox,
   }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
     await page.goto('/');
-    await expect(page.getByTestId('composer-input')).toBeVisible();
+    await expect(page.getByTestId('composer-input')).toBeVisible({ timeout: 30_000 });
 
     await expect(page.getByTestId('project-config-toggle')).toBeVisible();
     await page.getByTestId('project-config-toggle').click();
@@ -36,9 +39,10 @@ test.describe.fixme('Project config surface (issue #366)', () => {
     await expect(panel.getByTestId('mcp-server-filesystem')).toBeVisible();
   });
 
-  test('adding a plugin is independent of the MCP-server list', async ({ page }) => {
+  test('adding a plugin is independent of the MCP-server list', async ({ page, loombox }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
     await page.goto('/');
-    await expect(page.getByTestId('composer-input')).toBeVisible();
+    await expect(page.getByTestId('composer-input')).toBeVisible({ timeout: 30_000 });
 
     await page.getByTestId('project-config-toggle').click();
     const panel = page.getByTestId('project-config-panel-wrapper');
