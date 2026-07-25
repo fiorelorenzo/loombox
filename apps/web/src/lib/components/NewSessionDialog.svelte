@@ -25,12 +25,21 @@
    * `ErrorNotice` hardcode their own for their own component tests, so
    * this file wraps rather than relies on those) so this component's own
    * tests are unaffected.
+   *
+   * Deck migration (redesign v2 §2 "One button language", issue #464):
+   * every hand-rolled `.btn*` gives way to the shared `Button` primitive
+   * (using its `dataTestId` override so `new-session-submit`/
+   * `new-session-add-target-cta` keep their exact selectors), and the two
+   * inline error lines (`targetsError`/`createError`) now read through
+   * `ErrorNotice` instead of a hand-styled `<p class="error">`.
    */
   import type { CreateSessionOptions, TargetListEntry } from '$lib/relay-client';
   import TargetPicker from './TargetPicker.svelte';
   import WovenLoader from './WovenLoader.svelte';
+  import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   export interface NewSessionClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
@@ -131,14 +140,9 @@
 </script>
 
 {#snippet addTargetCta()}
-  <button
-    type="button"
-    class="btn btn-primary btn-sm"
-    onclick={onAddTarget}
-    data-testid="new-session-add-target-cta"
-  >
+  <Button variant="primary" size="sm" onclick={onAddTarget} dataTestId="new-session-add-target-cta">
     Add a target
-  </button>
+  </Button>
 {/snippet}
 
 {#snippet dialogBody()}
@@ -148,7 +152,7 @@
       Looking for connected nodes…
     </p>
   {:else if targetsError}
-    <p class="error" role="alert">{targetsError}</p>
+    <ErrorNotice message={targetsError} />
   {:else if targets.length === 0}
     <div class="empty-state-slot" data-testid="new-session-no-targets">
       <EmptyState
@@ -197,24 +201,20 @@
       data-testid="new-session-prompt"></textarea>
 
     {#if createError}
-      <p class="error" role="alert">{createError}</p>
+      <ErrorNotice message={createError} />
     {/if}
 
     <div class="actions">
-      <button type="button" class="btn btn-secondary" onclick={handleClose}>Cancel</button>
-      <button
+      <Button variant="secondary" onclick={handleClose}>Cancel</Button>
+      <Button
         type="submit"
-        class="btn btn-primary"
+        variant="primary"
         disabled={!canSubmit}
-        data-testid="new-session-submit"
+        loading={creating}
+        dataTestId="new-session-submit"
       >
-        {#if creating}
-          <WovenLoader label="Creating session" />
-          Creating…
-        {:else}
-          Create session
-        {/if}
-      </button>
+        Create session
+      </Button>
     </div>
   </form>
 {/snippet}
@@ -261,7 +261,7 @@
     background: var(--color-surface);
     color: inherit;
     font-family: inherit;
-    font-size: 0.9rem;
+    font-size: var(--text-body-size);
     resize: vertical;
     transition: border-color var(--duration-fast) var(--ease-beat);
   }
@@ -278,82 +278,5 @@
     justify-content: flex-end;
     gap: var(--space-sm);
     margin-top: var(--space-sm);
-  }
-
-  /* Hand-styled to match the shared `Button` primitive's visual language
-     (redesign brief §4) without importing it: `Button` hardcodes its own
-     `data-testid`, and this dialog's `new-session-submit`/CTA testids are
-     load-bearing for this component's own tests (loading state, disabled
-     state, click), so the buttons stay plain `<button>`s styled the same
-     way `Button` is (see that file's `.ui-button*` rules). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-xs);
-    border-radius: var(--radius-md);
-    padding: var(--space-sm) var(--space-lg);
-    font-family: inherit;
-    font-weight: 600;
-    font-size: var(--text-body-size);
-    cursor: pointer;
-    border: 1px solid transparent;
-    background: transparent;
-    color: inherit;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .btn-sm {
-    padding: var(--space-2xs) var(--space-md);
-    font-size: var(--text-small-size);
-  }
-
-  .btn:not(:disabled):active {
-    transform: scale(0.98);
-  }
-
-  .btn:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .btn-primary {
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-  }
-
-  .btn-primary:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  .btn-primary:not(:disabled):active {
-    background: var(--color-accent-active);
-  }
-
-  .btn-secondary {
-    border-color: var(--color-border-strong);
-    color: var(--color-text-primary);
-  }
-
-  .btn-secondary:not(:disabled):hover {
-    background: var(--color-fill-subtle);
-  }
-
-  .error {
-    margin: 0;
-    padding: var(--space-md) var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--color-danger-subtle);
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
-    font-size: var(--text-small-size);
   }
 </style>
