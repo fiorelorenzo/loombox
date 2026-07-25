@@ -98,6 +98,20 @@ The desktop shell comes from the branch; the UI it loads is the deployed PWA
 (`app.loombox.dev`) unless `PWA_URL` overrides it. So to test unmerged **web** changes,
 either deploy them to `app.loombox.dev` first or point `PWA_URL` at a dev server.
 
+## Deploying the web PWA fast (no Docker build)
+
+```bash
+scripts/deploy-web.sh    # build locally -> rsync build/ -> restart web on prodbox
+```
+
+The prod web container bind-mounts the host's `build/` dir (a prodbox-local
+`deploy/web/docker-compose.live.yml` overlay), so a web deploy is just an adapter-node
+build on the devbox plus rsync plus a container restart, in well under a minute. Avoid
+`docker compose build web` on the shared prodbox: it is slow and has repeatedly served
+a **stale, cached** build (a rebuild silently reused an old source COPY layer, so the
+deployed bundle lacked the just-pushed fix). Verify a web deploy by fetching the served
+chunk hash, not by trusting that the build ran.
+
 ## Build order
 
 Ship in milestone order — **v0** (validation spike) → **v1** (core cockpit) → **v2**
