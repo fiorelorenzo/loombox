@@ -168,6 +168,15 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
     expect(instances).toHaveLength(1);
   });
 
+  it('draws the titlebar through the shared Icon component (Deck migration, #470)', () => {
+    const client = fakeClient();
+    render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+    const icon = screen.getByTestId('icon');
+    expect(icon.getAttribute('data-icon-name')).toBe('tool-bash');
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('flips to the open view once terminalsFor reports status open', async () => {
     const client = fakeClient();
     render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });

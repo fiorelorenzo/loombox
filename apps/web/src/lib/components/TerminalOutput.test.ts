@@ -21,6 +21,15 @@ describe('TerminalOutput (#142)', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 
+  it('draws the header prompt through the shared Icon component (Deck migration, #470), not a hardcoded "$" glyph', () => {
+    render(TerminalOutput, {
+      props: { command: 'pnpm test', content: 'ok 12 passed' },
+    });
+    const icon = screen.getByTestId('icon');
+    expect(icon.getAttribute('data-icon-name')).toBe('tool-bash');
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('decodes raw byte chunks through the same chunk-boundary-safe pipeline as $lib/terminal.ts', () => {
     render(TerminalOutput, {
       props: { content: [bytes('a\x1b[31m'), bytes('b\x1b[0mc')] },

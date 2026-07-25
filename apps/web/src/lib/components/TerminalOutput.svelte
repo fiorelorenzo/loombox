@@ -23,8 +23,20 @@
    * the one place in the transcript meant to read as an actual console,
    * usually framed by a raised-tier card at the call site (`BashWidget`).
    * A hairline border gives it definition against that frame.
+   *
+   * Deck migration (redesign v2 design spec §2, issue #470): the header's
+   * prompt glyph was a bare `$` character — exactly the kind of unicode
+   * placeholder the bespoke icon set (issue #457) exists to replace — so it
+   * now draws through the shared `Icon` component (`tool-bash`, the same
+   * "terminal frame + prompt caret" glyph the tool-call widgets use) instead
+   * of a hardcoded character. Still decorative (`aria-hidden`, no `label`):
+   * the command text right next to it already carries the meaning. There is
+   * no other non-xterm UI here to route through `Button`/`IconButton` — this
+   * component has no interactive controls of its own (the copy affordance
+   * lives one level up, in `BashWidget`).
    */
   import { decodeTerminalChunks } from '$lib/terminal';
+  import { Icon } from './icons';
 
   interface Props {
     /** The command line shown on the prompt row, if any (a tool call with no discrete "command", e.g. raw stdout replay, can omit it). */
@@ -42,7 +54,7 @@
 <div class="terminal-output" data-testid="terminal-output">
   {#if command !== undefined}
     <div class="header">
-      <span class="prompt" aria-hidden="true">$</span>
+      <Icon name="tool-bash" class="prompt" />
       <code class="command" data-testid="terminal-command">{command}</code>
       {#if status}<span class="status">{status}</span>{/if}
     </div>
@@ -71,7 +83,10 @@
     border-bottom: 1px solid var(--color-border-subtle);
   }
 
-  .prompt {
+  /* `:global` — this class lands on `Icon`'s own root `<svg>`, one
+     component down, so Svelte's scoped-CSS hash on this file's stylesheet
+     never reaches it without the escape hatch. */
+  :global(.prompt) {
     color: var(--color-text-muted);
   }
 

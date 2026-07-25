@@ -40,12 +40,23 @@
    * reads as part of the same surface rather than a bare default-black
    * box. None of this touches the data flow above: no prop contract, no
    * status-transition logic, no I/O path changed.
+   *
+   * Deck migration (redesign v2 design spec §2, issue #470): the chrome
+   * above already read Deck's `--color-*`/`--space-*`/`--radius-*` tokens
+   * end to end (`deck.css` kept every name `tokens.css` used to own, see
+   * that file's doc comment) — nothing here was hardcoded outside the
+   * xterm.js theme object below, which cannot read CSS custom properties
+   * and is exempt per this issue's acceptance criteria. The one real
+   * change: the titlebar now carries the same bespoke `Icon` (`tool-bash`)
+   * `TerminalOutput` adopted, so both terminal surfaces read as one family
+   * instead of `StatusDot` and the "Terminal" text label standing alone.
    */
   import { onDestroy, onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
   import type { TerminalClient } from '$lib/terminal';
   import type { TerminalClientState } from '$lib/relay-client';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
+  import { Icon } from './icons';
 
   interface Props {
     sessionId: string;
@@ -150,6 +161,7 @@
   data-status={status}
 >
   <div class="terminal-titlebar">
+    <Icon name="tool-bash" class="terminal-titlebar-icon" />
     <StatusDot tone={statusTone} pulse={status === 'opening'} label={statusLabel} size="sm" />
     <span class="terminal-titlebar-label font-mono">Terminal</span>
   </div>
@@ -204,6 +216,14 @@
     padding: var(--space-xs) var(--space-sm);
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  /* `:global` — this class lands on `Icon`'s own root `<svg>`, one
+     component down, so Svelte's scoped-CSS hash on this file's stylesheet
+     never reaches it without the escape hatch. */
+  :global(.terminal-titlebar-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
   }
 
   .terminal-titlebar-label {
