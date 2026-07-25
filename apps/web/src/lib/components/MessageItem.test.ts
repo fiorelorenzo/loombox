@@ -46,6 +46,16 @@ describe('MessageItem', () => {
     render(MessageItem, { props: { item: messageItem() } });
     expect(screen.getByRole('button', { name: 'Copy agent message' })).toBeTruthy();
   });
+
+  it('draws the "Show thought" disclosure chevron via the shared Icon component (#468)', () => {
+    render(MessageItem, {
+      props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
+    });
+    const button = screen.getByRole('button', { name: 'Show thought' });
+    const icon = button.querySelector('[data-icon-name="collapse-chevron"]');
+    expect(icon).toBeTruthy();
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
 });
 
 describe('MessageItem: thinking/reasoning display (#136)', () => {

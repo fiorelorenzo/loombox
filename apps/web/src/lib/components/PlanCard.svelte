@@ -20,6 +20,13 @@
    * plan reads as part of the same motion language as the rest of the app.
    * A single un-staggered `beat-in` plays once on mount (mirroring
    * `MessageItem`/`ToolCallRow`).
+   *
+   * Deck token pass (redesign v2 design spec §2, issue #468): the
+   * in-progress step now gets the same accent-for-meaning left marker
+   * `TodoWidget`'s in-progress entry already uses (`--color-accent`,
+   * reserved for the one thing actually happening right now, never chrome)
+   * instead of relying on font-weight alone, so the two checklist-shaped
+   * widgets read as one consistent family.
    */
   import type { AcpPlanEntry } from '@loombox/providers-core';
   import CopyButton from './CopyButton.svelte';
@@ -154,6 +161,25 @@
   .plan-entries li.completed .content {
     opacity: 0.55;
     text-decoration: line-through;
+  }
+
+  /* Accent-for-meaning, not chrome (matches TodoWidget's identical
+     in-progress marker): the one entry actually in flight gets the accent
+     as a left marker, everything else stays neutral text weight. */
+  .plan-entries li.in_progress {
+    position: relative;
+    padding-left: var(--space-sm);
+  }
+
+  .plan-entries li.in_progress::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.2em;
+    bottom: 0.2em;
+    width: 2px;
+    border-radius: var(--radius-full);
+    background: var(--color-accent);
   }
 
   .plan-entries li.in_progress .content {

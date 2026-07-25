@@ -10,9 +10,14 @@
    * Warp Deck restyle (docs/design/redesign.md, issue #432): the widget
    * adopts the elevation ladder's "raised" tier as its outer frame (title +
    * status), with `DiffViewer`'s own card nested inside unchanged.
+   *
+   * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
+   * #468): the header draws the shared `tool-edit` glyph next to the title,
+   * the same convention `BashWidget`/`TodoWidget` use.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import DiffViewer from '../DiffViewer.svelte';
+  import Icon from '../icons/Icon.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -25,6 +30,7 @@
 
 <div class="edit-write-widget" data-testid="edit-write-widget">
   <div class="header">
+    <Icon name="tool-edit" class="type-icon" />
     <span class="title">{item.title ?? 'Edit'}</span>
     {#if item.status}<span class="status">{item.status}</span>{/if}
   </div>
@@ -51,6 +57,18 @@
     gap: var(--space-sm);
     font-size: var(--text-small-size);
     font-weight: 600;
+  }
+
+  :global(.type-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .status {
