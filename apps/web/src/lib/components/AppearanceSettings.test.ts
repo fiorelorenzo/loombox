@@ -4,30 +4,38 @@ import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import AppearanceSettings from './AppearanceSettings.svelte';
 import { accentStore } from '$lib/accent';
+import { styleStore } from '$lib/style';
 import { themeStore } from '$lib/theme';
 
 beforeEach(() => {
   localStorage.clear();
+  document.documentElement.removeAttribute('data-style');
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-accent');
   document.documentElement.style.cssText = '';
+  styleStore.init();
   themeStore.init();
   accentStore.init();
 });
 
 afterEach(() => {
   cleanup();
+  styleStore.setStyle('deck');
   themeStore.setTheme('system');
   localStorage.clear();
+  document.documentElement.removeAttribute('data-style');
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-accent');
   document.documentElement.style.cssText = '';
 });
 
 describe('AppearanceSettings (#195/#376 settings panel)', () => {
-  it('renders a theme option per preference and an accent swatch per preset', () => {
+  it('renders a style option per Style, a theme option per preference, and an accent swatch per preset', () => {
     render(AppearanceSettings);
     expect(screen.getByTestId('appearance-settings')).toBeTruthy();
+    expect(screen.getByTestId('style-option-deck')).toBeTruthy();
+    expect(screen.getByTestId('style-option-loom')).toBeTruthy();
+    expect(screen.getByTestId('style-option-studio')).toBeTruthy();
     expect(screen.getByTestId('theme-option-system')).toBeTruthy();
     expect(screen.getByTestId('theme-option-dark')).toBeTruthy();
     expect(screen.getByTestId('theme-option-light')).toBeTruthy();
@@ -37,6 +45,27 @@ describe('AppearanceSettings (#195/#376 settings panel)', () => {
     expect(screen.getByTestId('accent-preset-orchid')).toBeTruthy();
     expect(screen.getByTestId('accent-preset-emerald')).toBeTruthy();
     expect(screen.getByTestId('accent-preset-cyan')).toBeTruthy();
+  });
+
+  it('marks deck selected by default and switching style option updates styleStore live', async () => {
+    render(AppearanceSettings);
+    expect(screen.getByTestId('style-option-deck').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('style-option-loom').getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.click(screen.getByTestId('style-option-loom'));
+    expect(document.documentElement.getAttribute('data-style')).toBe('loom');
+    expect(screen.getByTestId('style-option-loom').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('style-option-deck').getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem('loombox:style')).toBe('loom');
+  });
+
+  it('selecting studio applies it and reflects aria-pressed state', async () => {
+    render(AppearanceSettings);
+    await fireEvent.click(screen.getByTestId('style-option-studio'));
+
+    expect(document.documentElement.getAttribute('data-style')).toBe('studio');
+    expect(screen.getByTestId('style-option-studio').getAttribute('aria-pressed')).toBe('true');
+    expect(localStorage.getItem('loombox:style')).toBe('studio');
   });
 
   it('marks azure selected by default and switching theme option updates themeStore', async () => {
