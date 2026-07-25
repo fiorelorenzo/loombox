@@ -15,10 +15,20 @@
    * issue #435): the two sections (plugins list, add form) each sit on a
    * `Card elevation="raised"`, the list becomes quiet hairline-divided rows
    * with a tactile toggle switch, and an empty list reads through
-   * `EmptyState`. Per-item controls keep their existing `data-testid` and
-   * are hand-styled to `Button`'s visual language rather than importing it
-   * (it hardcodes its own `data-testid` with no override) — same tradeoff
-   * as `McpServerConfigPanel`'s restyle and #434's settings restyle.
+   * `EmptyState`.
+   *
+   * Deck migration (redesign v2 design spec §2, issue #471): the remove and
+   * add-submit buttons now route through the shared `Button` primitive,
+   * using its `dataTestId` override (issue #479, which landed after #435's
+   * hand-styled-instead-of-imported tradeoff note above was written) to
+   * keep this surface's exact per-plugin ids (`plugin-remove-${name}`,
+   * `plugin-add-submit`) — the earlier workaround is no longer needed here.
+   * The duplicate-add/error text now renders through the real `ErrorNotice`
+   * primitive; the test that used to key off its fixed `plugin-config-error`
+   * testid now asserts on the visible message text instead (mirrors
+   * `TargetStatusView.test.ts`'s pattern), since `ErrorNotice`'s own root
+   * testid has no override. Every other `data-testid` is unchanged; only
+   * markup/CSS move.
    */
   import { PluginConfigError, type PluginConfig } from '@loombox/providers-core';
   import {
@@ -28,8 +38,10 @@
     setPluginEnabled,
     type PluginConfigStorage,
   } from '$lib/plugin-store';
+  import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   interface Props {
     projectPath: string;
@@ -85,7 +97,7 @@
 
 <div class="plugin-config" data-testid="plugin-config-panel">
   {#if error}
-    <p class="config-error" role="alert" data-testid="plugin-config-error">{error}</p>
+    <ErrorNotice message={error} />
   {/if}
 
   <Card elevation="raised" padding="md" class="config-section">
@@ -114,14 +126,15 @@
                 <span class="plugin-name">{record.config.name}</span>
                 <span class="plugin-source">{record.config.source}</span>
               </label>
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 class="remove-button"
                 onclick={() => handleRemove(record.config.name)}
-                data-testid={`plugin-remove-${record.config.name}`}
+                dataTestId={`plugin-remove-${record.config.name}`}
               >
                 Remove
-              </button>
+              </Button>
             </li>
           {/each}
         </ul>
@@ -140,14 +153,9 @@
           bind:value={newSource}
           data-testid="plugin-add-source"
         />
-        <button
-          type="button"
-          class="submit-button"
-          onclick={handleAdd}
-          data-testid="plugin-add-submit"
-        >
+        <Button variant="primary" size="sm" onclick={handleAdd} dataTestId="plugin-add-submit">
           Add
-        </button>
+        </Button>
       </div>
     </section>
   </Card>
@@ -173,15 +181,6 @@
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
-  }
-
-  .config-error {
-    margin: 0;
-    padding: var(--space-sm) var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--color-danger-subtle);
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
   }
 
   .plugin-list {
@@ -224,33 +223,12 @@
     font-family: var(--font-mono);
   }
 
-  .remove-button {
+  /* `Button`'s own scope hides this class from the file's hash (same
+     `:global()` pattern as `ConfigBar.svelte`'s `.mode-choice`) — only the
+     row-positioning this list needs on top of `Button`'s `danger` variant
+     lives here now. */
+  :global(.remove-button) {
     margin-left: auto;
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-danger);
-    background: transparent;
-    color: var(--color-danger);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .remove-button:hover,
-  .remove-button:active {
-    background: var(--color-danger-subtle);
-  }
-
-  .remove-button:active {
-    transform: scale(0.98);
-  }
-
-  .remove-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   /* A tactile toggle switch built on a real, still-fully-functional
@@ -334,44 +312,10 @@
     outline-offset: var(--focus-ring-offset);
   }
 
-  /* Hand-styled to `Button`'s `primary` visual language — same rationale
-     as the file doc comment. */
-  .submit-button {
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-lg);
-    border-radius: var(--radius-md);
-    border: 1px solid transparent;
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .submit-button:hover {
-    background: var(--color-accent-hover);
-  }
-
-  .submit-button:active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  .submit-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same 44px
-     coarse-pointer convention `Button`/`CopyButton` already use. */
+  /* Touch-optimized controls (SPEC.md §7.3, issue #133): `Button` already
+     sizes itself for `(pointer: coarse)`; only the toggle switch (not a
+     `Button`) needs its own rule here. */
   @media (pointer: coarse) {
-    .remove-button,
-    .submit-button {
-      min-height: 2.75rem;
-    }
-
     .toggle-switch {
       width: 2.75rem;
       height: 1.5rem;

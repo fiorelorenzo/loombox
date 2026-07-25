@@ -74,7 +74,7 @@ describe('PluginConfigPanel (issue #191)', () => {
       await fireEvent.click(screen.getByTestId('plugin-add-submit'));
     }
 
-    expect(screen.getByTestId('plugin-config-error').textContent).toMatch(/duplicate/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/duplicate/i);
   });
 
   it('is isolated from the MCP-server config panel: adding an MCP server of the same name never appears in, or affects, the plugin list', async () => {

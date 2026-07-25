@@ -24,6 +24,14 @@
    * Drawer width, e.g. the mobile bottom sheet) rather than nesting a
    * second card around cards. `data-testid="project-config-panel"` and the
    * prop contract are unchanged.
+   *
+   * Deck migration (redesign v2 design spec §2, issue #471): this wrapper
+   * owns no button, glyph, or empty/error state of its own (it only lays
+   * out its two children), so there's nothing here to route through
+   * `Button`/`IconButton`/`Icon`/`EmptyState`/`ErrorNotice` — that migration
+   * lives entirely in `McpServerConfigPanel`/`PluginConfigPanel` below it.
+   * It already reads every color/spacing/radius value through a token, so
+   * this file is otherwise unchanged.
    */
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';

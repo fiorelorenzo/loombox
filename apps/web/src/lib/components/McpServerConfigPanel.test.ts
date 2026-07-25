@@ -60,7 +60,7 @@ describe('McpServerConfigPanel (issue #188)', () => {
     await fireEvent.click(screen.getByTestId(`preset-add-${noSecretPreset.config.name}`));
     await fireEvent.click(screen.getByTestId(`preset-add-${noSecretPreset.config.name}`));
 
-    expect(screen.getByTestId('mcp-config-error').textContent).toMatch(/duplicate/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/duplicate/i);
   });
 
   it('a manual add produces the same stored record shape (config + enabled) as a preset add', async () => {

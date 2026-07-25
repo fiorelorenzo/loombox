@@ -28,8 +28,20 @@
    * behind the "···" affordance below `--bp-mobile`/480px). The mode
    * segmented control's selection crossfades (`status-crossfade`, §2)
    * rather than snapping.
+   *
+   * Deck migration (redesign v2 design spec, issue #471): the mode
+   * segmented control's choices now route through the shared `Button`
+   * (`ghost`, `sm`) instead of a hand-rolled `<button>`. `Button` has no
+   * built-in "selected" concept (unlike `IconButton`'s `pressed`), so the
+   * selected tint is applied via a plain class merged into its `class`
+   * prop, styled here with `:global()` the same way `AttachmentBar`'s
+   * `.pick-button` override reaches into a child component's own root
+   * element. `getByRole('button', { name })` in the tests still resolves
+   * the same way: `Button` renders its `children` snippet verbatim inside
+   * the native `<button>`.
    */
   import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core';
+  import Button from './ui/Button.svelte';
 
   interface Props {
     options: AcpConfigOption[];
@@ -78,14 +90,14 @@
   {#if modeOption}
     <div class="control mode" role="group" aria-label="Mode" data-testid="config-option-mode">
       {#each modeOption.choices as choice (choice.id)}
-        <button
-          type="button"
-          class="mode-choice"
-          class:selected={modeOption.current === choice.id}
+        <Button
+          variant="ghost"
+          size="sm"
+          class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
           onclick={() => onChange('mode', choice.id)}
         >
           {choice.name}
-        </button>
+        </Button>
       {/each}
     </div>
   {/if}
@@ -145,34 +157,24 @@
     overflow: hidden;
   }
 
-  .mode-choice {
-    border: none;
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
+  /* `Button`'s own scope hides `.mode-choice`/`.selected` from this file's
+     hash — reach in with `:global()`, same pattern as `AttachmentBar`'s
+     `.pick-button` override. Base hover/focus/status-crossfade transition
+     are already `Button`'s (`ghost` variant); only the color/background
+     tint this segmented control needs on top is declared here. */
+  :global(.mode-choice) {
     color: var(--color-text-secondary);
-    font: inherit;
-    font-size: var(--text-small-size);
-    /* status-crossfade (redesign brief §2): a selection change crossfades
-       color/background rather than snapping. */
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      color var(--duration-fast) var(--ease-beat);
+    border-radius: 0;
   }
 
-  .mode-choice:hover {
+  :global(.mode-choice:hover) {
+    text-decoration: none;
     background: var(--color-fill-subtle);
   }
 
-  .mode-choice:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: calc(-1 * var(--focus-ring-width));
-  }
-
-  .mode-choice.selected {
+  :global(.mode-choice.selected) {
     background: var(--color-accent-subtle);
     color: var(--color-accent);
-    font-weight: 600;
   }
 
   .meter {
@@ -188,7 +190,7 @@
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same
      coarse-pointer convention `Button`/`IconButton` already use. */
   @media (pointer: coarse) {
-    .mode-choice {
+    :global(.mode-choice) {
       min-height: 2.75rem;
     }
 
