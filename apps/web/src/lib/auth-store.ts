@@ -195,7 +195,21 @@ export class AuthStore {
     });
 
     const userId = data?.user.id;
-    const token = capturedToken ?? stored?.token;
+    // The bearer token can come from three places, in priority order:
+    //   1. the `set-auth-token` response header — the fully signed token, but
+    //      Better Auth's Bearer plugin only emits it when the response SETS a
+    //      session cookie (sign-in/sign-up), NOT on a cookie-authed
+    //      get-session, so it's absent on the OAuth-callback reload;
+    //   2. a token this device already persisted from a prior sign-in (also
+    //      the signed form) — preferred over (3) so a returning device keeps
+    //      the exact token it was issued;
+    //   3. `session.token` from the get-session body — the RAW (unsigned)
+    //      token. The relay's `bearer()` has no `requireSignature`, so it
+    //      re-signs a dot-less bearer server-side and accepts it, making this
+    //      a valid credential. It's the only token the GitHub-OAuth flow can
+    //      read (header absent, cookie HttpOnly), so without it the callback
+    //      reload would clear the session every time and loop to login.
+    const token = capturedToken ?? stored?.token ?? data?.session?.token;
     if (!userId || !token) {
       this.clearSession();
       return undefined;
