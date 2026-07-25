@@ -179,4 +179,67 @@ describe('AuthStore', () => {
 
     localStorage.clear();
   });
+
+  it('restoreSession recovers a cookie-only OAuth session from the get-session BODY when there is no set-auth-token header', async () => {
+    // Reproduces the production GitHub-OAuth login loop: the OAuth callback
+    // sets the session cookie and emits set-auth-token only on that redirect
+    // response (Better Auth's Bearer plugin bails unless the response carries
+    // a `set-cookie`), which the app JS never sees. The follow-up get-session
+    // is authed purely by cookie, so it carries NO set-auth-token header — the
+    // token has to come from the response body's `session.token`, or every
+    // reload/callback clears the session and bounces back to the login screen.
+    const storage = createInMemoryAuthStorage();
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('get-session')) {
+        // Valid session, cookie-authed: user + session.token in the body,
+        // deliberately WITHOUT a set-auth-token response header.
+        return new Response(
+          JSON.stringify({
+            user: { id: 'acct-oauth' },
+            session: { token: 'cookie-session-token' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    };
+    const store = new AuthStore({ relayBaseUrl: 'http://relay.test', storage, fetchImpl });
+
+    const restored = await store.restoreSession();
+
+    const expected = { token: 'cookie-session-token', accountId: 'acct-oauth' };
+    expect(restored).toEqual(expected);
+    expect(storage.get()).toEqual(expected);
+    expect(get(store.session)).toEqual(expected);
+  });
+
+  it("the get-session body's raw session.token is itself a valid bearer against the real relay", async () => {
+    // The fix above persists `session.token` from the get-session body for the
+    // OAuth flow. That token is the RAW (unsigned) form, different from the
+    // signed `set-auth-token` header value — so this proves the relay actually
+    // accepts it as a bearer (bearer() with no requireSignature re-signs a
+    // dot-less token server-side), against real HTTP, not a mock.
+    const store = new AuthStore({ relayBaseUrl, storage: createInMemoryAuthStorage() });
+    const signed = await store.signUpWithEmailPassword(
+      'oauth-shape@example.com',
+      'correct horse battery staple',
+    );
+
+    // Read the body's raw session.token (what restoreSession would persist).
+    const bodyRes = await fetch(`${relayBaseUrl}/api/auth/get-session`, {
+      headers: { Authorization: `Bearer ${signed.token}` },
+    });
+    const body = (await bodyRes.json()) as { session?: { token?: string } };
+    const rawToken = body.session?.token;
+    expect(rawToken).toBeTruthy();
+    expect(rawToken).not.toBe(signed.token); // unsigned, differs from the header bearer
+
+    // The raw token, presented as a bearer, resolves the SAME account.
+    const asBearerRes = await fetch(`${relayBaseUrl}/api/auth/get-session`, {
+      headers: { Authorization: `Bearer ${rawToken}` },
+    });
+    const asBearer = (await asBearerRes.json()) as { user?: { id?: string } };
+    expect(asBearer.user?.id).toBe(signed.accountId);
+  });
 });
