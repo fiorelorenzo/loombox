@@ -48,6 +48,15 @@
     ariaLabel?: string;
     /** Additional class name(s) merged onto the root `<button>`. */
     class?: string;
+    /**
+     * Overrides the root `data-testid` (default `"ui-button"`). Lets a
+     * surface that already has a per-option/per-action test selector (e.g.
+     * `AppearanceSettings`, `TargetStatusView`) route through this shared
+     * primitive without renaming its tests (issue #460, follow-up to #454).
+     * Omitting it preserves today's exact value, so every existing call
+     * site is untouched.
+     */
+    dataTestId?: string;
     children: Snippet;
   }
 
@@ -61,6 +70,7 @@
     onclick,
     ariaLabel,
     class: className = '',
+    dataTestId = 'ui-button',
     children,
   }: Props = $props();
 
@@ -75,7 +85,7 @@
   aria-busy={loading || undefined}
   aria-label={ariaLabel}
   {onclick}
-  data-testid="ui-button"
+  data-testid={dataTestId}
   data-variant={variant}
   data-size={size}
 >

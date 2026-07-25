@@ -33,6 +33,14 @@
     badge?: string | number;
     /** Additional class name(s) merged onto the root `<button>`. */
     class?: string;
+    /**
+     * Overrides the root `data-testid` (default `"ui-icon-button"`). Lets a
+     * surface that already has a per-action test selector route through
+     * this shared primitive without renaming its tests (issue #460,
+     * follow-up to #454). Omitting it preserves today's exact value, so
+     * every existing call site is untouched.
+     */
+    dataTestId?: string;
     /** The icon markup (inline SVG/glyph) — rendered `aria-hidden`, since `label` already carries the accessible name. */
     children: Snippet;
   }
@@ -45,6 +53,7 @@
     onclick,
     badge,
     class: className = '',
+    dataTestId = 'ui-icon-button',
     children,
   }: Props = $props();
 </script>
@@ -58,7 +67,7 @@
   title={label}
   aria-pressed={pressed}
   {onclick}
-  data-testid="ui-icon-button"
+  data-testid={dataTestId}
 >
   <span class="ui-icon-button-icon" aria-hidden="true">{@render children()}</span>
   {#if badge !== undefined}
