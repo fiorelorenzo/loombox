@@ -18,6 +18,26 @@
    * simply runs the same weave a little slower and steadier, since it can
    * run indefinitely behind a whole live turn rather than a single fetch.
    *
+   * A third, additive variant — `skeleton` (redesign brief §2/§6, issue
+   * #429) — reuses this exact same warp/weft geometry and `weave`
+   * keyframes as loading-placeholder chrome: a consumer stacks a few
+   * `size="md"` skeleton instances to stand in for not-yet-loaded
+   * transcript rows (see `/style-reference`'s "Thread-draw" section),
+   * distinct from a bare spinner because it reads as "content is being
+   * decrypted," not "genuinely empty." It's muted/neutral rather than
+   * accent-colored, since a placeholder is inert chrome, not the
+   * accent-worthy active state loading/working represent (the redesign
+   * brief's "accent is reserved for meaning, never chrome" discipline),
+   * and it ties its timing to the new `--duration-weave` token — the
+   * formalized "thread-draw" primitive in `$lib/styles/motion.css` uses
+   * the same token/technique, making this variant the deliberate bridge
+   * between `WovenLoader`'s original motif and that shared vocabulary.
+   * Deliberately does not declare its own `animation-name`: only
+   * `animation-duration`/`animation-timing-function`/`color` are
+   * overridden below, the same pattern `working` already uses, so the
+   * shared reduced-motion fallback further down (which only competes on
+   * `animation-name`) keeps controlling all three variants uniformly.
+   *
    * `size="sm"` is `1em` square, meant to sit inline next to button/status
    * text (matches `BrandMark`'s own inline sizing convention); `size="md"`
    * is a fixed, larger panel size for a standalone loading section.
@@ -31,8 +51,8 @@
   interface Props {
     /** `sm` (default) sits inline with text/buttons; `md` is a standalone panel size. */
     size?: 'sm' | 'md';
-    /** `loading` (default) for an indeterminate wait; `working` for a continuous, ongoing process (e.g. a live agent turn). */
-    variant?: 'loading' | 'working';
+    /** `loading` (default) for an indeterminate wait; `working` for a continuous, ongoing process (e.g. a live agent turn); `skeleton` for loading-placeholder chrome (e.g. transcript rows not yet decrypted). */
+    variant?: 'loading' | 'working' | 'skeleton';
     /** Forces the static reduced-motion fallback regardless of the media query. */
     reducedMotion?: boolean;
     /** Accessible name for the `role="status"` root. */
@@ -112,6 +132,21 @@
      behind a whole live turn instead of calling attention to a short wait. */
   .woven-loader-working .thread {
     animation-duration: 1.8s;
+    animation-timing-function: linear;
+  }
+
+  /* `skeleton` (loading-placeholder chrome, issue #429): same paths, same
+     `weave` keyframes — only duration/timing/color change, and
+     `animation-name` is deliberately left alone (see the doc comment
+     above) so the reduced-motion rules below keep working unmodified. Tied
+     to `--duration-weave`, the token the formalized thread-draw primitive
+     in `$lib/styles/motion.css` also uses. */
+  .woven-loader-skeleton {
+    color: var(--color-border-strong);
+  }
+
+  .woven-loader-skeleton .thread {
+    animation-duration: var(--duration-weave);
     animation-timing-function: linear;
   }
 

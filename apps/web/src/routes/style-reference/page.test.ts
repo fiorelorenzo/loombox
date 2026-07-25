@@ -41,4 +41,25 @@ describe('style-reference route (#195/#196: living token/type reference)', () =>
     expect(body).toContain('woven-loader-loading');
     expect(body).toContain('woven-loader-working');
   });
+
+  it('demonstrates the thread-draw motion primitive and the WovenLoader skeleton state (#429)', () => {
+    const { body } = render(Page);
+
+    // The SVG stroke form of the thread-draw utility (motion.css).
+    expect(body).toContain('thread-draw-once');
+    expect(body).toContain('thread-draw-loop');
+    expect(body).toContain('--thread-draw-length');
+
+    // The block-fill form.
+    expect(body).toContain('thread-draw-fill');
+    expect(body).toContain('thread-draw-fill-loop');
+    expect(body).toContain('--thread-draw-progress');
+
+    // The explicit reduced-motion escape hatch.
+    expect(body).toContain('thread-draw-reduced-motion');
+
+    // WovenLoader's additive skeleton variant, including reducedMotion.
+    expect(body).toContain('woven-loader-skeleton');
+    expect(body).toContain('data-reduced-motion="true"');
+  });
 });

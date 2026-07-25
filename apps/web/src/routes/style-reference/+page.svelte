@@ -217,6 +217,18 @@
     },
   ];
 
+  // ---------------------------------------------------------------------
+  // Thread-draw motion primitive (redesign brief §2, issue #429) —
+  // `$lib/styles/motion.css`'s formalized version of `WovenLoader`'s
+  // stroke-dashoffset weave technique, for anything else that fills or
+  // reveals. The SVG ring demo below needs its circle's real
+  // circumference to drive `--thread-draw-length` (the same "set the
+  // dash-array to the path length" step any real consumer — a meter, a
+  // permission-card border — would do); the block-fill demo drives
+  // `--thread-draw-progress` the same way a real progress bar would.
+  const threadDrawRingRadius = 15;
+  const threadDrawRingLength = 2 * Math.PI * threadDrawRingRadius;
+
   // Mirrors +page.svelte's theme-toggle wiring (issue #195) so this
   // reference page can be checked in both themes without leaving it.
   let themePreference = $state<ThemePreference>('system');
@@ -705,6 +717,115 @@
     </div>
   </section>
   <!-- === /Warp Deck: UI primitives === -->
+  <!-- === Warp Deck: thread-draw motion === -->
+  <section aria-labelledby="thread-draw-heading">
+    <h2 id="thread-draw-heading">Thread-draw motion primitive (redesign brief §2, issue #429)</h2>
+    <p class="motion-intro">
+      <code>WovenLoader</code>'s <code>stroke-dashoffset</code> weave technique, formalized into a
+      reusable primitive in <code>$lib/styles/motion.css</code> for anything else that fills or
+      reveals: progress/meter bars, the active-nav/active-tab indicator, and one-time reveals like
+      the permission card's border sweep. Two forms — <code>.thread-draw</code> for SVG strokes,
+      <code>.thread-draw-fill</code> for plain block elements via <code>clip-path</code> — each with
+      a <code>-once</code> (a single reveal) and <code>-loop</code> (a continuous fill) mode, both
+      on
+      <code>--duration-weave</code>.
+    </p>
+
+    <h3>SVG stroke form — <code>.thread-draw</code></h3>
+    <div class="thread-draw-showcase-row">
+      <div class="thread-draw-showcase-sample">
+        <svg class="thread-draw-showcase-svg" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="thread-draw-showcase-track" cx="18" cy="18" r={threadDrawRingRadius} />
+          <circle
+            class="thread-draw thread-draw-once thread-draw-showcase-ring"
+            cx="18"
+            cy="18"
+            r={threadDrawRingRadius}
+            style={`--thread-draw-length: ${threadDrawRingLength};`}
+          />
+        </svg>
+        <span class="motion-label">.thread-draw-once (single reveal)</span>
+      </div>
+      <div class="thread-draw-showcase-sample">
+        <svg class="thread-draw-showcase-svg" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="thread-draw-showcase-track" cx="18" cy="18" r={threadDrawRingRadius} />
+          <circle
+            class="thread-draw thread-draw-loop thread-draw-showcase-ring"
+            cx="18"
+            cy="18"
+            r={threadDrawRingRadius}
+            style={`--thread-draw-length: ${threadDrawRingLength};`}
+          />
+        </svg>
+        <span class="motion-label">.thread-draw-loop (continuous fill)</span>
+      </div>
+      <div class="thread-draw-showcase-sample">
+        <svg class="thread-draw-showcase-svg" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="thread-draw-showcase-track" cx="18" cy="18" r={threadDrawRingRadius} />
+          <circle
+            class="thread-draw thread-draw-loop thread-draw-reduced-motion thread-draw-showcase-ring"
+            cx="18"
+            cy="18"
+            r={threadDrawRingRadius}
+            style={`--thread-draw-length: ${threadDrawRingLength};`}
+          />
+        </svg>
+        <span class="motion-label">reduced-motion static fallback</span>
+      </div>
+    </div>
+
+    <h3>Block-fill form — <code>.thread-draw-fill</code></h3>
+    <div class="thread-draw-showcase-row">
+      <div class="thread-draw-showcase-sample thread-draw-showcase-sample-wide">
+        <div class="thread-draw-fill-showcase-track">
+          <div
+            class="thread-draw-fill thread-draw-fill-showcase-bar"
+            style="--thread-draw-progress: 70%;"
+          ></div>
+        </div>
+        <span class="motion-label">.thread-draw-fill (one-time reveal to 70%)</span>
+      </div>
+      <div class="thread-draw-showcase-sample thread-draw-showcase-sample-wide">
+        <div class="thread-draw-fill-showcase-track">
+          <div class="thread-draw-fill-loop thread-draw-fill-showcase-bar"></div>
+        </div>
+        <span class="motion-label">.thread-draw-fill-loop (continuous sweep)</span>
+      </div>
+    </div>
+
+    <h3>Skeleton state — <code>WovenLoader variant="skeleton"</code></h3>
+    <p class="motion-intro">
+      An additive third <code>WovenLoader</code> variant (same locked warp/weft geometry, same
+      reduced-motion contract as <code>loading</code>/<code>working</code>) for loading-placeholder
+      chrome — muted rather than accent-colored, since a placeholder isn't an accent-worthy active
+      state. A consumer stacks a few instances to stand in for not-yet-loaded rows, e.g. transcript
+      history that's still decrypting.
+    </p>
+    <div class="motion-row">
+      <div class="motion-sample">
+        <WovenLoader size="md" variant="skeleton" label="Loading placeholder" />
+        <span class="motion-label">size="md" variant="skeleton"</span>
+      </div>
+      <div class="motion-sample">
+        <WovenLoader size="sm" variant="skeleton" label="Loading placeholder" />
+        <span class="motion-label">size="sm" variant="skeleton"</span>
+      </div>
+      <div class="motion-sample">
+        <WovenLoader size="md" variant="skeleton" reducedMotion label="Loading placeholder" />
+        <span class="motion-label">reducedMotion static fallback</span>
+      </div>
+    </div>
+
+    <h4>Stacked as transcript-loading placeholder rows</h4>
+    <div class="skeleton-rows-showcase">
+      {#each [0, 1, 2] as row (row)}
+        <div class="skeleton-row-showcase">
+          <WovenLoader size="sm" variant="skeleton" label="Loading transcript history" />
+          <span class="skeleton-row-showcase-bar"></span>
+        </div>
+      {/each}
+    </div>
+  </section>
 </main>
 
 <style>
@@ -1127,6 +1248,27 @@
     background: var(--color-surface-raised);
   }
 
+  /* === Warp Deck: thread-draw motion showcase (redesign brief §2, issue
+     #429) === */
+  .thread-draw-showcase-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-md);
+  }
+
+  .thread-draw-showcase-sample {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 8rem;
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-raised);
+  }
+
   .status-dot-sample {
     display: inline-flex;
     align-items: center;
@@ -1139,4 +1281,64 @@
     height: 1.125rem;
   }
   /* === /Warp Deck: UI primitives === */
+  .thread-draw-showcase-sample-wide {
+    width: 16rem;
+  }
+
+  .thread-draw-showcase-svg {
+    width: 3rem;
+    height: 3rem;
+    transform: rotate(-90deg); /* draw clockwise from 12 o'clock, like a real progress ring */
+  }
+
+  .thread-draw-showcase-track {
+    fill: none;
+    stroke: var(--color-fill);
+    stroke-width: 2.5;
+  }
+
+  .thread-draw-showcase-ring {
+    fill: none;
+    stroke: var(--color-accent);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+
+  .thread-draw-fill-showcase-track {
+    width: 100%;
+    height: var(--space-md);
+    border-radius: var(--radius-full);
+    background: var(--color-fill-subtle);
+    overflow: hidden;
+  }
+
+  .thread-draw-fill-showcase-bar {
+    width: 100%;
+    height: 100%;
+    background: var(--color-accent);
+  }
+
+  .skeleton-rows-showcase {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 24rem;
+  }
+
+  .skeleton-row-showcase {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  .skeleton-row-showcase-bar {
+    flex: 1;
+    height: var(--space-md);
+    border-radius: var(--radius-sm);
+    background: var(--color-fill-subtle);
+  }
 </style>
