@@ -28,9 +28,18 @@ describe('loadNodeConfig', () => {
   });
 
   describe('from environment variables', () => {
-    it('loads a complete valid config', () => {
+    it('loads a complete valid config, normalizing the relay URL to end in /ws', () => {
       const config = loadNodeConfig({ env: BASE_ENV, argv: [] });
-      expect(config.relayUrl).toBe('wss://relay.loombox.dev');
+      // BASE_ENV's LOOMBOX_RELAY_URL is a bare origin; the relay serves its WS
+      // only on /ws, so config normalizes it (a bare origin 404s = "cannot
+      // reach"), and preserves an already-/ws URL unchanged.
+      expect(config.relayUrl).toBe('wss://relay.loombox.dev/ws');
+      expect(
+        loadNodeConfig({
+          env: { ...BASE_ENV, LOOMBOX_RELAY_URL: 'wss://relay.loombox.dev/ws' },
+          argv: [],
+        }).relayUrl,
+      ).toBe('wss://relay.loombox.dev/ws');
       expect(config.nodeId).toBe('devbox-node');
       expect(config.authToken).toBe('test-auth-token');
       expect(config.amk).toBeInstanceOf(Uint8Array);
@@ -222,7 +231,7 @@ describe('loadNodeConfig', () => {
       });
 
       const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
-      expect(config.relayUrl).toBe('ws://127.0.0.1:8787');
+      expect(config.relayUrl).toBe('ws://127.0.0.1:8787/ws');
       expect(config.nodeId).toBe('file-node');
       expect(config.authToken).toBe('file-token');
       expect(config.amk).toHaveLength(32);
@@ -286,7 +295,7 @@ describe('loadNodeConfig', () => {
       });
       expect(config.nodeId).toBe('env-override-node');
       // Untouched fields still come from the file.
-      expect(config.relayUrl).toBe('ws://127.0.0.1:8787');
+      expect(config.relayUrl).toBe('ws://127.0.0.1:8787/ws');
     });
 
     it('loads recoveryCode from the config file when no amk is present (issue #386)', async () => {

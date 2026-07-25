@@ -4,6 +4,19 @@ import type { TargetDescriptor } from '@loombox/protocol';
 
 import type { SshTargetConfig } from './target';
 
+/**
+ * The relay serves its WebSocket only on `/ws`, and the node connects to
+ * `relayUrl` directly for the AMK-bootstrap/epoch and main daemon sockets while
+ * deriving the HTTP base (device-login, accountId) by stripping a trailing
+ * `/ws`. So `relayUrl` must end in `/ws`; a bare `wss://relay.loombox.dev`
+ * opens against the relay's root and 404s ("cannot reach"). Normalize it here,
+ * once, so every consumer agrees regardless of what the operator configured.
+ */
+export function withRelayWsPath(relayUrl: string): string {
+  const trimmed = relayUrl.replace(/\/+$/, '');
+  return trimmed.endsWith('/ws') ? trimmed : `${trimmed}/ws`;
+}
+
 /** Raised for any config problem (missing required field, malformed file, an invalid AMK, ...) so `main.ts` can log a clear message and exit non-zero rather than let a cryptic downstream error surface first. */
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -310,7 +323,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
   const stateDir = env.LOOMBOX_NODE_STATE_DIR ?? file.stateDir;
 
   return {
-    relayUrl: relayUrl!,
+    relayUrl: withRelayWsPath(relayUrl!),
     nodeId: nodeId!,
     deviceId,
     authToken,

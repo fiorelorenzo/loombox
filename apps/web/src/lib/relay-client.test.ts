@@ -27,6 +27,7 @@ import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '
 import {
   RelayClient,
   bootstrapAmkFromRecoveryCode,
+  withRelayWsPath,
   type ClientSessionMeta,
   type WebSocketConstructor,
   type WebSocketLike,
@@ -58,6 +59,22 @@ type CryptoKey = webcrypto.CryptoKey;
 // independent parties interoperate, not just that RelayClient agrees with
 // itself.
 // -----------------------------------------------------------------------
+
+describe('withRelayWsPath', () => {
+  it('appends /ws to a bare relay origin so the WS opens against the relay route, not root', () => {
+    // The bug this guards: a bare origin opens against the relay's root (404),
+    // which silently broke device pairing + AMK escrow while HTTP sign-in
+    // (derived by stripping /ws) still worked.
+    expect(withRelayWsPath('wss://relay.loombox.dev')).toBe('wss://relay.loombox.dev/ws');
+    expect(withRelayWsPath('ws://127.0.0.1:8787')).toBe('ws://127.0.0.1:8787/ws');
+  });
+
+  it('leaves an already-/ws-terminated URL untouched and tolerates a trailing slash', () => {
+    expect(withRelayWsPath('wss://relay.loombox.dev/ws')).toBe('wss://relay.loombox.dev/ws');
+    expect(withRelayWsPath('wss://relay.loombox.dev/')).toBe('wss://relay.loombox.dev/ws');
+    expect(withRelayWsPath('wss://relay.loombox.dev/ws/')).toBe('wss://relay.loombox.dev/ws');
+  });
+});
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
