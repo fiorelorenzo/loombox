@@ -85,6 +85,21 @@ export type {
 type CryptoKey = webcrypto.CryptoKey;
 
 /**
+ * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
+ * client and the node connect to the relay URL *directly* — no path is appended
+ * downstream, and the HTTP base is derived by stripping a trailing `/ws`. So a
+ * relay URL must end in `/ws`. This normalizes any configured or stored value
+ * (the built-in default, or a hand-typed "Relay URL") to guarantee it, since a
+ * bare `wss://relay.loombox.dev` otherwise opens against the relay's root and
+ * 404s — which is exactly what silently broke device pairing and AMK escrow
+ * (the browser could sign in over HTTP but never open its session/escrow WS).
+ */
+export function withRelayWsPath(relayUrl: string): string {
+  const trimmed = relayUrl.replace(/\/+$/, '');
+  return trimmed.endsWith('/ws') ? trimmed : `${trimmed}/ws`;
+}
+
+/**
  * The subset of the WHATWG `WebSocket` interface this module relies on, kept
  * narrow so tests can inject a fake implementation. Both the browser's global
  * `WebSocket` and Node 22's global `WebSocket` (used by the hermetic tests
@@ -482,7 +497,7 @@ export async function bootstrapAmkFromRecoveryCode(
     );
   }
 
-  const socket = new ctor(options.relayUrl);
+  const socket = new ctor(withRelayWsPath(options.relayUrl));
   try {
     const wrappedAmkWire = await new Promise<string>((resolve, reject) => {
       let awaitingInitializeResult = true;
@@ -791,7 +806,7 @@ export class RelayClient {
     if (this.socket) return;
     this.statusStore.set('connecting');
 
-    const socket = new this.WebSocketCtor(this.options.relayUrl);
+    const socket = new this.WebSocketCtor(withRelayWsPath(this.options.relayUrl));
     this.socket = socket;
     this.awaitingInitializeResult = true;
 
