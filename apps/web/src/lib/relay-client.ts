@@ -54,6 +54,8 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionUpdateEnvelopeV1,
+  type SshDiscoveryResponse,
+  type SshDiscoveryResultV1,
   type TargetFsListRequestPayloadV1,
   type TargetFsListResponse,
   type TargetFsListResponsePayloadV1,
@@ -85,6 +87,12 @@ export type {
   ProvisionStepStatusV1,
   ProvisionTargetHostInputV1,
   ProvisionTargetResult,
+} from '@loombox/protocol';
+export type {
+  SshAgentIdentityV1,
+  SshAgentInfoV1,
+  SshDiscoveryResultV1,
+  SshHostCandidateV1,
 } from '@loombox/protocol';
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -816,6 +824,18 @@ export class RelayClient {
       reject: (error: Error) => void;
     }
   >();
+  /**
+   * requestId -> the pending {@link discoverSshHosts} call it belongs to
+   * (redesign v2 §3.2's add-target candidate picker; issue #475).
+   * `ssh_discovery_response` carries plain fields only (no envelope — see
+   * `@loombox/protocol`'s `ssh-discovery.ts` doc comment), so like
+   * {@link pendingTargetListRequests} this resolves a `Promise` directly,
+   * no decrypt step needed.
+   */
+  private readonly pendingSshDiscoveryRequests = new Map<
+    string,
+    { resolve: (result: SshDiscoveryResultV1) => void; reject: (error: Error) => void }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -966,6 +986,56 @@ export class RelayClient {
         },
       });
       this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
+    });
+  }
+
+  /**
+   * Asks `nodeId` (the account's already-connected node — e.g. one
+   * `listTargets()` already reported) to run its own `discoverSshTargets()`
+   * (redesign v2 §3.2; issue #475) — the add-target wizard's candidate-card
+   * picker's data source for this PWA client, which has no local
+   * filesystem/IPC access of its own to autodetect `~/.ssh/config` +
+   * ssh-agent from, unlike the desktop app's direct IPC call to the same
+   * underlying `@loombox/node` function (`apps/desktop/src/main/
+   * ssh-candidates.ts`).
+   *
+   * Routing metadata only, same boundary as `listTargets`/`provisionTarget`:
+   * nothing here is encrypted — an autodetected alias/hostname/username/
+   * identity-file path is no more sensitive than `provisionTarget`'s own
+   * `host` input (see `@loombox/protocol`'s `ssh-discovery.ts` doc comment).
+   * Requires an open connection and rejects on a timeout, mirroring
+   * `listTargets`'s "loud rejection over a silently dropped request" — this
+   * is a deliberate, one-shot query the wizard awaits before rendering its
+   * first step, not best-effort live session traffic.
+   */
+  discoverSshHosts(nodeId: string, timeoutMs = 10_000): Promise<SshDiscoveryResultV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot discover SSH hosts, no open connection'),
+      );
+    }
+    const requestId = generateId('sshdisco');
+    return new Promise<SshDiscoveryResultV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSshDiscoveryRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for ssh_discovery_response'));
+      }, timeoutMs);
+      this.pendingSshDiscoveryRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        requestId,
+      });
     });
   }
 
@@ -2266,6 +2336,9 @@ export class RelayClient {
       case 'provision_target_result':
         this.handleProvisionTargetResult(message);
         return;
+      case 'ssh_discovery_response':
+        this.handleSshDiscoveryResponse(message);
+        return;
       default:
         return;
     }
@@ -2447,6 +2520,19 @@ export class RelayClient {
     if (!pending) return;
     this.pendingProvisionRequests.delete(message.requestId);
     pending.resolve(message);
+  }
+
+  /**
+   * The acting node's reply to one of this client's own {@link discoverSshHosts}
+   * calls (issue #475) — same "requestId not pending means it isn't mine"
+   * guard as {@link handleTargetList}, no decrypt step (plain fields, no
+   * envelope).
+   */
+  private handleSshDiscoveryResponse(message: SshDiscoveryResponse): void {
+    const pending = this.pendingSshDiscoveryRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSshDiscoveryRequests.delete(message.requestId);
+    pending.resolve(message.result);
   }
 
   /** Seals `{ path }` and sends the `fs_list_request` (SPEC §7.4; issue #171), tracking it in {@link pendingFsListRequests} so the eventual `fs_list_response` can be told apart from a sibling device's own request for the same session. */

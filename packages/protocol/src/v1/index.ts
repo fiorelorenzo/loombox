@@ -289,6 +289,27 @@ export {
   provisionTargetResult,
 } from './provisioning';
 
+export type {
+  SshAgentIdentityV1,
+  SshAgentInfoV1,
+  SshDiscoveryRequest,
+  SshDiscoveryResponse,
+  SshDiscoveryResultErrorV1,
+  SshDiscoveryResultOkV1,
+  SshDiscoveryResultV1,
+  SshHostCandidateV1,
+} from './ssh-discovery';
+export {
+  sshAgentIdentityV1,
+  sshAgentInfoV1,
+  sshDiscoveryRequest,
+  sshDiscoveryResponse,
+  sshDiscoveryResultErrorV1,
+  sshDiscoveryResultOkV1,
+  sshDiscoveryResultV1,
+  sshHostCandidateV1,
+} from './ssh-discovery';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -404,6 +425,16 @@ import {
   provisionTargetRequest,
   provisionTargetResult,
 } from './provisioning';
+import {
+  sshAgentIdentityV1,
+  sshAgentInfoV1,
+  sshDiscoveryRequest,
+  sshDiscoveryResponse,
+  sshDiscoveryResultErrorV1,
+  sshDiscoveryResultOkV1,
+  sshDiscoveryResultV1,
+  sshHostCandidateV1,
+} from './ssh-discovery';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -508,4 +539,12 @@ export const schemasV1 = {
   provisionTargetRequest,
   provisionProgress,
   provisionTargetResult,
+  sshAgentIdentityV1,
+  sshAgentInfoV1,
+  sshHostCandidateV1,
+  sshDiscoveryResultOkV1,
+  sshDiscoveryResultErrorV1,
+  sshDiscoveryResultV1,
+  sshDiscoveryRequest,
+  sshDiscoveryResponse,
 } as const;

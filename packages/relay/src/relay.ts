@@ -238,6 +238,15 @@ export interface CreateRelayOptions {
    * expiry-then-reuse assertions fast, exactly like `provisionRequestTtlMs`.
    */
   targetFsListRequestTtlMs?: number;
+  /**
+   * How long an `ssh_discovery_request`'s per-requestId routing entry (#475
+   * — see the `pendingSshDiscoveryRequests` doc comment below) survives
+   * without an `ssh_discovery_response`, before the relay drops it on its
+   * own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS}; tests lower it to keep
+   * expiry-then-reuse assertions fast, exactly like `targetFsListRequestTtlMs`.
+   */
+  sshDiscoveryRequestTtlMs?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -256,6 +265,8 @@ export const DEFAULT_MAX_LEASE_TTL_MS = 5 * 60_000;
 export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
 /** Sane default for {@link CreateRelayOptions.targetFsListRequestTtlMs} — 30s, generous for a slow `ssh:` directory listing; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#474), not normal picker latency. */
 export const DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS = 30_000;
+/** Sane default for {@link CreateRelayOptions.sshDiscoveryRequestTtlMs} — 15s, generous for `~/.ssh/config` parsing + an ssh-agent probe on the acting node; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#475), not normal discovery latency. */
+export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -311,6 +322,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const provisionRequestTtlMs = opts.provisionRequestTtlMs ?? DEFAULT_PROVISION_REQUEST_TTL_MS;
   const targetFsListRequestTtlMs =
     opts.targetFsListRequestTtlMs ?? DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS;
+  const sshDiscoveryRequestTtlMs =
+    opts.sshDiscoveryRequestTtlMs ?? DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -365,12 +378,41 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     pendingTargetFsListRequests.delete(requestId);
   }
 
+  /**
+   * #475: routes a node's `ssh_discovery_response` back to the client whose
+   * `ssh_discovery_request` this requestId belongs to — the add-target
+   * wizard's own small in-memory routing table, exactly like
+   * `pendingTargetFsListRequests` above and for the same reason (there is no
+   * target, let alone a session, to fan this out through — discovering
+   * hosts is what happens BEFORE either exists). Populated in the
+   * `ssh_discovery_request` handler below, consumed in the
+   * `ssh_discovery_response` handler, and cleaned up in exactly three
+   * places so it never leaks: the response itself, the requesting client's
+   * own disconnect (`dropConnection`), and the TTL timer set here
+   * (`sshDiscoveryRequestTtlMs`). Never persisted — purely routing metadata
+   * for a request currently in flight.
+   */
+  const pendingSshDiscoveryRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingSshDiscoveryRequest(requestId: string): void {
+    const pending = pendingSshDiscoveryRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingSshDiscoveryRequests.delete(requestId);
+  }
+
   app.addHook('onClose', async () => {
     for (const requestId of [...pendingProvisionRequests.keys()]) {
       clearPendingProvisionRequest(requestId);
     }
     for (const requestId of [...pendingTargetFsListRequests.keys()]) {
       clearPendingTargetFsListRequest(requestId);
+    }
+    for (const requestId of [...pendingSshDiscoveryRequests.keys()]) {
+      clearPendingSshDiscoveryRequest(requestId);
     }
     await fanOutBackend.close();
   });
@@ -1092,6 +1134,26 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingTargetFsListRequest(message.requestId);
         return;
       }
+      case 'ssh_discovery_response': {
+        // #475's add-target wizard: a single-shot reply, delivered directly
+        // to the requesting client and then retired — via the same
+        // per-requestId routing table `ssh_discovery_request` populates
+        // below, exactly like `target_fs_list_response` above. Account-
+        // scoped the same way: a requestId whose owning client belongs to a
+        // different account than this replying node is treated the same as
+        // an unknown requestId.
+        const pending = pendingSshDiscoveryRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: ssh_discovery_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingSshDiscoveryRequest(message.requestId);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -1250,6 +1312,39 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(nodeConnection, message);
         return;
       }
+      case 'ssh_discovery_request': {
+        // #475's add-target wizard candidate picker: routed directly by
+        // `nodeId`, scoped to the requester's account, exactly like
+        // `provision_target_request`/`target_fs_list_request` above — there
+        // is no existing target to resolve through (discovering hosts is
+        // what happens before one exists at all). The reply is a single
+        // `ssh_discovery_response`, so its routing entry is populated here
+        // and retired in exactly the same three places
+        // `pendingTargetFsListRequests` is: the response itself, this
+        // client's own disconnect (`dropConnection`), and the TTL timer.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: ssh_discovery_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingSshDiscoveryRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: ssh_discovery_request routing entry expired before a response arrived',
+          );
+          pendingSshDiscoveryRequests.delete(message.requestId);
+        }, sshDiscoveryRequestTtlMs);
+        pendingSshDiscoveryRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
       case 'prompt_inject':
       case 'permission_response':
       case 'config_option':
@@ -1385,6 +1480,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // target_fs_list_response.
       for (const [requestId, pending] of pendingTargetFsListRequests) {
         if (pending.clientConnection === connection) clearPendingTargetFsListRequest(requestId);
+      }
+      // #475: same reasoning as the two cleanups above — a disconnected
+      // client can never receive a still-pending ssh_discovery_response.
+      for (const [requestId, pending] of pendingSshDiscoveryRequests) {
+        if (pending.clientConnection === connection) clearPendingSshDiscoveryRequest(requestId);
       }
     }
   }

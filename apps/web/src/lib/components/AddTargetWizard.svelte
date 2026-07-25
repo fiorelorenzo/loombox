@@ -62,6 +62,9 @@
     ProvisionProgress,
     ProvisionTargetHostInputV1,
     ProvisionTargetResult,
+    SshAgentInfoV1,
+    SshDiscoveryResultV1,
+    SshHostCandidateV1,
     TargetListEntry,
   } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
@@ -81,6 +84,40 @@
       },
       timeoutMs?: number,
     ) => Promise<ProvisionTargetResult>;
+    /**
+     * Asks `nodeId` to run its own SSH host autodetection over the relay
+     * (redesign v2 §3.2; issue #475) — this wizard's fallback source when
+     * there is no {@link getDesktopBridge desktop IPC bridge} in scope (the
+     * PWA case, no local filesystem access of its own).
+     */
+    discoverSshHosts: (nodeId: string, timeoutMs?: number) => Promise<SshDiscoveryResultV1>;
+  }
+
+  /**
+   * The desktop app's own IPC bridge (`apps/desktop/src/shared/bridge.ts`'s
+   * `listSshHostCandidates`), present only inside its Electron
+   * `BrowserWindow` — this is the SAME `apps/web` PWA build the desktop
+   * shell loads (see `AGENTS.md`'s "Testing the desktop app on the Mac"),
+   * so `window.loombox` is how this component tells the two apart. A
+   * minimal duck-typed shape declared locally rather than importing
+   * `apps/desktop`'s own bridge types, to keep this app's dependency graph
+   * one-directional (the desktop app depends on this app's build output,
+   * never the other way around).
+   */
+  interface DesktopSshBridge {
+    listSshHostCandidates: () => Promise<{
+      candidates: SshHostCandidateV1[];
+      requiresManualEntry: boolean;
+    }>;
+  }
+
+  /** `undefined` in a plain browser tab (the PWA case) or in this component's own SSR/test environment; the real bridge only inside the desktop shell's `BrowserWindow`. */
+  function getDesktopBridge(): DesktopSshBridge | undefined {
+    if (typeof window === 'undefined') return undefined;
+    const bridge = (window as unknown as { loombox?: Partial<DesktopSshBridge> }).loombox;
+    return typeof bridge?.listSshHostCandidates === 'function'
+      ? (bridge as DesktopSshBridge)
+      : undefined;
   }
 
   interface Props {
@@ -105,6 +142,16 @@
   let nodesLoading = $state(false);
   let nodesError = $state<string | undefined>(undefined);
   let actingNodeId = $state<string | undefined>(undefined);
+
+  // The candidate-card picker (redesign v2 §3.2; issue #475) — populated
+  // from whichever source responds (the desktop IPC bridge if present,
+  // else the relay round trip to the acting node); `manualOverride` is the
+  // wizard's "Enter manually" fallback, which always works regardless of
+  // what (if anything) was discovered.
+  let candidates = $state<SshHostCandidateV1[]>([]);
+  let candidatesLoading = $state(false);
+  let manualOverride = $state(false);
+  let agentInfo = $state<SshAgentInfoV1 | undefined>(undefined);
 
   let step = $state<WizardStep>('pick-host');
   let host = $state('');
@@ -143,11 +190,78 @@
     } finally {
       nodesLoading = false;
     }
+    if (actingNodeId) void loadCandidates();
+  }
+
+  /**
+   * Prefers the desktop IPC bridge (this machine's own `~/.ssh/config`,
+   * issue #403/#475) when this component runs inside the desktop shell;
+   * otherwise falls back to asking the acting node over the relay
+   * ({@link AddTargetClient.discoverSshHosts}, the PWA's own path with no
+   * local filesystem access). Never blocks/breaks the wizard on failure —
+   * an empty `candidates` list just means step 1 renders the manual form
+   * directly, exactly SPEC §7.23's "falls back to manual entry" contract.
+   */
+  async function loadCandidates(): Promise<void> {
+    candidatesLoading = true;
+    try {
+      const bridge = getDesktopBridge();
+      if (bridge) {
+        const discovered = await bridge.listSshHostCandidates();
+        candidates = discovered.candidates;
+        agentInfo = undefined;
+        return;
+      }
+      if (client && actingNodeId) {
+        const discovered = await client.discoverSshHosts(actingNodeId);
+        if (discovered.outcome === 'ok') {
+          candidates = discovered.candidates;
+          agentInfo = discovered.agent;
+        } else {
+          candidates = [];
+          agentInfo = undefined;
+        }
+      }
+    } catch {
+      candidates = [];
+      agentInfo = undefined;
+    } finally {
+      candidatesLoading = false;
+    }
+  }
+
+  function selectCandidate(candidate: SshHostCandidateV1): void {
+    host = candidate.hostName;
+    user = candidate.user ?? '';
+    port = candidate.port ? String(candidate.port) : '';
+    alias = candidate.alias;
+    label = candidate.alias;
+    step = 'review';
+  }
+
+  function candidateHasKnownAuth(candidate: SshHostCandidateV1): boolean {
+    return candidate.identityFiles.length > 0;
+  }
+
+  function candidateTone(candidate: SshHostCandidateV1): StatusTone {
+    if (candidateHasKnownAuth(candidate)) return 'success';
+    if (agentInfo?.available && agentInfo.identities.length > 0) return 'info';
+    return 'neutral';
+  }
+
+  function candidateStatusLabel(candidate: SshHostCandidateV1): string {
+    if (candidateHasKnownAuth(candidate)) return 'key on file';
+    if (agentInfo?.available && agentInfo.identities.length > 0) return 'ssh-agent available';
+    return 'no known key';
   }
 
   function resetWizard(): void {
     nodesError = undefined;
     actingNodeId = undefined;
+    candidates = [];
+    candidatesLoading = false;
+    manualOverride = false;
+    agentInfo = undefined;
     step = 'pick-host';
     host = '';
     user = '';
@@ -270,59 +384,116 @@
       </EmptyState>
     </div>
   {:else if step === 'pick-host'}
-    <form class="host-form" onsubmit={goToReview}>
-      <label for="add-target-host">Host</label>
-      <input
-        id="add-target-host"
-        type="text"
-        placeholder="10.0.0.5 or devbox.example.com"
-        bind:value={host}
-        data-testid="add-target-host"
-      />
-
-      <label for="add-target-user">User (optional)</label>
-      <input
-        id="add-target-user"
-        type="text"
-        placeholder="defaults to root"
-        bind:value={user}
-        data-testid="add-target-user"
-      />
-
-      <label for="add-target-port">Port (optional)</label>
-      <input
-        id="add-target-port"
-        type="number"
-        placeholder="22"
-        bind:value={port}
-        data-testid="add-target-port"
-      />
-
-      <label for="add-target-alias">~/.ssh/config alias (optional)</label>
-      <input
-        id="add-target-alias"
-        type="text"
-        placeholder="matches an entry the node already knows"
-        bind:value={alias}
-        data-testid="add-target-alias"
-      />
-
-      <label for="add-target-label">Label (optional)</label>
-      <input
-        id="add-target-label"
-        type="text"
-        placeholder="Defaults to the host"
-        bind:value={label}
-        data-testid="add-target-label"
-      />
-
-      <div class="actions">
-        <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={!canReview} dataTestId="add-target-next">Next</Button>
+    {#if candidatesLoading}
+      <p class="status-line">
+        <WovenLoader label="Looking for known hosts" />
+        Looking for known hosts…
+      </p>
+    {:else if candidates.length > 0 && !manualOverride}
+      <div class="candidate-picker" data-testid="add-target-candidates">
+        <ul class="candidate-list">
+          {#each candidates as candidate (candidate.alias)}
+            <li>
+              <button
+                type="button"
+                class="candidate-card"
+                data-testid={`add-target-candidate-${candidate.alias}`}
+                onclick={() => selectCandidate(candidate)}
+              >
+                <StatusDot
+                  tone={candidateTone(candidate)}
+                  label={candidateStatusLabel(candidate)}
+                  size="sm"
+                />
+                <span class="candidate-info">
+                  <span class="candidate-host"
+                    >{candidate.user ? `${candidate.user}@` : ''}{candidate.hostName}</span
+                  >
+                  <span class="candidate-alias">{candidate.alias}</span>
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        <div class="actions">
+          <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="secondary"
+            dataTestId="add-target-enter-manually"
+            onclick={() => (manualOverride = true)}
+          >
+            Enter manually
+          </Button>
+        </div>
       </div>
-    </form>
+    {:else}
+      <form class="host-form" onsubmit={goToReview}>
+        <label for="add-target-host">Host</label>
+        <input
+          id="add-target-host"
+          type="text"
+          placeholder="10.0.0.5 or devbox.example.com"
+          bind:value={host}
+          data-testid="add-target-host"
+        />
+
+        <label for="add-target-user">User (optional)</label>
+        <input
+          id="add-target-user"
+          type="text"
+          placeholder="defaults to root"
+          bind:value={user}
+          data-testid="add-target-user"
+        />
+
+        <label for="add-target-port">Port (optional)</label>
+        <input
+          id="add-target-port"
+          type="number"
+          placeholder="22"
+          bind:value={port}
+          data-testid="add-target-port"
+        />
+
+        <label for="add-target-alias">~/.ssh/config alias (optional)</label>
+        <input
+          id="add-target-alias"
+          type="text"
+          placeholder="matches an entry the node already knows"
+          bind:value={alias}
+          data-testid="add-target-alias"
+        />
+
+        <label for="add-target-label">Label (optional)</label>
+        <input
+          id="add-target-label"
+          type="text"
+          placeholder="Defaults to the host"
+          bind:value={label}
+          data-testid="add-target-label"
+        />
+
+        {#if candidates.length > 0}
+          <button
+            type="button"
+            class="link-button"
+            data-testid="add-target-back-to-candidates"
+            onclick={() => (manualOverride = false)}
+          >
+            ← Back to detected hosts
+          </button>
+        {/if}
+
+        <div class="actions">
+          <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!canReview} dataTestId="add-target-next">Next</Button>
+        </div>
+      </form>
+    {/if}
   {:else if step === 'review'}
     <div class="review" data-testid="add-target-review">
       <p class="confirm-text">
@@ -480,6 +651,87 @@
   .host-form input:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
+  }
+
+  .link-button {
+    align-self: flex-start;
+    margin-top: var(--space-2xs);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-accent);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .link-button:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .candidate-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .candidate-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    max-height: 18rem;
+    overflow-y: auto;
+  }
+
+  .candidate-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-beat),
+      background var(--duration-fast) var(--ease-beat);
+  }
+
+  .candidate-card:hover {
+    border-color: var(--color-accent);
+  }
+
+  .candidate-card:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .candidate-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    min-width: 0;
+  }
+
+  .candidate-host {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .candidate-alias {
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
   .review {
