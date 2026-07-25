@@ -40,6 +40,8 @@ import {
   type ProvisionTargetResult,
   type SessionCreate,
   type SessionMetaPublic,
+  type SshDiscoveryRequest,
+  type SshDiscoveryResultV1,
   type TargetDescriptor,
   type TargetFsListRequest,
   type TargetFsListRequestPayloadV1,
@@ -68,6 +70,7 @@ import { sampleLocalResources, sampleRemoteResources } from './resource-sampler'
 import { SameFolderGuard } from './same-folder-guard';
 import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
+import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
 import { TargetHealthSampler } from './target-health-sampler';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
@@ -252,6 +255,18 @@ export interface NodeDaemonOptions {
    * tests; defaults to a fresh `NodeMcpSecretManager({ stateDir })`.
    */
   mcpSecretManager?: NodeMcpSecretManager;
+  /**
+   * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
+   * redesign v2 §3.2; issue #475) when this node handles an
+   * `ssh_discovery_request` — the add-target wizard's candidate-card picker
+   * asking THIS node to autodetect from its own `~/.ssh/config` + ssh-agent,
+   * for a client (e.g. the PWA) with no local filesystem/IPC access of its
+   * own. Tests override `homeDir`/`configPath`/`env`, mirroring
+   * `wire-provision-and-pair.ts`'s own `discoverOptions`.
+   */
+  sshDiscoveryOptions?: DiscoverSshTargetsOptions;
+  /** Injectable for tests; defaults to the real `discoverSshTargets`. */
+  discoverSshTargetsImpl?: typeof discoverSshTargets;
 }
 
 export interface CreateNodeSessionOptions {
@@ -592,6 +607,9 @@ export class NodeDaemon extends EventEmitter {
   /** Per-target CPU/RAM/disk sampling (issues #253/#269) — see `NodeDaemonOptions.resourceSampling`'s doc comment for why it's opt-in. */
   private readonly targetHealthSampler: TargetHealthSampler;
   private readonly resourceSamplingEnabled: boolean;
+  /** Redesign v2 §3.2; issue #475 — see `NodeDaemonOptions.sshDiscoveryOptions`/`discoverSshTargetsImpl`'s doc comments. */
+  private readonly sshDiscoveryOptions?: DiscoverSshTargetsOptions;
+  private readonly discoverSshTargetsImpl: typeof discoverSshTargets;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -662,6 +680,8 @@ export class NodeDaemon extends EventEmitter {
       options.mcpConfigStore ?? new McpConfigStore({ stateDir: options.stateDir });
     this.mcpSecretManager =
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
+    this.sshDiscoveryOptions = options.sshDiscoveryOptions;
+    this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -1528,6 +1548,9 @@ export class NodeDaemon extends EventEmitter {
       case 'target_fs_list_request':
         this.handleTargetFsListRequest(message);
         return;
+      case 'ssh_discovery_request':
+        this.handleSshDiscoveryRequest(message);
+        return;
       case 'terminal_open':
         this.handleTerminalOpen(message);
         return;
@@ -1968,6 +1991,46 @@ export class NodeDaemon extends EventEmitter {
       targetId,
       requestId,
       envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) THIS node to run `discoverSshTargets()`
+   * on its own machine (redesign v2 §3.2; issue #475) — the add-target
+   * wizard's candidate-card picker, for a client (the PWA) with no local
+   * filesystem/IPC access of its own to autodetect `~/.ssh/config` +
+   * ssh-agent the way the desktop app's IPC bridge does directly. Plain
+   * fields, no envelope (see `@loombox/protocol`'s `ssh-discovery.ts` doc
+   * comment for why), so unlike `handleTargetFsListRequest` there is no
+   * decrypt step and no per-target key to resolve. `discoverSshTargets`
+   * itself never throws (see its own doc comment), but this still always
+   * replies — an `outcome: 'error'` for an unexpected failure rather than a
+   * hang with no answer, exactly like `listDirectoryForTarget`'s own
+   * contract.
+   */
+  private handleSshDiscoveryRequest(message: SshDiscoveryRequest): void {
+    this.discoverSshTargetsImpl(this.sshDiscoveryOptions)
+      .then((discovery) =>
+        this.sendSshDiscoveryResponse(message.requestId, {
+          outcome: 'ok',
+          candidates: discovery.candidates,
+          agent: discovery.agent,
+          requiresManualEntry: discovery.requiresManualEntry,
+        }),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendSshDiscoveryResponse(message.requestId, { outcome: 'error', message: detail });
+      });
+  }
+
+  private sendSshDiscoveryResponse(requestId: string, result: SshDiscoveryResultV1): void {
+    this.relay.send({
+      type: 'ssh_discovery_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
     });
   }
 

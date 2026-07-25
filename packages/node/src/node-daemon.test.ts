@@ -160,6 +160,18 @@ function permissionProvider(): AcpProvider {
   };
 }
 
+// `@loombox/node`'s own `ssh/host-candidates.test.ts` fixture `~/.ssh/config`
+// files (issue #475's ssh_discovery_request handler exercises the same real
+// `discoverSshTargets()`, not a fake), reached by relative path one level up
+// from this file's own `src/`.
+const SSH_CONFIG_FIXTURES_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'test',
+  'fixtures',
+  'ssh-config',
+);
+
 // -----------------------------------------------------------------------
 // Test-only crypto helpers standing in for a phone/PWA client. These are
 // deliberately NOT calls into this package's own `session-keys.ts`/
@@ -1278,6 +1290,168 @@ describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () 
       key,
     );
     expect(payload.outcome).toBe('error');
+  });
+});
+
+describe('NodeDaemon ssh-discovery (redesign v2 §3.2 add-target candidate picker; issue #475)', () => {
+  it('responds to ssh_discovery_request with a real discoverSshTargets() run against a fixture ~/.ssh/config, in the clear (no envelope)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-discovery-1';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-discovery-1',
+      deviceId: 'device-node-ssh-discovery-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      sshDiscoveryOptions: {
+        configPath: path.join(SSH_CONFIG_FIXTURES_DIR, 'multiple-hosts'),
+        homeDir: '/home/tester',
+        env: { SSH_AUTH_SOCK: '/tmp/ssh-agent.sock' },
+        listIdentities: async () => ({
+          stdout: '256 SHA256:abc dev@devbox (ED25519)',
+          exitCode: 0,
+        }),
+      },
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-ssh-discovery-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'ssh_discovery_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-ssh-discovery-1',
+      requestId: 'req-ssh-discovery-1',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'ssh_discovery_response' &&
+        (m as { requestId?: string }).requestId === 'req-ssh-discovery-1',
+    )) as Extract<WireMessageV1, { type: 'ssh_discovery_response' }>;
+
+    expect(response.nodeId).toBe('node-ssh-discovery-1');
+    expect(response.result.outcome).toBe('ok');
+    if (response.result.outcome !== 'ok') throw new Error('unreachable');
+    expect(response.result.candidates.map((c) => c.alias)).toEqual([
+      'prodbox',
+      'staging',
+      'mac',
+      'macbook',
+    ]);
+    expect(response.result.requiresManualEntry).toBe(false);
+    expect(response.result.agent).toEqual({
+      available: true,
+      socketPath: '/tmp/ssh-agent.sock',
+      identities: [
+        { bits: 256, fingerprint: 'SHA256:abc', comment: 'dev@devbox', type: 'ED25519' },
+      ],
+    });
+    // Plain fields only — never an envelope, unlike target_fs_list_response.
+    expect(response).not.toHaveProperty('envelope');
+  });
+
+  it('reports requiresManualEntry: true when this node has no ~/.ssh/config to discover from', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-discovery-2';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-discovery-2',
+      deviceId: 'device-node-ssh-discovery-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      sshDiscoveryOptions: {
+        configPath: path.join(SSH_CONFIG_FIXTURES_DIR, 'does-not-exist'),
+        homeDir: '/home/tester',
+        env: {},
+      },
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-ssh-discovery-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'ssh_discovery_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-ssh-discovery-2',
+      requestId: 'req-ssh-discovery-2',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'ssh_discovery_response' &&
+        (m as { requestId?: string }).requestId === 'req-ssh-discovery-2',
+    )) as Extract<WireMessageV1, { type: 'ssh_discovery_response' }>;
+
+    expect(response.result).toEqual({
+      outcome: 'ok',
+      candidates: [],
+      agent: { available: false, identities: [] },
+      requiresManualEntry: true,
+    });
+  });
+
+  it('replies with an error outcome instead of hanging when discoverSshTargetsImpl unexpectedly throws', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-discovery-3';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-discovery-3',
+      deviceId: 'device-node-ssh-discovery-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      discoverSshTargetsImpl: async () => {
+        throw new Error('boom: disk read failed');
+      },
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-ssh-discovery-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'ssh_discovery_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-ssh-discovery-3',
+      requestId: 'req-ssh-discovery-3',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'ssh_discovery_response' &&
+        (m as { requestId?: string }).requestId === 'req-ssh-discovery-3',
+    )) as Extract<WireMessageV1, { type: 'ssh_discovery_response' }>;
+
+    expect(response.result).toEqual({ outcome: 'error', message: 'boom: disk read failed' });
   });
 });
 

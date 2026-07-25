@@ -31,6 +31,8 @@ import {
   type SessionMetaPublic,
   type SessionResume,
   type SessionUpdateEnvelopeV1,
+  type SshDiscoveryRequest,
+  type SshDiscoveryResponse,
   type TargetAnnounce,
   type TargetDescriptor,
   type TargetFsListRequest,
@@ -1206,6 +1208,234 @@ describe('relay v1', () => {
       };
       send(node, response);
       const received = (await nextMessage(secondClient)) as unknown as TargetFsListResponse;
+      expect(received).toEqual(response);
+
+      // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
+    });
+  });
+
+  describe("ssh_discovery_request/ssh_discovery_response (redesign v2 §3.2; issue #475) — the add-target wizard's candidate picker, routed directly by nodeId like provision_target_request, but with plain fields (no envelope) since a discovered alias/hostname/user is routing-adjacent metadata, not a secret", () => {
+    it("routes ssh_discovery_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: SshDiscoveryRequest = {
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco',
+        requestId: 'req_sshdisco_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as SshDiscoveryRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['nodeId', 'protocolVersion', 'requestId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an ssh_discovery_request for an unknown node instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_nonexistent',
+        requestId: 'req_sshdisco_orphan',
+      } satisfies SshDiscoveryRequest);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it('does not route ssh_discovery_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_foreign',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_foreign',
+        requestId: 'req_sshdisco_intruder',
+      } satisfies SshDiscoveryRequest);
+
+      // The owner's node must not receive it; prove the relay is still
+      // alive with a benign round trip instead.
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers ssh_discovery_response back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_reply',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must never see
+      // this request's reply.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: SshDiscoveryRequest = {
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_reply',
+        requestId: 'req_sshdisco_2',
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: SshDiscoveryResponse = {
+        type: 'ssh_discovery_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_reply',
+        requestId: request.requestId,
+        result: {
+          outcome: 'ok',
+          candidates: [{ alias: 'devbox', hostName: '100.87.202.117', identityFiles: [] }],
+          agent: { available: false, identities: [] },
+          requiresManualEntry: false,
+        },
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as SshDiscoveryResponse;
+      expect(received).toEqual(response);
+
+      // The bystander never received it — prove it's still alive and its
+      // next frame is the benign one we send now, not a leaked response.
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        sshDiscoveryRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_ttl',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_1',
+      });
+      const request: SshDiscoveryRequest = {
+        type: 'ssh_discovery_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_ttl',
+        requestId: 'req_sshdisco_ttl',
+      };
+      send(firstClient, request);
+      await nextMessage(node);
+
+      // Never send a response — simulate an abandoned request and let it
+      // expire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_1',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const response: SshDiscoveryResponse = {
+        type: 'ssh_discovery_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_sshdisco_ttl',
+        requestId: request.requestId,
+        result: {
+          outcome: 'ok',
+          candidates: [],
+          agent: { available: false, identities: [] },
+          requiresManualEntry: true,
+        },
+      };
+      send(node, response);
+      const received = (await nextMessage(secondClient)) as unknown as SshDiscoveryResponse;
       expect(received).toEqual(response);
 
       // The expired-and-abandoned firstClient must not have received it.

@@ -2567,6 +2567,189 @@ describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474
   });
 });
 
+describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate picker; issue #475)', () => {
+  it("resolves with the acting node's discovered SSH candidates, plain fields only (no envelope)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-sshdisco-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-sshdisco-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-sshdisco-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const discoverPromise = client.discoverSshHosts('node_1');
+
+    const request = (await node.waitFor((m) => m.type === 'ssh_discovery_request')) as {
+      type: 'ssh_discovery_request';
+      nodeId: string;
+      requestId: string;
+    };
+    expect(request.nodeId).toBe('node_1');
+    expect(Object.keys(request).sort()).toEqual(
+      ['nodeId', 'protocolVersion', 'requestId', 'type'].sort(),
+    );
+
+    node.send({
+      type: 'ssh_discovery_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      requestId: request.requestId,
+      result: {
+        outcome: 'ok',
+        candidates: [
+          {
+            alias: 'devbox',
+            hostName: '100.87.202.117',
+            user: 'lorenzo',
+            port: 22,
+            identityFiles: ['/home/lorenzo/.ssh/id_ed25519'],
+          },
+        ],
+        agent: { available: true, socketPath: '/tmp/ssh-agent.sock', identities: [] },
+        requiresManualEntry: false,
+      },
+    });
+
+    const result = await discoverPromise;
+    expect(result).toEqual({
+      outcome: 'ok',
+      candidates: [
+        {
+          alias: 'devbox',
+          hostName: '100.87.202.117',
+          user: 'lorenzo',
+          port: 22,
+          identityFiles: ['/home/lorenzo/.ssh/id_ed25519'],
+        },
+      ],
+      agent: { available: true, socketPath: '/tmp/ssh-agent.sock', identities: [] },
+      requiresManualEntry: false,
+    });
+  });
+
+  it('resolves with an error outcome rather than rejecting, when the node reports one', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-sshdisco-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-sshdisco-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-sshdisco-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const discoverPromise = client.discoverSshHosts('node_2');
+    const request = (await node.waitFor((m) => m.type === 'ssh_discovery_request')) as {
+      requestId: string;
+    };
+    node.send({
+      type: 'ssh_discovery_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_2',
+      requestId: request.requestId,
+      result: { outcome: 'error', message: 'ssh config unreadable' },
+    });
+
+    const result = await discoverPromise;
+    expect(result).toEqual({ outcome: 'error', message: 'ssh config unreadable' });
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-sshdisco-no-conn',
+      deviceId: 'client-sshdisco-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.discoverSshHosts('node_x')).rejects.toThrow(/no open connection/);
+  });
+
+  it("ignores an ssh_discovery_response for another device's own pending request (not addressed to this client)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-sshdisco-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-sshdisco-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_3',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-sshdisco-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const discoverPromise = client.discoverSshHosts('node_3', 200);
+    // Swallow the eventual timeout rejection below; the assertion is that it
+    // times out at all (never resolved by the foreign reply).
+    discoverPromise.catch(() => undefined);
+
+    await node.waitFor((m) => m.type === 'ssh_discovery_request');
+    node.send({
+      type: 'ssh_discovery_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_3',
+      requestId: 'req-not-mine',
+      result: {
+        outcome: 'ok',
+        candidates: [],
+        agent: { available: false, identities: [] },
+        requiresManualEntry: true,
+      },
+    });
+
+    await expect(discoverPromise).rejects.toThrow(/timed out/);
+  });
+});
+
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
   it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
     const amk = generateAmk();

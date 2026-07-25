@@ -1,17 +1,20 @@
+import { discoverSshTargets } from '@loombox/node';
+
 import type { ListSshHostCandidatesResult } from '../shared/bridge';
 
 /**
- * TODO(#403 follow-up): `@loombox/node`'s `src/ssh/host-candidates.ts`
- * already implements exactly this (`discoverSshTargets`, autodetecting from
- * `~/.ssh/config` + ssh-agent), but it is not part of that package's public
- * `index.ts` export surface this app is scoped to import from (issue #403
- * is `apps/desktop`-only; exporting it is a one-line change to a different
- * package, out of this scaffold's scope). Until that lands, this bridge
- * method always reports "nothing discovered", which is exactly the shape
- * the add-target wizard is meant to treat as "fall back to manual entry"
- * (`requiresManualEntry: true`) — so wiring the real implementation later
- * only replaces this function's body, not the contract.
+ * Real implementation (issue #475 follow-up to the #403 TODO this replaces):
+ * `@loombox/node`'s `discoverSshTargets` is now exported from that package's
+ * public `index.ts`, so this bridge method drives it directly for the
+ * desktop-machine case (autodetecting from ITS OWN `~/.ssh/config` +
+ * ssh-agent) instead of always reporting "nothing discovered". The wizard's
+ * "falls back to manual entry when nothing is discoverable" contract still
+ * holds — `discoverSshTargets` never throws (see its own doc comment), so
+ * an empty `~/.ssh/config` still resolves to `{ candidates: [],
+ * requiresManualEntry: true }`, exactly the stub's old fixed result, just
+ * for a real reason now rather than unconditionally.
  */
 export async function listSshHostCandidates(): Promise<ListSshHostCandidatesResult> {
-  return { candidates: [], requiresManualEntry: true };
+  const { candidates, requiresManualEntry } = await discoverSshTargets();
+  return { candidates, requiresManualEntry };
 }

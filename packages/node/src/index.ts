@@ -98,6 +98,22 @@ export { SshExecutionTarget } from './ssh-execution-target';
 export type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './ssh/remote-transport';
 export { shQuote } from './ssh/remote-transport';
 
+// v2: SSH host autodetection for the add-target wizard's candidate-card
+// picker (SPEC §7.23 step 1; redesign v2 §3.2; issue #475) — was
+// package-internal only, so `apps/desktop/src/main/ssh-candidates.ts`'s
+// bridge method had to fall back to a hardcoded empty stub. Exported here so
+// that bridge (the desktop-machine case) and this package's own
+// `node-daemon.ts` (the `ssh_discovery_request` handler, for an
+// already-paired node running discovery on ITS OWN machine and reporting
+// back over the relay — the path a PWA client with no local filesystem/IPC
+// access needs) can both call the real implementation.
+export type {
+  DiscoverSshTargetsOptions,
+  SshHostCandidate,
+  SshTargetDiscovery,
+} from './ssh/host-candidates';
+export { discoverSshTargets } from './ssh/host-candidates';
+
 export { LocalProcessTransport } from './ssh/local-process-transport';
 export { FakeTransport } from './ssh/fake-transport';
 export type { FakeExecHandler, FakeTransportOptions } from './ssh/fake-transport';
