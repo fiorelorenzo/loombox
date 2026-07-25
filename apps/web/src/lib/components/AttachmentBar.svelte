@@ -26,10 +26,16 @@
    * drop-zone (which keeps its hand-rolled markup: it needs the raw
    * `ondrop`/`ondragover`/`ondragleave`/`onpaste` handlers on the exact
    * element `attachment-bar`'s tests target).
+   *
+   * Deck migration (issue #469): both glyphs (the paperclip trigger, the
+   * chip's remove control) now draw from the shared bespoke icon set
+   * (`icons/Icon.svelte`, issue #457) — `attach`/`close` — instead of a
+   * one-off inline SVG and a bare `×` character.
    */
   import type { ComposerAttachment } from '../attachments';
   import Button from './ui/Button.svelte';
   import IconButton from './ui/IconButton.svelte';
+  import { Icon } from './icons';
 
   interface Props {
     attachments: ComposerAttachment[];
@@ -102,20 +108,7 @@
     onchange={handleInputChange}
   />
   <IconButton label="Attach image" onclick={pickFiles} class="pick-button">
-    <svg
-      viewBox="0 0 20 20"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <path
-        d="M14.5 7.5 8.4 13.6a3 3 0 0 1-4.24-4.25L10.4 3.1a2 2 0 0 1 2.83 2.83l-6.01 6.01a1 1 0 0 1-1.42-1.41l5.31-5.31"
-      />
-    </svg>
+    <Icon name="attach" />
   </IconButton>
 
   {#if attachments.length > 0}
@@ -160,7 +153,7 @@
             onclick={() => onRemove(attachment.id)}
             class="remove"
           >
-            ×
+            <Icon name="close" />
           </IconButton>
         </li>
       {/each}
