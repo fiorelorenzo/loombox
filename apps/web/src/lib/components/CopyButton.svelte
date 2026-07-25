@@ -10,17 +10,23 @@
    *
    * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439):
    * hand-styled to match `IconButton`'s visual language (hit-target sizing,
-   * hover/focus treatment) rather than importing the primitive — mirrors
-   * `PermissionCard`'s own overflow-toggle rationale: this button's glyph
-   * swap (copy mark -> checkmark) and its one-time `copied` confirmation
-   * pulse don't compose cleanly onto `IconButton`'s fixed icon-only-
-   * children/`aria-pressed` toggle model. The confirmation itself is a
-   * `scale` pulse crossfading to `--color-success`, written against
-   * `--duration-base`/`--ease-tension` so `prefers-reduced-motion` (which
-   * zeroes those tokens globally, see `tokens.css`) collapses it to an
-   * instant color change for free — no separate reduced-motion branch.
+   * hover/focus treatment) rather than importing the primitive.
+   *
+   * Deck migration (issue #469): now actually routes through the shared
+   * `IconButton` primitive (a `class` override carries the dimmed/hover/
+   * copied-confirmation styling below onto its root button), and the glyph
+   * draws from the shared icon set (`icons/Icon.svelte`, issue #457) instead
+   * of a bare `⧉` character. There is no bespoke checkmark glyph in that set
+   * yet, so the "copied" acknowledgement stays the existing crossfade-to-
+   * `--color-success` + one-time scale pulse rather than a glyph swap — a
+   * `scale` pulse written against `--duration-base`/`--ease-tension` so
+   * `prefers-reduced-motion` (which zeroes those tokens globally, see
+   * `tokens.css`) collapses it to an instant color change for free, no
+   * separate reduced-motion branch needed.
    */
   import { copyToClipboard } from '$lib/copy';
+  import { Icon } from './icons';
+  import IconButton from './ui/IconButton.svelte';
 
   interface Props {
     /** The exact text this button copies. */
@@ -46,57 +52,27 @@
   }
 </script>
 
-<button
-  type="button"
-  class="copy-button"
-  class:copied
-  title={label}
-  aria-label={label}
-  onclick={handleClick}
->
-  <span class="icon" aria-hidden="true">{copied ? '✓' : '⧉'}</span>
-</button>
+<IconButton {label} onclick={handleClick} class={`copy-button ${copied ? 'copied' : ''}`.trim()}>
+  <Icon name="copy" />
+</IconButton>
 
 <style>
-  .copy-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    padding: 0;
-    border-radius: var(--radius-sm);
+  /* `IconButton` renders the actual `<button>`; `class` (above) carries
+     these rules onto its root, so every selector below has to reach past
+     this file's own scope with `:global(...)` (same pattern `AttachmentBar`
+     uses for its `:global(.retry)`/`:global(.remove)`). */
+  :global(.copy-button) {
     opacity: 0.5;
-    font-size: var(--text-small-size);
-    line-height: 1;
-    color: inherit;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      opacity var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
   }
 
-  .copy-button:hover,
-  .copy-button:focus-visible {
+  :global(.copy-button:hover),
+  :global(.copy-button:focus-visible) {
     opacity: 1;
-    background: var(--color-fill-subtle);
-  }
-
-  .copy-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .copy-button:active {
-    transform: scale(0.98);
   }
 
   /* The copied-confirmation micro-interaction: a crossfade to
      --color-success plus a one-time scale pulse. */
-  .copy-button.copied {
+  :global(.copy-button.copied) {
     opacity: 1;
     color: var(--color-success);
     animation: copy-confirm-pulse var(--duration-base) var(--ease-tension);
@@ -116,13 +92,12 @@
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): reachable via
      hover on desktop (this file's own doc comment), so a coarse (touch)
-     pointer — which has no hover — needs a real, adequately-sized tap
-     target instead of the compact desktop sizing above. */
+     pointer — which has no hover — needs an adequately visible tap target
+     instead of the more heavily dimmed desktop resting state above
+     (`IconButton` itself already grows the hit target under
+     `(pointer: coarse)`). */
   @media (pointer: coarse) {
-    .copy-button {
-      width: 2.75rem;
-      height: 2.75rem;
-      font-size: 1.1rem;
+    :global(.copy-button) {
       opacity: 0.7;
     }
   }
