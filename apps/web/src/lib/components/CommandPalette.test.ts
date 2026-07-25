@@ -16,7 +16,7 @@ describe('CommandPalette (#132)', () => {
     render(CommandPalette, {
       props: { open: false, sessions, onSelectSession: vi.fn(), onClose: vi.fn() },
     });
-    expect(screen.queryByTestId('command-palette')).toBeNull();
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 
   it('shows every session/action when the query is empty', () => {
@@ -111,7 +111,7 @@ describe('CommandPalette (#132)', () => {
         onClose: vi.fn(),
       },
     });
-    const hint = screen.getByTestId('command-palette').querySelector('.palette-hints');
+    const hint = screen.getByTestId('dialog').querySelector('.palette-hints');
     expect(hint?.textContent).toContain('Mod+.');
     expect(screen.getByText('Esc close')).toBeTruthy();
   });

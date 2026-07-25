@@ -33,6 +33,19 @@
    * full `RelayClient`), mirroring `NewSessionDialog.svelte`'s own
    * narrowed-client pattern, so a hermetic component test injects a fake
    * without spinning up a real relay.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4/§6,
+   * issue #431): chrome moves onto the shared `Dialog` primitive; the
+   * four steps get an explicit progress indicator across the top, its
+   * fill driven by the shared `thread-draw` motion primitive
+   * (`$lib/styles/motion.css`'s `.thread-draw-fill`) per the issue's
+   * surface direction ("clear step progression using thread-draw for the
+   * progress indicator"). The no-nodes empty state and terminal
+   * success/failure lines read through `EmptyState`/`ErrorNotice`'s visual
+   * language (wrapped, not imported bare, so this component's own
+   * load-bearing `data-testid`s survive — see `NewSessionDialog.svelte`'s
+   * identical note). Each progress-log entry gets a `StatusDot` for its
+   * status instead of a plain capitalized word.
    */
   import type {
     ProvisionProgress,
@@ -41,6 +54,9 @@
     TargetListEntry,
   } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
+  import Dialog from './ui/Dialog.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
+  import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
 
   export interface AddTargetClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
@@ -67,6 +83,13 @@
 
   type WizardStep = 'pick-host' | 'review' | 'progress' | 'done';
 
+  const STEPS: { id: WizardStep; label: string }[] = [
+    { id: 'pick-host', label: 'Host' },
+    { id: 'review', label: 'Review' },
+    { id: 'progress', label: 'Provision' },
+    { id: 'done', label: 'Done' },
+  ];
+
   let nodesLoading = $state(false);
   let nodesError = $state<string | undefined>(undefined);
   let actingNodeId = $state<string | undefined>(undefined);
@@ -82,6 +105,9 @@
   let result = $state<ProvisionTargetResult | undefined>(undefined);
   let provisionError = $state<string | undefined>(undefined);
   let generatedTargetId = $state('');
+
+  const stepIndex = $derived(STEPS.findIndex((s) => s.id === step));
+  const stepProgressPercent = $derived(((stepIndex + 1) / STEPS.length) * 100);
 
   // Re-fetches (and resets the whole wizard) every time it actually opens,
   // or once `client` becomes available while already open — mirrors
@@ -178,208 +204,255 @@
   function handleClose(): void {
     onClose();
   }
+
+  function progressEntryTone(status: ProvisionProgress['status']): StatusTone {
+    if (status === 'ok') return 'success';
+    if (status === 'failed') return 'danger';
+    return 'info';
+  }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="dialog-backdrop"
-    role="presentation"
-    onclick={handleClose}
-    data-testid="add-target-backdrop"
-  >
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-label="Add target"
-      tabindex="-1"
-      onclick={(event) => event.stopPropagation()}
-      data-testid="add-target-dialog"
-    >
-      <h2>Add target</h2>
-
-      {#if nodesLoading}
-        <p class="status-line">
-          <WovenLoader label="Looking for a node to provision with" />
-          Looking for a node to provision with…
-        </p>
-      {:else if nodesError}
-        <p class="error" role="alert">{nodesError}</p>
-      {:else if !actingNodeId}
-        <div class="empty-state" data-testid="add-target-no-nodes">
-          <p>
-            You need at least one node first — run the Mac app or a local node, then come back here
-            to add an SSH target.
-          </p>
-          <div class="actions">
-            <button type="button" class="cancel" onclick={handleClose}>Close</button>
-          </div>
-        </div>
-      {:else if step === 'pick-host'}
-        <form class="host-form" onsubmit={goToReview}>
-          <label for="add-target-host">Host</label>
-          <input
-            id="add-target-host"
-            type="text"
-            placeholder="10.0.0.5 or devbox.example.com"
-            bind:value={host}
-            data-testid="add-target-host"
-          />
-
-          <label for="add-target-user">User (optional)</label>
-          <input
-            id="add-target-user"
-            type="text"
-            placeholder="defaults to root"
-            bind:value={user}
-            data-testid="add-target-user"
-          />
-
-          <label for="add-target-port">Port (optional)</label>
-          <input
-            id="add-target-port"
-            type="number"
-            placeholder="22"
-            bind:value={port}
-            data-testid="add-target-port"
-          />
-
-          <label for="add-target-alias">~/.ssh/config alias (optional)</label>
-          <input
-            id="add-target-alias"
-            type="text"
-            placeholder="matches an entry the node already knows"
-            bind:value={alias}
-            data-testid="add-target-alias"
-          />
-
-          <label for="add-target-label">Label (optional)</label>
-          <input
-            id="add-target-label"
-            type="text"
-            placeholder="Defaults to the host"
-            bind:value={label}
-            data-testid="add-target-label"
-          />
-
-          <div class="actions">
-            <button type="button" class="cancel" onclick={handleClose}>Cancel</button>
-            <button type="submit" disabled={!canReview} data-testid="add-target-next">
-              Next
-            </button>
-          </div>
-        </form>
-      {:else if step === 'review'}
-        <div class="review" data-testid="add-target-review">
-          <p class="confirm-text">
-            This will install a loombox node on <strong>{host}</strong> and pair it. Continue?
-          </p>
-          <ul class="review-details">
-            <li><span>Host</span><span>{host}</span></li>
-            {#if user}<li><span>User</span><span>{user}</span></li>{/if}
-            {#if port}<li><span>Port</span><span>{port}</span></li>{/if}
-            {#if alias}<li><span>Alias</span><span>{alias}</span></li>{/if}
-          </ul>
-          <div class="actions">
-            <button type="button" class="cancel" onclick={goBackToPickHost}>Back</button>
-            <button type="button" onclick={confirmAndProvision} data-testid="add-target-confirm">
-              Continue
-            </button>
-          </div>
-        </div>
-      {:else if step === 'progress'}
-        <div class="progress" data-testid="add-target-progress">
-          <p class="status-line">
-            <WovenLoader label="Provisioning" variant="working" />
-            Provisioning "{host}"…
-          </p>
-          <ul class="progress-log">
-            {#each progressLog as entry, index (index)}
-              <li class="progress-entry" data-status={entry.status}>
-                <span class="step-name">{entry.step.replaceAll('_', ' ')}</span>
-                <span class="step-status">{entry.status}</span>
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {:else if step === 'done'}
-        <div class="done" data-testid="add-target-done">
-          {#if provisionError}
-            <p class="error" role="alert" data-testid="add-target-error">{provisionError}</p>
-          {:else if result?.ok}
-            <p class="success" data-testid="add-target-success">
-              "{host}" is provisioned and paired.
-            </p>
-          {:else if result}
-            <p class="error" role="alert" data-testid="add-target-failure">
-              {result.message}
-              {#if result.failedStep}
-                (stopped at {result.failedStep.replaceAll('_', ' ')})
-              {/if}
-            </p>
-          {/if}
-          <div class="actions">
-            <button type="button" onclick={handleClose} data-testid="add-target-done-close">
-              {result?.ok ? 'Done' : 'Close'}
-            </button>
-          </div>
-        </div>
-      {/if}
+{#snippet stepProgress()}
+  <ol class="wizard-steps" aria-label="Add target progress">
+    <div class="wizard-steps-track">
+      <div
+        class="wizard-steps-fill thread-draw-fill"
+        style={`--thread-draw-progress: ${stepProgressPercent}%`}
+      ></div>
     </div>
-  </div>
-{/if}
+    {#each STEPS as s, index (s.id)}
+      <li
+        class="wizard-step"
+        class:done={index < stepIndex}
+        class:current={index === stepIndex}
+        aria-current={index === stepIndex ? 'step' : undefined}
+      >
+        {s.label}
+      </li>
+    {/each}
+  </ol>
+{/snippet}
+
+{#snippet dialogBody()}
+  {#if actingNodeId}
+    {@render stepProgress()}
+  {/if}
+
+  {#if nodesLoading}
+    <p class="status-line">
+      <WovenLoader label="Looking for a node to provision with" />
+      Looking for a node to provision with…
+    </p>
+  {:else if nodesError}
+    <p class="error" role="alert">{nodesError}</p>
+  {:else if !actingNodeId}
+    <div class="empty-state-slot" data-testid="add-target-no-nodes">
+      <EmptyState
+        message="You need at least one node first — run the Mac app or a local node, then come back here to add an SSH target."
+      >
+        {#snippet cta()}
+          <button type="button" class="btn btn-secondary" onclick={handleClose}>Close</button>
+        {/snippet}
+      </EmptyState>
+    </div>
+  {:else if step === 'pick-host'}
+    <form class="host-form" onsubmit={goToReview}>
+      <label for="add-target-host">Host</label>
+      <input
+        id="add-target-host"
+        type="text"
+        placeholder="10.0.0.5 or devbox.example.com"
+        bind:value={host}
+        data-testid="add-target-host"
+      />
+
+      <label for="add-target-user">User (optional)</label>
+      <input
+        id="add-target-user"
+        type="text"
+        placeholder="defaults to root"
+        bind:value={user}
+        data-testid="add-target-user"
+      />
+
+      <label for="add-target-port">Port (optional)</label>
+      <input
+        id="add-target-port"
+        type="number"
+        placeholder="22"
+        bind:value={port}
+        data-testid="add-target-port"
+      />
+
+      <label for="add-target-alias">~/.ssh/config alias (optional)</label>
+      <input
+        id="add-target-alias"
+        type="text"
+        placeholder="matches an entry the node already knows"
+        bind:value={alias}
+        data-testid="add-target-alias"
+      />
+
+      <label for="add-target-label">Label (optional)</label>
+      <input
+        id="add-target-label"
+        type="text"
+        placeholder="Defaults to the host"
+        bind:value={label}
+        data-testid="add-target-label"
+      />
+
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" onclick={handleClose}>Cancel</button>
+        <button
+          type="submit"
+          class="btn btn-primary"
+          disabled={!canReview}
+          data-testid="add-target-next"
+        >
+          Next
+        </button>
+      </div>
+    </form>
+  {:else if step === 'review'}
+    <div class="review" data-testid="add-target-review">
+      <p class="confirm-text">
+        This will install a loombox node on <strong>{host}</strong> and pair it. Continue?
+      </p>
+      <ul class="review-details">
+        <li><span>Host</span><span>{host}</span></li>
+        {#if user}<li><span>User</span><span>{user}</span></li>{/if}
+        {#if port}<li><span>Port</span><span>{port}</span></li>{/if}
+        {#if alias}<li><span>Alias</span><span>{alias}</span></li>{/if}
+      </ul>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" onclick={goBackToPickHost}>Back</button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          onclick={confirmAndProvision}
+          data-testid="add-target-confirm"
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+  {:else if step === 'progress'}
+    <div class="progress" data-testid="add-target-progress">
+      <p class="status-line">
+        <WovenLoader label="Provisioning" variant="working" />
+        Provisioning "{host}"…
+      </p>
+      <ul class="progress-log">
+        {#each progressLog as entry, index (index)}
+          <li class="progress-entry">
+            <StatusDot
+              tone={progressEntryTone(entry.status)}
+              pulse={entry.status === 'started'}
+              label={entry.status}
+              size="sm"
+            />
+            <span class="step-name">{entry.step.replaceAll('_', ' ')}</span>
+            <span class="step-status">{entry.status}</span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {:else if step === 'done'}
+    <div class="done" data-testid="add-target-done">
+      {#if provisionError}
+        <p class="error" role="alert" data-testid="add-target-error">{provisionError}</p>
+      {:else if result?.ok}
+        <p class="success" data-testid="add-target-success">
+          <StatusDot tone="success" label="Paired" size="sm" />
+          "{host}" is provisioned and paired.
+        </p>
+      {:else if result}
+        <p class="error" role="alert" data-testid="add-target-failure">
+          {result.message}
+          {#if result.failedStep}
+            (stopped at {result.failedStep.replaceAll('_', ' ')})
+          {/if}
+        </p>
+      {/if}
+      <div class="actions">
+        <button
+          type="button"
+          class="btn btn-primary"
+          onclick={handleClose}
+          data-testid="add-target-done-close"
+        >
+          {result?.ok ? 'Done' : 'Close'}
+        </button>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
+<Dialog {open} label="Add target" onClose={handleClose} size="md" children={dialogBody}>
+  {#snippet header()}
+    <h2>Add target</h2>
+  {/snippet}
+</Dialog>
 
 <style>
-  .dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-overlay);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding: 6vh var(--space-md);
-    overflow-y: auto;
-    z-index: var(--z-modal);
-  }
-
-  .dialog {
-    width: min(28rem, 100%);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border-radius: var(--radius-xl);
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-    box-shadow: var(--shadow-lg);
-  }
-
-  .dialog h2 {
-    margin: 0;
-  }
-
   .status-line {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
     margin: 0;
-    opacity: 0.7;
+    color: var(--color-text-secondary);
     font-size: var(--text-small-size);
   }
 
-  .empty-state {
+  .empty-state-slot {
+    border-radius: var(--radius-lg);
+    background: var(--color-fill-subtle);
+  }
+
+  /* Step progress — a thread-draw fill sweep (redesign brief §2's
+     "thread-draw" row: "anything that fills or reveals") across the top
+     of the wizard, plus a labeled step list below it (issue #431's
+     surface direction: "clear step progression using thread-draw for the
+     progress indicator"). */
+  .wizard-steps {
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-xs);
+    margin: 0 0 var(--space-sm);
+    padding: 0;
+    list-style: none;
   }
 
-  .empty-state p {
-    margin: 0;
-    padding: var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-fill-subtle);
+  .wizard-steps-track {
+    position: relative;
+    height: 3px;
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    overflow: hidden;
+  }
+
+  .wizard-steps-fill {
+    position: absolute;
+    inset: 0;
+    background: var(--color-accent);
+  }
+
+  .wizard-step {
+    display: inline-block;
+    margin-right: var(--space-md);
+    color: var(--color-text-muted);
     font-size: var(--text-small-size);
+    font-weight: 500;
+    transition: color var(--duration-fast) var(--ease-beat);
+  }
+
+  .wizard-step.done {
+    color: var(--color-text-secondary);
+  }
+
+  .wizard-step.current {
+    color: var(--color-accent);
   }
 
   .host-form {
@@ -391,22 +464,23 @@
   .host-form label {
     margin-top: var(--space-xs);
     font-size: var(--text-small-size);
-    opacity: 0.8;
+    color: var(--color-text-secondary);
   }
 
   .host-form input {
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
-    background: var(--color-fill-subtle);
+    background: var(--color-surface);
     color: inherit;
     font-family: inherit;
     font-size: 0.9rem;
+    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
   .host-form input:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .review {
@@ -424,7 +498,8 @@
     margin: 0;
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
-    background: var(--color-fill-subtle);
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
@@ -438,7 +513,7 @@
   }
 
   .review-details li span:first-child {
-    opacity: 0.7;
+    color: var(--color-text-muted);
   }
 
   .progress {
@@ -460,21 +535,23 @@
 
   .progress-entry {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
     gap: var(--space-sm);
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
-    background: var(--color-fill-subtle);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
     font-size: var(--text-small-size);
+  }
+
+  .step-name {
+    flex: 1;
     text-transform: capitalize;
   }
 
-  .progress-entry[data-status='ok'] {
-    color: var(--color-success, inherit);
-  }
-
-  .progress-entry[data-status='failed'] {
-    color: var(--color-danger);
+  .step-status {
+    color: var(--color-text-muted);
+    text-transform: capitalize;
   }
 
   .done {
@@ -484,10 +561,14 @@
   }
 
   .success {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
     margin: 0;
     padding: var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-fill-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-success-subtle);
+    border: 1px solid var(--color-success);
   }
 
   .actions {
@@ -497,41 +578,71 @@
     margin-top: var(--space-sm);
   }
 
-  .actions button {
+  /* Hand-styled to match the shared `Button` primitive (see
+     `NewSessionDialog.svelte`'s identical note: this wizard's own
+     `add-target-*` testids are load-bearing for its tests). */
+  .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-xs);
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
+    font-family: inherit;
     font-weight: 600;
-  }
-
-  .actions button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  .actions .cancel {
-    border: 1px solid var(--color-border);
+    font-size: var(--text-body-size);
+    cursor: pointer;
+    border: 1px solid transparent;
     background: transparent;
     color: inherit;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
-  .actions button:not(.cancel) {
-    border: none;
+  .btn:not(:disabled):active {
+    transform: scale(0.98);
+  }
+
+  .btn:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .btn-primary {
     background: var(--color-accent);
     color: var(--color-accent-contrast);
   }
 
-  .actions button:not(.cancel):disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .btn-primary:not(:disabled):hover {
+    background: var(--color-accent-hover);
+  }
+
+  .btn-primary:not(:disabled):active {
+    background: var(--color-accent-active);
+  }
+
+  .btn-secondary {
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
+  }
+
+  .btn-secondary:not(:disabled):hover {
+    background: var(--color-fill-subtle);
   }
 
   .error {
     margin: 0;
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--color-danger-subtle);
+    border: 1px solid var(--color-danger);
     color: var(--color-danger);
     font-size: var(--text-small-size);
   }
