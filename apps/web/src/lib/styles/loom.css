@@ -1,11 +1,17 @@
 /*
- * Loom — placeholder Style (redesign v2 design spec §1/§4, issue #458).
- * Not built yet (that's a fast-follow wave per the spec's staging plan);
- * this file exists so selecting Loom from the Style picker is never blank.
- * Every rule below is a literal copy of `deck.css`'s values, scoped to
- * `[data-style='loom']` instead of `[data-style='deck']` — when Loom gets
- * its own art direction, only this file changes, same contract as every
- * other Style.
+ * Loom — a full Style (redesign v2 design spec §1/§4, issue #477). Fast-follow
+ * to Deck on the same token architecture: only this file changes.
+ *
+ * Where Deck reads mission-control/terminal (cool blue-black, azure, a grid +
+ * scanline texture), Loom goes back to the brand's original metaphor
+ * (SPEC.md §4: "ink/paper monochrome base plus one warm 'thread' accent — a
+ * loom-thread hue, warm coral/amber — used sparingly for active state and
+ * the woven motif"). Loom's neutral ramp is warm (brown-black ink, not
+ * blue-black), its accent is a terracotta/amber thread rather than azure, and
+ * its texture is a diagonal cross-hatch weave (warp + weft) rather than
+ * Deck's technical grid/scanline — see the flourish at the bottom of this
+ * file. Both dark and light are independently art-directed (the light block
+ * is a warm linen/parchment paper, not a lightened copy of the dark block).
  *
  * Deliberately no bare `:root` fallback here (unlike `deck.css`): Deck is
  * the only Style allowed to be the pre-JS/no-`data-style`-yet default, so
@@ -20,165 +26,172 @@
   color-scheme: dark;
 
   /* -------------------------------------------------------------- */
-  /* Neutral / surface ramp ("ink" — dark, default)                  */
+  /* Neutral / surface ramp ("ink" — dark, default). Warm brown-black,   */
+  /* not Deck's blue-black — raw canvas rather than a cockpit display.    */
   /* -------------------------------------------------------------- */
-  --color-bg: #0a0c0f;
-  --color-surface: #0e1114;
-  --color-surface-raised: #101418;
-  --color-rail: #08090b;
-  --color-overlay: rgb(5 6 8 / 72%);
+  --color-bg: #14100c;
+  --color-surface: #1c1712;
+  --color-surface-raised: #241d16;
+  --color-rail: #0f0b08;
+  --color-overlay: rgb(20 14 8 / 74%);
 
-  /* Hairline scale — Deck's "9%/16%" whites over the near-black bg,
-     extended with a third, stronger tier at the same rate of increase
-     tokens.css's old slate scale used (each tier ~1.7-1.8x the previous). */
-  --color-border-subtle: rgb(255 255 255 / 9%);
-  --color-border: rgb(255 255 255 / 16%);
-  --color-border-strong: rgb(255 255 255 / 28%);
-  --color-fill-subtle: rgb(255 255 255 / 6%);
-  --color-fill: rgb(255 255 255 / 12%);
-
-  /* -------------------------------------------------------------- */
-  /* Text ramp ("ink")                                               */
-  /* -------------------------------------------------------------- */
-  --color-text-primary: #e6e9ec;
-  --color-text-secondary: #8b9299;
-  --color-text-muted: #5a6167;
-  --color-text-inverse: #0a0c0f;
+  /* Hairline scale — warm cream-white washes over the warm near-black bg,
+     same three-tier rate of increase as Deck's own scale. */
+  --color-border-subtle: rgb(255 246 230 / 8%);
+  --color-border: rgb(255 246 230 / 15%);
+  --color-border-strong: rgb(255 246 230 / 26%);
+  --color-fill-subtle: rgb(255 246 230 / 5%);
+  --color-fill: rgb(255 246 230 / 11%);
 
   /* -------------------------------------------------------------- */
-  /* Brand accent — the "thread" (SPEC §4). Azure is Deck's default    */
-  /* preset ground (issue #376); these five values are the pre-JS/no-  */
-  /* choice-yet fallback only — `$lib/accent.ts` overrides them at        */
-  /* runtime via `deriveAccentPalette`, same mechanism as before, just     */
-  /* now layered on top of a Style instead of a single fixed palette.      */
+  /* Text ramp ("ink") — warm, not neutral grey.                      */
   /* -------------------------------------------------------------- */
-  --color-accent: #3b9df7;
-  --color-accent-hover: #3690e3;
-  --color-accent-active: #3387d4;
-  --color-accent-subtle: rgb(59 157 247 / 16%);
-  --color-accent-contrast: #0a0a0a;
+  --color-text-primary: #ece5da;
+  --color-text-secondary: #a89b8a;
+  --color-text-muted: #6d6255;
+  --color-text-inverse: #14100c;
+
+  /* -------------------------------------------------------------- */
+  /* Brand accent — the "thread" (SPEC §4: "a loom-thread hue — warm    */
+  /* coral/amber"). Loom's own ground, distinct from Deck's azure — a     */
+  /* burnt terracotta/amber. Same five-token shape as every Style; a       */
+  /* chosen accent preset (`$lib/accent.ts`) overrides these at runtime,    */
+  /* same mechanism, just layered on Loom's ground instead of Deck's.        */
+  /* -------------------------------------------------------------- */
+  --color-accent: #e0793f;
+  --color-accent-hover: #ea8951;
+  --color-accent-active: #c8672f;
+  --color-accent-subtle: rgb(224 121 63 / 18%);
+  --color-accent-contrast: #1a0f08;
 
   /* A glow, not a flat fill — for accent-lit chrome (active nav indicator,
-     focus glow, working-state pulses). A raw translucent color rather than
-     a full `box-shadow` value so a consumer composes it freely, e.g.
-     `box-shadow: 0 0 20px var(--azure-glow);`. Unused until wave 2/3. */
-  --azure-glow: rgb(59 157 247 / 45%);
+     focus glow, working-state pulses). Kept as `--azure-glow` for
+     cross-Style API consistency (every Style's file defines the same named
+     token); the value itself is Loom's warm thread glow, not azure. Unused
+     until wave 2/3 wires it into shared chrome. */
+  --azure-glow: rgb(224 121 63 / 45%);
 
   /* -------------------------------------------------------------- */
-  /* Semantic status                                                  */
+  /* Semantic status — kept legible against an all-warm palette by        */
+  /* pulling info cooler (a muted slate-blue) so it doesn't read as a       */
+  /* fifth shade of the accent's orange.                                    */
   /* -------------------------------------------------------------- */
-  --color-success: #34d399;
-  --color-success-subtle: rgb(52 211 153 / 16%);
-  --color-warning: #f5b942;
-  --color-warning-subtle: rgb(245 185 66 / 16%);
-  --color-danger: #f26565;
-  --color-danger-subtle: rgb(242 101 101 / 16%);
-  --color-info: #5aa2e0;
-  --color-info-subtle: rgb(90 162 224 / 16%);
+  --color-success: #6bb26e;
+  --color-success-subtle: rgb(107 178 110 / 16%);
+  --color-warning: #e3b23c;
+  --color-warning-subtle: rgb(227 178 60 / 16%);
+  --color-danger: #d1503f;
+  --color-danger-subtle: rgb(209 80 63 / 16%);
+  --color-info: #6f93ad;
+  --color-info-subtle: rgb(111 147 173 / 16%);
 
   /* Focus ring color: a hairline shift, deliberately NOT the accent color
      (see tokens.css's doc comment on `--focus-ring-width`/`-offset`). */
   --color-focus-ring: var(--color-border-strong);
 
   /* -------------------------------------------------------------- */
-  /* Texture — Deck's mission-control surface treatment. Faint on      */
-  /* purpose (a hint of grid/scanline, never a loud pattern). Unused     */
-  /* until wave 2/3 applies them to the canvas/rail chrome.               */
+  /* Texture — the woven motif (SPEC §4: "woven-thread lines are the       */
+  /* recurring motif"). A diagonal cross-hatch (warp + weft at ±45deg)       */
+  /* stands in for Deck's technical grid; a fine single-direction thread     */
+  /* line stands in for Deck's scanline. Both stay faint on purpose (a       */
+  /* hint of weave, never a loud pattern). Consumed by the rail flourish     */
+  /* below; otherwise unused until wave 2/3 wires these into more chrome.    */
   /* -------------------------------------------------------------- */
   --bg-grid:
     repeating-linear-gradient(
-      0deg,
-      rgb(255 255 255 / 3.5%) 0,
-      rgb(255 255 255 / 3.5%) 1px,
+      45deg,
+      rgb(255 246 230 / 4%) 0,
+      rgb(255 246 230 / 4%) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 26px
     ),
     repeating-linear-gradient(
-      90deg,
-      rgb(255 255 255 / 3.5%) 0,
-      rgb(255 255 255 / 3.5%) 1px,
+      -45deg,
+      rgb(255 246 230 / 4%) 0,
+      rgb(255 246 230 / 4%) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 26px
     );
   --scanline: repeating-linear-gradient(
     0deg,
-    rgb(255 255 255 / 2.5%) 0,
-    rgb(255 255 255 / 2.5%) 1px,
+    rgb(224 121 63 / 3%) 0,
+    rgb(224 121 63 / 3%) 1px,
     transparent 1px,
-    transparent 3px
+    transparent 5px
   );
 }
 
 /*
- * Deck light ("crisp paper") — independently art-directed per Lorenzo's
- * decision (design spec §1: "Deck light must be independently art-directed
- * ... NOT derived from dark"), not a lightened copy of the block above. A
- * cool, crisp white rather than tokens.css's old warm paper, with real
- * surface separation (three distinct tiers: bg / surface / surface-raised)
- * and sharper ink. Same dual-selector story as tokens.css's own dark/light
- * split: the media query covers "no explicit theme choice yet", the
+ * Loom light ("undyed linen") — independently art-directed per Lorenzo's
+ * decision (design spec §1: light must be art-directed, not a lightened
+ * copy of dark), same rigor Deck light required. A warm linen/parchment
+ * paper (not Deck light's crisp cool white), with real surface separation
+ * (four distinct warm tiers: bg / surface / surface-raised / rail) and a
+ * darker, more saturated thread accent for contrast against the pale
+ * ground. Same dual-selector story as `tokens.css`'s own dark/light split:
+ * the media query covers "no explicit theme choice yet", the
  * `[data-theme='light']` attribute is the explicit, persisted one.
  */
 @media (prefers-color-scheme: light) {
   :root[data-style='loom']:not([data-theme]) {
     color-scheme: light;
 
-    --color-bg: #eef1f5;
-    --color-surface: #ffffff;
-    --color-surface-raised: #f7f9fc;
-    --color-rail: #e2e6ec;
-    --color-overlay: rgb(10 14 20 / 40%);
+    --color-bg: #f3ece1;
+    --color-surface: #fbf7f0;
+    --color-surface-raised: #ffffff;
+    --color-rail: #e8ddcc;
+    --color-overlay: rgb(40 28 14 / 42%);
 
-    --color-border-subtle: rgb(15 23 35 / 7%);
-    --color-border: rgb(15 23 35 / 14%);
-    --color-border-strong: rgb(15 23 35 / 24%);
-    --color-fill-subtle: rgb(15 23 35 / 5%);
-    --color-fill: rgb(15 23 35 / 10%);
+    --color-border-subtle: rgb(60 40 20 / 8%);
+    --color-border: rgb(60 40 20 / 15%);
+    --color-border-strong: rgb(60 40 20 / 26%);
+    --color-fill-subtle: rgb(60 40 20 / 5%);
+    --color-fill: rgb(60 40 20 / 11%);
 
-    --color-text-primary: #10141a;
-    --color-text-secondary: #454b57;
-    --color-text-muted: #767c87;
-    --color-text-inverse: #0a0c0f;
+    --color-text-primary: #221a10;
+    --color-text-secondary: #5c4f3f;
+    --color-text-muted: #8a7c69;
+    --color-text-inverse: #f7f1e6;
 
-    --color-accent: #1f7fd0;
-    --color-accent-hover: #1d75bf;
-    --color-accent-active: #1b6db3;
-    --color-accent-subtle: rgb(31 127 208 / 16%);
-    --color-accent-contrast: #0a0a0a;
-    --azure-glow: rgb(31 127 208 / 32%);
+    --color-accent: #b8551f;
+    --color-accent-hover: #a44c1b;
+    --color-accent-active: #934318;
+    --color-accent-subtle: rgb(184 85 31 / 15%);
+    --color-accent-contrast: #fdf6ec;
+    --azure-glow: rgb(184 85 31 / 30%);
 
-    --color-success: #1f8f62;
-    --color-success-subtle: rgb(31 143 98 / 12%);
-    --color-warning: #9a6c0d;
-    --color-warning-subtle: rgb(154 108 13 / 12%);
-    --color-danger: #c23b41;
-    --color-danger-subtle: rgb(194 59 65 / 12%);
-    --color-info: #2568a8;
-    --color-info-subtle: rgb(37 104 168 / 12%);
+    --color-success: #2f7d43;
+    --color-success-subtle: rgb(47 125 67 / 13%);
+    --color-warning: #93690f;
+    --color-warning-subtle: rgb(147 105 15 / 13%);
+    --color-danger: #ab3a2c;
+    --color-danger-subtle: rgb(171 58 44 / 13%);
+    --color-info: #3f6785;
+    --color-info-subtle: rgb(63 103 133 / 13%);
 
     --color-focus-ring: var(--color-border-strong);
 
     --bg-grid:
       repeating-linear-gradient(
-        0deg,
-        rgb(15 23 35 / 4%) 0,
-        rgb(15 23 35 / 4%) 1px,
+        45deg,
+        rgb(60 40 20 / 5%) 0,
+        rgb(60 40 20 / 5%) 1px,
         transparent 1px,
-        transparent 24px
+        transparent 26px
       ),
       repeating-linear-gradient(
-        90deg,
-        rgb(15 23 35 / 4%) 0,
-        rgb(15 23 35 / 4%) 1px,
+        -45deg,
+        rgb(60 40 20 / 5%) 0,
+        rgb(60 40 20 / 5%) 1px,
         transparent 1px,
-        transparent 24px
+        transparent 26px
       );
     --scanline: repeating-linear-gradient(
       0deg,
-      rgb(15 23 35 / 3%) 0,
-      rgb(15 23 35 / 3%) 1px,
+      rgb(184 85 31 / 4%) 0,
+      rgb(184 85 31 / 4%) 1px,
       transparent 1px,
-      transparent 3px
+      transparent 5px
     );
   }
 }
@@ -186,62 +199,62 @@
 :root[data-style='loom'][data-theme='light'] {
   color-scheme: light;
 
-  --color-bg: #eef1f5;
-  --color-surface: #ffffff;
-  --color-surface-raised: #f7f9fc;
-  --color-rail: #e2e6ec;
-  --color-overlay: rgb(10 14 20 / 40%);
+  --color-bg: #f3ece1;
+  --color-surface: #fbf7f0;
+  --color-surface-raised: #ffffff;
+  --color-rail: #e8ddcc;
+  --color-overlay: rgb(40 28 14 / 42%);
 
-  --color-border-subtle: rgb(15 23 35 / 7%);
-  --color-border: rgb(15 23 35 / 14%);
-  --color-border-strong: rgb(15 23 35 / 24%);
-  --color-fill-subtle: rgb(15 23 35 / 5%);
-  --color-fill: rgb(15 23 35 / 10%);
+  --color-border-subtle: rgb(60 40 20 / 8%);
+  --color-border: rgb(60 40 20 / 15%);
+  --color-border-strong: rgb(60 40 20 / 26%);
+  --color-fill-subtle: rgb(60 40 20 / 5%);
+  --color-fill: rgb(60 40 20 / 11%);
 
-  --color-text-primary: #10141a;
-  --color-text-secondary: #454b57;
-  --color-text-muted: #767c87;
-  --color-text-inverse: #0a0c0f;
+  --color-text-primary: #221a10;
+  --color-text-secondary: #5c4f3f;
+  --color-text-muted: #8a7c69;
+  --color-text-inverse: #f7f1e6;
 
-  --color-accent: #1f7fd0;
-  --color-accent-hover: #1d75bf;
-  --color-accent-active: #1b6db3;
-  --color-accent-subtle: rgb(31 127 208 / 16%);
-  --color-accent-contrast: #0a0a0a;
-  --azure-glow: rgb(31 127 208 / 32%);
+  --color-accent: #b8551f;
+  --color-accent-hover: #a44c1b;
+  --color-accent-active: #934318;
+  --color-accent-subtle: rgb(184 85 31 / 15%);
+  --color-accent-contrast: #fdf6ec;
+  --azure-glow: rgb(184 85 31 / 30%);
 
-  --color-success: #1f8f62;
-  --color-success-subtle: rgb(31 143 98 / 12%);
-  --color-warning: #9a6c0d;
-  --color-warning-subtle: rgb(154 108 13 / 12%);
-  --color-danger: #c23b41;
-  --color-danger-subtle: rgb(194 59 65 / 12%);
-  --color-info: #2568a8;
-  --color-info-subtle: rgb(37 104 168 / 12%);
+  --color-success: #2f7d43;
+  --color-success-subtle: rgb(47 125 67 / 13%);
+  --color-warning: #93690f;
+  --color-warning-subtle: rgb(147 105 15 / 13%);
+  --color-danger: #ab3a2c;
+  --color-danger-subtle: rgb(171 58 44 / 13%);
+  --color-info: #3f6785;
+  --color-info-subtle: rgb(63 103 133 / 13%);
 
   --color-focus-ring: var(--color-border-strong);
 
   --bg-grid:
     repeating-linear-gradient(
-      0deg,
-      rgb(15 23 35 / 4%) 0,
-      rgb(15 23 35 / 4%) 1px,
+      45deg,
+      rgb(60 40 20 / 5%) 0,
+      rgb(60 40 20 / 5%) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 26px
     ),
     repeating-linear-gradient(
-      90deg,
-      rgb(15 23 35 / 4%) 0,
-      rgb(15 23 35 / 4%) 1px,
+      -45deg,
+      rgb(60 40 20 / 5%) 0,
+      rgb(60 40 20 / 5%) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 26px
     );
   --scanline: repeating-linear-gradient(
     0deg,
-    rgb(15 23 35 / 3%) 0,
-    rgb(15 23 35 / 3%) 1px,
+    rgb(184 85 31 / 4%) 0,
+    rgb(184 85 31 / 4%) 1px,
     transparent 1px,
-    transparent 3px
+    transparent 5px
   );
 }
 
@@ -251,4 +264,20 @@
    tokens.css's own `[data-theme="dark"]` rule). */
 :root[data-style='loom'][data-theme='dark'] {
   color-scheme: dark;
+}
+
+/*
+ * Style-conditional flourish (design spec §1: "Style-conditional flourishes
+ * that can't be pure tokens ... e.g. Loom's woven texture ... a few
+ * [data-style='X'] CSS rules against the same markup — never separate
+ * component variants"). `.rail` (the primary nav rail, `apps/web/src/routes/
+ * +page.svelte`) is the app's literal vertical warp threads, so it's where
+ * Loom's woven texture actually shows: a faint cross-hatch layered on top of
+ * whatever background the rail already has. `background-image` only (never
+ * the `background` shorthand) so this never clobbers the rail's own
+ * background-color — including the narrow-viewport rail, which sets one
+ * explicitly; this rule's higher selector specificity wins regardless of
+ * source order, the same guarantee documented at the top of this file. */
+:root[data-style='loom'] .rail {
+  background-image: var(--bg-grid);
 }
