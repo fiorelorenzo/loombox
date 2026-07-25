@@ -24,6 +24,7 @@
 import type { CryptoKey } from './webcrypto-types';
 import type { Envelope } from './envelope';
 import { unwrapAmkEpochForDevice, wrapAmkEpochForDevice } from './amk-rotation';
+import { base64ToBytes, bytesToBase64 } from './base64';
 
 /**
  * The epoch a handoff blob is bound to when the caller doesn't pass one
@@ -134,9 +135,9 @@ export function packAmkHandoffForFile(blob: AmkHandoffFileBlob): string {
   const packed: PackedAmkHandoffFile = {
     v: HANDOFF_FILE_FORMAT_VERSION,
     epoch: blob.epoch,
-    actingDevicePublicKey: Buffer.from(blob.actingDevicePublicKeyRaw).toString('base64'),
-    iv: Buffer.from(blob.envelope.iv).toString('base64'),
-    ciphertext: Buffer.from(blob.envelope.ciphertext).toString('base64'),
+    actingDevicePublicKey: bytesToBase64(blob.actingDevicePublicKeyRaw),
+    iv: bytesToBase64(blob.envelope.iv),
+    ciphertext: bytesToBase64(blob.envelope.ciphertext),
   };
   return JSON.stringify(packed);
 }
@@ -174,11 +175,11 @@ export function unpackAmkHandoffFromFile(raw: string): AmkHandoffFileBlob {
 
   return {
     epoch: packed.epoch,
-    actingDevicePublicKeyRaw: new Uint8Array(Buffer.from(packed.actingDevicePublicKey, 'base64')),
+    actingDevicePublicKeyRaw: base64ToBytes(packed.actingDevicePublicKey),
     envelope: {
       resourceId: '',
-      iv: new Uint8Array(Buffer.from(packed.iv, 'base64')),
-      ciphertext: new Uint8Array(Buffer.from(packed.ciphertext, 'base64')),
+      iv: base64ToBytes(packed.iv),
+      ciphertext: base64ToBytes(packed.ciphertext),
     },
   };
 }

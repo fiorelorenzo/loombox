@@ -46,6 +46,19 @@
   --radius-full: 999px;
 
   /* ---------------------------------------------------------------- */
+  /* Layout measures (redesign v3 design spec §3.1/§3.4). Structural,   */
+  /* not palette: how wide a column of prose may get before it stops    */
+  /* being readable, how wide the sidebar starts, and how much room the */
+  /* transcript's role gutter reserves. Components read these instead   */
+  /* of inventing their own magic widths.                               */
+  /* ---------------------------------------------------------------- */
+  --measure: 90ch; /* long-form prose in the transcript */
+  --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
+  --gutter: 2rem; /* the transcript timeline's role-glyph column */
+  --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
+  --sidebar-width-collapsed: 3.5rem;
+
+  /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */
   /* rather than a light-mode-style drop shadow)                      */
   /* ---------------------------------------------------------------- */

@@ -436,28 +436,48 @@
     sessionStatuses.clear();
   }
 
+  // Persistence for the four client-side UI preferences below (relay URL,
+  // Drawer pin, Sessions width/collapsed) is gated on this flag because in
+  // Svelte 5 `onMount` is itself just another user effect, scheduled in
+  // DECLARATION order alongside `$effect` — these effects are declared
+  // above `onMount`, so on a fresh load they used to run FIRST and write
+  // each preference's compile-time default over the persisted value before
+  // `onMount` ever got to read it back (a self-hoster's relay URL, a pinned
+  // Drawer, and a resized/collapsed Sessions column were all silently lost
+  // on every reload). `onMount` flips this once it has restored, after
+  // which every later change persists exactly as before.
+  let preferencesRestored = false;
+
   // Persists an operator-edited relay URL as soon as it changes (not just on
   // submit) so it survives the full-page reload a real OAuth redirect does —
   // see `onMount`'s restore of the same key. `$effect` is client/DOM-only in
   // Svelte 5 (never runs during `routes/page.test.ts`'s SSR render).
   $effect(() => {
-    localStorage.setItem(RELAY_URL_STORAGE_KEY, relayUrl);
+    const value = relayUrl;
+    if (!preferencesRestored) return;
+    localStorage.setItem(RELAY_URL_STORAGE_KEY, value);
   });
 
   // Persists the Drawer's pinned-column preference (redesign brief §1)
   // the same way — see `onMount`'s restore of the same key below.
   $effect(() => {
-    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, drawerPinned ? '1' : '0');
+    const value = drawerPinned;
+    if (!preferencesRestored) return;
+    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, value ? '1' : '0');
   });
 
   // Persists the Sessions column's own drag-resized width + collapsed-to-
   // selvage preference (redesign brief §1, issue #438) — see `onMount`'s
   // restore of the same two keys below.
   $effect(() => {
-    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(sessionsWidthPx));
+    const value = sessionsWidthPx;
+    if (!preferencesRestored) return;
+    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(value));
   });
   $effect(() => {
-    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, sessionsCollapsed ? '1' : '0');
+    const value = sessionsCollapsed;
+    if (!preferencesRestored) return;
+    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, value ? '1' : '0');
   });
 
   const planCollapsed = $derived(
@@ -1335,6 +1355,11 @@
     }
     const persistedSessionsCollapsed = localStorage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY);
     if (persistedSessionsCollapsed) sessionsCollapsed = persistedSessionsCollapsed === '1';
+
+    // Every preference above is now the persisted one, so the four
+    // persistence effects declared near the top of this component may
+    // start writing (see `preferencesRestored`'s own doc comment).
+    preferencesRestored = true;
 
     const store = ensureAuthStore();
 

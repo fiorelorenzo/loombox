@@ -5,6 +5,15 @@
  * would throw the moment it tried to derive a key). Everything in this
  * package is built on WebCrypto (`crypto.subtle` / `crypto.getRandomValues`)
  * instead, which is a global in both runtimes.
+ *
+ * Same contract, second builtin: `Buffer`. Vite does not polyfill it for the
+ * browser build either, and `session-envelope.ts`'s `openJson` — the path
+ * the PWA takes to decrypt EVERY session's private metadata, every session
+ * update, and every permission request — used to call `Buffer.from(...)`.
+ * The result was a shipped web app that silently failed every decrypt with
+ * `Buffer is not defined` and rendered "This device's key can't read these
+ * sessions" for a perfectly valid AMK. `base64.ts`'s `btoa`/`atob` codec is
+ * the replacement; this test is what stops the next one.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -20,6 +29,12 @@ const THIS_FILE = fileURLToPath(import.meta.url);
 // always "find" a hit right here, in the file doing the checking.
 const FORBIDDEN_SPECIFIER = ['node', 'crypto'].join(':');
 
+// Matches a real USE of the global (`Buffer.from`, `Buffer.alloc`, a
+// `Buffer(...)` call) rather than any mention of the word, so a doc comment
+// explaining why this package avoids it — `base64.ts` has one — doesn't
+// trip the guard. Assembled at runtime for the same reason as above.
+const FORBIDDEN_GLOBAL_USE = new RegExp(`\\b${['Buf', 'fer'].join('')}\\s*[.(]`);
+
 function listTsFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = join(dir, entry.name);
@@ -29,10 +44,23 @@ function listTsFiles(dir: string): string[] {
 }
 
 describe('browser safety (issue #324)', () => {
+  const sources = listTsFiles(SRC_DIR)
+    .filter((file) => file !== THIS_FILE)
+    .map((file) => ({ file, text: readFileSync(file, 'utf8') }));
+
   it("never references Node's crypto builtin anywhere under packages/crypto/src", () => {
-    const offenders = listTsFiles(SRC_DIR)
-      .filter((file) => file !== THIS_FILE)
-      .filter((file) => readFileSync(file, 'utf8').includes(FORBIDDEN_SPECIFIER));
+    const offenders = sources
+      .filter((source) => source.text.includes(FORBIDDEN_SPECIFIER))
+      .map((source) => source.file);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("never references Node's Buffer global in non-test sources", () => {
+    const offenders = sources
+      .filter((source) => !source.file.endsWith('.test.ts'))
+      .filter((source) => FORBIDDEN_GLOBAL_USE.test(source.text))
+      .map((source) => source.file);
 
     expect(offenders).toEqual([]);
   });
