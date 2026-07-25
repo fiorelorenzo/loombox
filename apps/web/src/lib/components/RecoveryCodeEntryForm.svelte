@@ -1,6 +1,6 @@
 <script lang="ts">
-  import WovenLoader from './WovenLoader.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Button from './ui/Button.svelte';
 
   /**
    * A Recovery Code text entry + submit — the "new device" bootstrap half of
@@ -13,13 +13,15 @@
    * `bootstrapAmkFromRecoveryCode` itself — the caller owns that (and thus
    * owns `busy`/`error`), so it stays trivially testable without a relay.
    *
-   * Restyle (redesign brief §4/§6, issue #430): the submit button is
-   * hand-rolled to match `Button`'s `primary` look 1:1 rather than
-   * importing it (the existing test queries a fixed
-   * `recovery-code-entry-submit` id `Button` can't take), gets a
-   * `thread-draw-fill-loop` sweep while busy (the brief's "thread-draw for
-   * the escrow/pairing in-flight state," §6), and the error surfaces via
-   * the real `ErrorNotice` primitive.
+   * Deck migration (redesign v2 design spec, issue #473): the submit button
+   * now composes the real `Button` primitive via its `dataTestId` override
+   * (issue #479) so the existing `recovery-code-entry-submit` test id
+   * survives the move — `Button`'s own `loading` state supplies the busy
+   * `WovenLoader` inline with the label text, so this file no longer
+   * renders one by hand. It still gets a `thread-draw-fill-loop` sweep
+   * while busy (the brief's "thread-draw for the escrow/pairing in-flight
+   * state," §6), and the error surfaces via the real `ErrorNotice`
+   * primitive.
    */
   interface Props {
     /** Fires with the raw (un-normalized) text the user typed — `@loombox/crypto`'s `normalizeRecoveryCode` runs on the receiving end, so this form doesn't need to duplicate that logic to validate input shape. */
@@ -62,19 +64,15 @@
     <ErrorNotice message={error} />
   {/if}
   <div class="submit-row">
-    <button
+    <Button
       type="submit"
-      class="submit-button"
-      disabled={code.trim() === '' || busy}
-      data-testid="recovery-code-entry-submit"
+      variant="primary"
+      loading={busy}
+      disabled={code.trim() === ''}
+      dataTestId="recovery-code-entry-submit"
     >
-      {#if busy}
-        <WovenLoader label="Verifying" />
-        Verifying…
-      {:else}
-        {submitLabel}
-      {/if}
-    </button>
+      {busy ? 'Verifying…' : submitLabel}
+    </Button>
     {#if busy}
       <span class="in-flight-track" aria-hidden="true">
         <span class="thread-draw-fill-loop in-flight-bar"></span>
@@ -116,43 +114,6 @@
     flex-direction: column;
     gap: var(--space-2xs);
     align-items: flex-start;
-  }
-
-  /* primary Button look (redesign brief §4), hand-rolled — see file doc
-     comment for why this can't just compose `Button`. */
-  .submit-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
-    font-weight: 600;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .submit-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .submit-button:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  .submit-button:not(:disabled):active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  .submit-button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
   }
 
   /* thread-draw for the bootstrap in-flight state (redesign brief §6). */

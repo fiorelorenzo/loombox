@@ -15,25 +15,31 @@
    * escrows it (both are `OnboardingGate.svelte`'s job) — it only renders
    * `code` and reports the moment the user has confirmed they saved it.
    *
-   * Restyle (redesign brief §4/§6, issue #430): the visible card composes
-   * the real `Card` primitive (`elevation="floating"`, since this is the
-   * one thing the whole onboarding screen exists to make the user look at)
-   * nested inside a plain, unstyled wrapper that keeps this component's own
-   * `recovery-code-card` test id — `Card` hardcodes its own `data-testid`,
-   * so it can't carry a caller-chosen one directly (see that component's
-   * doc comment). The Continue button is hand-rolled to match `Button`'s
-   * `primary` look 1:1 rather than importing it, since the existing test
-   * queries a fixed `recovery-code-continue` id `Button` can't take. A busy
-   * escrow round trip additionally gets a `thread-draw-fill-loop` sweep
-   * under the button — the brief's "thread-draw for the escrow/pairing
-   * in-flight state" (§6) — on top of the existing `WovenLoader` label.
-   * The escrow-failure message composes the real `ErrorNotice` primitive
-   * (no id constraint on it from the existing test).
+   * Deck migration (redesign v2 design spec, issue #473): the visible card
+   * composes the real `Card` primitive (`elevation="floating"`, since this
+   * is the one thing the whole onboarding screen exists to make the user
+   * look at) nested inside a plain, unstyled wrapper that keeps this
+   * component's own `recovery-code-card` test id — `Card` hardcodes its own
+   * `data-testid`, so it can't carry a caller-chosen one directly (see that
+   * component's doc comment). The copy affordance now reuses the shared
+   * `CopyButton` (rather than a second hand-rolled copy control) — its
+   * accessible name is what the test queries via `getByRole` now, since
+   * `CopyButton` doesn't take a `data-testid` override (unlike `Button`/
+   * `IconButton`, issue #479), the same convention `MessageItem.svelte`
+   * already established for composing it. Continue now composes the real
+   * `Button` primitive via its `dataTestId` override so the existing
+   * `recovery-code-continue` test id survives the move — `Button`'s own
+   * `loading` state supplies the busy `WovenLoader` inline with the label
+   * text. A busy escrow round trip additionally keeps a
+   * `thread-draw-fill-loop` sweep under the button — the brief's
+   * "thread-draw for the escrow/pairing in-flight state" (§6). The
+   * escrow-failure message composes the real `ErrorNotice` primitive (no id
+   * constraint on it from the existing test).
    */
-  import { copyToClipboard } from '$lib/copy';
-  import WovenLoader from './WovenLoader.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Button from './ui/Button.svelte';
+  import CopyButton from './CopyButton.svelte';
 
   interface Props {
     /** The Recovery Code to display, already formatted for display (`@loombox/crypto`'s `generateRecoveryCode`, dash-grouped). */
@@ -44,24 +50,13 @@
     busy?: boolean;
     /** An escrow/continue failure to surface, if any. */
     error?: string;
-    /** Injectable for tests; defaults to the real clipboard write. */
+    /** Injectable for tests; forwarded to `CopyButton`'s own `copyFn` — defaults to the real clipboard write. */
     copyFn?: (text: string) => Promise<void>;
   }
 
-  const { code, onConfirmed, busy = false, error, copyFn = copyToClipboard }: Props = $props();
+  const { code, onConfirmed, busy = false, error, copyFn }: Props = $props();
 
   let confirmed = $state(false);
-  let copied = $state(false);
-  let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
-
-  async function handleCopy(): Promise<void> {
-    await copyFn(code);
-    copied = true;
-    clearTimeout(copyResetTimer);
-    copyResetTimer = setTimeout(() => {
-      copied = false;
-    }, 1500);
-  }
 
   function handleContinue(): void {
     if (!confirmed || busy) return;
@@ -78,14 +73,7 @@
 
     <div class="code-row">
       <code class="code font-mono" data-testid="recovery-code-value">{code}</code>
-      <button
-        type="button"
-        class="copy-button"
-        onclick={handleCopy}
-        data-testid="recovery-code-copy"
-      >
-        {copied ? 'Copied' : 'Copy'}
-      </button>
+      <CopyButton text={code} label="Copy Recovery Code" {copyFn} />
     </div>
 
     <label class="confirm-row">
@@ -102,20 +90,16 @@
     {/if}
 
     <div class="continue-row">
-      <button
+      <Button
         type="button"
-        class="continue-button"
-        disabled={!confirmed || busy}
+        variant="primary"
+        loading={busy}
+        disabled={!confirmed}
         onclick={handleContinue}
-        data-testid="recovery-code-continue"
+        dataTestId="recovery-code-continue"
       >
-        {#if busy}
-          <WovenLoader label="Securing your account" />
-          Securing your account…
-        {:else}
-          Continue
-        {/if}
-      </button>
+        {busy ? 'Securing your account…' : 'Continue'}
+      </Button>
       {#if busy}
         <span class="in-flight-track" aria-hidden="true">
           <span class="thread-draw-fill-loop in-flight-bar"></span>
@@ -165,31 +149,6 @@
     user-select: all;
   }
 
-  .copy-button {
-    flex-shrink: 0;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-primary);
-    padding: var(--space-sm) var(--space-md);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .copy-button:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  .copy-button:active {
-    transform: scale(0.98);
-  }
-
-  .copy-button:focus-visible,
-  .continue-button:focus-visible,
   .confirm-row input:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
@@ -214,38 +173,6 @@
     flex-direction: column;
     gap: var(--space-2xs);
     align-items: flex-start;
-  }
-
-  /* primary Button look (redesign brief §4), hand-rolled — see file doc
-     comment for why this can't just compose `Button`. */
-  .continue-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
-    font-weight: 600;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .continue-button:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  .continue-button:not(:disabled):active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  .continue-button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
   }
 
   /* thread-draw for the escrow in-flight state (redesign brief §6): a

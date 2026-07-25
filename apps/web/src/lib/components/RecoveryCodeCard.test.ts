@@ -39,7 +39,7 @@ describe('RecoveryCodeCard (issue #384)', () => {
     const copyFn = vi.fn().mockResolvedValue(undefined);
     render(RecoveryCodeCard, { props: { code: CODE, onConfirmed: vi.fn(), copyFn } });
 
-    await fireEvent.click(screen.getByTestId('recovery-code-copy'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy Recovery Code' }));
     expect(copyFn).toHaveBeenCalledWith(CODE);
   });
 

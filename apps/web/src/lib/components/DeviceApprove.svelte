@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import WovenLoader from './WovenLoader.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import StatusDot from './ui/StatusDot.svelte';
+  import Button from './ui/Button.svelte';
 
   /**
    * The device-authorization approval card (issue #387's `/device` route):
@@ -14,15 +14,18 @@
    * thus owns `busy`/`outcome`, so this stays trivially testable without a
    * relay.
    *
-   * Restyle (redesign brief §4/§6, issue #430): Approve/Deny are hand-rolled
-   * to match `Button`'s `primary`/`secondary` look 1:1 (the existing test
-   * queries fixed `device-approve-submit`/`device-deny-submit` ids `Button`
-   * can't take), Approve gets a `thread-draw-fill-loop` sweep while busy —
+   * Deck migration (redesign v2 design spec, issue #473): Approve/Deny now
+   * compose the real `Button` primitive (`primary`/`secondary`) via its
+   * `dataTestId` override (issue #479) so the existing
+   * `device-approve-submit`/`device-deny-submit` test ids survive the move
+   * — `Button`'s own `loading` state supplies the busy `WovenLoader` inline
+   * with the label text, so this file no longer renders one by hand.
+   * Approve additionally keeps a `thread-draw-fill-loop` sweep while busy —
    * this component IS the pairing surface the brief's "thread-draw for the
-   * escrow/pairing in-flight state" (§6) names directly — the error
-   * surfaces via the real `ErrorNotice` primitive, and the terminal
-   * approved/denied states lead with a `StatusDot` (success/danger) per the
-   * brief's "StatusDot for state."
+   * escrow/pairing in-flight state" names directly — the error surfaces via
+   * the real `ErrorNotice` primitive, and the terminal approved/denied
+   * states lead with a `StatusDot` (success/danger) per the brief's
+   * "StatusDot for state."
    */
   interface Props {
     /** Pre-filled from `?user_code=`, if the node's `verification_uri_complete` was followed; still editable. */
@@ -94,28 +97,24 @@
       <ErrorNotice message={error} />
     {/if}
     <div class="device-approve-actions">
-      <button
+      <Button
         type="submit"
-        class="approve-button"
-        disabled={userCode.trim() === '' || busy}
-        data-testid="device-approve-submit"
+        variant="primary"
+        loading={busy}
+        disabled={userCode.trim() === ''}
+        dataTestId="device-approve-submit"
       >
-        {#if busy}
-          <WovenLoader label="Linking" />
-          Linking…
-        {:else}
-          Approve
-        {/if}
-      </button>
-      <button
+        {busy ? 'Linking…' : 'Approve'}
+      </Button>
+      <Button
         type="button"
-        class="deny-button"
+        variant="secondary"
         disabled={userCode.trim() === '' || busy}
         onclick={handleDeny}
-        data-testid="device-deny-submit"
+        dataTestId="device-deny-submit"
       >
         Deny
-      </button>
+      </Button>
     </div>
     {#if busy}
       <span class="in-flight-track" aria-hidden="true">
@@ -158,72 +157,6 @@
   .device-approve-actions {
     display: flex;
     gap: var(--space-sm);
-  }
-
-  /* primary Button look (redesign brief §4), hand-rolled — see file doc
-     comment for why this can't just compose `Button`. */
-  .approve-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-xs);
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
-    font-weight: 600;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .approve-button:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  .approve-button:not(:disabled):active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  /* secondary Button look (redesign brief §4). */
-  .deny-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-primary);
-    padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
-    font-weight: 600;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .deny-button:not(:disabled):hover {
-    background: var(--color-fill-subtle);
-  }
-
-  .deny-button:not(:disabled):active {
-    background: var(--color-fill);
-    transform: scale(0.98);
-  }
-
-  .approve-button:focus-visible,
-  .deny-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .approve-button:disabled,
-  .deny-button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
   }
 
   /* thread-draw for the pairing in-flight state (redesign brief §6): this
