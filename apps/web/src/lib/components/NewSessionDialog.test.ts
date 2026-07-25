@@ -15,6 +15,10 @@ function fakeClient(overrides: Partial<NewSessionClient> = {}): NewSessionClient
   return {
     listTargets: vi.fn().mockResolvedValue(TARGETS),
     createSession: vi.fn().mockResolvedValue('sess_new_1'),
+    // DirectoryPicker's data source (issue #474) — defaults to an empty ok
+    // listing so tests that never touch the picker beyond typing a manual
+    // path (`fillRequiredFields`) don't need their own stub.
+    browseDirectory: vi.fn().mockResolvedValue({ outcome: 'ok', path: '', entries: [] }),
     ...overrides,
   };
 }

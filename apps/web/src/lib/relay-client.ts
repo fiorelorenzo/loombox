@@ -1,11 +1,13 @@
 import type { webcrypto } from 'node:crypto';
 import { derived, get, writable, type Readable, type Writable } from 'svelte/store';
 import {
+  deriveKeyTree,
   deriveSessionKey,
   encryptEnvelope,
   envelopeToWire,
   exportPublicKeyRaw,
   generateEcdhKeyPair,
+  importAesGcmKey,
   openJson,
   packWrappedAmkForWire,
   sealJson,
@@ -52,6 +54,9 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionUpdateEnvelopeV1,
+  type TargetFsListRequestPayloadV1,
+  type TargetFsListResponse,
+  type TargetFsListResponsePayloadV1,
   type TargetList,
   type TargetListEntry,
   type TerminalClosed,
@@ -369,6 +374,32 @@ function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   const unique = hasRandomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
   return `${prefix}_${unique}`;
+}
+
+/**
+ * Derives one target's symmetric key from the account's AMK (SPEC §7.25's
+ * directory picker; issue #474) — the crypto boundary `browseDirectory`/
+ * `handleTargetFsListResponse` seal/open under, NOT `deriveSessionKey`'s
+ * session-derived key, since there is no session yet when browsing a
+ * target. Path: `['target', accountId, targetId]`, namespaced under its own
+ * `'target'` segment exactly like `deriveSessionKey`'s `'session'` segment
+ * (`packages/crypto/src/session-keys.ts`'s doc comment), so it can never
+ * collide with a session key even for the same account.
+ *
+ * Lives here rather than in `@loombox/crypto` (unlike `deriveSessionKey`)
+ * because this issue's scope doesn't touch that package — duplicated
+ * verbatim in `packages/node/src/node-daemon.ts`'s own `deriveTargetKey` so
+ * both sides derive the identical key from the same already-exported
+ * `deriveKeyTree`/`importAesGcmKey` primitives (see that copy's doc comment
+ * for the same reasoning).
+ */
+async function deriveTargetKey(
+  amk: Uint8Array,
+  accountId: string,
+  targetId: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
+  return importAesGcmKey(node.key);
 }
 
 /**
@@ -713,6 +744,8 @@ export class RelayClient {
   /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
   private readonly inboxTrackedSessions = new Set<string>();
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
+  /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per client instance, same caching shape as {@link sessionKeys}. */
+  private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -762,6 +795,24 @@ export class RelayClient {
     {
       onProgress?: (progress: ProvisionProgress) => void;
       resolve: (result: ProvisionTargetResult) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /**
+   * requestId -> the pending {@link browseDirectory} call it belongs to
+   * (SPEC §7.25's directory picker; issue #474). Like
+   * {@link pendingTargetListRequests} this resolves a `Promise` directly
+   * (one caller, one answer — the picker calls it again for every path the
+   * user navigates to, rather than a reactive stream), but unlike
+   * `target_list`, `target_fs_list_response` DOES carry a sealed envelope
+   * (SPEC §8's boundary: a directory listing is private metadata), so the
+   * entry also carries `targetId` for {@link getTargetKey}'s decrypt.
+   */
+  private readonly pendingTargetFsListRequests = new Map<
+    string,
+    {
+      targetId: string;
+      resolve: (payload: TargetFsListResponsePayloadV1) => void;
       reject: (error: Error) => void;
     }
   >();
@@ -984,6 +1035,70 @@ export class RelayClient {
         targetId: options.targetId,
         host: options.host,
       });
+    });
+  }
+
+  /**
+   * Lists a directory on `targetId`'s filesystem, before any session exists
+   * there (SPEC §7.25's directory picker; issue #474) — `DirectoryPicker.svelte`'s
+   * data source for both a local and a remote (`ssh:`) target, replacing
+   * `NewSessionDialog`'s bare `projectPath` text input. Unlike
+   * `fileTreeFor`/`expandDirectory`'s reactive per-session file tree (which
+   * needs an existing session's project root to bound against), this is a
+   * one-shot promise query exactly like {@link listTargets}/
+   * {@link provisionTarget}: the picker calls it again for every path the
+   * user navigates to. Sealed under a per-target key derived from the AMK
+   * (`getTargetKey`), NOT the session-derived key `fileTreeFor`/
+   * `expandDirectory` use — there is no session yet to derive from (mirrors
+   * `@loombox/protocol`'s `target-fs.ts` doc comment). Requires an open
+   * connection and rejects on a timeout, mirroring `listTargets`'s "loud
+   * rejection over a silently dropped request".
+   */
+  browseDirectory(
+    options: { nodeId: string; targetId: string; path: string },
+    timeoutMs = 10_000,
+  ): Promise<TargetFsListResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot browse a directory, no open connection'),
+      );
+    }
+    const { nodeId, targetId, path } = options;
+    const requestId = generateId('dirlist');
+    return new Promise<TargetFsListResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTargetFsListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for target_fs_list_response'));
+      }, timeoutMs);
+      this.pendingTargetFsListRequests.set(requestId, {
+        targetId,
+        resolve: (payload) => {
+          clearTimeout(timer);
+          resolve(payload);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: TargetFsListRequestPayloadV1 = { path };
+      this.getTargetKey(targetId)
+        .then((key) => sealJson(targetId, payload, key))
+        .then((envelope) => {
+          this.send({
+            type: 'target_fs_list_request',
+            protocolVersion: PROTOCOL_V1,
+            nodeId,
+            targetId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingTargetFsListRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
     });
   }
 
@@ -2142,6 +2257,9 @@ export class RelayClient {
       case 'target_list':
         this.handleTargetList(message);
         return;
+      case 'target_fs_list_response':
+        this.handleTargetFsListResponse(message);
+        return;
       case 'provision_progress':
         this.handleProvisionProgress(message);
         return;
@@ -2293,6 +2411,28 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link browseDirectory}
+   * calls (issue #474). Unlike `fs_list_response` (fanned out to every
+   * client subscribed to a session), this answers a single client's own
+   * request — the same "requestId not pending means it isn't mine" guard as
+   * {@link handleTargetList}. Decrypts under the request's own per-target key
+   * (`getTargetKey`), not the session key `handleFsListResponse` uses.
+   */
+  private handleTargetFsListResponse(message: TargetFsListResponse): void {
+    const pending = this.pendingTargetFsListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingTargetFsListRequests.delete(message.requestId);
+    this.getTargetKey(pending.targetId)
+      .then((key) =>
+        openJson<TargetFsListResponsePayloadV1>(pending.targetId, message.envelope, key),
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   /** One step of an in-flight `provisionTarget()` call streamed back (issue #408) — kept in the pending map (not deleted) since more steps/the final result follow. */
@@ -2492,6 +2632,16 @@ export class RelayClient {
     if (!key) {
       key = deriveSessionKey(this.amk, this.accountId, sessionId);
       this.sessionKeys.set(sessionId, key);
+    }
+    return key;
+  }
+
+  /** Same caching shape as {@link getSessionKey}, for {@link targetKeys} (issue #474's directory picker). */
+  private getTargetKey(targetId: string): Promise<CryptoKey> {
+    let key = this.targetKeys.get(targetId);
+    if (!key) {
+      key = deriveTargetKey(this.amk, this.accountId, targetId);
+      this.targetKeys.set(targetId, key);
     }
     return key;
   }

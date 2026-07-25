@@ -229,6 +229,15 @@ export interface CreateRelayOptions {
    * expiry-then-reuse assertions fast, exactly like `leaseTtlMs` above.
    */
   provisionRequestTtlMs?: number;
+  /**
+   * How long a `target_fs_list_request`'s per-requestId routing entry (#474
+   * — see the `pendingTargetFsListRequests` doc comment below) survives
+   * without a `target_fs_list_response`, before the relay drops it on its
+   * own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS}; tests lower it to keep
+   * expiry-then-reuse assertions fast, exactly like `provisionRequestTtlMs`.
+   */
+  targetFsListRequestTtlMs?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -245,6 +254,8 @@ export const DEFAULT_LEASE_TTL_MS = 30_000;
 export const DEFAULT_MAX_LEASE_TTL_MS = 5 * 60_000;
 /** Sane default for {@link CreateRelayOptions.provisionRequestTtlMs} — 10 minutes, generous because the underlying provision-and-pair sequence (runtime bootstrap + package installs over SSH, #400) can genuinely take a while; this only guards against a genuinely abandoned/crashed run leaking its routing entry forever (#410). */
 export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
+/** Sane default for {@link CreateRelayOptions.targetFsListRequestTtlMs} — 30s, generous for a slow `ssh:` directory listing; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#474), not normal picker latency. */
+export const DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS = 30_000;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -298,6 +309,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
   const pushSender = opts.push ? (opts.push.sender ?? createWebPushSender()) : undefined;
   const provisionRequestTtlMs = opts.provisionRequestTtlMs ?? DEFAULT_PROVISION_REQUEST_TTL_MS;
+  const targetFsListRequestTtlMs =
+    opts.targetFsListRequestTtlMs ?? DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -327,9 +340,37 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     pendingProvisionRequests.delete(requestId);
   }
 
+  /**
+   * #474: routes a node's `target_fs_list_response` back to the client whose
+   * `target_fs_list_request` this requestId belongs to — the directory
+   * picker's own small in-memory routing table, exactly like
+   * `pendingProvisionRequests` above and for the same reason (there is no
+   * `sessionId` to fan this out through; a target can be browsed before any
+   * session exists on it). Populated in the `target_fs_list_request` handler
+   * below, consumed in the `target_fs_list_response` handler, and cleaned up
+   * in exactly three places so it never leaks: the response itself, the
+   * requesting client's own disconnect (`dropConnection`), and the TTL timer
+   * set here (`targetFsListRequestTtlMs`). Never persisted — purely routing
+   * metadata for a request currently in flight.
+   */
+  const pendingTargetFsListRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingTargetFsListRequest(requestId: string): void {
+    const pending = pendingTargetFsListRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingTargetFsListRequests.delete(requestId);
+  }
+
   app.addHook('onClose', async () => {
     for (const requestId of [...pendingProvisionRequests.keys()]) {
       clearPendingProvisionRequest(requestId);
+    }
+    for (const requestId of [...pendingTargetFsListRequests.keys()]) {
+      clearPendingTargetFsListRequest(requestId);
     }
     await fanOutBackend.close();
   });
@@ -1030,6 +1071,27 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingProvisionRequest(message.requestId);
         return;
       }
+      case 'target_fs_list_response': {
+        // #474's directory picker: a single-shot reply, delivered directly
+        // to the requesting client and then retired — via the same
+        // per-requestId routing table `target_fs_list_request` populates
+        // below, exactly like `provision_target_result` above (there is no
+        // session to fan this out through, unlike `fs_list_response`).
+        // Account-scoped the same way: a requestId whose owning client
+        // belongs to a different account than this replying node is treated
+        // the same as an unknown requestId.
+        const pending = pendingTargetFsListRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: target_fs_list_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingTargetFsListRequest(message.requestId);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -1150,6 +1212,41 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           pendingProvisionRequests.delete(message.requestId);
         }, provisionRequestTtlMs);
         pendingProvisionRequests.set(message.requestId, { clientConnection: connection, timeout });
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'target_fs_list_request': {
+        // #474's directory picker: routed directly by `nodeId`, scoped to
+        // the requester's account, exactly like `provision_target_request`
+        // above — there is no existing session to resolve the owning node
+        // through (`routeToOwningNode`'s `sessionId` lookup), since browsing
+        // a target's filesystem to pick a `projectPath` can happen before
+        // any session exists on it (`@loombox/protocol`'s `target-fs.ts`
+        // doc comment). The reply is a single `target_fs_list_response`
+        // (never a stream of progress like provisioning's), so its routing
+        // entry is populated here and retired in exactly the same three
+        // places `pendingProvisionRequests` is: the response itself, this
+        // client's own disconnect (`dropConnection`), and the TTL timer.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: target_fs_list_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingTargetFsListRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: target_fs_list_request routing entry expired before a response arrived',
+          );
+          pendingTargetFsListRequests.delete(message.requestId);
+        }, targetFsListRequestTtlMs);
+        pendingTargetFsListRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
         sendDirect(nodeConnection, message);
         return;
       }
@@ -1282,6 +1379,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // rather than leave it to the TTL timer.
       for (const [requestId, pending] of pendingProvisionRequests) {
         if (pending.clientConnection === connection) clearPendingProvisionRequest(requestId);
+      }
+      // #474: same reasoning as the provisioning cleanup above — a
+      // disconnected client can never receive a still-pending
+      // target_fs_list_response.
+      for (const [requestId, pending] of pendingTargetFsListRequests) {
+        if (pending.clientConnection === connection) clearPendingTargetFsListRequest(requestId);
       }
     }
   }

@@ -33,6 +33,8 @@ import {
   type SessionUpdateEnvelopeV1,
   type TargetAnnounce,
   type TargetDescriptor,
+  type TargetFsListRequest,
+  type TargetFsListResponse,
   type TargetList,
   type TargetListRequest,
   type TargetStatus,
@@ -977,6 +979,239 @@ describe('relay v1', () => {
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
       );
+    });
+  });
+
+  describe("target_fs_list_request/target_fs_list_response (SPEC §7.25; issue #474) — the directory picker's target-scoped sibling of fs_list, routed directly by nodeId like provision_target_request", () => {
+    it("routes target_fs_list_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // Deliberately garbage "ciphertext" bytes — proves the relay forwards
+      // the envelope opaquely rather than requiring it to be decryptable.
+      const request: TargetFsListRequest = {
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker',
+        targetId: 'local',
+        requestId: 'req_dir_1',
+        envelope: fakeEnvelope('/home/lorenzo'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TargetFsListRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'nodeId', 'protocolVersion', 'requestId', 'targetId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a target_fs_list_request for an unknown node instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_nonexistent',
+        targetId: 'local',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('some-path'),
+      } satisfies TargetFsListRequest);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it('does not route target_fs_list_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_foreign',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_foreign',
+        targetId: 'local',
+        requestId: 'req_intruder',
+        envelope: fakeEnvelope('some-path'),
+      } satisfies TargetFsListRequest);
+
+      // The owner's node must not receive it; prove the relay is still
+      // alive with a benign round trip instead.
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers target_fs_list_response back to the requesting client only, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker_reply',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must never see
+      // this request's reply.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: TargetFsListRequest = {
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker_reply',
+        targetId: 'local',
+        requestId: 'req_dir_2',
+        envelope: fakeEnvelope('/home/lorenzo'),
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: TargetFsListResponse = {
+        type: 'target_fs_list_response',
+        protocolVersion: PROTOCOL_V1,
+        targetId: 'local',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('projects,README.md'),
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as TargetFsListResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'targetId', 'type'].sort(),
+      );
+
+      // The bystander never received it — prove it's still alive and its
+      // next frame is the benign one we send now, not a leaked response.
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        targetFsListRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker_ttl',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_1',
+      });
+      const request: TargetFsListRequest = {
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_dirpicker_ttl',
+        targetId: 'local',
+        requestId: 'req_dir_ttl',
+        envelope: fakeEnvelope('/home/lorenzo'),
+      };
+      send(firstClient, request);
+      await nextMessage(node);
+
+      // Never send a response — simulate an abandoned request and let it
+      // expire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_1',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const response: TargetFsListResponse = {
+        type: 'target_fs_list_response',
+        protocolVersion: PROTOCOL_V1,
+        targetId: 'local',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('projects'),
+      };
+      send(node, response);
+      const received = (await nextMessage(secondClient)) as unknown as TargetFsListResponse;
+      expect(received).toEqual(response);
+
+      // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
     });
   });
 
