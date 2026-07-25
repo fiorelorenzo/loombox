@@ -31,6 +31,8 @@ import {
   PROTOCOL_V1,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
+  type DecommissionResultV1,
+  type DecommissionTargetRequest,
   type FileEventPayloadV1,
   type FsListRequest,
   type FsListRequestPayloadV1,
@@ -47,6 +49,8 @@ import {
   type TargetFsListRequestPayloadV1,
   type TargetFsListResponsePayloadV1,
   type TargetResourceSample,
+  type TargetUpdateRequest,
+  type TargetVersionStatusV1,
   type TerminalClose,
   type TerminalClosedPayloadV1,
   type TerminalClosedReasonV1,
@@ -70,6 +74,7 @@ import { sampleLocalResources, sampleRemoteResources } from './resource-sampler'
 import { SameFolderGuard } from './same-folder-guard';
 import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
+import { decommissionSshTarget } from './ssh/decommission';
 import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
 import { TargetHealthSampler } from './target-health-sampler';
@@ -82,7 +87,10 @@ import { SessionLeaseManager } from './ssh/session-lease';
 import { supportsShellChannel } from './ssh/shell-transport';
 import { shellChannelToPty } from './ssh/ssh-pty-adapter';
 import { Ssh2Transport } from './ssh/ssh2-transport';
+import type { SupervisorArtifactSource } from './ssh/supervisor-artifact';
+import { TargetUpdateMonitor } from './ssh/target-update-monitor';
 import { SshTransportPool } from './ssh/ssh-transport-pool';
+import { SshTargetStore } from './ssh/verify-and-persist';
 import type { ReconnectingTransportOptions } from './ssh/reconnecting-transport';
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -267,6 +275,35 @@ export interface NodeDaemonOptions {
   sshDiscoveryOptions?: DiscoverSshTargetsOptions;
   /** Injectable for tests; defaults to the real `discoverSshTargets`. */
   discoverSshTargetsImpl?: typeof discoverSshTargets;
+  /**
+   * Where a `decommission_target_request` (Remove, or the teardown half of
+   * Edit — redesign v2 §3.3; issue #476) persists a target's removal.
+   * Defaults to a fresh `SshTargetStore({ stateDir })`, exactly like
+   * `mcpConfigStore`/`mcpSecretManager`'s own default-construction
+   * convention above.
+   */
+  sshTargetStore?: SshTargetStore;
+  /**
+   * Configures the "Update" action (redesign v2 §3.3; issue #476):
+   * `TargetUpdateMonitor.updateTarget`'s own `PlanSupervisorProvisioningOptions`
+   * inputs, minus `targetVersion` (the monitor supplies that itself from
+   * `pinnedVersion`). Left `undefined` by default — no real
+   * `SupervisorArtifactSource` exists yet in this codebase
+   * (`./ssh/supervisor-artifact.ts`'s own doc comment: "a real fetch
+   * implementation is a follow-up"), so a `target_update_request` against a
+   * node with none configured replies `ok: false` with an explanatory
+   * message rather than pretending to update anything real. Tests inject a
+   * fake `artifactSource` to exercise the real update path.
+   */
+  targetUpdate?: {
+    /** This node's pinned supervisor version — every target this node updates is brought to exactly this version. */
+    pinnedVersion: string;
+    artifactSource: SupervisorArtifactSource;
+    /** This node's pinned Ed25519 public key (raw 32 bytes), checked against every fetched artifact before it's staged. */
+    publicKey: Uint8Array;
+    /** Overrides the remote supervisor base directory; defaults to `$HOME/.loombox/supervisor` (see `supervisor-provisioning.ts`). */
+    baseDir?: string;
+  };
 }
 
 export interface CreateNodeSessionOptions {
@@ -610,6 +647,11 @@ export class NodeDaemon extends EventEmitter {
   /** Redesign v2 §3.2; issue #475 — see `NodeDaemonOptions.sshDiscoveryOptions`/`discoverSshTargetsImpl`'s doc comments. */
   private readonly sshDiscoveryOptions?: DiscoverSshTargetsOptions;
   private readonly discoverSshTargetsImpl: typeof discoverSshTargets;
+  /** Redesign v2 §3.3; issue #476 — see `NodeDaemonOptions.sshTargetStore`'s doc comment. */
+  private readonly sshTargetStore: SshTargetStore;
+  /** Redesign v2 §3.3; issue #476 — see `NodeDaemonOptions.targetUpdate`'s doc comment; `undefined` until a caller configures it. */
+  private readonly targetUpdateOptions?: NodeDaemonOptions['targetUpdate'];
+  private readonly targetUpdateMonitor?: TargetUpdateMonitor;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -682,6 +724,12 @@ export class NodeDaemon extends EventEmitter {
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
+    this.sshTargetStore =
+      options.sshTargetStore ?? new SshTargetStore({ stateDir: options.stateDir });
+    this.targetUpdateOptions = options.targetUpdate;
+    this.targetUpdateMonitor = options.targetUpdate
+      ? new TargetUpdateMonitor({ pinnedVersion: options.targetUpdate.pinnedVersion })
+      : undefined;
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -1419,7 +1467,14 @@ export class NodeDaemon extends EventEmitter {
   private sendTargetStatus(): void {
     if (!this._connected) return;
     const samples: TargetResourceSample[] = [];
+    // Issue #476: a decommissioned target's last reading lingers in the
+    // sampler's own `latest` map (`removeProbe`'s doc comment: it only stops
+    // future sampling, on purpose) — filtered out here so a removed target
+    // never resurfaces in `target_status` after `forgetSshTarget` has
+    // already dropped it from `this.targets`.
+    const stillOwned = new Set(this.targets.map((target) => target.id));
     for (const [targetId, sample] of this.targetHealthSampler.snapshot()) {
+      if (!stillOwned.has(targetId)) continue;
       samples.push({ targetId, ...sample });
     }
     if (samples.length === 0) return;
@@ -1550,6 +1605,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'ssh_discovery_request':
         this.handleSshDiscoveryRequest(message);
+        return;
+      case 'decommission_target_request':
+        this.handleDecommissionTargetRequest(message);
+        return;
+      case 'target_update_request':
+        this.handleTargetUpdateRequest(message);
         return;
       case 'terminal_open':
         this.handleTerminalOpen(message);
@@ -2031,6 +2092,181 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       nodeId: this.nodeId,
       result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to decommission one of its own
+   * `ssh:` targets — Remove, or the teardown half of Edit (redesign v2
+   * §3.3; issue #476): `./ssh/decommission.ts`'s already-tested
+   * `decommissionSshTarget`, over this target's pooled transport. Always
+   * replies — `ok: true` with the step summary, or `ok: false` with an
+   * explanatory message for an unknown target, the `local` target (nothing
+   * to decommission), or a genuine failure (an unreachable transport, a
+   * failed remote command) — exactly like `handleSshDiscoveryRequest`'s own
+   * "never a silent hang" contract. On success this node also forgets the
+   * target itself (see {@link forgetSshTarget}).
+   */
+  private handleDecommissionTargetRequest(message: DecommissionTargetRequest): void {
+    const target = this.targets.find((candidate) => candidate.id === message.targetId);
+    if (!target) {
+      this.sendDecommissionTargetResponse(message, {
+        ok: false,
+        message: `unknown target "${message.targetId}"`,
+      });
+      return;
+    }
+    if (target.kind === 'local') {
+      this.sendDecommissionTargetResponse(message, {
+        ok: false,
+        message: 'the local target cannot be decommissioned',
+      });
+      return;
+    }
+
+    this.getSshTransport(message.targetId)
+      .then((transport) =>
+        decommissionSshTarget(transport, this.sshTargetStore, {
+          targetId: message.targetId,
+          removeFiles: message.removeFiles,
+        }),
+      )
+      .then((result) => {
+        this.forgetSshTarget(message.targetId);
+        this.sendDecommissionTargetResponse(message, {
+          ok: true,
+          result: {
+            unitWasInstalled: result.unitWasInstalled,
+            unitStopped: result.unitStopped,
+            unitDisabled: result.unitDisabled,
+            deviceKeyRevoked: result.deviceKeyRevoked,
+            filesRemoved: result.filesRemoved,
+          },
+          message: `decommissioned "${message.targetId}"`,
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendDecommissionTargetResponse(message, { ok: false, message: detail });
+      });
+  }
+
+  private sendDecommissionTargetResponse(
+    message: DecommissionTargetRequest,
+    outcome:
+      { ok: true; result: DecommissionResultV1; message: string } | { ok: false; message: string },
+  ): void {
+    this.relay.send({
+      type: 'decommission_target_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      nodeId: this.nodeId,
+      targetId: message.targetId,
+      ...outcome,
+    });
+  }
+
+  /**
+   * Fully forgets `targetId` right after a successful decommission (issue
+   * #476): drops it from every in-memory index this node keeps
+   * (`sshTargetConfigs`, `sshExecutionTargets`, `remoteRunners`, the health
+   * sampler's probe), closes its pooled transport, removes it from
+   * `this.targets`, and re-announces the now-smaller target list — the
+   * wire-level counterpart to `decommission.ts`'s own doc comment: "the
+   * target genuinely no longer appears as usable the instant this returns."
+   */
+  private forgetSshTarget(targetId: string): void {
+    const index = this.targets.findIndex((candidate) => candidate.id === targetId);
+    if (index !== -1) this.targets.splice(index, 1);
+    this.sshTargetConfigs.delete(targetId);
+    this.sshExecutionTargets.delete(targetId);
+    this.remoteRunners.delete(targetId);
+    this.targetHealthSampler.removeProbe(targetId);
+    this.sshTransportPool.close(targetId).catch(() => {});
+    this.sendTargetAnnounce();
+  }
+
+  /**
+   * A client asked (via the relay) this node to run the "Update" one-tap
+   * action against one of its own `ssh:` targets (redesign v2 §3.3; issue
+   * #476) — `TargetUpdateMonitor.updateTarget`'s wire-level counterpart,
+   * over this target's pooled transport. Always replies, exactly like
+   * {@link handleDecommissionTargetRequest}. Requires
+   * `NodeDaemonOptions.targetUpdate` to be configured (see that option's own
+   * doc comment for why none is wired in by default yet); without it,
+   * replies `ok: false` rather than pretending to update anything real.
+   */
+  private handleTargetUpdateRequest(message: TargetUpdateRequest): void {
+    const target = this.targets.find((candidate) => candidate.id === message.targetId);
+    if (!target) {
+      this.sendTargetUpdateResponse(message, {
+        ok: false,
+        message: `unknown target "${message.targetId}"`,
+      });
+      return;
+    }
+    if (target.kind === 'local') {
+      this.sendTargetUpdateResponse(message, {
+        ok: false,
+        message: 'the local target has no supervisor version to update',
+      });
+      return;
+    }
+    const updateOptions = this.targetUpdateOptions;
+    const monitor = this.targetUpdateMonitor;
+    if (!updateOptions || !monitor) {
+      this.sendTargetUpdateResponse(message, {
+        ok: false,
+        message: 'target updates are not configured on this node',
+      });
+      return;
+    }
+
+    this.getSshTransport(message.targetId)
+      .then((transport) =>
+        monitor.updateTarget(message.targetId, transport, {
+          artifactSource: updateOptions.artifactSource,
+          publicKey: updateOptions.publicKey,
+          baseDir: updateOptions.baseDir,
+        }),
+      )
+      .then((result) => {
+        const handshake = monitor.statusFor(message.targetId);
+        this.sendTargetUpdateResponse(message, {
+          ok: result.ok,
+          status: handshake?.status,
+          remoteVersion: handshake?.remoteVersion,
+          installedVersion: result.installedVersion,
+          message:
+            result.error ??
+            (result.installedVersion
+              ? `"${message.targetId}" is now at ${result.installedVersion}`
+              : `"${message.targetId}": ${result.action}`),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendTargetUpdateResponse(message, { ok: false, message: detail });
+      });
+  }
+
+  private sendTargetUpdateResponse(
+    message: TargetUpdateRequest,
+    outcome: {
+      ok: boolean;
+      status?: TargetVersionStatusV1;
+      remoteVersion?: string;
+      installedVersion?: string;
+      message: string;
+    },
+  ): void {
+    this.relay.send({
+      type: 'target_update_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      nodeId: this.nodeId,
+      targetId: message.targetId,
+      ...outcome,
     });
   }
 

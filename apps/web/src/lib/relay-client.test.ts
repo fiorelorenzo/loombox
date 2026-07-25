@@ -2750,6 +2750,215 @@ describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate 
   });
 });
 
+describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 connection management; issue #476)', () => {
+  it('decommissionTarget sends a plain decommission_target_request and resolves with the ok result, no envelope', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-connmgmt-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-connmgmt-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-connmgmt-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const decommissionPromise = client.decommissionTarget({
+      nodeId: 'node_1',
+      targetId: 'ssh:devbox',
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'decommission_target_request')) as {
+      type: 'decommission_target_request';
+      nodeId: string;
+      targetId: string;
+      requestId: string;
+    };
+    expect(request.nodeId).toBe('node_1');
+    expect(request.targetId).toBe('ssh:devbox');
+    expect(Object.keys(request).sort()).toEqual(
+      ['nodeId', 'protocolVersion', 'requestId', 'targetId', 'type'].sort(),
+    );
+
+    node.send({
+      type: 'decommission_target_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      targetId: 'ssh:devbox',
+      requestId: request.requestId,
+      ok: true,
+      result: {
+        unitWasInstalled: true,
+        unitStopped: true,
+        unitDisabled: true,
+        deviceKeyRevoked: true,
+        filesRemoved: false,
+      },
+      message: 'decommissioned "ssh:devbox"',
+    });
+
+    const response = await decommissionPromise;
+    expect(response.ok).toBe(true);
+    expect(response.result).toEqual({
+      unitWasInstalled: true,
+      unitStopped: true,
+      unitDisabled: true,
+      deviceKeyRevoked: true,
+      filesRemoved: false,
+    });
+  });
+
+  it('decommissionTarget resolves with ok: false rather than rejecting, when the node reports a failure', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-connmgmt-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-connmgmt-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_2',
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-connmgmt-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const decommissionPromise = client.decommissionTarget({
+      nodeId: 'node_2',
+      targetId: 'ssh:unreachable',
+    });
+    const request = (await node.waitFor((m) => m.type === 'decommission_target_request')) as {
+      requestId: string;
+    };
+    node.send({
+      type: 'decommission_target_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_2',
+      targetId: 'ssh:unreachable',
+      requestId: request.requestId,
+      ok: false,
+      message: 'connect ECONNREFUSED',
+    });
+
+    const response = await decommissionPromise;
+    expect(response.ok).toBe(false);
+    expect(response.message).toBe('connect ECONNREFUSED');
+  });
+
+  it('decommissionTarget rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-connmgmt-no-conn',
+      deviceId: 'client-connmgmt-no-conn',
+    });
+    await expect(
+      client.decommissionTarget({ nodeId: 'node_x', targetId: 'ssh:devbox' }),
+    ).rejects.toThrow(/no open connection/);
+  });
+
+  it('updateTarget sends a plain target_update_request and resolves with the status/version fields, no envelope', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-connmgmt-3';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-connmgmt-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_3',
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-connmgmt-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const updatePromise = client.updateTarget({ nodeId: 'node_3', targetId: 'ssh:devbox' });
+
+    const request = (await node.waitFor((m) => m.type === 'target_update_request')) as {
+      type: 'target_update_request';
+      nodeId: string;
+      targetId: string;
+      requestId: string;
+    };
+    expect(request.nodeId).toBe('node_3');
+    expect(request.targetId).toBe('ssh:devbox');
+    expect(Object.keys(request).sort()).toEqual(
+      ['nodeId', 'protocolVersion', 'requestId', 'targetId', 'type'].sort(),
+    );
+
+    node.send({
+      type: 'target_update_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_3',
+      targetId: 'ssh:devbox',
+      requestId: request.requestId,
+      ok: true,
+      status: 'current',
+      remoteVersion: '2.0.0',
+      installedVersion: '2.0.0',
+      message: '"ssh:devbox" is now at 2.0.0',
+    });
+
+    const response = await updatePromise;
+    expect(response.ok).toBe(true);
+    expect(response.status).toBe('current');
+    expect(response.installedVersion).toBe('2.0.0');
+  });
+
+  it('updateTarget rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-connmgmt-update-no-conn',
+      deviceId: 'client-connmgmt-update-no-conn',
+    });
+    await expect(client.updateTarget({ nodeId: 'node_x', targetId: 'ssh:devbox' })).rejects.toThrow(
+      /no open connection/,
+    );
+  });
+});
+
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
   it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
     const amk = generateAmk();

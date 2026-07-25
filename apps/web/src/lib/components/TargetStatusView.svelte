@@ -48,14 +48,51 @@
    * neutral `no-data` state, which has none in the set — the dot alone
    * still carries it). Every remaining literal color/spacing/radius value
    * in this file's own styles is now a token.
+   *
+   * Connection management (redesign v2 §3.3; issue #476): each row gains
+   * Reconnect/Update/Remove/Edit actions through `ui/Button` — entirely
+   * additive behind the new optional `client` prop, so a caller that never
+   * passes one (every existing call site, until a follow-up wires it) keeps
+   * today's exact read-only view. Reconnect has no wire message of its own
+   * (an `ssh:` target's transport already auto-reconnects on next use); it
+   * just re-runs `onRefresh` for a fresh reachable/health read. Update and
+   * Remove call `client.updateTarget`/`decommissionTarget`; Remove requires
+   * an explicit confirm step first. Edit reuses `AddTargetWizard` itself
+   * (100% of the same tested add-target machinery) rather than a second
+   * form, opened in its `editing` mode — see that component's own doc
+   * comment for what "prefilled from the target being edited" honestly
+   * means given `TargetListEntry` never carries a target's connection
+   * recipe (SPEC §8's crypto boundary).
    */
-  import type { TargetHealth, TargetListEntry } from '$lib/relay-client';
+  import type {
+    DecommissionTargetResponse,
+    TargetHealth,
+    TargetListEntry,
+    TargetUpdateResponse,
+  } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Button from './ui/Button.svelte';
   import { Icon, type IconName } from './icons';
+  import AddTargetWizard, {
+    type AddTargetClient,
+    type EditingTarget,
+  } from './AddTargetWizard.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+
+  /** `TargetStatusView`'s own action surface on top of `AddTargetWizard`'s add/edit contract (issue #476) — `decommissionTarget`/`updateTarget` are required here (unlike `AddTargetClient`'s optional `decommissionTarget`), since every action this view offers besides Edit needs them the moment a `client` is passed at all. */
+  export interface TargetActionsClient extends AddTargetClient {
+    decommissionTarget: (
+      options: { nodeId: string; targetId: string; removeFiles?: boolean },
+      timeoutMs?: number,
+    ) => Promise<DecommissionTargetResponse>;
+    updateTarget: (
+      options: { nodeId: string; targetId: string },
+      timeoutMs?: number,
+    ) => Promise<TargetUpdateResponse>;
+  }
 
   export interface FocusTarget {
     nodeId: string;
@@ -71,9 +108,20 @@
     onClose: () => void;
     /** A specific node/target to highlight (issue #269's "a stalled session's view links back to this status view for its target") — e.g. `+page.svelte` sets this from the session row the user clicked through from. */
     focusTarget?: FocusTarget;
+    /** Enables the per-target Reconnect/Update/Remove/Edit actions (redesign v2 §3.3; issue #476) — omit to keep this view exactly as read-only as before. */
+    client?: TargetActionsClient;
   }
 
-  const { targets, loading, error, onRefresh, onClose, focusTarget }: Props = $props();
+  const { targets, loading, error, onRefresh, onClose, focusTarget, client }: Props = $props();
+
+  /** In-flight Update/Remove calls, keyed by {@link rowKey} — disables that row's own buttons and drives `Button`'s `loading` state without a page-wide spinner. `SvelteSet` (not a plain `Set` wrapped in `$state`, mirrors `FileTreePanel.svelte`'s own `expandedPaths`) so `.add`/`.delete` are reactive in place, no reassignment needed. */
+  const busyKeys = new SvelteSet<string>();
+  /** Rows currently showing Remove's "are you sure" confirm bar instead of its plain button, keyed by {@link rowKey}. */
+  const confirmingRemove = new SvelteSet<string>();
+  /** The last Update/Remove outcome message per row, keyed by {@link rowKey} — cleared implicitly the next time either action runs on that row. */
+  let actionMessages = $state<Record<string, string>>({});
+  let editWizardOpen = $state(false);
+  let editingTarget = $state<EditingTarget | undefined>(undefined);
 
   /** The overload threshold this view flags — deliberately not configurable at v1 (a fixed, documented figure is more legible than a per-target setting nobody has looked at yet); §7.16's own configurable per-target limits are the future consumer of this same sampling data. */
   const OVERLOAD_PERCENT = 90;
@@ -152,6 +200,85 @@
     if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s ago`;
     if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m ago`;
     return `${Math.round(ageMs / 3_600_000)}h ago`;
+  }
+
+  /**
+   * "Reconnect" (redesign v2 §3.3; issue #476): there is no reconnect wire
+   * message at all (`@loombox/protocol`'s `target-lifecycle.ts` doc comment)
+   * — an `ssh:` target's pooled transport already auto-reconnects on next
+   * use, so the one useful thing a client can do is ask for a fresh
+   * reachable/health read, exactly what the header's own Refresh button
+   * already does.
+   */
+  function reconnect(): void {
+    onRefresh();
+  }
+
+  async function runUpdate(target: TargetListEntry): Promise<void> {
+    if (!client) return;
+    const key = rowKey(target);
+    busyKeys.add(key);
+    try {
+      const response = await client.updateTarget({
+        nodeId: target.nodeId,
+        targetId: target.targetId,
+      });
+      actionMessages = { ...actionMessages, [key]: response.message };
+      if (response.ok) onRefresh();
+    } catch (error) {
+      actionMessages = {
+        ...actionMessages,
+        [key]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      busyKeys.delete(key);
+    }
+  }
+
+  function startRemove(target: TargetListEntry): void {
+    confirmingRemove.add(rowKey(target));
+  }
+
+  function cancelRemove(target: TargetListEntry): void {
+    confirmingRemove.delete(rowKey(target));
+  }
+
+  async function confirmRemove(target: TargetListEntry): Promise<void> {
+    if (!client) return;
+    const key = rowKey(target);
+    busyKeys.add(key);
+    try {
+      const response = await client.decommissionTarget({
+        nodeId: target.nodeId,
+        targetId: target.targetId,
+      });
+      actionMessages = { ...actionMessages, [key]: response.message };
+      if (response.ok) onRefresh();
+    } catch (error) {
+      actionMessages = {
+        ...actionMessages,
+        [key]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      busyKeys.delete(key);
+      confirmingRemove.delete(key);
+    }
+  }
+
+  /** Opens the embedded `AddTargetWizard` in Edit mode (issue #476) — see that component's own doc comment for what "prefilled" means here. */
+  function openEdit(target: TargetListEntry): void {
+    editingTarget = { nodeId: target.nodeId, targetId: target.targetId, label: target.label };
+    editWizardOpen = true;
+  }
+
+  function closeEditWizard(): void {
+    editWizardOpen = false;
+    editingTarget = undefined;
+  }
+
+  /** The edit's replacement target is now paired — refresh so the list reflects the swap (the old target is already gone from a prior `decommissionTarget` call inside the wizard itself). */
+  function handleEditProvisioned(): void {
+    onRefresh();
   }
 </script>
 
@@ -253,12 +380,97 @@
             {:else}
               <p class="no-data">No data yet.</p>
             {/if}
+
+            {#if client}
+              <div class="target-actions" data-testid="target-actions">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onclick={reconnect}
+                  dataTestId={`target-action-reconnect-${rowKey(target)}`}
+                >
+                  Reconnect
+                </Button>
+                {#if target.kind === 'ssh'}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={busyKeys.has(rowKey(target))}
+                    disabled={busyKeys.has(rowKey(target))}
+                    onclick={() => runUpdate(target)}
+                    dataTestId={`target-action-update-${rowKey(target)}`}
+                  >
+                    Update
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busyKeys.has(rowKey(target))}
+                    onclick={() => openEdit(target)}
+                    dataTestId={`target-action-edit-${rowKey(target)}`}
+                  >
+                    Edit
+                  </Button>
+                  {#if confirmingRemove.has(rowKey(target))}
+                    <span
+                      class="remove-confirm"
+                      data-testid={`target-action-remove-confirmbar-${rowKey(target)}`}
+                    >
+                      Remove this target?
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busyKeys.has(rowKey(target))}
+                        onclick={() => cancelRemove(target)}
+                        dataTestId={`target-action-remove-cancel-${rowKey(target)}`}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        loading={busyKeys.has(rowKey(target))}
+                        onclick={() => confirmRemove(target)}
+                        dataTestId={`target-action-remove-confirm-${rowKey(target)}`}
+                      >
+                        Remove
+                      </Button>
+                    </span>
+                  {:else}
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      disabled={busyKeys.has(rowKey(target))}
+                      onclick={() => startRemove(target)}
+                      dataTestId={`target-action-remove-${rowKey(target)}`}
+                    >
+                      Remove
+                    </Button>
+                  {/if}
+                {/if}
+              </div>
+              {#if actionMessages[rowKey(target)]}
+                <p class="action-message" data-testid={`target-action-message-${rowKey(target)}`}>
+                  {actionMessages[rowKey(target)]}
+                </p>
+              {/if}
+            {/if}
           </div>
         </li>
       {/each}
     </ul>
   {/if}
 </section>
+
+{#if client}
+  <AddTargetWizard
+    open={editWizardOpen}
+    {client}
+    editing={editingTarget}
+    onClose={closeEditWizard}
+    onProvisioned={handleEditProvisioned}
+  />
+{/if}
 
 <style>
   .target-status-view {
@@ -462,5 +674,28 @@
     align-self: flex-end;
     font-size: var(--text-small-size);
     opacity: 0.6;
+  }
+
+  /* Connection management actions (redesign v2 §3.3; issue #476). */
+  .target-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+    margin-top: var(--space-2xs);
+  }
+
+  .remove-confirm {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .action-message {
+    margin: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
   }
 </style>

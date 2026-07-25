@@ -247,6 +247,26 @@ export interface CreateRelayOptions {
    * expiry-then-reuse assertions fast, exactly like `targetFsListRequestTtlMs`.
    */
   sshDiscoveryRequestTtlMs?: number;
+  /**
+   * How long a `decommission_target_request`'s per-requestId routing entry
+   * (#476 — see the `pendingDecommissionTargetRequests` doc comment below)
+   * survives without a `decommission_target_response`, before the relay
+   * drops it on its own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS}; tests lower it to
+   * keep expiry-then-reuse assertions fast, exactly like
+   * `sshDiscoveryRequestTtlMs`.
+   */
+  decommissionTargetRequestTtlMs?: number;
+  /**
+   * How long a `target_update_request`'s per-requestId routing entry (#476
+   * — see the `pendingTargetUpdateRequests` doc comment below) survives
+   * without a `target_update_response`, before the relay drops it on its
+   * own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS}; tests lower it to keep
+   * expiry-then-reuse assertions fast, exactly like
+   * `decommissionTargetRequestTtlMs`.
+   */
+  targetUpdateRequestTtlMs?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -267,6 +287,10 @@ export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
 export const DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS = 30_000;
 /** Sane default for {@link CreateRelayOptions.sshDiscoveryRequestTtlMs} — 15s, generous for `~/.ssh/config` parsing + an ssh-agent probe on the acting node; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#475), not normal discovery latency. */
 export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
+/** Sane default for {@link CreateRelayOptions.decommissionTargetRequestTtlMs} — 60s, generous for the systemd stop/disable + optional file cleanup `decommissionSshTarget` runs over `ssh:`; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal decommission latency. */
+export const DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS = 60_000;
+/** Sane default for {@link CreateRelayOptions.targetUpdateRequestTtlMs} — 5 minutes, generous because the underlying update re-runs supervisor provisioning (fetch + verify + stage an artifact over `ssh:`, #87); this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal update latency. */
+export const DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS = 5 * 60_000;
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -324,6 +348,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     opts.targetFsListRequestTtlMs ?? DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS;
   const sshDiscoveryRequestTtlMs =
     opts.sshDiscoveryRequestTtlMs ?? DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS;
+  const decommissionTargetRequestTtlMs =
+    opts.decommissionTargetRequestTtlMs ?? DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS;
+  const targetUpdateRequestTtlMs =
+    opts.targetUpdateRequestTtlMs ?? DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -404,6 +432,55 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     pendingSshDiscoveryRequests.delete(requestId);
   }
 
+  /**
+   * #476: routes a node's `decommission_target_response` back to the client
+   * whose `decommission_target_request` this requestId belongs to —
+   * `TargetStatusView`'s Remove/Edit actions' own small in-memory routing
+   * table, exactly like `pendingSshDiscoveryRequests` above and for the same
+   * reason (a single-shot reply with no `sessionId` to fan it out through).
+   * Populated in the `decommission_target_request` handler below, consumed
+   * in the `decommission_target_response` handler, and cleaned up in exactly
+   * three places so it never leaks: the response itself, the requesting
+   * client's own disconnect (`dropConnection`), and the TTL timer set here
+   * (`decommissionTargetRequestTtlMs`). Never persisted — purely routing
+   * metadata for a request currently in flight.
+   */
+  const pendingDecommissionTargetRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingDecommissionTargetRequest(requestId: string): void {
+    const pending = pendingDecommissionTargetRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingDecommissionTargetRequests.delete(requestId);
+  }
+
+  /**
+   * #476: routes a node's `target_update_response` back to the client whose
+   * `target_update_request` this requestId belongs to — `TargetStatusView`'s
+   * Update action's own small in-memory routing table, exactly like
+   * `pendingDecommissionTargetRequests` above and for the same reason.
+   * Populated in the `target_update_request` handler below, consumed in the
+   * `target_update_response` handler, and cleaned up in exactly three places
+   * so it never leaks: the response itself, the requesting client's own
+   * disconnect (`dropConnection`), and the TTL timer set here
+   * (`targetUpdateRequestTtlMs`). Never persisted — purely routing metadata
+   * for a request currently in flight.
+   */
+  const pendingTargetUpdateRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingTargetUpdateRequest(requestId: string): void {
+    const pending = pendingTargetUpdateRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingTargetUpdateRequests.delete(requestId);
+  }
+
   app.addHook('onClose', async () => {
     for (const requestId of [...pendingProvisionRequests.keys()]) {
       clearPendingProvisionRequest(requestId);
@@ -413,6 +490,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     for (const requestId of [...pendingSshDiscoveryRequests.keys()]) {
       clearPendingSshDiscoveryRequest(requestId);
+    }
+    for (const requestId of [...pendingDecommissionTargetRequests.keys()]) {
+      clearPendingDecommissionTargetRequest(requestId);
+    }
+    for (const requestId of [...pendingTargetUpdateRequests.keys()]) {
+      clearPendingTargetUpdateRequest(requestId);
     }
     await fanOutBackend.close();
   });
@@ -1154,6 +1237,41 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingSshDiscoveryRequest(message.requestId);
         return;
       }
+      case 'decommission_target_response': {
+        // #476's Remove/Edit actions: a single-shot reply, delivered
+        // directly to the requesting client and then retired — via the
+        // same per-requestId routing table `decommission_target_request`
+        // populates below, exactly like `ssh_discovery_response` above.
+        // Account-scoped the same way: a requestId whose owning client
+        // belongs to a different account than this replying node is
+        // treated the same as an unknown requestId.
+        const pending = pendingDecommissionTargetRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: decommission_target_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingDecommissionTargetRequest(message.requestId);
+        return;
+      }
+      case 'target_update_response': {
+        // #476's Update action: same single-shot reply/routing-table shape
+        // as `decommission_target_response` above.
+        const pending = pendingTargetUpdateRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: target_update_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingTargetUpdateRequest(message.requestId);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -1345,6 +1463,65 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(nodeConnection, message);
         return;
       }
+      case 'decommission_target_request': {
+        // #476's Remove/Edit actions: routed directly by `nodeId`, scoped to
+        // the requester's account, exactly like `ssh_discovery_request`
+        // above — the target already exists, but there is no session to
+        // resolve the owning node through either, so this is addressed
+        // directly the same way. The reply is a single
+        // `decommission_target_response`, so its routing entry is populated
+        // here and retired in exactly the same three places
+        // `pendingSshDiscoveryRequests` is: the response itself, this
+        // client's own disconnect (`dropConnection`), and the TTL timer.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: decommission_target_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingDecommissionTargetRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: decommission_target_request routing entry expired before a response arrived',
+          );
+          pendingDecommissionTargetRequests.delete(message.requestId);
+        }, decommissionTargetRequestTtlMs);
+        pendingDecommissionTargetRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'target_update_request': {
+        // #476's Update action: same direct-by-`nodeId` routing shape as
+        // `decommission_target_request` above.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: target_update_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingTargetUpdateRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: target_update_request routing entry expired before a response arrived',
+          );
+          pendingTargetUpdateRequests.delete(message.requestId);
+        }, targetUpdateRequestTtlMs);
+        pendingTargetUpdateRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
       case 'prompt_inject':
       case 'permission_response':
       case 'config_option':
@@ -1485,6 +1662,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // client can never receive a still-pending ssh_discovery_response.
       for (const [requestId, pending] of pendingSshDiscoveryRequests) {
         if (pending.clientConnection === connection) clearPendingSshDiscoveryRequest(requestId);
+      }
+      // #476: same reasoning as the cleanups above — a disconnected client
+      // can never receive a still-pending decommission_target_response.
+      for (const [requestId, pending] of pendingDecommissionTargetRequests) {
+        if (pending.clientConnection === connection) {
+          clearPendingDecommissionTargetRequest(requestId);
+        }
+      }
+      // #476: same reasoning — a disconnected client can never receive a
+      // still-pending target_update_response.
+      for (const [requestId, pending] of pendingTargetUpdateRequests) {
+        if (pending.clientConnection === connection) clearPendingTargetUpdateRequest(requestId);
       }
     }
   }

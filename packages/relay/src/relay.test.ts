@@ -33,6 +33,10 @@ import {
   type SessionUpdateEnvelopeV1,
   type SshDiscoveryRequest,
   type SshDiscoveryResponse,
+  type DecommissionTargetRequest,
+  type DecommissionTargetResponse,
+  type TargetUpdateRequest,
+  type TargetUpdateResponse,
   type TargetAnnounce,
   type TargetDescriptor,
   type TargetFsListRequest,
@@ -1439,6 +1443,432 @@ describe('relay v1', () => {
       expect(received).toEqual(response);
 
       // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
+    });
+  });
+
+  describe('decommission_target_request/decommission_target_response (redesign v2 §3.3 Remove/Edit; issue #476) — routed directly by nodeId like provision_target_request/ssh_discovery_request, plain fields (no envelope)', () => {
+    it("routes decommission_target_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: DecommissionTargetRequest = {
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission',
+        targetId: 'ssh:devbox',
+        requestId: 'req_decommission_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as DecommissionTargetRequest;
+      expect(received).toEqual(request);
+    });
+
+    it('ignores a decommission_target_request for an unknown node instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_nonexistent',
+        targetId: 'ssh:devbox',
+        requestId: 'req_decommission_orphan',
+      } satisfies DecommissionTargetRequest);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it('does not route decommission_target_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_foreign',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_foreign',
+        targetId: 'ssh:devbox',
+        requestId: 'req_decommission_intruder',
+      } satisfies DecommissionTargetRequest);
+
+      // The owner's node must not receive it; prove the relay is still
+      // alive with a benign round trip instead.
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers decommission_target_response back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_reply',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must never see
+      // this request's reply.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: DecommissionTargetRequest = {
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_reply',
+        targetId: 'ssh:devbox',
+        requestId: 'req_decommission_2',
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: DecommissionTargetResponse = {
+        type: 'decommission_target_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_reply',
+        targetId: 'ssh:devbox',
+        requestId: request.requestId,
+        ok: true,
+        result: {
+          unitWasInstalled: true,
+          unitStopped: true,
+          unitDisabled: true,
+          deviceKeyRevoked: true,
+          filesRemoved: false,
+        },
+        message: 'decommissioned "ssh:devbox"',
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as DecommissionTargetResponse;
+      expect(received).toEqual(response);
+
+      // The bystander never received it — prove it's still alive and its
+      // next frame is the benign one we send now, not a leaked response.
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        decommissionTargetRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_ttl',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_1',
+      });
+      const request: DecommissionTargetRequest = {
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_ttl',
+        targetId: 'ssh:devbox',
+        requestId: 'req_decommission_ttl',
+      };
+      send(firstClient, request);
+      await nextMessage(node);
+
+      // Never send a response — simulate an abandoned request and let it
+      // expire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_1',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const response: DecommissionTargetResponse = {
+        type: 'decommission_target_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_decommission_ttl',
+        targetId: 'ssh:devbox',
+        requestId: request.requestId,
+        ok: false,
+        message: 'unknown target "ssh:devbox"',
+      };
+      send(node, response);
+      const received = (await nextMessage(secondClient)) as unknown as DecommissionTargetResponse;
+      expect(received).toEqual(response);
+
+      // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
+    });
+  });
+
+  describe('target_update_request/target_update_response (redesign v2 §3.3 Update; issue #476) — same direct-by-nodeId routing shape as decommission_target_request', () => {
+    it("routes target_update_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: TargetUpdateRequest = {
+        type: 'target_update_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update',
+        targetId: 'ssh:devbox',
+        requestId: 'req_update_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TargetUpdateRequest;
+      expect(received).toEqual(request);
+    });
+
+    it('does not route target_update_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_foreign',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'target_update_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_foreign',
+        targetId: 'ssh:devbox',
+        requestId: 'req_update_intruder',
+      } satisfies TargetUpdateRequest);
+
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers target_update_response back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_reply',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: TargetUpdateRequest = {
+        type: 'target_update_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_reply',
+        targetId: 'ssh:devbox',
+        requestId: 'req_update_2',
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: TargetUpdateResponse = {
+        type: 'target_update_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_reply',
+        targetId: 'ssh:devbox',
+        requestId: request.requestId,
+        ok: true,
+        status: 'current',
+        remoteVersion: '2.0.0',
+        installedVersion: '2.0.0',
+        message: '"ssh:devbox" is now at 2.0.0',
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as TargetUpdateResponse;
+      expect(received).toEqual(response);
+
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        targetUpdateRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_ttl',
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_1',
+      });
+      const request: TargetUpdateRequest = {
+        type: 'target_update_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_ttl',
+        targetId: 'ssh:devbox',
+        requestId: 'req_update_ttl',
+      };
+      send(firstClient, request);
+      await nextMessage(node);
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_1',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const response: TargetUpdateResponse = {
+        type: 'target_update_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_update_ttl',
+        targetId: 'ssh:devbox',
+        requestId: request.requestId,
+        ok: false,
+        message: 'target updates are not configured on this node',
+      };
+      send(node, response);
+      const received = (await nextMessage(secondClient)) as unknown as TargetUpdateResponse;
+      expect(received).toEqual(response);
+
       send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
       const firstClientNext = await nextMessage(firstClient);
       expect(firstClientNext.type).toBe('session_list');

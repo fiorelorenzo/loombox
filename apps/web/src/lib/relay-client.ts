@@ -39,6 +39,7 @@ import {
   initializeResult,
   newDeviceBootstrapResponse,
   safeParseWireMessageV1,
+  type DecommissionTargetResponse,
   type EncryptedEnvelope,
   type FsEntryV1,
   type FsListRequestPayloadV1,
@@ -61,6 +62,7 @@ import {
   type TargetFsListResponsePayloadV1,
   type TargetList,
   type TargetListEntry,
+  type TargetUpdateResponse,
   type TerminalClosed,
   type TerminalClosedPayloadV1,
   type TerminalDataPayloadV1,
@@ -93,6 +95,12 @@ export type {
   SshAgentInfoV1,
   SshDiscoveryResultV1,
   SshHostCandidateV1,
+} from '@loombox/protocol';
+export type {
+  DecommissionResultV1,
+  DecommissionTargetResponse,
+  TargetUpdateResponse,
+  TargetVersionStatusV1,
 } from '@loombox/protocol';
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -836,6 +844,27 @@ export class RelayClient {
     string,
     { resolve: (result: SshDiscoveryResultV1) => void; reject: (error: Error) => void }
   >();
+  /**
+   * requestId -> the pending {@link decommissionTarget} call it belongs to
+   * (redesign v2 §3.3's Remove/Edit actions; issue #476).
+   * `decommission_target_response` carries plain fields only (no envelope —
+   * see `@loombox/protocol`'s `target-lifecycle.ts` doc comment), so like
+   * {@link pendingSshDiscoveryRequests} this resolves a `Promise` directly,
+   * no decrypt step needed.
+   */
+  private readonly pendingDecommissionTargetRequests = new Map<
+    string,
+    { resolve: (response: DecommissionTargetResponse) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link updateTarget} call it belongs to
+   * (redesign v2 §3.3's Update action; issue #476) — same shape as
+   * {@link pendingDecommissionTargetRequests} and for the same reason.
+   */
+  private readonly pendingTargetUpdateRequests = new Map<
+    string,
+    { resolve: (response: TargetUpdateResponse) => void; reject: (error: Error) => void }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socket: WebSocketLike | undefined;
@@ -1034,6 +1063,100 @@ export class RelayClient {
         type: 'ssh_discovery_request',
         protocolVersion: PROTOCOL_V1,
         nodeId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to decommission one of its own `ssh:` targets — Remove, or
+   * the teardown half of Edit (redesign v2 §3.3; issue #476):
+   * `decommissionSshTarget`'s wire-level counterpart. `removeFiles` mirrors
+   * `DecommissionOptions.removeFiles`'s own default of `false` — omit it to
+   * only stop/disable the remote unit and revoke the target, opt in to also
+   * clean up its staged files.
+   *
+   * Routing metadata only, same boundary as `discoverSshHosts`/`listTargets`:
+   * nothing here is encrypted — which systemd steps ran and whether files
+   * were removed is no more sensitive than `provisionTargetResult`'s own
+   * step-outcome fields. Resolves with the response whether it succeeded or
+   * failed (check `.ok`); only REJECTS for a genuinely unusable call: no
+   * open connection, or a timeout with no response at all.
+   */
+  decommissionTarget(
+    options: { nodeId: string; targetId: string; removeFiles?: boolean },
+    timeoutMs = 30_000,
+  ): Promise<DecommissionTargetResponse> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot decommission a target, no open connection'),
+      );
+    }
+    const requestId = generateId('decommission');
+    return new Promise<DecommissionTargetResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingDecommissionTargetRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for decommission_target_response'));
+      }, timeoutMs);
+      this.pendingDecommissionTargetRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'decommission_target_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: options.nodeId,
+        targetId: options.targetId,
+        requestId,
+        ...(options.removeFiles !== undefined ? { removeFiles: options.removeFiles } : {}),
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to run the "Update" one-tap action against one of its own
+   * `ssh:` targets (redesign v2 §3.3; issue #476) —
+   * `TargetUpdateMonitor.updateTarget`'s wire-level counterpart. Same
+   * routing-metadata-only boundary and "resolves either way, rejects only
+   * when genuinely unusable" contract as {@link decommissionTarget}; a
+   * longer default timeout since a real update re-runs supervisor
+   * provisioning (fetch + verify + stage an artifact over `ssh:`), not a
+   * quick metadata query.
+   */
+  updateTarget(
+    options: { nodeId: string; targetId: string },
+    timeoutMs = 300_000,
+  ): Promise<TargetUpdateResponse> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot update a target, no open connection'));
+    }
+    const requestId = generateId('targetupdate');
+    return new Promise<TargetUpdateResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTargetUpdateRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for target_update_response'));
+      }, timeoutMs);
+      this.pendingTargetUpdateRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'target_update_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: options.nodeId,
+        targetId: options.targetId,
         requestId,
       });
     });
@@ -2339,6 +2462,12 @@ export class RelayClient {
       case 'ssh_discovery_response':
         this.handleSshDiscoveryResponse(message);
         return;
+      case 'decommission_target_response':
+        this.handleDecommissionTargetResponse(message);
+        return;
+      case 'target_update_response':
+        this.handleTargetUpdateResponse(message);
+        return;
       default:
         return;
     }
@@ -2533,6 +2662,30 @@ export class RelayClient {
     if (!pending) return;
     this.pendingSshDiscoveryRequests.delete(message.requestId);
     pending.resolve(message.result);
+  }
+
+  /**
+   * The acting node's reply to one of this client's own {@link decommissionTarget}
+   * calls (issue #476) — same "requestId not pending means it isn't mine"
+   * guard as {@link handleSshDiscoveryResponse}, no decrypt step (plain
+   * fields, no envelope).
+   */
+  private handleDecommissionTargetResponse(message: DecommissionTargetResponse): void {
+    const pending = this.pendingDecommissionTargetRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingDecommissionTargetRequests.delete(message.requestId);
+    pending.resolve(message);
+  }
+
+  /**
+   * The acting node's reply to one of this client's own {@link updateTarget}
+   * calls (issue #476) — same shape as {@link handleDecommissionTargetResponse}.
+   */
+  private handleTargetUpdateResponse(message: TargetUpdateResponse): void {
+    const pending = this.pendingTargetUpdateRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingTargetUpdateRequests.delete(message.requestId);
+    pending.resolve(message);
   }
 
   /** Seals `{ path }` and sends the `fs_list_request` (SPEC §7.4; issue #171), tracking it in {@link pendingFsListRequests} so the eventual `fs_list_response` can be told apart from a sibling device's own request for the same session. */

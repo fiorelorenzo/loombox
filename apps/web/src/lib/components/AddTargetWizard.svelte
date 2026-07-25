@@ -57,8 +57,22 @@
    * There is no glyph anywhere in this wizard (the step indicator is
    * label-only, `StatusDot` already covers per-status color), so
    * `ui/IconButton`/the `Icon` component have nothing to attach to here.
+   *
+   * Edit mode (redesign v2 §3.3; issue #476): `TargetStatusView`'s Edit
+   * action reuses this exact wizard rather than a second form — SPEC's
+   * "100% reuse of tested machinery" call. Passing `editing` skips straight
+   * to the manual host form (prefilled with the target's `label`; there is
+   * no `host`/`user`/`port` to prefill from, since `TargetListEntry` never
+   * carries those — SPEC §8's crypto boundary keeps a target's connection
+   * recipe off the relay's clear metadata entirely, so re-entering them is
+   * unavoidable, exactly like a fresh Add) and skips node discovery (the
+   * owning node is already known). On submit, `confirmAndProvision`
+   * decommissions the old target first, then provisions the replacement
+   * under a freshly-generated `targetId` — a brief visible gap during the
+   * swap, Lorenzo's accepted tradeoff over a true patch-in-place edit.
    */
   import type {
+    DecommissionTargetResponse,
     ProvisionProgress,
     ProvisionTargetHostInputV1,
     ProvisionTargetResult,
@@ -91,6 +105,16 @@
      * PWA case, no local filesystem access of its own).
      */
     discoverSshHosts: (nodeId: string, timeoutMs?: number) => Promise<SshDiscoveryResultV1>;
+    /**
+     * Edit mode's teardown half (redesign v2 §3.3; issue #476): decommissions
+     * the target being edited before {@link provisionTarget} provisions its
+     * replacement. Absent for a plain "Add target" call — `editing` is what
+     * gates whether this wizard ever calls it.
+     */
+    decommissionTarget?: (
+      options: { nodeId: string; targetId: string },
+      timeoutMs?: number,
+    ) => Promise<DecommissionTargetResponse>;
   }
 
   /**
@@ -120,15 +144,24 @@
       : undefined;
   }
 
+  /** The target being replaced, when this wizard is opened in Edit mode (redesign v2 §3.3; issue #476) — see this file's own doc comment for what "prefilled" honestly means here. */
+  export interface EditingTarget {
+    nodeId: string;
+    targetId: string;
+    label: string;
+  }
+
   interface Props {
     open: boolean;
     client: AddTargetClient | undefined;
     onClose: () => void;
     /** Fired once a target is successfully provisioned and paired, with its new targetId. */
     onProvisioned?: (targetId: string) => void;
+    /** Set to open this wizard in Edit mode against an existing target instead of a fresh Add. */
+    editing?: EditingTarget;
   }
 
-  const { open, client, onClose, onProvisioned }: Props = $props();
+  const { open, client, onClose, onProvisioned, editing }: Props = $props();
 
   type WizardStep = 'pick-host' | 'review' | 'progress' | 'done';
 
@@ -170,10 +203,22 @@
 
   // Re-fetches (and resets the whole wizard) every time it actually opens,
   // or once `client` becomes available while already open — mirrors
-  // `NewSessionDialog.svelte`'s own effect exactly.
+  // `NewSessionDialog.svelte`'s own effect exactly. Edit mode already knows
+  // its acting node (the target being edited already lives there) and isn't
+  // discovering a NEW host, so it skips `loadNodes`/candidate discovery
+  // entirely and jumps straight to the manual form, prefilled with the
+  // target's label — see this file's own doc comment for why host/user/port
+  // still start blank.
   $effect(() => {
     if (!open) return;
     resetWizard();
+    if (editing) {
+      actingNodeId = editing.nodeId;
+      label = editing.label;
+      alias = editing.label;
+      manualOverride = true;
+      return;
+    }
     if (client) void loadNodes();
   });
 
@@ -311,6 +356,19 @@
     };
 
     try {
+      // Edit = decommission-then-reprovision (redesign v2 §3.3; issue #476):
+      // tear the old target down first, using 100% of the same tested
+      // `decommissionSshTarget` machinery `TargetStatusView`'s own Remove
+      // action calls — a brief visible target gap during the swap, Lorenzo's
+      // accepted tradeoff over a true patch-in-place edit (out of scope this
+      // round). A decommission failure aborts the whole edit rather than
+      // provisioning a second, orphaned target alongside a still-live old one.
+      if (editing) {
+        if (!client.decommissionTarget) {
+          throw new Error('this client cannot decommission the target being edited');
+        }
+        await client.decommissionTarget({ nodeId: editing.nodeId, targetId: editing.targetId });
+      }
       result = await client.provisionTarget({
         nodeId: actingNodeId,
         targetId: generatedTargetId,
@@ -497,7 +555,12 @@
   {:else if step === 'review'}
     <div class="review" data-testid="add-target-review">
       <p class="confirm-text">
-        This will install a loombox node on <strong>{host}</strong> and pair it. Continue?
+        {#if editing}
+          This will remove the existing target and install a loombox node on <strong>{host}</strong> as
+          its replacement. Continue?
+        {:else}
+          This will install a loombox node on <strong>{host}</strong> and pair it. Continue?
+        {/if}
       </p>
       <ul class="review-details">
         <li><span>Host</span><span>{host}</span></li>
@@ -559,9 +622,15 @@
   {/if}
 {/snippet}
 
-<Dialog {open} label="Add target" onClose={handleClose} size="md" children={dialogBody}>
+<Dialog
+  {open}
+  label={editing ? 'Edit target' : 'Add target'}
+  onClose={handleClose}
+  size="md"
+  children={dialogBody}
+>
   {#snippet header()}
-    <h2>Add target</h2>
+    <h2>{editing ? 'Edit target' : 'Add target'}</h2>
   {/snippet}
 </Dialog>
 
