@@ -16,6 +16,15 @@
   import { onMount } from 'svelte';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
+  // Warp Deck shared UI primitives (redesign brief §4, issue #428) — see
+  // the "Components" section appended at the end of this file's markup.
+  import Button from '$lib/components/ui/Button.svelte';
+  import IconButton from '$lib/components/ui/IconButton.svelte';
+  import Card from '$lib/components/ui/Card.svelte';
+  import Dialog from '$lib/components/ui/Dialog.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
+  import StatusDot from '$lib/components/ui/StatusDot.svelte';
 
   const neutralSwatches = [
     { name: '--color-bg', label: 'Background' },
@@ -219,6 +228,13 @@
     });
     return unsubscribe;
   });
+
+  // ---------------------------------------------------------------------
+  // Components gallery (redesign brief §4, issue #428) — live state for
+  // the interactive Dialog/IconButton samples in the "Components" section
+  // appended at the end of this file's markup.
+  let componentsDialogOpen = $state(false);
+  let componentsDrawerPinned = $state(false);
 </script>
 
 <svelte:head>
@@ -526,6 +542,169 @@
       >
     </p>
   </section>
+
+  <!-- === Warp Deck: UI primitives === -->
+  <section aria-labelledby="components-heading">
+    <h2 id="components-heading">Components (redesign brief §4, issue #428)</h2>
+    <p class="motion-intro">
+      The shared <code>lib/components/ui/</code> primitive set every wave-3 surface builds on —
+      <code>Button</code>, <code>IconButton</code>, <code>Card</code>, <code>Dialog</code>,
+      <code>EmptyState</code>, <code>ErrorNotice</code>, and <code>StatusDot</code>. Existing
+      surfaces keep their current markup until their own per-surface restyle issue; this page is
+      each primitive's variant/state gallery.
+    </p>
+
+    <h3>Button</h3>
+    <div class="component-row">
+      <Button variant="primary">Primary</Button>
+      <Button variant="secondary">Secondary</Button>
+      <Button variant="ghost">Ghost</Button>
+      <Button variant="danger">Danger</Button>
+    </div>
+    <div class="component-row">
+      <Button size="sm">Small</Button>
+      <Button size="md">Medium</Button>
+      <Button disabled>Disabled</Button>
+      <Button loading>Loading</Button>
+    </div>
+
+    <h3>IconButton</h3>
+    <div class="component-row">
+      <IconButton label="Command palette">
+        <svg
+          class="icon-glyph"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <path d="M4 10h12M10 4v12" />
+        </svg>
+      </IconButton>
+      <IconButton
+        label="Pin drawer"
+        pressed={componentsDrawerPinned}
+        onclick={() => (componentsDrawerPinned = !componentsDrawerPinned)}
+      >
+        <svg
+          class="icon-glyph"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <path d="M10 3v9M6 8l4-4 4 4" />
+          <path d="M5 15h10" />
+        </svg>
+      </IconButton>
+      <IconButton label="Inbox" badge={3}>
+        <svg
+          class="icon-glyph"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <rect x="3" y="5" width="14" height="11" rx="1.5" />
+          <path d="M3 8h14" />
+        </svg>
+      </IconButton>
+      <IconButton label="Disabled action" disabled>
+        <svg
+          class="icon-glyph"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <circle cx="10" cy="10" r="6" />
+        </svg>
+      </IconButton>
+    </div>
+    <p class="motion-token-job">
+      "Pin drawer" toggles <code>aria-pressed</code> — currently {componentsDrawerPinned
+        ? 'pressed'
+        : 'not pressed'}.
+    </p>
+
+    <h3>Card — elevation ladder (issue #427)</h3>
+    <div class="component-row">
+      <Card elevation="flat" class="component-card-sample">
+        <strong>flat</strong>
+        <p>Agent message rows, generic list rows, hairline-divided rows.</p>
+      </Card>
+      <Card elevation="raised" class="component-card-sample">
+        <strong>raised</strong>
+        <p>Session rows (selected), tool-call rows, PlanCard, target cards.</p>
+      </Card>
+      <Card elevation="floating" class="component-card-sample">
+        <strong>floating</strong>
+        <p>PermissionCard, Dialog, Drawer (overlay), Command Palette.</p>
+      </Card>
+    </div>
+
+    <h3>Dialog — thread-lift entrance/exit, Esc/backdrop-click/focus-trap</h3>
+    <div class="component-row">
+      <Button variant="primary" onclick={() => (componentsDialogOpen = true)}>Open dialog</Button>
+    </div>
+    <Dialog
+      open={componentsDialogOpen}
+      label="Example dialog"
+      onClose={() => (componentsDialogOpen = false)}
+    >
+      {#snippet header()}
+        <h2>Example dialog</h2>
+      {/snippet}
+      <p>
+        Esc, a backdrop click, or the buttons below all call <code>onClose</code>. Tab cycles
+        between the two footer buttons without escaping the panel.
+      </p>
+      {#snippet footer()}
+        <Button variant="secondary" onclick={() => (componentsDialogOpen = false)}>Cancel</Button>
+        <Button variant="primary" onclick={() => (componentsDialogOpen = false)}>Confirm</Button>
+      {/snippet}
+    </Dialog>
+
+    <h3>EmptyState</h3>
+    <div class="component-row">
+      <div class="empty-state-sample">
+        <EmptyState message="No sessions yet — start one to see it here." />
+      </div>
+      <div class="empty-state-sample">
+        <EmptyState message="No targets connected yet — start a loombox node.">
+          {#snippet cta()}
+            <Button variant="primary">Add a target</Button>
+          {/snippet}
+        </EmptyState>
+      </div>
+    </div>
+
+    <h3>ErrorNotice</h3>
+    <div class="component-row component-row-stack">
+      <ErrorNotice message="This session's history failed to decrypt." />
+      <ErrorNotice message="Couldn't reach the relay." retryable onRetry={() => {}} />
+    </div>
+
+    <h3>StatusDot</h3>
+    <div class="component-row">
+      <span class="status-dot-sample"><StatusDot tone="neutral" label="Idle" /> Idle</span>
+      <span class="status-dot-sample"><StatusDot tone="info" label="Working" pulse /> Working</span>
+      <span class="status-dot-sample"
+        ><StatusDot tone="warning" label="Permission required" /> Permission required</span
+      >
+      <span class="status-dot-sample"><StatusDot tone="danger" label="Error" /> Error</span>
+      <span class="status-dot-sample"><StatusDot tone="success" label="Healthy" /> Healthy</span>
+    </div>
+  </section>
+  <!-- === /Warp Deck: UI primitives === -->
 </main>
 
 <style>
@@ -901,4 +1080,63 @@
     display: inline-block;
     opacity: 0.75;
   }
+
+  /* === Warp Deck: UI primitives (redesign brief §4, issue #428) === */
+  .component-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+  }
+
+  .component-row-stack {
+    flex-direction: column;
+    align-items: stretch;
+    max-width: 28rem;
+  }
+
+  /* `Card`'s `class` prop lands on an element inside Card's own component
+     scope, not this one — `:global()` is the standard, narrowly-scoped way
+     to reach it. `strong`/`p` below are written directly in this file's own
+     template (as Card's passed-in children), so they stay normally scoped
+     and don't need `:global()` themselves. */
+  :global(.component-card-sample) {
+    width: 14rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  :global(.component-card-sample) strong {
+    font-size: var(--text-small-size);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  :global(.component-card-sample) p {
+    margin: 0;
+    font-size: var(--text-small-size);
+    opacity: 0.75;
+  }
+
+  .empty-state-sample {
+    width: 18rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-raised);
+  }
+
+  .status-dot-sample {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--text-small-size);
+  }
+
+  .icon-glyph {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
+  /* === /Warp Deck: UI primitives === */
 </style>
