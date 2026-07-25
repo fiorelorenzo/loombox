@@ -1,79 +1,26 @@
 /*
- * loombox design tokens (issue #195, SPEC.md §4 "Visual style").
+ * loombox structural design tokens (issue #195, SPEC.md §4 "Visual style";
+ * split from the color palette by issue #458's Style-system architecture).
  *
- * Single source of truth for every color/spacing/radius/elevation/z-index
- * value the PWA draws from. Dark is the default (`:root`) because SPEC §4
- * calls this "dark-mode-first (it is a dev tool)"; light is a secondary
- * variant applied either automatically (`prefers-color-scheme: light`, for
- * a user who has never chosen) or explicitly (`[data-theme="light"]`, set
- * by `$lib/theme.ts` once a user picks a side — see that file's doc
- * comment for how the two interact).
+ * This file is now deliberately COLOR-FREE: every `--color-*` custom
+ * property (background/surface/border/text ramps, the accent "thread", and
+ * the semantic status set) moved to `styles/deck.css` (and its siblings
+ * `loom.css`/`studio.css`) — see this redesign's design spec §1 ("Token
+ * layers") and issue #458. What stays here is the "style-agnostic
+ * structural" layer every Style shares: spacing, radius, shadow, z-index,
+ * motion (duration/ease), focus-ring geometry, and breakpoints. Components
+ * still read every value through a custom property, never a hardcoded
+ * number — retuning the shared structural scale is one edit here; retuning
+ * a Style's palette is one edit in that Style's own CSS file.
  *
- * NOTE ON THE PALETTE: SPEC §4 asks for an "ink/paper monochrome base plus
- * one warm 'thread' accent (a loom-thread hue — warm coral/amber)". The
- * exact hues below are a coherent first pass, not a final brand decision —
- * every color a component draws goes through one of these custom
- * properties, so retuning the whole app is a matter of editing the values
- * in this one file, never hunting through components.
+ * Shadows keep their own dark/light variance in THIS file (not per-Style):
+ * elevation is a theme (dark/light) concern, not a Style (deck/loom/studio)
+ * one — a soft dark shadow reads right on any dark Style, a crisp light one
+ * on any light Style. `color-scheme` lives here for the same reason.
  */
 
 :root {
   color-scheme: dark;
-
-  /* ---------------------------------------------------------------- */
-  /* Neutral / surface ramp ("ink" — dark, default)                    */
-  /* ---------------------------------------------------------------- */
-  --color-bg: #0b0d10;
-  --color-surface: #14171b;
-  --color-surface-raised: #1c2025;
-  --color-overlay: rgb(6 7 9 / 72%);
-
-  /* Neutral "fill"/"border" scale: one hue (a cool slate), several
-     opacities, reused as both `background` and `border-color` across
-     components instead of each one inventing its own gray. */
-  --color-border-subtle: rgb(148 163 184 / 14%);
-  --color-border: rgb(148 163 184 / 28%);
-  --color-border-strong: rgb(148 163 184 / 46%);
-  --color-fill-subtle: rgb(148 163 184 / 10%);
-  --color-fill: rgb(148 163 184 / 20%);
-
-  /* ---------------------------------------------------------------- */
-  /* Text ramp                                                        */
-  /* ---------------------------------------------------------------- */
-  --color-text-primary: #eef0f2;
-  --color-text-secondary: #b7bcc3;
-  --color-text-muted: #80868f;
-  --color-text-inverse: #0b0d10;
-
-  /* ---------------------------------------------------------------- */
-  /* Brand accent — the "thread" (SPEC §4), used sparingly for          */
-  /* active/selected state and the woven motif. Azure is the default    */
-  /* preset (issue #376); it and the other five presets, plus a custom  */
-  /* hex, are selectable at runtime via `$lib/accent.ts`, which          */
-  /* overrides these five custom properties on `:root` — the values     */
-  /* below are only the pre-JS/no-choice-yet default, derived from      */
-  /* azure's base hex (#3b9df7) by the exact same                       */
-  /* `$lib/accent-color.ts#deriveAccentPalette` every preset and custom  */
-  /* accent goes through (hover ~8% darker, active ~14% darker, subtle   */
-  /* 16%-alpha, contrast = the AA-correct on-accent ink).                */
-  /* ---------------------------------------------------------------- */
-  --color-accent: #3b9df7;
-  --color-accent-hover: #3690e3;
-  --color-accent-active: #3387d4;
-  --color-accent-subtle: rgb(59 157 247 / 16%);
-  --color-accent-contrast: #0a0a0a;
-
-  /* ---------------------------------------------------------------- */
-  /* Semantic status                                                  */
-  /* ---------------------------------------------------------------- */
-  --color-success: #3fb27f;
-  --color-success-subtle: rgb(63 178 127 / 16%);
-  --color-warning: #e0a72e;
-  --color-warning-subtle: rgb(224 167 46 / 16%);
-  --color-danger: #e5636a;
-  --color-danger-subtle: rgb(229 99 106 / 16%);
-  --color-info: #5aa2e0;
-  --color-info-subtle: rgb(90 162 224 / 16%);
 
   /* ---------------------------------------------------------------- */
   /* Spacing scale (t-shirt sizes so the ratio, not a pixel-perfect     */
@@ -140,11 +87,12 @@
   --ease-tension: cubic-bezier(0.16, 1, 0.3, 1); /* dialogs: snap-then-ease */
   --ease-exit: cubic-bezier(0.4, 0, 1, 1); /* exits: accelerate out, never lingers */
 
-  /* Focus ring: a hairline shift, deliberately NOT the accent color — the
-     accent stays reserved for meaning (selection/active state), never
-     chrome, per the redesign brief's "accent is reserved for meaning"
-     discipline. */
-  --color-focus-ring: var(--color-border-strong);
+  /* Focus ring geometry: width/offset are structural (a plain pixel
+     measurement, shared by every Style). The ring's COLOR is not — it's
+     defined per-Style, right next to that Style's `--color-border-strong`
+     (deliberately NOT the accent color — the accent stays reserved for
+     meaning, never chrome, per the redesign brief's discipline — see each
+     Style's own CSS file). */
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
 
@@ -180,7 +128,9 @@
 }
 
 /*
- * Light variant ("paper"). Two ways in on purpose:
+ * Light variant ("paper") — shadow/color-scheme only now; the rest of what
+ * used to live here (bg/surface/border/text/accent/status) is each Style's
+ * own concern. Two ways in on purpose, same as before:
  *  - `prefers-color-scheme: light` covers a first-ever visit before any
  *    explicit choice exists (no `data-theme` attribute yet).
  *  - `[data-theme="light"]` is the explicit, persisted choice `theme.ts`
@@ -192,37 +142,6 @@
   :root:not([data-theme]) {
     color-scheme: light;
 
-    --color-bg: #f6f5f2;
-    --color-surface: #ffffff;
-    --color-surface-raised: #fffdfa;
-    --color-overlay: rgb(23 20 15 / 40%);
-
-    --color-border-subtle: rgb(71 85 105 / 8%);
-    --color-border: rgb(71 85 105 / 18%);
-    --color-border-strong: rgb(71 85 105 / 32%);
-    --color-fill-subtle: rgb(71 85 105 / 6%);
-    --color-fill: rgb(71 85 105 / 12%);
-
-    --color-text-primary: #16181b;
-    --color-text-secondary: #4a4e55;
-    --color-text-muted: #767b83;
-    --color-text-inverse: #f6f5f2;
-
-    --color-accent: #1f7fd0;
-    --color-accent-hover: #1d75bf;
-    --color-accent-active: #1b6db3;
-    --color-accent-subtle: rgb(31 127 208 / 16%);
-    --color-accent-contrast: #0a0a0a;
-
-    --color-success: #1f8a5a;
-    --color-success-subtle: rgb(31 138 90 / 12%);
-    --color-warning: #a1710f;
-    --color-warning-subtle: rgb(161 113 15 / 12%);
-    --color-danger: #c23b41;
-    --color-danger-subtle: rgb(194 59 65 / 12%);
-    --color-info: #2568a8;
-    --color-info-subtle: rgb(37 104 168 / 12%);
-
     --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
     --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);
     --shadow-lg: 0 12px 32px rgb(23 20 15 / 14%);
@@ -231,37 +150,6 @@
 
 :root[data-theme='light'] {
   color-scheme: light;
-
-  --color-bg: #f6f5f2;
-  --color-surface: #ffffff;
-  --color-surface-raised: #fffdfa;
-  --color-overlay: rgb(23 20 15 / 40%);
-
-  --color-border-subtle: rgb(71 85 105 / 8%);
-  --color-border: rgb(71 85 105 / 18%);
-  --color-border-strong: rgb(71 85 105 / 32%);
-  --color-fill-subtle: rgb(71 85 105 / 6%);
-  --color-fill: rgb(71 85 105 / 12%);
-
-  --color-text-primary: #16181b;
-  --color-text-secondary: #4a4e55;
-  --color-text-muted: #767b83;
-  --color-text-inverse: #f6f5f2;
-
-  --color-accent: #1f7fd0;
-  --color-accent-hover: #1d75bf;
-  --color-accent-active: #1b6db3;
-  --color-accent-subtle: rgb(31 127 208 / 16%);
-  --color-accent-contrast: #0a0a0a;
-
-  --color-success: #1f8a5a;
-  --color-success-subtle: rgb(31 138 90 / 12%);
-  --color-warning: #a1710f;
-  --color-warning-subtle: rgb(161 113 15 / 12%);
-  --color-danger: #c23b41;
-  --color-danger-subtle: rgb(194 59 65 / 12%);
-  --color-info: #2568a8;
-  --color-info-subtle: rgb(37 104 168 / 12%);
 
   --shadow-sm: 0 1px 2px rgb(23 20 15 / 8%);
   --shadow-md: 0 4px 12px rgb(23 20 15 / 10%);

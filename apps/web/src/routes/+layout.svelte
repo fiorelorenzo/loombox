@@ -4,8 +4,12 @@
   import { pwaInfo } from 'virtual:pwa-info';
   import { useRegisterSW } from 'virtual:pwa-register/svelte';
   import '$lib/styles/tokens.css';
+  import '$lib/styles/deck.css';
+  import '$lib/styles/loom.css';
+  import '$lib/styles/studio.css';
   import '$lib/styles/typography.css';
   import '$lib/styles/motion.css';
+  import { styleStore } from '$lib/style';
   import { themeStore } from '$lib/theme';
   import { accentStore } from '$lib/accent';
 
@@ -35,6 +39,14 @@
     useRegisterSW({ immediate: true });
   }
 
+  // The Style-system mechanism (redesign v2 design spec §1, issue #458)
+  // initializes first: it stamps the persisted (or default 'deck')
+  // `data-style` onto <html>, the attribute `deck.css`/`loom.css`/
+  // `studio.css` key their palettes off. Style, Theme, and Accent are
+  // orthogonal axes (see `$lib/style.ts`'s doc comment), so order between
+  // them doesn't matter functionally, but this mirrors the spec's own
+  // "Style × Theme × Accent" layering.
+  //
   // Design tokens' theme mechanism (issue #195): stamps the persisted (or
   // absent, i.e. "follow the system") theme preference onto <html> once,
   // client-side, before the rest of the app renders. See `$lib/theme.ts`'s
@@ -47,6 +59,7 @@
   // possibly-persisted starting value rather than the module's static
   // default).
   onMount(() => {
+    styleStore.init();
     themeStore.init();
     accentStore.init();
   });
