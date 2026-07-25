@@ -80,6 +80,27 @@ describe('AuthStore', () => {
     expect(storage.get()).toEqual(session);
   });
 
+  // Redesign v3 §3.1 / defect A2: the account menu used to render the raw
+  // `accountId` in monospace as if it were a name. It can only render a
+  // person if the session actually carries one, so these two fields are
+  // part of what a sign-in resolves — and they survive a reload.
+  it('carries the signed-in identity (name/email) on the session and through a reload', async () => {
+    const storage = createInMemoryAuthStorage();
+    const store = new AuthStore({ relayBaseUrl, storage });
+
+    const session = await store.signUpWithEmailPassword(
+      'identity@example.com',
+      'correct horse battery staple',
+    );
+
+    expect(session.email).toBe('identity@example.com');
+    expect(session.displayName).toBeTruthy();
+
+    const restored = await new AuthStore({ relayBaseUrl, storage }).restoreSession();
+    expect(restored?.email).toBe('identity@example.com');
+    expect(restored?.displayName).toBe(session.displayName);
+  });
+
   it('two different accounts resolve to two different accountIds', async () => {
     const storeA = new AuthStore({ relayBaseUrl, storage: createInMemoryAuthStorage() });
     const storeB = new AuthStore({ relayBaseUrl, storage: createInMemoryAuthStorage() });

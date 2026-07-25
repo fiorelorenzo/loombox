@@ -32,14 +32,19 @@
    * second, divergent "send" path.
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §3/§4/§6,
-   * issue #436): rows stay a quiet left-edge color stripe keyed by
-   * `data-kind` rather than a tinted background, so a long inbox stays
-   * scannable (`PermissionCard` is the one deliberate exception — it keeps
-   * its own full `floating` tier untouched, per the redesign brief's
-   * elevation ladder). The empty state adopts the shared `EmptyState`
-   * primitive; rows get a capped, staggered `beat-in` reveal. All
-   * `data-testid`s, DOM structure the tests query, and every callback
-   * contract are unchanged.
+   * issue #436): the empty state adopts the shared `EmptyState` primitive;
+   * rows get a capped, staggered `beat-in` reveal. All `data-testid`s, DOM
+   * structure the tests query, and every callback contract are unchanged.
+   *
+   * Session-row visual language (redesign v3 design spec §3.6): a row no
+   * longer carries its own uppercase `APPROVAL`-style chip and heavy
+   * left-edge accent border — it reads like a session row instead, a
+   * leading `StatusDot` plus a plain sentence-case status label, both
+   * keyed off the same `$lib/session-status.ts` tone/wording vocabulary
+   * the sidebar and command palette use (see `itemStatus` below).
+   * `PermissionCard` (rendered inline below a `'permission'` row) is the
+   * one deliberate exception — it keeps its own full `floating` elevation
+   * tier untouched, per the redesign brief's elevation ladder.
    *
    * Deck migration (redesign v2 §2 "One button language", issue #472): the
    * Open control and the reply composer's Send button now route through
@@ -59,6 +64,8 @@
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
+  import { SESSION_STATUS_LABELS, SESSION_STATUS_TONES } from '$lib/session-status';
 
   interface Props {
     items: AttentionInboxItem[];
@@ -99,19 +106,36 @@
     }
   }
 
-  /** A short, class-identifying label shown alongside `needLabel` — color (`data-kind`) alone should never be the only way to tell classes apart. */
-  function kindBadge(item: AttentionInboxItem): string {
+  /**
+   * Maps an inbox item onto the shared session-status tone/label
+   * vocabulary (`$lib/session-status.ts`) wherever it genuinely
+   * corresponds to one of `AcpSessionStatus`'s five states — the same
+   * "one wording, never re-derived" rule the sidebar and command palette
+   * follow (redesign v3 design spec §3.6). `ci_failure`/`review_request`
+   * have no live session-status equivalent yet (`AttentionInboxItem`'s own
+   * doc comment: neither has a wire producer in v1), so those two keep a
+   * short label of their own rather than claiming a status they aren't.
+   */
+  function itemStatus(item: AttentionInboxItem): { tone: StatusTone; label: string } {
     switch (item.kind) {
       case 'permission':
-        return 'Approval';
+        return {
+          tone: SESSION_STATUS_TONES.permission_required,
+          label: SESSION_STATUS_LABELS.permission_required,
+        };
       case 'awaiting_input':
-        return 'Reply';
+        return {
+          tone: SESSION_STATUS_TONES.awaiting_input,
+          label: SESSION_STATUS_LABELS.awaiting_input,
+        };
       case 'session_outcome':
-        return item.outcome === 'error' ? 'Errored' : 'Finished';
+        return item.outcome === 'error'
+          ? { tone: SESSION_STATUS_TONES.error, label: SESSION_STATUS_LABELS.error }
+          : { tone: SESSION_STATUS_TONES.exited, label: SESSION_STATUS_LABELS.exited };
       case 'ci_failure':
-        return 'CI';
+        return { tone: 'danger', label: 'CI' };
       case 'review_request':
-        return 'Review';
+        return { tone: 'info', label: 'Review' };
     }
   }
 
@@ -129,11 +153,10 @@
   {:else}
     <ul>
       {#each items as item (itemKey(item))}
+        {@const status = itemStatus(item)}
         <li class="item" data-kind={item.kind} data-testid="attention-inbox-item">
           <div class="item-header">
-            <span class="kind-badge" data-testid="attention-inbox-kind-badge"
-              >{kindBadge(item)}</span
-            >
+            <StatusDot tone={status.tone} label={status.label} />
             <Button
               variant="ghost"
               class="open"
@@ -143,8 +166,10 @@
               <strong>{item.sessionTitle}</strong>
               <small>{item.projectPath} · {item.nodeId}</small>
             </Button>
-            <span class="need" data-testid="attention-inbox-need">{needLabel(item)}</span>
+            <span class="status-label" data-testid="attention-inbox-kind-badge">{status.label}</span
+            >
           </div>
+          <p class="need" data-testid="attention-inbox-need">{needLabel(item)}</p>
           {#if item.kind === 'permission' && item.permission}
             {@const request = item.permission}
             <PermissionCard
@@ -201,10 +226,10 @@
   }
 
   /* Flat elevation tier (redesign brief §3): a list row is quiet chrome,
-     not a boxed card — a left-edge color stripe carries the per-kind
-     signal instead of a tinted background, so a long inbox stays
-     scannable. `PermissionCard` (rendered inline below) keeps its own
-     full `floating` tier untouched. */
+     not a boxed card. Session-row visual language (redesign v3 design
+     spec §3.6): the per-kind signal now lives on the leading `StatusDot`
+     alone, not a second colored border — `PermissionCard` (rendered
+     inline below) keeps its own full `floating` tier untouched. */
   .item {
     display: flex;
     flex-direction: column;
@@ -212,11 +237,8 @@
     padding: var(--space-sm) var(--space-md);
     background: var(--color-surface);
     border: 1px solid var(--color-border-subtle);
-    border-left-width: var(--space-2xs);
     border-radius: var(--radius-lg);
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat);
+    transition: background-color var(--duration-fast) var(--ease-beat);
     /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
        20ms/item, capped at 5 rows. */
     animation: beat-in var(--duration-base) var(--ease-beat) both;
@@ -254,68 +276,20 @@
     }
   }
 
-  /* Each class gets its own border-left color, in addition to the
-     text `.kind-badge` — color is never the only signal (accessibility). */
-  .item[data-kind='permission'] {
-    border-left-color: var(--color-warning);
-  }
-
-  .item[data-kind='awaiting_input'] {
-    border-left-color: var(--color-accent);
-  }
-
-  .item[data-kind='session_outcome'] {
-    border-left-color: var(--color-success);
-  }
-
-  .item[data-kind='ci_failure'] {
-    border-left-color: var(--color-danger);
-  }
-
-  .item[data-kind='review_request'] {
-    border-left-color: var(--color-info);
-  }
-
   .item-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-sm);
-    flex-wrap: wrap;
   }
 
-  .kind-badge {
+  /* Sentence-case status wording next to the leading `StatusDot` (redesign
+     v3 design spec §3.6) — color lives on the dot alone now, never
+     duplicated as a second per-kind tint on this text. */
+  .status-label {
+    flex-shrink: 0;
+    margin-left: auto;
     font-size: var(--text-small-size);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    padding: var(--space-3xs) var(--space-xs);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-full);
-    white-space: nowrap;
-    /* Text is colored to match the row's left-edge stripe (below) — a
-       quiet, still-legible reinforcement, never a filled background. */
     color: var(--color-text-secondary);
-  }
-
-  .item[data-kind='permission'] .kind-badge {
-    color: var(--color-warning);
-  }
-
-  .item[data-kind='awaiting_input'] .kind-badge {
-    color: var(--color-accent);
-  }
-
-  .item[data-kind='session_outcome'] .kind-badge {
-    color: var(--color-success);
-  }
-
-  .item[data-kind='ci_failure'] .kind-badge {
-    color: var(--color-danger);
-  }
-
-  .item[data-kind='review_request'] .kind-badge {
-    color: var(--color-info);
   }
 
   /* `:global` — the `open` class lands on `Button`'s own root `<button>`,

@@ -7,21 +7,44 @@
    * (`$lib/tool-widgets.ts`'s `resolveToolWidgetKind`), so this component
    * itself never needs to know about the bespoke tier.
    *
-   * Warp Deck restyle (docs/design/redesign.md, issue #432): adopts the
-   * elevation ladder's "raised" tier (Card's own recipe, hand-styled here
-   * rather than imported so the generic-tool-row testid this component's
-   * tests query stays on the actual root element).
+   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
+   * §3.4 "One tool-call anatomy"): `[kind icon in the gutter] title …
+   * [status]`, the same shape every tool-call widget uses now (`BashWidget`
+   * / `EditWriteWidget` / `TodoWidget`) — no visible kind chip (the old
+   * uppercase `toolKind` badge is gone; the kind lives as the gutter icon
+   * plus an `sr-only` label, same discipline as `MessageItem`'s role), and
+   * status is a `StatusDot` + short human label (`$lib/tool-widgets.ts`'s
+   * `TOOL_CALL_STATUS_TONES`/`_LABELS`) rather than the raw enum as grey
+   * body text. The row header toggles an expand/collapse of its own body
+   * (defaulting open, so replayed history reads exactly as before).
+   *
+   * `rawInput`/`content` never render as a raw `JSON.stringify` blob
+   * (defect C7 / acceptance #4): when the call has already produced
+   * `content`, that renders as preformatted text as before
+   * (`toolCallOutputText`); before it has (the common "still just an
+   * argument object" case, e.g. `read`/`search`), `rawInput` goes through
+   * `$lib/tool-widgets.ts`'s shared `classifyRawInput` — the same
+   * registry `PermissionCard` uses for its own rawInput fallback — which
+   * renders a command line, a lone path, or a formatted key/value list
+   * (keys in `--font-mono`, muted; values readable), never braces/quotes.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): every tool call that lands here (tier-2, no bespoke widget) is by
    * definition the "any other tool" case, so it always draws the shared
-   * `tool-generic` glyph — decorative, the `kind-badge` text right next to
-   * it already carries the meaning.
+   * `tool-generic` glyph — decorative, the kind is carried by the `sr-only`
+   * label right beside it.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
-  import { toolCallOutputText } from '$lib/tool-widgets';
+  import {
+    classifyRawInput,
+    toolCallOutputText,
+    TOOL_CALL_STATUS_LABELS,
+    TOOL_CALL_STATUS_TONES,
+    type RawInputRender,
+  } from '$lib/tool-widgets';
   import CopyButton from './CopyButton.svelte';
   import Icon from './icons/Icon.svelte';
+  import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -29,8 +52,27 @@
 
   const { item }: Props = $props();
 
-  const outputText = $derived(toolCallOutputText(item.content ?? item.rawInput));
-  const copyText = $derived(`${item.title ?? item.toolKind ?? item.id}\n${outputText}`.trim());
+  let expanded = $state(true);
+
+  const hasContent = $derived(item.content !== undefined);
+  const outputText = $derived(hasContent ? toolCallOutputText(item.content) : '');
+  const rawInputPreview = $derived(hasContent ? undefined : classifyRawInput(item.rawInput));
+
+  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
+  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
+
+  function rawInputCopyText(preview: RawInputRender | undefined): string {
+    if (!preview) return '';
+    if (preview.kind === 'command') return `$ ${preview.command}`;
+    if (preview.kind === 'path') return preview.path;
+    return preview.entries.map((entry) => `${entry.key}: ${entry.value}`).join('\n');
+  }
+
+  const copyText = $derived(
+    `${item.title ?? item.toolKind ?? item.id}\n${
+      hasContent ? outputText : rawInputCopyText(rawInputPreview)
+    }`.trim(),
+  );
 </script>
 
 <div
@@ -38,33 +80,77 @@
   data-tool-kind={item.toolKind ?? 'other'}
   data-testid="generic-tool-row"
 >
-  <div class="row-header">
+  <div class="gutter" aria-hidden="true">
     <Icon name="tool-generic" class="type-icon" />
-    <span class="kind-badge">{item.toolKind ?? 'other'}</span>
-    <span class="title">{item.title ?? item.id}</span>
-    {#if item.status}<span class="status">{item.status}</span>{/if}
-    <CopyButton text={copyText} label={`Copy ${item.title ?? 'tool call'} output`} />
   </div>
-  {#if outputText}
-    <pre class="output">{outputText}</pre>
-  {/if}
+  <div class="content">
+    <div class="header-line">
+      <button
+        type="button"
+        class="row-header"
+        onclick={() => (expanded = !expanded)}
+        aria-expanded={expanded}
+      >
+        <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+        <span class="sr-only">{item.toolKind ?? 'other'}</span>
+        <span class="title">{item.title ?? item.id}</span>
+        {#if statusTone && statusLabel}
+          <span class="status">
+            <StatusDot tone={statusTone} label={statusLabel} size="sm" />
+            <span class="status-label" aria-hidden="true">{statusLabel}</span>
+          </span>
+        {/if}
+      </button>
+      <div class="copy-row">
+        <CopyButton
+          text={copyText}
+          label={`Copy ${item.title ?? 'tool call'} output`}
+          revealOnHover
+        />
+      </div>
+    </div>
+    {#if expanded}
+      {#if hasContent && outputText}
+        <div class="body">
+          <pre class="output">{outputText}</pre>
+        </div>
+      {:else if !hasContent && rawInputPreview}
+        <div class="body">
+          {#if rawInputPreview.kind === 'command'}
+            <code class="command-line">$ {rawInputPreview.command}</code>
+          {:else if rawInputPreview.kind === 'path'}
+            <code class="path">{rawInputPreview.path}</code>
+          {:else}
+            <dl class="entries">
+              {#each rawInputPreview.entries as entry (entry.key)}
+                <div class="entry">
+                  <dt class="entry-key font-mono">{entry.key}</dt>
+                  <dd class="entry-value">{entry.value}</dd>
+                </div>
+              {/each}
+            </dl>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+  </div>
 </div>
 
 <style>
-  /* raised tier (elevation ladder §3). */
   .generic-tool-row {
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
-    padding: var(--space-sm) 0.7rem;
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    min-width: 0;
     font-size: var(--text-small-size);
   }
 
-  .row-header {
+  .gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
     display: flex;
-    align-items: center;
-    gap: var(--space-sm);
+    justify-content: center;
+    padding-top: var(--space-2xs);
   }
 
   :global(.type-icon) {
@@ -72,37 +158,144 @@
     color: var(--color-text-secondary);
   }
 
-  .kind-badge {
-    text-transform: uppercase;
-    font-size: 0.65rem;
-    letter-spacing: 0.03em;
-    opacity: 0.7;
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border-strong);
+  .content {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-2xs) 0;
+  }
+
+  .header-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .row-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row-header:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
     border-radius: var(--radius-sm);
-    padding: 0.05rem var(--space-2xs);
+  }
+
+  :global(.disclosure-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .row-header[aria-expanded='false'] :global(.disclosure-icon) {
+    transform: rotate(-90deg);
   }
 
   .title {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .status {
-    opacity: 0.6;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .status-label {
+    color: var(--color-text-secondary);
     font-size: var(--text-small-size);
   }
 
+  .copy-row {
+    flex-shrink: 0;
+  }
+
+  /* Copy affordances reveal on row hover/focus-within (redesign v3 §3.4
+     "Copy affordances"); see CopyButton.svelte's `revealOnHover` doc
+     comment for why this lives here rather than in the shared button. */
+  .generic-tool-row:hover :global(.copy-button-reveal),
+  .generic-tool-row:focus-within :global(.copy-button-reveal) {
+    opacity: 1;
+  }
+
+  .body {
+    margin-top: var(--space-xs);
+    min-width: 0;
+  }
+
   .output {
-    margin: var(--space-xs) 0 0;
+    margin: 0;
     padding: var(--space-xs) var(--space-sm);
     background: var(--color-fill-subtle);
     border-radius: var(--radius-md);
     overflow-x: auto;
     white-space: pre-wrap;
     font-size: var(--text-small-size);
-    font-family: var(--font-mono);
+  }
+
+  .command-line,
+  .path {
+    display: block;
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .entries {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .entry {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: baseline;
+  }
+
+  .entry-key {
+    flex: 0 0 auto;
+    min-width: 6rem;
+    margin: 0;
+    color: var(--color-text-muted);
+  }
+
+  .entry-value {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

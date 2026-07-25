@@ -54,3 +54,17 @@ describe('PlanCard', () => {
     expect(screen.queryAllByRole('listitem')).toHaveLength(0);
   });
 });
+
+describe('PlanCard: gutter alignment (redesign v3 §3.4)', () => {
+  it('sits behind a gutter spacer the same column every other transcript row uses, keeping its own card shape', () => {
+    const { container } = render(PlanCard, {
+      props: { entries, collapsed: false, onToggle: vi.fn() },
+    });
+    const gutter = container.querySelector('.plan-gutter');
+    const card = screen.getByTestId('plan-card');
+    expect(gutter).toBeTruthy();
+    // The gutter is a sibling spacer before the card, not inside it — the
+    // card keeps its existing raised shape untouched.
+    expect(gutter?.nextElementSibling).toBe(card);
+  });
+});

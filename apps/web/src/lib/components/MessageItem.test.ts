@@ -185,3 +185,34 @@ describe('MessageItem: streaming render pacing (#137)', () => {
     expect(after).toBe(before);
   });
 });
+
+describe('MessageItem: one timeline metaphor (redesign v3 §3.4)', () => {
+  it('renders a user message with the same structural shape as an agent message — a gutter plus content, never a bubble', () => {
+    render(MessageItem, { props: { item: messageItem() } });
+    const agentRoot = screen.getByTestId('message-item');
+    const agentShape = Array.from(agentRoot.children).map((el) => el.tagName);
+    const agentClasses = agentRoot.className.split(' ').filter((c) => c !== 'agent');
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    const userRoot = screen.getByTestId('message-item');
+    const userShape = Array.from(userRoot.children).map((el) => el.tagName);
+    const userClasses = userRoot.className.split(' ').filter((c) => c !== 'user');
+
+    // Identical DOM shape (gutter + content), not a right-aligned bubble
+    // for one role and a full-width card for the other.
+    expect(userShape).toEqual(agentShape);
+    expect(userRoot.querySelector('.gutter')).toBeTruthy();
+    expect(userRoot.querySelector('.content')).toBeTruthy();
+    // The only class difference between the two roots is the role modifier.
+    expect(userClasses.sort()).toEqual(agentClasses.sort());
+  });
+
+  it('never renders an uppercase USER/AGENT/THOUGHT word in the visible content flow — the role is an sr-only label', () => {
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    const content = document.querySelector('.content');
+    expect(content?.textContent ?? '').not.toMatch(/\b(USER|AGENT|THOUGHT)\b/);
+    // The sr-only role label lives in the gutter, not the content flow.
+    expect(document.querySelector('.gutter')?.textContent?.trim()).toBe('user');
+  });
+});

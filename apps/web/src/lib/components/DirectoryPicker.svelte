@@ -67,6 +67,11 @@
   let entries = $state<FsEntryV1[]>([]);
   let status = $state<LoadStatus>('idle');
   let loadError = $state<string | undefined>(undefined);
+  // Seeded from `value` ONCE, on purpose: this is the editable "go to path"
+  // field, so after mount it is the user's text, not a mirror of the prop.
+  // The component is mounted fresh each time the dialog opens, which is
+  // where a new starting `value` actually arrives.
+  // svelte-ignore state_referenced_locally
   let pathInputValue = $state(value);
   let recentPaths = $state<string[]>([]);
 

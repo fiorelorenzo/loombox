@@ -13,6 +13,18 @@ import { writable, type Readable } from 'svelte/store';
 export interface StoredAuthSession {
   token: string;
   accountId: string;
+  /**
+   * Better Auth's `user.name` and `user.email`, carried alongside the pair
+   * above purely so the UI can identify the signed-in person as a person
+   * (redesign v3 design spec §3.1 / defect A2 — the account menu used to
+   * show the raw `accountId` in monospace, truncated, as if that were a
+   * name). Optional: a session persisted by an older build has neither, and
+   * an identity provider may supply no name at all, so every consumer must
+   * fall back to `accountId`. Never load-bearing — no key derivation, no
+   * wire field, ever reads these.
+   */
+  displayName?: string;
+  email?: string;
 }
 
 /**
@@ -33,6 +45,24 @@ function isStoredAuthSession(value: unknown): value is StoredAuthSession {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.token === 'string' && typeof candidate.accountId === 'string';
+}
+
+/**
+ * Extracts the optional display fields of {@link StoredAuthSession} from a
+ * Better Auth `getSession` user, dropping empty strings so a provider that
+ * returns `name: ''` doesn't produce a blank label the UI would happily
+ * render. Spread into the session object at both construction sites.
+ */
+function identityOf(user: { name?: string | null; email?: string | null } | undefined): {
+  displayName?: string;
+  email?: string;
+} {
+  const displayName = user?.name?.trim();
+  const email = user?.email?.trim();
+  return {
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+  };
 }
 
 /** The real, `window.localStorage`-backed `AuthStorage` (browser + jsdom). */
@@ -215,7 +245,11 @@ export class AuthStore {
       return undefined;
     }
 
-    const session: StoredAuthSession = { token, accountId: userId };
+    const session: StoredAuthSession = {
+      token,
+      accountId: userId,
+      ...identityOf(data?.user),
+    };
     this.persist(session);
     return session;
   }
@@ -235,7 +269,7 @@ export class AuthStore {
     if (error || !data?.user.id) {
       throw new Error('AuthStore: could not resolve an account id for the new session');
     }
-    const session: StoredAuthSession = { token, accountId: data.user.id };
+    const session: StoredAuthSession = { token, accountId: data.user.id, ...identityOf(data.user) };
     this.persist(session);
     return session;
   }

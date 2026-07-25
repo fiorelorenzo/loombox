@@ -1,7 +1,3 @@
-// TODO(e2e session flow): fixme until the browser auth+connect+session-select
-// path (getSession via the CORS bridge, WS connect, auto-select) is debugged
-// with an interactive browser (unavailable on the headless devbox). The
-// underlying logic is covered by vitest; the pwa-shell e2e specs pass.
 import type { ConfigOption } from '@loombox/protocol';
 import { expect, sendSessionUpdate, test } from './fixtures';
 
@@ -20,7 +16,7 @@ import { expect, sendSessionUpdate, test } from './fixtures';
  * only ever carries `'permission' | 'awaiting_input'` kinds (see that
  * type's own doc comment), so #149 stays open after this spec, not closed.
  */
-test.describe.fixme('Model/mode/reasoning-effort bar (issue #149, read side)', () => {
+test.describe('Model/mode/reasoning-effort bar (issue #149, read side)', () => {
   test('renders from the negotiated config options, re-renders wholesale on an update, and emits a change', async ({
     page,
     loombox,
@@ -72,8 +68,11 @@ test.describe.fixme('Model/mode/reasoning-effort bar (issue #149, read side)', (
     await expect(page.getByTestId('config-option-mode')).toBeVisible();
     await expect(page.getByTestId('config-option-sandbox_profile')).toBeVisible();
 
-    // A user pick on a plain <select> category sends a clear config_option.
-    await page.getByTestId('config-option-model').locator('select').selectOption('haiku');
+    // A user pick on a category rendered by the shared `ui/Select`
+    // primitive (button trigger + listbox, redesign v3 §3.5) sends a
+    // clear config_option.
+    await page.getByTestId('config-option-model').getByRole('combobox').click();
+    await page.getByRole('option', { name: 'Haiku' }).click();
     const modelChange = (await loombox.node.waitFor(
       (message) => message.type === 'config_option' && message.category === 'model',
     )) as ConfigOption;
@@ -83,7 +82,7 @@ test.describe.fixme('Model/mode/reasoning-effort bar (issue #149, read side)', (
       optionId: 'haiku',
     });
 
-    // Mode renders as a segmented control (buttons), not a <select>.
+    // Mode renders as a segmented control (buttons), not a `Select`.
     await page.getByTestId('config-option-mode').getByRole('button', { name: 'Plan' }).click();
     const modeChange = (await loombox.node.waitFor(
       (message) => message.type === 'config_option' && message.category === 'mode',
@@ -104,8 +103,8 @@ test.describe.fixme('Model/mode/reasoning-effort bar (issue #149, read side)', (
         },
       ],
     });
-    await expect(page.getByTestId('config-option-model').locator('select')).toHaveValue(
-      'haiku-fallback',
+    await expect(page.getByTestId('config-option-model').getByRole('combobox')).toHaveText(
+      'Haiku (fallback)',
     );
     await expect(page.getByTestId('config-option-mode')).toHaveCount(0);
     await expect(page.getByTestId('config-option-thought_level')).toHaveCount(0);

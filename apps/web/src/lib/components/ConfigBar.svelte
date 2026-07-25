@@ -39,9 +39,23 @@
    * element. `getByRole('button', { name })` in the tests still resolves
    * the same way: `Button` renders its `children` snippet verbatim inside
    * the native `<button>`.
+   *
+   * Deck v3 restyle (redesign v3 design spec §3.5, issue #502): every
+   * category picker now renders through the shared `ui/Select` primitive
+   * instead of a native `<select>`, so the bar never mixes two visual
+   * languages again (defect `C8`) — `Select`'s own trigger reads the same
+   * `--radius-md`/`--color-border` tokens and the same `sm` size scale as
+   * the `mode` segmented control's `Button` (`ghost`, `sm`) choices, so
+   * the two control idioms share height/radius/border by construction,
+   * not by coincidence. The context/cost meter now gets its own
+   * right-aligned, bordered-off slot with the percentage as the primary
+   * figure and the cost muted beside it (previously undifferentiated grey
+   * text jammed against the controls), plus a `title` spelling out both
+   * numbers for anyone hovering.
    */
   import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core';
   import Button from './ui/Button.svelte';
+  import Select from './ui/Select.svelte';
 
   interface Props {
     options: AcpConfigOption[];
@@ -64,6 +78,16 @@
       : undefined,
   );
 
+  // Bullet 2 of the v3 Controls slice: a clear, hoverable explanation of
+  // both meter figures — the percentage is turn-scoped and subagent-free,
+  // the cost is the whole session and always includes subagent spend
+  // (see the `contextPercent` comment above).
+  const meterTitle = $derived(
+    contextPercent !== undefined
+      ? `${contextPercent}% of the context window used this turn · $${cumulativeCostUsd.toFixed(2)} spent this session`
+      : `$${cumulativeCostUsd.toFixed(2)} spent this session`,
+  );
+
   function categoryLabel(category: string): string {
     return category
       .split('_')
@@ -74,17 +98,16 @@
 
 <div class="config-bar" data-testid="config-bar">
   {#each otherOptions as option (option.category)}
-    <label class="control" data-testid={`config-option-${option.category}`}>
+    <div class="control" data-testid={`config-option-${option.category}`}>
       <span class="label">{categoryLabel(option.category)}</span>
-      <select
+      <Select
         value={option.current ?? ''}
-        onchange={(event) => onChange(option.category, (event.target as HTMLSelectElement).value)}
-      >
-        {#each option.choices as choice (choice.id)}
-          <option value={choice.id}>{choice.name}</option>
-        {/each}
-      </select>
-    </label>
+        options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
+        onChange={(optionId) => onChange(option.category, optionId)}
+        label={categoryLabel(option.category)}
+        size="sm"
+      />
+    </div>
   {/each}
 
   {#if modeOption}
@@ -102,11 +125,12 @@
     </div>
   {/if}
 
-  <div class="meter" data-testid="context-meter">
+  <div class="meter" data-testid="context-meter" title={meterTitle}>
     {#if contextPercent !== undefined}
-      <span>{contextPercent}% context</span>
+      <span class="meter-primary">{contextPercent}% context</span>
+      <span class="meter-sep" aria-hidden="true">·</span>
     {/if}
-    <span>${cumulativeCostUsd.toFixed(2)}</span>
+    <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
   </div>
 </div>
 
@@ -127,27 +151,6 @@
 
   .label {
     color: var(--color-text-secondary);
-  }
-
-  .control select {
-    background: var(--color-surface);
-    color: inherit;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    padding: var(--space-3xs) var(--space-xs);
-    font: inherit;
-    font-size: var(--text-small-size);
-    cursor: pointer;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .control select:hover {
-    border-color: var(--color-border-strong);
-  }
-
-  .control select:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .mode {
@@ -177,24 +180,35 @@
     color: var(--color-accent);
   }
 
+  /* A clear right-aligned slot (v3 §3.5): bordered off from the controls
+     rather than jammed against them, percentage as the primary figure,
+     cost muted beside it — see the `title` for the full explanation. */
   .meter {
     margin-left: auto;
     display: flex;
-    gap: var(--space-sm);
-    color: var(--color-text-secondary);
+    align-items: baseline;
+    gap: var(--space-2xs);
+    padding-left: var(--space-md);
+    border-left: 1px solid var(--color-border);
     font-family: var(--font-mono);
     font-feature-settings: var(--font-feature-tabular);
     font-size: var(--text-small-size);
+  }
+
+  .meter-primary {
+    color: var(--color-text-primary);
+    font-weight: 600;
+  }
+
+  .meter-sep,
+  .meter-cost {
+    color: var(--color-text-muted);
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same
      coarse-pointer convention `Button`/`IconButton` already use. */
   @media (pointer: coarse) {
     :global(.mode-choice) {
-      min-height: 2.75rem;
-    }
-
-    .control select {
       min-height: 2.75rem;
     }
   }

@@ -15,7 +15,6 @@
    */
   import { onMount } from 'svelte';
   import { themeStore, type ThemePreference } from '$lib/theme';
-  import { styleStore, type StylePreference } from '$lib/style';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
   // Warp Deck shared UI primitives (redesign brief §4, issue #428) — see
   // the "Components" section appended at the end of this file's markup.
@@ -31,6 +30,7 @@
     { name: '--color-bg', label: 'Background' },
     { name: '--color-surface', label: 'Surface' },
     { name: '--color-surface-raised', label: 'Surface raised' },
+    { name: '--color-rail', label: 'Rail / sidebar' },
   ];
 
   const fillBorderSwatches = [
@@ -234,28 +234,13 @@
   // reference page can be checked in both themes without leaving it.
   let themePreference = $state<ThemePreference>('system');
 
-  // The Style switcher (redesign v2 design spec §1, issue #458) — lets all
-  // three Styles (Deck built, Loom/Studio placeholders mirroring it for
-  // now) be checked here without opening devtools.
-  const STYLE_OPTIONS: { key: StylePreference; label: string }[] = [
-    { key: 'deck', label: 'Deck' },
-    { key: 'loom', label: 'Loom' },
-    { key: 'studio', label: 'Studio' },
-  ];
-  let stylePreference = $state<StylePreference>('deck');
-
   onMount(() => {
     themeStore.init();
     const unsubscribeTheme = themeStore.preference.subscribe((value) => {
       themePreference = value;
     });
-    styleStore.init();
-    const unsubscribeStyle = styleStore.preference.subscribe((value) => {
-      stylePreference = value;
-    });
     return () => {
       unsubscribeTheme();
-      unsubscribeStyle();
     };
   });
 
@@ -282,27 +267,6 @@
       </p>
     </div>
     <div class="header-controls">
-      <div
-        class="style-switcher"
-        role="radiogroup"
-        aria-label="Style"
-        data-testid="style-switcher"
-        data-style-preference={stylePreference}
-      >
-        {#each STYLE_OPTIONS as option (option.key)}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={stylePreference === option.key}
-            class="style-switcher-option"
-            class:active={stylePreference === option.key}
-            onclick={() => styleStore.setStyle(option.key)}
-            data-testid={`style-switch-${option.key}`}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
       <button
         type="button"
         onclick={() => themeStore.toggleTheme()}
@@ -383,11 +347,14 @@
     <h3>Contrast check (body text, WCAG AA)</h3>
     <p class="contrast-note">
       <code>--color-text-primary</code> on <code>--color-bg</code> and
-      <code>--color-text-secondary</code> on <code>--color-bg</code> both clear 4.5:1 (the AA
-      threshold for normal-size body text) in dark AND light — verified with a relative-luminance
-      script against the exact hex values in <code>tokens.css</code>
-      as of this token set's introduction. <code>--color-text-muted</code> is a caption/hint tone only
-      (large-text-only AA, ~3:1+), never used for paragraph body copy.
+      <code>--color-surface</code> clears 7:1+ in dark AND light (well past the 4.5:1 AA threshold
+      for normal-size body text); <code>--color-text-secondary</code> clears at least 4.5:1 against
+      both in either theme too. <code>--color-text-muted</code> stays a caption/hint tone in dark
+      (large-text-only AA, ~3:1, never used for paragraph body copy), but was strengthened to a real
+      AA-normal-text 4.5:1 tone in light as part of redesign v3's light re-tune (issue #502) — see
+      <code>deck.css</code>'s light block doc comment for the full ratio table. Verified with a
+      relative-luminance script against the exact hex values in <code>deck.css</code> as of this token
+      set's introduction.
     </p>
   </section>
 
@@ -910,32 +877,6 @@
     font: inherit;
     text-transform: capitalize;
     flex-shrink: 0;
-  }
-
-  /* Style switcher (redesign v2 design spec §1, issue #458). */
-  .style-switcher {
-    display: flex;
-    gap: var(--space-3xs);
-    padding: var(--space-3xs);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-  }
-
-  .style-switcher-option {
-    border: none;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font: inherit;
-    opacity: 0.7;
-  }
-
-  .style-switcher-option.active {
-    background: var(--color-fill);
-    opacity: 1;
-    font-weight: 600;
   }
 
   h2 {

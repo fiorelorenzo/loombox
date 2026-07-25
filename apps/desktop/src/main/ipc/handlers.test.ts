@@ -49,16 +49,27 @@ describe('registerBridgeHandlers', () => {
     expect(new Set(ipcMain.registeredChannels)).toEqual(new Set(Object.values(BRIDGE_CHANNELS)));
   });
 
-  it('listSshHostCandidates delegates to the TODO stub', async () => {
+  it('listSshHostCandidates delegates to the injected discovery', async () => {
     const ipcMain = new FakeIpcMain();
+    const discovered = {
+      candidates: [
+        {
+          alias: 'build-server',
+          hostName: '10.0.0.5',
+          user: 'lorenzo',
+          identityFiles: ['/home/lorenzo/.ssh/id_ed25519'],
+        },
+      ],
+      requiresManualEntry: false,
+    };
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      listSshHostCandidates: () => Promise.resolve(discovered),
     });
-    await expect(ipcMain.invoke(BRIDGE_CHANNELS.listSshHostCandidates)).resolves.toEqual({
-      candidates: [],
-      requiresManualEntry: true,
-    });
+    await expect(ipcMain.invoke(BRIDGE_CHANNELS.listSshHostCandidates)).resolves.toEqual(
+      discovered,
+    );
   });
 
   it('provisionTarget reports notConfigured by default (no deps resolved in this scaffold)', async () => {

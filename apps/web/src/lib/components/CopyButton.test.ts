@@ -16,4 +16,17 @@ describe('CopyButton', () => {
 
     expect(copy).toHaveBeenCalledWith('hello world');
   });
+
+  it('stays permanently visible (dim, not hidden) by default — only opts into row-scoped hover reveal via revealOnHover (redesign v3 §3.4)', () => {
+    render(CopyButton, { props: { text: 'x', label: 'Copy x' } });
+    const button = screen.getByRole('button', { name: 'Copy x' });
+    expect(button.className).toContain('copy-button');
+    expect(button.className).not.toContain('copy-button-reveal');
+  });
+
+  it('opts into the row-scoped hover-reveal modifier class when revealOnHover is set', () => {
+    render(CopyButton, { props: { text: 'x', label: 'Copy x', revealOnHover: true } });
+    const button = screen.getByRole('button', { name: 'Copy x' });
+    expect(button.className).toContain('copy-button-reveal');
+  });
 });

@@ -1,12 +1,10 @@
 <script lang="ts">
   /**
    * The one copy affordance every transcript item (message, thought, diff,
-   * raw tool command/output) shares — reachable on hover (desktop, via the
-   * caller's `.item:hover &` CSS revealing it) and long-press/tap (touch:
-   * the button is a real, always-focusable target, never hover-only) (SPEC.md
-   * §7.24 "Copy & export", issue #150). Grounded in emdash's
-   * `chat-ui/CopyButton.tsx` (SPEC.md §16): a tiny icon button that copies
-   * fixed text and flashes a "Copied" acknowledgement.
+   * raw tool command/output) shares (SPEC.md §7.24 "Copy & export", issue
+   * #150). Grounded in emdash's `chat-ui/CopyButton.tsx` (SPEC.md §16): a
+   * tiny icon button that copies fixed text and flashes a "Copied"
+   * acknowledgement.
    *
    * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439):
    * hand-styled to match `IconButton`'s visual language (hit-target sizing,
@@ -23,6 +21,20 @@
    * `prefers-reduced-motion` (which zeroes those tokens globally, see
    * `tokens.css`) collapses it to an instant color change for free, no
    * separate reduced-motion branch needed.
+   *
+   * Redesign v3 (§3.4 "Copy affordances", defect: a copy icon sat
+   * permanently visible at the right of nearly every row, adding noise):
+   * `revealOnHover` is the opt-in for a row-scoped reveal — hidden until
+   * the button's own containing row signals hover/focus-within by
+   * overriding this button's opacity back to 1 (each transcript row's own
+   * stylesheet does that with a `.row:hover :global(.copy-button-reveal)`
+   * rule reaching into this shared component, since only the row's
+   * stylesheet can see its own `:hover`/`:focus-within` state). Defaults to
+   * `false` so call sites outside a hoverable row (e.g. `RecoveryCodeCard`,
+   * the canvas toolbar's "Export transcript" button) keep the original
+   * always-visible-but-dim treatment unchanged. Either way the button is
+   * never actually removed, and a coarse (touch) pointer — which has no
+   * hover to reveal it with — always sees it.
    */
   import { copyToClipboard } from '$lib/copy';
   import { Icon } from './icons';
@@ -35,12 +47,20 @@
     label?: string;
     /** Injectable for tests; defaults to the real clipboard write. */
     copyFn?: (text: string) => Promise<void>;
+    /** Hidden until the containing row is hovered/focus-within instead of permanently dim-visible (redesign v3 §3.4 "Copy affordances"); opt-in per call site — see the file doc comment. */
+    revealOnHover?: boolean;
   }
 
-  const { text, label = 'Copy', copyFn = copyToClipboard }: Props = $props();
+  const { text, label = 'Copy', copyFn = copyToClipboard, revealOnHover = false }: Props = $props();
 
   let copied = $state(false);
   let resetTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const classNames = $derived(
+    ['copy-button', copied && 'copied', revealOnHover && 'copy-button-reveal']
+      .filter(Boolean)
+      .join(' '),
+  );
 
   async function handleClick(): Promise<void> {
     await copyFn(text);
@@ -52,7 +72,7 @@
   }
 </script>
 
-<IconButton {label} onclick={handleClick} class={`copy-button ${copied ? 'copied' : ''}`.trim()}>
+<IconButton {label} onclick={handleClick} class={classNames}>
   <Icon name="copy" />
 </IconButton>
 
@@ -87,6 +107,28 @@
     }
     100% {
       transform: scale(1);
+    }
+  }
+
+  /* Row-scoped reveal (redesign v3 §3.4 "Copy affordances"): opted into per
+     call site via `revealOnHover`. Hidden by default; the containing row's
+     own stylesheet is what actually reveals it on hover/focus-within (see
+     the file doc comment) — this button only owns its own hover/focus and
+     the coarse-pointer fallback below. The extra `.copy-button-reveal`
+     class keeps this at higher specificity than the plain `.copy-button`
+     rule above regardless of CSS source order. */
+  :global(.copy-button.copy-button-reveal) {
+    opacity: 0;
+  }
+
+  :global(.copy-button.copy-button-reveal:hover),
+  :global(.copy-button.copy-button-reveal:focus-visible) {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    :global(.copy-button.copy-button-reveal) {
+      opacity: 0.7;
     }
   }
 

@@ -84,7 +84,7 @@ const noop = () => {};
 describe('TargetStatusView (issue #269)', () => {
   it('lists every target with its label, kind, and node id', () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
 
     const rows = screen.getAllByTestId('target-status-row');
@@ -97,7 +97,7 @@ describe('TargetStatusView (issue #269)', () => {
 
   it('shows CPU/RAM/disk percentages for a target with a health reading', () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
 
     const row = screen.getByTestId('target-status-row-node_1:local');
@@ -108,7 +108,7 @@ describe('TargetStatusView (issue #269)', () => {
 
   it("shows 'No data yet' for a target that hasn't reported a health sample", () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
 
     const row = screen.getByTestId('target-status-row-node_1:ssh_devbox');
@@ -117,7 +117,7 @@ describe('TargetStatusView (issue #269)', () => {
 
   it('marks a target reachable but failing its own sample as unhealthy, distinct from a node-offline target', () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
 
     const flaky = screen.getByTestId('target-status-row-node_2:ssh_flaky');
@@ -153,7 +153,6 @@ describe('TargetStatusView (issue #269)', () => {
         loading: false,
         error: undefined,
         onRefresh: noop,
-        onClose: noop,
       },
     });
 
@@ -166,26 +165,25 @@ describe('TargetStatusView (issue #269)', () => {
   it('calls onRefresh when the refresh button is clicked', async () => {
     const onRefresh = vi.fn();
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh },
     });
 
     await fireEvent.click(screen.getByTestId('target-status-refresh'));
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onClose when the close button is clicked', async () => {
-    const onClose = vi.fn();
+  it('renders no internal title or Close action — the Drawer that hosts this view owns both (redesign v3 spec §3.6 D2)', () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
-
-    await fireEvent.click(screen.getByTestId('target-status-close'));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('heading', { name: /nodes.*targets/i })).toBeNull();
+    expect(screen.queryByTestId('target-status-close')).toBeNull();
+    expect(screen.getByTestId('target-status-refresh')).toBeTruthy();
   });
 
   it('shows a loading indicator while the first fetch is in flight', () => {
     render(TargetStatusView, {
-      props: { targets: [], loading: true, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: [], loading: true, error: undefined, onRefresh: noop },
     });
     expect(screen.getByTestId('woven-loader')).toBeTruthy();
   });
@@ -197,18 +195,18 @@ describe('TargetStatusView (issue #269)', () => {
         loading: false,
         error: 'timed out waiting for target_list',
         onRefresh: noop,
-        onClose: noop,
       },
     });
     expect(screen.getByText(/timed out waiting for target_list/)).toBeTruthy();
   });
 
-  it('shows a fallback message when there are no known targets', () => {
+  it('shows a fallback message that says what to do next when there are no known targets', () => {
     render(TargetStatusView, {
-      props: { targets: [], loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: [], loading: false, error: undefined, onRefresh: noop },
     });
     expect(screen.queryAllByTestId('target-status-row')).toHaveLength(0);
-    expect(screen.getByText(/no nodes\/targets/i)).toBeTruthy();
+    expect(screen.getByText(/no nodes or targets connected yet/i)).toBeTruthy();
+    expect(screen.getByText(/add a target or connect a node/i)).toBeTruthy();
   });
 
   it('highlights the row matching focusTarget (issue #269: a stalled session links back to its target)', () => {
@@ -218,7 +216,6 @@ describe('TargetStatusView (issue #269)', () => {
         loading: false,
         error: undefined,
         onRefresh: noop,
-        onClose: noop,
         focusTarget: { nodeId: 'node_2', targetId: 'ssh_flaky' },
       },
     });
@@ -300,7 +297,7 @@ function fakeActionsClient(overrides: Partial<TargetActionsClient> = {}): Target
 describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Update/Remove/Edit; issue #476)', () => {
   it('renders no per-target actions when no client is passed (existing read-only behavior, unchanged)', () => {
     render(TargetStatusView, {
-      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop, onClose: noop },
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
     expect(screen.queryAllByTestId('target-actions')).toHaveLength(0);
   });
@@ -312,7 +309,6 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         loading: false,
         error: undefined,
         onRefresh: noop,
-        onClose: noop,
         client: fakeActionsClient(),
       },
     });
@@ -338,7 +334,6 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         loading: false,
         error: undefined,
         onRefresh,
-        onClose: noop,
         client: fakeActionsClient(),
       },
     });
@@ -356,7 +351,6 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         loading: false,
         error: undefined,
         onRefresh,
-        onClose: noop,
         client: fakeActionsClient({ updateTarget }),
       },
     });
@@ -379,7 +373,6 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         loading: false,
         error: undefined,
         onRefresh,
-        onClose: noop,
         client: fakeActionsClient({ decommissionTarget }),
       },
     });
@@ -413,7 +406,6 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         loading: false,
         error: undefined,
         onRefresh,
-        onClose: noop,
         client: fakeActionsClient({ decommissionTarget, provisionTarget }),
       },
     });

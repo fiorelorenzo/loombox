@@ -15,15 +15,17 @@
    * transcript (issue #139's acceptance, tested by forcing a throw).
    *
    * Warp Deck restyle (`docs/design/redesign.md` §6, issue #432): this row
-   * is a thin dispatcher, not its own card — the elevation ladder's
-   * `raised` tier (§3) lives on whichever child actually renders
-   * (`GenericToolRow` / the bespoke widgets), so this wrapper stays
-   * unboxed and only adds two things at the row level: a single
-   * un-staggered `beat-in` on mount (same mount-once CSS-`animation`
-   * technique as `MessageItem`), and a one-time `thread-draw` top-edge
-   * pulse (accent fading to neutral, `--duration-weave`, never looping —
-   * distinct from `StatusDot`'s continuous `working` weave) the instant a
-   * streaming tool call settles into `completed`.
+   * is a thin dispatcher, not its own card. Redesign v3
+   * (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md` §3.4 "One
+   * tool-call anatomy"): the gutter-plus-content row anatomy lives on
+   * whichever child actually renders (`GenericToolRow` / the bespoke
+   * widgets), so this wrapper stays unboxed and only adds two things at
+   * the row level: a single un-staggered `beat-in` on mount (same
+   * mount-once CSS-`animation` technique as `MessageItem`), and a
+   * one-time `thread-draw` top-edge pulse (accent fading to neutral,
+   * `--duration-weave`, never looping — distinct from `StatusDot`'s
+   * continuous `working` weave) the instant a streaming tool call settles
+   * into `completed`.
    */
   import { untrack } from 'svelte';
   import type { TranscriptToolCallItem } from '@loombox/providers-core';

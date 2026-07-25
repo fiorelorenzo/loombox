@@ -34,3 +34,13 @@ describe('DiffViewer', () => {
     expect(rows.every((row) => row.className.includes('added'))).toBe(true);
   });
 });
+
+describe('DiffViewer: copy affordance (redesign v3 §3.4)', () => {
+  it('opts its copy affordance into row-scoped hover reveal (redesign v3 §3.4 "Copy affordances")', () => {
+    const { getByRole } = render(DiffViewer, {
+      props: { path: 'src/foo.ts', oldText: 'a', newText: 'b' },
+    });
+    const button = getByRole('button', { name: 'Copy diff for src/foo.ts' });
+    expect(button.className).toContain('copy-button-reveal');
+  });
+});
