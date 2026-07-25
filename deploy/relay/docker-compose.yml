@@ -48,6 +48,11 @@ services:
       PORT: 8787
       DATABASE_URL: postgresql://loombox:${POSTGRES_PASSWORD}@postgres:5432/loombox
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-https://relay.loombox.dev}
+      # The web app + desktop app are served from a different origin than the
+      # relay, so their origin must be trusted for Better Auth's CSRF/CORS.
+      LOOMBOX_TRUSTED_ORIGINS: ${LOOMBOX_TRUSTED_ORIGINS:-https://app.loombox.dev}
+      # Device-authorization verification_uri host (#387).
+      LOOMBOX_APP_URL: ${LOOMBOX_APP_URL:-https://app.loombox.dev}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID in .env}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET in .env}
