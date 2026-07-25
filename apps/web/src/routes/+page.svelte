@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { env as publicEnv } from '$env/dynamic/public';
   import type {
     AcpConfigOption,
@@ -33,7 +33,7 @@
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
-  import { isNarrowViewport } from '$lib/viewport';
+  import { isNarrowViewport, TABLET_VIEWPORT_BREAKPOINT_PX } from '$lib/viewport';
   import { resolvePendingPushAction } from '$lib/push-action-routing';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import {
@@ -66,6 +66,8 @@
   import Card from '$lib/components/ui/Card.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
+  import IconButton from '$lib/components/ui/IconButton.svelte';
+  import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
@@ -190,6 +192,82 @@
   /** Toggles a Drawer tab: closes it if already open, otherwise opens it (and implicitly replaces whatever other tab was open — only one at a time). */
   function toggleDrawer(tab: DrawerTab): void {
     activeDrawer = activeDrawer === tab ? null : tab;
+  }
+
+  /**
+   * The Sessions column's own drag-resize + collapse-to-selvage (redesign
+   * brief `docs/design/redesign.md` §1, issue #438): width and collapsed
+   * state both persist to `localStorage` (mirrors `drawerPinned` above),
+   * restored in `onMount` below. `sessionsWidthPx` always holds the user's
+   * last dragged-to width even while collapsed, so expanding again restores
+   * it rather than snapping back to the default.
+   */
+  const SESSIONS_WIDTH_STORAGE_KEY = 'loombox:sessions-width';
+  const SESSIONS_COLLAPSED_STORAGE_KEY = 'loombox:sessions-collapsed';
+  /** 18rem, the redesign brief's default column width, at the app's own 16px base root font size. */
+  const DEFAULT_SESSIONS_WIDTH_PX = 288;
+  const MIN_SESSIONS_WIDTH_PX = 200;
+  const MAX_SESSIONS_WIDTH_PX = 440;
+  /** 3.5rem — the icon-only "selvage rail" width (redesign brief §1), matching the left `.rail`'s own 3.5rem. */
+  const SESSIONS_SELVAGE_WIDTH_PX = 56;
+
+  let sessionsWidthPx = $state(DEFAULT_SESSIONS_WIDTH_PX);
+  let sessionsCollapsed = $state(false);
+  /** True only while a drag is in flight — suppresses the width `transition` so the column tracks the pointer instead of visibly lagging behind it. */
+  let sessionsResizing = $state(false);
+  /** True at/below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px), where Sessions renders as the full-height sheet (redesign brief §1) rather than an inline column — the icon-only selvage rail is a wide-viewport concept only, so it's parked (not cleared) here rather than in `sessionsCollapsed` itself, which stays the user's actual persisted preference for whenever the viewport widens again. */
+  let sessionsSheetViewport = $state(false);
+
+  /** The effective collapsed-to-selvage state once the sheet-viewport override above is applied — what the template actually renders on. */
+  const sessionsRailCollapsed = $derived(sessionsCollapsed && !sessionsSheetViewport);
+  const sessionsColumnWidthPx = $derived(
+    sessionsRailCollapsed ? SESSIONS_SELVAGE_WIDTH_PX : sessionsWidthPx,
+  );
+
+  function clampSessionsWidth(px: number): number {
+    return Math.min(MAX_SESSIONS_WIDTH_PX, Math.max(MIN_SESSIONS_WIDTH_PX, px));
+  }
+
+  /** Toggles the Sessions column between its normal width and the icon-only selvage rail — the column's own edge control and the global `Mod+B` shortcut both call this. */
+  function toggleSessionsCollapsed(): void {
+    sessionsCollapsed = !sessionsCollapsed;
+  }
+
+  /** Starts a drag-resize of the Sessions column from its own edge handle. Uses Pointer Events with `setPointerCapture` directly on the handle, so the temporary move/up listeners live and die with the drag itself — no `window`-level listener to remember to remove. */
+  function startSessionsResize(event: PointerEvent): void {
+    if (sessionsRailCollapsed || event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    sessionsResizing = true;
+    const startX = event.clientX;
+    const startWidth = sessionsWidthPx;
+
+    function onMove(moveEvent: PointerEvent): void {
+      sessionsWidthPx = clampSessionsWidth(startWidth + (moveEvent.clientX - startX));
+    }
+
+    function onUp(upEvent: PointerEvent): void {
+      handle.releasePointerCapture(upEvent.pointerId);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      sessionsResizing = false;
+    }
+
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+  }
+
+  /** Keyboard-accessible resize (arrow keys, when the handle itself has focus) — the same drag affordance, without a pointer. */
+  function handleSessionsResizeKeydown(event: KeyboardEvent): void {
+    const STEP_PX = 16;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      sessionsWidthPx = clampSessionsWidth(sessionsWidthPx - STEP_PX);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      sessionsWidthPx = clampSessionsWidth(sessionsWidthPx + STEP_PX);
+    }
   }
 
   // The node/target status view (SPEC §7.21; issue #269): this page owns
@@ -334,6 +412,16 @@
   // the same way — see `onMount`'s restore of the same key below.
   $effect(() => {
     localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, drawerPinned ? '1' : '0');
+  });
+
+  // Persists the Sessions column's own drag-resized width + collapsed-to-
+  // selvage preference (redesign brief §1, issue #438) — see `onMount`'s
+  // restore of the same two keys below.
+  $effect(() => {
+    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(sessionsWidthPx));
+  });
+  $effect(() => {
+    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, sessionsCollapsed ? '1' : '0');
   });
 
   const planCollapsed = $derived(
@@ -888,6 +976,104 @@
   );
 
   /**
+   * Sessions clustered under their target/node (redesign brief §1/§4, issue
+   * #438): shown only when more than one target is currently active among
+   * the listed sessions — a single-target account stays a flat list, per
+   * the brief's "when more than one target is active" gate. Grouped by
+   * `${nodeId}:${targetId}`, the same composite key `targetHealthDots`
+   * above already uses (a bare `targetId` is only unique per node).
+   */
+  interface SessionGroup {
+    key: string;
+    label: string;
+    sessions: ClientSessionMeta[];
+  }
+
+  function sessionTargetKey(session: ClientSessionMeta): string {
+    return `${session.nodeId}:${session.targetId}`;
+  }
+
+  /** The group header's label — the live target list's own label when it's arrived, falling back to the bare `targetId` before it has (mirrors `targetHealthDots`' own `label ?? targetId` fallback above). */
+  function sessionTargetLabel(session: ClientSessionMeta): string {
+    const target = targetStatusEntries.find(
+      (entry) => entry.nodeId === session.nodeId && entry.targetId === session.targetId,
+    );
+    return target?.label ?? session.targetId;
+  }
+
+  const groupSessionsByTarget = $derived(new Set(sessions.map(sessionTargetKey)).size > 1);
+
+  const sessionGroups = $derived.by((): SessionGroup[] => {
+    if (!groupSessionsByTarget) return [];
+    const groups = new SvelteMap<string, SessionGroup>();
+    for (const session of sessions) {
+      const key = sessionTargetKey(session);
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, label: sessionTargetLabel(session), sessions: [] };
+        groups.set(key, group);
+      }
+      group.sessions.push(session);
+    }
+    return Array.from(groups.values());
+  });
+
+  /** Which target groups are currently collapsed (redesign brief §1's "collapsible" group header) — transient UI state, unlike the column's own persisted width/collapsed-state, so it resets to "all expanded" on reload. A `SvelteSet` (not a plain `Set` wrapped in `$state`) so mutating it in place is enough to trigger reactivity, mirroring `planCollapsedBySession`'s own `SvelteMap` above. */
+  const collapsedGroupKeys = new SvelteSet<string>();
+
+  function toggleGroupCollapsed(key: string): void {
+    if (collapsedGroupKeys.has(key)) collapsedGroupKeys.delete(key);
+    else collapsedGroupKeys.add(key);
+  }
+
+  /** Sessions with a pending item in the cross-project attention inbox (issues #167/#168) — the row's "needs attention" affordance, reusing `attentionInboxItems` already tracked above rather than a new subscription. */
+  const sessionsNeedingAttention = $derived(
+    new Set(attentionInboxItems.map((item) => item.sessionId)),
+  );
+
+  /** The session row's/selvage-rail's first-letter avatar (redesign brief §1's "first-letter avatar") — the session's own title, falling back to its target id for the rare title-less edge case. */
+  function sessionInitial(session: ClientSessionMeta): string {
+    const trimmed = session.title.trim();
+    return (trimmed || session.targetId).charAt(0).toUpperCase();
+  }
+
+  /**
+   * A short relative-time string for the row's last-activity detail
+   * (redesign brief §1's row content). `ClientSessionMeta.createdAt` is the
+   * one timestamp already flowing into this list without adding a new
+   * per-session subscription — `syncSessionStatusSubscriptions` above only
+   * tracks live `status`, deliberately not the richer `TranscriptState`
+   * (that would fire on every transcript update, not just a status
+   * transition, well outside this restyle's scope). Mirrors
+   * `TargetStatusView.svelte`'s own `formatSampledAt` bucketing.
+   */
+  function formatSessionActivity(createdAt: number): string {
+    const ageMs = Date.now() - createdAt;
+    if (ageMs < 5_000) return 'just now';
+    if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s ago`;
+    if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m ago`;
+    if (ageMs < 86_400_000) return `${Math.round(ageMs / 3_600_000)}h ago`;
+    return `${Math.round(ageMs / 86_400_000)}d ago`;
+  }
+
+  /** Maps `AcpSessionStatus` onto the shared `StatusDot` tone vocabulary — the same four colors the row's existing `.status-badge` text already carries (see its own CSS below), just also driving the dot. */
+  const SESSION_STATUS_TONES: Record<AcpSessionStatus, StatusTone> = {
+    working: 'info',
+    awaiting_input: 'neutral',
+    permission_required: 'warning',
+    error: 'danger',
+    exited: 'neutral',
+  };
+
+  const SESSION_STATUS_LABELS: Record<AcpSessionStatus, string> = {
+    working: 'Working',
+    awaiting_input: 'Awaiting input',
+    permission_required: 'Permission required',
+    error: 'Error',
+    exited: 'Exited',
+  };
+
+  /**
    * Pushes the current mute/quiet-hours preferences, plus this device's
    * `sessionId -> projectPath` map, into the active service worker (#166) —
    * there is no `localStorage` access from a service worker, and the push
@@ -913,7 +1099,7 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     if (paletteOpen) return;
     if (isModShortcut(event, 'k')) {
@@ -924,6 +1110,11 @@
     if (isModShortcut(event, '.') && !isTypingTarget(event.target)) {
       event.preventDefault();
       stopSession();
+      return;
+    }
+    if (isModShortcut(event, 'b') && !isTypingTarget(event.target)) {
+      event.preventDefault();
+      toggleSessionsCollapsed();
     }
   }
 
@@ -993,6 +1184,12 @@
     // Narrow-viewport permission footer (SPEC §7.3; issue #134).
     const unsubscribeNarrow = isNarrowViewport().subscribe((value) => (narrowViewport = value));
 
+    // The Sessions column's own sheet-viewport override (redesign brief §1,
+    // issue #438) — see `sessionsSheetViewport`'s own doc comment above.
+    const unsubscribeSessionsSheetViewport = isNarrowViewport(
+      TABLET_VIEWPORT_BREAKPOINT_PX,
+    ).subscribe((value) => (sessionsSheetViewport = value));
+
     // Restores an operator-customized relay URL before constructing
     // `authStore` against it, so a self-hoster who edits this field, then
     // signs in (a full-page OAuth redirect that reloads this component from
@@ -1004,6 +1201,18 @@
     // Redesign brief §1: restores the Drawer's pinned-column preference.
     const persistedDrawerPinned = localStorage.getItem(DRAWER_PINNED_STORAGE_KEY);
     if (persistedDrawerPinned) drawerPinned = persistedDrawerPinned === '1';
+
+    // Redesign brief §1, issue #438: restores the Sessions column's own
+    // drag-resized width + collapsed-to-selvage preference.
+    const persistedSessionsWidth = localStorage.getItem(SESSIONS_WIDTH_STORAGE_KEY);
+    if (persistedSessionsWidth) {
+      const parsedSessionsWidth = Number(persistedSessionsWidth);
+      if (Number.isFinite(parsedSessionsWidth)) {
+        sessionsWidthPx = clampSessionsWidth(parsedSessionsWidth);
+      }
+    }
+    const persistedSessionsCollapsed = localStorage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY);
+    if (persistedSessionsCollapsed) sessionsCollapsed = persistedSessionsCollapsed === '1';
 
     const store = ensureAuthStore();
 
@@ -1036,6 +1245,7 @@
       unsubscribeTheme();
       unsubscribeAuthSession();
       unsubscribeNarrow();
+      unsubscribeSessionsSheetViewport();
       disconnect();
     };
   });
@@ -1432,11 +1642,110 @@
         ></button>
       {/if}
 
-      <aside class="sessions" class:sheet-open={sessionsSheetOpen} data-testid="sessions-column">
+      <!-- A single row's markup (redesign brief §1/§4, issue #438: StatusDot
+           + first-letter avatar + title + last-activity + attention
+           affordance), shared between the flat list and the grouped-by-
+           target list below so neither copy can drift from the other. -->
+      {#snippet sessionRow(session: ClientSessionMeta)}
+        {@const sessionStatus = sessionStatuses.get(session.id)}
+        {@const needsAttention = sessionsNeedingAttention.has(session.id)}
+        <li class="session-row" data-testid="session-row-item">
+          <button
+            type="button"
+            class="session"
+            class:selected={session.id === selectedSessionId}
+            onclick={() => selectSession(session.id)}
+          >
+            <span class="session-avatar" aria-hidden="true">{sessionInitial(session)}</span>
+            <span class="session-main">
+              <span class="session-title-row">
+                <strong>{session.title}</strong>
+                {#if needsAttention}
+                  <span
+                    class="session-attention-dot"
+                    data-testid="session-attention-dot"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="sr-only">Needs attention</span>
+                {/if}
+                {#if sessionStatus}
+                  <span
+                    class="status-badge"
+                    data-status={sessionStatus}
+                    data-testid="session-status-badge"
+                  >
+                    <StatusDot
+                      tone={SESSION_STATUS_TONES[sessionStatus]}
+                      pulse={sessionStatus === 'working'}
+                      label={SESSION_STATUS_LABELS[sessionStatus]}
+                      size="sm"
+                    />
+                    {sessionStatus}
+                  </span>
+                {/if}
+              </span>
+              <span class="session-meta-row">
+                <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
+                <span class="session-activity font-mono" data-testid="session-activity"
+                  >{formatSessionActivity(session.createdAt)}</span
+                >
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            class="session-target-status-link"
+            title={`View status for target ${session.targetId}`}
+            aria-label={`View status for target ${session.targetId}`}
+            onclick={() => openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
+            data-testid="session-target-status-link"
+          >
+            Target status
+          </button>
+        </li>
+      {/snippet}
+
+      <!-- The icon-only "selvage rail" row (redesign brief §1: "status dot
+           + first-letter avatar, tooltip on hover"). -->
+      {#snippet selvageSessionRow(session: ClientSessionMeta)}
+        {@const sessionStatus = sessionStatuses.get(session.id)}
+        <li>
+          <button
+            type="button"
+            class="selvage-session"
+            class:selected={session.id === selectedSessionId}
+            class:needs-attention={sessionsNeedingAttention.has(session.id)}
+            onclick={() => selectSession(session.id)}
+            title={session.title}
+            aria-label={session.title}
+            data-testid="selvage-session"
+          >
+            <span class="selvage-avatar" aria-hidden="true">{sessionInitial(session)}</span>
+            <StatusDot
+              tone={sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
+              pulse={sessionStatus === 'working'}
+              label={sessionStatus ? SESSION_STATUS_LABELS[sessionStatus] : 'No status yet'}
+              size="sm"
+              class="selvage-status-dot"
+            />
+          </button>
+        </li>
+      {/snippet}
+
+      <aside
+        class="sessions"
+        class:sheet-open={sessionsSheetOpen}
+        class:collapsed={sessionsRailCollapsed}
+        class:resizing={sessionsResizing}
+        style={sessionsSheetViewport ? undefined : `width: ${sessionsColumnWidthPx}px`}
+        data-testid="sessions-column"
+      >
         <div class="sessions-header">
-          <h2>Sessions</h2>
-          {#if status === 'open'}
-            <div class="sessions-header-actions">
+          {#if !sessionsRailCollapsed}
+            <h2>Sessions</h2>
+          {/if}
+          <div class="sessions-header-actions">
+            {#if !sessionsRailCollapsed && status === 'open'}
               <button
                 type="button"
                 class="add-target-button"
@@ -1453,74 +1762,113 @@
               >
                 New session
               </button>
+            {/if}
+            <!-- TODO(redesign wave 2/5): replace this chevron glyph with the real icon set (SPEC brief §5). -->
+            <IconButton
+              label={sessionsCollapsed ? 'Expand sessions' : 'Collapse sessions'}
+              pressed={sessionsCollapsed}
+              onclick={toggleSessionsCollapsed}
+              class="sessions-collapse-toggle"
+            >
+              <span aria-hidden="true">{sessionsCollapsed ? '»' : '«'}</span>
+            </IconButton>
+          </div>
+        </div>
+
+        <div class="sessions-content">
+          {#if sessionsRailCollapsed}
+            <ul class="selvage-list" data-testid="selvage-session-list">
+              {#each sessions as session (session.id)}
+                {@render selvageSessionRow(session)}
+              {/each}
+            </ul>
+          {:else if status === 'connecting' || status === 'idle'}
+            <p class="empty loading-line">
+              <WovenLoader label="Loading sessions" />
+              Loading sessions…
+            </p>
+          {:else if sessions.length === 0 && sessionDecryptFailures > 0}
+            <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
+              <p class="key-mismatch-title">This device's key can't read these sessions.</p>
+              <p class="hint">Re-pair this device with your Recovery Code to restore access.</p>
+              <RecoveryCodeEntryForm
+                busy={rePairBusy}
+                error={rePairError}
+                submitLabel="Re-pair this device"
+                onSubmit={rePairWithRecoveryCode}
+              />
             </div>
+          {:else if sessions.length === 0}
+            <EmptyState message="No sessions yet. Start one to connect an agent to a project.">
+              {#snippet cta()}
+                <button
+                  type="button"
+                  class="empty-sessions-cta"
+                  onclick={openNewSessionDialog}
+                  data-testid="new-session-empty-cta"
+                >
+                  Start your first session
+                </button>
+              {/snippet}
+            </EmptyState>
+          {:else if groupSessionsByTarget}
+            {#each sessionGroups as group (group.key)}
+              <div class="session-group">
+                <button
+                  type="button"
+                  class="session-group-header"
+                  onclick={() => toggleGroupCollapsed(group.key)}
+                  aria-expanded={!collapsedGroupKeys.has(group.key)}
+                  data-testid="session-group-header"
+                >
+                  <span
+                    class="session-group-chevron"
+                    class:collapsed={collapsedGroupKeys.has(group.key)}
+                    aria-hidden="true">▾</span
+                  >
+                  <span class="session-group-label">{group.label}</span>
+                  <span class="session-group-count">{group.sessions.length}</span>
+                </button>
+                {#if !collapsedGroupKeys.has(group.key)}
+                  <ul>
+                    {#each group.sessions as session (session.id)}
+                      {@render sessionRow(session)}
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/each}
+          {:else}
+            <ul>
+              {#each sessions as session (session.id)}
+                {@render sessionRow(session)}
+              {/each}
+            </ul>
           {/if}
         </div>
-        {#if status === 'connecting' || status === 'idle'}
-          <p class="empty loading-line">
-            <WovenLoader label="Loading sessions" />
-            Loading sessions…
-          </p>
-        {:else if sessions.length === 0 && sessionDecryptFailures > 0}
-          <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
-            <p class="key-mismatch-title">This device's key can't read these sessions.</p>
-            <p class="hint">Re-pair this device with your Recovery Code to restore access.</p>
-            <RecoveryCodeEntryForm
-              busy={rePairBusy}
-              error={rePairError}
-              submitLabel="Re-pair this device"
-              onSubmit={rePairWithRecoveryCode}
-            />
-          </div>
-        {:else if sessions.length === 0}
-          <div class="empty-sessions">
-            <p class="empty">No sessions yet.</p>
-            <button
-              type="button"
-              onclick={openNewSessionDialog}
-              data-testid="new-session-empty-cta"
-            >
-              Start your first session
-            </button>
-          </div>
-        {:else}
-          <ul>
-            {#each sessions as session (session.id)}
-              <li class="session-row">
-                <button
-                  type="button"
-                  class="session"
-                  class:selected={session.id === selectedSessionId}
-                  onclick={() => selectSession(session.id)}
-                >
-                  <span class="session-title-row">
-                    <strong>{session.title}</strong>
-                    {#if sessionStatuses.get(session.id)}
-                      <span
-                        class="status-badge"
-                        data-status={sessionStatuses.get(session.id)}
-                        data-testid="session-status-badge"
-                      >
-                        {sessionStatuses.get(session.id)}
-                      </span>
-                    {/if}
-                  </span>
-                  <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
-                </button>
-                <button
-                  type="button"
-                  class="session-target-status-link"
-                  title={`View status for target ${session.targetId}`}
-                  aria-label={`View status for target ${session.targetId}`}
-                  onclick={() =>
-                    openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
-                  data-testid="session-target-status-link"
-                >
-                  Target status
-                </button>
-              </li>
-            {/each}
-          </ul>
+
+        {#if !sessionsRailCollapsed}
+          <!-- A focusable, draggable `separator` (redesign brief §1's
+               drag-resize handle) is the WAI-ARIA APG's own "Window
+               Splitter" pattern — a deliberate exception to the usual
+               noninteractive-role rule, mirroring `PermissionCard.svelte`'s
+               identical pair of ignores for its own keyboard-focusable
+               `group`. -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="sessions-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sessions column"
+            aria-valuenow={sessionsWidthPx}
+            aria-valuemin={MIN_SESSIONS_WIDTH_PX}
+            aria-valuemax={MAX_SESSIONS_WIDTH_PX}
+            tabindex="0"
+            onpointerdown={startSessionsResize}
+            onkeydown={handleSessionsResizeKeydown}
+            data-testid="sessions-resize-handle"
+          ></div>
         {/if}
       </aside>
 
@@ -2067,6 +2415,38 @@
     display: flex;
     align-items: stretch;
     gap: var(--space-2xs);
+    /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
+       20ms/item, capped at 5 rows — mirrors `AttentionInbox`'s own
+       identical treatment. */
+    animation: beat-in var(--duration-base) var(--ease-beat) both;
+  }
+
+  .session-row:nth-child(2) {
+    animation-delay: 20ms;
+  }
+
+  .session-row:nth-child(3) {
+    animation-delay: 40ms;
+  }
+
+  .session-row:nth-child(4) {
+    animation-delay: 60ms;
+  }
+
+  .session-row:nth-child(n + 5) {
+    animation-delay: 80ms;
+  }
+
+  @keyframes beat-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .session-row .session {
@@ -2513,12 +2893,23 @@
     display: none;
   }
 
+  /* Drag-resizable width + collapse-to-selvage (redesign brief §1, issue
+     #438). Width itself comes from the inline `style` binding
+     (`sessionsColumnWidthPx`); the `transition` here only smooths a
+     collapse/expand toggle — `.resizing` suppresses it during an active
+     drag so the column tracks the pointer instead of visibly lagging. */
   .sessions {
-    width: 16rem;
+    position: relative;
+    display: flex;
+    flex-direction: column;
     flex-shrink: 0;
-    padding: var(--space-lg);
+    min-width: 0;
     border-right: 1px solid var(--color-border);
-    overflow-y: auto;
+    transition: width var(--duration-fast) var(--ease-beat);
+  }
+
+  .sessions.resizing {
+    transition: none;
   }
 
   .sessions-header {
@@ -2526,7 +2917,13 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-sm);
-    margin-bottom: var(--space-sm);
+    padding: var(--space-lg) var(--space-lg) var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .sessions.collapsed .sessions-header {
+    justify-content: center;
+    padding: var(--space-lg) var(--space-2xs) var(--space-sm);
   }
 
   .sessions-header h2 {
@@ -2562,14 +2959,44 @@
     font-weight: 600;
   }
 
-  .empty-sessions {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-sm);
+  .sessions-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--space-lg) var(--space-lg);
   }
 
-  .empty-sessions button {
+  .sessions.collapsed .sessions-content {
+    padding: 0 var(--space-2xs) var(--space-lg);
+  }
+
+  /* The drag handle itself — a thin hit target straddling the column's
+     right edge (redesign brief §1's "drag-resizable width"). */
+  .sessions-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -0.25rem;
+    bottom: 0;
+    width: 0.5rem;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: var(--z-raised);
+  }
+
+  .sessions-resize-handle:hover,
+  .sessions-resize-handle:focus-visible {
+    background: var(--color-accent-subtle);
+  }
+
+  .sessions-resize-handle:focus-visible {
+    outline: none;
+  }
+
+  /* The empty-state's own CTA (redesign brief §4's `EmptyState` primitive) —
+     hand-styled to match `Button`'s primary variant rather than importing
+     it, so this keeps its own fixed `new-session-empty-cta` testid (see
+     this file's own doc comment on adopting shared primitives). */
+  .empty-sessions-cta {
     border: 1px solid var(--color-accent);
     border-radius: var(--radius-md);
     background: var(--color-accent-subtle);
@@ -2578,6 +3005,23 @@
     cursor: pointer;
     font-weight: 600;
     font-size: var(--text-small-size);
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
+  }
+
+  .empty-sessions-cta:hover {
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
+  .empty-sessions-cta:active {
+    transform: scale(0.98);
+  }
+
+  .empty-sessions-cta:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .key-mismatch {
@@ -2610,22 +3054,109 @@
     gap: var(--space-2xs);
   }
 
+  /* Target/node group headers (redesign brief §1/§4, issue #438): mono,
+     small-caps, collapsible — shown only once more than one target is
+     active (`groupSessionsByTarget`), otherwise the list stays flat. */
+  .session-group + .session-group {
+    margin-top: var(--space-md);
+  }
+
+  .session-group-header {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: var(--space-xs);
+    border: none;
+    background: transparent;
+    color: var(--color-text-secondary);
+    padding: var(--space-2xs);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-variant-caps: small-caps;
+    font-size: var(--text-small-size);
+    letter-spacing: 0.03em;
+    transition: color var(--duration-fast) var(--ease-beat);
+  }
+
+  .session-group-header:hover,
+  .session-group-header:focus-visible {
+    color: var(--color-text-primary);
+  }
+
+  .session-group-chevron {
+    display: inline-flex;
+    flex-shrink: 0;
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .session-group-chevron.collapsed {
+    transform: rotate(-90deg);
+  }
+
+  .session-group-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-group-count {
+    flex-shrink: 0;
+    margin-left: auto;
+    opacity: 0.7;
+    font-variant-caps: normal;
+  }
+
+  /* Rows (redesign brief §4): quiet hairline-divided, not boxed cards;
+     selected/active state is a 2px left accent bar + subtle background
+     tint, echoing a highlighted thread on a warp rather than a "selected
+     card" pattern. */
   .session {
     width: 100%;
     text-align: left;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
+    align-items: flex-start;
+    gap: var(--space-sm);
     padding: var(--space-sm);
     border-radius: var(--radius-md);
-    border: 1px solid transparent;
+    border-left: 2px solid transparent;
     background: transparent;
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .session:hover:not(.selected) {
+    background: var(--color-fill-subtle);
   }
 
   .session.selected {
-    border-color: var(--color-accent);
+    border-left-color: var(--color-accent);
     background: var(--color-accent-subtle);
+  }
+
+  .session-avatar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin-top: var(--space-3xs);
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .session-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
   }
 
   .session small {
@@ -2639,21 +3170,59 @@
   .session-title-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-xs);
     min-width: 0;
   }
 
   .session-title-row strong {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* Session-status badge (SPEC §7.13/§7.24; issue #126) — a neutral default,
-     overridden per status so a glance at the list shows what needs attention. */
-  .status-badge {
+  /* The row's "needs attention" affordance (redesign brief's row content,
+     issue #438) — a session with a pending item in the cross-project
+     attention inbox, distinct from (and additional to) the session's own
+     ACP status. */
+  .session-attention-dot {
     flex-shrink: 0;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--radius-full);
+    background: var(--color-warning);
+  }
+
+  .session-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
+
+  .session-meta-row small {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .session-activity {
+    flex-shrink: 0;
+    opacity: 0.55;
+    font-size: 0.7rem;
+  }
+
+  /* Session-status badge (SPEC §7.13/§7.24; issue #126) — a neutral default,
+     overridden per status so a glance at the list shows what needs
+     attention. Redesign brief §4/issue #438: now also carries a `StatusDot`
+     alongside its text, mirroring `TargetStatusView.svelte`'s own health
+     badge (dot + label together, never color alone). */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: var(--space-3xs);
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.02em;
@@ -2680,6 +3249,74 @@
 
   .status-badge[data-status='exited'] {
     background: var(--color-fill);
+  }
+
+  /* The icon-only "selvage rail" (redesign brief §1: "status dot +
+     first-letter avatar, tooltip on hover"). */
+  .selvage-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .selvage-session {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .selvage-session:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .selvage-session:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .selvage-session.selected {
+    border-color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .selvage-session.needs-attention .selvage-avatar {
+    box-shadow: 0 0 0 2px var(--color-warning);
+  }
+
+  .selvage-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  /* `StatusDot`'s `class` prop lands inside its own component scope — see
+     `EmptyState`'s identical `:global()`-under-a-local-ancestor pattern. */
+  .selvage-session :global(.selvage-status-dot) {
+    position: absolute;
+    bottom: 0.3rem;
+    right: 0.3rem;
   }
 
   .canvas {
@@ -2940,6 +3577,18 @@
 
     .sessions.sheet-open {
       transform: translateX(0);
+    }
+
+    /* The drag-resize handle and collapse-to-selvage toggle are both a
+       wide-viewport concept (redesign brief §1) — below this width Sessions
+       is always the full sheet above, `sessionsSheetViewport` already keeps
+       the JS side from ever rendering the selvage rail here too. `IconButton`'s
+       `class` prop lands inside its own component scope, same as
+       `.selvage-session :global(.selvage-status-dot)` below — see
+       `EmptyState`'s identical `:global()`-under-a-local-ancestor pattern. */
+    .sessions-resize-handle,
+    .sessions-header-actions :global(.sessions-collapse-toggle) {
+      display: none;
     }
 
     .sessions-backdrop {
