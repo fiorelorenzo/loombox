@@ -54,4 +54,43 @@ describe('WovenLoader (#274 woven-thread loading/working motif)', () => {
     expect(root.classList.contains('woven-loader')).toBe(true);
     expect(root.classList.contains('inline-loader')).toBe(true);
   });
+
+  // Thread-draw / skeleton state (redesign brief §2/§6, issue #429): an
+  // additive third variant, same locked warp/weft geometry, same
+  // reduced-motion contract as `loading`/`working` above.
+  describe('variant="skeleton" (#429 thread-draw loading-placeholder state)', () => {
+    it('accepts the skeleton variant with the same locked geometry as the other variants', () => {
+      render(WovenLoader, { props: { variant: 'skeleton' } });
+      const root = screen.getByTestId('woven-loader');
+      expect(root.getAttribute('data-variant')).toBe('skeleton');
+      expect(root.classList.contains('woven-loader-skeleton')).toBe(true);
+      const svg = root.querySelector('svg');
+      expect(svg?.querySelectorAll('path.thread')).toHaveLength(5);
+    });
+
+    it('combines with both existing sizes, unchanged', () => {
+      render(WovenLoader, { props: { variant: 'skeleton', size: 'md' } });
+      const root = screen.getByTestId('woven-loader');
+      expect(root.getAttribute('data-size')).toBe('md');
+      expect(root.classList.contains('woven-loader-md')).toBe(true);
+
+      cleanup();
+      render(WovenLoader, { props: { variant: 'skeleton', size: 'sm' } });
+      const rootSm = screen.getByTestId('woven-loader');
+      expect(rootSm.getAttribute('data-size')).toBe('sm');
+      expect(rootSm.classList.contains('woven-loader-sm')).toBe(true);
+    });
+
+    it('respects the same explicit reduced-motion override as the other two variants', () => {
+      render(WovenLoader, { props: { variant: 'skeleton', reducedMotion: true } });
+      expect(screen.getByTestId('woven-loader').getAttribute('data-reduced-motion')).toBe('true');
+    });
+
+    it('accepts a custom accessible label for a transcript-loading placeholder use', () => {
+      render(WovenLoader, {
+        props: { variant: 'skeleton', label: 'Decrypting session history' },
+      });
+      expect(screen.getByRole('status', { name: 'Decrypting session history' })).toBeTruthy();
+    });
+  });
 });

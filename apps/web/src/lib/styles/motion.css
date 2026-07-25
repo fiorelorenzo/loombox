@@ -1,0 +1,133 @@
+/*
+ * Thread-draw motion primitive (redesign brief `docs/design/redesign.md`
+ * §2 "Shuttle Motion — extending the weave", issue #429).
+ *
+ * `WovenLoader` (issue #274) already animates its warp/weft SVG threads by
+ * traveling `stroke-dashoffset` from hidden to fully drawn. This file
+ * formalizes that same technique into a second, reusable motion
+ * vocabulary — "thread-draw" — for anything else that *fills* or
+ * *reveals*: progress/meter bars, the active-nav/active-tab indicator,
+ * and one-time reveals like the permission card's top-edge border sweep
+ * or a focus ring appearing (redesign brief §2's "thread-draw" row).
+ *
+ * This is a CSS utility layer, not a component: import it once at the app
+ * root (alongside `tokens.css`) and opt any element into it via class
+ * names, matching `WovenLoader`'s own "no JS frame loop, for battery/perf
+ * on mobile" discipline. Two forms, for the two families of element
+ * thread-draw gets used on:
+ *
+ *   1. `.thread-draw` — SVG elements with a `stroke` (paths, lines,
+ *      circles). The literal technique: set `--thread-draw-length` to the
+ *      element's path length (its total dash-array — e.g. a circle's
+ *      circumference), then let `stroke-dasharray`/`stroke-dashoffset`
+ *      travel from fully-hidden to fully-drawn. Pair it with:
+ *        - `.thread-draw-once` for a single reveal (a border sweep, a
+ *          focus ring appearing) — `--duration-weave` / `--ease-tension`.
+ *        - `.thread-draw-loop` for a continuous fill (a meter that keeps
+ *          re-sweeping while indeterminate) — `--duration-weave` / linear.
+ *
+ *   2. `.thread-draw-fill` — the non-SVG equivalent for plain block
+ *      elements (a `<div>` progress bar, the active-nav underline), using
+ *      `clip-path` as the redesign brief's "equivalent background-
+ *      position/clip-path sweep." Driven by `--thread-draw-progress`
+ *      (a `0%`–`100%` custom property): set it once for a one-time reveal
+ *      (animates via `transition`), or add `.thread-draw-fill-loop` for a
+ *      continuous end-to-end sweep that ignores the progress value.
+ *
+ * Reduced motion is handled twice, deliberately redundantly, exactly
+ * mirroring `WovenLoader`'s own contract: `tokens.css` already zeroes
+ * every `--duration-*` custom property under `prefers-reduced-motion:
+ * reduce` (so any transition/animation written against
+ * `var(--duration-weave)` already collapses to instant), and the explicit
+ * rules below additionally pin the *end* state directly (a one-time
+ * reveal jumps straight to fully-drawn/filled; a continuous loop freezes
+ * to a static, partly-transparent drawn state) so there is never a flash
+ * of the hidden state even where 0ms animations aren't well supported.
+ * `.thread-draw-reduced-motion` is the explicit, caller-set escape hatch
+ * for the same static end state — for callers that already track a
+ * user's reduced-motion preference elsewhere, and for deterministic
+ * component tests (jsdom doesn't evaluate `prefers-reduced-motion`),
+ * mirroring `WovenLoader`'s own `reducedMotion` prop.
+ */
+
+.thread-draw {
+  --thread-draw-length: 100;
+  stroke-dasharray: var(--thread-draw-length);
+  stroke-dashoffset: var(--thread-draw-length);
+}
+
+.thread-draw-once {
+  animation: thread-draw-reveal var(--duration-weave) var(--ease-tension) forwards;
+}
+
+.thread-draw-loop {
+  animation: thread-draw-reveal var(--duration-weave) linear infinite;
+}
+
+@keyframes thread-draw-reveal {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.thread-draw-fill {
+  --thread-draw-progress: 0%;
+  clip-path: inset(0 calc(100% - var(--thread-draw-progress)) 0 0);
+  transition: clip-path var(--duration-weave) var(--ease-tension);
+}
+
+.thread-draw-fill-loop {
+  animation: thread-draw-fill-sweep var(--duration-weave) linear infinite;
+}
+
+@keyframes thread-draw-fill-sweep {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+
+  to {
+    clip-path: inset(0 0% 0 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-draw-once,
+  .thread-draw-loop {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+
+  .thread-draw-loop {
+    opacity: 0.6;
+  }
+
+  .thread-draw-fill {
+    transition: none;
+  }
+
+  .thread-draw-fill-loop {
+    animation: none;
+    clip-path: inset(0 0% 0 0);
+    opacity: 0.6;
+  }
+}
+
+.thread-draw-once.thread-draw-reduced-motion,
+.thread-draw-loop.thread-draw-reduced-motion {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+
+.thread-draw-loop.thread-draw-reduced-motion {
+  opacity: 0.6;
+}
+
+.thread-draw-fill.thread-draw-reduced-motion {
+  transition: none;
+}
+
+.thread-draw-fill-loop.thread-draw-reduced-motion {
+  animation: none;
+  clip-path: inset(0 0% 0 0);
+  opacity: 0.6;
+}
