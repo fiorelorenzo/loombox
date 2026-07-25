@@ -17,29 +17,39 @@
    * `open` state to the caller, exactly like every existing hand-rolled
    * dialog in this package already works.
    *
+   * The backdrop + Esc/backdrop-click-close (and its fade transition) is
+   * `Overlay.svelte` (issue #461) — this component no longer renders its
+   * own backdrop markup, it renders its panel through `Overlay`'s
+   * `children` slot at the `--z-modal` layer. The panel's OWN focus trap
+   * stays here (Overlay deliberately traps nothing else); Escape is handled
+   * by `Overlay` and reaches `onClose` the same way a backdrop click does.
+   *
    * Motion — `thread-lift` (redesign brief §2 table: "backdrop fades
    * independently at `--duration-fast`/`--ease-beat`; card `scale(0.97→1)`
-   * + fade" at `--duration-base`/`--ease-tension`). This is the one
-   * primitive in this library that reaches for Svelte's own `in:`/`out:`
-   * transition directives rather than a plain CSS `transition`/`animation`
-   * (every other primitive here stays CSS-only, letting `tokens.css`'s
+   * + fade" at `--duration-base`/`--ease-tension`). The panel is the one
+   * primitive left here reaching for Svelte's own `in:`/`out:` transition
+   * directives rather than a plain CSS `transition`/`animation` (every
+   * other primitive in this package stays CSS-only, letting `tokens.css`'s
    * single global `prefers-reduced-motion` rule handle them for free) —
    * Dialog specifically needs a *real* exit animation, and only Svelte's
    * transition engine can delay the panel's removal from the DOM until an
    * outro finishes. The duration/easing values below mirror
-   * `--duration-base`/`--duration-fast`/`--ease-tension` and are kept in
-   * sync with `tokens.css` by hand — the same manual-sync convention
+   * `--duration-base`/`--ease-tension` and are kept in sync with
+   * `tokens.css` by hand — the same manual-sync convention
    * `$lib/viewport.ts` already uses for its breakpoint numbers, for the
    * same reason (plain TS can't read a CSS custom property at this call
    * site). `reducedMotion` forces the static (durationless) fallback,
    * mirroring `WovenLoader`'s own explicit override for callers/tests
-   * (jsdom doesn't evaluate `prefers-reduced-motion`); the automatic case
-   * is covered by a live `matchMedia` read, the same convention
-   * `$lib/theme.ts`/`$lib/accent.ts` already use for the same media query.
+   * (jsdom doesn't evaluate `prefers-reduced-motion`), and is passed
+   * through to `Overlay` so its own backdrop fade stays in sync; the
+   * automatic case is covered by a live `matchMedia` read, the same
+   * convention `$lib/theme.ts`/`$lib/accent.ts` already use for the same
+   * media query.
    */
   import type { Snippet } from 'svelte';
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
+  import Overlay from './Overlay.svelte';
 
   export type DialogSize = 'sm' | 'md' | 'lg';
 
@@ -102,11 +112,8 @@
   });
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-      return;
-    }
+    // Escape is Overlay's job now (it wraps this panel and owns the
+    // backdrop); this handler only needs the Tab focus-trap.
     if (event.key !== 'Tab') return;
     const focusable = focusableElements();
     if (focusable.length === 0) {
@@ -141,57 +148,51 @@
       css: (t: number) => `opacity: ${t}; transform: scale(${0.97 + 0.03 * t});`,
     };
   }
-
-  function backdropFade(_node: Element): TransitionConfig {
-    const duration = reduced() ? 0 : 140; // tokens.css --duration-fast
-    return { duration, easing: cubicOut, css: (t: number) => `opacity: ${t};` };
-  }
 </script>
 
-{#if open}
+<Overlay
+  {open}
+  {onClose}
+  {reducedMotion}
+  zIndex="--z-modal"
+  class="dialog-backdrop"
+  testid="dialog-backdrop"
+>
   <div
-    class="dialog-backdrop"
-    role="presentation"
-    onclick={onClose}
-    in:backdropFade
-    out:backdropFade
-    data-testid="dialog-backdrop"
+    bind:this={panelEl}
+    class={`dialog-panel dialog-panel-${size} ${className}`.trim()}
+    role="dialog"
+    aria-modal="true"
+    aria-label={label}
+    tabindex="-1"
+    onclick={(event) => event.stopPropagation()}
+    onkeydown={handleKeydown}
+    in:panelLift
+    out:panelLift
+    data-testid="dialog"
   >
-    <div
-      bind:this={panelEl}
-      class={`dialog-panel dialog-panel-${size} ${className}`.trim()}
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-      tabindex="-1"
-      onclick={(event) => event.stopPropagation()}
-      onkeydown={handleKeydown}
-      in:panelLift
-      out:panelLift
-      data-testid="dialog"
-    >
-      {#if header}
-        <div class="dialog-header">{@render header()}</div>
-      {/if}
-      <div class="dialog-body">{@render children()}</div>
-      {#if footer}
-        <div class="dialog-footer">{@render footer()}</div>
-      {/if}
-    </div>
+    {#if header}
+      <div class="dialog-header">{@render header()}</div>
+    {/if}
+    <div class="dialog-body">{@render children()}</div>
+    {#if footer}
+      <div class="dialog-footer">{@render footer()}</div>
+    {/if}
   </div>
-{/if}
+</Overlay>
 
 <style>
-  .dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-overlay);
+  /* `:global` — this class lands on the backdrop element that `Overlay`
+     (a child component) renders, not on anything `Dialog` renders directly,
+     so Svelte's per-component style scoping would otherwise never match it.
+     Position/background/z-index are `Overlay`'s own concern now; this is
+     just the dialog-specific centering layout layered on top. */
+  :global(.dialog-backdrop) {
     display: flex;
     align-items: flex-start;
     justify-content: center;
     padding: 6vh var(--space-md);
     overflow-y: auto;
-    z-index: var(--z-modal);
   }
 
   .dialog-panel {
