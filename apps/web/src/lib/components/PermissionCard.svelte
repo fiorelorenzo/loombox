@@ -21,6 +21,8 @@
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { PendingPermissionRequest } from '@loombox/providers-core';
   import DiffViewer from './DiffViewer.svelte';
+  import Button from './ui/Button.svelte';
+  import StatusDot from './ui/StatusDot.svelte';
   import { triggerHapticFeedback } from '$lib/haptics';
 
   /** Below this many options, there's nothing to collapse into an overflow menu even on a narrow viewport. */
@@ -65,10 +67,6 @@
   const overflowOptions = $derived(
     narrow ? request.options.slice(NARROW_PRIMARY_OPTION_COUNT) : [],
   );
-
-  function optionClass(kind: AcpPermissionOption['kind']): string {
-    return kind === 'allow_once' || kind === 'allow_always' ? 'option allow' : 'option reject';
-  }
 
   /**
    * Confirm/deny is irreversible (SPEC.md §7.3), so every resolve gets a
@@ -116,92 +114,159 @@
       resolveOption(request.options[index]);
     }
   }
+
+  /** primary (solid accent) for the affirmative options, danger for reject — Button
+   * variants doing the "unmistakable" work the redesign brief asks for, instead of a
+   * hand-rolled color class. */
+  function optionVariant(kind: AcpPermissionOption['kind']): 'primary' | 'danger' {
+    return kind === 'allow_once' || kind === 'allow_always' ? 'primary' : 'danger';
+  }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div
-  class="permission-card"
-  class:actionable
-  role="group"
-  tabindex="0"
-  aria-label={`Permission request: ${request.toolCall.title ?? request.toolCall.id}`}
-  onkeydown={handleKeydown}
-  data-testid="permission-card"
->
-  <div class="header">
-    <span class="title">{request.toolCall.title ?? request.toolCall.id}</span>
-  </div>
+<!--
+  Keyed on requestId (not just mounted once): the redesign brief's thread-draw
+  border sweep is meant to fire "when a request arrives" (docs/design/redesign.md
+  §6), not only on the very first mount of this component instance. Since
+  `PermissionQueueBar` reuses the same `PermissionCard` instance across FIFO heads
+  (no key on its own usage), wrapping the root in `{#key}` forces a fresh DOM node
+  — and therefore a fresh one-time CSS animation — each time the head request
+  actually changes, while leaving it alone (no replay) for any other re-render of
+  the same request (e.g. `actionable`/`narrow` flipping).
+-->
+{#key request.requestId}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="permission-card"
+    class:actionable
+    role="group"
+    tabindex="0"
+    aria-label={`Permission request: ${request.toolCall.title ?? request.toolCall.id}`}
+    onkeydown={handleKeydown}
+    data-testid="permission-card"
+  >
+    <div class="header">
+      <StatusDot
+        tone={actionable ? 'warning' : 'neutral'}
+        pulse={actionable}
+        label={actionable ? 'Waiting for your response' : 'Queued'}
+      />
+      <span class="title">{request.toolCall.title ?? request.toolCall.id}</span>
+    </div>
 
-  {#if request.toolCall.diff}
-    <DiffViewer
-      path={request.toolCall.diff.path}
-      oldText={request.toolCall.diff.oldText}
-      newText={request.toolCall.diff.newText}
-    />
-  {:else if contentText(request.toolCall.content)}
-    <pre class="field content">{contentText(request.toolCall.content)}</pre>
-  {:else if rawInputText(request.toolCall.rawInput)}
-    <pre class="field raw-input">{rawInputText(request.toolCall.rawInput)}</pre>
-  {/if}
-
-  {#if locationsText(request.toolCall.locations)}
-    <p class="locations">{locationsText(request.toolCall.locations)}</p>
-  {/if}
-
-  <div class="options" class:narrow data-testid="permission-options">
-    {#each primaryOptions as option (option.optionId)}
-      <button
-        type="button"
-        class={optionClass(option.kind)}
-        disabled={!actionable}
-        onclick={() => resolveOption(option)}
-      >
-        <span class="shortcut">{request.options.indexOf(option) + 1}</span>
-        {option.name}
-      </button>
-    {/each}
-
-    {#if overflowOptions.length > 0}
-      <button
-        type="button"
-        class="option overflow-toggle"
-        disabled={!actionable}
-        aria-expanded={overflowOpen}
-        onclick={() => (overflowOpen = !overflowOpen)}
-        data-testid="permission-overflow-toggle"
-      >
-        More ({overflowOptions.length})
-      </button>
+    {#if request.toolCall.diff}
+      <DiffViewer
+        path={request.toolCall.diff.path}
+        oldText={request.toolCall.diff.oldText}
+        newText={request.toolCall.diff.newText}
+      />
+    {:else if contentText(request.toolCall.content)}
+      <pre class="field content">{contentText(request.toolCall.content)}</pre>
+    {:else if rawInputText(request.toolCall.rawInput)}
+      <pre class="field raw-input">{rawInputText(request.toolCall.rawInput)}</pre>
     {/if}
-  </div>
 
-  {#if overflowOpen && overflowOptions.length > 0}
-    <div class="options-overflow" data-testid="permission-options-scroll">
-      {#each overflowOptions as option (option.optionId)}
-        <button
-          type="button"
-          class={optionClass(option.kind)}
+    {#if locationsText(request.toolCall.locations)}
+      <p class="locations">{locationsText(request.toolCall.locations)}</p>
+    {/if}
+
+    <div class="options" class:narrow data-testid="permission-options">
+      {#each primaryOptions as option (option.optionId)}
+        <Button
+          variant={optionVariant(option.kind)}
+          size="sm"
           disabled={!actionable}
           onclick={() => resolveOption(option)}
         >
           <span class="shortcut">{request.options.indexOf(option) + 1}</span>
           {option.name}
-        </button>
+        </Button>
       {/each}
+
+      {#if overflowOptions.length > 0}
+        <!--
+          Hand-styled to match Button's ghost variant rather than importing the
+          primitive: this control needs `data-testid`/`aria-expanded` on the real
+          button element itself (what the existing test queries and clicks), and
+          `Button` has no attribute passthrough for either.
+        -->
+        <button
+          type="button"
+          class="overflow-toggle"
+          disabled={!actionable}
+          aria-expanded={overflowOpen}
+          onclick={() => (overflowOpen = !overflowOpen)}
+          data-testid="permission-overflow-toggle"
+        >
+          More ({overflowOptions.length})
+        </button>
+      {/if}
     </div>
-  {/if}
-</div>
+
+    {#if overflowOpen && overflowOptions.length > 0}
+      <div class="options-overflow" data-testid="permission-options-scroll">
+        {#each overflowOptions as option (option.optionId)}
+          <Button
+            variant={optionVariant(option.kind)}
+            size="sm"
+            disabled={!actionable}
+            onclick={() => resolveOption(option)}
+          >
+            <span class="shortcut">{request.options.indexOf(option) + 1}</span>
+            {option.name}
+          </Button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/key}
 
 <style>
+  /* Floating elevation tier (docs/design/redesign.md §3): the one deliberate
+     exception to "status color is a left-edge stripe, never a tinted card" —
+     this card is meant to interrupt, so it earns the full raised surface +
+     `--shadow-lg` + a warning-toned border (state: this needs your response),
+     not a flat 1px rule sitting on a warning-subtle fill. */
   .permission-card {
+    position: relative;
     border: 1px solid var(--color-warning);
-    border-radius: var(--radius-xl);
-    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md) var(--space-lg);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    background: var(--color-warning-subtle);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* thread-draw (docs/design/redesign.md §2): a one-time top-edge border
+     sweep signaling "a request just arrived" — accent, not the card's own
+     warning state color, so the two meanings (state vs. arrival event) stay
+     visually distinct. Plays once per `{#key request.requestId}` mount and
+     never loops or replays while the same request stays on screen. */
+  .permission-card::before {
+    content: '';
+    position: absolute;
+    inset: -1px -1px auto -1px;
+    height: 2px;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: var(--color-accent);
+    clip-path: inset(0 100% 0 0);
+    animation: permission-card-thread-draw var(--duration-weave) var(--ease-tension) forwards;
+    pointer-events: none;
+  }
+
+  @keyframes permission-card-thread-draw {
+    to {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .permission-card::before {
+      animation: none;
+      clip-path: inset(0 0 0 0);
+    }
   }
 
   .permission-card:not(.actionable) {
@@ -209,8 +274,14 @@
   }
 
   .permission-card:focus-visible {
-    outline: 2px solid var(--color-warning);
-    outline-offset: 2px;
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
   }
 
   .title {
@@ -237,6 +308,7 @@
   .options {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-xs);
   }
 
@@ -247,9 +319,33 @@
     flex-wrap: nowrap;
   }
 
+  /* Hand-styled to match ui-button-ghost (see the template comment above on
+     why this isn't the imported `Button` component). */
   .overflow-toggle {
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) var(--space-md);
+    background: transparent;
     color: inherit;
     opacity: 0.75;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity var(--duration-fast) var(--ease-beat);
+  }
+
+  .overflow-toggle:not(:disabled):hover {
+    opacity: 1;
+    text-decoration: underline;
+  }
+
+  .overflow-toggle:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .overflow-toggle:disabled {
+    cursor: not-allowed;
   }
 
   /* Scrollable option lists (issue #134): capped height so a long
@@ -263,44 +359,39 @@
     overflow-y: auto;
   }
 
-  .option {
+  /* Keycap-style shortcut chip: a small raised tile (not just a bordered
+     digit) echoing a physical key, sitting inside each option Button's own
+     label. */
+  .shortcut {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
-    border-radius: var(--radius-md);
-    border: 1px solid currentColor;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    background: transparent;
-    font-size: var(--text-small-size);
-  }
-
-  .option.allow {
-    color: var(--color-success);
-  }
-
-  .option.reject {
-    color: var(--color-danger);
-  }
-
-  .option:disabled {
-    cursor: not-allowed;
-  }
-
-  .shortcut {
-    opacity: 0.55;
+    justify-content: center;
+    min-width: 1.1rem;
+    margin-right: var(--space-2xs);
+    opacity: 0.85;
+    font-family: var(--font-mono);
     font-size: 0.7rem;
     border: 1px solid currentColor;
     border-radius: var(--radius-sm);
     padding: 0 var(--space-2xs);
+    box-shadow: 0 1px 0 currentColor;
   }
 
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a
      coarse (touch) pointer, the confirm/deny/overflow buttons grow to at
-     least the ~44px hit target both major mobile platforms recommend,
-     instead of the compact desktop sizing above. */
+     least the ~44px hit target both major mobile platforms recommend. The
+     option buttons are the shared `Button` primitive now (`size="sm"`,
+     which alone only grows to 2.5rem under coarse pointer) — this keeps the
+     permission card's own, slightly larger, pre-existing touch target. */
   @media (pointer: coarse) {
-    .option {
+    .options :global(.ui-button),
+    .options-overflow :global(.ui-button) {
+      min-height: 2.75rem;
+      padding: 0.55rem 0.9rem;
+      font-size: 0.95rem;
+    }
+
+    .overflow-toggle {
       min-height: 2.75rem;
       padding: 0.55rem 0.9rem;
       font-size: 0.95rem;
