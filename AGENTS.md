@@ -78,6 +78,26 @@ branch-protection rule cannot mark the check "required"; the gate is procedural,
 CI runs on every PR and we never merge a red one, always via a feature branch + PR,
 never a direct push to `main`.
 
+## Testing the desktop app on the Mac (from the devbox)
+
+The Electron desktop app (`apps/desktop`) can only render on the Mac (the devbox is
+headless — no GUI, no Chrome). Do not ask the human to run anything by hand: launch it
+for them with one command from the devbox.
+
+```bash
+scripts/mac-desktop.sh                 # the branch we're on now (auto-published to origin)
+scripts/mac-desktop.sh some-branch     # a specific branch already on origin
+PWA_URL=http://localhost:5173 scripts/mac-desktop.sh   # point the app at a dev server
+```
+
+It publishes the branch under development, hard-resets the Mac's checkout to it,
+reinstalls, stops any running dev instance, and relaunches the Electron window in the
+Mac's GUI session (via `open`/LaunchServices — `launchctl asuser` needs root over SSH).
+Everything is auto-detected; override with `MAC_HOST`, `LOOMBOX_MAC_REPO`, `PWA_URL`.
+The desktop shell comes from the branch; the UI it loads is the deployed PWA
+(`app.loombox.dev`) unless `PWA_URL` overrides it. So to test unmerged **web** changes,
+either deploy them to `app.loombox.dev` first or point `PWA_URL` at a dev server.
+
 ## Build order
 
 Ship in milestone order — **v0** (validation spike) → **v1** (core cockpit) → **v2**
