@@ -175,6 +175,27 @@ export {
 } from './fs';
 
 export type {
+  TargetFsListErrorV1,
+  TargetFsListRequest,
+  TargetFsListRequestPayloadV1,
+  TargetFsListResponse,
+  TargetFsListResponsePayloadV1,
+  TargetFsListResultV1,
+} from './target-fs';
+export {
+  parseTargetFsListRequestPayloadV1,
+  parseTargetFsListResponsePayloadV1,
+  safeParseTargetFsListRequestPayloadV1,
+  safeParseTargetFsListResponsePayloadV1,
+  targetFsListErrorV1,
+  targetFsListRequest,
+  targetFsListRequestPayloadV1,
+  targetFsListResponse,
+  targetFsListResponsePayloadV1,
+  targetFsListResultV1,
+} from './target-fs';
+
+export type {
   TerminalClose,
   TerminalClosed,
   TerminalClosedPayloadV1,
@@ -339,6 +360,14 @@ import {
   fsListResponsePayloadV1,
   fsListResultV1,
 } from './fs';
+import {
+  targetFsListErrorV1,
+  targetFsListRequest,
+  targetFsListRequestPayloadV1,
+  targetFsListResponse,
+  targetFsListResponsePayloadV1,
+  targetFsListResultV1,
+} from './target-fs';
 import { presence, resyncMarker, resyncRequest } from './presence';
 import {
   leaseDenial,
@@ -440,6 +469,12 @@ export const schemasV1 = {
   fsListResponsePayloadV1,
   fsListRequest,
   fsListResponse,
+  targetFsListRequestPayloadV1,
+  targetFsListResultV1,
+  targetFsListErrorV1,
+  targetFsListResponsePayloadV1,
+  targetFsListRequest,
+  targetFsListResponse,
   terminalOpenPayloadV1,
   terminalOpenResultPayloadV1,
   terminalDataPayloadV1,

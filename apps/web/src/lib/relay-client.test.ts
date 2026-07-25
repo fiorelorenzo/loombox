@@ -97,6 +97,16 @@ async function deriveNodeSessionKey(
   return importAesGcmKey(node.key);
 }
 
+/** The directory picker's own derivation (issue #474) — `['target', accountId, targetId]`, mirroring `deriveNodeSessionKey` above but never the same key, even for the same account. */
+async function deriveNodeTargetKey(
+  amk: Uint8Array,
+  accountId: string,
+  targetId: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
+  return importAesGcmKey(node.key);
+}
+
 async function nodeSeal(
   sessionId: string,
   value: unknown,
@@ -2354,6 +2364,206 @@ describe('RelayClient: listTargets (issue #383)', () => {
       healthy: true,
       sampledAt: 1_700_000_000_000,
     });
+  });
+});
+
+describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474)', () => {
+  it('resolves with a decrypted directory listing from the owning node, sealed under a per-target key (not the session key)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-dirpicker-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-dirpicker-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-dirpicker-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const browsePromise = client.browseDirectory({
+      nodeId: 'node_1',
+      targetId: 'local',
+      path: '',
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'target_fs_list_request')) as {
+      type: 'target_fs_list_request';
+      nodeId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.nodeId).toBe('node_1');
+    expect(request.targetId).toBe('local');
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'nodeId', 'protocolVersion', 'requestId', 'targetId', 'type'].sort(),
+    );
+
+    const key = await deriveNodeTargetKey(amk, accountId, 'local');
+    const requestPayload = await nodeOpen<{ path: string }>('local', request.envelope, key);
+    expect(requestPayload).toEqual({ path: '' });
+
+    const responseEnvelope = await nodeSeal(
+      'local',
+      {
+        outcome: 'ok',
+        path: '/home/lorenzo',
+        entries: [
+          { name: 'projects', kind: 'dir', size: 0 },
+          { name: '.bashrc', kind: 'file', size: 220 },
+        ],
+      },
+      key,
+    );
+    node.send({
+      type: 'target_fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      targetId: 'local',
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const payload = await browsePromise;
+    expect(payload).toEqual({
+      outcome: 'ok',
+      path: '/home/lorenzo',
+      entries: [
+        { name: 'projects', kind: 'dir', size: 0 },
+        { name: '.bashrc', kind: 'file', size: 220 },
+      ],
+    });
+  });
+
+  it('resolves with an error outcome payload rather than rejecting, when the node reports one', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-dirpicker-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-dirpicker-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-dirpicker-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const browsePromise = client.browseDirectory({
+      nodeId: 'node_2',
+      targetId: 'local',
+      path: '/root',
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'target_fs_list_request')) as {
+      requestId: string;
+    };
+    const key = await deriveNodeTargetKey(amk, accountId, 'local');
+    const errorEnvelope = await nodeSeal(
+      'local',
+      { outcome: 'error', path: '/root', message: 'permission denied' },
+      key,
+    );
+    node.send({
+      type: 'target_fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      targetId: 'local',
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    const payload = await browsePromise;
+    expect(payload).toEqual({ outcome: 'error', path: '/root', message: 'permission denied' });
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-dirpicker-no-conn',
+      deviceId: 'client-dirpicker-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(
+      client.browseDirectory({ nodeId: 'node_x', targetId: 'local', path: '' }),
+    ).rejects.toThrow(/no open connection/);
+  });
+
+  it("ignores a target_fs_list_response for another device's own pending request (not addressed to this client)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-dirpicker-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-dirpicker-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_3',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-dirpicker-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const browsePromise = client.browseDirectory(
+      { nodeId: 'node_3', targetId: 'local', path: '' },
+      200,
+    );
+    // Swallow the eventual timeout rejection below; the assertion is that it
+    // times out at all (never resolved by the foreign reply).
+    browsePromise.catch(() => undefined);
+
+    await node.waitFor((m) => m.type === 'target_fs_list_request');
+    const key = await deriveNodeTargetKey(amk, accountId, 'local');
+    const foreignEnvelope = await nodeSeal('local', { outcome: 'ok', path: '', entries: [] }, key);
+    node.send({
+      type: 'target_fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      targetId: 'local',
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await expect(browsePromise).rejects.toThrow(/timed out/);
   });
 });
 

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { webcrypto } from 'node:crypto';
 import { mkdir as fsMkdir, mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -188,6 +188,16 @@ async function derivePhoneSessionKey(
   sessionId: string,
 ): Promise<CryptoKey> {
   const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
+  return importAesGcmKey(node.key);
+}
+
+/** The directory picker's own derivation (issue #474) — `['target', accountId, targetId]`, mirroring `derivePhoneSessionKey` above but never the same key, even for the same account (see `NodeDaemon`'s `deriveTargetKey` doc comment). */
+async function derivePhoneTargetKey(
+  amk: Uint8Array,
+  accountId: string,
+  targetId: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
   return importAesGcmKey(node.key);
 }
 
@@ -1049,6 +1059,225 @@ describe('NodeDaemon fs-list (read-only file-tree panel, SPEC §7.4; issue #171)
       );
       expect(payload.outcome).toBe('error');
     }
+  });
+});
+
+describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
+  it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-target-fs-1',
+      deviceId: 'device-node-target-fs-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const key = await derivePhoneTargetKey(amk, accountId, 'local');
+
+    // A directory this test controls (not a session worktree — the whole
+    // point of the picker is browsing BEFORE any session exists), nested
+    // under `projectPath` (which `beforeEach` already `git init`s) so this
+    // one has exactly the two entries below, mixing a file and a directory
+    // to prove the dirs-first sort.
+    const browseDir = pathJoin(projectPath, 'browse-me');
+    await fsMkdir(browseDir);
+    await fsWriteFile(pathJoin(browseDir, 'README.md'), '# hi');
+    await fsMkdir(pathJoin(browseDir, 'src'));
+    await fsWriteFile(pathJoin(browseDir, 'src', 'index.ts'), 'export {};');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-target-fs-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // Sealed/opened under `targetId` ('local') as the resource id — SPEC
+    // §8's AAD binding — exactly what `NodeDaemon`'s `decryptTargetFsListRequest`/
+    // `sendTargetFsListResponse` use, not the path being browsed.
+    const requestEnvelope = await phoneSeal('local', { path: browseDir }, key);
+    assertOpaque(requestEnvelope, ['README.md', 'src']);
+    phone.send({
+      type: 'target_fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-target-fs-1',
+      targetId: 'local',
+      requestId: 'req-dir-root',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_fs_list_response' &&
+        (m as { requestId?: string }).requestId === 'req-dir-root',
+    )) as { type: 'target_fs_list_response'; targetId: string; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['README.md', 'src']);
+
+    const payload = await phoneOpen<{
+      outcome: string;
+      path: string;
+      entries?: { name: string; kind: string; size: number }[];
+    }>('local', response.envelope, key);
+    expect(payload.outcome).toBe('ok');
+    expect(payload.path).toBe(browseDir);
+    // Dirs first (SPEC §7.25's acceptance), then alphabetical — a
+    // directory's own reported `size` is filesystem-dependent, so only
+    // name/kind (and the ORDER) are asserted for it; the file's size is
+    // real content and asserted exactly.
+    expect(payload.entries?.map((entry) => ({ name: entry.name, kind: entry.kind }))).toEqual([
+      { name: 'src', kind: 'dir' },
+      { name: 'README.md', kind: 'file' },
+    ]);
+    expect(payload.entries?.find((entry) => entry.name === 'README.md')?.size).toBe(4);
+  });
+
+  it("resolves an empty path to the local target's own home directory", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-home';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-target-fs-2',
+      deviceId: 'device-node-target-fs-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const key = await derivePhoneTargetKey(amk, accountId, 'local');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-target-fs-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const requestEnvelope = await phoneSeal('local', { path: '' }, key);
+    phone.send({
+      type: 'target_fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-target-fs-2',
+      targetId: 'local',
+      requestId: 'req-dir-home',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_fs_list_response' &&
+        (m as { requestId?: string }).requestId === 'req-dir-home',
+    )) as { type: 'target_fs_list_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; path: string }>(
+      'local',
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('ok');
+    expect(payload.path).toBe(homedir());
+  });
+
+  it('ignores a target_fs_list_request for a target this node does not own, instead of throwing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-unknown';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-target-fs-3',
+      deviceId: 'device-node-target-fs-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const key = await derivePhoneTargetKey(amk, accountId, 'does-not-exist');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-target-fs-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const requestEnvelope = await phoneSeal('does-not-exist', { path: '' }, key);
+    phone.send({
+      type: 'target_fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-target-fs-3',
+      targetId: 'does-not-exist',
+      requestId: 'req-dir-unknown',
+      envelope: requestEnvelope,
+    });
+
+    // Give the node a beat to (not) reply, then prove it's still alive.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(phone.count((m) => m.type === 'target_fs_list_response')).toBe(0);
+  });
+
+  it('a missing directory replies with an error outcome instead of leaking data or hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-error';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-target-fs-4',
+      deviceId: 'device-node-target-fs-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const key = await derivePhoneTargetKey(amk, accountId, 'local');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-target-fs-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const missingPath = pathJoin(projectPath, 'does-not-exist');
+    const requestEnvelope = await phoneSeal('local', { path: missingPath }, key);
+    phone.send({
+      type: 'target_fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-target-fs-4',
+      targetId: 'local',
+      requestId: 'req-dir-missing',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_fs_list_response' &&
+        (m as { requestId?: string }).requestId === 'req-dir-missing',
+    )) as { type: 'target_fs_list_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; message?: string }>(
+      'local',
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('error');
   });
 });
 

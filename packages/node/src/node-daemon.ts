@@ -1,5 +1,6 @@
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { homedir } from 'node:os';
 import { basename, posix } from 'node:path';
 
 import type {
@@ -19,7 +20,13 @@ import {
   type AttentionStatus,
   type TerminalSession,
 } from '@loombox/supervisor';
-import { deriveSessionKey, openJson, sealJson } from '@loombox/crypto';
+import {
+  deriveKeyTree,
+  deriveSessionKey,
+  importAesGcmKey,
+  openJson,
+  sealJson,
+} from '@loombox/crypto';
 import {
   PROTOCOL_V1,
   type AmkEpochPendingEnvelope,
@@ -34,6 +41,9 @@ import {
   type SessionCreate,
   type SessionMetaPublic,
   type TargetDescriptor,
+  type TargetFsListRequest,
+  type TargetFsListRequestPayloadV1,
+  type TargetFsListResponsePayloadV1,
   type TargetResourceSample,
   type TerminalClose,
   type TerminalClosedPayloadV1,
@@ -402,6 +412,35 @@ function resolveSessionRelativePath(root: string, requestedPath: string): string
 }
 
 /**
+ * Derives one target's symmetric key from the account's AMK (SPEC §7.25's
+ * directory picker; issue #474) — the crypto boundary a `target_fs_list_
+ * request`/`target_fs_list_response` is sealed under, NOT
+ * `deriveSessionKey`'s session-derived key, since there is no session yet
+ * when browsing a target. Path: `['target', accountId, targetId]`,
+ * namespaced under its own `'target'` segment exactly like
+ * `deriveSessionKey`'s `'session'` segment (`packages/crypto/src/session-
+ * keys.ts`'s doc comment), so it can never collide with a session key even
+ * for the same account.
+ *
+ * Lives here rather than in `@loombox/crypto` (unlike `deriveSessionKey`)
+ * because this issue's scope doesn't touch that package — duplicated
+ * verbatim in `apps/web/src/lib/relay-client.ts`'s own `deriveTargetKey` so
+ * both sides derive the identical key from the same already-exported
+ * `deriveKeyTree`/`importAesGcmKey` primitives (see that copy's doc comment
+ * for the same reasoning). Any future third caller of this exact derivation
+ * should be the trigger to promote it into `@loombox/crypto` alongside
+ * `deriveSessionKey`, rather than growing a third copy.
+ */
+async function deriveTargetKey(
+  amk: Uint8Array,
+  accountId: string,
+  targetId: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
+  return importAesGcmKey(node.key);
+}
+
+/**
  * Emitted once per attachment after {@link NodeDaemon.resolveAttachment}
  * fetches and decrypts it while handling an inbound `prompt_inject` (SPEC
  * §7.25 "Deliver to the executing host"; issue #156) — the plaintext bytes
@@ -507,6 +546,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly bridges = new Map<string, SessionBridge>();
   private _connected = false;
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
+  /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per process, same caching shape as {@link sessionKeys}. */
+  private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
 
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
@@ -1400,7 +1441,8 @@ export class NodeDaemon extends EventEmitter {
    * `handleAmkEpochFetchResponse` applies before ever emitting, re-checked
    * here since adoption is the security-relevant step and callers should
    * never be trusted to skip a stale epoch on their own. Clears every
-   * cached session key so any *new* session created after this call derives
+   * cached session key (and {@link targetKeys}, issue #474's directory
+   * picker) so any *new* session/target-browse after this call derives
    * from the new epoch; already-cached keys for sessions created before
    * rotation are left alone for this process's remaining lifetime (see
    * `session-keys.ts`'s doc comment for why the AMK is the sole root of
@@ -1412,6 +1454,7 @@ export class NodeDaemon extends EventEmitter {
     this.amk = newAmk;
     this.amkEpoch = epoch;
     this.sessionKeys.clear();
+    this.targetKeys.clear();
     this.emit('amk-epoch-adopted', { epoch });
     return true;
   }
@@ -1481,6 +1524,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'fs_list_request':
         this.handleFsListRequest(message);
+        return;
+      case 'target_fs_list_request':
+        this.handleTargetFsListRequest(message);
         return;
       case 'terminal_open':
         this.handleTerminalOpen(message);
@@ -1809,6 +1855,123 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * A client asked (via the relay) this node to list a directory on one of
+   * its OWN targets' filesystems, before any session exists there (SPEC
+   * §7.25's directory picker; issue #474) — `handleFsListRequest`'s
+   * target-scoped sibling, keyed by `targetId` directly rather than an
+   * existing session's `sessionId`. Ignored if `targetId` isn't one of this
+   * node's own targets (mirrors `handleSessionCreate`'s same guard). A
+   * decrypt failure is logged and dropped (there is no path to reply
+   * about); everything past that — an unreadable/missing directory, an
+   * `ssh:` transport failure — becomes an `outcome: 'error'` response
+   * instead of a silent drop, exactly like `handleFsListRequest`'s own
+   * contract.
+   */
+  private handleTargetFsListRequest(message: TargetFsListRequest): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(`NodeDaemon: target_fs_list_request for unknown target "${message.targetId}"`);
+      return;
+    }
+
+    this.decryptTargetFsListRequest(message)
+      .then((payload) => this.listDirectoryForTarget(message.targetId, payload.path))
+      .then((responsePayload) =>
+        this.sendTargetFsListResponse(message.targetId, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle target_fs_list_request for target ${message.targetId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTargetFsListRequest(
+    message: TargetFsListRequest,
+  ): Promise<TargetFsListRequestPayloadV1> {
+    const key = await this.getTargetKey(message.targetId);
+    return openJson<TargetFsListRequestPayloadV1>(message.targetId, message.envelope, key);
+  }
+
+  /**
+   * Lists `requestedPath` directly on `targetId`'s filesystem — unlike
+   * {@link listDirectoryForBridge}, there is no session worktree root to
+   * bound traversal against (SPEC §7.25: the whole point is browsing to
+   * PICK a project directory, anywhere the target can reach), so an empty/
+   * `.` path resolves to the target's own home directory instead of a
+   * session root (see {@link resolveTargetFsPath}). Entries come back
+   * directories-first, then alphabetically, since this is meant to drive a
+   * picker (SPEC §7.25's acceptance) rather than merely mirror the
+   * filesystem's own return order. Never throws: a failure becomes an
+   * `outcome: 'error'` payload, exactly like `listDirectoryForBridge`.
+   */
+  private async listDirectoryForTarget(
+    targetId: string,
+    requestedPath: string,
+  ): Promise<TargetFsListResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(targetId);
+      const resolvedPath = await this.resolveTargetFsPath(target, requestedPath);
+      const entries = await target.readdirDetailed(resolvedPath);
+      const mapped = entries.map((entry) => ({
+        name: entry.name,
+        // `readdirDetailed`'s `'other'` (socket/device/fifo) collapses to
+        // `'file'` on the wire, same as `listDirectoryForBridge`'s own map.
+        kind: entry.type === 'other' ? ('file' as const) : entry.type,
+        size: entry.size,
+      }));
+      mapped.sort((a, b) => {
+        if (a.kind === 'dir' && b.kind !== 'dir') return -1;
+        if (b.kind === 'dir' && a.kind !== 'dir') return 1;
+        return a.name.localeCompare(b.name);
+      });
+      return { outcome: 'ok', path: resolvedPath, entries: mapped };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: requestedPath, message: detail };
+    }
+  }
+
+  /**
+   * Resolves an empty/`.` `requestedPath` to `target`'s own home directory;
+   * any other value is used as-is (SPEC §7.25: browsing here is not bounded
+   * to a project root). `local` reaches for `os.homedir()` directly
+   * (mirrors `resource-sampler.ts`'s own `diskPath` default); `ssh:` has no
+   * such direct handle, so this runs `pwd` with no `cwd` override —
+   * `ExecutionTarget.exec`'s own "omit for the target's own default", which
+   * for a real login shell is ordinarily `$HOME`.
+   */
+  private async resolveTargetFsPath(
+    target: ExecutionTarget,
+    requestedPath: string,
+  ): Promise<string> {
+    const trimmed = requestedPath.trim();
+    if (trimmed !== '' && trimmed !== '.') return trimmed;
+    if (target.kind === 'local') return homedir();
+    const result = await target.exec('pwd', []);
+    if (result.exitCode !== 0) {
+      throw new Error(`could not resolve the target's default directory: ${result.stderr.trim()}`);
+    }
+    return result.stdout.trim();
+  }
+
+  private async sendTargetFsListResponse(
+    targetId: string,
+    requestId: string,
+    payload: TargetFsListResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getTargetKey(targetId);
+    const envelope = await sealJson(targetId, payload, key);
+    this.relay.send({
+      type: 'target_fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      targetId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
    * A client asked (via the relay) this node to open a new interactive PTY
    * terminal on one of its sessions' targets (SPEC §7.5; issues #172/#173).
    * Ignored if `sessionId` isn't one of this node's own bridges (mirrors
@@ -2078,6 +2241,16 @@ export class NodeDaemon extends EventEmitter {
     if (!key) {
       key = deriveSessionKey(this.amk, this.accountId, sessionId);
       this.sessionKeys.set(sessionId, key);
+    }
+    return key;
+  }
+
+  /** Same caching shape as {@link getSessionKey}, for {@link targetKeys} (issue #474's directory picker). */
+  private getTargetKey(targetId: string): Promise<CryptoKey> {
+    let key = this.targetKeys.get(targetId);
+    if (!key) {
+      key = deriveTargetKey(this.amk, this.accountId, targetId);
+      this.targetKeys.set(targetId, key);
     }
     return key;
   }

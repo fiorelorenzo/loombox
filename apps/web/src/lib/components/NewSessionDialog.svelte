@@ -32,8 +32,20 @@
    * `new-session-add-target-cta` keep their exact selectors), and the two
    * inline error lines (`targetsError`/`createError`) now read through
    * `ErrorNotice` instead of a hand-styled `<p class="error">`.
+   *
+   * Directory picker (SPEC §7.25, design spec §3.1; issue #474): the bare
+   * `projectPath` `<input>` gives way to `DirectoryPicker.svelte`, which
+   * browses the SELECTED target's own filesystem via `RelayClient.
+   * browseDirectory()` — so it needs that target's `nodeId` alongside
+   * `selectedTargetId` (`TargetListEntry` already carries both), looked up
+   * once here rather than making the picker re-derive it. The picker keeps
+   * `new-session-project-path` as its manual-entry input's own
+   * `data-testid` (its `inputTestId` override), so this component's own
+   * `canSubmit`/`handleSubmit` and this file's existing tests are
+   * unaffected by the swap.
    */
   import type { CreateSessionOptions, TargetListEntry } from '$lib/relay-client';
+  import DirectoryPicker, { type DirectoryPickerClient } from './DirectoryPicker.svelte';
   import TargetPicker from './TargetPicker.svelte';
   import WovenLoader from './WovenLoader.svelte';
   import Button from './ui/Button.svelte';
@@ -41,7 +53,7 @@
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
 
-  export interface NewSessionClient {
+  export interface NewSessionClient extends DirectoryPickerClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
     createSession: (options: CreateSessionOptions) => Promise<string>;
   }
@@ -67,6 +79,11 @@
   let prompt = $state('');
   let creating = $state(false);
   let createError = $state<string | undefined>(undefined);
+
+  /** The selected target's own `nodeId` — `DirectoryPicker`'s other routing half alongside `selectedTargetId` (`RelayClient.browseDirectory`'s `nodeId`+`targetId` pair). `undefined` while nothing's selected yet, same as `selectedTargetId`. */
+  const selectedNodeId = $derived(
+    targets.find((target) => target.targetId === selectedTargetId)?.nodeId,
+  );
 
   // Re-fetches (and resets the form) every time the dialog actually opens,
   // or once `client` becomes available while it's already open (the very
@@ -174,14 +191,17 @@
       <option value="claude">Claude Code</option>
     </select>
 
-    <label for="new-session-project-path">Project folder</label>
-    <input
-      id="new-session-project-path"
-      type="text"
-      placeholder="/home/you/project"
-      bind:value={projectPath}
-      data-testid="new-session-project-path"
-    />
+    <span class="field-label" id="new-session-project-path-label">Project folder</span>
+    <div role="group" aria-labelledby="new-session-project-path-label">
+      <DirectoryPicker
+        {client}
+        nodeId={selectedNodeId}
+        targetId={selectedTargetId}
+        value={projectPath}
+        onChange={(path) => (projectPath = path)}
+        inputTestId="new-session-project-path"
+      />
+    </div>
 
     <label for="new-session-title">Title (optional)</label>
     <input
@@ -246,7 +266,9 @@
     gap: var(--space-2xs);
   }
 
-  .session-form label {
+  .session-form label,
+  .session-form .field-label {
+    display: block;
     margin-top: var(--space-xs);
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
