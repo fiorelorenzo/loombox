@@ -5,6 +5,7 @@
   import { useRegisterSW } from 'virtual:pwa-register/svelte';
   import '$lib/styles/tokens.css';
   import '$lib/styles/typography.css';
+  import '$lib/styles/motion.css';
   import { themeStore } from '$lib/theme';
   import { accentStore } from '$lib/accent';
 
