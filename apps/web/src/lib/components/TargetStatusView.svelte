@@ -24,9 +24,24 @@
    * - Anything else with a health reading is "Healthy"; no reading yet at
    *   all (a node that hasn't completed its first sample tick) is
    *   "No data yet" rather than any of the above.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §3/§4/§6,
+   * issue #436): each row keeps its `raised` elevation tier but gains a
+   * quiet left-edge stripe keyed by `healthState`, mirroring
+   * `AttentionInbox`'s treatment so both attention surfaces read as one
+   * family; the health badge grows a `StatusDot` alongside its (now
+   * larger) text, and the CPU/RAM/disk meters switch from a plain `width`
+   * transition to the shared `thread-draw-fill` primitive
+   * (`$lib/styles/motion.css`). Empty and error states adopt the shared
+   * `EmptyState`/`ErrorNotice` primitives. All `data-testid`s, DOM
+   * structure the tests query, `focusTarget` highlighting, and every
+   * callback contract are unchanged.
    */
   import type { TargetHealth, TargetListEntry } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
+  import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   export interface FocusTarget {
     nodeId: string;
@@ -86,6 +101,15 @@
     healthy: 'Healthy',
   };
 
+  /** Maps `HealthState` onto the shared `StatusDot` tone vocabulary — the same four semantic colors this view's own badge already carries, just also driving the dot. */
+  const HEALTH_TONES: Record<HealthState, StatusTone> = {
+    'no-data': 'neutral',
+    'node-offline': 'danger',
+    unreachable: 'danger',
+    overloaded: 'warning',
+    healthy: 'success',
+  };
+
   function meterLevel(percent: number): 'ok' | 'elevated' | 'high' {
     if (percent >= OVERLOAD_PERCENT) return 'high';
     if (percent >= 75) return 'elevated';
@@ -113,13 +137,20 @@
   <div class="header">
     <h2>Nodes &amp; targets</h2>
     <div class="header-actions">
-      <button type="button" onclick={onRefresh} data-testid="target-status-refresh">Refresh</button>
-      <button type="button" onclick={onClose} data-testid="target-status-close">Close</button>
+      <button
+        type="button"
+        class="header-btn"
+        onclick={onRefresh}
+        data-testid="target-status-refresh">Refresh</button
+      >
+      <button type="button" class="header-btn" onclick={onClose} data-testid="target-status-close"
+        >Close</button
+      >
     </div>
   </div>
 
   {#if error}
-    <p class="error" role="alert">{error}</p>
+    <ErrorNotice message={error} retryable onRetry={onRefresh} />
   {/if}
 
   {#if loading}
@@ -128,7 +159,7 @@
       Checking node/target status…
     </p>
   {:else if targets.length === 0}
-    <p class="empty">No nodes/targets connected yet.</p>
+    <EmptyState message="No nodes/targets connected yet." />
   {:else}
     <ul class="target-rows">
       {#each targets as target (rowKey(target))}
@@ -137,15 +168,20 @@
           <div
             data-testid={`target-status-row-${rowKey(target)}`}
             class="target-row-inner"
+            data-health={state}
             class:focused={isFocused(target)}
           >
             <div class="target-heading">
               <strong>{target.label}</strong>
               <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
               <span class="node-id font-mono">{target.nodeId}</span>
-              <span class="agent-health-badge" data-testid="agent-health-badge" data-state={state}>
-                {HEALTH_LABELS[state]}
-              </span>
+              <span class="agent-health-badge" data-testid="agent-health-badge" data-state={state}
+                ><StatusDot
+                  tone={HEALTH_TONES[state]}
+                  label={HEALTH_LABELS[state]}
+                  size="sm"
+                />{HEALTH_LABELS[state]}</span
+              >
             </div>
 
             {#if target.health}
@@ -155,9 +191,9 @@
                   <span class="meter-label">CPU</span>
                   <div class="meter" data-testid="cpu-meter">
                     <div
-                      class="meter-fill"
+                      class="meter-fill thread-draw-fill"
                       data-level={meterLevel(health.cpuPercent)}
-                      style={`width: ${Math.min(100, health.cpuPercent)}%`}
+                      style={`--thread-draw-progress: ${Math.min(100, health.cpuPercent)}%`}
                     ></div>
                   </div>
                   <span class="meter-value">{Math.round(health.cpuPercent)}%</span>
@@ -166,9 +202,9 @@
                   <span class="meter-label">RAM</span>
                   <div class="meter" data-testid="mem-meter">
                     <div
-                      class="meter-fill"
+                      class="meter-fill thread-draw-fill"
                       data-level={meterLevel(health.memPercent)}
-                      style={`width: ${Math.min(100, health.memPercent)}%`}
+                      style={`--thread-draw-progress: ${Math.min(100, health.memPercent)}%`}
                     ></div>
                   </div>
                   <span class="meter-value"
@@ -181,9 +217,9 @@
                   <span class="meter-label">Disk</span>
                   <div class="meter" data-testid="disk-meter">
                     <div
-                      class="meter-fill"
+                      class="meter-fill thread-draw-fill"
                       data-level={meterLevel(health.diskPercent)}
-                      style={`width: ${Math.min(100, health.diskPercent)}%`}
+                      style={`--thread-draw-progress: ${Math.min(100, health.diskPercent)}%`}
                     ></div>
                   </div>
                   <span class="meter-value"
@@ -220,6 +256,10 @@
 
   .header h2 {
     margin: 0;
+    font-size: var(--text-title-size);
+    line-height: var(--text-title-line);
+    font-weight: var(--text-title-weight);
+    color: var(--color-text-primary);
   }
 
   .header-actions {
@@ -227,22 +267,50 @@
     gap: var(--space-xs);
   }
 
+  /* Hand-styled to match `Button`'s secondary visual language (redesign
+     brief §4) — kept as plain buttons, not the shared component, so the
+     `target-status-refresh`/`target-status-close` `data-testid`s stay on
+     the actual clickable element the tests query. */
+  .header-btn {
+    padding: var(--space-2xs) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-strong);
+    background: transparent;
+    color: var(--color-text-primary);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
+  }
+
+  .header-btn:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  /* tension-press (redesign brief §2). */
+  .header-btn:active {
+    background: var(--color-fill);
+    transform: scale(0.98);
+  }
+
+  .header-btn:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
   .loading-state {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-    opacity: 0.8;
+    color: var(--color-text-secondary);
   }
 
-  .empty,
   .no-data {
     opacity: 0.6;
     font-size: var(--text-small-size);
     margin: 0;
-  }
-
-  .error {
-    color: var(--color-danger);
   }
 
   .target-rows {
@@ -258,6 +326,10 @@
     display: contents;
   }
 
+  /* Raised elevation tier (redesign brief §3), plus a quiet left-edge
+     stripe keyed by `healthState` — the same "stripe, not a tinted card"
+     language `AttentionInbox` uses, so both attention surfaces read as
+     one family. */
   .target-row-inner {
     display: flex;
     flex-direction: column;
@@ -265,7 +337,29 @@
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
+    border-left-width: var(--space-2xs);
     background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
+    transition:
+      border-color var(--duration-fast) var(--ease-beat),
+      box-shadow var(--duration-fast) var(--ease-beat);
+  }
+
+  .target-row-inner[data-health='healthy'] {
+    border-left-color: var(--color-success);
+  }
+
+  .target-row-inner[data-health='overloaded'] {
+    border-left-color: var(--color-warning);
+  }
+
+  .target-row-inner[data-health='unreachable'],
+  .target-row-inner[data-health='node-offline'] {
+    border-left-color: var(--color-danger);
+  }
+
+  .target-row-inner[data-health='no-data'] {
+    border-left-color: var(--color-border-strong);
   }
 
   .target-row-inner.focused {
@@ -283,23 +377,33 @@
   .kind-badge {
     text-transform: uppercase;
     letter-spacing: 0.02em;
-    font-size: 0.7rem;
+    font-size: var(--text-small-size);
+    font-weight: 600;
     padding: var(--space-3xs) var(--space-xs);
     border-radius: var(--radius-full);
     background: var(--color-fill);
   }
 
   .node-id {
-    font-size: 0.7rem;
+    font-size: var(--text-small-size);
     opacity: 0.7;
   }
 
+  /* Health/status badge (redesign brief §6, issue #436): a `StatusDot`
+     alongside its own text, both legibly larger than the previous
+     0.7rem — color-by-state stays on the badge itself, so the dot
+     reinforces rather than replaces the accessible text label. */
   .agent-health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
     margin-left: auto;
-    font-size: 0.7rem;
-    padding: var(--space-3xs) var(--space-xs);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-full);
     background: var(--color-fill);
+    transition: background-color var(--duration-fast) var(--ease-beat);
   }
 
   .agent-health-badge[data-state='healthy'] {
@@ -343,7 +447,12 @@
     overflow: hidden;
   }
 
+  /* thread-draw-fill (redesign brief §2, `$lib/styles/motion.css`): the
+     fill spans the full track and reveals only its `--thread-draw-progress`
+     share via `clip-path`, replacing the previous plain `width` transition
+     — with `motion.css`'s own reduced-motion fallback applying for free. */
   .meter-fill {
+    width: 100%;
     height: 100%;
     border-radius: var(--radius-full);
     background: var(--color-accent);
@@ -364,7 +473,7 @@
 
   .sampled-at {
     align-self: flex-end;
-    font-size: 0.7rem;
+    font-size: var(--text-small-size);
     opacity: 0.6;
   }
 </style>
