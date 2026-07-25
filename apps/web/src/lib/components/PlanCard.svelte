@@ -10,9 +10,20 @@
    * "remembers during the session" store lives once, in the transcript view,
    * not duplicated per card). The persistent per-session sidebar view of the
    * same data is a separate v2 issue (§12); this is the inline card only.
+   *
+   * Warp Deck restyle (docs/design/redesign.md §3/§6, issue #432): adopts
+   * the elevation ladder's "raised" tier by name (the brief's table lists
+   * `PlanCard` directly). The shimmer keeps its existing `plan-shimmer`
+   * testid and behavior but is hand-styled as a small `thread-draw` ring
+   * (the same traveling-`stroke-dashoffset` technique `StatusDot` uses for
+   * its `pulse` state) instead of a plain opacity blink, so an in-progress
+   * plan reads as part of the same motion language as the rest of the app.
+   * A single un-staggered `beat-in` plays once on mount (mirroring
+   * `MessageItem`/`ToolCallRow`).
    */
   import type { AcpPlanEntry } from '@loombox/providers-core';
   import CopyButton from './CopyButton.svelte';
+  import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
     entries: AcpPlanEntry[];
@@ -40,7 +51,11 @@
     <span class="chevron">{collapsed ? '▸' : '▾'}</span>
     <span class="title">Plan</span>
     <span class="progress">{completedCount}/{entries.length}</span>
-    {#if active}<span class="shimmer" data-testid="plan-shimmer" aria-hidden="true"></span>{/if}
+    {#if active}
+      <span class="shimmer" data-testid="plan-shimmer">
+        <StatusDot tone="info" pulse label="Plan in progress" />
+      </span>
+    {/if}
   </button>
 
   {#if !collapsed}
@@ -60,11 +75,29 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3): PlanCard is named directly in the
+     ladder's table. */
   .plan-card {
+    background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
     overflow: hidden;
     font-size: 0.9rem;
+    /* Single un-staggered beat-in (redesign brief §2), mount-once same as
+       MessageItem/ToolCallRow. */
+    animation: beat-in var(--duration-base) var(--ease-beat) both;
+  }
+
+  @keyframes beat-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .plan-header {
@@ -91,21 +124,8 @@
   }
 
   .shimmer {
-    width: var(--space-sm);
-    height: var(--space-sm);
-    border-radius: 50%;
-    background: var(--color-accent);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.25;
-    }
-    50% {
-      opacity: 1;
-    }
+    display: inline-flex;
+    flex-shrink: 0;
   }
 
   .plan-entries {
@@ -121,6 +141,14 @@
     display: flex;
     gap: var(--space-xs);
     align-items: baseline;
+  }
+
+  .plan-entries li .checkbox {
+    color: var(--color-text-muted);
+  }
+
+  .plan-entries li.completed .checkbox {
+    color: var(--color-success);
   }
 
   .plan-entries li.completed .content {

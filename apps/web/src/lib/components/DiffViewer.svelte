@@ -6,8 +6,13 @@
    * (§7.4, a later epic — this component takes no tool-call-specific props,
    * only `{path, oldText, newText}`, so it's already that shared component).
    * `oldText === null` (binary/symlink change, or a brand-new file) still
-   * renders a real diff card — never a blank one — falling back to a
+   * renders a real diff card - never a blank one - falling back to a
    * structural-only summary when there's no line text to diff at all.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): the card
+   * itself adopts the elevation ladder's "raised" tier; the header keeps
+   * its own slightly-darker fill as a toolbar strip for path/stats/copy,
+   * legible against either surrounding surface.
    */
   import { computeLineDiff, languageForPath, type DiffLine } from '$lib/diff';
   import CopyButton from './CopyButton.svelte';
@@ -67,9 +72,12 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3). */
   .diff-viewer {
+    background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
     overflow: hidden;
     font-size: var(--text-code-size);
   }
@@ -80,6 +88,7 @@
     gap: var(--space-sm);
     padding: var(--space-xs) var(--space-sm);
     background: var(--color-fill-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
     font-family: var(--font-mono);
   }
 

@@ -12,10 +12,17 @@
    * call's output already lives as one string in `TranscriptToolCallItem`)
    * or the raw `Uint8Array[]` chunk list a live byte stream (this same
    * tool call while still running, or a real interactive terminal, once
-   * that later component exists) would hand in — both paths render through
+   * that later component exists) would hand in - both paths render through
    * the exact same decode/strip pipeline (`$lib/terminal.ts`'s
    * `TerminalChunkDecoder`), so there is one source of truth for "how a
    * terminal's bytes become displayed text," not a fork per caller.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): deliberately
+   * keeps its own dark "terminal screen" look (background `--color-bg`,
+   * not the raised-tier surface) rather than becoming another card - it's
+   * the one place in the transcript meant to read as an actual console,
+   * usually framed by a raised-tier card at the call site (`BashWidget`).
+   * A hairline border gives it definition against that frame.
    */
   import { decodeTerminalChunks } from '$lib/terminal';
 
@@ -47,7 +54,8 @@
 
 <style>
   .terminal-output {
-    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--color-bg);
     color: var(--color-text-primary);
@@ -60,10 +68,11 @@
     align-items: center;
     gap: var(--space-xs);
     padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .prompt {
-    opacity: 0.6;
+    color: var(--color-text-muted);
   }
 
   .command {

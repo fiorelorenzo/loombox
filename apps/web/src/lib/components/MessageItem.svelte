@@ -26,6 +26,21 @@
    * reveal, and always flushes to the full text the instant `turnActive`
    * goes false — the real `turn_ended` signal, so nothing is ever left
    * partially revealed once a turn settles.
+   *
+   * Warp Deck restyle (`docs/design/redesign.md` §6, issue #432): the root
+   * `.message-item` is itself the flex item that drives role-based
+   * alignment (fixing the old dead `align-self` rule, which needed a flex
+   * *parent* it never had) — `user` turns right-align a real accent-subtle
+   * bubble capped at ~70ch; `agent`/`thought` rows stay left-aligned, full
+   * width, `flat`-tier (elevation ladder §3). A plain CSS `animation`
+   * (`beat-in`, `--duration-base`/`--ease-beat`) plays once when the root
+   * element is first mounted into the keyed `{#each item.id}` list and
+   * never replays on the in-place prop updates that stream text into the
+   * same DOM node (verified by the existing "DOM node stays the same
+   * instance" test) — the un-staggered single beat-in the brief specifies
+   * for live-streamed arrivals. Reduced motion is handled for free: this
+   * animation is written entirely against `--duration-base`/`--ease-*`,
+   * which `tokens.css` already zeroes under `prefers-reduced-motion`.
    */
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core';
@@ -129,26 +144,55 @@
 </div>
 
 <style>
+  /* The root is the actual flex item that drives alignment (fixes the old
+     dead `align-self` rule — that needed a flex *parent*, which the
+     `<li>` wrapper in the transcript list never provided). */
   .message-item {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--color-fill-subtle);
+    display: flex;
+    width: 100%;
+    justify-content: flex-start;
+    animation: beat-in var(--duration-base) var(--ease-beat) both;
   }
 
   .message-item.user {
-    align-self: flex-end;
-    background: var(--color-accent-subtle);
+    justify-content: flex-end;
   }
 
-  .message-item.thought {
-    opacity: 0.65;
-    font-style: italic;
+  @keyframes beat-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .row {
     display: flex;
     align-items: flex-start;
     gap: var(--space-xs);
+    max-width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-lg);
+    /* flat tier (elevation ladder §3): agent/thought rows are plain,
+       full-width, conversational text — not a boxed card. */
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  /* User turns: a real right-aligned accent-subtle bubble, capped so a
+     one-line reply doesn't stretch across the whole canvas. */
+  .message-item.user .row {
+    max-width: min(70ch, 100%);
+    background: var(--color-accent-subtle);
+    border-color: transparent;
+  }
+
+  .message-item.thought .row {
+    opacity: 0.65;
+    font-style: italic;
   }
 
   .role {
@@ -188,5 +232,16 @@
     opacity: 0.7;
     cursor: pointer;
     padding: 0;
+    border-radius: var(--radius-sm);
+    transition: opacity var(--duration-fast) var(--ease-beat);
+  }
+
+  .expand:hover {
+    opacity: 1;
+  }
+
+  .expand:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 </style>

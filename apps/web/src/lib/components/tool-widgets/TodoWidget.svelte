@@ -4,6 +4,10 @@
    * Claude's TodoWrite tool call, keyed structurally on `rawInput.todos`
    * (`$lib/tool-widgets.ts`'s `isTodoInput`) since ACP carries no tool-name
    * field to match on directly.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): adopts the
+   * elevation ladder's "raised" tier, hand-styled to match `Card`'s recipe
+   * so the todo-widget testid stays on this component's own root element.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { isTodoInput } from '$lib/tool-widgets';
@@ -35,9 +39,12 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3). */
   .todo-widget {
+    background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
     padding: var(--space-sm) 0.7rem;
     font-size: var(--text-small-size);
   }
@@ -67,8 +74,39 @@
     gap: var(--space-xs);
   }
 
+  .todos li .checkbox {
+    color: var(--color-text-muted);
+  }
+
+  .todos li.completed .checkbox {
+    color: var(--color-success);
+  }
+
   .todos li.completed .content {
     opacity: 0.55;
     text-decoration: line-through;
+  }
+
+  /* Accent-for-meaning, not chrome: the one entry actually in flight gets
+     the accent as a left marker, since it's the meaningful "happening
+     right now" signal — everything else stays neutral text weight. */
+  .todos li.in_progress {
+    position: relative;
+    padding-left: var(--space-sm);
+  }
+
+  .todos li.in_progress::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.2em;
+    bottom: 0.2em;
+    width: 2px;
+    border-radius: var(--radius-full);
+    background: var(--color-accent);
+  }
+
+  .todos li.in_progress .content {
+    font-weight: 600;
   }
 </style>
