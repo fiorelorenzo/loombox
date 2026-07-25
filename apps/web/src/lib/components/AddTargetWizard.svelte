@@ -46,6 +46,17 @@
    * load-bearing `data-testid`s survive — see `NewSessionDialog.svelte`'s
    * identical note). Each progress-log entry gets a `StatusDot` for its
    * status instead of a plain capitalized word.
+   *
+   * Deck migration (redesign v2 §2 "One button language", issue #465):
+   * every hand-rolled `.btn`/`.btn-primary`/`.btn-secondary` here is gone in
+   * favor of the shared `ui/Button` primitive, using its `dataTestId`
+   * override (issue #460) to keep every `add-target-*` testid this
+   * component's own tests rely on — unlike `NewSessionDialog.svelte`'s
+   * still-hand-styled buttons (written before that override existed),
+   * this file is a real call site now that the primitive supports it.
+   * There is no glyph anywhere in this wizard (the step indicator is
+   * label-only, `StatusDot` already covers per-status color), so
+   * `ui/IconButton`/the `Icon` component have nothing to attach to here.
    */
   import type {
     ProvisionProgress,
@@ -54,6 +65,7 @@
     TargetListEntry,
   } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
+  import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
@@ -251,7 +263,9 @@
         message="You need at least one node first — run the Mac app or a local node, then come back here to add an SSH target."
       >
         {#snippet cta()}
-          <button type="button" class="btn btn-secondary" onclick={handleClose}>Close</button>
+          <Button variant="secondary" dataTestId="add-target-no-nodes-close" onclick={handleClose}>
+            Close
+          </Button>
         {/snippet}
       </EmptyState>
     </div>
@@ -303,15 +317,10 @@
       />
 
       <div class="actions">
-        <button type="button" class="btn btn-secondary" onclick={handleClose}>Cancel</button>
-        <button
-          type="submit"
-          class="btn btn-primary"
-          disabled={!canReview}
-          data-testid="add-target-next"
-        >
-          Next
-        </button>
+        <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={!canReview} dataTestId="add-target-next">Next</Button>
       </div>
     </form>
   {:else if step === 'review'}
@@ -326,15 +335,10 @@
         {#if alias}<li><span>Alias</span><span>{alias}</span></li>{/if}
       </ul>
       <div class="actions">
-        <button type="button" class="btn btn-secondary" onclick={goBackToPickHost}>Back</button>
-        <button
-          type="button"
-          class="btn btn-primary"
-          onclick={confirmAndProvision}
-          data-testid="add-target-confirm"
-        >
-          Continue
-        </button>
+        <Button variant="secondary" dataTestId="add-target-back" onclick={goBackToPickHost}>
+          Back
+        </Button>
+        <Button dataTestId="add-target-confirm" onclick={confirmAndProvision}>Continue</Button>
       </div>
     </div>
   {:else if step === 'progress'}
@@ -376,14 +380,9 @@
         </p>
       {/if}
       <div class="actions">
-        <button
-          type="button"
-          class="btn btn-primary"
-          onclick={handleClose}
-          data-testid="add-target-done-close"
-        >
+        <Button dataTestId="add-target-done-close" onclick={handleClose}>
           {result?.ok ? 'Done' : 'Close'}
-        </button>
+        </Button>
       </div>
     </div>
   {/if}
@@ -474,7 +473,7 @@
     background: var(--color-surface);
     color: inherit;
     font-family: inherit;
-    font-size: 0.9rem;
+    font-size: var(--text-body-size);
     transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
@@ -576,65 +575,6 @@
     justify-content: flex-end;
     gap: var(--space-sm);
     margin-top: var(--space-sm);
-  }
-
-  /* Hand-styled to match the shared `Button` primitive (see
-     `NewSessionDialog.svelte`'s identical note: this wizard's own
-     `add-target-*` testids are load-bearing for its tests). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-xs);
-    border-radius: var(--radius-md);
-    padding: var(--space-sm) var(--space-lg);
-    font-family: inherit;
-    font-weight: 600;
-    font-size: var(--text-body-size);
-    cursor: pointer;
-    border: 1px solid transparent;
-    background: transparent;
-    color: inherit;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .btn:not(:disabled):active {
-    transform: scale(0.98);
-  }
-
-  .btn:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .btn-primary {
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-  }
-
-  .btn-primary:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  .btn-primary:not(:disabled):active {
-    background: var(--color-accent-active);
-  }
-
-  .btn-secondary {
-    border-color: var(--color-border-strong);
-    color: var(--color-text-primary);
-  }
-
-  .btn-secondary:not(:disabled):hover {
-    background: var(--color-fill-subtle);
   }
 
   .error {
