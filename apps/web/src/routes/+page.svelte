@@ -356,6 +356,19 @@
   // `matchMedia` read, client-only (see `viewport.ts`'s doc comment for why
   // it defaults `false` during SSR).
   let narrowViewport = $state(false);
+  /**
+   * The composer's own mini-toolbar collapse (redesign brief
+   * `docs/design/redesign.md` §1: "below 480px, the composer's mini-toolbar
+   * (mode/attach/context meter) collapses under a single '···' expand
+   * affordance", issue #439). Manual toggle only matters at/below
+   * `narrowViewport` (480px) — see `composerToolbarVisible` below, which
+   * also force-expands whenever there's a real pending attachment to show,
+   * so a file the user already attached never hides behind an unopened
+   * "···".
+   */
+  let composerToolbarExpanded = $state(false);
+  /** A live ref to the composer `<textarea>` (auto-grow + programmatic height reset, redesign brief §4 "Inputs", issue #439). */
+  let composerTextarea: HTMLTextAreaElement | undefined = $state(undefined);
   // Stale-approve/deny discard note for the selected session (SPEC §7.3;
   // issue #131) — `undefined` until one has happened.
   let staleNotice = $state<{ requestId: string; message: string } | undefined>(undefined);
@@ -439,6 +452,11 @@
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
 
+  /** See `composerToolbarExpanded`'s own doc comment above — the effective visibility the template renders on. */
+  const composerToolbarVisible = $derived(
+    !narrowViewport || composerToolbarExpanded || attachments.length > 0,
+  );
+
   /** The redesign brief's header title zone: "current session title once selected" (§1). */
   const selectedSessionTitle = $derived(
     sessions.find((session) => session.id === selectedSessionId)?.title,
@@ -521,6 +539,7 @@
     queuedPrompts = [];
     staleNotice = undefined;
     fileTree = new Map();
+    composerToolbarExpanded = false;
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client.permissionQueueFor(id).subscribe((value) => {
@@ -784,6 +803,7 @@
     fileTree = new Map();
     filePickerOpen = false;
     atTriggerStart = undefined;
+    composerToolbarExpanded = false;
     newSessionOpen = false;
     // Closes whatever Drawer tab was open (inbox/targets/files/terminal/
     // config/settings) — none of them have anything to show once
@@ -824,6 +844,29 @@
     draft = '';
   }
 
+  /** Warp Deck composer convention (redesign brief §4 "Inputs", issue #439): Enter sends, Shift+Enter inserts a newline — the same auto-growing `<textarea>` behavior `NewSessionDialog`'s starting-prompt field already brings to parity with. Composition (IME) `Enter` keystrokes confirm the candidate instead of submitting mid-composition. */
+  function handleComposerKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    submitPrompt(event);
+  }
+
+  /** Grows the composer textarea with its content, 1–8 rows (redesign brief §4) — this file's own CSS (`max-height`/`overflow-y: auto` on `.composer-row textarea`) caps the visible growth past 8 rows and lets it scroll internally past that point. */
+  function autoGrowComposer(el: HTMLTextAreaElement): void {
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }
+
+  // Resets the textarea's own inline height back to its single-row default
+  // whenever `draft` is cleared *programmatically* (after a send, or on
+  // disconnect) — `autoGrowComposer` above only ever runs from a real
+  // `oninput` DOM event, which a plain `draft = ''` assignment never fires.
+  $effect(() => {
+    if (draft === '' && composerTextarea) {
+      composerTextarea.style.height = 'auto';
+    }
+  });
+
   /** Wired to `AttachmentBar`'s `onFiles` (paste/drop/pick, SPEC §7.25) — attaches each picked file to the current session, starting its encrypt+upload immediately. */
   function attachFiles(files: File[]): void {
     if (!client || !selectedSessionId) return;
@@ -853,7 +896,8 @@
    * `@partial-query` text rather than guessing.
    */
   function handleComposerInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
+    const input = event.currentTarget as HTMLTextAreaElement;
+    autoGrowComposer(input);
     const caret = input.selectionStart ?? draft.length;
     const beforeCaret = draft.slice(0, caret);
     const match = /(?:^|\s)@(\S*)$/.exec(beforeCaret);
@@ -1877,13 +1921,6 @@
           <p class="empty">Select a session to view its live transcript.</p>
         {:else}
           <div class="transcript-toolbar">
-            <ConfigBar
-              options={configOptions}
-              usage={transcript?.usage}
-              cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-              onChange={changeConfigOption}
-            />
-            <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
             <CopyButton
               text={transcript ? exportTranscriptText(transcript) : ''}
               label="Export transcript"
@@ -1963,23 +2000,60 @@
             narrow={narrowViewport}
           />
 
+          <!-- The composer's own mini-toolbar (redesign brief §1/§6, issue
+               #439): ConfigBar's mode toggle + context/cost meter and
+               AttachmentBar's attach trigger/chip row share one quiet strip
+               directly above the composer, collapsing under a single "···"
+               below `--bp-mobile`/480px (`narrowViewport`) — see
+               `composerToolbarVisible`'s own doc comment for the
+               force-expand-when-attaching exception. -->
+          <div class="composer-toolbar" data-testid="composer-toolbar">
+            {#if composerToolbarVisible}
+              <div class="composer-toolbar-controls" data-testid="composer-toolbar-controls">
+                <AttachmentBar
+                  {attachments}
+                  onFiles={attachFiles}
+                  onRetry={retryAttachment}
+                  onRemove={removeAttachment}
+                />
+                <ConfigBar
+                  options={configOptions}
+                  usage={transcript?.usage}
+                  cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+                  onChange={changeConfigOption}
+                />
+              </div>
+            {/if}
+            {#if narrowViewport}
+              <IconButton
+                label={composerToolbarExpanded ? 'Hide composer options' : 'More composer options'}
+                pressed={composerToolbarExpanded}
+                onclick={() => (composerToolbarExpanded = !composerToolbarExpanded)}
+                class="composer-toolbar-expand"
+              >
+                ···
+              </IconButton>
+            {/if}
+          </div>
+
           <form class="composer" onsubmit={submitPrompt}>
-            <AttachmentBar
-              {attachments}
-              onFiles={attachFiles}
-              onRetry={retryAttachment}
-              onRemove={removeAttachment}
-            />
             <div class="composer-row">
-              <input
-                type="text"
+              <textarea
+                bind:this={composerTextarea}
                 bind:value={draft}
                 oninput={handleComposerInput}
+                onkeydown={handleComposerKeydown}
                 placeholder="Send a follow-up prompt… (type @ to reference a file)"
                 aria-label="Follow-up prompt"
-                data-testid="composer-input"
-              />
-              <button type="submit" disabled={sendDisabled}>Send</button>
+                rows="1"
+                data-testid="composer-input"></textarea>
+              <div class="composer-actions">
+                <TurnStopControl
+                  turnActive={transcript?.turnActive ?? false}
+                  onStop={stopSession}
+                />
+                <Button type="submit" disabled={sendDisabled} ariaLabel="Send prompt">Send</Button>
+              </div>
             </div>
           </form>
         {/if}
@@ -3350,19 +3424,95 @@
     gap: var(--space-sm);
   }
 
+  /* The composer's own mini-toolbar (redesign brief §1/§6, issue #439):
+     ConfigBar + AttachmentBar's trigger/chip row share one quiet strip
+     directly above the composer, collapsing under a single "···"
+     affordance below --bp-mobile/480px (`composerToolbarVisible`'s own
+     force-expand-while-attaching exception lives in the script above). */
+  .composer-toolbar {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .composer-toolbar-controls {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+  }
+
+  :global(.composer-toolbar-expand) {
+    flex-shrink: 0;
+  }
+
   .composer {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
   }
 
+  /* Considered prompt input (redesign brief §4 "Inputs"): flat style, no
+     inner shadow — the wrapper's own border strengthens on focus-within
+     rather than a colored glow on the textarea itself. */
   .composer-row {
     display: flex;
+    align-items: flex-end;
     gap: var(--space-sm);
+    padding: var(--space-xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
-  .composer-row input {
+  .composer-row:focus-within {
+    border-color: var(--color-border-strong);
+  }
+
+  .composer-row textarea {
     flex: 1;
+    min-width: 0;
+    resize: none;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-family: var(--font-ui);
+    font-size: var(--text-body-size);
+    line-height: 1.45;
+    padding: var(--space-sm) var(--space-xs);
+    /* 1-8 rows (redesign brief §4): auto-grows via this file's own
+       `autoGrowComposer`, capped here so growth past ~8 lines scrolls
+       internally instead of pushing the composer's own actions off-canvas. */
+    max-height: 13rem;
+    overflow-y: auto;
+  }
+
+  .composer-row textarea::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .composer-row textarea:focus {
+    outline: none;
+  }
+
+  .composer-row textarea:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: calc(-1 * var(--focus-ring-offset));
+  }
+
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+    padding-bottom: var(--space-2xs);
   }
 
   .empty {

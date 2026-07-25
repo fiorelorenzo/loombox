@@ -13,6 +13,14 @@
    * `RelayClient.sendPrompt` never applies a queued prompt to
    * `transcriptFor` until it is actually flushed, so this is the only place
    * a queued prompt is visible until then.
+   *
+   * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439): "a
+   * `state=\"queued\"` styling of the same bubble treatment" — mirrors
+   * `MessageItem`'s real user-bubble geometry (right-aligned, capped at
+   * ~70ch) rather than an independently-maintained look-alike, kept
+   * visually distinct only by the dashed accent ring + muted opacity + the
+   * "Queued" badge. A single un-staggered `beat-in` plays once per row on
+   * mount, same as `MessageItem`/`PlanCard`.
    */
   import type { QueuedPrompt } from '$lib/outbox';
 
@@ -44,8 +52,13 @@
     gap: var(--space-xs);
   }
 
+  /* Mirrors MessageItem's own user-bubble geometry (redesign brief §6):
+     right-aligned, capped at ~70ch, same radius/padding rhythm — kept
+     visually distinct only by the dashed accent ring, muted opacity, and
+     the "Queued" badge. */
   .queued-item {
     align-self: flex-end;
+    max-width: min(70ch, 100%);
     display: flex;
     align-items: flex-start;
     gap: var(--space-xs);
@@ -53,16 +66,29 @@
     border-radius: var(--radius-lg);
     border: 1px dashed var(--color-accent);
     background: var(--color-accent-subtle);
-    opacity: 0.75;
+    opacity: 0.8;
+    animation: beat-in var(--duration-base) var(--ease-beat) both;
+  }
+
+  @keyframes beat-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 0.8;
+      transform: translateY(0);
+    }
   }
 
   .badge {
     flex-shrink: 0;
     font-size: 0.65rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    opacity: 0.75;
-    padding-top: var(--space-2xs);
+    letter-spacing: 0.04em;
+    color: var(--color-accent);
+    padding-top: var(--space-3xs);
   }
 
   .text {

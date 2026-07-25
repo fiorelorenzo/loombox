@@ -18,6 +18,16 @@
    * identically — the caller (see `RelayClient.setConfigOption`) just
    * replaces `options` wholesale, which is exactly what §7.24 asks for
    * ("never patch one control in isolation").
+   *
+   * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439): "moves
+   * into a slim toolbar row directly above the composer" — this component
+   * itself stays chrome-less (no background/border of its own) so it
+   * composes cleanly as a quiet control strip inside the caller's own
+   * mini-toolbar frame (`+page.svelte`'s `.composer-toolbar-controls`,
+   * which also holds `AttachmentBar`'s trigger and collapses together
+   * behind the "···" affordance below `--bp-mobile`/480px). The mode
+   * segmented control's selection crossfades (`status-crossfade`, §2)
+   * rather than snapping.
    */
   import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core';
 
@@ -94,8 +104,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
-    font-size: 0.8rem;
-    padding: var(--space-xs) 0;
+    font-size: var(--text-small-size);
   }
 
   .control {
@@ -105,7 +114,28 @@
   }
 
   .label {
-    opacity: 0.6;
+    color: var(--color-text-secondary);
+  }
+
+  .control select {
+    background: var(--color-surface);
+    color: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3xs) var(--space-xs);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .control select:hover {
+    border-color: var(--color-border-strong);
+  }
+
+  .control select:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .mode {
@@ -120,11 +150,28 @@
     background: transparent;
     padding: var(--space-2xs) var(--space-sm);
     cursor: pointer;
-    color: inherit;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--text-small-size);
+    /* status-crossfade (redesign brief §2): a selection change crossfades
+       color/background rather than snapping. */
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      color var(--duration-fast) var(--ease-beat);
+  }
+
+  .mode-choice:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .mode-choice:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: calc(-1 * var(--focus-ring-width));
   }
 
   .mode-choice.selected {
     background: var(--color-accent-subtle);
+    color: var(--color-accent);
     font-weight: 600;
   }
 
@@ -132,8 +179,21 @@
     margin-left: auto;
     display: flex;
     gap: var(--space-sm);
-    opacity: 0.75;
+    color: var(--color-text-secondary);
     font-family: var(--font-mono);
     font-feature-settings: var(--font-feature-tabular);
+    font-size: var(--text-small-size);
+  }
+
+  /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same
+     coarse-pointer convention `Button`/`IconButton` already use. */
+  @media (pointer: coarse) {
+    .mode-choice {
+      min-height: 2.75rem;
+    }
+
+    .control select {
+      min-height: 2.75rem;
+    }
   }
 </style>
