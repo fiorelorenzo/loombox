@@ -9,6 +9,16 @@ const config = {
     // matching the relay-fronted deployment model used by pitchbox and
     // loombox-landing (Caddy -> node process on prodbox), see SPEC §10.1.
     adapter: adapter(),
+    serviceWorker: {
+      // SvelteKit auto-registers `src/service-worker.ts` by default via an
+      // injected `navigator.serviceWorker.register(...)` script in the page.
+      // That runs independently of app code (and of vite-pwa's injectRegister),
+      // so it re-registered the SW even inside the Electron desktop shell,
+      // where the SW breaks workbox's postMessage and hangs the app on
+      // startup. Turn it off; registration is done explicitly (and gated for
+      // Electron) via useRegisterSW in +layout.svelte.
+      register: false,
+    },
     typescript: {
       // SvelteKit's generated tsconfig only auto-includes `test/`/`tests/`
       // (see its own `include` list), not the Playwright suite's
