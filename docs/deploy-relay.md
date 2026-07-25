@@ -138,15 +138,44 @@ truth, Redis is only the live fan-out plane.
 
 ## Updating
 
-Re-sync the repo to `/opt/apps/loombox`, then:
+Re-sync the repo to `/opt/apps/loombox`, then rebuild:
 
 ```bash
+# from the devbox, on the commit you want live
+rsync -az --delete \
+  --exclude '.git' --exclude 'node_modules' --exclude '.svelte-kit' \
+  --exclude 'apps/web/build' \
+  --exclude 'deploy/relay/.env' --exclude 'deploy/relay/backups' \
+  ./ prodbox:/opt/apps/loombox/
+
+# on prodbox — the build takes 2-3 minutes, so run it detached rather than
+# through a short-lived SSH command that will time out mid-build
 cd /opt/apps/loombox/deploy/relay
 docker compose up -d --build
 ```
 
+**The two `deploy/relay` excludes are not optional.** `.env` holds
+`BETTER_AUTH_SECRET` (losing it invalidates every login session) and
+`POSTGRES_PASSWORD`; `backups/` holds the encrypted database dumps, which are
+the only copy of everything the relay stores (see `docs/relay-backup.md`).
+Neither is in git, so a `--delete` sync without these excludes deletes them
+off the host.
+
 Migrations run automatically on the relay's boot. To roll a migration back
 manually, `docker compose exec relay pnpm --filter @loombox/relay migrate down`.
+
+### A stale relay fails silently
+
+The relay validates every inbound frame against `@loombox/protocol`'s
+discriminated union and **drops** anything it does not recognise, logging
+`relay: dropped an invalid wire frame`. A relay older than a client therefore
+does not report a version mismatch: the client just never gets an answer and
+times out. If a feature that shipped with a new message type appears dead in
+production, check for that log line before debugging the client:
+
+```bash
+docker compose logs relay --since 10m | grep invalid_union_discriminator
+```
 
 ## Backup & disaster recovery
 
