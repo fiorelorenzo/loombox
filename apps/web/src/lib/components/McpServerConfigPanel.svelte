@@ -27,16 +27,25 @@
    * table's documented home for "MCP/plugin config cards"), the configured
    * list becomes quiet hairline-divided rows with a tactile toggle switch
    * instead of a bare checkbox, and an empty list reads through `EmptyState`
-   * rather than a dim one-line paragraph. Every per-item control (quick-add
-   * buttons, the enable toggle, remove) keeps its exact existing
-   * `data-testid` and is hand-styled to `Button`/`IconButton`'s visual
-   * language rather than importing those primitives directly: both
-   * primitives hardcode their own `data-testid` with no override, and this
-   * surface's tests key off the per-server/per-preset ids
-   * (`preset-add-${name}`, `server-remove-${name}`, …), the same tradeoff
-   * already made for `PushNotificationToggle`/`AppearanceSettings` (#434).
-   * The root's `data-testid="mcp-config-panel"` and every other
-   * `data-testid` are unchanged; only markup/CSS/motion move.
+   * rather than a dim one-line paragraph.
+   *
+   * Deck migration (redesign v2 design spec §2, issue #471): every per-item
+   * button (quick-add, remove, manual submit) now routes through the shared
+   * `Button` primitive, using its `dataTestId` override (issue #479, which
+   * landed after #434/#435's tradeoff note below was written) to keep this
+   * surface's exact per-server/per-preset ids (`preset-add-${name}`,
+   * `server-remove-${name}`, …) — the earlier `PushNotificationToggle`/
+   * `AppearanceSettings` hand-styled-instead-of-imported workaround is no
+   * longer needed for these. The duplicate-add/error text now renders
+   * through the real `ErrorNotice` primitive; the test that used to key off
+   * its fixed `mcp-config-error` testid now asserts on the visible message
+   * text instead (mirrors `TargetStatusView.test.ts`'s pattern), since
+   * `ErrorNotice`'s own root testid has no override. The quick-add rows'
+   * decorative "+" glyph is dropped rather than routed through the shared
+   * `Icon` component: the bespoke icon set (issue #457) has no generic
+   * "add" glyph, and each preset's name is already the button's visible
+   * label. The root's `data-testid="mcp-config-panel"` and every other
+   * `data-testid` are unchanged; only markup/CSS move.
    */
   import {
     MCP_SERVER_PRESET_CATALOG,
@@ -53,8 +62,10 @@
     setMcpServerEnabled,
     type McpServerConfigStorage,
   } from '$lib/mcp-server-store';
+  import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   interface Props {
     projectPath: string;
@@ -148,7 +159,7 @@
 
 <div class="mcp-config" data-testid="mcp-config-panel">
   {#if error}
-    <p class="config-error" role="alert" data-testid="mcp-config-error">{error}</p>
+    <ErrorNotice message={error} />
   {/if}
 
   <Card elevation="raised" padding="md" class="config-section">
@@ -157,19 +168,14 @@
       <ul class="preset-list">
         {#each catalog as preset (preset.config.name)}
           <li class="preset-row">
-            <button
-              type="button"
-              class="pill-button"
-              data-testid={`preset-add-${preset.config.name}`}
+            <Button
+              variant="secondary"
+              size="sm"
+              dataTestId={`preset-add-${preset.config.name}`}
               onclick={() => handleQuickAdd(preset)}
             >
-              <span class="pill-icon" aria-hidden="true">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M10 4v12M4 10h12" stroke-linecap="round" />
-                </svg>
-              </span>
               {preset.config.name}
-            </button>
+            </Button>
             <span class="preset-description">{preset.description}</span>
           </li>
         {/each}
@@ -211,14 +217,15 @@
                   Needs secret: {secretName}
                 </span>
               {/each}
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 class="remove-button"
                 onclick={() => handleRemove(record.config.name)}
-                data-testid={`server-remove-${record.config.name}`}
+                dataTestId={`server-remove-${record.config.name}`}
               >
                 Remove
-              </button>
+              </Button>
             </li>
           {/each}
         </ul>
@@ -248,14 +255,14 @@
           bind:value={manualArgs}
           data-testid="manual-add-args"
         />
-        <button
-          type="button"
-          class="submit-button"
+        <Button
+          variant="primary"
+          size="sm"
           onclick={handleManualAdd}
-          data-testid="manual-add-submit"
+          dataTestId="manual-add-submit"
         >
           Add
-        </button>
+        </Button>
       </div>
     </section>
   </Card>
@@ -281,15 +288,6 @@
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
-  }
-
-  .config-error {
-    margin: 0;
-    padding: var(--space-sm) var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--color-danger-subtle);
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
   }
 
   .preset-list,
@@ -327,54 +325,6 @@
     font-size: 0.78rem;
   }
 
-  /* Hand-styled to `Button`'s `secondary` visual language (border-strong,
-     transparent fill, tension-press) rather than importing `Button`
-     itself — see the file doc comment for why: `Button` hardcodes
-     `data-testid="ui-button"` and this row needs a unique
-     `preset-add-${name}` id per test. */
-  .pill-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-strong);
-    background: transparent;
-    color: var(--color-text-primary);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .pill-button:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  /* tension-press (redesign brief §2). */
-  .pill-button:active {
-    background: var(--color-fill);
-    transform: scale(0.98);
-  }
-
-  .pill-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .pill-icon {
-    display: inline-flex;
-    width: 0.9rem;
-    height: 0.9rem;
-  }
-
-  .pill-icon svg {
-    width: 100%;
-    height: 100%;
-  }
-
   .server-row {
     display: flex;
     align-items: center;
@@ -407,33 +357,12 @@
     font-size: 0.72rem;
   }
 
-  .remove-button {
+  /* `Button`'s own scope hides this class from the file's hash (same
+     `:global()` pattern as `ConfigBar.svelte`'s `.mode-choice`) — only the
+     row-positioning this list needs on top of `Button`'s `danger` variant
+     lives here now. */
+  :global(.remove-button) {
     margin-left: auto;
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-danger);
-    background: transparent;
-    color: var(--color-danger);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .remove-button:hover,
-  .remove-button:active {
-    background: var(--color-danger-subtle);
-  }
-
-  .remove-button:active {
-    transform: scale(0.98);
-  }
-
-  .remove-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   /* A tactile toggle switch built on a real, still-fully-functional
@@ -518,45 +447,10 @@
     outline-offset: var(--focus-ring-offset);
   }
 
-  /* Hand-styled to `Button`'s `primary` visual language — same rationale
-     as `.pill-button` above. */
-  .submit-button {
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-lg);
-    border-radius: var(--radius-md);
-    border: 1px solid transparent;
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .submit-button:hover {
-    background: var(--color-accent-hover);
-  }
-
-  .submit-button:active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  .submit-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same 44px
-     coarse-pointer convention `Button`/`CopyButton` already use. */
+  /* Touch-optimized controls (SPEC.md §7.3, issue #133): `Button` already
+     sizes itself for `(pointer: coarse)`; only the toggle switch (not a
+     `Button`) needs its own rule here. */
   @media (pointer: coarse) {
-    .pill-button,
-    .remove-button,
-    .submit-button {
-      min-height: 2.75rem;
-    }
-
     .toggle-switch {
       width: 2.75rem;
       height: 1.5rem;
