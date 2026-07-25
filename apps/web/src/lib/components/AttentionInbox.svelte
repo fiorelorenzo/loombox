@@ -40,10 +40,24 @@
    * primitive; rows get a capped, staggered `beat-in` reveal. All
    * `data-testid`s, DOM structure the tests query, and every callback
    * contract are unchanged.
+   *
+   * Deck migration (redesign v2 §2 "One button language", issue #472): the
+   * Open control and the reply composer's Send button now route through
+   * the shared `Button` primitive (`ghost`/`secondary`) instead of two bare
+   * hand-rolled `<button>`s, using its `dataTestId` override (issue #460)
+   * so the existing `attention-inbox-open`/`attention-inbox-reply-send`
+   * selectors are untouched. The Open control's stacked title/subtitle
+   * layout and its own row-level hover (already provided by `.item:hover`)
+   * don't match `Button`'s default centered/underline-on-hover ghost look,
+   * so both are reset via the documented `class`-prop escape hatch
+   * (`Dialog`'s own doc comment names this same pattern) with a `:global`
+   * selector, since the class lands on `Button`'s own scope, not this
+   * component's.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core';
   import type { AttentionInboxItem } from '../relay-client';
   import PermissionCard from './PermissionCard.svelte';
+  import Button from './ui/Button.svelte';
   import EmptyState from './ui/EmptyState.svelte';
 
   interface Props {
@@ -120,15 +134,15 @@
             <span class="kind-badge" data-testid="attention-inbox-kind-badge"
               >{kindBadge(item)}</span
             >
-            <button
-              type="button"
+            <Button
+              variant="ghost"
               class="open"
               onclick={() => onOpenSession(item.sessionId)}
-              data-testid="attention-inbox-open"
+              dataTestId="attention-inbox-open"
             >
               <strong>{item.sessionTitle}</strong>
               <small>{item.projectPath} · {item.nodeId}</small>
-            </button>
+            </Button>
             <span class="need" data-testid="attention-inbox-need">{needLabel(item)}</span>
           </div>
           {#if item.kind === 'permission' && item.permission}
@@ -156,7 +170,12 @@
                 aria-label={`Reply to ${item.sessionTitle}`}
                 data-testid="attention-inbox-reply-input"
               />
-              <button type="submit" data-testid="attention-inbox-reply-send">Send</button>
+              <Button
+                type="submit"
+                variant="secondary"
+                size="sm"
+                dataTestId="attention-inbox-reply-send">Send</Button
+              >
             </form>
           {/if}
         </li>
@@ -299,27 +318,32 @@
     color: var(--color-info);
   }
 
-  .open {
-    display: flex;
+  /* `:global` — the `open` class lands on `Button`'s own root `<button>`,
+     which carries `Button`'s own scope hash, not this component's, so a
+     plain (non-`:global`) selector would never match (same rationale
+     `CommandPalette`'s `:global(.command-palette-panel)` documents).
+     Resets `Button`'s ghost chrome (centered layout, padding, underline
+     hover) back to a quiet, left-aligned, stacked title/subtitle control —
+     `.item:hover` above already carries the row's own hover feedback. */
+  :global(.open) {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-3xs);
-    background: transparent;
-    border: none;
-    border-radius: var(--radius-sm);
     padding: 0;
-    cursor: pointer;
     text-align: left;
-    color: inherit;
-    font: inherit;
   }
 
-  .open:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
+  :global(.open .ui-button-label) {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
-  .open small {
+  :global(.open:not(:disabled):hover) {
+    background: transparent;
+    text-decoration: none;
+  }
+
+  :global(.open) small {
     color: var(--color-text-secondary);
   }
 
@@ -349,33 +373,5 @@
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
     border-color: var(--color-border-strong);
-  }
-
-  .reply button {
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-strong);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-md);
-    cursor: pointer;
-    font: inherit;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .reply button:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  /* tension-press (redesign brief §2): darken + scale(0.98), no bounce. */
-  .reply button:active {
-    background: var(--color-fill);
-    transform: scale(0.98);
-  }
-
-  .reply button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 </style>

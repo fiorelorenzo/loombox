@@ -11,21 +11,28 @@
    * issue #434): each state gets a small hand-drawn bell glyph (matching
    * the brief's 20x20/1.5px-stroke icon system) and a `StatusDot` for
    * at-a-glance state (never as the only signal — the text label always
-   * carries the same meaning for screen readers). The enable button is
-   * hand-styled to `Button`'s `primary` visual language rather than
-   * importing `Button` itself, because `Button` hardcodes its own
-   * `data-testid` ("ui-button") with no override, and this component's
-   * tests depend on the existing `data-testid="push-enable"` staying on
-   * the actual interactive element. The error state keeps its own
-   * `role="alert"`/`data-testid="push-error"` span, hand-styled to
-   * `ErrorNotice`'s danger-tinted look for the same reason.
+   * carries the same meaning for screen readers).
+   *
+   * Deck migration (redesign v2 §2 "One button language"/"Consistency
+   * sweep", issue #472): the enable button now routes through the shared
+   * `Button` primitive (`primary`) using its `dataTestId` override (issue
+   * #460, which is what unblocks this — `Button` used to hardcode
+   * `data-testid="ui-button"` with no way to keep this component's existing
+   * `data-testid="push-enable"`), and the subscribe-error message now
+   * renders through the shared `ErrorNotice`, in place of the two
+   * hand-rolled lookalikes this file used to maintain. The bell glyph stays
+   * a hand-rolled inline SVG: the shared bespoke icon set
+   * (`$lib/components/icons/icon-paths.ts`) doesn't have a bell/notification
+   * glyph yet, and that file is outside this issue's scope, so there is no
+   * shared `Icon` to route through here without inventing one out of scope.
    */
   import {
     pushSupportState,
     subscribeToPush,
     type PushSupportState,
   } from '$lib/push-notifications';
-  import WovenLoader from './WovenLoader.svelte';
+  import Button from './ui/Button.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
@@ -129,16 +136,8 @@
       Notifications on
     </span>
   {:else}
-    <button
-      type="button"
-      class="push-enable-button"
-      data-testid="push-enable"
-      disabled={subscribing}
-      onclick={enable}
-    >
-      {#if subscribing}
-        <WovenLoader size="sm" label="Enabling" />
-      {:else}
+    <Button variant="primary" loading={subscribing} onclick={enable} dataTestId="push-enable">
+      {#if !subscribing}
         <span class="push-icon" aria-hidden="true">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
             <path
@@ -151,10 +150,10 @@
         </span>
       {/if}
       {subscribing ? 'Enabling…' : 'Enable notifications'}
-    </button>
+    </Button>
   {/if}
   {#if error}
-    <span class="push-error" role="alert" data-testid="push-error">{error}</span>
+    <ErrorNotice message={error} />
   {/if}
 </div>
 
@@ -187,59 +186,5 @@
   .push-icon svg {
     width: 100%;
     height: 100%;
-  }
-
-  .push-enable-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    font: inherit;
-    font-weight: 600;
-    padding: var(--space-sm) var(--space-lg);
-    border-radius: var(--radius-md);
-    border: 1px solid transparent;
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .push-enable-button:not(:disabled):hover {
-    background: var(--color-accent-hover);
-  }
-
-  /* tension-press (redesign brief §2): darken + scale(0.98) on press. */
-  .push-enable-button:not(:disabled):active {
-    background: var(--color-accent-active);
-    transform: scale(0.98);
-  }
-
-  .push-enable-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .push-enable-button:disabled {
-    opacity: 0.65;
-    cursor: default;
-  }
-
-  .push-error {
-    display: inline-flex;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    background: var(--color-danger-subtle);
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
-     coarse-pointer convention `Button`/`CopyButton` already use. */
-  @media (pointer: coarse) {
-    .push-enable-button {
-      min-height: 2.75rem;
-    }
   }
 </style>

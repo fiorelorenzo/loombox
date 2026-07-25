@@ -105,8 +105,6 @@ describe('PushNotificationToggle (#162)', () => {
     });
 
     await fireEvent.click(screen.getByTestId('push-enable'));
-    await waitFor(() =>
-      expect(screen.getByTestId('push-error').textContent).toContain('network is down'),
-    );
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('network is down'));
   });
 });
