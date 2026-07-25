@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
-import type { webcrypto } from 'node:crypto';
+import {
+  generateKeyPairSync,
+  sign as cryptoSign,
+  type KeyObject,
+  type webcrypto,
+} from 'node:crypto';
 import { mkdir as fsMkdir, mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path, { join as pathJoin } from 'node:path';
@@ -31,6 +36,8 @@ import {
 import { createNode, type NodeDaemon } from './node-daemon';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
+import { FakeTransport, type FakeExecHandler } from './ssh/fake-transport';
+import type { SupervisorArtifactSource } from './ssh/supervisor-artifact';
 
 const execFileAsync = promisify(execFile);
 
@@ -1452,6 +1459,331 @@ describe('NodeDaemon ssh-discovery (redesign v2 §3.2 add-target candidate picke
     )) as Extract<WireMessageV1, { type: 'ssh_discovery_response' }>;
 
     expect(response.result).toEqual({ outcome: 'error', message: 'boom: disk read failed' });
+  });
+});
+
+function generateEd25519Pair(): { privateKey: KeyObject; publicKeyRaw: Uint8Array } {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
+  return { privateKey, publicKeyRaw: new Uint8Array(Buffer.from(jwk.x, 'base64url')) };
+}
+
+function signBytes(bytes: Uint8Array, privateKey: KeyObject): Uint8Array {
+  return new Uint8Array(cryptoSign(null, Buffer.from(bytes), privateKey));
+}
+
+function signedArtifactSource(privateKey: KeyObject): SupervisorArtifactSource {
+  const bytes = new TextEncoder().encode('supervisor-runtime');
+  return {
+    fetch: async (_osArch, version) => ({
+      version,
+      bytes,
+      signature: signBytes(bytes, privateKey),
+    }),
+  };
+}
+
+/**
+ * A scripted `ssh:` remote backing both connection-management actions below
+ * (issue #476): the systemd-unit commands `decommissionSshTarget` issues
+ * (mirrors `decommission.test.ts`'s own fixture) and the version-marker
+ * commands `TargetUpdateMonitor`/`supervisor-provisioning.ts` issue (mirrors
+ * `target-update-monitor.test.ts`'s own fixture) — one shared script since a
+ * single `FakeTransport` instance backs every test's ssh: target here.
+ * `state.stagedVersion` is mutated in place so an update test's own
+ * before/after handshake sees its own write reflected.
+ */
+function fakeConnectionManagementExec(state: { stagedVersion?: string }): FakeExecHandler {
+  return (command) => {
+    if (command.includes('uname')) return { stdout: 'Linux x86_64', stderr: '', exitCode: 0 };
+    if (command.includes('command -v systemctl')) {
+      return { stdout: 'present\n', stderr: '', exitCode: 0 };
+    }
+    if (command.startsWith('printf %s "$HOME/.config/systemd/user"')) {
+      return { stdout: '/home/dev/.config/systemd/user', stderr: '', exitCode: 0 };
+    }
+    if (command.startsWith('printf %s "$HOME/.loombox/supervisor"')) {
+      return { stdout: '/home/dev/.loombox/supervisor', stderr: '', exitCode: 0 };
+    }
+    if (command.startsWith('cat ') && command.includes('VERSION')) {
+      return {
+        stdout: state.stagedVersion ?? '',
+        stderr: '',
+        exitCode: state.stagedVersion ? 0 : 1,
+      };
+    }
+    if (command.startsWith('printf') && command.includes('VERSION')) {
+      const match = /printf '%s' '([^']*)'/.exec(command);
+      state.stagedVersion = match?.[1];
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (command.startsWith('cat ')) {
+      // The systemd unit file check (decommission's `unitWasInstalled` probe).
+      return { stdout: '[Unit]\nDescription=x\n', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
+  };
+}
+
+describe('NodeDaemon connection management (redesign v2 §3.3 Reconnect/Update/Remove/Edit; issue #476)', () => {
+  it('decommissions an ssh: target on decommission_target_request, forgets it, and re-announces the smaller target list', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-conn-mgmt-decommission';
+    const targetId = 'ssh:devbox-1';
+    const transport = new FakeTransport({ onExec: fakeConnectionManagementExec({}) });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-conn-mgmt-1',
+      deviceId: 'device-node-conn-mgmt-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box' }],
+      sshTargets: [{ id: targetId, label: 'Dev box', host: '100.87.202.117', user: 'dev' }],
+      sshTransportFactory: () => transport,
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-conn-mgmt-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'decommission_target_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-conn-mgmt-1',
+      targetId,
+      requestId: 'req-decommission-1',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'decommission_target_response' &&
+        (m as { requestId?: string }).requestId === 'req-decommission-1',
+    )) as Extract<WireMessageV1, { type: 'decommission_target_response' }>;
+
+    expect(response.ok).toBe(true);
+    expect(response.result).toEqual({
+      unitWasInstalled: true,
+      unitStopped: true,
+      unitDisabled: true,
+      deviceKeyRevoked: true,
+      filesRemoved: false,
+    });
+    // Plain fields only — never an envelope.
+    expect(response).not.toHaveProperty('envelope');
+
+    // The target genuinely no longer appears as usable (decommission.ts's
+    // own doc comment): forgetSshTarget's re-announce reaches the relay's
+    // store, so a fresh target_list_request no longer lists it.
+    phone.send({
+      type: 'target_list_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-list-after-decommission',
+    });
+    const list = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_list' &&
+        (m as { requestId?: string }).requestId === 'req-list-after-decommission',
+    )) as Extract<WireMessageV1, { type: 'target_list' }>;
+    expect(list.targets.some((t) => t.targetId === targetId)).toBe(false);
+  });
+
+  it('replies ok: false for an unknown targetId instead of throwing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-conn-mgmt-unknown';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-conn-mgmt-2',
+      deviceId: 'device-node-conn-mgmt-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-conn-mgmt-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'decommission_target_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-conn-mgmt-2',
+      targetId: 'ssh:does-not-exist',
+      requestId: 'req-decommission-2',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'decommission_target_response' &&
+        (m as { requestId?: string }).requestId === 'req-decommission-2',
+    )) as Extract<WireMessageV1, { type: 'decommission_target_response' }>;
+
+    expect(response.ok).toBe(false);
+    expect(response.result).toBeUndefined();
+    expect(response.message).toContain('ssh:does-not-exist');
+  });
+
+  it('refuses to decommission the local target', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-conn-mgmt-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-conn-mgmt-3',
+      deviceId: 'device-node-conn-mgmt-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-conn-mgmt-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'decommission_target_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-conn-mgmt-3',
+      targetId: 'local',
+      requestId: 'req-decommission-3',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'decommission_target_response' &&
+        (m as { requestId?: string }).requestId === 'req-decommission-3',
+    )) as Extract<WireMessageV1, { type: 'decommission_target_response' }>;
+
+    expect(response.ok).toBe(false);
+    expect(response.message).toContain('local target');
+  });
+
+  it('updates an outdated ssh: target on target_update_request via a real TargetUpdateMonitor + signed artifact', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-conn-mgmt-update';
+    const targetId = 'ssh:devbox-2';
+    const { privateKey, publicKeyRaw } = generateEd25519Pair();
+    const execState = { stagedVersion: '1.0.0' };
+    const transport = new FakeTransport({ onExec: fakeConnectionManagementExec(execState) });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-conn-mgmt-4',
+      deviceId: 'device-node-conn-mgmt-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 2' }],
+      sshTargets: [{ id: targetId, label: 'Dev box 2', host: '100.87.202.117', user: 'dev' }],
+      sshTransportFactory: () => transport,
+      targetUpdate: {
+        pinnedVersion: '2.0.0',
+        artifactSource: signedArtifactSource(privateKey),
+        publicKey: publicKeyRaw,
+      },
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-conn-mgmt-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'target_update_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-conn-mgmt-4',
+      targetId,
+      requestId: 'req-update-1',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_update_response' &&
+        (m as { requestId?: string }).requestId === 'req-update-1',
+    )) as Extract<WireMessageV1, { type: 'target_update_response' }>;
+
+    expect(response.ok).toBe(true);
+    expect(response.status).toBe('current');
+    expect(response.remoteVersion).toBe('2.0.0');
+    expect(response.installedVersion).toBe('2.0.0');
+    expect(response).not.toHaveProperty('envelope');
+  });
+
+  it('replies ok: false when no target-update artifact source is configured on this node', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-conn-mgmt-not-configured';
+    const targetId = 'ssh:devbox-3';
+    const transport = new FakeTransport({ onExec: fakeConnectionManagementExec({}) });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-conn-mgmt-5',
+      deviceId: 'device-node-conn-mgmt-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 3' }],
+      sshTargets: [{ id: targetId, label: 'Dev box 3', host: '100.87.202.117', user: 'dev' }],
+      sshTransportFactory: () => transport,
+      // No `targetUpdate` configured.
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-conn-mgmt-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'target_update_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-conn-mgmt-5',
+      targetId,
+      requestId: 'req-update-2',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'target_update_response' &&
+        (m as { requestId?: string }).requestId === 'req-update-2',
+    )) as Extract<WireMessageV1, { type: 'target_update_response' }>;
+
+    expect(response.ok).toBe(false);
+    expect(response.message).toBe('target updates are not configured on this node');
   });
 });
 

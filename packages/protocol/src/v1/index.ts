@@ -310,6 +310,23 @@ export {
   sshHostCandidateV1,
 } from './ssh-discovery';
 
+export type {
+  DecommissionResultV1,
+  DecommissionTargetRequest,
+  DecommissionTargetResponse,
+  TargetUpdateRequest,
+  TargetUpdateResponse,
+  TargetVersionStatusV1,
+} from './target-lifecycle';
+export {
+  decommissionResultV1,
+  decommissionTargetRequest,
+  decommissionTargetResponse,
+  targetUpdateRequest,
+  targetUpdateResponse,
+  targetVersionStatusV1,
+} from './target-lifecycle';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -435,6 +452,14 @@ import {
   sshDiscoveryResultV1,
   sshHostCandidateV1,
 } from './ssh-discovery';
+import {
+  decommissionResultV1,
+  decommissionTargetRequest,
+  decommissionTargetResponse,
+  targetUpdateRequest,
+  targetUpdateResponse,
+  targetVersionStatusV1,
+} from './target-lifecycle';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -547,4 +572,10 @@ export const schemasV1 = {
   sshDiscoveryResultV1,
   sshDiscoveryRequest,
   sshDiscoveryResponse,
+  decommissionResultV1,
+  decommissionTargetRequest,
+  decommissionTargetResponse,
+  targetVersionStatusV1,
+  targetUpdateRequest,
+  targetUpdateResponse,
 } as const;

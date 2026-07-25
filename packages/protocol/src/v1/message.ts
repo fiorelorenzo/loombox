@@ -39,6 +39,12 @@ import {
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import { targetFsListRequest, targetFsListResponse } from './target-fs';
 import { sshDiscoveryRequest, sshDiscoveryResponse } from './ssh-discovery';
+import {
+  decommissionTargetRequest,
+  decommissionTargetResponse,
+  targetUpdateRequest,
+  targetUpdateResponse,
+} from './target-lifecycle';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -96,6 +102,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   provisionTargetResult,
   sshDiscoveryRequest,
   sshDiscoveryResponse,
+  decommissionTargetRequest,
+  decommissionTargetResponse,
+  targetUpdateRequest,
+  targetUpdateResponse,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 
