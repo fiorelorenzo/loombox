@@ -16,8 +16,22 @@
    * active row, Enter activates it, Esc closes without acting — the exact
    * same defer-vs-resolve split `PermissionCard`'s own keyboard handling
    * uses (issue #148).
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4/§6,
+   * issue #431): the hand-rolled backdrop+card chrome is replaced by the
+   * shared `Dialog` primitive (`thread-lift` entrance, Esc/backdrop-click/
+   * focus-trap all come from there now — this component no longer owns
+   * any of that). Rows get leading icon-set glyphs (session vs. action)
+   * in place of the old text-only "Session"/"Action" tags, kept
+   * screen-reader-visible via a `.sr-only` label so removing the visible
+   * tag loses no accessible information. Tight, single-line rows and a
+   * fast hover/active crossfade are the "Raycast-grade" feel the brief's
+   * surface direction calls for; the active row reads as a 2px accent
+   * left-bar + subtle tint (accent-for-meaning, never a filled block),
+   * echoing the session-row convention documented in the brief's §4.
    */
   import { fuzzyFilter } from '$lib/fuzzy';
+  import Dialog from './ui/Dialog.svelte';
 
   export interface CommandPaletteSession {
     id: string;
@@ -48,7 +62,6 @@
 
   let query = $state('');
   let activeIndex = $state(0);
-  let inputEl = $state<HTMLInputElement | undefined>(undefined);
 
   const allEntries = $derived<Entry[]>([
     ...actions.map((action): Entry => ({
@@ -73,11 +86,13 @@
     if (activeIndex >= results.length) activeIndex = Math.max(0, results.length - 1);
   });
 
+  // Resets the search on every open — focusing the input is now the
+  // shared `Dialog`'s job (its focus-trap moves focus to the first
+  // focusable element, which is this header's search input).
   $effect(() => {
     if (open) {
       query = '';
       activeIndex = 0;
-      inputEl?.focus();
     }
   });
 
@@ -89,7 +104,10 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
+      // Stop here rather than let it bubble to Dialog's own Esc handler —
+      // both would otherwise call onClose for the same keypress.
       event.preventDefault();
+      event.stopPropagation();
       onClose();
       return;
     }
@@ -111,108 +129,114 @@
   }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="palette-backdrop"
-    role="presentation"
-    onclick={onClose}
-    data-testid="command-palette-backdrop"
-  >
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div
-      class="palette"
-      role="dialog"
-      tabindex="-1"
-      aria-label="Command palette"
-      onclick={(event) => event.stopPropagation()}
-      data-testid="command-palette"
-    >
-      <input
-        bind:this={inputEl}
-        type="text"
-        class="palette-input"
-        placeholder="Jump to a session or run an action…"
-        aria-label="Command palette search"
-        bind:value={query}
-        onkeydown={handleKeydown}
-        data-testid="command-palette-input"
-      />
+{#snippet paletteHeader()}
+  <input
+    type="text"
+    class="palette-input"
+    placeholder="Jump to a session or run an action…"
+    aria-label="Command palette search"
+    bind:value={query}
+    onkeydown={handleKeydown}
+    data-testid="command-palette-input"
+  />
+{/snippet}
 
-      <ul class="palette-results" role="listbox">
-        {#if results.length === 0}
-          <li class="palette-empty">No matches.</li>
-        {/if}
-        {#each results as entry, index (entry.kind + ':' + entry.id)}
-          <li>
-            <button
-              type="button"
-              class="palette-item"
-              class:active={index === activeIndex}
-              role="option"
-              aria-selected={index === activeIndex}
-              onmouseenter={() => (activeIndex = index)}
-              onclick={() => activate(entry)}
-              data-testid="command-palette-item"
-            >
-              <span class="kind">{entry.kind === 'session' ? 'Session' : 'Action'}</span>
-              {#if entry.kind === 'session'}
-                <span class="label">{entry.session.title}</span>
-                <span class="meta">{entry.session.projectPath}</span>
-              {:else}
-                <span class="label">{entry.action.label}</span>
-                {#if entry.action.shortcut}
-                  <span class="meta">{entry.action.shortcut}</span>
-                {/if}
-              {/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
+{#snippet paletteBody()}
+  <ul class="palette-results" role="listbox">
+    {#if results.length === 0}
+      <li class="palette-empty">No matches.</li>
+    {/if}
+    {#each results as entry, index (entry.kind + ':' + entry.id)}
+      <li>
+        <button
+          type="button"
+          class="palette-item"
+          class:active={index === activeIndex}
+          role="option"
+          aria-selected={index === activeIndex}
+          onmouseenter={() => (activeIndex = index)}
+          onclick={() => activate(entry)}
+          data-testid="command-palette-item"
+        >
+          <span class="entry-icon" aria-hidden="true">
+            {#if entry.kind === 'session'}
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M4 5.5h12a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8l-3 2.5v-2.5H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"
+                />
+              </svg>
+            {:else}
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M11 3 5 11h4l-1 6 6-8h-4l1-6Z"
+                />
+              </svg>
+            {/if}
+          </span>
+          <span class="sr-only">{entry.kind === 'session' ? 'Session' : 'Action'}</span>
+          {#if entry.kind === 'session'}
+            <span class="label">{entry.session.title}</span>
+            <span class="meta">{entry.session.projectPath}</span>
+          {:else}
+            <span class="label">{entry.action.label}</span>
+            {#if entry.action.shortcut}
+              <span class="meta">{entry.action.shortcut}</span>
+            {/if}
+          {/if}
+        </button>
+      </li>
+    {/each}
+  </ul>
+{/snippet}
 
-      <div class="palette-hints">
-        <span>↑↓ navigate</span>
-        <span>Enter select</span>
-        <span>Esc close</span>
-        {#each actions.filter((a) => a.shortcut) as action (action.id)}
-          <span>{action.shortcut} {action.label}</span>
-        {/each}
-      </div>
-    </div>
+{#snippet paletteFooter()}
+  <div class="palette-hints">
+    <span>↑↓ navigate</span>
+    <span>Enter select</span>
+    <span>Esc close</span>
+    {#each actions.filter((a) => a.shortcut) as action (action.id)}
+      <span>{action.shortcut} {action.label}</span>
+    {/each}
   </div>
-{/if}
+{/snippet}
+
+<Dialog
+  {open}
+  label="Command palette"
+  {onClose}
+  size="md"
+  class="command-palette-panel"
+  header={paletteHeader}
+  children={paletteBody}
+  footer={paletteFooter}
+/>
 
 <style>
-  .palette-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-overlay);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 10vh;
-    z-index: var(--z-modal);
-  }
-
-  .palette {
-    width: min(32rem, 90vw);
+  /* Overrides the shared Dialog panel's own box (its default padding/max-
+     width are tuned for a form dialog, not a dense, wide result list) —
+     the documented escape hatch for the `class` prop Dialog's own doc
+     comment calls out. */
+  :global(.command-palette-panel) {
+    width: min(34rem, 92vw);
     max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    border-radius: var(--radius-xl);
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-    box-shadow: var(--shadow-lg);
-    overflow: hidden;
   }
 
   .palette-input {
-    padding: var(--space-md) 0.9rem;
+    padding: var(--space-sm) 0.15rem;
     border: none;
     border-bottom: 1px solid var(--color-border);
     font-size: 1rem;
     background: transparent;
     color: inherit;
+    font-family: inherit;
+  }
+
+  .palette-input::placeholder {
+    color: var(--color-text-muted);
   }
 
   .palette-input:focus {
@@ -222,40 +246,63 @@
   .palette-results {
     list-style: none;
     margin: 0;
-    padding: var(--space-2xs);
+    padding: 0;
     overflow-y: auto;
-    flex: 1;
   }
 
   .palette-empty {
-    padding: var(--space-sm);
-    opacity: 0.6;
+    padding: var(--space-sm) var(--space-2xs);
+    color: var(--color-text-muted);
     font-size: var(--text-small-size);
   }
 
+  /* Tight, single-line rows — the "Raycast-grade" density the brief's
+     surface direction asks for. */
   .palette-item {
     width: 100%;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-sm);
     text-align: left;
     border: none;
+    border-left: 2px solid transparent;
     background: transparent;
     color: inherit;
-    padding: 0.45rem var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-md);
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat);
   }
 
+  .palette-item:not(:disabled):active {
+    transform: scale(0.995);
+  }
+
+  /* Active row: a 2px accent left-bar + subtle tint — never a filled
+     accent block (redesign brief §4's "accent-for-meaning" row
+     convention). */
   .palette-item.active {
     background: var(--color-accent-subtle);
+    border-left-color: var(--color-accent);
   }
 
-  .kind {
+  .entry-icon {
     flex-shrink: 0;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    opacity: 0.55;
+    display: inline-flex;
+    width: 1.125rem;
+    height: 1.125rem;
+    color: var(--color-text-secondary);
+  }
+
+  .entry-icon svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .palette-item.active .entry-icon {
+    color: var(--color-accent);
   }
 
   .label {
@@ -263,21 +310,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: var(--text-body-size);
   }
 
   .meta {
     flex-shrink: 0;
     font-size: var(--text-small-size);
-    opacity: 0.55;
+    color: var(--color-text-muted);
   }
 
   .palette-hints {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-md);
-    padding: var(--space-sm) 0.9rem;
-    border-top: 1px solid var(--color-border);
     font-size: 0.7rem;
-    opacity: 0.6;
+    color: var(--color-text-muted);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

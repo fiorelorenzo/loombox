@@ -40,7 +40,7 @@ describe('FileReferencePicker (SPEC §7.25 "@file references"; issue #160)', () 
         onClose: vi.fn(),
       },
     });
-    expect(screen.queryByTestId('file-reference-picker')).toBeNull();
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 
   it('lists every known file (across every loaded directory) when the query is empty', () => {

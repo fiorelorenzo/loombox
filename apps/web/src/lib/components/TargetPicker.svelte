@@ -6,8 +6,17 @@
    * `NewSessionDialog.svelte` owns fetching, loading/error state, and the
    * richer "no nodes connected yet" empty-state CTA; this component only
    * renders whatever `targets` it's given and reports a pick.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §3/§4,
+   * issue #431): rows sit at the `raised` elevation tier (session/target
+   * cards' documented tier), selection reads as a 2px accent left-bar +
+   * subtle tint rather than a solid accent border (accent-for-meaning),
+   * and reachability is now signaled with a shared `StatusDot` alongside
+   * the existing "offline" text badge (kept, so this component's own
+   * `getByText('offline')` test assertion is untouched).
    */
   import type { TargetListEntry } from '$lib/relay-client';
+  import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
     targets: TargetListEntry[];
@@ -35,6 +44,11 @@
         data-testid="target-option"
         data-target-id={target.targetId}
       >
+        <StatusDot
+          tone={target.reachable ? 'success' : 'danger'}
+          label={target.reachable ? 'Reachable' : 'Unreachable'}
+          size="sm"
+        />
         <span class="label">{target.label}</span>
         <span class="meta">
           <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
@@ -59,42 +73,54 @@
 
   .empty {
     margin: 0;
-    opacity: 0.6;
+    color: var(--color-text-muted);
     font-size: var(--text-small-size);
   }
 
+  /* `raised` elevation tier (redesign brief §3): target cards. */
   .target-option {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     flex-wrap: wrap;
     gap: var(--space-xs) var(--space-sm);
     text-align: left;
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
+    border-left: 2px solid transparent;
     background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
     color: inherit;
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
-  .target-option:hover:not(:disabled),
+  .target-option:not(:disabled):active {
+    transform: scale(0.995);
+  }
+
+  .target-option:hover:not(:disabled) {
+    background: var(--color-fill-subtle);
+  }
+
   .target-option:focus-visible {
-    border-color: var(--color-accent);
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
-  .target-option:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
+  /* Selected: a 2px accent left-bar + subtle tint, never a solid accent
+     border/fill (redesign brief §4's row convention: accent reserved for
+     meaning, echoing a highlighted thread on a warp). */
   .target-option.selected {
-    border-color: var(--color-accent);
+    border-left-color: var(--color-accent);
     background: var(--color-accent-subtle);
   }
 
   .target-option:disabled {
-    opacity: 0.5;
+    opacity: 0.55;
     cursor: not-allowed;
   }
 
@@ -107,8 +133,9 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-xs);
+    margin-left: auto;
+    color: var(--color-text-secondary);
     font-size: 0.7rem;
-    opacity: 0.7;
     min-width: 0;
   }
 

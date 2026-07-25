@@ -35,7 +35,7 @@ describe('NewSessionDialog (issue #385)', () => {
     render(NewSessionDialog, {
       props: { open: false, client: fakeClient(), onCreated: vi.fn(), onClose: vi.fn() },
     });
-    expect(screen.queryByTestId('new-session-dialog')).toBeNull();
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 
   it('fetches targets from the client when opened and lists them via TargetPicker', async () => {

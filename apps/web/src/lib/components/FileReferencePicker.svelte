@@ -22,10 +22,19 @@
    * just triggered by this picker opening instead of a manual click, and it
    * naturally converges (or stops at the cap) as loads land and reveal
    * further subdirectories.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4,
+   * issue #431): hand-rolled backdrop+card chrome moves onto the shared
+   * `Dialog` primitive, mirroring `CommandPalette.svelte`'s identical
+   * migration — same tight-row/fast-hover visual language, same
+   * stop-propagation note on Esc (this component owns its own Esc/arrow
+   * handling on the search input; without it Dialog's own Esc handler
+   * would fire a second `onClose`).
    */
   import { fuzzyFilter } from '../fuzzy';
   import { flattenLoadedFiles, joinTreePath, type FlatFileEntry } from '../file-tree';
   import type { FileTreeDirectoryState } from '../relay-client';
+  import Dialog from './ui/Dialog.svelte';
 
   interface Props {
     open: boolean;
@@ -42,7 +51,6 @@
 
   let query = $state('');
   let activeIndex = $state(0);
-  let inputEl = $state<HTMLInputElement | undefined>(undefined);
   let autoExpandedCount = 0;
 
   const files = $derived(flattenLoadedFiles(tree));
@@ -57,7 +65,6 @@
       query = '';
       activeIndex = 0;
       autoExpandedCount = 0;
-      inputEl?.focus();
     }
   });
 
@@ -87,7 +94,10 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
+      // Stop here rather than let it bubble to Dialog's own Esc handler —
+      // both would otherwise call onClose for the same keypress.
       event.preventDefault();
+      event.stopPropagation();
       onClose();
       return;
     }
@@ -109,96 +119,89 @@
   }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="picker-backdrop"
-    role="presentation"
-    onclick={onClose}
-    data-testid="file-reference-picker-backdrop"
-  >
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div
-      class="picker"
-      role="dialog"
-      tabindex="-1"
-      aria-label="Reference a file"
-      onclick={(event) => event.stopPropagation()}
-      data-testid="file-reference-picker"
-    >
-      <input
-        bind:this={inputEl}
-        type="text"
-        class="picker-input"
-        placeholder="Reference a file…"
-        aria-label="File reference search"
-        bind:value={query}
-        onkeydown={handleKeydown}
-        data-testid="file-reference-picker-input"
-      />
+{#snippet pickerHeader()}
+  <input
+    type="text"
+    class="picker-input"
+    placeholder="Reference a file…"
+    aria-label="File reference search"
+    bind:value={query}
+    onkeydown={handleKeydown}
+    data-testid="file-reference-picker-input"
+  />
+{/snippet}
 
-      <ul class="picker-results" role="listbox">
-        {#if results.length === 0}
-          <li class="picker-empty">No matching files.</li>
-        {/if}
-        {#each results as entry, index (entry.path)}
-          <li>
-            <button
-              type="button"
-              class="picker-item"
-              class:active={index === activeIndex}
-              role="option"
-              aria-selected={index === activeIndex}
-              onmouseenter={() => (activeIndex = index)}
-              onclick={() => activate(entry)}
-              data-testid="file-reference-picker-item"
-            >
-              <span class="path">{entry.path}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
+{#snippet pickerBody()}
+  <ul class="picker-results" role="listbox">
+    {#if results.length === 0}
+      <li class="picker-empty">No matching files.</li>
+    {/if}
+    {#each results as entry, index (entry.path)}
+      <li>
+        <button
+          type="button"
+          class="picker-item"
+          class:active={index === activeIndex}
+          role="option"
+          aria-selected={index === activeIndex}
+          onmouseenter={() => (activeIndex = index)}
+          onclick={() => activate(entry)}
+          data-testid="file-reference-picker-item"
+        >
+          <span class="entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6 3h6l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+              />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3h3" />
+            </svg>
+          </span>
+          <span class="path">{entry.path}</span>
+        </button>
+      </li>
+    {/each}
+  </ul>
+{/snippet}
 
-      <div class="picker-hints">
-        <span>↑↓ navigate</span>
-        <span>Enter insert</span>
-        <span>Esc close</span>
-      </div>
-    </div>
+{#snippet pickerFooter()}
+  <div class="picker-hints">
+    <span>↑↓ navigate</span>
+    <span>Enter insert</span>
+    <span>Esc close</span>
   </div>
-{/if}
+{/snippet}
+
+<Dialog
+  {open}
+  label="Reference a file"
+  {onClose}
+  size="md"
+  class="file-reference-picker-panel"
+  header={pickerHeader}
+  children={pickerBody}
+  footer={pickerFooter}
+/>
 
 <style>
-  .picker-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-overlay);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 12vh;
-    z-index: var(--z-modal);
-  }
-
-  .picker {
-    width: min(28rem, 90vw);
+  :global(.file-reference-picker-panel) {
+    width: min(30rem, 92vw);
     max-height: 60vh;
-    display: flex;
-    flex-direction: column;
-    border-radius: var(--radius-xl);
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-    box-shadow: var(--shadow-lg);
-    overflow: hidden;
   }
 
   .picker-input {
-    padding: 0.65rem var(--space-md);
+    padding: var(--space-sm) 0.15rem;
     border: none;
     border-bottom: 1px solid var(--color-border);
     font-size: 0.95rem;
     background: transparent;
     color: inherit;
+    font-family: inherit;
+  }
+
+  .picker-input::placeholder {
+    color: var(--color-text-muted);
   }
 
   .picker-input:focus {
@@ -208,31 +211,59 @@
   .picker-results {
     list-style: none;
     margin: 0;
-    padding: var(--space-2xs);
+    padding: 0;
     overflow-y: auto;
-    flex: 1;
   }
 
   .picker-empty {
-    padding: var(--space-sm);
-    opacity: 0.6;
+    padding: var(--space-sm) var(--space-2xs);
+    color: var(--color-text-muted);
     font-size: var(--text-small-size);
   }
 
   .picker-item {
     width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
     text-align: left;
     border: none;
+    border-left: 2px solid transparent;
     background: transparent;
     color: inherit;
-    padding: var(--space-xs) 0.55rem;
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-md);
     cursor: pointer;
     font-size: 0.82rem;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .picker-item:not(:disabled):active {
+    transform: scale(0.995);
   }
 
   .picker-item.active {
     background: var(--color-accent-subtle);
+    border-left-color: var(--color-accent);
+  }
+
+  .entry-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-secondary);
+  }
+
+  .entry-icon svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .picker-item.active .entry-icon {
+    color: var(--color-accent);
   }
 
   .path {
@@ -246,9 +277,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.65rem;
-    padding: var(--space-xs) var(--space-md);
-    border-top: 1px solid var(--color-border);
     font-size: 0.68rem;
-    opacity: 0.6;
+    color: var(--color-text-muted);
   }
 </style>

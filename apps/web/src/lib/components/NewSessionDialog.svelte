@@ -15,10 +15,22 @@
    * (not yet connected) renders the dialog closed for content but still
    * mounts, matching `open`'s own gate — `+page.svelte` only ever passes a
    * defined `client` once `status === 'open'` in practice.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4,
+   * issue #431): the hand-rolled backdrop+card chrome moves onto the
+   * shared `Dialog` primitive (`thread-lift` entrance, Esc/backdrop-click/
+   * focus-trap). The no-targets empty state and the error line now read
+   * through `EmptyState`/`ErrorNotice`'s visual language; the outer
+   * elements keep their original `data-testid`s (`EmptyState`/
+   * `ErrorNotice` hardcode their own for their own component tests, so
+   * this file wraps rather than relies on those) so this component's own
+   * tests are unaffected.
    */
   import type { CreateSessionOptions, TargetListEntry } from '$lib/relay-client';
   import TargetPicker from './TargetPicker.svelte';
   import WovenLoader from './WovenLoader.svelte';
+  import Dialog from './ui/Dialog.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
 
   export interface NewSessionClient {
     listTargets: (timeoutMs?: number) => Promise<TargetListEntry[]>;
@@ -118,172 +130,114 @@
   }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="dialog-backdrop"
-    role="presentation"
-    onclick={handleClose}
-    data-testid="new-session-backdrop"
+{#snippet addTargetCta()}
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    onclick={onAddTarget}
+    data-testid="new-session-add-target-cta"
   >
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-label="New session"
-      tabindex="-1"
-      onclick={(event) => event.stopPropagation()}
-      data-testid="new-session-dialog"
-    >
-      <h2>New session</h2>
+    Add a target
+  </button>
+{/snippet}
 
-      {#if targetsLoading}
-        <p class="status-line">
-          <WovenLoader label="Looking for connected nodes" />
-          Looking for connected nodes…
-        </p>
-      {:else if targetsError}
-        <p class="error" role="alert">{targetsError}</p>
-      {:else if targets.length === 0}
-        <div class="empty-state" data-testid="new-session-no-targets">
-          <p>No nodes connected yet — start a loombox node pointed at this relay.</p>
-          {#if onAddTarget}
-            <button
-              type="button"
-              class="add-target-cta"
-              onclick={onAddTarget}
-              data-testid="new-session-add-target-cta"
-            >
-              Add a target
-            </button>
-          {/if}
-        </div>
-      {:else}
-        <TargetPicker
-          {targets}
-          value={selectedTargetId}
-          onChange={(id) => (selectedTargetId = id)}
-        />
-      {/if}
-
-      <form class="session-form" onsubmit={handleSubmit}>
-        <label for="new-session-provider">Provider</label>
-        <select
-          id="new-session-provider"
-          bind:value={selectedProvider}
-          data-testid="new-session-provider"
-        >
-          <option value="claude">Claude Code</option>
-        </select>
-
-        <label for="new-session-project-path">Project folder</label>
-        <input
-          id="new-session-project-path"
-          type="text"
-          placeholder="/home/you/project"
-          bind:value={projectPath}
-          data-testid="new-session-project-path"
-        />
-
-        <label for="new-session-title">Title (optional)</label>
-        <input
-          id="new-session-title"
-          type="text"
-          placeholder="Defaults to the project folder"
-          bind:value={title}
-          data-testid="new-session-title"
-        />
-
-        <label for="new-session-prompt">Starting prompt</label>
-        <textarea
-          id="new-session-prompt"
-          rows="3"
-          placeholder="What should the agent do first?"
-          bind:value={prompt}
-          data-testid="new-session-prompt"></textarea>
-
-        {#if createError}
-          <p class="error" role="alert">{createError}</p>
-        {/if}
-
-        <div class="actions">
-          <button type="button" class="cancel" onclick={handleClose}>Cancel</button>
-          <button type="submit" disabled={!canSubmit} data-testid="new-session-submit">
-            {#if creating}
-              <WovenLoader label="Creating session" />
-              Creating…
-            {:else}
-              Create session
-            {/if}
-          </button>
-        </div>
-      </form>
+{#snippet dialogBody()}
+  {#if targetsLoading}
+    <p class="status-line">
+      <WovenLoader label="Looking for connected nodes" />
+      Looking for connected nodes…
+    </p>
+  {:else if targetsError}
+    <p class="error" role="alert">{targetsError}</p>
+  {:else if targets.length === 0}
+    <div class="empty-state-slot" data-testid="new-session-no-targets">
+      <EmptyState
+        message="No nodes connected yet — start a loombox node pointed at this relay."
+        cta={onAddTarget ? addTargetCta : undefined}
+      />
     </div>
-  </div>
-{/if}
+  {:else}
+    <TargetPicker {targets} value={selectedTargetId} onChange={(id) => (selectedTargetId = id)} />
+  {/if}
+
+  <form class="session-form" onsubmit={handleSubmit}>
+    <label for="new-session-provider">Provider</label>
+    <select
+      id="new-session-provider"
+      bind:value={selectedProvider}
+      data-testid="new-session-provider"
+    >
+      <option value="claude">Claude Code</option>
+    </select>
+
+    <label for="new-session-project-path">Project folder</label>
+    <input
+      id="new-session-project-path"
+      type="text"
+      placeholder="/home/you/project"
+      bind:value={projectPath}
+      data-testid="new-session-project-path"
+    />
+
+    <label for="new-session-title">Title (optional)</label>
+    <input
+      id="new-session-title"
+      type="text"
+      placeholder="Defaults to the project folder"
+      bind:value={title}
+      data-testid="new-session-title"
+    />
+
+    <label for="new-session-prompt">Starting prompt</label>
+    <textarea
+      id="new-session-prompt"
+      rows="3"
+      placeholder="What should the agent do first?"
+      bind:value={prompt}
+      data-testid="new-session-prompt"></textarea>
+
+    {#if createError}
+      <p class="error" role="alert">{createError}</p>
+    {/if}
+
+    <div class="actions">
+      <button type="button" class="btn btn-secondary" onclick={handleClose}>Cancel</button>
+      <button
+        type="submit"
+        class="btn btn-primary"
+        disabled={!canSubmit}
+        data-testid="new-session-submit"
+      >
+        {#if creating}
+          <WovenLoader label="Creating session" />
+          Creating…
+        {:else}
+          Create session
+        {/if}
+      </button>
+    </div>
+  </form>
+{/snippet}
+
+<Dialog {open} label="New session" onClose={handleClose} size="md" children={dialogBody}>
+  {#snippet header()}
+    <h2>New session</h2>
+  {/snippet}
+</Dialog>
 
 <style>
-  .dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-overlay);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding: 6vh var(--space-md);
-    overflow-y: auto;
-    z-index: var(--z-modal);
-  }
-
-  .dialog {
-    width: min(28rem, 100%);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border-radius: var(--radius-xl);
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-    box-shadow: var(--shadow-lg);
-  }
-
-  .dialog h2 {
-    margin: 0;
-  }
-
   .status-line {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
     margin: 0;
-    opacity: 0.7;
+    color: var(--color-text-secondary);
     font-size: var(--text-small-size);
   }
 
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-sm);
-    padding: var(--space-md);
-    border-radius: var(--radius-md);
+  .empty-state-slot {
+    border-radius: var(--radius-lg);
     background: var(--color-fill-subtle);
-    font-size: var(--text-small-size);
-  }
-
-  .empty-state p {
-    margin: 0;
-  }
-
-  .add-target-cta {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    font-weight: 600;
   }
 
   .session-form {
@@ -295,7 +249,7 @@
   .session-form label {
     margin-top: var(--space-xs);
     font-size: var(--text-small-size);
-    opacity: 0.8;
+    color: var(--color-text-secondary);
   }
 
   .session-form input,
@@ -304,18 +258,19 @@
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
-    background: var(--color-fill-subtle);
+    background: var(--color-surface);
     color: inherit;
     font-family: inherit;
     font-size: 0.9rem;
     resize: vertical;
+    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
   .session-form input:focus-visible,
   .session-form select:focus-visible,
   .session-form textarea:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .actions {
@@ -325,41 +280,79 @@
     margin-top: var(--space-sm);
   }
 
-  .actions button {
+  /* Hand-styled to match the shared `Button` primitive's visual language
+     (redesign brief §4) without importing it: `Button` hardcodes its own
+     `data-testid`, and this dialog's `new-session-submit`/CTA testids are
+     load-bearing for this component's own tests (loading state, disabled
+     state, click), so the buttons stay plain `<button>`s styled the same
+     way `Button` is (see that file's `.ui-button*` rules). */
+  .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-xs);
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-lg);
-    cursor: pointer;
+    font-family: inherit;
     font-weight: 600;
-  }
-
-  .actions button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  .actions .cancel {
-    border: 1px solid var(--color-border);
+    font-size: var(--text-body-size);
+    cursor: pointer;
+    border: 1px solid transparent;
     background: transparent;
     color: inherit;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      border-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
-  .actions button[type='submit'] {
-    border: none;
+  .btn-sm {
+    padding: var(--space-2xs) var(--space-md);
+    font-size: var(--text-small-size);
+  }
+
+  .btn:not(:disabled):active {
+    transform: scale(0.98);
+  }
+
+  .btn:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .btn-primary {
     background: var(--color-accent);
     color: var(--color-accent-contrast);
   }
 
-  .actions button[type='submit']:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .btn-primary:not(:disabled):hover {
+    background: var(--color-accent-hover);
+  }
+
+  .btn-primary:not(:disabled):active {
+    background: var(--color-accent-active);
+  }
+
+  .btn-secondary {
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
+  }
+
+  .btn-secondary:not(:disabled):hover {
+    background: var(--color-fill-subtle);
   }
 
   .error {
     margin: 0;
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--color-danger-subtle);
+    border: 1px solid var(--color-danger);
     color: var(--color-danger);
     font-size: var(--text-small-size);
   }

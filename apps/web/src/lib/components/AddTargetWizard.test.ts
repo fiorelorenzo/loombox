@@ -44,7 +44,7 @@ async function fillHostAndReview(): Promise<void> {
 describe('AddTargetWizard (issue #408)', () => {
   it('is not rendered while closed', () => {
     render(AddTargetWizard, { props: { open: false, client: fakeClient(), onClose: vi.fn() } });
-    expect(screen.queryByTestId('add-target-dialog')).toBeNull();
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 
   it('shows the no-nodes empty state with clear guidance when listTargets resolves empty', async () => {
