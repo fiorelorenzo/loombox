@@ -19,6 +19,8 @@
   import type { AcpPermissionOption, PermissionQueueState } from '@loombox/providers-core';
   import { headPermissionRequest, listPermissionRequests } from '@loombox/providers-core';
   import PermissionCard from './PermissionCard.svelte';
+  import Button from './ui/Button.svelte';
+  import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
     sessionId: string;
@@ -38,8 +40,16 @@
 {#if head}
   <div class="permission-queue-bar" class:narrow data-testid="permission-queue-bar">
     <div class="queue-meta">
-      <span>{pending.length} pending</span>
-      <button type="button" class="stop" onclick={onStop}>Stop</button>
+      <span class="queue-count">
+        <StatusDot
+          tone="warning"
+          pulse={pending.length > 1}
+          label="Permission requests pending"
+          size="sm"
+        />
+        {pending.length} pending
+      </span>
+      <Button variant="danger" size="sm" onclick={onStop}>Stop</Button>
     </div>
     <PermissionCard
       request={head}
@@ -67,31 +77,28 @@
     background: var(--color-surface);
   }
 
+  /* "N more waiting" glanceable at a glance (docs/design/redesign.md, issue
+     #433's brief): a quiet pill instead of dimmed inline text, with a
+     StatusDot carrying the same pending/queued meaning `PermissionCard`
+     itself uses — the queue-count text stays byte-for-byte the same string
+     the existing test asserts on ("N pending"), just given a more
+     glanceable frame. */
   .queue-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: var(--text-small-size);
-    opacity: 0.7;
+    gap: var(--space-sm);
   }
 
-  .stop {
-    border: 1px solid var(--color-danger);
-    color: var(--color-danger);
-    background: transparent;
-    border-radius: var(--radius-sm);
+  .queue-count {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     padding: var(--space-3xs) var(--space-sm);
-    cursor: pointer;
+    border-radius: var(--radius-full);
+    background: var(--color-warning-subtle);
+    color: var(--color-text-secondary);
     font-size: var(--text-small-size);
-  }
-
-  /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): a
-     coarse (touch) pointer gets a larger Stop hit target. */
-  @media (pointer: coarse) {
-    .stop {
-      min-height: 2.75rem;
-      padding: 0.5rem 0.9rem;
-      font-size: 0.9rem;
-    }
+    font-weight: 600;
   }
 </style>
