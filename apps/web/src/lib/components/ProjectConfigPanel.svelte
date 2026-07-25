@@ -16,6 +16,14 @@
    * panel" test). `mcpStorage`/`pluginStorage` are only ever overridden in
    * tests; in the app both default to each panel's own real
    * `localStorage`-backed store, scoped by `projectPath`.
+   *
+   * Warp Deck restyle (redesign brief `docs/design/redesign.md` §1/§4,
+   * issue #435): only the section headers and column rhythm change here —
+   * each child panel now carries its own `Card elevation="raised"` chrome,
+   * so this wrapper stays a plain two-column layout (stacking at a narrow
+   * Drawer width, e.g. the mobile bottom sheet) rather than nesting a
+   * second card around cards. `data-testid="project-config-panel"` and the
+   * prop contract are unchanged.
    */
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
@@ -55,12 +63,18 @@
     /* Narrow/mobile viewport parity (#174's same fix): lets a section shrink
        inside a narrow flex row instead of forcing horizontal overflow. */
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
 
   h3 {
-    margin: 0 0 var(--space-sm);
-    font-size: 0.85rem;
-    opacity: 0.7;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
     font-weight: 600;
   }
 </style>
