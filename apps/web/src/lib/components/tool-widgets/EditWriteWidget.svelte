@@ -3,9 +3,13 @@
    * The bespoke Edit/Write widget (SPEC.md §7.24 tier-1, issue #139):
    * Claude's Edit/Write and Codex's patch/diff all resolve here
    * (`$lib/tool-widgets.ts`'s `resolveToolWidgetKind`) since they share
-   * ACP v1's one `Diff` shape. Reuses `DiffViewer` verbatim — the same
-   * component the working-tree diff viewer (§7.4) uses — rather than
+   * ACP v1's one `Diff` shape. Reuses `DiffViewer` verbatim - the same
+   * component the working-tree diff viewer (§7.4) uses - rather than
    * re-rendering the diff itself.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): the widget
+   * adopts the elevation ladder's "raised" tier as its outer frame (title +
+   * status), with `DiffViewer`'s own card nested inside unchanged.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import DiffViewer from '../DiffViewer.svelte';
@@ -28,10 +32,17 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3): the outer frame for the title row;
+     DiffViewer keeps its own nested card treatment. */
   .edit-write-widget {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
+    gap: var(--space-xs);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-sm);
   }
 
   .header {

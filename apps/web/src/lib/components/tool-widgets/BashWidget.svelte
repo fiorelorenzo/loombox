@@ -8,6 +8,12 @@
    * so this widget and any other display-only tool-call terminal render
    * identically and share one chunk-boundary-safe decode path
    * (`$lib/terminal.ts`), not a fork per widget.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): the widget
+   * itself is the elevation ladder's "raised" tier (Card's own recipe,
+   * hand-styled here so the bash-widget testid stays put) - a card frame
+   * around TerminalOutput's own dark terminal-screen surface, which stays
+   * untouched.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { bashCommand, toolCallOutputText } from '$lib/tool-widgets';
@@ -32,13 +38,20 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3): a card frame around
+     TerminalOutput's own "screen" surface. */
   .bash-widget {
     position: relative;
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-xs);
   }
 
   .copy-row {
     position: absolute;
-    top: var(--space-2xs);
-    right: var(--space-xs);
+    top: var(--space-sm);
+    right: var(--space-sm);
   }
 </style>

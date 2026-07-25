@@ -6,6 +6,11 @@
    * all). `ToolCallRow` is the one place that decides bespoke-vs-generic
    * (`$lib/tool-widgets.ts`'s `resolveToolWidgetKind`), so this component
    * itself never needs to know about the bespoke tier.
+   *
+   * Warp Deck restyle (docs/design/redesign.md, issue #432): adopts the
+   * elevation ladder's "raised" tier (Card's own recipe, hand-styled here
+   * rather than imported so the generic-tool-row testid this component's
+   * tests query stays on the actual root element).
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { toolCallOutputText } from '$lib/tool-widgets';
@@ -38,9 +43,12 @@
 </div>
 
 <style>
+  /* raised tier (elevation ladder §3). */
   .generic-tool-row {
+    background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
     padding: var(--space-sm) 0.7rem;
     font-size: var(--text-small-size);
   }
@@ -55,8 +63,9 @@
     text-transform: uppercase;
     font-size: 0.65rem;
     letter-spacing: 0.03em;
-    opacity: 0.6;
-    border: 1px solid currentColor;
+    opacity: 0.7;
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     padding: 0.05rem var(--space-2xs);
   }
