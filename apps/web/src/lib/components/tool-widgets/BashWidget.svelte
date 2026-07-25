@@ -14,11 +14,18 @@
    * hand-styled here so the bash-widget testid stays put) - a card frame
    * around TerminalOutput's own dark terminal-screen surface, which stays
    * untouched.
+   *
+   * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
+   * #468): a small header identifies the widget's tool-call type via the
+   * shared `tool-bash` glyph, the same convention `EditWriteWidget`/
+   * `TodoWidget` use — decorative, since the "Bash" label right next to it
+   * already carries the meaning.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { bashCommand, toolCallOutputText } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import TerminalOutput from '../TerminalOutput.svelte';
+  import Icon from '../icons/Icon.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -31,17 +38,20 @@
 </script>
 
 <div class="bash-widget" data-testid="bash-widget">
-  <TerminalOutput {command} content={output} status={item.status} />
-  <div class="copy-row">
-    <CopyButton text={copyText} label="Copy command and output" />
+  <div class="header">
+    <Icon name="tool-bash" class="type-icon" />
+    <span class="title">Bash</span>
+    <div class="copy-row">
+      <CopyButton text={copyText} label="Copy command and output" />
+    </div>
   </div>
+  <TerminalOutput {command} content={output} status={item.status} />
 </div>
 
 <style>
   /* raised tier (elevation ladder §3): a card frame around
      TerminalOutput's own "screen" surface. */
   .bash-widget {
-    position: relative;
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
@@ -49,9 +59,25 @@
     padding: var(--space-xs);
   }
 
+  .header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0 var(--space-2xs) var(--space-xs);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .title {
+    flex: 1;
+  }
+
+  :global(.type-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+  }
+
   .copy-row {
-    position: absolute;
-    top: var(--space-sm);
-    right: var(--space-sm);
+    flex-shrink: 0;
   }
 </style>

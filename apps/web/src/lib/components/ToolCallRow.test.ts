@@ -114,3 +114,43 @@ describe('ToolCallRow: permission awaiting indicator (#146)', () => {
     expect(screen.getByTestId('tool-call-row').className).toContain('awaiting-permission');
   });
 });
+
+describe('ToolCallRow: tool-call type glyphs via the shared Icon component (#468)', () => {
+  it('the Bash widget draws the tool-bash glyph', () => {
+    const { container } = render(ToolCallRow, {
+      props: { item: toolCallItem({ toolKind: 'execute', rawInput: { command: 'pnpm test' } }) },
+    });
+    expect(container.querySelector('[data-icon-name="tool-bash"]')).toBeTruthy();
+  });
+
+  it('the Edit/Write widget draws the tool-edit glyph', () => {
+    const { container } = render(ToolCallRow, {
+      props: {
+        item: toolCallItem({
+          toolKind: 'edit',
+          diff: { path: 'src/foo.ts', oldText: 'a', newText: 'b' },
+        }),
+      },
+    });
+    expect(container.querySelector('[data-icon-name="tool-edit"]')).toBeTruthy();
+  });
+
+  it('the TodoWrite widget draws a tool-call type glyph', () => {
+    const { container } = render(ToolCallRow, {
+      props: {
+        item: toolCallItem({
+          toolKind: 'other',
+          rawInput: { todos: [{ content: 'ship it', status: 'in_progress' }] },
+        }),
+      },
+    });
+    expect(container.querySelector('[data-icon-name="tool-generic"]')).toBeTruthy();
+  });
+
+  it('the generic fallback row draws the tool-generic glyph', () => {
+    const { container } = render(ToolCallRow, {
+      props: { item: toolCallItem({ toolKind: 'search' }) },
+    });
+    expect(container.querySelector('[data-icon-name="tool-generic"]')).toBeTruthy();
+  });
+});

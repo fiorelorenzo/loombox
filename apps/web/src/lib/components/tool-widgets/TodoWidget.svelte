@@ -8,10 +8,21 @@
    * Warp Deck restyle (docs/design/redesign.md, issue #432): adopts the
    * elevation ladder's "raised" tier, hand-styled to match `Card`'s recipe
    * so the todo-widget testid stays on this component's own root element.
+   *
+   * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
+   * #468): the header draws a shared glyph next to the title, same
+   * convention as `BashWidget`/`EditWriteWidget`. There is no dedicated
+   * "todo" glyph in `icon-paths.ts` yet (its `IconName` union only has
+   * `tool-bash`/`tool-edit`/`tool-generic`), so this borrows `tool-generic`
+   * as an interim stand-in — a purpose-built checklist glyph is a natural
+   * follow-up for whoever next touches the icon set. The per-entry ☑/☐
+   * marks below are unaffected (out of this issue's scope, matching
+   * `PlanCard`'s identical, untouched marker convention).
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { isTodoInput } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
+  import Icon from '../icons/Icon.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -25,6 +36,7 @@
 
 <div class="todo-widget" data-testid="todo-widget">
   <div class="header">
+    <Icon name="tool-generic" class="type-icon" />
     <span class="title">Todo list</span>
     <CopyButton text={copyText} label="Copy todo list" />
   </div>
@@ -53,6 +65,11 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+  }
+
+  :global(.type-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
   }
 
   .title {

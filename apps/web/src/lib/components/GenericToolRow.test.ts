@@ -31,4 +31,11 @@ describe('GenericToolRow', () => {
     render(GenericToolRow, { props: { item } });
     expect(screen.getByText(/"pattern": "TODO"/)).toBeTruthy();
   });
+
+  it('draws its tool-call type glyph via the shared Icon component (#468)', () => {
+    const { container } = render(GenericToolRow, { props: { item } });
+    const icon = container.querySelector('[data-icon-name="tool-generic"]');
+    expect(icon).toBeTruthy();
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
 });

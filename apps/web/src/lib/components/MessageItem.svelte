@@ -41,6 +41,13 @@
    * for live-streamed arrivals. Reduced motion is handled for free: this
    * animation is written entirely against `--duration-base`/`--ease-*`,
    * which `tokens.css` already zeroes under `prefers-reduced-motion`.
+   *
+   * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
+   * #468): the "Show thought" disclosure affordance draws its chevron from
+   * the shared `Icon` component (`collapse-chevron` — the same glyph the
+   * sessions rail uses for its own expand/collapse toggle) instead of
+   * relying on text alone; decorative (`aria-hidden`, no `label`), since the
+   * button's own visible text already carries the accessible name.
    */
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core';
@@ -48,6 +55,7 @@
   import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
   import WovenLoader from './WovenLoader.svelte';
+  import Icon from './icons/Icon.svelte';
 
   interface Props {
     item: TranscriptMessageItem;
@@ -133,7 +141,10 @@
       <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
     {/if}
     {#if role === 'thought' && !expanded}
-      <button type="button" class="expand" onclick={() => (expanded = true)}>Show thought</button>
+      <button type="button" class="expand" onclick={() => (expanded = true)}>
+        <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
+        Show thought
+      </button>
     {:else if role === 'thought'}
       <p class="text thought-body" data-testid="thought-body">{displayText}</p>
     {:else}
@@ -224,6 +235,9 @@
   }
 
   .expand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
     flex: 1;
     text-align: left;
     background: none;
@@ -243,5 +257,9 @@
   .expand:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
+  }
+
+  :global(.expand-icon) {
+    flex-shrink: 0;
   }
 </style>

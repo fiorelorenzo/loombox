@@ -11,10 +11,17 @@
    * elevation ladder's "raised" tier (Card's own recipe, hand-styled here
    * rather than imported so the generic-tool-row testid this component's
    * tests query stays on the actual root element).
+   *
+   * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
+   * #468): every tool call that lands here (tier-2, no bespoke widget) is by
+   * definition the "any other tool" case, so it always draws the shared
+   * `tool-generic` glyph — decorative, the `kind-badge` text right next to
+   * it already carries the meaning.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { toolCallOutputText } from '$lib/tool-widgets';
   import CopyButton from './CopyButton.svelte';
+  import Icon from './icons/Icon.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -32,6 +39,7 @@
   data-testid="generic-tool-row"
 >
   <div class="row-header">
+    <Icon name="tool-generic" class="type-icon" />
     <span class="kind-badge">{item.toolKind ?? 'other'}</span>
     <span class="title">{item.title ?? item.id}</span>
     {#if item.status}<span class="status">{item.status}</span>{/if}
@@ -57,6 +65,11 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+  }
+
+  :global(.type-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
   }
 
   .kind-badge {
