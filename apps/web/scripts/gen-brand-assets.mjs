@@ -6,15 +6,23 @@
 // placeholder generator, `gen-icons.mjs`, now that a real brand mark
 // exists to bake in).
 //
+// Since issue #459 this script covers BOTH apps: `apps/web/static/icons`
+// (favicon/PWA) AND `apps/desktop/assets` (dock icon + menu-bar tray
+// icons) — both are rasterized from the exact same `MARK_PATHS` constant,
+// so nobody should add a second, hand-drawn desktop asset pipeline later.
+//
 // Run with: pnpm --filter @loombox/web exec node scripts/gen-brand-assets.mjs
 import { Resvg } from '@resvg/resvg-js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const staticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'static');
+const webDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const staticDir = path.join(webDir, 'static');
 const iconsDir = path.join(staticDir, 'icons');
+const desktopAssetsDir = path.join(webDir, '..', 'desktop', 'assets');
 mkdirSync(iconsDir, { recursive: true });
+mkdirSync(desktopAssetsDir, { recursive: true });
 
 // The exact locked geometry from issue #194 — do not redraw. Mirrors
 // `$lib/components/BrandMark.svelte`'s inline SVG, which uses
@@ -39,6 +47,12 @@ const AZURE = '#3b9df7';
 // empty pixels as solid black rather than leaving them see-through, so an
 // explicit dark tile reads intentional instead of like a rendering bug).
 const TILE_BG = '#0b0d10';
+// `tokens.css`'s `--color-accent-contrast` — the AA-correct ink for content
+// drawn on top of the azure accent itself (as opposed to azure-on-dark
+// everywhere else in this file). The desktop dock icon (issue #459) draws
+// the mark ON an azure tile rather than beside one, so it needs this
+// contrast color instead of AZURE/TILE_BG.
+const ACCENT_CONTRAST = '#0a0a0a';
 
 /** The bare mark, transparent background, at its native 64x64 viewBox. */
 function markSvg(strokeColor) {
@@ -63,11 +77,36 @@ function tiledMarkSvg(canvas, markFraction) {
 </svg>`;
 }
 
-function rasterize(svg, size, filename) {
+/**
+ * The mark centered on a padded azure rounded-square ("squircle") tile —
+ * the desktop dock icon's shape (issue #459). Unlike `tiledMarkSvg`, the
+ * tile itself is inset from the full canvas (macOS Dock icons all carry
+ * this margin so they read as the same visual size next to every other
+ * app), and it's radiused rather than square, using the same corner-radius
+ * proportion as the mark's own outer frame (`rx="14"` on a 64-wide rect,
+ * i.e. ~22% of the tile). The mark is drawn in `ACCENT_CONTRAST`, not
+ * `AZURE`, since it now sits ON the accent color instead of beside it.
+ */
+function squircleTileSvg(canvas, { tileFraction = 0.82, markFraction = 0.6 } = {}) {
+  const tileSize = canvas * tileFraction;
+  const tileOffset = (canvas - tileSize) / 2;
+  const cornerRadius = tileSize * (14 / 64);
+  const markCanvasSize = tileSize * markFraction;
+  const markOffset = (canvas - markCanvasSize) / 2;
+  const scale = markCanvasSize / 64;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas}" height="${canvas}" viewBox="0 0 ${canvas} ${canvas}">
+  <rect x="${tileOffset}" y="${tileOffset}" width="${tileSize}" height="${tileSize}" rx="${cornerRadius}" fill="${AZURE}" />
+  <g transform="translate(${markOffset} ${markOffset}) scale(${scale})" fill="none" stroke="${ACCENT_CONTRAST}" stroke-width="3.4" stroke-linecap="round">${MARK_PATHS}</g>
+</svg>`;
+}
+
+function rasterize(svg, size, filename, dir = iconsDir) {
   const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: size } });
   const png = resvg.render().asPng();
-  writeFileSync(path.join(iconsDir, filename), png);
-  console.log(`wrote static/icons/${filename} (${size}x${size}, ${png.length} bytes)`);
+  writeFileSync(path.join(dir, filename), png);
+  console.log(
+    `wrote ${path.relative(webDir, path.join(dir, filename))} (${size}x${size}, ${png.length} bytes)`,
+  );
 }
 
 // 1. The favicon SVG itself — modern browsers render this directly at any
@@ -94,3 +133,22 @@ rasterize(tiledMarkSvg(180, 0.82), 180, 'apple-touch-icon-180.png');
 //    safe-zone circle every Android masking shape (circle/squircle/
 //    rounded-square) preserves.
 rasterize(tiledMarkSvg(512, 0.625), 512, 'maskable-512.png');
+
+// 5. Desktop dock icon (issue #459): the mark on a padded azure squircle
+//    tile, at the 1024x1024 electron-builder/`app.dock.setIcon` expects.
+rasterize(squircleTileSvg(1024), 1024, 'icon.png', desktopAssetsDir);
+
+// 6. Desktop tray ("menu bar") icons (issue #459). The `Template` filename
+//    suffix tells macOS to treat this as a template image: ignore its
+//    actual color and use only the alpha channel as a mask it tints
+//    automatically for the light/dark menu bar — so, unlike every asset
+//    above, this one must stay a plain transparent mark with NO azure tile
+//    (a colored background would just show through as an opaque blob).
+//    22px is the native macOS menu-bar glyph size; the `@2x` sibling is
+//    Electron's own HiDPI convention (same name, `@2x` suffix, auto-paired).
+for (const [filename, size] of [
+  ['tray-iconTemplate.png', 22],
+  ['tray-iconTemplate@2x.png', 44],
+]) {
+  rasterize(markSvg('#000000'), size, filename, desktopAssetsDir);
+}
