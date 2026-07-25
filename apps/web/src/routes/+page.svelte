@@ -46,6 +46,7 @@
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import AttentionInbox from '$lib/components/AttentionInbox.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import CopyButton from '$lib/components/CopyButton.svelte';
@@ -149,19 +150,60 @@
   let newSessionOpen = $state(false);
   // The "Add target" zero-touch provision-and-pair wizard (SPEC §7.23; issue #408).
   let addTargetOpen = $state(false);
-  // The node/target status view (SPEC §7.21; issue #269): a togglable panel,
-  // same shape as `inboxOpen`/`notificationSettingsOpen` — this page owns
+
+  /**
+   * The single Drawer state (redesign brief `docs/design/redesign.md` §1/§7,
+   * issue #427): replaces six independently-toggled panel booleans
+   * (`inboxOpen`, `targetStatusOpen`, `appearanceSettingsOpen`,
+   * `notificationSettingsOpen`, `fileTreeOpen`, `terminalOpen`,
+   * `projectConfigOpen`) with one union — only one Drawer tab is ever open
+   * at a time now ("one tab visible at a time in overlay mode"). `'settings'`
+   * covers both the old Appearance and Notification panels (now two
+   * sections of one Drawer tab); the pre-authentication sign-in screen's
+   * own minimal Appearance-only affordance reuses this exact same state
+   * rather than a parallel boolean, so there is still only ever one "what
+   * panel is open" answer for the whole page. Every existing panel
+   * component (`AttentionInbox`, `TargetStatusView`, `FileTreePanel`,
+   * `InteractiveTerminal`, `ProjectConfigPanel`, `AppearanceSettings`,
+   * `NotificationPreferences`) keeps its own props/logic/tests unchanged —
+   * only the container deciding whether it renders changed.
+   */
+  type DrawerTab = 'inbox' | 'targets' | 'files' | 'terminal' | 'config' | 'settings';
+  let activeDrawer = $state<DrawerTab | null>(null);
+  /** The Drawer's persistent-column mode at `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` and above (redesign brief §1's "toggle, persisted per-user"); below that width this is ignored and the Drawer is always an overlay/bottom-sheet — see this file's style block. Restored from `localStorage` in `onMount` below. */
+  let drawerPinned = $state(false);
+  const DRAWER_PINNED_STORAGE_KEY = 'loombox:drawer-pinned';
+  /** The mobile/tablet Sessions sheet (redesign brief §1's "<768px ... full-height sheet reached via a header 'Sessions' affordance, dismissed on pick"); a no-op at wider viewports where the Sessions column is always visible inline. */
+  let sessionsSheetOpen = $state(false);
+  /** The cockpit header's account/settings menu (redesign brief §1's "one account/settings menu"). */
+  let accountMenuOpen = $state(false);
+
+  /** Sets (or closes, via `null`) the Drawer's one open tab. */
+  function setActiveDrawer(tab: DrawerTab | null): void {
+    activeDrawer = tab;
+  }
+
+  /** Toggles a Drawer tab: closes it if already open, otherwise opens it (and implicitly replaces whatever other tab was open — only one at a time). */
+  function toggleDrawer(tab: DrawerTab): void {
+    activeDrawer = activeDrawer === tab ? null : tab;
+  }
+
+  // The node/target status view (SPEC §7.21; issue #269): this page owns
   // fetching/loading/error/polling, `TargetStatusView` itself is purely
   // presentational (mirrors `NewSessionDialog`'s split with `TargetPicker`).
-  let targetStatusOpen = $state(false);
+  // Polling itself runs continuously from the moment the client connects
+  // (see `connect()`'s status subscription below), not just while the
+  // Drawer's "targets" tab happens to be open — the redesign's always-
+  // visible header StatusDot cluster (SPEC brief §1/§6) needs live target
+  // health regardless of whether the Drawer is open.
   let targetStatusEntries = $state<TargetListEntry[]>([]);
   let targetStatusLoading = $state(false);
   let targetStatusError = $state<string | undefined>(undefined);
   /** Set when opened from a specific session's target link, so `TargetStatusView` can highlight it (issue #269's "a stalled session's view links back to this status view for its target"). */
   let targetStatusFocus = $state<TargetStatusFocusTarget | undefined>(undefined);
-  /** Not `$state`: a timer handle, never rendered — only `targetStatusOpen`/`targetStatusEntries` above drive the UI. */
+  /** Not `$state`: a timer handle, never rendered — only `targetStatusEntries` above drives the UI. */
   let targetStatusPollHandle: ReturnType<typeof setInterval> | undefined;
-  /** How often the status view re-polls `listTargets()` while open (issue #269's "refreshed on a regular interval"). */
+  /** How often target status re-polls `listTargets()` while connected (issue #269's "refreshed on a regular interval"). */
   const TARGET_STATUS_POLL_MS = 10_000;
 
   let status = $state<ConnectionStatus>('idle');
@@ -176,25 +218,21 @@
   // The read-only file-tree panel (SPEC §7.4; issue #171) and the @file
   // reference picker it backs (SPEC §7.25; issue #160). `fileTree` mirrors
   // `RelayClient.fileTreeFor(selectedSessionId)`'s live snapshot; the panel
-  // itself is a togglable side panel (`fileTreeOpen`), independent of the
-  // picker, which opens on typing '@' in the composer.
+  // itself is now the Drawer's "files" tab (`activeDrawer`), independent of
+  // the picker, which opens on typing '@' in the composer.
   let fileTree = $state<Map<string, FileTreeDirectoryState>>(new Map());
-  let fileTreeOpen = $state(false);
-  // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174):
-  // a togglable side panel, same shape as `fileTreeOpen` above. Each toggle
-  // ON mounts a fresh `InteractiveTerminal`, which opens its own new
+  // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174) is
+  // now the Drawer's "terminal" tab (`activeDrawer`). Each time it's opened
+  // it mounts a fresh `InteractiveTerminal`, which opens its own new
   // terminal on mount and closes it on unmount (its own doc comment) — so
-  // toggling it off and back on again opens a new terminal each time,
-  // rather than this page tracking one itself (issue #173's "multiple
-  // terminals" is the node/client's job below this component, not this
-  // page's).
-  let terminalOpen = $state(false);
-  // The project config surface (SPEC §7.7; issue #366): a togglable side
-  // panel, same shape as `fileTreeOpen`/`terminalOpen` above, that mounts
-  // the MCP-server quick-add panel (#188) and the plugin/extension panel
-  // (#191) — both shipped in #364 but left unmounted from this file to
-  // avoid a parallel-edit clash. See `ProjectConfigPanel.svelte`.
-  let projectConfigOpen = $state(false);
+  // closing the Drawer and reopening the terminal tab opens a new terminal
+  // each time, rather than this page tracking one itself (issue #173's
+  // "multiple terminals" is the node/client's job below this component, not
+  // this page's).
+  //
+  // The project config surface (SPEC §7.7; issue #366) is now the Drawer's
+  // "config" tab (`activeDrawer`); mounts the MCP-server quick-add panel
+  // (#188) and the plugin/extension panel (#191). See `ProjectConfigPanel.svelte`.
   let filePickerOpen = $state(false);
   // The index in `draft` where the triggering '@' sits, so a picked file
   // reference replaces exactly the '@partial-query' text the user typed,
@@ -204,16 +242,14 @@
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
-  // `RelayClient.attentionInbox`'s doc comment.
+  // `RelayClient.attentionInbox`'s doc comment. Now the Drawer's "inbox"
+  // tab (`activeDrawer`).
   let attentionInboxItems = $state<AttentionInboxItem[]>([]);
-  let inboxOpen = $state(false);
-  // Per-project mute + quiet-hours settings panel (SPEC §7.11, issue #166).
-  // `notificationPreferencesStorage` is only ever constructed client-side
-  // (onMount below, same reason `amkStorage` is) — `localStorage` doesn't
-  // exist during `routes/page.test.ts`'s SSR render.
-  let notificationSettingsOpen = $state(false);
-  // `$state` (not a plain `let`) because the template's notification
-  // settings panel reads it reactively to decide whether to render.
+  // Per-project mute + quiet-hours settings panel (SPEC §7.11, issue #166),
+  // now a section of the Drawer's "settings" tab (`activeDrawer`), alongside
+  // Appearance below. `notificationPreferencesStorage` is only ever
+  // constructed client-side (onMount below, same reason `amkStorage` is) —
+  // `localStorage` doesn't exist during `routes/page.test.ts`'s SSR render.
   let notificationPreferencesStorage = $state<NotificationPreferencesStorage | undefined>(
     undefined,
   );
@@ -221,15 +257,16 @@
     defaultNotificationPreferences(),
   );
   // Design tokens' theme toggle (SPEC.md §4/issue #195): mirrors
-  // `$lib/theme.ts`'s store so the header button's label reflects the
+  // `$lib/theme.ts`'s store so the settings panel's toggle reflects the
   // current preference; the actual `data-theme` DOM effect and
   // localStorage persistence happen in `theme.ts` itself, not here.
   let themePreference = $state<ThemePreference>('system');
-  // Appearance settings panel (SPEC.md §4; issues #194/#376): a togglable
-  // panel, same shape as `notificationSettingsOpen` below, holding the
-  // theme radios and the accent preset/custom picker. `AppearanceSettings`
-  // itself owns all the reading/writing against `theme.ts`/`accent.ts`.
-  let appearanceSettingsOpen = $state(false);
+  // Appearance settings (SPEC.md §4; issues #194/#376: theme radios and the
+  // accent preset/custom picker) are now the other section of the Drawer's
+  // "settings" tab post-authentication, and the sign-in screen's own
+  // minimal `activeDrawer === 'settings'` affordance pre-authentication.
+  // `AppearanceSettings` itself owns all the reading/writing against
+  // `theme.ts`/`accent.ts`.
 
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
@@ -289,6 +326,12 @@
     localStorage.setItem(RELAY_URL_STORAGE_KEY, relayUrl);
   });
 
+  // Persists the Drawer's pinned-column preference (redesign brief §1)
+  // the same way — see `onMount`'s restore of the same key below.
+  $effect(() => {
+    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, drawerPinned ? '1' : '0');
+  });
+
   const planCollapsed = $derived(
     selectedSessionId ? (planCollapsedBySession.get(selectedSessionId) ?? false) : false,
   );
@@ -303,6 +346,20 @@
   );
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
+
+  /** The redesign brief's header title zone: "current session title once selected" (§1). */
+  const selectedSessionTitle = $derived(
+    sessions.find((session) => session.id === selectedSessionId)?.title,
+  );
+  /**
+   * True once the full four-zone Warp Deck shell (rail/sessions/canvas/
+   * drawer, redesign brief §1) should render instead of the plain lockup
+   * header used for checking-session/sign-in/onboarding — those three
+   * stay exactly as before (the redesign brief reserves the full
+   * `BrandLockup` for "sign-in/onboarding, where nothing competes for
+   * attention"; only the actual cockpit gets the new compact header).
+   */
+  const cockpitReady = $derived(!!authSession && onboardingNeeded === false);
 
   // Most logic (the WS connection, the E2E-encrypted session list, the
   // transcript decrypt+reduce, the permission queue, config options, and the
@@ -355,6 +412,9 @@
 
   function selectSession(id: string): void {
     selectedSessionId = id;
+    // Redesign brief §1: picking a session dismisses the mobile Sessions
+    // sheet (a no-op at wider viewports, where it's never open).
+    sessionsSheetOpen = false;
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
@@ -428,8 +488,13 @@
       // needs a LIVE connection (`RelayClient.escrowAmk`) — the moment this
       // freshly constructed client actually reaches `'open'` is the first
       // point that's true.
-      if (value === 'open' && pendingEscrowRecoveryCode) {
-        void escrowPendingRecoveryCode();
+      if (value === 'open') {
+        if (pendingEscrowRecoveryCode) void escrowPendingRecoveryCode();
+        // Redesign brief §1/§6: target status now polls continuously from
+        // connect (not only while the Drawer's "targets" tab happens to be
+        // open) so the header's always-visible StatusDot cluster has live
+        // data regardless of whether the Drawer is open.
+        startTargetStatusPolling();
       }
     });
     unsubscribeSessions = client.sessions.subscribe((value) => {
@@ -566,22 +631,30 @@
     }
   }
 
-  /** The node/target status view's entry point (SPEC §7.21; issue #269) — `focus` optionally scopes the highlight to one session's target (wired from the sessions list's target link below). */
-  function openTargetStatus(focus?: TargetStatusFocusTarget): void {
-    targetStatusFocus = focus;
-    targetStatusOpen = true;
+  /** Starts (idempotently) the continuous `listTargets()` poll (issue #269's "refreshed on a regular interval") — called once the client connects, not when any particular UI opens; see `connect()`'s status subscription. */
+  function startTargetStatusPolling(): void {
     void refreshTargetStatus();
     if (targetStatusPollHandle === undefined) {
       targetStatusPollHandle = setInterval(() => void refreshTargetStatus(), TARGET_STATUS_POLL_MS);
     }
   }
 
-  function closeTargetStatus(): void {
-    targetStatusOpen = false;
+  function stopTargetStatusPolling(): void {
     if (targetStatusPollHandle !== undefined) {
       clearInterval(targetStatusPollHandle);
       targetStatusPollHandle = undefined;
     }
+  }
+
+  /** The node/target status view's entry point (SPEC §7.21; issue #269; redesign brief's Drawer "targets" tab) — `focus` optionally scopes the highlight to one session's target (wired from the sessions list's target link below). Polling itself is already running (`startTargetStatusPolling`, connection-scoped) — this just opens the Drawer and requests an immediate refresh so the view isn't stale from the moment it's shown. */
+  function openTargetStatus(focus?: TargetStatusFocusTarget): void {
+    targetStatusFocus = focus;
+    setActiveDrawer('targets');
+    void refreshTargetStatus();
+  }
+
+  function closeTargetStatus(): void {
+    if (activeDrawer === 'targets') setActiveDrawer(null);
   }
 
   /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
@@ -614,16 +687,17 @@
     attachments = [];
     queuedPrompts = [];
     attentionInboxItems = [];
-    inboxOpen = false;
     staleNotice = undefined;
     paletteOpen = false;
     fileTree = new Map();
-    fileTreeOpen = false;
-    projectConfigOpen = false;
     filePickerOpen = false;
     atTriggerStart = undefined;
     newSessionOpen = false;
-    closeTargetStatus();
+    // Closes whatever Drawer tab was open (inbox/targets/files/terminal/
+    // config/settings) — none of them have anything to show once
+    // disconnected.
+    setActiveDrawer(null);
+    stopTargetStatusPolling();
     targetStatusEntries = [];
     targetStatusError = undefined;
     targetStatusFocus = undefined;
@@ -761,8 +835,8 @@
     }
     actions.push({
       id: 'toggle-inbox',
-      label: inboxOpen ? 'Close attention inbox' : 'Open attention inbox',
-      run: () => (inboxOpen = !inboxOpen),
+      label: activeDrawer === 'inbox' ? 'Close attention inbox' : 'Open attention inbox',
+      run: () => toggleDrawer('inbox'),
     });
     return actions;
   });
@@ -779,6 +853,34 @@
   // this account's currently-known distinct `projectPath`s.
   const projectPaths = $derived(
     Array.from(new Set(sessions.map((session) => session.projectPath))).sort(),
+  );
+
+  /** Compact per-target health, for the header's always-visible StatusDot cluster (redesign brief §1/§6) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the header dots and the Drawer's "targets" tab detail never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). */
+  const TARGET_OVERLOAD_PERCENT = 90;
+  type TargetHealthDotState = 'healthy' | 'overloaded' | 'unreachable' | 'no-data';
+  function classifyTargetHealth(target: TargetListEntry): TargetHealthDotState {
+    if (!target.reachable) return 'unreachable';
+    if (!target.health) return 'no-data';
+    if (!target.health.healthy) return 'unreachable';
+    const { cpuPercent, memPercent, diskPercent } = target.health;
+    if (
+      cpuPercent >= TARGET_OVERLOAD_PERCENT ||
+      memPercent >= TARGET_OVERLOAD_PERCENT ||
+      diskPercent >= TARGET_OVERLOAD_PERCENT
+    ) {
+      return 'overloaded';
+    }
+    return 'healthy';
+  }
+  const targetHealthDots = $derived(
+    targetStatusEntries.map((target) => ({
+      key: `${target.nodeId}:${target.targetId}`,
+      label: target.label ?? target.targetId,
+      state: classifyTargetHealth(target),
+    })),
+  );
+  const hasUnhealthyTarget = $derived(
+    targetHealthDots.some((dot) => dot.state === 'unreachable' || dot.state === 'overloaded'),
   );
 
   /**
@@ -834,7 +936,7 @@
   /** The attention inbox's "Open" action (issue #168) — jumps to the item's originating session and closes the inbox panel. */
   function openSessionFromInbox(sessionId: string): void {
     selectSession(sessionId);
-    inboxOpen = false;
+    setActiveDrawer(null);
   }
 
   /** The attention inbox's inline reply action (issue #168) — the exact same `RelayClient.sendPrompt` call the session's own composer form makes, so a reply sent from the inbox is not a second, divergent send path; it works for any listed session, not only the currently selected one. */
@@ -895,6 +997,10 @@
     const persistedRelayUrl = localStorage.getItem(RELAY_URL_STORAGE_KEY);
     if (persistedRelayUrl) relayUrl = persistedRelayUrl;
 
+    // Redesign brief §1: restores the Drawer's pinned-column preference.
+    const persistedDrawerPinned = localStorage.getItem(DRAWER_PINNED_STORAGE_KEY);
+    if (persistedDrawerPinned) drawerPinned = persistedDrawerPinned === '1';
+
     const store = ensureAuthStore();
 
     const unsubscribeAuthSession = store.session.subscribe((value) => {
@@ -933,41 +1039,47 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<main>
-  <header>
-    <h1 class="brand-heading"><BrandLockup /></h1>
-    <p>{APP_TAGLINE}</p>
-    <div class="header-actions">
-      <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
-           label, not an icon glyph, states the toggle's current mode. -->
-      <button
-        type="button"
-        class="theme-toggle"
-        onclick={() => themeStore.toggleTheme()}
-        title={`Theme: ${themePreference}`}
-        aria-label={`Switch theme (currently ${themePreference})`}
-        data-testid="theme-toggle"
-        data-theme-preference={themePreference}
-      >
-        {themePreference}
-      </button>
-      <button
-        type="button"
-        class="appearance-toggle"
-        class:active={appearanceSettingsOpen}
-        onclick={() => (appearanceSettingsOpen = !appearanceSettingsOpen)}
-        data-testid="appearance-settings-toggle"
-      >
-        Appearance
-      </button>
-    </div>
-  </header>
+<main class:cockpit={cockpitReady}>
+  {#if !cockpitReady}
+    <!-- Checking session / sign-in / onboarding: the redesign brief reserves
+         the full `BrandLockup` for these screens ("where nothing competes
+         for attention", §1) — only the cockpit below gets the new compact
+         3-zone header. -->
+    <header class="header-lockup">
+      <h1 class="brand-heading"><BrandLockup /></h1>
+      <p>{APP_TAGLINE}</p>
+      <div class="header-actions">
+        <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
+             label, not an icon glyph, states the toggle's current mode. -->
+        <button
+          type="button"
+          class="theme-toggle"
+          onclick={() => themeStore.toggleTheme()}
+          title={`Theme: ${themePreference}`}
+          aria-label={`Switch theme (currently ${themePreference})`}
+          data-testid="theme-toggle"
+          data-theme-preference={themePreference}
+        >
+          {themePreference}
+        </button>
+        <button
+          type="button"
+          class="appearance-toggle"
+          class:active={activeDrawer === 'settings'}
+          onclick={() => toggleDrawer('settings')}
+          data-testid="appearance-settings-toggle"
+        >
+          Appearance
+        </button>
+      </div>
+    </header>
 
-  {#if appearanceSettingsOpen}
-    <section class="appearance-settings-panel">
-      <h2>Appearance</h2>
-      <AppearanceSettings />
-    </section>
+    {#if activeDrawer === 'settings'}
+      <section class="appearance-settings-panel">
+        <h2>Appearance</h2>
+        <AppearanceSettings />
+      </section>
+    {/if}
   {/if}
 
   {#if !authChecked}
@@ -986,7 +1098,7 @@
         <p class="error" role="alert">{authError}</p>
       {/if}
     </section>
-  {:else}
+  {:else if onboardingNeeded}
     <section class="connection">
       <span class="account">{authSession.accountId}</span>
       <span class="status" data-status={status}>
@@ -998,8 +1110,8 @@
       <button
         type="button"
         class="inbox-toggle"
-        class:active={inboxOpen}
-        onclick={() => (inboxOpen = !inboxOpen)}
+        class:active={activeDrawer === 'inbox'}
+        onclick={() => toggleDrawer('inbox')}
         data-testid="inbox-toggle"
       >
         Inbox
@@ -1010,8 +1122,8 @@
       <button
         type="button"
         class="target-status-toggle"
-        class:active={targetStatusOpen}
-        onclick={() => (targetStatusOpen ? closeTargetStatus() : openTargetStatus())}
+        class:active={activeDrawer === 'targets'}
+        onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
         data-testid="target-status-toggle"
       >
         Nodes &amp; targets
@@ -1033,8 +1145,8 @@
         <button
           type="button"
           class="notification-settings-toggle"
-          class:active={notificationSettingsOpen}
-          onclick={() => (notificationSettingsOpen = !notificationSettingsOpen)}
+          class:active={activeDrawer === 'settings'}
+          onclick={() => toggleDrawer('settings')}
           data-testid="notification-settings-toggle"
         >
           Mute &amp; quiet hours
@@ -1045,295 +1157,622 @@
       {/if}
     </section>
 
-    {#if onboardingNeeded}
-      <OnboardingGate
-        accountId={authSession.accountId}
-        {relayUrl}
-        authToken={authSession.token}
-        onFirstDevice={handleFirstDeviceOnboarded}
-        onNewDevice={handleNewDeviceOnboarded}
-      />
-    {:else}
-      {#if escrowStatus !== 'idle'}
-        <p class="escrow-status" role="status" data-testid="escrow-status">
-          {#if escrowStatus === 'in-flight'}
-            <WovenLoader label="Securing your account key" />
-            Securing your account key…
-          {:else}
-            Couldn't save your Recovery Code to the relay{escrowError ? `: ${escrowError}` : '.'} This
-            device still works, but recovering this account elsewhere may not until it does.
-          {/if}
-        </p>
-      {/if}
+    <OnboardingGate
+      accountId={authSession.accountId}
+      {relayUrl}
+      authToken={authSession.token}
+      onFirstDevice={handleFirstDeviceOnboarded}
+      onNewDevice={handleNewDeviceOnboarded}
+    />
+  {:else}
+    <!-- The Warp Deck cockpit (redesign brief §1, issue #427): a sticky
+         3-zone header, then a rail/sessions/canvas/drawer row filling the
+         rest of the viewport. -->
+    <header class="warp-header">
+      <div class="warp-header-zone warp-header-left">
+        <h1 class="cockpit-brand">
+          <BrandMark decorative={false} label="loombox" />
+        </h1>
+        {#if selectedSessionTitle}
+          <span class="session-title" data-testid="cockpit-session-title"
+            >{selectedSessionTitle}</span
+          >
+        {/if}
+      </div>
 
-      {#if notificationSettingsOpen && notificationPreferencesStorage}
-        <section class="notification-settings-panel">
-          <h2>Notifications</h2>
-          <NotificationPreferences
-            {projectPaths}
-            storage={notificationPreferencesStorage}
-            onChange={onNotificationPreferencesChange}
-          />
-        </section>
-      {/if}
-
-      {#if inboxOpen}
-        <section class="inbox-panel">
-          <h2>Attention inbox</h2>
-          <AttentionInbox
-            items={attentionInboxItems}
-            onResolve={resolveInboxPermission}
-            onOpenSession={openSessionFromInbox}
-            onReply={replyFromInbox}
-          />
-        </section>
-      {/if}
-
-      {#if targetStatusOpen}
-        <section class="target-status-panel" data-testid="target-status-panel">
-          <TargetStatusView
-            targets={targetStatusEntries}
-            loading={targetStatusLoading}
-            error={targetStatusError}
-            focusTarget={targetStatusFocus}
-            onRefresh={refreshTargetStatus}
-            onClose={closeTargetStatus}
-          />
-        </section>
-      {/if}
-
-      <div class="cockpit">
-        <aside class="sessions">
-          <div class="sessions-header">
-            <h2>Sessions</h2>
-            {#if status === 'open'}
-              <div class="sessions-header-actions">
-                <button
-                  type="button"
-                  class="add-target-button"
-                  onclick={openAddTargetWizard}
-                  data-testid="add-target-button"
-                >
-                  Add target
-                </button>
-                <button
-                  type="button"
-                  class="new-session-button"
-                  onclick={openNewSessionDialog}
-                  data-testid="new-session-button"
-                >
-                  New session
-                </button>
-              </div>
+      <div class="warp-header-zone warp-header-center">
+        <!-- The compact, always-visible target-health StatusDot cluster
+             (redesign brief §0/§1/§6): glanceable node/target health without
+             opening the Drawer. Fed by `startTargetStatusPolling`, which
+             runs continuously once connected, not only while the Drawer's
+             "targets" tab happens to be open. -->
+        {#if targetHealthDots.length > 0}
+          <button
+            type="button"
+            class="target-health-cluster"
+            onclick={() => openTargetStatus()}
+            data-testid="target-health-cluster"
+            title="Nodes &amp; targets"
+          >
+            {#each targetHealthDots.slice(0, 6) as dot (dot.key)}
+              <!-- TODO(redesign wave 2): replace with <StatusDot>. -->
+              <span class="target-dot" data-state={dot.state} title={dot.label}></span>
+            {/each}
+            {#if targetHealthDots.length > 6}
+              <span class="target-dot-overflow">+{targetHealthDots.length - 6}</span>
             {/if}
-          </div>
-          {#if status === 'connecting' || status === 'idle'}
-            <p class="empty loading-line">
-              <WovenLoader label="Loading sessions" />
-              Loading sessions…
-            </p>
-          {:else if sessions.length === 0 && sessionDecryptFailures > 0}
-            <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
-              <p class="key-mismatch-title">This device's key can't read these sessions.</p>
-              <p class="hint">Re-pair this device with your Recovery Code to restore access.</p>
-              <RecoveryCodeEntryForm
-                busy={rePairBusy}
-                error={rePairError}
-                submitLabel="Re-pair this device"
-                onSubmit={rePairWithRecoveryCode}
-              />
-            </div>
-          {:else if sessions.length === 0}
-            <div class="empty-sessions">
-              <p class="empty">No sessions yet.</p>
+          </button>
+        {/if}
+      </div>
+
+      <div class="warp-header-zone warp-header-right">
+        <span
+          class="connection-dot"
+          data-status={status}
+          title={`status: ${status}`}
+          data-testid="connection-status-dot"
+        >
+          <span class="sr-only">status: {status}</span>
+        </span>
+        <button
+          type="button"
+          class="command-trigger"
+          onclick={() => (paletteOpen = true)}
+          data-testid="command-palette-toggle"
+        >
+          <span aria-hidden="true">⌘K</span>
+          <span class="sr-only">Jump to…</span>
+        </button>
+        <div class="account-menu">
+          <button
+            type="button"
+            class="account-menu-trigger"
+            aria-haspopup="menu"
+            aria-expanded={accountMenuOpen}
+            onclick={() => (accountMenuOpen = !accountMenuOpen)}
+            data-testid="account-menu-toggle"
+          >
+            {authSession.accountId}
+          </button>
+          {#if accountMenuOpen}
+            <button
+              type="button"
+              class="account-menu-backdrop"
+              aria-label="Close menu"
+              onclick={() => (accountMenuOpen = false)}
+            ></button>
+            <div class="account-menu-dropdown" role="menu" data-testid="account-menu">
               <button
                 type="button"
-                onclick={openNewSessionDialog}
-                data-testid="new-session-empty-cta"
+                role="menuitem"
+                onclick={() => {
+                  setActiveDrawer('settings');
+                  accountMenuOpen = false;
+                }}
               >
-                Start your first session
+                Appearance
+              </button>
+              {#if deviceId}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => {
+                    setActiveDrawer('settings');
+                    accountMenuOpen = false;
+                  }}
+                  data-testid="notification-settings-toggle"
+                >
+                  Notifications
+                </button>
+              {/if}
+              <button
+                type="button"
+                role="menuitem"
+                onclick={() => {
+                  openTargetStatus();
+                  accountMenuOpen = false;
+                }}
+                data-testid="target-status-toggle"
+              >
+                Nodes &amp; targets
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onclick={() => {
+                  setActiveDrawer('inbox');
+                  accountMenuOpen = false;
+                }}
+                data-testid="inbox-toggle"
+              >
+                Inbox
+                {#if attentionInboxItems.length > 0}
+                  <span class="inbox-count" data-testid="inbox-count"
+                    >{attentionInboxItems.length}</span
+                  >
+                {/if}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                class="danger"
+                onclick={() => {
+                  accountMenuOpen = false;
+                  void signOut();
+                }}
+              >
+                Sign out
               </button>
             </div>
-          {:else}
-            <ul>
-              {#each sessions as session (session.id)}
-                <li class="session-row">
-                  <button
-                    type="button"
-                    class="session"
-                    class:selected={session.id === selectedSessionId}
-                    onclick={() => selectSession(session.id)}
-                  >
-                    <span class="session-title-row">
-                      <strong>{session.title}</strong>
-                      {#if sessionStatuses.get(session.id)}
-                        <span
-                          class="status-badge"
-                          data-status={sessionStatuses.get(session.id)}
-                          data-testid="session-status-badge"
-                        >
-                          {sessionStatuses.get(session.id)}
-                        </span>
-                      {/if}
-                    </span>
-                    <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
-                  </button>
-                  <button
-                    type="button"
-                    class="session-target-status-link"
-                    title={`View status for target ${session.targetId}`}
-                    aria-label={`View status for target ${session.targetId}`}
-                    onclick={() =>
-                      openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
-                    data-testid="session-target-status-link"
-                  >
-                    Target status
-                  </button>
-                </li>
-              {/each}
-            </ul>
           {/if}
-        </aside>
+        </div>
+      </div>
+    </header>
 
-        <section class="transcript">
-          {#if !selectedSessionId}
-            <p class="empty">Select a session to view its live transcript.</p>
-          {:else}
-            <div class="transcript-toolbar">
-              <ConfigBar
-                options={configOptions}
-                usage={transcript?.usage}
-                cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-                onChange={changeConfigOption}
-              />
-              <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
-              <CopyButton
-                text={transcript ? exportTranscriptText(transcript) : ''}
-                label="Export transcript"
-                copyFn={exportTranscript}
-              />
+    {#if escrowStatus !== 'idle'}
+      <p class="escrow-status" role="status" data-testid="escrow-status">
+        {#if escrowStatus === 'in-flight'}
+          <WovenLoader label="Securing your account key" />
+          Securing your account key…
+        {:else}
+          Couldn't save your Recovery Code to the relay{escrowError ? `: ${escrowError}` : '.'} This device
+          still works, but recovering this account elsewhere may not until it does.
+        {/if}
+      </p>
+    {/if}
+    {#if authError}
+      <p class="error" role="alert">{authError}</p>
+    {/if}
+
+    <div class="warp-body">
+      <nav class="rail" aria-label="Primary">
+        <button
+          type="button"
+          class="rail-item"
+          class:active={sessionsSheetOpen}
+          onclick={() => (sessionsSheetOpen = !sessionsSheetOpen)}
+          data-testid="rail-sessions"
+        >
+          <!-- TODO(redesign wave 2/5): replace these letter glyphs with the real icon set (SPEC brief §5). -->
+          <span class="rail-icon" aria-hidden="true">S</span>
+          <span class="rail-label">Sessions</span>
+        </button>
+        <button
+          type="button"
+          class="rail-item"
+          class:active={activeDrawer === 'inbox'}
+          onclick={() => toggleDrawer('inbox')}
+          data-testid="rail-inbox"
+        >
+          <span class="rail-icon" aria-hidden="true">I</span>
+          <span class="rail-label">Inbox</span>
+          {#if attentionInboxItems.length > 0}
+            <span class="rail-badge" data-testid="rail-inbox-badge"
+              >{attentionInboxItems.length}</span
+            >
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="rail-item"
+          class:active={activeDrawer === 'targets'}
+          onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
+          data-testid="rail-targets"
+        >
+          <span class="rail-icon" aria-hidden="true">N</span>
+          <span class="rail-label">Nodes &amp; targets</span>
+          {#if hasUnhealthyTarget}
+            <span
+              class="rail-badge rail-badge-dot"
+              data-testid="rail-targets-badge"
+              aria-hidden="true"
+            ></span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="rail-item"
+          onclick={() => (paletteOpen = true)}
+          data-testid="rail-command"
+        >
+          <span class="rail-icon" aria-hidden="true">⌘</span>
+          <span class="rail-label">Command</span>
+        </button>
+        <div class="rail-spacer"></div>
+        <button
+          type="button"
+          class="rail-item"
+          class:active={activeDrawer === 'settings'}
+          onclick={() => toggleDrawer('settings')}
+          data-testid="rail-settings"
+        >
+          <span class="rail-icon" aria-hidden="true">⚙</span>
+          <span class="rail-label">Settings</span>
+        </button>
+      </nav>
+
+      {#if sessionsSheetOpen}
+        <button
+          type="button"
+          class="sessions-backdrop"
+          aria-label="Close sessions"
+          onclick={() => (sessionsSheetOpen = false)}
+        ></button>
+      {/if}
+
+      <aside class="sessions" class:sheet-open={sessionsSheetOpen} data-testid="sessions-column">
+        <div class="sessions-header">
+          <h2>Sessions</h2>
+          {#if status === 'open'}
+            <div class="sessions-header-actions">
               <button
                 type="button"
-                class="file-tree-toggle"
-                class:active={fileTreeOpen}
-                onclick={() => (fileTreeOpen = !fileTreeOpen)}
-                data-testid="file-tree-toggle"
+                class="add-target-button"
+                onclick={openAddTargetWizard}
+                data-testid="add-target-button"
               >
-                Files
+                Add target
               </button>
               <button
                 type="button"
-                class="terminal-toggle"
-                class:active={terminalOpen}
-                onclick={() => (terminalOpen = !terminalOpen)}
-                data-testid="terminal-toggle"
+                class="new-session-button"
+                onclick={openNewSessionDialog}
+                data-testid="new-session-button"
               >
-                Terminal
-              </button>
-              <button
-                type="button"
-                class="project-config-toggle"
-                class:active={projectConfigOpen}
-                onclick={() => (projectConfigOpen = !projectConfigOpen)}
-                data-testid="project-config-toggle"
-              >
-                Config
+                New session
               </button>
             </div>
+          {/if}
+        </div>
+        {#if status === 'connecting' || status === 'idle'}
+          <p class="empty loading-line">
+            <WovenLoader label="Loading sessions" />
+            Loading sessions…
+          </p>
+        {:else if sessions.length === 0 && sessionDecryptFailures > 0}
+          <div class="key-mismatch" role="alert" data-testid="session-decrypt-mismatch">
+            <p class="key-mismatch-title">This device's key can't read these sessions.</p>
+            <p class="hint">Re-pair this device with your Recovery Code to restore access.</p>
+            <RecoveryCodeEntryForm
+              busy={rePairBusy}
+              error={rePairError}
+              submitLabel="Re-pair this device"
+              onSubmit={rePairWithRecoveryCode}
+            />
+          </div>
+        {:else if sessions.length === 0}
+          <div class="empty-sessions">
+            <p class="empty">No sessions yet.</p>
+            <button
+              type="button"
+              onclick={openNewSessionDialog}
+              data-testid="new-session-empty-cta"
+            >
+              Start your first session
+            </button>
+          </div>
+        {:else}
+          <ul>
+            {#each sessions as session (session.id)}
+              <li class="session-row">
+                <button
+                  type="button"
+                  class="session"
+                  class:selected={session.id === selectedSessionId}
+                  onclick={() => selectSession(session.id)}
+                >
+                  <span class="session-title-row">
+                    <strong>{session.title}</strong>
+                    {#if sessionStatuses.get(session.id)}
+                      <span
+                        class="status-badge"
+                        data-status={sessionStatuses.get(session.id)}
+                        data-testid="session-status-badge"
+                      >
+                        {sessionStatuses.get(session.id)}
+                      </span>
+                    {/if}
+                  </span>
+                  <small>{session.provider} · {session.projectPath} · {session.targetId}</small>
+                </button>
+                <button
+                  type="button"
+                  class="session-target-status-link"
+                  title={`View status for target ${session.targetId}`}
+                  aria-label={`View status for target ${session.targetId}`}
+                  onclick={() =>
+                    openTargetStatus({ nodeId: session.nodeId, targetId: session.targetId })}
+                  data-testid="session-target-status-link"
+                >
+                  Target status
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </aside>
 
-            {#if fileTreeOpen}
-              <aside class="file-tree-panel" data-testid="file-tree-panel-wrapper">
+      <section class="canvas">
+        {#if !selectedSessionId}
+          <p class="empty">Select a session to view its live transcript.</p>
+        {:else}
+          <div class="transcript-toolbar">
+            <ConfigBar
+              options={configOptions}
+              usage={transcript?.usage}
+              cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+              onChange={changeConfigOption}
+            />
+            <TurnStopControl turnActive={transcript?.turnActive ?? false} onStop={stopSession} />
+            <CopyButton
+              text={transcript ? exportTranscriptText(transcript) : ''}
+              label="Export transcript"
+              copyFn={exportTranscript}
+            />
+            <button
+              type="button"
+              class="file-tree-toggle"
+              class:active={activeDrawer === 'files'}
+              onclick={() => toggleDrawer('files')}
+              data-testid="file-tree-toggle"
+            >
+              Files
+            </button>
+            <button
+              type="button"
+              class="terminal-toggle"
+              class:active={activeDrawer === 'terminal'}
+              onclick={() => toggleDrawer('terminal')}
+              data-testid="terminal-toggle"
+            >
+              Terminal
+            </button>
+            <button
+              type="button"
+              class="project-config-toggle"
+              class:active={activeDrawer === 'config'}
+              onclick={() => toggleDrawer('config')}
+              data-testid="project-config-toggle"
+            >
+              Config
+            </button>
+          </div>
+
+          <ol class="items">
+            {#each transcript?.items ?? [] as item (item.id)}
+              <li>
+                {#if item.type === 'message'}
+                  <MessageItem
+                    {item}
+                    thinking={item.kind === 'agent_thought_chunk' && transcript
+                      ? isThoughtStillThinking(transcript, item.turnId)
+                      : false}
+                    turnActive={transcript?.turnActive ?? false}
+                  />
+                {:else}
+                  <ToolCallRow
+                    {item}
+                    awaitingPermission={permissionHead?.toolCall.id === item.id}
+                  />
+                {/if}
+              </li>
+            {/each}
+          </ol>
+
+          {#if transcript && transcript.plan.length > 0}
+            <PlanCard
+              entries={transcript.plan}
+              collapsed={planCollapsed}
+              onToggle={togglePlanCollapsed}
+            />
+          {/if}
+
+          <QueuedPromptBar prompts={queuedPrompts} />
+
+          {#if staleNotice}
+            <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+              {staleNotice.message}
+            </p>
+          {/if}
+
+          <PermissionQueueBar
+            sessionId={selectedSessionId}
+            queue={permissionQueue}
+            onResolve={resolvePermission}
+            onStop={stopSession}
+            narrow={narrowViewport}
+          />
+
+          <form class="composer" onsubmit={submitPrompt}>
+            <AttachmentBar
+              {attachments}
+              onFiles={attachFiles}
+              onRetry={retryAttachment}
+              onRemove={removeAttachment}
+            />
+            <div class="composer-row">
+              <input
+                type="text"
+                bind:value={draft}
+                oninput={handleComposerInput}
+                placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                aria-label="Follow-up prompt"
+                data-testid="composer-input"
+              />
+              <button type="submit" disabled={sendDisabled}>Send</button>
+            </div>
+          </form>
+        {/if}
+      </section>
+
+      <!-- The Drawer (redesign brief §1/§7): replaces the six independently-
+           toggled inline panels with tabs of one component, one tab visible
+           at a time. Overlay by default (<1280px, or unpinned); pinnable as
+           a persistent third column at >=1280px (`--bp-wide`) via
+           `drawerPinned`. -->
+      <aside
+        class="drawer"
+        class:drawer-open={activeDrawer !== null}
+        class:drawer-pinned={drawerPinned}
+        aria-hidden={activeDrawer === null}
+        data-testid="drawer"
+      >
+        {#if activeDrawer !== null}
+          <div class="drawer-header">
+            <div class="drawer-tabs" role="tablist" aria-label="Panels">
+              <button
+                type="button"
+                class="drawer-tab"
+                class:active={activeDrawer === 'inbox'}
+                onclick={() => setActiveDrawer('inbox')}
+                data-testid="drawer-tab-inbox"
+              >
+                Inbox
+              </button>
+              <button
+                type="button"
+                class="drawer-tab"
+                class:active={activeDrawer === 'targets'}
+                onclick={() => setActiveDrawer('targets')}
+                data-testid="drawer-tab-targets"
+              >
+                Nodes &amp; targets
+              </button>
+              {#if selectedSessionId}
+                <button
+                  type="button"
+                  class="drawer-tab"
+                  class:active={activeDrawer === 'files'}
+                  onclick={() => setActiveDrawer('files')}
+                  data-testid="drawer-tab-files"
+                >
+                  Files
+                </button>
+                <button
+                  type="button"
+                  class="drawer-tab"
+                  class:active={activeDrawer === 'terminal'}
+                  onclick={() => setActiveDrawer('terminal')}
+                  data-testid="drawer-tab-terminal"
+                >
+                  Terminal
+                </button>
+                <button
+                  type="button"
+                  class="drawer-tab"
+                  class:active={activeDrawer === 'config'}
+                  onclick={() => setActiveDrawer('config')}
+                  data-testid="drawer-tab-config"
+                >
+                  Config
+                </button>
+              {/if}
+              <button
+                type="button"
+                class="drawer-tab"
+                class:active={activeDrawer === 'settings'}
+                onclick={() => setActiveDrawer('settings')}
+                data-testid="drawer-tab-settings"
+              >
+                Settings
+              </button>
+            </div>
+            <div class="drawer-header-actions">
+              <!-- Redesign brief §1: pinnable as a persistent column at
+                   >=1280px only — the toggle itself is always reachable,
+                   but has no visible effect below that width (see
+                   `<style>`'s `--bp-wide` media query). -->
+              <button
+                type="button"
+                class="drawer-pin-toggle"
+                class:active={drawerPinned}
+                aria-pressed={drawerPinned}
+                onclick={() => (drawerPinned = !drawerPinned)}
+                data-testid="drawer-pin-toggle"
+                title={drawerPinned ? 'Unpin panel' : 'Pin panel'}
+              >
+                Pin
+              </button>
+              <button
+                type="button"
+                class="drawer-close"
+                onclick={() => setActiveDrawer(null)}
+                data-testid="drawer-close"
+                aria-label="Close panel"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          <div class="drawer-content">
+            {#if activeDrawer === 'inbox'}
+              <AttentionInbox
+                items={attentionInboxItems}
+                onResolve={resolveInboxPermission}
+                onOpenSession={openSessionFromInbox}
+                onReply={replyFromInbox}
+              />
+            {:else if activeDrawer === 'targets'}
+              <TargetStatusView
+                targets={targetStatusEntries}
+                loading={targetStatusLoading}
+                error={targetStatusError}
+                focusTarget={targetStatusFocus}
+                onRefresh={refreshTargetStatus}
+                onClose={closeTargetStatus}
+              />
+            {:else if activeDrawer === 'files' && selectedSessionId}
+              <div class="drawer-panel-inner" data-testid="file-tree-panel-wrapper">
                 <FileTreePanel
                   tree={fileTree}
                   onExpand={expandDirectory}
                   onSelectFile={insertFileReference}
                 />
-              </aside>
-            {/if}
-
-            {#if terminalOpen && client}
-              <aside class="terminal-panel" data-testid="terminal-panel-wrapper">
-                <InteractiveTerminal sessionId={selectedSessionId} {client} />
-              </aside>
-            {/if}
-
-            {#if projectConfigOpen && selectedProjectPath}
-              <aside
-                class="project-config-panel-wrapper"
-                data-testid="project-config-panel-wrapper"
-              >
-                <ProjectConfigPanel projectPath={selectedProjectPath} />
-              </aside>
-            {/if}
-
-            <ol class="items">
-              {#each transcript?.items ?? [] as item (item.id)}
-                <li>
-                  {#if item.type === 'message'}
-                    <MessageItem
-                      {item}
-                      thinking={item.kind === 'agent_thought_chunk' && transcript
-                        ? isThoughtStillThinking(transcript, item.turnId)
-                        : false}
-                      turnActive={transcript?.turnActive ?? false}
-                    />
-                  {:else}
-                    <ToolCallRow
-                      {item}
-                      awaitingPermission={permissionHead?.toolCall.id === item.id}
-                    />
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-
-            {#if transcript && transcript.plan.length > 0}
-              <PlanCard
-                entries={transcript.plan}
-                collapsed={planCollapsed}
-                onToggle={togglePlanCollapsed}
-              />
-            {/if}
-
-            <QueuedPromptBar prompts={queuedPrompts} />
-
-            {#if staleNotice}
-              <p class="stale-notice" role="status" data-testid="stale-permission-notice">
-                {staleNotice.message}
-              </p>
-            {/if}
-
-            <PermissionQueueBar
-              sessionId={selectedSessionId}
-              queue={permissionQueue}
-              onResolve={resolvePermission}
-              onStop={stopSession}
-              narrow={narrowViewport}
-            />
-
-            <form class="composer" onsubmit={submitPrompt}>
-              <AttachmentBar
-                {attachments}
-                onFiles={attachFiles}
-                onRetry={retryAttachment}
-                onRemove={removeAttachment}
-              />
-              <div class="composer-row">
-                <input
-                  type="text"
-                  bind:value={draft}
-                  oninput={handleComposerInput}
-                  placeholder="Send a follow-up prompt… (type @ to reference a file)"
-                  aria-label="Follow-up prompt"
-                  data-testid="composer-input"
-                />
-                <button type="submit" disabled={sendDisabled}>Send</button>
               </div>
-            </form>
-          {/if}
-        </section>
-      </div>
-    {/if}
+            {:else if activeDrawer === 'terminal' && selectedSessionId && client}
+              <div
+                class="drawer-panel-inner drawer-panel-terminal"
+                data-testid="terminal-panel-wrapper"
+              >
+                <InteractiveTerminal sessionId={selectedSessionId} {client} />
+              </div>
+            {:else if activeDrawer === 'config' && selectedProjectPath}
+              <div class="drawer-panel-inner" data-testid="project-config-panel-wrapper">
+                <ProjectConfigPanel projectPath={selectedProjectPath} />
+              </div>
+            {:else if activeDrawer === 'settings'}
+              <div class="settings-tab">
+                <section class="settings-section">
+                  <h3>Appearance</h3>
+                  <AppearanceSettings />
+                </section>
+                {#if notificationPreferencesStorage}
+                  <section class="settings-section">
+                    <h3>Notifications</h3>
+                    <NotificationPreferences
+                      {projectPaths}
+                      storage={notificationPreferencesStorage}
+                      onChange={onNotificationPreferencesChange}
+                    />
+                  </section>
+                {/if}
+                {#if deviceId}
+                  <section class="settings-section">
+                    <h3>Push notifications</h3>
+                    <PushNotificationToggle
+                      relayBaseUrl={relayHttpBaseUrl(relayUrl)}
+                      authToken={authSession.token}
+                      {deviceId}
+                    />
+                  </section>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </aside>
+    </div>
   {/if}
 </main>
 
@@ -1378,7 +1817,18 @@
     padding: var(--space-lg);
   }
 
-  header {
+  /* The Warp Deck cockpit (redesign brief `docs/design/redesign.md` §1,
+     issue #427) resets the plain stacked-column padding/gap above in favor
+     of a sticky header plus a rail/sessions/canvas/drawer row that fills
+     the rest of the viewport edge-to-edge; the pre-cockpit screens
+     (checking session/sign-in/onboarding) keep the original padded,
+     centered column layout untouched. */
+  main.cockpit {
+    gap: 0;
+    padding: 0;
+  }
+
+  .header-lockup {
     position: relative;
     text-align: center;
   }
@@ -1389,7 +1839,7 @@
     margin: 0;
   }
 
-  header p {
+  .header-lockup p {
     margin: var(--space-2xs) 0 0;
     opacity: 0.7;
   }
@@ -1464,7 +1914,9 @@
      rather than the browser's default unstyled `<button>` — the toggle
      buttons in this same bar (`.inbox-toggle`, `.notification-settings-
      toggle`) already draw this exact look, this just extends it to the
-     rest instead of leaving them as an inconsistent outlier. */
+     rest instead of leaving them as an inconsistent outlier. This bar only
+     renders now while checking session/signed-out/onboarding — the
+     cockpit's own header below replaced it there. */
   .connection button {
     display: inline-flex;
     align-items: center;
@@ -1534,17 +1986,6 @@
     font-feature-settings: var(--font-feature-tabular);
   }
 
-  .inbox-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-  }
-
-  .inbox-panel h2 {
-    font-size: 1rem;
-    margin: 0 0 var(--space-sm);
-  }
-
   .target-status-toggle {
     display: inline-flex;
     align-items: center;
@@ -1561,12 +2002,6 @@
   .target-status-toggle.active {
     background: var(--color-accent-subtle);
     border-color: var(--color-accent);
-  }
-
-  .target-status-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
   }
 
   .session-row {
@@ -1617,69 +2052,8 @@
     border-color: var(--color-accent);
   }
 
-  .notification-settings-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-  }
-
-  .notification-settings-panel h2 {
-    font-size: 1rem;
-    margin: 0 0 var(--space-sm);
-  }
-
-  .file-tree-toggle {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .file-tree-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .file-tree-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-sm);
-    max-height: 16rem;
-    overflow-y: auto;
-  }
-
-  .terminal-toggle {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
-  }
-
-  .terminal-toggle.active {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .terminal-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    /* Reachability parity (#174): min-width 0 lets this panel shrink inside
-       a narrow/mobile flex layout instead of forcing horizontal overflow —
-       the same panel, not a separate mobile variant. */
-    min-width: 0;
-    height: 20rem;
-  }
-
+  .file-tree-toggle,
+  .terminal-toggle,
   .project-config-toggle {
     display: inline-flex;
     align-items: center;
@@ -1692,19 +2066,11 @@
     font-size: var(--text-small-size);
   }
 
+  .file-tree-toggle.active,
+  .terminal-toggle.active,
   .project-config-toggle.active {
     background: var(--color-accent-subtle);
     border-color: var(--color-accent);
-  }
-
-  .project-config-panel-wrapper {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    /* Same narrow/mobile parity fix as `.terminal-panel` (#174). */
-    min-width: 0;
-    max-height: 24rem;
-    overflow-y: auto;
   }
 
   .account {
@@ -1720,16 +2086,359 @@
     width: 100%;
   }
 
-  .cockpit {
+  /* The pre-cockpit `.error` above sits inside a padded `.connection` row;
+     the cockpit's own top-level error/escrow banners are direct children
+     of the now-unpadded `main.cockpit`, so they need their own inline
+     margin to line up with the header/rail/canvas content around them. */
+  main.cockpit > .escrow-status,
+  main.cockpit > .error {
+    margin-inline: var(--space-lg);
+  }
+
+  .escrow-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin: var(--space-sm) 0 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
+    font-size: var(--text-small-size);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The cockpit's 3-zone sticky header (redesign brief §1)               */
+  /* ------------------------------------------------------------------ */
+
+  .warp-header {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .warp-header-zone {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .warp-header-left,
+  .warp-header-right {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .warp-header-right {
+    justify-content: flex-end;
+  }
+
+  .warp-header-center {
+    flex: 0 0 auto;
+  }
+
+  .cockpit-brand {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    color: var(--color-accent);
+    font-size: 1.4rem;
+    flex-shrink: 0;
+  }
+
+  .session-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    opacity: 0.85;
+  }
+
+  /* The compact, always-visible target-health StatusDot cluster (redesign
+     brief §0/§1/§6): glanceable node/target health without opening the
+     Drawer. TODO(redesign wave 2): replace `.target-dot` with a real
+     <StatusDot> component (thread-draw pulse while `working`, etc.) — this
+     is a minimal inline placeholder for the foundation shell. */
+  .target-health-cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
+    background: transparent;
+    padding: var(--space-3xs) var(--space-sm);
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .target-health-cluster:hover,
+  .target-health-cluster:focus-visible {
+    border-color: var(--color-border-strong);
+  }
+
+  .target-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    transition: background-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .target-dot[data-state='healthy'] {
+    background: var(--color-success);
+  }
+
+  .target-dot[data-state='overloaded'] {
+    background: var(--color-warning);
+  }
+
+  .target-dot[data-state='unreachable'] {
+    background: var(--color-danger);
+  }
+
+  .target-dot-overflow {
+    font-size: 0.65rem;
+    opacity: 0.7;
+    font-family: var(--font-mono);
+  }
+
+  .connection-dot {
+    display: inline-flex;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    transition: background-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .connection-dot[data-status='open'] {
+    background: var(--color-success);
+  }
+
+  .connection-dot[data-status='connecting'] {
+    background: var(--color-warning);
+  }
+
+  .connection-dot[data-status='error'] {
+    background: var(--color-danger);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .command-trigger {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
+  }
+
+  .command-trigger:hover,
+  .command-trigger:focus-visible {
+    background: var(--color-fill-subtle);
+  }
+
+  .account-menu {
+    position: relative;
+  }
+
+  .account-menu-trigger {
+    max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
+  }
+
+  .account-menu-trigger[aria-expanded='true'] {
+    border-color: var(--color-accent);
+  }
+
+  .account-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    border: none;
+    background: transparent;
+    cursor: default;
+  }
+
+  .account-menu-dropdown {
+    position: absolute;
+    top: calc(100% + var(--space-2xs));
+    right: 0;
+    z-index: var(--z-modal);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    min-width: 12rem;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-2xs);
+  }
+
+  .account-menu-dropdown button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-xs) var(--space-sm);
+    cursor: pointer;
+    text-align: left;
+    font-size: var(--text-small-size);
+  }
+
+  .account-menu-dropdown button:hover,
+  .account-menu-dropdown button:focus-visible {
+    background: var(--color-fill-subtle);
+  }
+
+  .account-menu-dropdown button.danger {
+    color: var(--color-danger);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The four-zone body: Rail | Sessions | Canvas | Drawer (redesign      */
+  /* brief §1)                                                            */
+  /* ------------------------------------------------------------------ */
+
+  .warp-body {
+    position: relative;
     display: flex;
     flex: 1;
-    gap: var(--space-lg);
     min-height: 0;
+  }
+
+  .rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex-shrink: 0;
+    width: 3.5rem;
+    border-right: 1px solid var(--color-border);
+    padding: var(--space-sm) 0;
+  }
+
+  .rail-item {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-3xs);
+    border: none;
+    border-left: 2px solid transparent;
+    background: transparent;
+    color: inherit;
+    padding: var(--space-sm) var(--space-2xs);
+    cursor: pointer;
+    opacity: 0.75;
+  }
+
+  .rail-item:hover,
+  .rail-item:focus-visible {
+    opacity: 1;
+    background: var(--color-fill-subtle);
+  }
+
+  /* Selected rail item reads via a 2px accent left-bar, never a filled
+     background (redesign brief §1: "keeping the rail visually quiet"). */
+  .rail-item.active {
+    opacity: 1;
+    border-left-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .rail-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+
+  .rail-label {
+    font-size: 0.6rem;
+    text-align: center;
+    line-height: 1;
+  }
+
+  .rail-badge {
+    position: absolute;
+    top: var(--space-3xs);
+    right: var(--space-3xs);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 var(--space-3xs);
+    border-radius: var(--radius-full);
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
+    font-size: 0.6rem;
+    font-family: var(--font-mono);
+  }
+
+  .rail-badge-dot {
+    min-width: 0.5rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    padding: 0;
+    background: var(--color-danger);
+  }
+
+  .rail-spacer {
+    flex: 1;
+  }
+
+  .sessions-backdrop {
+    display: none;
   }
 
   .sessions {
     width: 16rem;
     flex-shrink: 0;
+    padding: var(--space-lg);
+    border-right: 1px solid var(--color-border);
+    overflow-y: auto;
   }
 
   .sessions-header {
@@ -1810,17 +2519,6 @@
     margin: 0;
     font-size: var(--text-small-size);
     opacity: 0.85;
-  }
-
-  .escrow-status {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-fill-subtle);
-    font-size: var(--text-small-size);
   }
 
   .sessions ul {
@@ -1904,13 +2602,14 @@
     background: var(--color-fill);
   }
 
-  .transcript {
+  .canvas {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     gap: var(--space-sm);
+    padding: var(--space-lg);
   }
 
   .transcript-toolbar {
@@ -1960,5 +2659,253 @@
     border-radius: var(--radius-md);
     background: var(--color-warning-subtle);
     font-size: 0.8rem;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The Drawer (redesign brief §1/§7): one component, tabs, one tab      */
+  /* visible at a time — replaces the six independently-toggled inline    */
+  /* panels. Overlay by default; pinnable as a persistent third column at */
+  /* >=1280px (`--bp-wide`) via `drawerPinned`. Below 768px it becomes a   */
+  /* bottom sheet instead (see the media query at the bottom of this      */
+  /* file).                                                                */
+  /* ------------------------------------------------------------------ */
+
+  .drawer {
+    position: fixed;
+    top: 3.5rem;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    width: min(24rem, 100vw);
+    background: var(--color-surface-raised);
+    border-left: 1px solid var(--color-border-strong);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(100%);
+    transition: transform var(--duration-base) var(--ease-shuttle);
+  }
+
+  .drawer.drawer-open {
+    transform: translateX(0);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .drawer-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    min-width: 0;
+  }
+
+  .drawer-tab {
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+    padding: var(--space-3xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    white-space: nowrap;
+  }
+
+  .drawer-tab:hover,
+  .drawer-tab:focus-visible {
+    opacity: 1;
+    background: var(--color-fill-subtle);
+  }
+
+  .drawer-tab.active {
+    opacity: 1;
+    border-color: var(--color-accent);
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  .drawer-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .drawer-pin-toggle,
+  .drawer-close {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-3xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+  }
+
+  /* Only meaningful — and only shown — at >=1280px (`--bp-wide`), where the
+     Drawer can actually become a persistent column; see the media query
+     below. Below that width pinning would have no visible effect. */
+  .drawer-pin-toggle {
+    display: none;
+  }
+
+  .drawer-pin-toggle.active {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .drawer-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-md);
+  }
+
+  .drawer-panel-inner {
+    min-width: 0;
+  }
+
+  .drawer-panel-terminal {
+    height: 100%;
+    min-height: 20rem;
+  }
+
+  .settings-tab {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+  }
+
+  .settings-section h3 {
+    font-size: var(--text-small-size);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.7;
+    margin: 0 0 var(--space-sm);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Responsive collapse (redesign brief §1)                              */
+  /* ------------------------------------------------------------------ */
+
+  /* Below `--bp-desktop`/`DESKTOP_VIEWPORT_BREAKPOINT_PX` (1024px): the
+     rail collapses to a bottom tab bar. */
+  @media (max-width: 1023px) {
+    .rail {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      z-index: var(--z-sticky);
+      width: auto;
+      height: 3.5rem;
+      flex-direction: row;
+      align-items: stretch;
+      justify-content: space-around;
+      border-right: none;
+      border-top: 1px solid var(--color-border);
+      background: var(--color-bg);
+      padding: 0;
+    }
+
+    .rail-item {
+      flex: 1;
+      border-left: none;
+      border-top: 2px solid transparent;
+      padding: var(--space-2xs);
+    }
+
+    .rail-item.active {
+      border-left-color: transparent;
+      border-top-color: var(--color-accent);
+    }
+
+    .rail-spacer {
+      display: none;
+    }
+
+    .warp-body {
+      padding-bottom: 3.5rem;
+    }
+  }
+
+  /* Below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px): Sessions
+     becomes a dismissible full-height sheet, and the Drawer becomes a
+     bottom sheet instead of a right-edge overlay column. */
+  @media (max-width: 767px) {
+    .session-title {
+      display: none;
+    }
+
+    .sessions {
+      position: fixed;
+      inset: 0;
+      z-index: var(--z-modal);
+      width: 100%;
+      border-right: none;
+      background: var(--color-bg);
+      transform: translateX(-100%);
+      transition: transform var(--duration-base) var(--ease-shuttle);
+    }
+
+    .sessions.sheet-open {
+      transform: translateX(0);
+    }
+
+    .sessions-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: calc(var(--z-modal) - 1);
+      border: none;
+      background: var(--color-overlay);
+      cursor: default;
+    }
+
+    .drawer {
+      top: auto;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      height: 60vh;
+      border-left: none;
+      border-top: 1px solid var(--color-border-strong);
+      transform: translateY(100%);
+    }
+
+    .drawer.drawer-open {
+      transform: translateY(0);
+    }
+  }
+
+  /* At `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` (1280px) and above: the
+     Drawer can be pinned as a persistent third column instead of an
+     overlay (redesign brief §1's "power user" escape hatch). */
+  @media (min-width: 1280px) {
+    .drawer-pin-toggle {
+      display: inline-flex;
+    }
+
+    .drawer.drawer-pinned.drawer-open {
+      position: static;
+      top: auto;
+      width: 22rem;
+      flex-shrink: 0;
+      height: auto;
+      transform: none;
+      box-shadow: none;
+      border-left: 1px solid var(--color-border);
+    }
   }
 </style>

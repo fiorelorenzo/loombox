@@ -115,6 +115,68 @@
   --z-overlay: 30;
   --z-modal: 40;
   --z-toast: 50;
+
+  /* ---------------------------------------------------------------- */
+  /* Motion — "Shuttle Motion" (redesign brief, issue #427). One small    */
+  /* set of durations/easings, each with one documented job (see          */
+  /* `/style-reference`'s "Motion" section), rather than every component  */
+  /* inventing its own timing. Strictly additive on top of `WovenLoader`'s */
+  /* existing, untouched animation — a second reusable motion vocabulary   */
+  /* layered next to it, not a replacement.                                */
+  /* ---------------------------------------------------------------- */
+  --duration-instant: 80ms; /* press feedback (tension-press) */
+  --duration-fast: 140ms; /* hover, toggle, focus ring, status crossfade */
+  --duration-base: 220ms; /* drawer/sheet slide, card entrance, transcript item arrival */
+  --duration-slow: 360ms; /* onboarding step transitions, page-level narrative */
+  --duration-weave: 640ms; /* permission-card entrance, thread-draw fills/reveals */
+
+  --ease-beat: cubic-bezier(0.4, 0, 0.2, 1); /* default: toggles, crossfades, symmetric motion */
+  --ease-shuttle: cubic-bezier(
+    0.32,
+    0.72,
+    0,
+    1
+  ); /* entrances: fast-out, settles — drawer/sheet slide */
+  --ease-tension: cubic-bezier(0.16, 1, 0.3, 1); /* dialogs: snap-then-ease */
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1); /* exits: accelerate out, never lingers */
+
+  /* Focus ring: a hairline shift, deliberately NOT the accent color — the
+     accent stays reserved for meaning (selection/active state), never
+     chrome, per the redesign brief's "accent is reserved for meaning"
+     discipline. */
+  --color-focus-ring: var(--color-border-strong);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* ---------------------------------------------------------------- */
+  /* Breakpoints (redesign brief §1, issue #427). Documented here as one  */
+  /* source of truth for the values, same as every other token, but plain */
+  /* CSS `@media` conditions cannot read custom properties — the numeric   */
+  /* siblings that components' actual `@media` rules and any JS            */
+  /* `matchMedia` reads match against live in `$lib/viewport.ts`           */
+  /* (`NARROW_VIEWPORT_BREAKPOINT_PX` and friends), which must be kept in   */
+  /* sync with the values below by hand.                                   */
+  /* ---------------------------------------------------------------- */
+  --bp-mobile: 480px; /* == viewport.ts's NARROW_VIEWPORT_BREAKPOINT_PX */
+  --bp-tablet: 768px;
+  --bp-desktop: 1024px;
+  --bp-wide: 1280px; /* drawer pin threshold */
+}
+
+/* One reduced-motion story for the whole app (mirrors `WovenLoader`'s own
+   per-component `prefers-reduced-motion` contract): zeroing every
+   `--duration-*` custom property here means any transition/animation
+   written as `<property> var(--duration-*) var(--ease-*)` collapses to an
+   instant, no-transform state automatically, without each component
+   re-implementing its own reduced-motion branch. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-weave: 0ms;
+  }
 }
 
 /*

@@ -73,6 +73,141 @@
 
   const shadowSwatches = ['--shadow-sm', '--shadow-md', '--shadow-lg'];
 
+  // ---------------------------------------------------------------------
+  // Motion — "Shuttle Motion" (redesign brief `docs/design/redesign.md`
+  // §2, issue #427). The demo dots below animate with
+  // `animation-duration: var(--duration-*)`/`animation-timing-function:
+  // var(--ease-*)` set directly from these token names (a `style` attribute
+  // referencing the custom property, same pattern the spacing/radius
+  // scales above already use) — so, like every other value on this page,
+  // retuning `tokens.css` changes what's demonstrated here live, and the
+  // `prefers-reduced-motion` rule that zeroes every `--duration-*` token
+  // freezes these demos too, for free.
+  const durationTokens = [
+    { name: '--duration-instant', label: 'instant', job: 'press feedback (tension-press)' },
+    { name: '--duration-fast', label: 'fast', job: 'hover, toggle, focus ring, status crossfade' },
+    {
+      name: '--duration-base',
+      label: 'base',
+      job: 'drawer/sheet slide, card entrance, transcript item arrival',
+    },
+    {
+      name: '--duration-slow',
+      label: 'slow',
+      job: 'onboarding step transitions, page-level narrative',
+    },
+    {
+      name: '--duration-weave',
+      label: 'weave',
+      job: 'permission-card entrance, thread-draw fills/reveals',
+    },
+  ];
+
+  const easingTokens = [
+    { name: '--ease-beat', label: 'beat', job: 'default: toggles, crossfades, symmetric motion' },
+    {
+      name: '--ease-shuttle',
+      label: 'shuttle',
+      job: 'entrances: fast-out, settles — drawer/sheet slide',
+    },
+    { name: '--ease-tension', label: 'tension', job: 'dialogs: snap-then-ease' },
+    { name: '--ease-exit', label: 'exit', job: 'exits: accelerate out, never lingers' },
+  ];
+
+  const namedTransitions = [
+    {
+      name: 'beat-in',
+      where: 'New transcript item, list row appearing',
+      motion: '4px upward slide + fade',
+      timing: '--duration-base / --ease-beat (staggered 20ms/item, capped at 5, initial load only)',
+    },
+    {
+      name: 'shuttle-in / shuttle-out',
+      where: 'Drawer open/close, mobile Sessions sheet, bottom sheets',
+      motion: "Translate from the panel's edge + fade",
+      timing: 'in: --duration-base/--ease-shuttle; out: --duration-fast/--ease-exit',
+    },
+    {
+      name: 'thread-lift',
+      where: 'Modal open (Dialog primitive)',
+      motion: 'Backdrop fades independently; card scale(0.97→1) + fade',
+      timing: '--duration-base / --ease-tension',
+    },
+    {
+      name: 'tension-press',
+      where: 'Button/row :active',
+      motion: 'Background darkens ~8%, scale(0.98) — no bounce, no overshoot',
+      timing: '--duration-instant / --ease-beat',
+    },
+    {
+      name: 'status-crossfade',
+      where: 'A status dot/badge changing state (working → permission_required, health flipping)',
+      motion: 'Color/background crossfade, no snap',
+      timing: '--duration-fast / --ease-beat',
+    },
+    {
+      name: 'thread-draw',
+      where:
+        'Anything that fills or reveals: meter bars, the permission card’s one-time border sweep, the active-nav/active-tab indicator, focus-ring appearing',
+      motion: 'stroke-dashoffset (SVG) or an equivalent background-position/clip-path sweep',
+      timing: '--duration-weave / linear for continuous fills, --ease-tension for one-time reveals',
+    },
+  ];
+
+  // ---------------------------------------------------------------------
+  // Breakpoints (redesign brief §1, issue #427) — `lib/viewport.ts`'s
+  // numeric siblings are what components' real `@media`/`matchMedia`
+  // checks match against (plain CSS can't read a custom property inside a
+  // media condition); these tokens are the one documented source for the
+  // values themselves.
+  const breakpointTokens = [
+    {
+      name: '--bp-mobile',
+      label: 'Mobile',
+      job: 'composer toolbar collapses under "···" below this',
+    },
+    { name: '--bp-tablet', label: 'Tablet', job: 'Sessions/Drawer become sheets below this' },
+    { name: '--bp-desktop', label: 'Desktop', job: 'Rail becomes a bottom tab bar below this' },
+    { name: '--bp-wide', label: 'Wide', job: 'Drawer pin threshold — pinned column at/above this' },
+  ];
+
+  // ---------------------------------------------------------------------
+  // Elevation ladder (redesign brief §3, issue #427) — gives the existing
+  // `--shadow-*` tokens above a documented job. Each tier's background/
+  // border/shadow are read live the same way every other swatch on this
+  // page is (inline `style` referencing the token), so this stays accurate
+  // if the underlying color/shadow tokens ever change.
+  const elevationTiers: {
+    tier: string;
+    background: string;
+    border: string;
+    shadow: string | null;
+    usedBy: string;
+  }[] = [
+    {
+      tier: 'flat',
+      background: '--color-surface',
+      border: '--color-border-subtle',
+      shadow: null,
+      usedBy: 'Agent message rows, generic list rows, hairline-divided rows',
+    },
+    {
+      tier: 'raised',
+      background: '--color-surface-raised',
+      border: '--color-border',
+      shadow: '--shadow-sm',
+      usedBy:
+        'Session rows (selected), tool-call rows, PlanCard, target cards, MCP/plugin config cards',
+    },
+    {
+      tier: 'floating',
+      background: '--color-surface-raised',
+      border: '--color-border-strong',
+      shadow: '--shadow-lg',
+      usedBy: 'PermissionCard, Dialog, Drawer (overlay mode), Command Palette',
+    },
+  ];
+
   // Mirrors +page.svelte's theme-toggle wiring (issue #195) so this
   // reference page can be checked in both themes without leaving it.
   let themePreference = $state<ThemePreference>('system');
@@ -223,6 +358,26 @@
     </div>
   </section>
 
+  <section aria-labelledby="elevation-in-use-heading">
+    <h2 id="elevation-in-use-heading">Elevation in use (redesign brief §3, issue #427)</h2>
+    <p class="motion-intro">
+      Three tiers, each with one documented job — status color on list rows defaults to a quiet
+      left-edge stripe rather than a tinted background, so a long list stays scannable;
+      <code>PermissionCard</code> is the one deliberate exception, since it's meant to interrupt.
+    </p>
+    <div class="elevation-row">
+      {#each elevationTiers as level (level.tier)}
+        <div
+          class="elevation-card"
+          style={`background: var(${level.background}); border: 1px solid var(${level.border}); box-shadow: ${level.shadow ? `var(${level.shadow})` : 'none'};`}
+        >
+          <code class="elevation-tier">{level.tier}</code>
+          <p class="elevation-used-by">{level.usedBy}</p>
+        </div>
+      {/each}
+    </div>
+  </section>
+
   <section aria-labelledby="motion-heading">
     <h2 id="motion-heading">Woven-thread motif (SPEC.md §4, issue #274)</h2>
     <p class="motion-intro">
@@ -248,6 +403,76 @@
         <WovenLoader size="md" variant="working" reducedMotion label="Working" />
         <span class="motion-label">reducedMotion static fallback</span>
       </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="shuttle-motion-heading">
+    <h2 id="shuttle-motion-heading">Motion — "Shuttle Motion" (redesign brief §2, issue #427)</h2>
+    <p class="motion-intro">
+      One small set of durations/easings, each with one documented job, layered next to
+      <code>WovenLoader</code>'s existing weave rather than replacing it. The moving dots below
+      animate with <code>animation-duration</code>/<code>animation-timing-function</code> set
+      directly from these token names, so they demonstrate the real values live — and freeze under
+      <code>prefers-reduced-motion</code>, same as everything else driven by these tokens.
+    </p>
+
+    <h3>Durations</h3>
+    <div class="motion-token-row">
+      {#each durationTokens as token (token.name)}
+        <div class="motion-token-card">
+          <div class="motion-track">
+            <div class="motion-dot" style={`animation-duration: var(${token.name});`}></div>
+          </div>
+          <span class="motion-token-label">{token.label}</span>
+          <code class="swatch-token">{token.name}</code>
+          <p class="motion-token-job">{token.job}</p>
+        </div>
+      {/each}
+    </div>
+
+    <h3>Easings</h3>
+    <div class="motion-token-row">
+      {#each easingTokens as token (token.name)}
+        <div class="motion-token-card">
+          <div class="motion-track">
+            <div
+              class="motion-dot"
+              style={`animation-duration: var(--duration-slow); animation-timing-function: var(${token.name});`}
+            ></div>
+          </div>
+          <span class="motion-token-label">{token.label}</span>
+          <code class="swatch-token">{token.name}</code>
+          <p class="motion-token-job">{token.job}</p>
+        </div>
+      {/each}
+    </div>
+
+    <h3>Named transitions</h3>
+    <div class="transition-table" role="table" aria-label="Named transitions">
+      <div class="transition-row transition-row-head" role="row">
+        <span role="columnheader">Name</span>
+        <span role="columnheader">Where</span>
+        <span role="columnheader">Motion</span>
+        <span role="columnheader">Timing</span>
+      </div>
+      {#each namedTransitions as row (row.name)}
+        <div class="transition-row" role="row">
+          <span role="cell"><code>{row.name}</code></span>
+          <span role="cell">{row.where}</span>
+          <span role="cell">{row.motion}</span>
+          <span role="cell" class="transition-timing">{row.timing}</span>
+        </div>
+      {/each}
+    </div>
+
+    <h3>Breakpoints</h3>
+    <div class="scale-row">
+      {#each breakpointTokens as token (token.name)}
+        <div class="scale-item">
+          <code>{token.name}</code>
+          <span class="motion-token-job">{token.label} — {token.job}</span>
+        </div>
+      {/each}
     </div>
   </section>
 
@@ -439,6 +664,133 @@
     font-size: var(--text-small-size);
     text-align: center;
     opacity: 0.7;
+  }
+
+  /* Elevation ladder cards (redesign brief §3, issue #427). */
+  .elevation-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+  }
+
+  .elevation-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    width: 14rem;
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+  }
+
+  .elevation-tier {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.75rem;
+  }
+
+  .elevation-used-by {
+    margin: 0;
+    opacity: 0.75;
+    font-size: var(--text-small-size);
+  }
+
+  /* Shuttle Motion token demos (redesign brief §2, issue #427). */
+  .motion-token-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-md);
+  }
+
+  .motion-token-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    width: 12rem;
+  }
+
+  .motion-track {
+    position: relative;
+    width: 100%;
+    height: 1.25rem;
+    border-radius: var(--radius-full);
+    background: var(--color-fill-subtle);
+    overflow: hidden;
+  }
+
+  .motion-dot {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-top: -0.425rem;
+    border-radius: var(--radius-full);
+    background: var(--color-accent);
+    animation-name: motion-token-slide;
+    animation-timing-function: var(--ease-beat);
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+  }
+
+  @keyframes motion-token-slide {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(calc(12rem - 2.5rem));
+    }
+  }
+
+  .motion-token-label {
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+
+  .motion-token-job {
+    margin: 0;
+    opacity: 0.7;
+    font-size: 0.75rem;
+  }
+
+  /* Named-transitions table (redesign brief §2). A plain ARIA `role="table"`
+     grid rather than a real `<table>`, matching this page's existing
+     div-based swatch layout instead of introducing a new element pattern. */
+  .transition-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .transition-row {
+    display: grid;
+    grid-template-columns: 11rem 16rem 1fr 14rem;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border-subtle);
+    font-size: var(--text-small-size);
+  }
+
+  .transition-row:last-child {
+    border-bottom: none;
+  }
+
+  .transition-row-head {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
+    opacity: 0.7;
+    background: var(--color-fill-subtle);
+  }
+
+  .transition-timing {
+    font-family: var(--font-mono);
+    opacity: 0.85;
   }
 
   .scale-row {
