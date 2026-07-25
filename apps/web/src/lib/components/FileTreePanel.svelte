@@ -20,24 +20,33 @@
    * deliberately read-only (issue #171's acceptance criteria).
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4/§5/§6,
-   * issue #435): the 📄/🔗/▸/▾ glyphs are replaced with a small hand-drawn
-   * icon set (20x20, 1.5px stroke, matching the brief's §5 system and the
-   * settings restyle's #434 bell/chevron precedent); the disclosure chevron
-   * rotates with a `--duration-fast`/`--ease-beat` transform (a quiet,
-   * one-job motion, not `thread-draw` — that primitive is reserved for
-   * fills/reveals, not a toggle rotation); a freshly-expanded directory's
-   * children get a `beat-in`-style 4px slide + fade (the brief's "list row
-   * appearing" job); and a directory that loads with zero entries reads
-   * through `EmptyState` instead of a silent empty `<ul>`. The root
-   * `data-testid="file-tree-panel"`, every row/loading/error `data-testid`,
-   * and the recursive expand/select behavior are all unchanged.
+   * issue #435): the disclosure chevron rotates with a
+   * `--duration-fast`/`--ease-beat` transform (a quiet, one-job motion, not
+   * `thread-draw` — that primitive is reserved for fills/reveals, not a
+   * toggle rotation); a freshly-expanded directory's children get a
+   * `beat-in`-style 4px slide + fade (the brief's "list row appearing" job);
+   * and a directory that loads with zero entries reads through `EmptyState`
+   * instead of a silent empty `<ul>`.
+   *
+   * Deck migration (redesign v2, issue #467): every row glyph (folder,
+   * file, the disclosure chevron) now draws from the shared bespoke
+   * `Icon` component (`./icons`) instead of this component's own inline
+   * `<svg>` paths, and a directory-load error reads through `ErrorNotice`
+   * instead of a bare `<p role="alert">`. `icon-paths.ts` (issue #457) has
+   * no dedicated `symlink` glyph yet, so a symlink row reuses `file` until
+   * one is added — out of this issue's file scope (see the PR description).
+   * The root `data-testid="file-tree-panel"`, every row/loading/error
+   * `data-testid`, and the recursive expand/select behavior are all
+   * unchanged.
    */
   import type { FsEntryV1 } from '@loombox/protocol';
   import { SvelteSet } from 'svelte/reactivity';
   import { joinTreePath, sortEntries } from '../file-tree';
   import type { FileTreeDirectoryState } from '../relay-client';
+  import { Icon } from './icons';
   import WovenLoader from './WovenLoader.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   interface Props {
     tree: Map<string, FileTreeDirectoryState>;
@@ -66,91 +75,76 @@
     if (!dirState || dirState.status !== 'loaded') return [];
     return [...dirState.entries].sort(sortEntries);
   }
-
-  const rootEntries = $derived(entriesFor(''));
-  const rootState = $derived(tree.get(''));
 </script>
 
 {#snippet dirContents(path: string)}
   {@const dirState = tree.get(path)}
+  {@const entries = entriesFor(path)}
   {#if dirState?.status === 'loading'}
     <p class="tree-status tree-status-loading" data-testid="file-tree-loading">
       <WovenLoader size="sm" label="Loading directory" />
       Loading…
     </p>
   {:else if dirState?.status === 'error'}
-    <p class="tree-status tree-status-error" role="alert" data-testid="file-tree-error">
-      {dirState.error}
-    </p>
+    <div class="tree-error" data-testid="file-tree-error">
+      <ErrorNotice message={dirState.error ?? 'Failed to load this directory.'} />
+    </div>
+  {:else if dirState?.status === 'loaded' && entries.length === 0}
+    <EmptyState
+      message={path === '' ? 'This project has no files yet.' : 'This directory is empty.'}
+    />
   {/if}
-  <ul class="tree-entries">
-    {#each entriesFor(path) as entry (entry.name)}
-      {@const entryPath = joinTreePath(path, entry.name)}
-      <li>
-        {#if entry.kind === 'dir'}
-          <button
-            type="button"
-            class="tree-row tree-row-dir"
-            onclick={() => toggle(entryPath)}
-            aria-expanded={expandedPaths.has(entryPath)}
-            data-testid="file-tree-dir"
-          >
-            <span
-              class="tree-chevron"
-              class:tree-chevron-open={expandedPaths.has(entryPath)}
-              aria-hidden="true"
+  {#if !(dirState?.status === 'loaded' && entries.length === 0)}
+    <ul class="tree-entries">
+      {#each entries as entry (entry.name)}
+        {@const entryPath = joinTreePath(path, entry.name)}
+        <li>
+          {#if entry.kind === 'dir'}
+            <button
+              type="button"
+              class="tree-row tree-row-dir"
+              onclick={() => toggle(entryPath)}
+              aria-expanded={expandedPaths.has(entryPath)}
+              data-testid="file-tree-dir"
             >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </span>
-            <span class="name">{entry.name}</span>
-          </button>
-          {#if expandedPaths.has(entryPath)}
-            <div class="tree-children">
-              {@render dirContents(entryPath)}
-            </div>
+              <span
+                class="tree-chevron"
+                class:tree-chevron-open={expandedPaths.has(entryPath)}
+                aria-hidden="true"
+              >
+                <Icon name="collapse-chevron" size="100%" />
+              </span>
+              <span class="tree-icon" aria-hidden="true">
+                <Icon name="folder" size="100%" />
+              </span>
+              <span class="name">{entry.name}</span>
+            </button>
+            {#if expandedPaths.has(entryPath)}
+              <div class="tree-children">
+                {@render dirContents(entryPath)}
+              </div>
+            {/if}
+          {:else}
+            <button
+              type="button"
+              class="tree-row tree-row-file"
+              onclick={() => onSelectFile?.(entryPath)}
+              data-testid="file-tree-file"
+            >
+              <span class="tree-icon" aria-hidden="true">
+                <Icon name="file" size="100%" />
+              </span>
+              <span class="name">{entry.name}</span>
+            </button>
           {/if}
-        {:else}
-          <button
-            type="button"
-            class="tree-row tree-row-file"
-            onclick={() => onSelectFile?.(entryPath)}
-            data-testid="file-tree-file"
-          >
-            <span class="tree-icon" aria-hidden="true">
-              {#if entry.kind === 'symlink'}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M8 12l4-4" stroke-linecap="round" /><path
-                    d="M9.5 6.5h-2A2.5 2.5 0 0 0 5 9v0a2.5 2.5 0 0 0 2.5 2.5h.5M10.5 13.5h2A2.5 2.5 0 0 0 15 11v0a2.5 2.5 0 0 0-2.5-2.5h-.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              {:else}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path
-                    d="M6 3.5h5.5L15 7v9.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"
-                    stroke-linejoin="round"
-                  />
-                  <path d="M11.5 3.5V7H15" stroke-linejoin="round" />
-                </svg>
-              {/if}
-            </span>
-            <span class="name">{entry.name}</span>
-          </button>
-        {/if}
-      </li>
-    {/each}
-  </ul>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 {/snippet}
 
 <nav class="file-tree" aria-label="Project files" data-testid="file-tree-panel">
-  {#if rootState?.status === 'loaded' && rootEntries.length === 0}
-    <EmptyState message="This project has no files yet." />
-  {:else}
-    {@render dirContents('')}
-  {/if}
+  {@render dirContents('')}
 </nav>
 
 <style>
@@ -170,8 +164,8 @@
     font-size: var(--text-small-size);
   }
 
-  .tree-status-error {
-    color: var(--color-danger);
+  .tree-error {
+    padding: var(--space-2xs) 0;
   }
 
   .tree-entries {
@@ -191,7 +185,7 @@
   .tree-children .tree-entries {
     padding-left: var(--space-lg);
     border-left: 1px solid var(--color-border-subtle);
-    margin-left: 0.55rem;
+    margin-left: var(--space-sm);
   }
 
   @keyframes tree-reveal {
@@ -238,12 +232,6 @@
     width: 1rem;
     height: 1rem;
     color: var(--color-text-muted);
-  }
-
-  .tree-chevron svg,
-  .tree-icon svg {
-    width: 100%;
-    height: 100%;
   }
 
   /* A quiet rotation, not thread-draw: thread-draw is reserved for

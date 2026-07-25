@@ -30,11 +30,18 @@
    * stop-propagation note on Esc (this component owns its own Esc/arrow
    * handling on the search input; without it Dialog's own Esc handler
    * would fire a second `onClose`).
+   *
+   * Deck migration (redesign v2, issue #467): each result row's file glyph
+   * now draws from the shared bespoke `Icon` component (`./icons`) instead
+   * of this component's own inline `<svg>`, and the "no matches" row reads
+   * through `EmptyState` instead of a plain `<li>`.
    */
   import { fuzzyFilter } from '../fuzzy';
   import { flattenLoadedFiles, joinTreePath, type FlatFileEntry } from '../file-tree';
   import type { FileTreeDirectoryState } from '../relay-client';
+  import { Icon } from './icons';
   import Dialog from './ui/Dialog.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
 
   interface Props {
     open: boolean;
@@ -132,37 +139,31 @@
 {/snippet}
 
 {#snippet pickerBody()}
-  <ul class="picker-results" role="listbox">
-    {#if results.length === 0}
-      <li class="picker-empty">No matching files.</li>
-    {/if}
-    {#each results as entry, index (entry.path)}
-      <li>
-        <button
-          type="button"
-          class="picker-item"
-          class:active={index === activeIndex}
-          role="option"
-          aria-selected={index === activeIndex}
-          onmouseenter={() => (activeIndex = index)}
-          onclick={() => activate(entry)}
-          data-testid="file-reference-picker-item"
-        >
-          <span class="entry-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M6 3h6l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-              />
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3h3" />
-            </svg>
-          </span>
-          <span class="path">{entry.path}</span>
-        </button>
-      </li>
-    {/each}
-  </ul>
+  {#if results.length === 0}
+    <EmptyState message="No matching files." />
+  {:else}
+    <ul class="picker-results" role="listbox">
+      {#each results as entry, index (entry.path)}
+        <li>
+          <button
+            type="button"
+            class="picker-item"
+            class:active={index === activeIndex}
+            role="option"
+            aria-selected={index === activeIndex}
+            onmouseenter={() => (activeIndex = index)}
+            onclick={() => activate(entry)}
+            data-testid="file-reference-picker-item"
+          >
+            <span class="entry-icon" aria-hidden="true">
+              <Icon name="file" size="100%" />
+            </span>
+            <span class="path">{entry.path}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 {/snippet}
 
 {#snippet pickerFooter()}
@@ -191,10 +192,10 @@
   }
 
   .picker-input {
-    padding: var(--space-sm) 0.15rem;
+    padding: var(--space-sm) var(--space-3xs);
     border: none;
     border-bottom: 1px solid var(--color-border);
-    font-size: 0.95rem;
+    font-size: var(--text-body-size);
     background: transparent;
     color: inherit;
     font-family: inherit;
@@ -213,12 +214,6 @@
     margin: 0;
     padding: 0;
     overflow-y: auto;
-  }
-
-  .picker-empty {
-    padding: var(--space-sm) var(--space-2xs);
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 
   .picker-item {
@@ -257,11 +252,6 @@
     color: var(--color-text-secondary);
   }
 
-  .entry-icon svg {
-    width: 100%;
-    height: 100%;
-  }
-
   .picker-item.active .entry-icon {
     color: var(--color-accent);
   }
@@ -276,7 +266,7 @@
   .picker-hints {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.65rem;
+    gap: var(--space-md);
     font-size: 0.68rem;
     color: var(--color-text-muted);
   }
