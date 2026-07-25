@@ -14,8 +14,13 @@
    * and reachability is now signaled with a shared `StatusDot` alongside
    * the existing "offline" text badge (kept, so this component's own
    * `getByText('offline')` test assertion is untouched).
+   *
+   * Deck migration (redesign v2 §2 "Consistency sweep", issue #464): the
+   * "no targets available" fallback now reads through the shared
+   * `EmptyState` primitive instead of a hand-styled `<p>`.
    */
   import type { TargetListEntry } from '$lib/relay-client';
+  import EmptyState from './ui/EmptyState.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
@@ -29,7 +34,7 @@
 
 <div class="target-picker" role="radiogroup" aria-label="Target" data-testid="target-picker">
   {#if targets.length === 0}
-    <p class="empty">No targets available.</p>
+    <EmptyState message="No targets available." />
   {:else}
     {#each targets as target (target.nodeId + ':' + target.targetId)}
       <button
@@ -69,12 +74,6 @@
     gap: var(--space-2xs);
     max-height: 14rem;
     overflow-y: auto;
-  }
-
-  .empty {
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 
   /* `raised` elevation tier (redesign brief §3): target cards. */
