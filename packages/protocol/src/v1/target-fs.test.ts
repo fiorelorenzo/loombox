@@ -128,3 +128,29 @@ describe('targetFsListRequest / targetFsListResponse (the top-level wire message
     }
   });
 });
+
+describe('targetFsListResultV1.gitRepo', () => {
+  it('is optional, so a node predating the field still produces a valid listing', () => {
+    const parsed = parseTargetFsListResponsePayloadV1({
+      outcome: 'ok',
+      path: '/srv/app',
+      entries: [],
+    });
+    expect(parsed.outcome).toBe('ok');
+    if (parsed.outcome !== 'ok') throw new Error('unreachable');
+    expect(parsed.gitRepo).toBeUndefined();
+  });
+
+  it('round-trips both answers, since "not a repo" is a normal project (SPEC 6)', () => {
+    for (const gitRepo of [true, false]) {
+      const parsed = parseTargetFsListResponsePayloadV1({
+        outcome: 'ok',
+        path: '/srv/app',
+        entries: [],
+        gitRepo,
+      });
+      if (parsed.outcome !== 'ok') throw new Error('unreachable');
+      expect(parsed.gitRepo).toBe(gitRepo);
+    }
+  });
+});

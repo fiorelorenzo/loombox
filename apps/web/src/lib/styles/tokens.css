@@ -56,6 +56,8 @@
   --gutter: 2rem; /* the transcript timeline's role-glyph column */
   --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
   --sidebar-width-collapsed: 3.5rem;
+  --nav-row-height: 2.5rem; /* 40px — v4 primary destination row height, spec 3.1 */
+  --nav-icon-size: 1.25rem; /* 20px — same rows' icon size */
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */

@@ -26,9 +26,9 @@ test.describe('Attention inbox: inline reply (issue #168)', () => {
       updatedAt: new Date().toISOString(),
     });
 
-    const inboxToggle = page.getByTestId('inbox-toggle');
+    const inbox = page.getByTestId('destination-inbox');
     await expect(page.getByTestId('inbox-count')).toHaveText('1');
-    await inboxToggle.click();
+    await inbox.click();
 
     const row = page.getByTestId('attention-inbox-item');
     await expect(row).toHaveCount(1);
@@ -38,8 +38,8 @@ test.describe('Attention inbox: inline reply (issue #168)', () => {
     await replyInput.fill('Looks good, go ahead and merge it.');
     await row.getByTestId('attention-inbox-reply-send').click();
 
-    // Never left the inbox panel to do it - no session was opened/selected.
-    await expect(page.getByTestId('inbox-toggle')).toHaveClass(/active/);
+    // Never left the inbox to do it: no session was opened or selected.
+    await expect(page.getByTestId('destination-inbox')).toHaveClass(/active/);
 
     const routed = (await loombox.node.waitFor(
       (message) => message.type === 'prompt_inject',

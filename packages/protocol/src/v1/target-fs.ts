@@ -60,6 +60,18 @@ export const targetFsListResultV1 = z.object({
   outcome: z.literal('ok'),
   path: z.string(),
   entries: z.array(fsEntryV1),
+  /**
+   * Whether `path` itself sits inside a git work tree. The directory picker
+   * needs this to know whether to offer SPEC §7.1's per-session worktree
+   * choice, and SPEC §6 is explicit that a project need not be a repo at all,
+   * so "not a repo" is a normal answer here rather than an error.
+   *
+   * Optional: a node older than this field simply omits it, and a client must
+   * read `undefined` as "unknown" rather than as `false` — making it required
+   * would have the relay drop the whole frame against such a node, with no
+   * version mismatch reported anywhere.
+   */
+  gitRepo: z.boolean().optional(),
 });
 export type TargetFsListResultV1 = z.infer<typeof targetFsListResultV1>;
 

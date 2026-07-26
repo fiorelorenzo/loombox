@@ -311,8 +311,12 @@
       Checking node/target status…
     </p>
   {:else if targets.length === 0}
+    <!-- Points at nothing in particular on purpose: the two setup actions
+         moved onto this surface's own header when it became the Nodes page
+         (IA v4 §3.1), so the old "from the sidebar" told you to look in the
+         one place they are no longer. -->
     <EmptyState
-      message="No nodes or targets connected yet. Add a target or connect a node from the sidebar to get started."
+      message="No nodes or targets connected yet. Add a target or connect a node to get started."
     />
   {:else}
     <ul class="target-rows">

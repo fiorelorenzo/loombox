@@ -51,6 +51,27 @@ export async function createRemoteWorktree(
   transport: RemoteTransport,
   options: { projectPath: string; sessionId: string; branch: string },
 ): Promise<RemoteWorktreeHandle> {
+  // Two clear, path-naming refusals ahead of the real `git worktree add`
+  // below (SPEC §6/§7.1; issue #507): neither "no such directory" nor "not
+  // a git repository" is something `git worktree add`'s own stderr says on
+  // its own, since every command in this module already `cd`s into
+  // `projectPath` first and git never echoes back the path it ran in.
+  const dirCheck = await transport.exec(
+    `[ -d ${shQuote(options.projectPath)} ] && echo yes || echo no`,
+  );
+  if (dirCheck.stdout.trim() !== 'yes') {
+    throw new Error(`remote-worktree: no such directory: ${options.projectPath}`);
+  }
+  const repoCheck = await transport.exec(
+    `git -C ${shQuote(options.projectPath)} rev-parse --is-inside-work-tree`,
+  );
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== 'true') {
+    throw new Error(
+      `remote-worktree: not a git repository: ${options.projectPath} — an isolated ` +
+        'worktree needs one; work in place instead',
+    );
+  }
+
   const worktreePath = posixJoin(options.projectPath, '.loombox', 'worktrees', options.sessionId);
   const command = [
     `cd ${shQuote(options.projectPath)}`,

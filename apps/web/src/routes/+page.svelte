@@ -46,7 +46,7 @@
     SESSION_STATUS_TONES,
     SESSION_STATUS_UNKNOWN_LABEL,
   } from '$lib/session-status';
-  import { fuzzyFilter } from '$lib/fuzzy';
+  import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import {
     createLocalStorageNotificationPreferencesStorage,
@@ -54,9 +54,17 @@
     type NotificationPreferences as NotificationPreferencesData,
     type NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
+  import {
+    createProjectStore,
+    projectKey,
+    projectNameFromPath,
+    sessionProjectKey,
+    type NewProject,
+    type Project,
+  } from '$lib/projects';
+  import AddProjectDialog from '$lib/components/AddProjectDialog.svelte';
   import AppearanceSettings from '$lib/components/AppearanceSettings.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
-  import AttentionInbox from '$lib/components/AttentionInbox.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
@@ -67,15 +75,14 @@
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
-  import PushNotificationToggle from '$lib/components/PushNotificationToggle.svelte';
-  import NotificationPreferences from '$lib/components/NotificationPreferences.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
-  import TargetStatusView, {
-    type FocusTarget as TargetStatusFocusTarget,
-  } from '$lib/components/TargetStatusView.svelte';
+  import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
+  import InboxPage from '$lib/components/pages/InboxPage.svelte';
+  import NodesPage from '$lib/components/pages/NodesPage.svelte';
+  import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -171,42 +178,63 @@
   let newSessionOpen = $state(false);
   // The "Add target" zero-touch provision-and-pair wizard (SPEC §7.23; issue #408).
   let addTargetOpen = $state(false);
+  // The "Add project" flow (design spec v4 §3.1/§3.4; issue #507): registers
+  // a folder once, independent of any session. The sidebar's `+` next to
+  // "PROJECTS" and the main-area empty state's own CTA both open this.
+  let addProjectOpen = $state(false);
+  /** Which project a just-opened `NewSessionDialog` creates into (design spec v4 §3.4): every entry point (a project's own `+ New session` row, its `⋯` menu, ⌘K, the empty-state CTA) sets this before flipping `newSessionOpen`, since the dialog no longer picks a target or a folder itself; both are inherited from this project. */
+  let newSessionProject = $state<Project | undefined>(undefined);
 
   /**
-   * The single Drawer state (redesign brief `docs/design/redesign.md` §1/§7,
-   * issue #427): replaces six independently-toggled panel booleans
-   * (`inboxOpen`, `targetStatusOpen`, `appearanceSettingsOpen`,
-   * `notificationSettingsOpen`, `fileTreeOpen`, `terminalOpen`,
-   * `projectConfigOpen`) with one union — only one Drawer tab is ever open
-   * at a time now ("one tab visible at a time in overlay mode"). `'settings'`
-   * covers both the old Appearance and Notification panels (now two
-   * sections of one Drawer tab); the pre-authentication sign-in screen's
-   * own minimal Appearance-only affordance reuses this exact same state
-   * rather than a parallel boolean, so there is still only ever one "what
-   * panel is open" answer for the whole page. Every existing panel
-   * component (`AttentionInbox`, `TargetStatusView`, `FileTreePanel`,
-   * `InteractiveTerminal`, `ProjectConfigPanel`, `AppearanceSettings`,
-   * `NotificationPreferences`) keeps its own props/logic/tests unchanged —
-   * only the container deciding whether it renders changed.
+   * What the main area shows (design spec v4 §3.3; issue #507). Closes the
+   * gap design spec v4 §1.1 names: v3 drew Inbox/Nodes/Settings twice, once
+   * as sidebar rows that toggled a Drawer tab of the same name. Two
+   * navigations pointed at the same three destinations. They are `mainView`
+   * destinations now, not Drawer tabs; the Drawer keeps only what is scoped
+   * to the open session (files/terminal/config, `DrawerTab` below).
+   * Selecting a session always sets `'session'`; selecting a destination
+   * sets that destination and deliberately LEAVES `selectedSessionId`
+   * alone, so returning to the transcript is one click and the header
+   * breadcrumb (§3.6) is never lost.
    */
-  type DrawerTab = 'inbox' | 'targets' | 'files' | 'terminal' | 'config' | 'settings';
+  let mainView = $state<'session' | 'inbox' | 'nodes' | 'settings'>('session');
+
+  /** Display titles for the three `mainView` destinations (design spec v4 §3.6's header): matches each page's own `PageLayout` title exactly (`InboxPage`/`NodesPage`/`SettingsPage`), so the topbar and the page body never disagree about what "here" is called. */
+  const MAIN_VIEW_TITLES: Record<'inbox' | 'nodes' | 'settings', string> = {
+    inbox: 'Inbox',
+    nodes: 'Nodes',
+    settings: 'Settings',
+  };
+
+  /**
+   * The Drawer state (redesign brief `docs/design/redesign.md` §1/§7, issue
+   * #427; narrowed by design spec v4 §3.5, issue #507). Used to cover six
+   * panels; Inbox/Nodes & targets/Settings are `mainView` destinations now
+   * (see above), leaving only the session's own workbench: Files,
+   * Terminal, Config, plus `'settings'`, kept solely for the
+   * pre-authentication sign-in screen's own minimal Appearance-only
+   * affordance below, which reuses this exact same state rather than a
+   * parallel boolean (that affordance predates the cockpit and is out of
+   * this issue's scope). Every remaining panel component (`FileTreePanel`,
+   * `InteractiveTerminal`, `ProjectConfigPanel`, `AppearanceSettings`) keeps
+   * its own props/logic/tests unchanged; only the container deciding
+   * whether it renders changed.
+   */
+  type DrawerTab = 'files' | 'terminal' | 'config' | 'settings';
   let activeDrawer = $state<DrawerTab | null>(null);
 
   /**
-   * The Drawer's tab strip, as data (redesign v3 design spec §3.6). Six
-   * hand-written `<Button variant="ghost">`s used to wrap onto two rows and
-   * distinguish the active tab by an underline alone; one loop over this
-   * list gives every tab the same icon + label anatomy and one active
-   * treatment. `files`/`terminal`/`config` are session-scoped and drop out
-   * when nothing is selected, exactly as before.
+   * The Drawer's tab strip, as data (v3 design spec §3.6, kept from v3).
+   * Design spec v4 §3.5 drops `inbox`/`targets`/`settings` from this array:
+   * those three are `mainView` destinations now, not Drawer tabs, leaving
+   * only the session's own workbench. All three remaining tabs are
+   * session-scoped and drop out when nothing is selected, exactly as
+   * before.
    */
   const DRAWER_TABS: { id: DrawerTab; label: string; icon: IconName; sessionScoped: boolean }[] = [
-    { id: 'inbox', label: 'Inbox', icon: 'inbox', sessionScoped: false },
-    { id: 'targets', label: 'Nodes & targets', icon: 'targets', sessionScoped: false },
     { id: 'files', label: 'Files', icon: 'file', sessionScoped: true },
     { id: 'terminal', label: 'Terminal', icon: 'terminal', sessionScoped: true },
     { id: 'config', label: 'Config', icon: 'settings', sessionScoped: true },
-    { id: 'settings', label: 'Settings', icon: 'settings', sessionScoped: false },
   ];
   const drawerTabs = $derived(
     DRAWER_TABS.filter((tab) => !tab.sessionScoped || selectedSessionId !== undefined),
@@ -226,11 +254,15 @@
    * registered only while it is open.
    */
   let accountMenuOpen = $state(false);
-  /** The sidebar's "New session" split-button menu (Add target / Connect a node) — same anchored-popover treatment as {@link accountMenuOpen}. */
-  let newSessionMenuOpen = $state(false);
+  /** Which project group's `⋯` menu is open, if any, keyed by project id, same one-at-a-time treatment as {@link sessionRowMenuFor} (design spec v4 §3.2). */
+  let projectMenuFor = $state<string | undefined>(undefined);
   /** Which session row's `⋯` menu is open, if any — keyed by session id so only one row menu exists at a time. */
   let sessionRowMenuFor = $state<string | undefined>(undefined);
-  /** The sidebar's session filter query (redesign v3 design spec §3.1) — client-side only, over the same `fuzzyFilter` the command palette uses. */
+  /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
+  let renamingProjectId = $state<string | undefined>(undefined);
+  /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
+  let renameDraft = $state('');
+  /** The sidebar's filter query (design spec v4 §3.2), client-side only, over the same `fuzzyFilter`/`fuzzyMatch` the command palette uses. Matches session title/target as well as project name, so it doubles as a project search. */
   let sessionFilter = $state('');
 
   /**
@@ -240,12 +272,16 @@
    */
   function closeSidebarMenus(): void {
     accountMenuOpen = false;
-    newSessionMenuOpen = false;
+    projectMenuFor = undefined;
     sessionRowMenuFor = undefined;
+    renamingProjectId = undefined;
   }
 
   const anySidebarMenuOpen = $derived(
-    accountMenuOpen || newSessionMenuOpen || sessionRowMenuFor !== undefined,
+    accountMenuOpen ||
+      projectMenuFor !== undefined ||
+      sessionRowMenuFor !== undefined ||
+      renamingProjectId !== undefined,
   );
 
   /**
@@ -304,6 +340,9 @@
 
   let sessionsWidthPx = $state(DEFAULT_SESSIONS_WIDTH_PX);
   let sessionsCollapsed = $state(false);
+  /** Which project groups are currently collapsed (design spec v4 §3.2), PERSISTED (unlike v3's transient `collapsedGroupKeys` this replaces): "a project you never use should stay shut across reloads." Keyed by {@link projectKey}, not a project's `id`: an `id` is re-minted if a project is removed and later re-adopted (§4.2's `adoptFromSessions`), while the `(nodeId, targetId, path)` triple stays stable across that cycle. Restored in `onMount`, persisted by the `$effect` below alongside the sessions column's own width/collapsed prefs. A `SvelteSet` (not a plain `Set` wrapped in `$state`) so `.add`/`.delete` are reactive in place, mirroring `planCollapsedBySession`'s own `SvelteMap`. */
+  const PROJECT_GROUPS_COLLAPSED_STORAGE_KEY = 'loombox:project-groups-collapsed';
+  const collapsedProjectKeys = new SvelteSet<string>();
   /** True only while a drag is in flight — suppresses the width `transition` so the column tracks the pointer instead of visibly lagging behind it. */
   let sessionsResizing = $state(false);
   /** True at/below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px), where Sessions renders as the full-height sheet (redesign brief §1) rather than an inline column — the icon-only selvage rail is a wide-viewport concept only, so it's parked (not cleared) here rather than in `sessionsCollapsed` itself, which stays the user's actual persisted preference for whenever the viewport widens again. */
@@ -382,6 +421,18 @@
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
+  /**
+   * The client-side project registry (design spec v4 §4.2; SPEC §6's
+   * "Project: any folder ... does not have to be a git repository").
+   * Created once, for this component's lifetime. `adoptFromSessions`
+   * (called from `connect()`'s own `sessions` subscription below, and
+   * again after `removeProject` below) is what keeps every session's
+   * project registered even before this device has ever opened
+   * `AddProjectDialog`, so an upgrade from v3 shows a populated tree on
+   * first load rather than an empty one waiting for a manual Add.
+   */
+  const projectStore = createProjectStore();
+  let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
@@ -547,6 +598,15 @@
     if (!preferencesRestored) return;
     localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, value ? '1' : '0');
   });
+  // Design spec v4 §3.2: persists whichever project groups are currently
+  // collapsed. Reads `collapsedProjectKeys` by spreading it, so this
+  // effect re-runs on every `.add`/`.delete` (`SvelteSet` mutation is
+  // reactive in place, same as every other persisted-Set/Map in this file).
+  $effect(() => {
+    const keys = Array.from(collapsedProjectKeys);
+    if (!preferencesRestored) return;
+    localStorage.setItem(PROJECT_GROUPS_COLLAPSED_STORAGE_KEY, JSON.stringify(keys));
+  });
 
   const planCollapsed = $derived(
     selectedSessionId ? (planCollapsedBySession.get(selectedSessionId) ?? false) : false,
@@ -674,6 +734,11 @@
 
   function selectSession(id: string): void {
     selectedSessionId = id;
+    // Design spec v4 §3.3: picking a session always shows the transcript,
+    // even if a destination (Inbox/Nodes/Settings) was showing a moment ago:
+    // selecting a session is never a no-op just because you were looking
+    // at a page.
+    mainView = 'session';
     // Redesign brief §1: picking a session dismisses the mobile Sessions
     // sheet (a no-op at wider viewports, where it's never open).
     sessionsSheetOpen = false;
@@ -762,6 +827,10 @@
     });
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
+      // Design spec v4 §4.2: registers a project for every session's
+      // `(nodeId, targetId, projectPath)` triple that has no entry yet.
+      // Idempotent and cheap, safe to call on every emission.
+      projectStore.adoptFromSessions(value);
       syncSessionStatusSubscriptions(value);
       // #166: the session list is where this device's `sessionId ->
       // projectPath` map comes from — re-sync every time it changes so the
@@ -881,12 +950,30 @@
     }
   }
 
-  /** The "New session" flow's entry point (SPEC §7.1; issue #385) — wired to the sessions aside's CTA and the empty-state's own action. */
-  function openNewSessionDialog(): void {
+  /**
+   * Every "New session" entry point converges here (design spec v4 §3.4):
+   * the tree row's own `+ New session`, a project group's `⋯` menu, and
+   * the main-area empty state all just need to say WHICH project: the
+   * dialog inherits its target/folder from `project`, it no longer picks
+   * either itself.
+   */
+  function openNewSessionDialogFor(project: Project): void {
+    newSessionProject = project;
     newSessionOpen = true;
   }
 
-  /** The "Add target" zero-touch provision-and-pair wizard's entry point (SPEC §7.23; issue #408) — wired to the sessions aside's CTA and `NewSessionDialog`'s own "no nodes connected yet" empty state. */
+  /** The "Add project" flow's entry point (design spec v4 §3.1/§3.4), wired to the sidebar's `PROJECTS` header `+` and the main-area empty state's own CTA. */
+  function openAddProjectDialog(): void {
+    addProjectOpen = true;
+  }
+
+  /** `AddProjectDialog`'s success callback (design spec v4 §4.3): the dialog is pure and never touches the registry itself (`ProjectStore.add` is idempotent on an already-known `(nodeId, targetId, path)`, so a re-add of an adopted project just fills in its `isGitRepo`). */
+  function handleProjectCreated(project: NewProject): void {
+    projectStore.add(project);
+    addProjectOpen = false;
+  }
+
+  /** The "Add target" zero-touch provision-and-pair wizard's entry point (SPEC §7.23; issue #408), wired to the Nodes page's own two setup actions (design spec v4 §3.1: "Add target" / "Connect a node" both move here from the old sidebar split menu). This codebase has exactly one such flow today: `AddTargetWizard` already covers both "pair a new node" and "provision its first target" in one guided run (SPEC §7.23's steps 1-3), so both actions open the same wizard rather than a second, not-yet-built one. */
   function openAddTargetWizard(): void {
     addTargetOpen = true;
   }
@@ -922,15 +1009,11 @@
     }
   }
 
-  /** The node/target status view's entry point (SPEC §7.21; issue #269; redesign brief's Drawer "targets" tab) — `focus` optionally scopes the highlight to one session's target (wired from the sessions list's target link below). Polling itself is already running (`startTargetStatusPolling`, connection-scoped) — this just opens the Drawer and requests an immediate refresh so the view isn't stale from the moment it's shown. */
+  /** The Nodes destination's entry point (SPEC §7.21; issue #269; design spec v4 §3.1/§3.3): `focus` optionally scopes the highlight to one session's target (wired from the session row's own `⋯` menu below). Polling itself is already running (`startTargetStatusPolling`, connection-scoped); this just switches the main area and requests an immediate refresh so the view isn't stale from the moment it's shown. */
   function openTargetStatus(focus?: TargetStatusFocusTarget): void {
     targetStatusFocus = focus;
-    setActiveDrawer('targets');
+    mainView = 'nodes';
     void refreshTargetStatus();
-  }
-
-  function closeTargetStatus(): void {
-    if (activeDrawer === 'targets') setActiveDrawer(null);
   }
 
   /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
@@ -970,9 +1053,15 @@
     atTriggerStart = undefined;
     composerToolbarExpanded = false;
     newSessionOpen = false;
-    // Closes whatever Drawer tab was open (inbox/targets/files/terminal/
-    // config/settings) — none of them have anything to show once
-    // disconnected.
+    newSessionProject = undefined;
+    addProjectOpen = false;
+    // Design spec v4 §3.3: back to the transcript/empty-state view, same
+    // reasoning as every other per-connection UI reset below: none of
+    // Inbox/Nodes/Settings has anything live to show once disconnected.
+    mainView = 'session';
+    closeSidebarMenus();
+    // Closes whatever Drawer tab was open (files/terminal/config); none of
+    // them have anything to show once disconnected.
     setActiveDrawer(null);
     stopTargetStatusPolling();
     targetStatusEntries = [];
@@ -1135,9 +1224,9 @@
       });
     }
     actions.push({
-      id: 'toggle-inbox',
-      label: activeDrawer === 'inbox' ? 'Close attention inbox' : 'Open attention inbox',
-      run: () => toggleDrawer('inbox'),
+      id: 'open-inbox',
+      label: 'Open attention inbox',
+      run: () => (mainView = 'inbox'),
     });
     return actions;
   });
@@ -1192,62 +1281,12 @@
    * `${nodeId}:${targetId}`, the same composite key `targetHealthDots`
    * above already uses (a bare `targetId` is only unique per node).
    */
-  interface SessionGroup {
-    key: string;
-    label: string;
-    sessions: ClientSessionMeta[];
-  }
-
-  function sessionTargetKey(session: ClientSessionMeta): string {
-    return `${session.nodeId}:${session.targetId}`;
-  }
-
-  /** The group header's label — the live target list's own label when it's arrived, falling back to the bare `targetId` before it has (mirrors `targetHealthDots`' own `label ?? targetId` fallback above). */
+  /** The group header's label: the live target list's own label when it's arrived, falling back to the bare `targetId` before it has (mirrors `targetHealthDots`' own `label ?? targetId` fallback above). Also what a session row's own meta line shows (design spec v4 §3.2 drops the project name from the row now that the group header carries it). */
   function sessionTargetLabel(session: ClientSessionMeta): string {
     const target = targetStatusEntries.find(
       (entry) => entry.nodeId === session.nodeId && entry.targetId === session.targetId,
     );
     return target?.label ?? session.targetId;
-  }
-
-  /**
-   * The sessions the sidebar actually lists (redesign v3 design spec §3.1's
-   * filter row). Matched over title + project path + target id through the
-   * same `fuzzyFilter` the command palette uses, so typing `pitch` or
-   * `build-server` narrows the list the way typing it into ⌘K would. An
-   * empty query returns everything in its original order.
-   */
-  const visibleSessions = $derived(
-    fuzzyFilter(
-      sessions,
-      sessionFilter,
-      (session) => `${session.title} ${session.projectPath} ${session.targetId}`,
-    ),
-  );
-
-  const groupSessionsByTarget = $derived(new Set(visibleSessions.map(sessionTargetKey)).size > 1);
-
-  const sessionGroups = $derived.by((): SessionGroup[] => {
-    if (!groupSessionsByTarget) return [];
-    const groups = new SvelteMap<string, SessionGroup>();
-    for (const session of visibleSessions) {
-      const key = sessionTargetKey(session);
-      let group = groups.get(key);
-      if (!group) {
-        group = { key, label: sessionTargetLabel(session), sessions: [] };
-        groups.set(key, group);
-      }
-      group.sessions.push(session);
-    }
-    return Array.from(groups.values());
-  });
-
-  /** Which target groups are currently collapsed (redesign brief §1's "collapsible" group header) — transient UI state, unlike the column's own persisted width/collapsed-state, so it resets to "all expanded" on reload. A `SvelteSet` (not a plain `Set` wrapped in `$state`) so mutating it in place is enough to trigger reactivity, mirroring `planCollapsedBySession`'s own `SvelteMap` above. */
-  const collapsedGroupKeys = new SvelteSet<string>();
-
-  function toggleGroupCollapsed(key: string): void {
-    if (collapsedGroupKeys.has(key)) collapsedGroupKeys.delete(key);
-    else collapsedGroupKeys.add(key);
   }
 
   /** Sessions with a pending item in the cross-project attention inbox (issues #167/#168) — the row's "needs attention" affordance, reusing `attentionInboxItems` already tracked above rather than a new subscription. */
@@ -1262,16 +1301,19 @@
   }
 
   /**
-   * The last path segment of a session's `projectPath` — what the sidebar
-   * row's meta line shows (redesign v3 design spec §3.2). The full path is
-   * both too long for a 17rem column and the least distinguishing part of
-   * it: two sessions in the same checkout differ by their target, not by
-   * `/Users/lorenzo/Progetti/`. The full path stays reachable through the
-   * row's title attribute and its `⋯` menu.
+   * The registered project's display name for `session` (design spec v4
+   * §3.6's header breadcrumb: "the project's registered NAME where there
+   * is one"). Reads {@link Project.name} once the registry has an entry
+   * for its `(nodeId, targetId, projectPath)` triple, falling back to the
+   * path basename for the one tick before `adoptFromSessions` commits it.
+   * Unlike v3's `projectName`, this never reads `projectPath` directly
+   * once a project is registered, so a rename (`ProjectStore.rename`) is
+   * reflected everywhere without re-deriving from the path.
    */
-  function projectName(projectPath: string): string {
-    const trimmed = projectPath.replace(/\/+$/, '');
-    return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed || projectPath;
+  function projectDisplayName(session: ClientSessionMeta): string {
+    const key = sessionProjectKey(session);
+    const project = projects.find((entry) => projectKey(entry) === key);
+    return project?.name ?? projectNameFromPath(session.projectPath);
   }
 
   /**
@@ -1293,9 +1335,208 @@
     return `${Math.round(ageMs / 86_400_000)}d ago`;
   }
 
-  // Session status wording/tones now live in `$lib/session-status.ts` — see
-  // that module's doc comment (the sidebar, the palette and the attention
-  // inbox all describe the same five states and used to disagree).
+  /**
+   * The sessions the sidebar actually lists (design spec v4 §3.2's filter
+   * row, extending v3's §3.1). Matched over title + target + the session's
+   * own registered PROJECT NAME (not the raw path, since a renamed project
+   * should stay findable by its new name) through the same `fuzzyFilter`
+   * the command palette uses. An empty query returns everything in its
+   * original order.
+   */
+  const visibleSessions = $derived(
+    fuzzyFilter(
+      sessions,
+      sessionFilter,
+      (session) => `${session.title} ${sessionTargetLabel(session)} ${projectDisplayName(session)}`,
+    ),
+  );
+
+  function toggleProjectGroupCollapsed(key: string): void {
+    if (collapsedProjectKeys.has(key)) collapsedProjectKeys.delete(key);
+    else collapsedProjectKeys.add(key);
+  }
+
+  /** One project's row in the sidebar tree (design spec v4 §3.2). */
+  interface ProjectGroup {
+    key: string;
+    project: Project;
+    /** This project's sessions to render: every session when the filter is empty or matched the PROJECT itself, otherwise only the sessions that individually matched (see {@link projectGroups}'s own doc comment). */
+    sessions: ClientSessionMeta[];
+    /** Sessions needing attention, counted over the project's FULL session list: a status summary, independent of the filter narrowing which rows actually render. */
+    attentionCount: number;
+    /** The worst live status among the project's FULL session list, or `undefined` for a project with no live status yet (including a project with zero sessions). */
+    worstStatus: AcpSessionStatus | undefined;
+    /** True when this group renders expanded: the filter force-expands every group it keeps (design spec v4 §3.2's "auto-expands every group that has a match"), regardless of {@link collapsedProjectKeys}. */
+    expanded: boolean;
+  }
+
+  /** Ranks a live session status worst-first, for a project group's single summary `StatusDot` (design spec v4 §3.2). Reuses `$lib/session-status.ts`'s own tone/label maps for the actual dot and its `aria-label`, so this ranking never invents wording of its own. */
+  const SESSION_STATUS_SEVERITY: Record<AcpSessionStatus, number> = {
+    error: 4,
+    permission_required: 3,
+    working: 2,
+    awaiting_input: 1,
+    exited: 0,
+  };
+
+  /**
+   * The project tree (design spec v4 §3.2), replacing v3's target-based
+   * `sessionGroups`. Built from the registry (`projects`, already sorted
+   * by name there) rather than purely derived from `sessions`, so a
+   * project with zero sessions still renders its own row (§3.3's "a
+   * project with zero sessions is normal now"). A defensive fallback
+   * covers the one-tick gap between a session arriving and `connect()`'s
+   * `adoptFromSessions` call committing it to the registry: any session
+   * whose project isn't registered yet still gets a synthetic row rather
+   * than silently vanishing from the list.
+   */
+  const projectGroups = $derived.by((): ProjectGroup[] => {
+    const query = sessionFilter.trim();
+    const filterActive = query !== '';
+
+    const allByKey = new SvelteMap<string, ClientSessionMeta[]>();
+    for (const session of sessions) {
+      const key = sessionProjectKey(session);
+      const list = allByKey.get(key);
+      if (list) list.push(session);
+      else allByKey.set(key, [session]);
+    }
+    const matchedByKey = new SvelteMap<string, ClientSessionMeta[]>();
+    for (const session of visibleSessions) {
+      const key = sessionProjectKey(session);
+      const list = matchedByKey.get(key);
+      if (list) list.push(session);
+      else matchedByKey.set(key, [session]);
+    }
+
+    function buildRow(project: Project): ProjectGroup {
+      const key = projectKey(project);
+      const allSessions = allByKey.get(key) ?? [];
+      const nameMatches = filterActive && fuzzyMatch(query, project.name).matched;
+      const sessionsForRow =
+        filterActive && !nameMatches ? (matchedByKey.get(key) ?? []) : allSessions;
+      let attentionCount = 0;
+      let worstStatus: AcpSessionStatus | undefined;
+      for (const session of allSessions) {
+        if (sessionsNeedingAttention.has(session.id)) attentionCount += 1;
+        const status = sessionStatuses.get(session.id);
+        if (!status) continue;
+        if (
+          !worstStatus ||
+          SESSION_STATUS_SEVERITY[status] > SESSION_STATUS_SEVERITY[worstStatus]
+        ) {
+          worstStatus = status;
+        }
+      }
+      return {
+        key,
+        project,
+        sessions: sessionsForRow,
+        attentionCount,
+        worstStatus,
+        expanded: filterActive || !collapsedProjectKeys.has(key),
+      };
+    }
+
+    const rows = projects.map(buildRow);
+    const seenKeys = new Set(rows.map((row) => row.key));
+    for (const [key, groupSessions] of allByKey) {
+      if (seenKeys.has(key)) continue;
+      const [first] = groupSessions;
+      if (!first) continue;
+      rows.push(
+        buildRow({
+          id: key,
+          name: projectNameFromPath(first.projectPath),
+          nodeId: first.nodeId,
+          targetId: first.targetId,
+          path: first.projectPath,
+          createdAt: first.createdAt,
+        }),
+      );
+    }
+    if (!filterActive) return rows;
+    return rows.filter(
+      (row) => fuzzyMatch(query, row.project.name).matched || row.sessions.length > 0,
+    );
+  });
+
+  /** Focuses+selects a freshly-mounted rename `<input>` (design spec v4 §3.2's inline rename): an `{@attach}`, not the plain `autofocus` HTML attribute, mirroring `revealActiveTab`'s identical use of a DOM lifecycle hook elsewhere in this file. */
+  function focusAndSelect(node: HTMLInputElement): void {
+    node.focus();
+    node.select();
+  }
+
+  /** The project group menu's "Rename" action (design spec v4 §3.2): switches that group's header into the editable `<input>` above, seeded with its current name. */
+  function startRenamingProject(project: Project): void {
+    renamingProjectId = project.id;
+    renameDraft = project.name;
+  }
+
+  function commitRename(): void {
+    if (!renamingProjectId) return;
+    const trimmed = renameDraft.trim();
+    if (trimmed !== '') projectStore.rename(renamingProjectId, trimmed);
+    renamingProjectId = undefined;
+    renameDraft = '';
+  }
+
+  function cancelRename(): void {
+    renamingProjectId = undefined;
+    renameDraft = '';
+  }
+
+  /** Enter commits the rename, Escape discards it (blurring the input, e.g. a click elsewhere, also commits, via the input's own `onblur`). */
+  function handleRenameKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitRename();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelRename();
+    }
+  }
+
+  /**
+   * The project group menu's "Reveal path" action (design spec v4 §3.2). A
+   * browser tab has no OS-level "reveal in Finder/Explorer" capability:
+   * this copies the absolute path instead, the same honest affordance the
+   * session row's own "Copy project path" menu item already offers, just
+   * scoped to the project rather than one of its sessions.
+   */
+  async function revealProjectPath(project: Project): Promise<void> {
+    await copyToClipboard(project.path);
+  }
+
+  /**
+   * The project group menu's "Remove project" action (design spec v4
+   * §3.2): forgets the registry entry only. `ProjectStore.remove`'s own
+   * doc comment guarantees sessions are untouched. Immediately re-runs
+   * `adoptFromSessions` so a project that still has live sessions
+   * reappears as an adopted entry in the SAME tick, rather than waiting
+   * for the next session-list update, matching the spec's "reappears as
+   * an adopted entry if any of its sessions still exist."
+   */
+  function removeProject(id: string): void {
+    projectStore.remove(id);
+    projectStore.adoptFromSessions(sessions);
+  }
+
+  /**
+   * Which single CTA the main-area empty state offers (design spec v4
+   * §3.3): "always the one that unblocks the next step." Checked in this
+   * order because each earlier gap makes every later action meaningless:
+   * there is nothing to add a project ONTO without a target, and nothing
+   * to start a session IN without a project.
+   */
+  type EmptyStateCta = 'connect-node' | 'add-project' | 'new-session';
+  const emptyStateCta = $derived<EmptyStateCta>(
+    targetStatusEntries.length === 0
+      ? 'connect-node'
+      : projects.length === 0
+        ? 'add-project'
+        : 'new-session',
+  );
 
   /**
    * Pushes the current mute/quiet-hours preferences, plus this device's
@@ -1455,6 +1696,15 @@
       themePreference = value;
     });
 
+    // Design spec v4 §4.2: mirrors the project registry's store into
+    // `projects`, created eagerly at module scope above (its default
+    // storage is SSR-safe), but the subscription itself lives here so
+    // every subscription in this component starts/stops in the same
+    // place, matching `themeStore`'s identical pattern right above.
+    const unsubscribeProjects = projectStore.subscribe((value) => {
+      projects = value;
+    });
+
     amkStorage = createLocalStorageAmkStorage();
     deviceIdStorage = createLocalStorageDeviceIdStorage();
     deviceId = loadOrCreateDeviceId(deviceIdStorage);
@@ -1550,6 +1800,7 @@
 
     return () => {
       unsubscribeTheme();
+      unsubscribeProjects();
       unsubscribeAuthSession();
       unsubscribeNarrow();
       unsubscribeSessionsSheetViewport();
@@ -1704,13 +1955,16 @@
                 <span class="sr-only">Needs attention</span>
               {/if}
             </span>
-            <span class="session-meta">
-              {projectName(session.projectPath)} · {session.targetId}
+            <!-- Design spec v4 §3.2: the meta line drops the project name
+                 (the group header now carries it) and picks up the
+                 relative activity time that used to sit in its own grid
+                 column on the right. -->
+            <span class="session-meta" data-testid="session-activity">
+              {sessionTargetLabel(session)}
+              <span aria-hidden="true">·</span>
+              {formatSessionActivity(session.createdAt)}
             </span>
           </span>
-          <span class="session-activity font-mono" data-testid="session-activity"
-            >{formatSessionActivity(session.createdAt)}</span
-          >
         </button>
         <!-- The row's actions used to be one permanently visible "Target
              status" button, wide enough to squeeze the title down to a
@@ -1825,87 +2079,87 @@
           </IconButton>
         </div>
 
-        {#if status === 'open'}
-          <div class="sidebar-actions" data-sidebar-menu>
-            {#if sessionsRailCollapsed}
-              <IconButton
-                label="New session"
-                onclick={openNewSessionDialog}
-                dataTestId="new-session-button"
-                class="sidebar-new-icon"
+        <!-- Primary destinations (design spec v4 §3.1): heavier than v3's
+             muted secondary nav they replace, and moved to the TOP: they
+             now indicate what the main area is showing, not a panel to
+             toggle. Selecting one leaves `selectedSessionId` untouched
+             (§3.3), so returning to the transcript is one click. -->
+        <nav
+          class="sidebar-destinations"
+          aria-label="Primary destinations"
+          data-testid="sidebar-destinations"
+        >
+          <button
+            type="button"
+            class="destination-row"
+            class:active={mainView === 'inbox'}
+            onclick={() => (mainView = 'inbox')}
+            data-testid="destination-inbox"
+          >
+            <span class="destination-icon"><Icon name="inbox" size="100%" /></span>
+            <span class="destination-label">Inbox</span>
+            {#if attentionInboxItems.length > 0}
+              <span class="destination-badge" data-testid="inbox-count"
+                >{attentionInboxItems.length}</span
               >
-                <Icon name="plus" />
-              </IconButton>
-            {:else}
-              <!-- One primary action, not two competing ones: "Add target" is
-                   a once-per-machine setup step and belongs in the split
-                   menu, not beside the thing you do twenty times a day
-                   (spec §3.1). -->
-              <div class="split-button">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  fullWidth
-                  onclick={openNewSessionDialog}
-                  dataTestId="new-session-button"
-                  class="split-button-main"
-                >
-                  New session
-                </Button>
-                <IconButton
-                  label="More ways to start"
-                  pressed={newSessionMenuOpen}
-                  class="split-button-more"
-                  dataTestId="new-session-menu-toggle"
-                  onclick={() => {
-                    const wasOpen = newSessionMenuOpen;
-                    closeSidebarMenus();
-                    newSessionMenuOpen = !wasOpen;
-                  }}
-                >
-                  <Icon name="chevron-down" />
-                </IconButton>
-              </div>
-              {#if newSessionMenuOpen}
-                <div class="popover-menu popover-below" role="menu" data-testid="new-session-menu">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="add-target-button"
-                    onclick={() => {
-                      closeSidebarMenus();
-                      openAddTargetWizard();
-                    }}
-                  >
-                    Add a target
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onclick={() => {
-                      closeSidebarMenus();
-                      openTargetStatus();
-                    }}
-                  >
-                    Nodes &amp; targets
-                  </button>
-                </div>
-              {/if}
             {/if}
-          </div>
-        {/if}
+          </button>
+          <button
+            type="button"
+            class="destination-row"
+            class:active={mainView === 'nodes'}
+            onclick={() => openTargetStatus()}
+            data-testid="destination-nodes"
+          >
+            <span class="destination-icon"><Icon name="targets" size="100%" /></span>
+            <span class="destination-label">Nodes</span>
+            {#if hasUnhealthyTarget}
+              <span
+                class="destination-badge destination-badge-dot"
+                data-testid="targets-health-badge"
+                aria-hidden="true"
+              ></span>
+              <span class="sr-only">Some targets need attention</span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="destination-row"
+            class:active={mainView === 'settings'}
+            onclick={() => (mainView = 'settings')}
+            data-testid="destination-settings"
+          >
+            <span class="destination-icon"><Icon name="settings" size="100%" /></span>
+            <span class="destination-label">Settings</span>
+          </button>
+        </nav>
 
-        {#if !sessionsRailCollapsed && sessions.length > 0}
-          <div class="sidebar-filter">
-            <Icon name="search" class="sidebar-filter-icon" />
-            <input
-              type="search"
-              bind:value={sessionFilter}
-              placeholder="Filter sessions…"
-              aria-label="Filter sessions"
-              data-testid="session-filter"
-            />
+        <div class="sidebar-divider" role="separator" aria-orientation="horizontal"></div>
+
+        {#if !sessionsRailCollapsed}
+          <div class="sidebar-section-header">
+            <span class="sidebar-section-title">Projects</span>
+            <IconButton
+              label="Add project"
+              onclick={openAddProjectDialog}
+              dataTestId="add-project-button"
+            >
+              <Icon name="plus" />
+            </IconButton>
           </div>
+
+          {#if projects.length > 0}
+            <div class="sidebar-filter">
+              <Icon name="search" class="sidebar-filter-icon" />
+              <input
+                type="search"
+                bind:value={sessionFilter}
+                placeholder="Filter projects and sessions…"
+                aria-label="Filter projects and sessions"
+                data-testid="session-filter"
+              />
+            </div>
+          {/if}
         {/if}
 
         <div class="sidebar-sessions">
@@ -1931,104 +2185,160 @@
                 onSubmit={rePairWithRecoveryCode}
               />
             </div>
-          {:else if sessions.length === 0}
-            <EmptyState message="No sessions yet. Start one to connect an agent to a project.">
+          {:else if projects.length === 0}
+            <EmptyState message="No projects yet. Add one to start a session in it.">
               {#snippet cta()}
                 <Button
                   variant="primary"
-                  onclick={openNewSessionDialog}
-                  dataTestId="new-session-empty-cta"
+                  onclick={openAddProjectDialog}
+                  dataTestId="add-project-empty-cta"
                 >
-                  Start your first session
+                  Add project
                 </Button>
               {/snippet}
             </EmptyState>
-          {:else if visibleSessions.length === 0}
+          {:else if projectGroups.length === 0}
             <p class="empty" data-testid="session-filter-empty">
-              No session matches “{sessionFilter}”.
+              No project or session matches “{sessionFilter}”.
             </p>
-          {:else if groupSessionsByTarget}
-            {#each sessionGroups as group (group.key)}
-              <div class="session-group">
-                <button
-                  type="button"
-                  class="session-group-header"
-                  onclick={() => toggleGroupCollapsed(group.key)}
-                  aria-expanded={!collapsedGroupKeys.has(group.key)}
-                  data-testid="session-group-header"
-                >
-                  <Icon
-                    name="collapse-chevron"
-                    class={collapsedGroupKeys.has(group.key)
-                      ? 'session-group-chevron collapsed'
-                      : 'session-group-chevron'}
-                  />
-                  <span class="session-group-label">{group.label}</span>
-                  <span class="session-group-count">{group.sessions.length}</span>
-                </button>
-                {#if !collapsedGroupKeys.has(group.key)}
-                  <ul>
-                    {#each group.sessions as session (session.id)}
+          {:else}
+            {#each projectGroups as row (row.key)}
+              {@const worstTone = row.worstStatus
+                ? SESSION_STATUS_TONES[row.worstStatus]
+                : undefined}
+              {@const worstLabel = row.worstStatus ? SESSION_STATUS_LABELS[row.worstStatus] : ''}
+              <div class="project-group" data-testid="project-group">
+                <div class="project-group-header-row" data-sidebar-menu>
+                  {#if renamingProjectId === row.project.id}
+                    <span class="project-group-header-renaming">
+                      <Icon
+                        name="collapse-chevron"
+                        class={row.expanded
+                          ? 'project-group-chevron'
+                          : 'project-group-chevron collapsed'}
+                      />
+                      <input
+                        class="project-rename-input"
+                        bind:value={renameDraft}
+                        onkeydown={handleRenameKeydown}
+                        onblur={commitRename}
+                        aria-label={`Rename ${row.project.name}`}
+                        data-testid="project-rename-input"
+                        {@attach focusAndSelect}
+                      />
+                    </span>
+                  {:else}
+                    <button
+                      type="button"
+                      class="project-group-header"
+                      onclick={() => toggleProjectGroupCollapsed(row.key)}
+                      aria-expanded={row.expanded}
+                      data-testid="project-group-header"
+                    >
+                      <Icon
+                        name="collapse-chevron"
+                        class={row.expanded
+                          ? 'project-group-chevron'
+                          : 'project-group-chevron collapsed'}
+                      />
+                      <span class="project-group-label">{row.project.name}</span>
+                    </button>
+                  {/if}
+                  <span class="project-group-meta">
+                    {#if row.attentionCount > 0}
+                      <span class="project-group-count" data-testid="project-attention-count"
+                        >{row.attentionCount}</span
+                      >
+                    {/if}
+                    {#if worstTone}
+                      <StatusDot tone={worstTone} label={`Worst status: ${worstLabel}`} size="sm" />
+                    {/if}
+                    <IconButton
+                      label={`More actions for ${row.project.name}`}
+                      class="project-row-more"
+                      dataTestId="project-row-more"
+                      onclick={() => {
+                        const wasOpen = projectMenuFor === row.project.id;
+                        closeSidebarMenus();
+                        projectMenuFor = wasOpen ? undefined : row.project.id;
+                      }}
+                    >
+                      <Icon name="more" />
+                    </IconButton>
+                  </span>
+                  {#if projectMenuFor === row.project.id}
+                    <div
+                      class="popover-menu popover-below"
+                      role="menu"
+                      data-testid="project-row-menu"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => {
+                          closeSidebarMenus();
+                          openNewSessionDialogFor(row.project);
+                        }}
+                      >
+                        New session
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => {
+                          closeSidebarMenus();
+                          startRenamingProject(row.project);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => {
+                          closeSidebarMenus();
+                          void revealProjectPath(row.project);
+                        }}
+                      >
+                        Reveal path
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="danger"
+                        onclick={() => {
+                          closeSidebarMenus();
+                          removeProject(row.project.id);
+                        }}
+                        title="Removes this from the sidebar only. Sessions and files are untouched."
+                      >
+                        Remove project
+                      </button>
+                    </div>
+                  {/if}
+                </div>
+                {#if row.expanded}
+                  <ul class="project-group-sessions">
+                    {#each row.sessions as session (session.id)}
                       {@render sessionRow(session)}
                     {/each}
+                    <li class="project-new-session-row">
+                      <button
+                        type="button"
+                        class="project-new-session"
+                        onclick={() => openNewSessionDialogFor(row.project)}
+                        data-testid="project-new-session-row"
+                      >
+                        <Icon name="plus" />
+                        New session
+                      </button>
+                    </li>
                   </ul>
                 {/if}
               </div>
             {/each}
-          {:else}
-            <ul>
-              {#each visibleSessions as session (session.id)}
-                {@render sessionRow(session)}
-              {/each}
-            </ul>
           {/if}
         </div>
-
-        <nav class="sidebar-nav" aria-label="Secondary">
-          <button
-            type="button"
-            class="sidebar-nav-item"
-            class:active={activeDrawer === 'inbox'}
-            onclick={() => toggleDrawer('inbox')}
-            data-testid="inbox-toggle"
-          >
-            <Icon name="inbox" class="sidebar-nav-icon" />
-            <span class="sidebar-nav-label">Inbox</span>
-            {#if attentionInboxItems.length > 0}
-              <span class="sidebar-nav-badge" data-testid="inbox-count"
-                >{attentionInboxItems.length}</span
-              >
-            {/if}
-          </button>
-          <button
-            type="button"
-            class="sidebar-nav-item"
-            class:active={activeDrawer === 'targets'}
-            onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
-            data-testid="target-status-toggle"
-          >
-            <Icon name="targets" class="sidebar-nav-icon" />
-            <span class="sidebar-nav-label">Nodes &amp; targets</span>
-            {#if hasUnhealthyTarget}
-              <span
-                class="sidebar-nav-badge sidebar-nav-badge-dot"
-                data-testid="targets-health-badge"
-                aria-hidden="true"
-              ></span>
-              <span class="sr-only">Some targets need attention</span>
-            {/if}
-          </button>
-          <button
-            type="button"
-            class="sidebar-nav-item"
-            class:active={activeDrawer === 'settings'}
-            onclick={() => toggleDrawer('settings')}
-            data-testid="settings-toggle"
-          >
-            <Icon name="settings" class="sidebar-nav-icon" />
-            <span class="sidebar-nav-label">Settings</span>
-          </button>
-        </nav>
 
         <div class="sidebar-account" data-sidebar-menu>
           {#if accountMenuOpen}
@@ -2043,7 +2353,7 @@
                 role="menuitem"
                 onclick={() => {
                   closeSidebarMenus();
-                  setActiveDrawer('settings');
+                  mainView = 'settings';
                 }}
               >
                 Appearance &amp; settings
@@ -2104,19 +2414,27 @@
       </aside>
 
       <div class="workspace">
-        <!-- Two zones, not three (spec §3.3): the selected session's context
-             on the left, its own controls on the right. The brand and the
-             account moved into the sidebar; the always-green connection dot
-             is gone, replaced by a chip that only appears when there is
-             something wrong and something to do about it. -->
+        <!-- Two zones, not three (spec §3.3): context on the left, controls
+             on the right. The brand and the account moved into the
+             sidebar; the always-green connection dot is gone, replaced by
+             a chip that only appears when there is something wrong and
+             something to do about it. Design spec v4 §3.6 adds one case:
+             while a destination page is showing, the left zone is that
+             page's own title instead of the session breadcrumb, and the
+             right zone drops every session-scoped control (Files/
+             Terminal/Config/Export); none of them apply to a page. -->
         <header class="topbar">
           <div class="topbar-context">
-            {#if selectedSession}
+            {#if mainView !== 'session'}
+              <span class="topbar-title" data-testid="cockpit-page-title"
+                >{MAIN_VIEW_TITLES[mainView]}</span
+              >
+            {:else if selectedSession}
               <span class="topbar-title" data-testid="cockpit-session-title"
                 >{selectedSession.title}</span
               >
               <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
-                {projectName(selectedSession.projectPath)}
+                {projectDisplayName(selectedSession)}
                 <span aria-hidden="true">·</span>
                 {selectedSession.targetId}
               </span>
@@ -2148,7 +2466,7 @@
               </span>
             {/if}
 
-            {#if selectedSessionId}
+            {#if selectedSessionId && mainView === 'session'}
               <IconButton
                 label="Files"
                 pressed={activeDrawer === 'files'}
@@ -2224,10 +2542,83 @@
         {/if}
 
         <section class="canvas">
-          {#if !selectedSessionId}
+          {#if mainView !== 'session'}
+            <!-- Design spec v4 §3.3: the three destinations are full-width
+                 pages in this same canvas position, capped at the same
+                 `--measure-wide` the transcript's own wide content opts
+                 into, each with its own title and no close button: you
+                 leave a page by going somewhere else. -->
+            <div class="canvas-page">
+              {#if mainView === 'inbox'}
+                <InboxPage
+                  items={attentionInboxItems}
+                  onResolve={resolveInboxPermission}
+                  onOpenSession={openSessionFromInbox}
+                  onReply={replyFromInbox}
+                />
+              {:else if mainView === 'nodes'}
+                <NodesPage
+                  targets={targetStatusEntries}
+                  loading={targetStatusLoading}
+                  error={targetStatusError}
+                  focusTarget={targetStatusFocus}
+                  onRefresh={refreshTargetStatus}
+                  onAddTarget={openAddTargetWizard}
+                  onConnectNode={openAddTargetWizard}
+                />
+              {:else if mainView === 'settings' && authSession}
+                <SettingsPage
+                  {notificationPreferencesStorage}
+                  {projectPaths}
+                  {onNotificationPreferencesChange}
+                  {deviceId}
+                  relayBaseUrl={relayHttpBaseUrl(relayUrl)}
+                  authToken={authSession.token}
+                />
+              {/if}
+            </div>
+          {:else if !selectedSessionId}
+            <!-- Design spec v4 §3.3: the primary "New session" CTA now
+                 lives here instead of the sidebar's old split button,
+                 always the one action that unblocks the next step. -->
             <EmptyState
-              message="Pick a session on the left to follow its live transcript, or start a new one."
-            />
+              message={emptyStateCta === 'connect-node'
+                ? 'Connect a node to run agents on your machines.'
+                : emptyStateCta === 'add-project'
+                  ? 'Add a project to start a session in it.'
+                  : 'Pick a session on the left to follow its live transcript, or start a new one.'}
+            >
+              {#snippet cta()}
+                {#if emptyStateCta === 'connect-node'}
+                  <Button
+                    variant="primary"
+                    onclick={openAddTargetWizard}
+                    dataTestId="empty-state-connect-node"
+                  >
+                    Connect a node
+                  </Button>
+                {:else if emptyStateCta === 'add-project'}
+                  <Button
+                    variant="primary"
+                    onclick={openAddProjectDialog}
+                    dataTestId="empty-state-add-project"
+                  >
+                    Add project
+                  </Button>
+                {:else}
+                  {@const defaultProject = projects[0]}
+                  {#if defaultProject}
+                    <Button
+                      variant="primary"
+                      onclick={() => openNewSessionDialogFor(defaultProject)}
+                      dataTestId="empty-state-new-session"
+                    >
+                      New session
+                    </Button>
+                  {/if}
+                {/if}
+              {/snippet}
+            </EmptyState>
           {:else}
             <ol class="items">
               {#each transcript?.items ?? [] as item (item.id)}
@@ -2341,11 +2732,14 @@
         </section>
       </div>
 
-      <!-- The Drawer (redesign brief §1/§7; issue #462): the ONE content
-           surface besides the canvas. Overlay by default (<1280px, or
-           unpinned) through the shared `Overlay` primitive; pinnable as a
-           persistent third column at >=1280px (`--bp-wide`). -->
-      {#snippet drawerPanel(authSession: StoredAuthSession)}
+      <!-- The Drawer (redesign brief §1/§7; issue #462), narrowed by design
+           spec v4 §3.5 to just the session's own workbench (Files/
+           Terminal/Config). Inbox/Nodes/Settings are `mainView`
+           destinations now (§3.3), not Drawer tabs. Overlay by default
+           (<1280px, or unpinned) through the shared `Overlay` primitive;
+           pinnable as a persistent third column at >=1280px
+           (`--bp-wide`). -->
+      {#snippet drawerPanel()}
         <!-- The click handler is only a guard against `Overlay`'s own
              backdrop-click-to-close bubbling past this panel when in
              overlay mode (mirrors `Dialog.svelte`'s identical
@@ -2399,22 +2793,7 @@
           </div>
 
           <div class="drawer-content">
-            {#if activeDrawer === 'inbox'}
-              <AttentionInbox
-                items={attentionInboxItems}
-                onResolve={resolveInboxPermission}
-                onOpenSession={openSessionFromInbox}
-                onReply={replyFromInbox}
-              />
-            {:else if activeDrawer === 'targets'}
-              <TargetStatusView
-                targets={targetStatusEntries}
-                loading={targetStatusLoading}
-                error={targetStatusError}
-                focusTarget={targetStatusFocus}
-                onRefresh={refreshTargetStatus}
-              />
-            {:else if activeDrawer === 'files' && selectedSessionId}
+            {#if activeDrawer === 'files' && selectedSessionId}
               <div class="drawer-panel-inner" data-testid="file-tree-panel-wrapper">
                 <FileTreePanel
                   tree={fileTree}
@@ -2433,33 +2812,6 @@
               <div class="drawer-panel-inner" data-testid="project-config-panel-wrapper">
                 <ProjectConfigPanel projectPath={selectedProjectPath} />
               </div>
-            {:else if activeDrawer === 'settings'}
-              <div class="settings-tab">
-                <section class="settings-section">
-                  <h3>Appearance</h3>
-                  <AppearanceSettings />
-                </section>
-                {#if notificationPreferencesStorage}
-                  <section class="settings-section">
-                    <h3>Notifications</h3>
-                    <NotificationPreferences
-                      {projectPaths}
-                      storage={notificationPreferencesStorage}
-                      onChange={onNotificationPreferencesChange}
-                    />
-                  </section>
-                {/if}
-                {#if deviceId}
-                  <section class="settings-section">
-                    <h3>Push notifications</h3>
-                    <PushNotificationToggle
-                      relayBaseUrl={relayHttpBaseUrl(relayUrl)}
-                      authToken={authSession.token}
-                      {deviceId}
-                    />
-                  </section>
-                {/if}
-              </div>
             {/if}
           </div>
         </aside>
@@ -2473,10 +2825,10 @@
           class="drawer-backdrop"
           testid="drawer-backdrop"
         >
-          {@render drawerPanel(authSession)}
+          {@render drawerPanel()}
         </Overlay>
       {:else if activeDrawer !== null}
-        {@render drawerPanel(authSession)}
+        {@render drawerPanel()}
       {/if}
     </div>
 
@@ -2499,8 +2851,11 @@
       <button
         type="button"
         class="tabbar-item"
-        class:active={activeDrawer === 'inbox'}
-        onclick={() => toggleDrawer('inbox')}
+        class:active={mainView === 'inbox'}
+        onclick={() => {
+          mainView = 'inbox';
+          sessionsSheetOpen = false;
+        }}
         data-testid="tabbar-inbox"
       >
         <Icon name="inbox" class="tabbar-icon" />
@@ -2512,8 +2867,11 @@
       <button
         type="button"
         class="tabbar-item"
-        class:active={activeDrawer === 'targets'}
-        onclick={() => (activeDrawer === 'targets' ? closeTargetStatus() : openTargetStatus())}
+        class:active={mainView === 'nodes'}
+        onclick={() => {
+          openTargetStatus();
+          sessionsSheetOpen = false;
+        }}
         data-testid="tabbar-targets"
       >
         <Icon name="targets" class="tabbar-icon" />
@@ -2531,8 +2889,11 @@
       <button
         type="button"
         class="tabbar-item"
-        class:active={activeDrawer === 'settings'}
-        onclick={() => toggleDrawer('settings')}
+        class:active={mainView === 'settings'}
+        onclick={() => {
+          mainView = 'settings';
+          sessionsSheetOpen = false;
+        }}
         data-testid="tabbar-settings"
       >
         <Icon name="settings" class="tabbar-icon" />
@@ -2561,15 +2922,25 @@
   onClose={closeFilePicker}
 />
 
-<NewSessionDialog
-  open={newSessionOpen}
+{#if newSessionProject}
+  <NewSessionDialog
+    open={newSessionOpen}
+    project={newSessionProject}
+    {client}
+    onClose={() => (newSessionOpen = false)}
+    onCreated={handleSessionCreated}
+    onGitRepoResolved={(isGitRepo) => {
+      if (newSessionProject) projectStore.setGitRepo(newSessionProject.id, isGitRepo);
+    }}
+  />
+{/if}
+
+<AddProjectDialog
+  open={addProjectOpen}
+  targets={targetStatusEntries}
   {client}
-  onCreated={handleSessionCreated}
-  onClose={() => (newSessionOpen = false)}
-  onAddTarget={() => {
-    newSessionOpen = false;
-    openAddTargetWizard();
-  }}
+  onClose={() => (addProjectOpen = false)}
+  onCreated={handleProjectCreated}
 />
 
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
@@ -2884,42 +3255,107 @@
     transform: scaleX(-1);
   }
 
-  .sidebar-actions {
-    position: relative;
-    padding: var(--space-2xs) var(--space-md) var(--space-sm);
-    flex-shrink: 0;
-  }
+  /* ------------------------------------------------------------------ */
+  /* Primary destinations (design spec v4 §3.1): Inbox/Nodes/Settings, now */
+  /* the top of the sidebar rather than a muted secondary nav at the       */
+  /* bottom: their active state is a filled surface (not a subtle tint)   */
+  /* because they now indicate what the MAIN AREA is showing, a stronger  */
+  /* claim than the old toggle-a-drawer-tab behaviour they replace.       */
+  /* ------------------------------------------------------------------ */
 
-  .sidebar.collapsed .sidebar-actions {
+  .sidebar-destinations {
     display: flex;
-    justify-content: center;
-    padding-inline: 0;
-  }
-
-  /* One primary action with a split affordance, rather than two buttons of
-     near-equal weight that both wrapped onto two lines in a 17rem column
-     (spec §3.1 / defect B2). */
-  .split-button {
-    display: flex;
-    align-items: stretch;
+    flex-direction: column;
     gap: 1px;
-  }
-
-  .split-button :global(.split-button-main) {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-  }
-
-  .split-button :global(.split-button-more) {
+    padding: var(--space-sm) var(--space-sm) var(--space-xs);
     flex-shrink: 0;
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    background: var(--color-accent);
-    color: var(--color-accent-contrast);
   }
 
-  .split-button :global(.split-button-more:hover) {
-    background: var(--color-accent-hover);
+  .destination-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    height: var(--nav-row-height);
+    padding: 0 var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font-size: var(--text-body-size);
+    text-align: left;
+  }
+
+  .destination-row:hover {
+    background: var(--color-fill-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .destination-row.active {
+    background: var(--color-fill);
+    color: var(--color-text-primary);
+  }
+
+  .destination-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    width: var(--nav-icon-size);
+    height: var(--nav-icon-size);
+  }
+
+  .destination-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .destination-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    padding: 0 var(--space-2xs);
+    border-radius: var(--radius-full);
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
+    font-size: var(--text-caption-size);
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feature-tabular);
+  }
+
+  .destination-badge-dot {
+    min-width: 0.45rem;
+    width: 0.45rem;
+    height: 0.45rem;
+    padding: 0;
+    background: var(--color-warning);
+  }
+
+  .sidebar-divider {
+    height: 1px;
+    margin: var(--space-xs) var(--space-md);
+    background: var(--color-border-subtle);
+    flex-shrink: 0;
+  }
+
+  .sidebar-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-xs) var(--space-sm) var(--space-2xs) var(--space-md);
+    flex-shrink: 0;
+  }
+
+  .sidebar-section-title {
+    font-size: var(--text-caption-size);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
   }
 
   /* ------------------------------------------------------------------ */
@@ -3112,7 +3548,7 @@
     flex: 1;
     min-width: 0;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     gap: var(--space-sm);
     text-align: left;
@@ -3186,17 +3622,10 @@
     color: var(--color-text-muted);
   }
 
-  .session-activity {
-    flex-shrink: 0;
-    font-size: var(--text-caption-size);
-    color: var(--color-text-muted);
-    font-feature-settings: var(--font-feature-tabular);
-  }
-
   /* The `⋯` menu replaces the permanently visible "Target status" button
-     that used to squeeze the title down to one character (defect B3). It
-     covers the activity time on hover rather than reserving its own column,
-     so the row's width budget goes entirely to the title. */
+     that used to squeeze the title down to one character (defect B3),
+     hover/focus-revealed rather than reserving its own column so the
+     row's width budget goes entirely to the title. */
   .session-row-actions {
     position: absolute;
     right: var(--space-2xs);
@@ -3226,49 +3655,135 @@
     }
   }
 
-  .session-group + .session-group {
+  .project-group + .project-group {
     margin-top: var(--space-sm);
   }
 
-  .session-group-header {
-    width: 100%;
+  .project-group-header-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--space-2xs);
-    padding: var(--space-2xs) var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm) var(--space-2xs) var(--space-2xs);
+  }
+
+  .project-group-header {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-2xs) var(--space-2xs) var(--space-sm);
     border: none;
+    border-radius: var(--radius-md);
     background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    font-size: var(--text-caption-size);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-
-  .session-group-header:hover {
     color: var(--color-text-secondary);
+    cursor: pointer;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    text-align: left;
   }
 
-  :global(.session-group-chevron) {
+  .project-group-header:hover {
+    color: var(--color-text-primary);
+    background: var(--color-fill-subtle);
+  }
+
+  .project-group-header-renaming {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding-left: var(--space-sm);
+  }
+
+  :global(.project-group-chevron) {
+    flex-shrink: 0;
     transform: rotate(0deg);
     transition: transform var(--duration-fast) var(--ease-beat);
   }
 
-  :global(.session-group-chevron.collapsed) {
+  :global(.project-group-chevron.collapsed) {
     transform: rotate(-90deg);
   }
 
-  .session-group-label {
+  .project-group-label {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .project-rename-input {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-3xs) var(--space-2xs);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-fill-subtle);
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .project-rename-input:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .project-group-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .project-group-count {
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+    font-feature-settings: var(--font-feature-tabular);
+  }
+
+  .project-group-sessions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  /* Indented one step under their group (design spec v4 §3.2). */
+  .project-group-sessions .session {
+    padding-left: calc(var(--space-sm) + var(--space-lg));
+  }
+
+  .project-new-session-row {
+    display: flex;
+  }
+
+  .project-new-session {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm) var(--space-2xs)
+      calc(var(--space-sm) + var(--space-lg));
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: var(--text-small-size);
     text-align: left;
   }
 
-  .session-group-count {
-    font-feature-settings: var(--font-feature-tabular);
+  .project-new-session:hover {
+    color: var(--color-text-secondary);
+    background: var(--color-fill-subtle);
   }
 
   .key-mismatch {
@@ -3346,73 +3861,8 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* Sidebar footer: secondary nav + account                              */
+  /* Sidebar footer: account                                              */
   /* ------------------------------------------------------------------ */
-
-  .sidebar-nav {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: var(--space-sm) var(--space-sm) var(--space-2xs);
-    border-top: 1px solid var(--color-border-subtle);
-    flex-shrink: 0;
-  }
-
-  .sidebar-nav-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    width: 100%;
-    padding: var(--space-xs) var(--space-sm);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    font-size: var(--text-small-size);
-    text-align: left;
-  }
-
-  .sidebar-nav-item:hover {
-    background: var(--color-fill-subtle);
-    color: var(--color-text-primary);
-  }
-
-  .sidebar-nav-item.active {
-    background: var(--color-fill);
-    color: var(--color-text-primary);
-  }
-
-  .sidebar-nav-label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .sidebar-nav-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.2rem;
-    height: 1.2rem;
-    padding: 0 var(--space-2xs);
-    border-radius: var(--radius-full);
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-    font-size: var(--text-caption-size);
-    font-family: var(--font-mono);
-    font-feature-settings: var(--font-feature-tabular);
-  }
-
-  .sidebar-nav-badge-dot {
-    min-width: 0.45rem;
-    width: 0.45rem;
-    height: 0.45rem;
-    padding: 0;
-    background: var(--color-warning);
-  }
 
   .sidebar-account {
     position: relative;
@@ -3463,14 +3913,14 @@
     color: var(--color-text-secondary);
   }
 
-  .sidebar.collapsed .sidebar-nav-label,
+  .sidebar.collapsed .destination-label,
   .sidebar.collapsed .account-name,
   .sidebar.collapsed :global(.account-chevron),
-  .sidebar.collapsed .sidebar-nav-badge:not(.sidebar-nav-badge-dot) {
+  .sidebar.collapsed .destination-badge:not(.destination-badge-dot) {
     display: none;
   }
 
-  .sidebar.collapsed .sidebar-nav-item,
+  .sidebar.collapsed .destination-row,
   .sidebar.collapsed .account-trigger {
     justify-content: center;
     padding-inline: 0;
@@ -3614,6 +4064,17 @@
     min-height: 0;
     padding: var(--space-lg);
     gap: var(--space-md);
+  }
+
+  /* The three `mainView` pages render here instead of the transcript
+     (design spec v4 §3.3): `.canvas` itself has no scroll of its own
+     (the transcript's `.items` handles that internally while `.canvas-
+     footer` stays pinned below it); a page has no such footer to reserve
+     space for, so this is the one place that needs its own scroll. */
+  .canvas-page {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   /* A readable measure (spec §3.4 / defect C3): transcript prose used to
@@ -3826,20 +4287,6 @@
   .drawer-panel-terminal {
     display: flex;
     min-height: 20rem;
-  }
-
-  .settings-tab {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xl);
-  }
-
-  .settings-section h3 {
-    margin: 0 0 var(--space-sm);
-    font-size: var(--text-small-size);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-muted);
   }
 
   /* ------------------------------------------------------------------ */

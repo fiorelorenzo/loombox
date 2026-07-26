@@ -22,52 +22,58 @@ async function gotoCockpit(page: Page, loombox: LoomboxFixture): Promise<void> {
 }
 
 /**
- * The redesign v3 cockpit shell (design spec §3.1-§3.6). Every assertion
- * here is about an affordance the v2 shell either lacked or shipped broken,
- * and every one of them needs a real browser: focus location decides whether
- * Escape reaches an overlay, `:hover` decides whether the row menu exists,
- * and a scrim is only observable as a painted element over the app.
+ * The cockpit shell, covering both redesigns it has been through.
+ *
+ * v3 (design spec `2026-07-25-redesign-v3-design.md` §3.1-§3.6) gave it one
+ * sidebar and one timeline; v4 (`2026-07-25-ia-v4-design.md`) fixed what the
+ * navigation actually meant. Every assertion here is about an affordance one
+ * of the two either lacked or shipped broken, and every one needs a real
+ * browser: focus location decides whether Escape reaches an overlay,
+ * `:hover` decides whether the row menu exists, and a scrim is only
+ * observable as a painted element over the app.
  */
-test.describe('cockpit shell (redesign v3)', () => {
+test.describe('cockpit shell', () => {
   test('the sidebar filters sessions, and clearing the query restores them', async ({
     page,
     loombox,
   }) => {
-    const second = new FakeNode(loombox.relay.url, {
-      deviceId: 'shell-spec-node',
+    // A second session on a second project, so the filter has something to
+    // discard and the tree has two groups to render.
+    const other = new FakeNode(loombox.relay.url, {
+      deviceId: 'e2e-node-2',
       devicePublicKey: randomBase64(),
       authToken: loombox.token,
     });
-    await second.ready;
-    await announceSession(second, {
+    await other.ready;
+    await announceSession(other, {
       amk: loombox.amk,
       accountId: loombox.accountId,
-      sessionId: 'sess_shell_spec',
-      nodeId: 'shell-spec-daemon',
-      targetId: 'ssh:build-server',
-      provider: 'codex',
-      title: 'Unrelated pitchbox work',
-      projectPath: '/workspace/pitchbox',
+      sessionId: `sess_filter_${Date.now()}`,
+      nodeId: 'e2e-node-2-daemon',
+      targetId: 'local',
+      provider: 'claude',
+      title: 'Totally unrelated work',
+      projectPath: '/workspace/other-project',
     });
 
     await gotoCockpit(page, loombox);
     const rows = page.getByTestId('session-row-item');
-    await expect(rows).toHaveCount(2, { timeout: 30_000 });
+    await expect(rows).toHaveCount(2, { timeout: 60_000 });
 
-    await page.getByTestId('session-filter').fill('pitchbox');
+    await page.getByTestId('session-filter').fill('unrelated');
     await expect(rows).toHaveCount(1);
-    await expect(rows.first()).toContainText('Unrelated pitchbox work');
+    await expect(rows.first()).toContainText('Totally unrelated work');
 
-    // A query nothing matches says so, rather than rendering an empty list
-    // that reads as "you have no sessions".
-    await page.getByTestId('session-filter').fill('zzzz-no-such-session');
-    await expect(rows).toHaveCount(0);
-    await expect(page.getByTestId('session-filter-empty')).toBeVisible();
+    // The filter matches a project name too, not only a session title: the
+    // tree groups by project now, so filtering that can't reach the group
+    // header would be filtering half the surface.
+    await page.getByTestId('session-filter').fill('e2e-project');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('E2E session');
 
     await page.getByTestId('session-filter').fill('');
     await expect(rows).toHaveCount(2);
-
-    second.close();
+    other.close();
   });
 
   test('the account menu is an anchored popover with no scrim, and Escape closes it', async ({
@@ -75,28 +81,28 @@ test.describe('cockpit shell (redesign v3)', () => {
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
-
     await page.getByTestId('account-menu-toggle').click();
     await expect(page.getByTestId('account-menu')).toBeVisible();
-    // The v2 menu rendered through `Overlay`, dimming the whole app behind a
-    // two-item list. A menu is not modal.
-    await expect(page.getByTestId('overlay-backdrop')).toHaveCount(0);
 
-    // Focus stays on the trigger, outside the menu — which is exactly the
-    // case the old backdrop-bound keydown handler could never see.
+    // v2 dimmed the entire app behind a 40% scrim to show two menu items.
+    // An anchored popover paints no backdrop at all.
+    await expect(page.getByTestId('drawer-backdrop')).toHaveCount(0);
+
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('account-menu')).toHaveCount(0);
   });
 
   test('the Drawer closes on Escape and on a backdrop click', async ({ page, loombox }) => {
     await gotoCockpit(page, loombox);
-    await page.getByTestId('settings-toggle').click();
+    // The drawer is the open session's workbench now, so it is opened from a
+    // session-scoped control rather than from a global navigation item.
+    await page.getByTestId('file-tree-toggle').click();
     await expect(page.getByTestId('drawer')).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('drawer')).toHaveCount(0);
 
-    await page.getByTestId('settings-toggle').click();
+    await page.getByTestId('file-tree-toggle').click();
     await expect(page.getByTestId('drawer')).toBeVisible();
     // Click the backdrop away from the panel (which stops propagation).
     await page.getByTestId('drawer-backdrop').click({ position: { x: 40, y: 300 } });
@@ -118,21 +124,75 @@ test.describe('cockpit shell (redesign v3)', () => {
     await page.getByTestId('session-row-more').first().click();
     await page.getByTestId('session-target-status-link').click();
 
-    await expect(page.getByTestId('drawer')).toBeVisible();
-    await expect(page.getByTestId('drawer-tab-targets')).toHaveAttribute('aria-selected', 'true');
+    // v4: target status is a destination in the main area, not a drawer tab.
+    await expect(page.getByTestId('cockpit-page-title')).toHaveText(/nodes/i);
+    await expect(page.getByTestId('drawer')).toHaveCount(0);
   });
 
-  test('"Add a target" lives behind the New session split menu, not beside it', async ({
+  test('the drawer carries only the open session workbench, not the global destinations', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
-    await expect(page.getByTestId('new-session-button')).toBeVisible();
+    await page.getByTestId('file-tree-toggle').click();
+    await expect(page.getByTestId('drawer')).toBeVisible();
+
+    // v3 shipped six tabs, three of which repeated the sidebar's own
+    // navigation. Inbox, Nodes and Settings are pages now and must not be
+    // reachable as a tab as well.
+    await expect(page.getByTestId('drawer-tab-inbox')).toHaveCount(0);
+    await expect(page.getByTestId('drawer-tab-targets')).toHaveCount(0);
+    await expect(page.getByTestId('drawer-tab-settings')).toHaveCount(0);
+    await expect(page.getByTestId('drawer-tab-files')).toBeVisible();
+  });
+
+  test('a destination switches the main area and keeps the session selected', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.getByTestId('session-row-item').first().click();
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+
+    await page.getByTestId('destination-inbox').click();
+    await expect(page.getByTestId('cockpit-page-title')).toHaveText(/inbox/i);
+    // The transcript is replaced, not overlaid: no drawer, no scrim.
+    await expect(page.getByTestId('composer-input')).toHaveCount(0);
+    await expect(page.getByTestId('drawer')).toHaveCount(0);
+
+    // Returning is one click, because the session stayed selected.
+    await page.getByTestId('session-row-item').first().click();
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+  });
+
+  test('sessions are nested under their project, and creation is project-scoped', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+
+    // The project the fixture's session runs in was adopted into the
+    // registry, so the tree has a group even though nobody added it by hand.
+    const group = page.getByTestId('project-group').first();
+    await expect(group).toBeVisible();
+    await expect(group.getByTestId('project-group-header')).toContainText('e2e-project');
+    await expect(group.getByTestId('session-row-item').first()).toBeVisible();
+
+    // v3's global "New session" button is gone: every entry point carries a
+    // project, so the one in the tree belongs to this group.
+    await expect(page.getByTestId('new-session-button')).toHaveCount(0);
+    await expect(group.getByTestId('project-new-session-row')).toBeVisible();
+  });
+
+  test('"Add a target" lives on the Nodes page, not in the sidebar', async ({ page, loombox }) => {
+    await gotoCockpit(page, loombox);
+    // It used to sit beside "New session" in a 288px column where both
+    // wrapped onto two lines, then behind that button's split menu. It is a
+    // once-per-machine setup step, so it belongs with the other ones.
     await expect(page.getByTestId('add-target-button')).toHaveCount(0);
 
-    await page.getByTestId('new-session-menu-toggle').click();
-    await expect(page.getByTestId('new-session-menu')).toBeVisible();
-    await page.getByTestId('add-target-button').click();
+    await page.getByTestId('destination-nodes').click();
+    await page.getByTestId('nodes-page-add-target').click();
     await expect(page.getByRole('heading', { name: 'Add target' })).toBeVisible();
   });
 

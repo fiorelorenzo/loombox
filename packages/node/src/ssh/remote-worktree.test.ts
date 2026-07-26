@@ -127,6 +127,37 @@ describe('remote-worktree (hermetic, via LocalProcessTransport)', () => {
       await rm(notARepo, { recursive: true, force: true });
     }
   });
+
+  it('names the folder and says "not a git repository" when isolating a non-repo folder (issue #507)', async () => {
+    const notARepo = await mkdtemp(join(tmpdir(), 'loombox-not-a-repo-named-'));
+    try {
+      const error = await createRemoteWorktree(transport, {
+        projectPath: notARepo,
+        sessionId: 'sess-named',
+        branch: 'loombox/session-sess-named',
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('not a git repository');
+      expect((error as Error).message).toContain(notARepo);
+    } finally {
+      await rm(notARepo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a missing directory without misreporting it as a non-repo (issue #507)', async () => {
+    const missingDir = join(repoPath, 'does-not-exist-remote-worktree');
+
+    const error = await createRemoteWorktree(transport, {
+      projectPath: missingDir,
+      sessionId: 'sess-missing',
+      branch: 'loombox/session-sess-missing',
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toMatch(/not a git repository/i);
+    expect((error as Error).message).toContain(missingDir);
+  });
 });
 
 // Real-sshd integration (issue #75's "the same behavior is verified on both
