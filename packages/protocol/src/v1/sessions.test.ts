@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseSessionPrivateMetaV1,
+  safeParseSessionPrivateMetaV1,
   sessionAnnounceV1,
   sessionCreate,
   sessionListRequest,
@@ -147,5 +149,33 @@ describe('sessionListV1', () => {
       expect(entry.session).not.toHaveProperty('title');
       expect(entry.session).not.toHaveProperty('projectPath');
     }
+  });
+});
+
+describe('sessionPrivateMetaV1', () => {
+  it('accepts the shape both ends have always sent, with no worktree field', () => {
+    const parsed = parseSessionPrivateMetaV1({ title: 'Refactor', projectPath: '/srv/app' });
+    expect(parsed).toEqual({ title: 'Refactor', projectPath: '/srv/app' });
+    expect(parsed.worktree).toBeUndefined();
+  });
+
+  it('carries SPEC 7.1s per-session worktree choice in both directions', () => {
+    expect(
+      parseSessionPrivateMetaV1({ title: 't', projectPath: '/p', worktree: true }).worktree,
+    ).toBe(true);
+    expect(
+      parseSessionPrivateMetaV1({ title: 't', projectPath: '/p', worktree: false }).worktree,
+    ).toBe(false);
+  });
+
+  it('rejects a non-boolean worktree rather than coercing it', () => {
+    expect(
+      safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', worktree: 'yes' }).success,
+    ).toBe(false);
+  });
+
+  it('still requires the two fields the relay boundary has always guaranteed', () => {
+    expect(safeParseSessionPrivateMetaV1({ projectPath: '/p' }).success).toBe(false);
+    expect(safeParseSessionPrivateMetaV1({ title: 't' }).success).toBe(false);
   });
 });

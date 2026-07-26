@@ -28,6 +28,48 @@ export const sessionWithPrivateEnvelope = z.object({
 });
 export type SessionWithPrivateEnvelope = z.infer<typeof sessionWithPrivateEnvelope>;
 
+/**
+ * The plaintext a session's private envelope decrypts to — the other half of
+ * the boundary {@link sessionMetaPublic} describes. Defined here, once,
+ * because both ends of the wire have to agree on it: `@loombox/node` seals it
+ * in `session_announce` and opens it out of `session_create`, and `apps/web`
+ * does the mirror image. Before this schema existed each side carried its own
+ * hand-written `SessionPrivateMeta` interface and nothing checked they matched.
+ *
+ * The relay never sees any of this; it routes on {@link sessionMetaPublic}
+ * alone (SPEC §8).
+ */
+export const sessionPrivateMetaV1 = z.object({
+  title: z.string(),
+  projectPath: z.string(),
+  /**
+   * SPEC §7.1's per-session choice: isolate this session in a fresh git
+   * worktree (`true`) or run directly in `projectPath` (`false`). Omitted
+   * means "no opinion" and the node applies its per-target default, which is
+   * what every client sent before this field existed — `local` isolates,
+   * `ssh:` works in place (`CreateNodeSessionOptions.worktree`).
+   *
+   * Optional on purpose, and it must stay that way: the relay drops frames
+   * that fail schema validation without reporting a version mismatch, so a
+   * field made required here would silently break every peer that predates
+   * it. Only meaningful when the folder is a git repo (SPEC §6).
+   */
+  worktree: z.boolean().optional(),
+});
+export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
+
+/** Parses and validates a decrypted session private envelope, throwing on an invalid one. */
+export function parseSessionPrivateMetaV1(data: unknown): SessionPrivateMetaV1 {
+  return sessionPrivateMetaV1.parse(data);
+}
+
+/** Same as {@link parseSessionPrivateMetaV1} but never throws; returns zod's result. */
+export function safeParseSessionPrivateMetaV1(
+  data: unknown,
+): z.SafeParseReturnType<unknown, SessionPrivateMetaV1> {
+  return sessionPrivateMetaV1.safeParse(data);
+}
+
 /** A client asks a node to start a new session on one of its targets. */
 export const sessionCreate = z.object({
   type: z.literal('session_create'),

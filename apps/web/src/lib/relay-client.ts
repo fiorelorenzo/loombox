@@ -54,6 +54,7 @@ import {
   type SessionAnnounceV1,
   type SessionListV1,
   type SessionMetaPublic,
+  type SessionPrivateMetaV1,
   type SessionUpdateEnvelopeV1,
   type SshDiscoveryResponse,
   type SshDiscoveryResultV1,
@@ -144,11 +145,13 @@ const WS_OPEN = 1;
 /** Connection lifecycle exposed to the UI. v1 does not auto-reconnect (mirrors v0; see the class docstring). */
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
-/** The plaintext a session's private envelope decrypts to (SPEC §8's metadata boundary), mirrored from `@loombox/node`'s `SessionPrivateMeta`. */
-interface SessionPrivateMeta {
-  title: string;
-  projectPath: string;
-}
+/**
+ * The plaintext a session's private envelope carries. Re-exported from
+ * `@loombox/protocol`'s `sessionPrivateMetaV1` rather than hand-written here:
+ * this shape has to match what `@loombox/node` seals and opens, and it used to
+ * be two independent interfaces with nothing checking they agreed.
+ */
+type SessionPrivateMeta = SessionPrivateMetaV1;
 
 /**
  * An attachment ref carried inside a `prompt_inject` envelope's plaintext
@@ -670,6 +673,19 @@ export interface CreateSessionOptions {
   provider: string;
   /** The project folder this session opens in (SPEC §7.1) — travels only inside the encrypted `privateEnvelope` below, never in the clear (SPEC §8's metadata boundary). */
   projectPath: string;
+  /**
+   * SPEC §7.1's per-session choice: `true` isolates the agent in a fresh git
+   * worktree under `<projectPath>/.loombox/worktrees/`, `false` runs it
+   * directly in `projectPath`. Travels inside the private envelope alongside
+   * `projectPath`, so the relay never learns which one was picked.
+   *
+   * Omit it to leave the decision to the node's per-target default (`local`
+   * isolates, `ssh:` works in place) — which is what every caller did before
+   * the field existed. Only meaningful when the folder is a git repo; a UI
+   * should offer the choice only on a confirmed `gitRepo` from
+   * {@link RelayClient.browseDirectory}.
+   */
+  worktree?: boolean;
   /** This session's display title (SPEC §7.24's session list). Defaults to `projectPath` itself when omitted — unlike `NodeDaemon.createSession`'s own node-direct API, the relay's `session_create` handler uses this title verbatim with no server-side default. */
   title?: string;
   /** An optional starting prompt (SPEC §7.1): sent as an ordinary follow-up (the same path {@link sendPrompt} uses) once the session is confirmed created — `session_create`'s wire schema has no inline prompt field of its own. Omit to create an empty session with nothing said yet. */
@@ -1356,6 +1372,10 @@ export class RelayClient {
     const privateMeta: SessionPrivateMeta = {
       title: options.title?.trim() || options.projectPath,
       projectPath: options.projectPath,
+      // Omitted rather than sent as `undefined`: the field's whole contract is
+      // that its absence means "use the node's per-target default", and
+      // `JSON.stringify` would drop an explicit `undefined` anyway.
+      ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
     };
     const key = await this.getSessionKey(sessionId);
     const privateEnvelope = await sealJson(sessionId, privateMeta, key);

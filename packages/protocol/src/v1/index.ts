@@ -76,15 +76,19 @@ export type {
   SessionListRequest,
   SessionListV1,
   SessionMetaPublic,
+  SessionPrivateMetaV1,
   SessionResume,
   SessionWithPrivateEnvelope,
 } from './sessions';
 export {
+  parseSessionPrivateMetaV1,
+  safeParseSessionPrivateMetaV1,
   sessionAnnounceV1,
   sessionCreate,
   sessionListRequest,
   sessionListV1,
   sessionMetaPublic,
+  sessionPrivateMetaV1,
   sessionResume,
   sessionWithPrivateEnvelope,
 } from './sessions';
