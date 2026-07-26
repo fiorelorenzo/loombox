@@ -61,6 +61,22 @@
 /* Base element styles — the app's default typographic surface.           */
 /* ---------------------------------------------------------------------- */
 
+/*
+ * The one reset this app has. It was missing, and its absence is not
+ * theoretical: `PageLayout`'s `width: 100%` plus its own padding made every
+ * full-page destination exactly its horizontal padding wider than the canvas
+ * that contains it, so the Nodes page's "Add target" button and the Inbox's
+ * permission card were clipped by the viewport edge (issue #507's audit).
+ *
+ * Every component here already reasons about width as "the box I occupy",
+ * which is what `border-box` means; content-box was silently disagreeing.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 html {
   font-family: var(--font-ui);
   font-size: var(--text-body-size);

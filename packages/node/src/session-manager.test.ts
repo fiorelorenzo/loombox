@@ -162,6 +162,60 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('non-git projects (SPEC §6/§7.1; issue #507)', () => {
+    it('succeeds working in place in a non-git folder', async () => {
+      const nonGitDir = await mkdtemp(join(tmpdir(), 'loombox-nongit-inplace-'));
+      tempDirs.push(nonGitDir);
+
+      const session = await manager.createSession({
+        projectPath: nonGitDir,
+        provider: 'claude',
+        workInPlace: true,
+      });
+
+      expect(session.worktreePath).toBe(nonGitDir);
+      expect(session.branch).toBe('');
+    });
+
+    it('rejects isolating a worktree in a non-git folder, naming the folder', async () => {
+      const nonGitDir = await mkdtemp(join(tmpdir(), 'loombox-nongit-isolate-'));
+      tempDirs.push(nonGitDir);
+
+      const error = await manager
+        .createSession({ projectPath: nonGitDir, provider: 'claude', workInPlace: false })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('not a git repository');
+      expect((error as Error).message).toContain(nonGitDir);
+      expect(manager.listSessions()).toHaveLength(0);
+    });
+
+    it('rejects a missing directory without misreporting it as a non-repo, when isolating', async () => {
+      const missingDir = join(repoPath, 'does-not-exist-isolate');
+
+      const error = await manager
+        .createSession({ projectPath: missingDir, provider: 'claude' })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toMatch(/not a git repository/i);
+      expect((error as Error).message).toContain(missingDir);
+    });
+
+    it('rejects a missing directory without misreporting it as a non-repo, when working in place', async () => {
+      const missingDir = join(repoPath, 'does-not-exist-in-place');
+
+      const error = await manager
+        .createSession({ projectPath: missingDir, provider: 'claude', workInPlace: true })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toMatch(/not a git repository/i);
+      expect((error as Error).message).toContain(missingDir);
+    });
+  });
+
   describe('same-folder safety (issue #68, SPEC §7.2)', () => {
     it('refuses a second in-place session on a folder that already has one running', async () => {
       const first = await manager.createSession({

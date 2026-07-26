@@ -29,6 +29,7 @@ import {
 } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
+  parseSessionPrivateMetaV1,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
   type DecommissionResultV1,
@@ -42,6 +43,7 @@ import {
   type ProvisionTargetResult,
   type SessionCreate,
   type SessionMetaPublic,
+  type SessionPrivateMetaV1,
   type SshDiscoveryRequest,
   type SshDiscoveryResultV1,
   type TargetDescriptor,
@@ -307,7 +309,7 @@ export interface NodeDaemonOptions {
 }
 
 export interface CreateNodeSessionOptions {
-  /** Absolute path to a local git repository to run the session against. */
+  /** Absolute path to the project folder to run the session against — does not have to be a git repository (SPEC §6); only isolating into a worktree (see `worktree` below) requires one. */
   projectPath: string;
   /** Provider id registered on this node's supervisor (default: 'claude'). */
   provider?: string;
@@ -325,18 +327,14 @@ export interface CreateNodeSessionOptions {
    * directly in `projectPath` on the remote host, the "deliberate gap"
    * `./target.ts`'s doc comment describes — now closeable per-session by
    * passing `worktree: true` explicitly, backed by `./ssh/remote-worktree.ts`).
-   * Only reachable via this direct API in this wave: a relay-driven
-   * `session_create` has no wire field for it yet (`SessionCreate` is
-   * `@loombox/protocol`, out of this change's scope) and always gets the
-   * per-target default.
+   * Reachable two ways, both landing on this same option: this direct API,
+   * and a relay-driven `session_create`, whose private envelope carries the
+   * identical per-session choice (`SessionPrivateMetaV1.worktree`,
+   * `@loombox/protocol`) that `handleSessionCreate` reads and threads
+   * straight through — omitting it there falls back to the same
+   * per-target default this option applies when omitted here.
    */
   worktree?: boolean;
-}
-
-/** The plaintext a session's private envelope (`session_create`/`session_announce`) decrypts to — SPEC §8's metadata boundary: title and project path never reach the relay in the clear. */
-interface SessionPrivateMeta {
-  title: string;
-  projectPath: string;
 }
 
 /**
@@ -1401,7 +1399,7 @@ export class NodeDaemon extends EventEmitter {
 
   private async announce(bridge: SessionBridge): Promise<void> {
     const key = await this.getSessionKey(bridge.session.id);
-    const privateMeta: SessionPrivateMeta = {
+    const privateMeta: SessionPrivateMetaV1 = {
       title: bridge.title,
       projectPath: bridge.session.projectPath,
     };
@@ -1667,6 +1665,10 @@ export class NodeDaemon extends EventEmitter {
           provider: message.provider,
           targetId: message.targetId,
           title: privateMeta.title,
+          // SPEC §7.1's per-session choice, now reachable over the relay
+          // (issue #507) — see `CreateNodeSessionOptions.worktree`'s doc
+          // comment for the full default-mapping story.
+          worktree: privateMeta.worktree,
         }),
       )
       .catch((error: unknown) => {
@@ -1677,9 +1679,15 @@ export class NodeDaemon extends EventEmitter {
       });
   }
 
-  private async decryptSessionCreate(message: SessionCreate): Promise<SessionPrivateMeta> {
+  private async decryptSessionCreate(message: SessionCreate): Promise<SessionPrivateMetaV1> {
     const key = await this.getSessionKey(message.sessionId);
-    return openJson<SessionPrivateMeta>(message.sessionId, message.privateEnvelope, key);
+    // Validated, not just cast (issue #507): a malformed payload from a
+    // peer becomes a clear zod failure here, caught by `handleSessionCreate`'s
+    // own `.catch` exactly like a decrypt failure already was, rather than
+    // an unchecked `as SessionPrivateMetaV1` silently waving through
+    // `undefined`/wrong-shaped or missing fields.
+    const decrypted = await openJson<unknown>(message.sessionId, message.privateEnvelope, key);
+    return parseSessionPrivateMetaV1(decrypted);
   }
 
   /** A client injected a follow-up prompt (via the relay) into one of this node's sessions. */
@@ -1986,8 +1994,13 @@ export class NodeDaemon extends EventEmitter {
    * session root (see {@link resolveTargetFsPath}). Entries come back
    * directories-first, then alphabetically, since this is meant to drive a
    * picker (SPEC §7.25's acceptance) rather than merely mirror the
-   * filesystem's own return order. Never throws: a failure becomes an
-   * `outcome: 'error'` payload, exactly like `listDirectoryForBridge`.
+   * filesystem's own return order. Also reports whether `resolvedPath`
+   * itself is a git work tree (`gitRepo`; issue #507), so the picker can
+   * offer or hide SPEC §7.1's worktree choice before any session exists —
+   * probed alongside the listing, never a reason for the listing itself to
+   * fail: a folder that isn't a repo is still a perfectly good SPEC §6
+   * project. Never throws: a failure becomes an `outcome: 'error'` payload,
+   * exactly like `listDirectoryForBridge`.
    */
   private async listDirectoryForTarget(
     targetId: string,
@@ -2009,7 +2022,29 @@ export class NodeDaemon extends EventEmitter {
         if (b.kind === 'dir' && a.kind !== 'dir') return 1;
         return a.name.localeCompare(b.name);
       });
-      return { outcome: 'ok', path: resolvedPath, entries: mapped };
+
+      // The same `git -C <path> rev-parse --is-inside-work-tree` probe
+      // `assertIsGitRepo` (`./session-manager.ts`) runs for `local` sessions,
+      // repeated here over `ExecutionTarget.exec` so the identical check
+      // also works for `ssh:` targets. Its own try/catch, nested inside the
+      // one around this whole method: a host with no `git` on PATH, or a
+      // path that plain isn't a repo, both just mean `gitRepo: false` —
+      // never a reason for the listing itself to fail (see this method's
+      // doc comment above).
+      let gitRepo = false;
+      try {
+        const probe = await target.exec('git', [
+          '-C',
+          resolvedPath,
+          'rev-parse',
+          '--is-inside-work-tree',
+        ]);
+        gitRepo = probe.exitCode === 0 && probe.stdout.trim() === 'true';
+      } catch {
+        // git missing, or some other exec failure — still not a repo.
+      }
+
+      return { outcome: 'ok', path: resolvedPath, entries: mapped, gitRepo };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return { outcome: 'error', path: requestedPath, message: detail };

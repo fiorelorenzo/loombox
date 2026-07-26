@@ -285,4 +285,105 @@ describe('DirectoryPicker (SPEC §7.25 directory picker; issue #474)', () => {
       path: '',
     });
   });
+
+  it('shows a quiet "Git repository" marker on the current path when the listing reports gitRepo: true, and reports it as onChange\'s second argument', async () => {
+    const client = fakeClient({
+      '': {
+        outcome: 'ok',
+        path: '/home/lorenzo',
+        entries: [{ name: 'projects', kind: 'dir', size: 0 }],
+        gitRepo: false,
+      },
+      '/home/lorenzo/projects': {
+        outcome: 'ok',
+        path: '/home/lorenzo/projects',
+        entries: [],
+        gitRepo: true,
+      },
+    });
+    const onChange = vi.fn();
+    render(DirectoryPicker, {
+      props: { client, nodeId: 'node_1', targetId: 'local', value: '', onChange },
+    });
+
+    await waitFor(() => expect(screen.getByText('projects')).toBeTruthy());
+    expect(screen.queryByTestId('directory-picker-git-badge')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('directory-picker-entry'));
+
+    await waitFor(() => expect(screen.getByTestId('directory-picker-git-badge')).toBeTruthy());
+    expect(onChange).toHaveBeenCalledWith('/home/lorenzo/projects', true);
+  });
+
+  it("treats an omitted gitRepo (an older node) as unknown rather than false: no marker, and onChange's second argument is undefined", async () => {
+    const client = fakeClient({
+      '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
+      '/etc': { outcome: 'ok', path: '/etc', entries: [] },
+    });
+    const onChange = vi.fn();
+    render(DirectoryPicker, {
+      props: { client, nodeId: 'node_1', targetId: 'local', value: '', onChange },
+    });
+    await waitFor(() =>
+      expect((screen.getByTestId('directory-picker-input') as HTMLInputElement).value).toBe(
+        '/home/lorenzo',
+      ),
+    );
+
+    await fireEvent.input(screen.getByTestId('directory-picker-input'), {
+      target: { value: '/etc' },
+    });
+    await fireEvent.keyDown(screen.getByTestId('directory-picker-input'), { key: 'Enter' });
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('/etc', undefined));
+    expect(screen.queryByTestId('directory-picker-git-badge')).toBeNull();
+  });
+
+  it("replaces a rejected browseDirectory's raw wire message with human copy and a working Retry action (issue #505)", async () => {
+    let attempts = 0;
+    const client: DirectoryPickerClient = {
+      browseDirectory: vi.fn(async (): Promise<TargetFsListResponsePayloadV1> => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('RelayClient: timed out waiting for target_fs_list_response');
+        }
+        return { outcome: 'ok', path: '/home/lorenzo', entries: [] };
+      }),
+    };
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    render(DirectoryPicker, {
+      props: { client, nodeId: 'node_1', targetId: 'local', value: '', onChange: vi.fn() },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('ui-error-notice')).toBeTruthy());
+    const notice = screen.getByTestId('ui-error-notice');
+    expect(notice.textContent).not.toMatch(/target_fs_list_response/);
+    expect(notice.textContent).toMatch(/didn't respond/i);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'DirectoryPicker: browseDirectory failed',
+      expect.any(Error),
+    );
+
+    await fireEvent.click(screen.getByText('Retry'));
+
+    await waitFor(() => expect(screen.getByTestId('directory-picker-input')).toBeTruthy());
+    expect(client.browseDirectory).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
+  });
+
+  it('does not re-browse when only `value` changes without the target changing (e.g. a parent reactively echoing typed input back down): only a real target change re-triggers the initial browse (issue #507 regression, AddProjectDialog binds `value` back to its own state on every keystroke)', async () => {
+    const client = fakeClient({
+      '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
+    });
+    render(DirectoryPicker, {
+      props: { client, nodeId: 'node_1', targetId: 'local', value: '', onChange: vi.fn() },
+    });
+    await waitFor(() => expect(client.browseDirectory).toHaveBeenCalledTimes(1));
+
+    await fireEvent.input(screen.getByTestId('directory-picker-input'), {
+      target: { value: '/tmp/typed' },
+    });
+
+    expect(client.browseDirectory).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -79,7 +79,7 @@ function applyTransition(session: Session, action: 'pause' | 'resume' | 'end'): 
 }
 
 export interface CreateSessionOptions {
-  /** Absolute path to a local git repository to run the session against. */
+  /** Absolute path to the project folder to run the session against — does not have to be a git repository (SPEC §6); only isolating into a worktree (`workInPlace: false`, below) requires one. */
   projectPath: string;
   /** Provider id (e.g. 'claude', 'codex'); opaque to the session manager. */
   provider: string;
@@ -124,6 +124,50 @@ async function runGit(args: string[], cwd: string): Promise<string> {
   }
 }
 
+/**
+ * Thrown by {@link assertIsGitRepo} when `projectPath` exists (see
+ * {@link assertPathExists}) but isn't a git work tree — the refusal for
+ * asking to isolate a session in a folder with nothing to branch a worktree
+ * from. Exported, like {@link SameFolderConflictError} above, so a caller
+ * can catch this refusal specifically instead of pattern-matching
+ * `error.message`; SPEC §6/§7.1 makes this a normal, expected outcome for a
+ * folder that simply isn't a repo, not a bug.
+ */
+export class NotAGitRepoError extends Error {
+  constructor(readonly projectPath: string) {
+    super(
+      `not a git repository: ${projectPath} (an isolated worktree needs one; ` +
+        'work in place instead, or initialize a repo first)',
+    );
+    this.name = 'NotAGitRepoError';
+  }
+}
+
+/**
+ * Confirms `projectPath` exists at all, before anything below ever asks
+ * whether it's a git repo. A missing directory and one that merely isn't a
+ * repo are different problems with different fixes (issue #507): conflating
+ * them — what this function's absence used to do, via `assertIsGitRepo`'s
+ * old catch-all — reported a plain typo'd path as "not a git repository",
+ * which is simply false.
+ */
+async function assertPathExists(projectPath: string): Promise<void> {
+  try {
+    await stat(projectPath);
+  } catch {
+    throw new Error(`project folder does not exist: ${projectPath}`);
+  }
+}
+
+/**
+ * Confirms `projectPath` is a git work tree. Only called when isolating
+ * into a fresh worktree (SPEC §6: a project "does not have to be a git
+ * repository" — true for working in place, but there is nothing to branch a
+ * worktree off of otherwise); {@link SessionManager.createSession} never
+ * calls this for `workInPlace`. Assumes the caller already ran
+ * {@link assertPathExists}, so every failure here specifically means
+ * "exists, but isn't a repo".
+ */
 async function assertIsGitRepo(projectPath: string): Promise<void> {
   try {
     const result = await execFileAsync('git', [
@@ -133,13 +177,11 @@ async function assertIsGitRepo(projectPath: string): Promise<void> {
       '--is-inside-work-tree',
     ]);
     if (result.stdout.trim() !== 'true') {
-      throw new Error(`not a git repository: ${projectPath}`);
+      throw new NotAGitRepoError(projectPath);
     }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('not a git repository')) {
-      throw error;
-    }
-    throw new Error(`not a git repository: ${projectPath}`);
+    if (error instanceof NotAGitRepoError) throw error;
+    throw new NotAGitRepoError(projectPath);
   }
 }
 
@@ -179,13 +221,16 @@ export class SessionManager {
     targetId,
     workInPlace = false,
   }: CreateSessionOptions): Promise<Session> {
-    await assertIsGitRepo(projectPath);
+    await assertPathExists(projectPath);
 
     const id = givenId ?? randomUUID();
 
     let worktreePath: string;
     let branch: string;
     if (workInPlace) {
+      // SPEC §6/§7.1: working in place never requires a git repository —
+      // only isolating into a worktree (the `else` below) does, since
+      // there's nothing to branch one off of otherwise (issue #507).
       // Reserve before creating anything: a refusal here is cheap (nothing
       // was touched yet) and leaves no partial state to clean up, unlike a
       // conflict discovered after `git worktree add` had already run.
@@ -193,6 +238,7 @@ export class SessionManager {
       worktreePath = projectPath;
       branch = '';
     } else {
+      await assertIsGitRepo(projectPath);
       branch = sessionWorktreeBranch(id);
       worktreePath = join(projectPath, '.loombox', 'worktrees', id);
       await runGit(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], projectPath);

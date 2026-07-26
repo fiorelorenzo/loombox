@@ -766,6 +766,73 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     expect(session.branch).toBe('');
   });
 
+  it('succeeds working in place in a non-git remote folder (SPEC §6/§7.1; issue #507)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-nongit-inplace';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-nongit-inplace',
+      deviceId: 'device-node-ssh-nongit-inplace',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    // remoteWorkspace is never git-initialized in this test — a plain
+    // non-repo folder (SPEC §6: "does not have to be a git repository").
+    const session = await node.createSession({
+      projectPath: remoteWorkspace,
+      provider: 'test-echo',
+      targetId: 'devbox',
+      worktree: false,
+    });
+
+    expect(session.worktreePath).toBe(remoteWorkspace);
+    expect(session.branch).toBe('');
+  });
+
+  it('rejects isolating a worktree in a non-git remote folder, naming the folder (SPEC §6/§7.1; issue #507)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-nongit-isolate';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-nongit-isolate',
+      deviceId: 'device-node-ssh-nongit-isolate',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG],
+      sshTransportFactory: () => new LocalProcessTransport(),
+      remoteChildPollIntervalMs: 30,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const error = await node
+      .createSession({
+        projectPath: remoteWorkspace,
+        provider: 'test-echo',
+        targetId: 'devbox',
+        worktree: true,
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('not a git repository');
+    expect((error as Error).message).toContain(remoteWorkspace);
+  });
+
   describe('same-folder safety on ssh: targets (issue #68, SPEC §7.2)', () => {
     it('refuses a second in-place session on the same target+folder while one is running', async () => {
       const amk = generateAmk();

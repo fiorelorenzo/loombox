@@ -41,6 +41,11 @@ import type { SupervisorArtifactSource } from './ssh/supervisor-artifact';
 
 const execFileAsync = promisify(execFile);
 
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd });
+  return stdout.trim();
+}
+
 type CryptoKey = webcrypto.CryptoKey;
 
 // Reuses the same hermetic fixture agent packages/providers/core,
@@ -762,6 +767,109 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     );
   });
 
+  it("threads the private envelope's worktree: false into an in-place session (issue #507)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-create-worktree-false';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-worktree-false',
+      deviceId: 'device-node-worktree-false',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-worktree-false';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'in place from client', projectPath, worktree: false },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-worktree-false',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-echo',
+      privateEnvelope,
+    });
+
+    await waitForSessionInList(phone, sessionId);
+
+    // In place: no new worktree was added under projectPath...
+    const worktreeList = await git(projectPath, ['worktree', 'list', '--porcelain']);
+    expect(worktreeList.split('\n\n').filter((entry) => entry.trim())).toHaveLength(1);
+
+    // ...and it reserved projectPath for same-folder safety (SPEC §7.2)
+    // exactly like a direct `worktree: false` session would: a second
+    // in-place session on the same folder is refused.
+    await expect(
+      node.createSession({ projectPath, provider: 'test-echo', worktree: false }),
+    ).rejects.toThrow(/already running/i);
+  });
+
+  it("threads the private envelope's worktree: true into an isolated worktree session (issue #507)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-create-worktree-true';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-worktree-true',
+      deviceId: 'device-node-worktree-true',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-worktree-true';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'isolated from client', projectPath, worktree: true },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-worktree-true',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-echo',
+      privateEnvelope,
+    });
+
+    await waitForSessionInList(phone, sessionId);
+
+    const worktreePath = pathJoin(projectPath, '.loombox', 'worktrees', sessionId);
+    const insideWorkTree = await git(worktreePath, ['rev-parse', '--is-inside-work-tree']);
+    expect(insideWorkTree).toBe('true');
+    const branch = await git(worktreePath, ['branch', '--show-current']);
+    expect(branch).toBe(`loombox/session-${sessionId}`);
+  });
+
   it('resyncs a client after it drops: the relay replays buffered ciphertext for the seq range it missed', async () => {
     const amk = generateAmk();
     const accountId = 'acct-resync';
@@ -1297,6 +1405,113 @@ describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () 
       key,
     );
     expect(payload.outcome).toBe('error');
+  });
+
+  it('reports gitRepo: true when the listed path is inside a git work tree (SPEC §7.1; issue #507)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-gitrepo-true';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-target-fs-gitrepo-true',
+      deviceId: 'device-node-target-fs-gitrepo-true',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const key = await derivePhoneTargetKey(amk, accountId, 'local');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-target-fs-gitrepo-true',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const requestEnvelope = await phoneSeal('local', { path: projectPath }, key);
+    phone.send({
+      type: 'target_fs_list_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node-target-fs-gitrepo-true',
+      targetId: 'local',
+      requestId: 'req-gitrepo-true',
+      envelope: requestEnvelope,
+    });
+
+    const response = await phone.waitFor(
+      (m) => m.type === 'target_fs_list_response' && m.requestId === 'req-gitrepo-true',
+    );
+    if (response.type !== 'target_fs_list_response') {
+      throw new Error('expected a target_fs_list_response');
+    }
+    const payload = await phoneOpen<{ outcome: string; gitRepo?: boolean }>(
+      'local',
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('ok');
+    expect(payload.gitRepo).toBe(true);
+  });
+
+  it('reports gitRepo: false when the listed path is not inside a git work tree (SPEC §6/§7.1; issue #507)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-target-fs-gitrepo-false';
+    const nonGitDir = await mkdtemp(path.join(tmpdir(), 'loombox-target-fs-nongit-'));
+
+    try {
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-target-fs-gitrepo-false',
+        deviceId: 'device-node-target-fs-gitrepo-false',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+      await waitForConnected(node);
+
+      const key = await derivePhoneTargetKey(amk, accountId, 'local');
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-target-fs-gitrepo-false',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      const requestEnvelope = await phoneSeal('local', { path: nonGitDir }, key);
+      phone.send({
+        type: 'target_fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node-target-fs-gitrepo-false',
+        targetId: 'local',
+        requestId: 'req-gitrepo-false',
+        envelope: requestEnvelope,
+      });
+
+      const response = await phone.waitFor(
+        (m) => m.type === 'target_fs_list_response' && m.requestId === 'req-gitrepo-false',
+      );
+      if (response.type !== 'target_fs_list_response') {
+        throw new Error('expected a target_fs_list_response');
+      }
+      const payload = await phoneOpen<{ outcome: string; gitRepo?: boolean }>(
+        'local',
+        response.envelope,
+        key,
+      );
+      expect(payload.outcome).toBe('ok');
+      expect(payload.gitRepo).toBe(false);
+    } finally {
+      await rm(nonGitDir, { recursive: true, force: true });
+    }
   });
 });
 
