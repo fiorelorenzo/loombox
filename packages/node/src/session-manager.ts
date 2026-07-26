@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { rm, stat } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -186,6 +186,39 @@ async function assertIsGitRepo(projectPath: string): Promise<void> {
 }
 
 /**
+ * Makes `<projectPath>/.loombox/` ignore itself, by writing the standard
+ * self-ignoring `.gitignore` (`*`) into it before the first worktree lands.
+ *
+ * The class doc below used to say `.loombox/` "is expected to be git-ignored
+ * by consuming projects", which quietly made every user responsible for
+ * cleaning up after us: the node writes worktrees into their repo, so without
+ * this the very first session leaves an untracked `.loombox/` in their
+ * `git status` forever, and loombox's own repo was no exception (issue #507's
+ * end-to-end check is what surfaced it). A directory that ignores itself
+ * needs no cooperation from the project and cannot be forgotten.
+ *
+ * Never overwrites an existing file: a user who has deliberately committed
+ * something under `.loombox/` keeps whatever rules they wrote. Failure is
+ * non-fatal on purpose, since a dirty `git status` is a far smaller problem
+ * than refusing to start the session the user actually asked for.
+ */
+async function ensureLoomboxDirIsSelfIgnoring(projectPath: string): Promise<void> {
+  const dir = join(projectPath, '.loombox');
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, '.gitignore'), '*\n', { flag: 'wx' });
+  } catch (error) {
+    // `EEXIST` is the normal steady state after the first session.
+    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') return;
+    console.warn(
+      `SessionManager: could not make ${dir} self-ignoring: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
  * Owns in-memory `Session` records and the git worktrees that back them, for
  * the `local` execution target only (SPEC §5.2, §6, §7.1).
  *
@@ -241,6 +274,7 @@ export class SessionManager {
       await assertIsGitRepo(projectPath);
       branch = sessionWorktreeBranch(id);
       worktreePath = join(projectPath, '.loombox', 'worktrees', id);
+      await ensureLoomboxDirIsSelfIgnoring(projectPath);
       await runGit(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], projectPath);
     }
 

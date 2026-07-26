@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -40,6 +40,23 @@ describe('SessionManager', () => {
     );
 
     manager = new SessionManager();
+  });
+
+  it('makes .loombox/ ignore itself, so a worktree never dirties the project git status', async () => {
+    await manager.createSession({ projectPath: repoPath, provider: 'claude', nodeId: 'n1' });
+
+    expect(await readFile(join(repoPath, '.loombox', '.gitignore'), 'utf8')).toBe('*\n');
+    const { stdout } = await execFileAsync('git', ['-C', repoPath, 'status', '--porcelain']);
+    expect(stdout.trim()).toBe('');
+  });
+
+  it('never overwrites rules a project already wrote under .loombox/', async () => {
+    await execFileAsync('mkdir', ['-p', join(repoPath, '.loombox')]);
+    await writeFile(join(repoPath, '.loombox', '.gitignore'), 'worktrees/\n');
+
+    await manager.createSession({ projectPath: repoPath, provider: 'claude', nodeId: 'n1' });
+
+    expect(await readFile(join(repoPath, '.loombox', '.gitignore'), 'utf8')).toBe('worktrees/\n');
   });
 
   afterEach(async () => {
