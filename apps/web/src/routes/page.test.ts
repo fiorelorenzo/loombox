@@ -16,6 +16,27 @@ import type { StoredAuthSession } from '$lib/auth-store';
 import type * as AuthStoreModule from '$lib/auth-store';
 import type * as RelayClientModule from '$lib/relay-client';
 
+// jsdom has no Web Animations API, but Svelte 5's `in:`/`out:` transitions
+// (ArchiveSessionDialog's `Dialog`/`Overlay`, opened reactively by the
+// session row menu's "Archive session…" action below) call
+// `element.animate()` under the hood whenever an element actually appears
+// AFTER a component's initial mount — see `TargetStatusView.test.ts`'s
+// identical stub for the same reason (its own embedded `AddTargetWizard`
+// dialog). A minimal no-op stub is enough to let the transition run
+// without crashing; it doesn't need to animate anything for these
+// assertions to hold.
+if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+  Element.prototype.animate = () =>
+    ({
+      finished: Promise.resolve(),
+      cancel: () => {},
+      play: () => {},
+      pause: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as Animation;
+}
+
 /**
  * `+page.svelte` constructs `AuthStore`/`RelayClient` itself (SPEC §8's
  * real Better Auth + E2E relay session) rather than taking either as a
@@ -121,6 +142,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     discoverSshHosts: vi.fn(),
     decommissionTarget: vi.fn(),
     updateTarget: vi.fn(),
+    archiveSession: vi.fn().mockResolvedValue(undefined),
     resolvePermission: vi.fn(),
     expandDirectory: vi.fn(),
     escrowAmk: vi.fn().mockResolvedValue(undefined),
@@ -225,10 +247,11 @@ function mountCockpit(scenario: FakeClientScenario = {}) {
         signOut: vi.fn(),
       }) as unknown as AuthStoreModule.AuthStore,
   );
+  const fakeClient = createFakeClient(scenario);
   vi.mocked(RelayClient).mockImplementation(
-    () => createFakeClient(scenario) as unknown as RelayClientModule.RelayClient,
+    () => fakeClient as unknown as RelayClientModule.RelayClient,
   );
-  return render(Page);
+  return { ...render(Page), client: fakeClient };
 }
 
 describe('cockpit shell (design spec v4, issue #507)', () => {
@@ -289,5 +312,74 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.queryByTestId('drawer-tab-inbox')).toBeNull();
     expect(screen.queryByTestId('drawer-tab-targets')).toBeNull();
     expect(screen.queryByTestId('drawer-tab-settings')).toBeNull();
+  });
+});
+
+describe('session archive (SPEC §7.2 board archive; issue #512)', () => {
+  it('the row menu offers "Archive session…" alongside Target status/Copy project path', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+
+    expect(screen.getByTestId('session-archive-link').textContent).toContain('Archive session');
+  });
+
+  it('clicking "Archive session…" opens a confirm dialog naming the session and its project', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ title: 'Refactor relay routing', projectPath: '/home/dev/loombox' }),
+      ],
+    });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+    await fireEvent.click(screen.getByTestId('session-archive-link'));
+
+    const context = (await screen.findByTestId('archive-session-context')).textContent ?? '';
+    expect(context).toContain('Refactor relay routing');
+    expect(context).toContain('/home/dev/loombox');
+  });
+
+  it('confirming the dialog calls client.archiveSession with the session id and the checkbox choice', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+    await fireEvent.click(screen.getByTestId('session-archive-link'));
+    await screen.findByTestId('archive-session-context');
+
+    await fireEvent.click(screen.getByTestId('archive-session-confirm'));
+
+    expect(client.archiveSession).toHaveBeenCalledWith('sess_1', { removeWorktree: true });
+  });
+
+  it('falls back to the next remaining session when the selected one drops out of the sessions list', async () => {
+    const { client } = mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+    // The first session is auto-selected on load.
+    expect(await screen.findByTestId('cockpit-session-title')).toBeTruthy();
+    expect(screen.getByTestId('cockpit-session-title').textContent).toBe('First session');
+
+    // The same store mutation RelayClient.handleSessionArchiveResponse does
+    // on outcome: 'ok' (SessionArchiveResponse) — the previously-selected
+    // session is simply no longer in the list.
+    client.sessions.set([makeSession({ id: 'sess_2', title: 'Second session' })]);
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('cockpit-session-title').textContent).toBe('Second session');
+    });
+  });
+
+  it('clears the selection (empty state) when the selected session was the only one and it drops out', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_only', title: 'Only session' })],
+    });
+    expect(await screen.findByTestId('cockpit-session-title')).toBeTruthy();
+
+    client.sessions.set([]);
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('No session selected')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('cockpit-session-title')).toBeNull();
   });
 });

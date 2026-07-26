@@ -13,6 +13,7 @@ import {
 } from '@loombox/crypto';
 import { createTranscriptState, reduceTranscript } from '@loombox/providers-core';
 import {
+  HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   type BlobDownloadResponse,
   type ConfigOption,
@@ -417,6 +418,385 @@ function flakyBlobUploadSocketCtor(counter: {
       }
     }
   };
+}
+
+/**
+ * A `WebSocketConstructor` wrapping a real WebSocket that records every
+ * outbound frame (parsed) into `sent` and every created instance into
+ * `sockets` — `session_list_request`/`ping` are relay-answered directly
+ * and never routed to a `FakeNode`, so this is how a test inspects what a
+ * (re)connect actually sent. `sockets[i].close()` also gives a test a way
+ * to force an unexpected drop: `RelayClient` has no way to tell "the test
+ * closed the underlying transport" from "the network did", so this is
+ * indistinguishable from a real drop from its point of view.
+ */
+function recordingSocketCtor(
+  sent: WireMessageV1[],
+  sockets: WebSocketLike[],
+): WebSocketConstructor {
+  return class RecordingSocket implements WebSocketLike {
+    private readonly real: WebSocketLike;
+
+    constructor(url: string) {
+      this.real = new WebSocket(url) as unknown as WebSocketLike;
+      sockets.push(this);
+    }
+
+    get readyState(): number {
+      return this.real.readyState;
+    }
+
+    send(data: string): void {
+      sent.push(JSON.parse(data) as WireMessageV1);
+      this.real.send(data);
+    }
+
+    close(): void {
+      this.real.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      switch (type) {
+        case 'open':
+          this.real.addEventListener('open', listener as () => void);
+          return;
+        case 'message':
+          this.real.addEventListener('message', listener as (event: { data: unknown }) => void);
+          return;
+        case 'close':
+          this.real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          this.real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
+  };
+}
+
+/**
+ * A `WebSocketConstructor` that throws synchronously out of its own
+ * constructor for the first `failUntilAttempt` instances, then wraps a real
+ * WebSocket normally — an unreachable relay can surface as a synchronous
+ * construction failure rather than an async 'error'/'close' pair depending
+ * on the environment, which `RelayClient.open()` must recover from exactly
+ * like any other failed attempt (mirrors `@loombox/node`'s
+ * `RelayConnection`, issue #511).
+ */
+function flakyConstructorSocketCtor(counter: {
+  attempts: number;
+  failUntilAttempt: number;
+}): WebSocketConstructor {
+  return class FlakyConstructorSocket implements WebSocketLike {
+    private readonly real: WebSocketLike;
+
+    constructor(url: string) {
+      counter.attempts += 1;
+      if (counter.attempts <= counter.failUntilAttempt) {
+        throw new Error(
+          `FlakyConstructorSocket: simulated construction failure #${counter.attempts}`,
+        );
+      }
+      this.real = new WebSocket(url) as unknown as WebSocketLike;
+    }
+
+    get readyState(): number {
+      return this.real.readyState;
+    }
+
+    send(data: string): void {
+      this.real.send(data);
+    }
+
+    close(): void {
+      this.real.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      switch (type) {
+        case 'open':
+          this.real.addEventListener('open', listener as () => void);
+          return;
+        case 'message':
+          this.real.addEventListener('message', listener as (event: { data: unknown }) => void);
+          return;
+        case 'close':
+          this.real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          this.real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
+  };
+}
+
+/**
+ * A `WebSocketConstructor` whose first `failUntilAttempt` instances fire
+ * only 'error' and never 'close' — reproducing the exact asymmetry issue
+ * #511 was filed for: Node's undici `WebSocket` (this whole suite's global
+ * `WebSocket`, since it runs under Vitest/Node, not a browser) emits
+ * 'error' with no 'close' at all on a *failed connection attempt*, as
+ * opposed to a socket that opened and later dropped. `RelayClient.open()`
+ * must not depend on 'close' ever following 'error' to recover. Later
+ * instances (once `failUntilAttempt` is exhausted) wrap a real WebSocket
+ * normally.
+ */
+function errorWithoutCloseSocketCtor(counter: {
+  attempts: number;
+  failUntilAttempt: number;
+}): WebSocketConstructor {
+  return class ErrorWithoutCloseSocket implements WebSocketLike {
+    private readonly real: WebSocketLike | undefined;
+    private readonly failing: boolean;
+    private errorListener: (() => void) | undefined;
+
+    constructor(url: string) {
+      counter.attempts += 1;
+      this.failing = counter.attempts <= counter.failUntilAttempt;
+      if (this.failing) {
+        // No real socket at all: this attempt never reaches OPEN, exactly
+        // like trying to connect to a relay that is down. Deferred past
+        // the constructor so `attemptOpen()` has already registered the
+        // 'error' listener below by the time this fires.
+        queueMicrotask(() => this.errorListener?.());
+      } else {
+        this.real = new WebSocket(url) as unknown as WebSocketLike;
+      }
+    }
+
+    get readyState(): number {
+      return this.real ? this.real.readyState : 0;
+    }
+
+    send(data: string): void {
+      this.real?.send(data);
+    }
+
+    close(): void {
+      this.real?.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      if (this.failing) {
+        // 'open'/'message' never come (it never connects), and 'close' is
+        // deliberately never invoked — that is the whole point of this
+        // double.
+        if (type === 'error') this.errorListener = listener as () => void;
+        return;
+      }
+      const real = this.real!;
+      switch (type) {
+        case 'open':
+          real.addEventListener('open', listener as () => void);
+          return;
+        case 'message':
+          real.addEventListener('message', listener as (event: { data: unknown }) => void);
+          return;
+        case 'close':
+          real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
+  };
+}
+
+/**
+ * A `WebSocketConstructor` wrapping a real WebSocket that records every
+ * outbound frame into `sent` like {@link recordingSocketCtor}, but silently
+ * drops (never forwards) any `ping` — the relay never sees it and never
+ * answers it, which is what a half-open socket looks like from
+ * `RelayClient`'s side: everything else it sends still works, only the
+ * heartbeat's own probe goes unanswered.
+ */
+function pingSwallowingSocketCtor(
+  sent: WireMessageV1[],
+  sockets: WebSocketLike[],
+): WebSocketConstructor {
+  return class PingSwallowingSocket implements WebSocketLike {
+    private readonly real: WebSocketLike;
+
+    constructor(url: string) {
+      this.real = new WebSocket(url) as unknown as WebSocketLike;
+      sockets.push(this);
+    }
+
+    get readyState(): number {
+      return this.real.readyState;
+    }
+
+    send(data: string): void {
+      const message = JSON.parse(data) as WireMessageV1;
+      sent.push(message);
+      if (message.type === 'ping') return;
+      this.real.send(data);
+    }
+
+    close(): void {
+      this.real.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      switch (type) {
+        case 'open':
+          this.real.addEventListener('open', listener as () => void);
+          return;
+        case 'message':
+          this.real.addEventListener('message', listener as (event: { data: unknown }) => void);
+          return;
+        case 'close':
+          this.real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          this.real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
+  };
+}
+
+/** Rewrites a relay message event to drop `HEARTBEAT_CAPABILITY` from an `initialize_result`'s `capabilities`, otherwise passes it through unchanged — see {@link capabilityStrippingSocketCtor}'s doc comment. */
+function stripHeartbeatCapability(event: { data: unknown }): { data: unknown } {
+  const parsed = JSON.parse(String(event.data)) as { type?: string; capabilities?: unknown };
+  if (parsed.type !== 'initialize_result' || !Array.isArray(parsed.capabilities)) return event;
+  return {
+    data: JSON.stringify({
+      ...parsed,
+      capabilities: parsed.capabilities.filter((capability) => capability !== HEARTBEAT_CAPABILITY),
+    }),
+  };
+}
+
+/**
+ * A `WebSocketConstructor` wrapping a real WebSocket that strips
+ * `HEARTBEAT_CAPABILITY` out of the relay's `initialize_result` before
+ * `RelayClient` ever parses it, and records every outbound frame into
+ * `sent`. The real in-process relay this suite runs against always
+ * advertises the capability (`relay.test.ts`'s own coverage), so this is
+ * the only way to exercise "the relay didn't" without touching the relay
+ * package itself.
+ */
+function capabilityStrippingSocketCtor(sent: WireMessageV1[]): WebSocketConstructor {
+  return class CapabilityStrippingSocket implements WebSocketLike {
+    private readonly real: WebSocketLike;
+
+    constructor(url: string) {
+      this.real = new WebSocket(url) as unknown as WebSocketLike;
+    }
+
+    get readyState(): number {
+      return this.real.readyState;
+    }
+
+    send(data: string): void {
+      sent.push(JSON.parse(data) as WireMessageV1);
+      this.real.send(data);
+    }
+
+    close(): void {
+      this.real.close();
+    }
+
+    addEventListener(type: 'open', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(type: 'close', listener: () => void): void;
+    addEventListener(type: 'error', listener: () => void): void;
+    addEventListener(
+      type: 'open' | 'message' | 'close' | 'error',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      switch (type) {
+        case 'open':
+          this.real.addEventListener('open', listener as () => void);
+          return;
+        case 'message': {
+          const messageListener = listener as (event: { data: unknown }) => void;
+          this.real.addEventListener('message', (event: { data: unknown }) => {
+            messageListener(stripHeartbeatCapability(event));
+          });
+          return;
+        }
+        case 'close':
+          this.real.addEventListener('close', listener as () => void);
+          return;
+        case 'error':
+          this.real.addEventListener('error', listener as () => void);
+          return;
+      }
+    }
+  };
+}
+
+/**
+ * Waits until `sent` contains a message satisfying `predicate` — the
+ * outbound-frame counterpart of `FakeNode.waitFor` above, for assertions
+ * against a recording socket ctor's own client-side record rather than a
+ * peer's inbox. A real timer, not a fake/advanced one, for the same reason
+ * `waitForStore`/`FakeNode.waitFor` already poll on one: every `RelayClient`
+ * here talks to a real in-process `@loombox/relay` over a real WebSocket
+ * (`RelayClient`'s own class docstring), so nothing here is on a mockable
+ * clock.
+ */
+async function waitForSentMessage(
+  sent: WireMessageV1[],
+  predicate: (message: WireMessageV1) => boolean,
+  timeoutMs = 3000,
+): Promise<WireMessageV1> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const found = sent.find(predicate);
+    if (found) return found;
+    if (Date.now() > deadline) throw new Error('waitForSentMessage: timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/**
+ * Polls an arbitrary synchronous condition on a real timer (see
+ * `waitForSentMessage`'s doc comment for why one is unavoidable here) —
+ * used instead of `waitForStore` where the awaited transition is only
+ * momentarily true (e.g. `status === 'closed'` during this test file's own
+ * tiny `initialBackoffMs`, which the store can flip past between two 10ms
+ * polls); `sockets.length` growing is monotonic and so never races.
+ */
+async function waitForCondition(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error('waitForCondition: timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 let relay: StartedRelay;
@@ -2959,6 +3339,159 @@ describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 conn
   });
 });
 
+describe('RelayClient: archiveSession (SPEC §7.2 board archive; issue #512)', () => {
+  it('archiveSession sends a plain session_archive_request and resolves once outcome: "ok" comes back, dropping the session from the store', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-archive-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_archive_1', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Archive me', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-archive-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const archivePromise = client.archiveSession(session.id, { removeWorktree: true });
+
+    const request = (await node.waitFor((m) => m.type === 'session_archive_request')) as {
+      type: 'session_archive_request';
+      requestId: string;
+      sessionId: string;
+      removeWorktree: boolean;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(request.removeWorktree).toBe(true);
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'removeWorktree', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    node.send({
+      type: 'session_archive_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: session.id,
+      result: { outcome: 'ok' },
+    });
+
+    await expect(archivePromise).resolves.toBeUndefined();
+    await waitForStore(client.sessions, (sessions) => !sessions.some((s) => s.id === session.id));
+  });
+
+  it('archiveSession rejects with the node-reported message when outcome: "error" comes back, and leaves the session on the board', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-archive-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_archive_2', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Archive me too', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-archive-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const archivePromise = client.archiveSession(session.id, { removeWorktree: true });
+    const request = (await node.waitFor((m) => m.type === 'session_archive_request')) as {
+      requestId: string;
+    };
+    node.send({
+      type: 'session_archive_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: session.id,
+      result: { outcome: 'error', message: 'git worktree remove failed: exit code 128' },
+    });
+
+    await expect(archivePromise).rejects.toThrow('git worktree remove failed: exit code 128');
+    // A failed archive never drops the session — it is still on the board.
+    expect(get(client.sessions).some((s) => s.id === session.id)).toBe(true);
+  });
+
+  it('archiveSession rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-archive-no-conn',
+      deviceId: 'client-archive-no-conn',
+    });
+    await expect(
+      client.archiveSession('sess_nonexistent', { removeWorktree: true }),
+    ).rejects.toThrow(/no open connection/);
+  });
+
+  it('drops a session from the store on any outcome: "ok" response, even one this client never itself requested (account-wide fan-out, issue #512)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-fanout';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-archive-fanout',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_archive_fanout', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Archived elsewhere', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-archive-fanout',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    // This client never called archiveSession for this sessionId — this is
+    // the relay's own account-wide publish for another device's request
+    // (packages/relay/src/relay.ts). The requestId matches nothing this
+    // client is waiting on.
+    node.send({
+      type: 'session_archive_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-from-another-device',
+      sessionId: session.id,
+      result: { outcome: 'ok' },
+    });
+
+    await waitForStore(client.sessions, (sessions) => !sessions.some((s) => s.id === session.id));
+  });
+});
+
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
   it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
     const amk = generateAmk();
@@ -4005,5 +4538,171 @@ describe('RelayClient: sessionDecryptFailures (issue #384 mismatched-AMK state)'
     await waitForStore(client.status, (status) => status === 'open');
     await waitForStore(client.sessions, (value) => Array.isArray(value));
     expect(get(client.sessionDecryptFailures)).toBe(0);
+  });
+});
+
+describe('RelayClient: auto-reconnect + heartbeat (issue #511)', () => {
+  it('an unexpected drop reconnects on its own, with backoff, and re-sends session_list_request', async () => {
+    const amk = generateAmk();
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-auto-reconnect',
+      deviceId: 'client-auto-reconnect',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    expect(sent.filter((m) => m.type === 'session_list_request')).toHaveLength(1);
+    expect(sockets).toHaveLength(1);
+
+    // An unexpected drop, not client.close() — RelayClient cannot tell the
+    // difference between the test closing the underlying transport and a
+    // real network blip closing it.
+    sockets[0].close();
+
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+    expect(sockets).toHaveLength(2);
+    expect(sent.filter((m) => m.type === 'session_list_request')).toHaveLength(2);
+  });
+
+  it('an explicit close() never reconnects, even after waiting out several backoff intervals', async () => {
+    const amk = generateAmk();
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-no-reconnect-after-close',
+      deviceId: 'client-no-reconnect-after-close',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: recordingSocketCtor([], sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    client.close();
+    await waitForStore(client.status, (status) => status === 'closed');
+
+    // Long enough for several (incorrect) automatic retries to have fired
+    // if close() hadn't disarmed them.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(get(client.status)).toBe('closed');
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('a WebSocket constructor that throws once still recovers on the automatic retry', async () => {
+    const amk = generateAmk();
+    const counter = { attempts: 0, failUntilAttempt: 1 };
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-ctor-throws',
+      deviceId: 'client-ctor-throws',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: flakyConstructorSocketCtor(counter),
+    });
+
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    expect(counter.attempts).toBe(2);
+  });
+
+  it('recovers from a socket that fires only "error" and never "close" on a failed connection attempt (undici asymmetry, issue #511)', async () => {
+    const amk = generateAmk();
+    const counter = { attempts: 0, failUntilAttempt: 1 };
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-error-without-close',
+      deviceId: 'client-error-without-close',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: errorWithoutCloseSocketCtor(counter),
+    });
+
+    // Under the old close-handler-only reconnect wiring this hangs forever
+    // (the failing attempt's 'error' sets status 'error' and nothing ever
+    // schedules a retry) — this is the exact four-hour-outage shape #511
+    // was filed for, reproduced at the RelayClient level.
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    expect(counter.attempts).toBe(2);
+  });
+
+  it('pings a relay that advertised HEARTBEAT_CAPABILITY, every heartbeatIntervalMs', async () => {
+    const amk = generateAmk();
+    const sent: WireMessageV1[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-heartbeat-pings',
+      deviceId: 'client-heartbeat-pings',
+      heartbeatIntervalMs: 20,
+      webSocketImpl: recordingSocketCtor(sent, []),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const ping = await waitForSentMessage(sent, (m) => m.type === 'ping');
+    if (ping.type !== 'ping') throw new Error('expected a ping frame');
+    expect(ping.protocolVersion).toBe(PROTOCOL_V1);
+    expect(ping.nonce.length).toBeGreaterThan(0);
+
+    // The real relay answers every ping, so the heartbeat itself must never
+    // tear a healthy connection down.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(get(client.status)).toBe('open');
+  });
+
+  it('tears the socket down and reconnects when a ping goes unanswered by the next tick', async () => {
+    const amk = generateAmk();
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-heartbeat-timeout',
+      deviceId: 'client-heartbeat-timeout',
+      heartbeatIntervalMs: 25,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: pingSwallowingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+    expect(sent.some((m) => m.type === 'ping')).toBe(true);
+  });
+
+  it('never pings a relay that did not advertise HEARTBEAT_CAPABILITY', async () => {
+    const amk = generateAmk();
+    const sent: WireMessageV1[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-heartbeat-unsupported',
+      deviceId: 'client-heartbeat-unsupported',
+      heartbeatIntervalMs: 15,
+      webSocketImpl: capabilityStrippingSocketCtor(sent),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    // A real wait, not an awaited event: the claim under test is that
+    // nothing happens, so there is no signal to await instead — several
+    // heartbeatIntervalMs multiples give a false negative here a real
+    // chance to surface.
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect(sent.some((m) => m.type === 'ping')).toBe(false);
+    expect(get(client.status)).toBe('open');
   });
 });
