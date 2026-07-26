@@ -35,6 +35,7 @@ import {
 } from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from './node-daemon';
+import { SessionManager } from './session-manager';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { FakeTransport, type FakeExecHandler } from './ssh/fake-transport';
@@ -2972,5 +2973,55 @@ describe('NodeDaemon session archive (SPEC §7.2, issue #512)', () => {
     expect(response.result.outcome).toBe('error');
     if (response.result.outcome !== 'error') throw new Error('unreachable');
     expect(response.result.message.length).toBeGreaterThan(0);
+  });
+
+  it('answers ok for a session it no longer tracks, so a node restart cannot leave a permanently unarchivable row', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-forgotten';
+
+    const sessionManager = new SessionManager();
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-forgotten',
+      deviceId: 'device-node-archive-forgotten',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      sessionManager,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-forgotten',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // Exactly what a node restart does to `SessionManager`'s in-memory
+    // records while the relay's Postgres-backed board keeps the row. Done
+    // through the manager's own API rather than a test-only hook, and
+    // without touching disk, so the worktree survives just as it would.
+    await sessionManager.removeSession(session.id, { removeWorktree: false });
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_forgotten',
+      sessionId: session.id,
+      removeWorktree: true,
+    });
+
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result).toEqual({ outcome: 'ok' });
+
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const list = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    expect(list.sessions.some((s) => s.session.id === session.id)).toBe(false);
   });
 });

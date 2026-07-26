@@ -1710,17 +1710,32 @@ export class NodeDaemon extends EventEmitter {
    * and branch too — see {@link SessionManager.removeSession}'s own doc
    * comment for exactly what `removeWorktree` does and doesn't touch.
    * Always replies, exactly like `handleTargetFsListRequest`'s "never a
-   * silent hang" contract. Silently ignored for a sessionId this node
-   * doesn't hold, exactly like `handlePromptInject` above — the relay
-   * already scoped routing to this node by the session's own nodeId
-   * before this ever arrives, so an unknown id here means a stale request
-   * racing this node's own restart, not a spoofed target.
+   * silent hang" contract — including for a sessionId this node does not
+   * hold, which answers `ok`.
+   *
+   * That case is not hypothetical and not a race: `SessionManager` keeps its
+   * records in memory only, so every node restart forgets every session
+   * while the relay (backed by Postgres) still lists them. Copying
+   * `handlePromptInject`'s silent-ignore here made every such row
+   * permanently unarchivable — the client waits out its timeout and the row
+   * comes back on the next load, forever. Found by archiving a real session
+   * across a real node restart, which no test covered.
+   *
+   * `ok` is the honest answer rather than a convenient one: archiving asks
+   * for this session to stop existing, and for everything this node governs
+   * that already holds. What it cannot do is clean the forgotten session's
+   * worktree, since the path lives under its `projectPath` and that only
+   * ever travels inside the session's encrypted envelope (SPEC §8) — a
+   * session this node forgot is one whose folder it can no longer name.
+   * That leak belongs to the node's session state being memory-only, filed
+   * separately; refusing here would only add an unremovable row on top of it.
    */
   private handleSessionArchiveRequest(message: SessionArchiveRequest): void {
     if (!this.sessionManager.getSession(message.sessionId)) {
       console.warn(
-        `NodeDaemon: session_archive_request for unknown session "${message.sessionId}"`,
+        `NodeDaemon: session_archive_request for a session this node no longer tracks ("${message.sessionId}"); reporting it archived so the row can be cleared`,
       );
+      this.sendSessionArchiveResponse(message, { outcome: 'ok' });
       return;
     }
     this.archiveSession(message.sessionId, message.removeWorktree)

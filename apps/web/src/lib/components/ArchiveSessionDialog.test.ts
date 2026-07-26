@@ -183,4 +183,27 @@ describe('ArchiveSessionDialog (SPEC §7.2 board archive; issue #512)', () => {
     );
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('rephrases a transport timeout instead of leaking the wire identifier at the user (issue #505 precedent)', async () => {
+    const archiveSession = vi
+      .fn()
+      .mockRejectedValue(new Error('RelayClient: timed out waiting for session_archive_response'));
+    render(ArchiveSessionDialog, {
+      props: {
+        open: true,
+        session: makeSession(),
+        client: fakeClient(archiveSession),
+        onClose: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByTestId('archive-session-confirm'));
+
+    const notice = await vi.waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('session_archive_response');
+    expect(notice.textContent).toContain('may be asleep, offline, or on an older relay');
+    // Says plainly that nothing happened: a timeout is the one failure where
+    // the user cannot tell whether the destructive half already ran.
+    expect(notice.textContent).toContain('Nothing was archived');
+  });
 });

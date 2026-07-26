@@ -77,7 +77,21 @@
       });
       onClose();
     } catch (error) {
-      archiveError = error instanceof Error ? error.message : String(error);
+      // A timeout here means nothing answered at all, and its `Error#message`
+      // is wire/internal phrasing written for a developer console
+      // ("RelayClient: timed out waiting for session_archive_response"), not
+      // for this screen — the same leak issue #505 fixed in
+      // `DirectoryPicker`. A sleeping laptop, a dropped node, or a relay too
+      // old to route this are all ordinary causes, and none of them are the
+      // user's fault or their vocabulary. The node's own errors (git refusing
+      // to remove a worktree, say) are written for a human already, so those
+      // are shown verbatim; only the transport timeout gets rephrased. The
+      // real message still reaches a developer via `console.warn`.
+      console.warn('ArchiveSessionDialog: archiveSession failed', error);
+      const raw = error instanceof Error ? error.message : String(error);
+      archiveError = raw.includes('timed out waiting')
+        ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay. Nothing was archived.'
+        : raw;
     } finally {
       archiving = false;
     }
