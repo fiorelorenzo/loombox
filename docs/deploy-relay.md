@@ -146,6 +146,7 @@ rsync -az --delete \
   --exclude '.git' --exclude 'node_modules' --exclude '.svelte-kit' \
   --exclude 'apps/web/build' \
   --exclude 'deploy/relay/.env' --exclude 'deploy/relay/backups' \
+  --exclude 'deploy/web/docker-compose.live.yml' \
   ./ prodbox:/opt/apps/loombox/
 
 # on prodbox — the build takes 2-3 minutes, so run it detached rather than
@@ -154,12 +155,18 @@ cd /opt/apps/loombox/deploy/relay
 docker compose up -d --build
 ```
 
-**The two `deploy/relay` excludes are not optional.** `.env` holds
-`BETTER_AUTH_SECRET` (losing it invalidates every login session) and
-`POSTGRES_PASSWORD`; `backups/` holds the encrypted database dumps, which are
-the only copy of everything the relay stores (see `docs/relay-backup.md`).
-Neither is in git, so a `--delete` sync without these excludes deletes them
-off the host.
+**None of those last three excludes is optional**, because none of the files
+is in git and a `--delete` sync therefore deletes them off the host:
+
+- `deploy/relay/.env` holds `BETTER_AUTH_SECRET` (losing it invalidates every
+  login session) and `POSTGRES_PASSWORD`.
+- `deploy/relay/backups/` holds the encrypted database dumps, the only copy of
+  everything the relay stores (see `docs/relay-backup.md`).
+- `deploy/web/docker-compose.live.yml` is the prodbox-local overlay that
+  bind-mounts the host's `apps/web/build` into the web container, which is the
+  whole reason `scripts/deploy-web.sh` can ship the PWA without a Docker build.
+  Delete it and that script fails at its restart step with
+  `no such file or directory`, which is how this entry got written.
 
 Migrations run automatically on the relay's boot. To roll a migration back
 manually, `docker compose exec relay pnpm --filter @loombox/relay migrate down`.
