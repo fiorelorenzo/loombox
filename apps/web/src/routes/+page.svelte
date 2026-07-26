@@ -63,6 +63,7 @@
     type Project,
   } from '$lib/projects';
   import AddProjectDialog from '$lib/components/AddProjectDialog.svelte';
+  import ArchiveSessionDialog from '$lib/components/ArchiveSessionDialog.svelte';
   import AppearanceSettings from '$lib/components/AppearanceSettings.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
@@ -258,6 +259,9 @@
   let projectMenuFor = $state<string | undefined>(undefined);
   /** Which session row's `⋯` menu is open, if any — keyed by session id so only one row menu exists at a time. */
   let sessionRowMenuFor = $state<string | undefined>(undefined);
+  /** The session a just-opened `ArchiveSessionDialog` confirms archiving for (design spec v4 §3.2's row menu); `undefined` when none is open. Kept separate from a plain boolean so the dialog's own exit transition still has real session content to render while it plays out — same split `newSessionProject`/`newSessionOpen` already use. */
+  let archivingSession = $state<ClientSessionMeta | undefined>(undefined);
+  let archiveSessionOpen = $state(false);
   /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
   let renamingProjectId = $state<string | undefined>(undefined);
   /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
@@ -434,6 +438,26 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
+  /**
+   * The transcript's scroll container, and whether it is currently following
+   * the newest output (issue #508).
+   *
+   * It never did. `.items` scrolls, but nothing ever moved `scrollTop`, so a
+   * live session streamed its newest tool calls and messages in *below the
+   * fold* and left the list pinned at the very first frame — measured at
+   * `scrollTop: 0` with 140px of unseen content on the audit transcript.
+   * What you saw at the boundary was a diff sliced through the middle of its
+   * glyphs with no scrollbar and no bottom border, which is why #508 was
+   * filed as a rendering fault: the cut was real, "there is more below" was
+   * the part never communicated.
+   *
+   * Following is conditional on purpose. Yanking the view back down while
+   * someone is reading earlier output is the other half of this bug, so
+   * scrolling up detaches, {@link jumpToLatest} (and switching session)
+   * re-attaches, and the button only exists while detached.
+   */
+  let transcriptList = $state<HTMLElement | undefined>(undefined);
+  let followingTranscript = $state(true);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   let attachments = $state<ComposerAttachment[]>([]);
@@ -750,6 +774,9 @@
     unsubscribeStaleNotice?.();
     unsubscribeFileTree?.();
     transcript = undefined;
+    // Opening a session shows its newest output, never wherever the previous
+    // one happened to be scrolled to (issue #508).
+    followingTranscript = true;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
@@ -841,6 +868,14 @@
         pendingSessionIdFromUrl = undefined;
       } else if (!selectedSessionId && value[0]) {
         selectSession(value[0].id);
+      } else if (selectedSessionId && !value.some((s) => s.id === selectedSessionId)) {
+        // Issue #512: an archive (this device's own request, or another
+        // device's — the relay fans session_archive_response out account-
+        // wide) can drop the selected session out of `value`. Falls back
+        // exactly like the "nothing selected yet" branch above: the next
+        // remaining session, or the empty state if none are left.
+        if (value[0]) selectSession(value[0].id);
+        else selectedSessionId = undefined;
       }
     });
     // Issue #384's mismatched-AMK state: today's silent decrypt-drop gets a
@@ -1522,6 +1557,16 @@
     projectStore.adoptFromSessions(sessions);
   }
 
+  /** The session row menu's "Archive session…" action (design spec v4 §3.2; issue #512). */
+  function openArchiveSessionDialog(session: ClientSessionMeta): void {
+    archivingSession = session;
+    archiveSessionOpen = true;
+  }
+
+  function closeArchiveSessionDialog(): void {
+    archiveSessionOpen = false;
+  }
+
   /**
    * Which single CTA the main-area empty state offers (design spec v4
    * §3.3): "always the one that unblocks the next step." Checked in this
@@ -1577,6 +1622,46 @@
   function toggleActiveClass(active: boolean): string {
     return active ? 'warp-toggle-active' : '';
   }
+
+  /**
+   * How far off the bottom still counts as "following" (issue #508). A
+   * couple of lines of slack, because sub-pixel rounding and a growing last
+   * item routinely leave `scrollTop` a hair short of the exact bottom, and
+   * detaching on that would make the button flicker on every streamed chunk.
+   */
+  const FOLLOW_TRANSCRIPT_SLACK_PX = 48;
+
+  function distanceFromTranscriptBottom(el: HTMLElement): number {
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  }
+
+  function onTranscriptScroll(event: Event): void {
+    const el = event.currentTarget as HTMLElement;
+    followingTranscript = distanceFromTranscriptBottom(el) <= FOLLOW_TRANSCRIPT_SLACK_PX;
+  }
+
+  function jumpToLatest(): void {
+    followingTranscript = true;
+    transcriptList?.scrollTo({ top: transcriptList.scrollHeight, behavior: 'smooth' });
+  }
+
+  /**
+   * Follows the newest output while attached (issue #508).
+   *
+   * Keyed on `transcript` itself rather than on `items.length`: the reducer
+   * returns a fresh state object for every update, and a streaming text
+   * chunk grows the *last existing* item rather than appending a new one, so
+   * a length-keyed effect would sit still through exactly the case that
+   * needs it most. Runs after the DOM is updated, which is what makes
+   * reading the just-grown `scrollHeight` correct.
+   */
+  $effect(() => {
+    void transcript;
+    if (!followingTranscript) return;
+    const el = transcriptList;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  });
 
   /**
    * Keeps the Drawer's active tab visible (redesign v3 design spec §3.6).
@@ -2006,6 +2091,17 @@
                 }}
               >
                 Copy project path
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="session-archive-link"
+                onclick={() => {
+                  closeSidebarMenus();
+                  openArchiveSessionDialog(session);
+                }}
+              >
+                Archive session…
               </button>
             </div>
           {/if}
@@ -2620,7 +2716,12 @@
               {/snippet}
             </EmptyState>
           {:else}
-            <ol class="items">
+            <ol
+              class="items"
+              bind:this={transcriptList}
+              onscroll={onTranscriptScroll}
+              data-testid="transcript-items"
+            >
               {#each transcript?.items ?? [] as item (item.id)}
                 <li>
                   {#if item.type === 'message'}
@@ -2640,6 +2741,18 @@
                 </li>
               {/each}
             </ol>
+
+            {#if !followingTranscript}
+              <button
+                type="button"
+                class="jump-latest"
+                onclick={jumpToLatest}
+                data-testid="transcript-jump-latest"
+              >
+                <Icon name="chevron-down" size="100%" />
+                Jump to latest
+              </button>
+            {/if}
 
             <div class="canvas-footer">
               {#if transcript && transcript.plan.length > 0}
@@ -2932,6 +3045,15 @@
     onGitRepoResolved={(isGitRepo) => {
       if (newSessionProject) projectStore.setGitRepo(newSessionProject.id, isGitRepo);
     }}
+  />
+{/if}
+
+{#if archivingSession}
+  <ArchiveSessionDialog
+    open={archiveSessionOpen}
+    session={archivingSession}
+    {client}
+    onClose={closeArchiveSessionDialog}
   />
 {/if}
 
@@ -4093,6 +4215,38 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+
+  /* The "there is more below" affordance #508 asked for. Sits between the
+     scrolling transcript and the pinned footer, so it reads as the edge of
+     the scroll region rather than as another transcript item, and it exists
+     only while detached — a permanent control here would be one more thing
+     to ignore. */
+  .jump-latest {
+    align-self: center;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin-top: calc(var(--space-sm) * -1);
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
+    color: var(--color-text-secondary);
+    font-size: var(--text-caption-size);
+    cursor: pointer;
+  }
+
+  .jump-latest :global(svg) {
+    width: 0.85em;
+    height: 0.85em;
+  }
+
+  .jump-latest:hover {
+    color: var(--color-text-primary);
+    border-color: var(--color-border-strong);
   }
 
   .canvas-footer {

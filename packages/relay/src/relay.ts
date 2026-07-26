@@ -2,6 +2,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyWebsocket, { type WebSocket as WsWebSocket } from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
+  HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   initialize,
   negotiateVersion,
@@ -9,11 +10,13 @@ import {
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type InitializeResult,
+  type Pong,
   type LeaseReleaseResult,
   type LeaseResult,
   type NewDeviceBootstrapResponse,
   type ResyncMarker,
   type SessionAnnounceV1,
+  type SessionArchiveResponse,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
   type TargetList,
@@ -62,7 +65,15 @@ export const RELAY_WS_PATH = '/ws';
  */
 const RELAY_SUPPORTED_VERSIONS = [PROTOCOL_V1] as const;
 
-/** What this relay build can do, echoed back in `initializeResult` (#108). Purely informational today. */
+/**
+ * What this relay build can do, echoed back in `initializeResult` (#108).
+ *
+ * Mostly informational, with one exception that is load-bearing:
+ * {@link HEARTBEAT_CAPABILITY} is how a peer learns it may arm a pong
+ * deadline against this relay (issue #511). A relay that predates the
+ * heartbeat drops a `ping` silently instead of answering it, so a peer that
+ * assumed a reply would kill its own healthy connection every interval.
+ */
 const RELAY_CAPABILITIES = [
   'devices',
   'targets',
@@ -70,6 +81,7 @@ const RELAY_CAPABILITIES = [
   'blobs',
   'resync',
   'presence',
+  HEARTBEAT_CAPABILITY,
 ] as const;
 
 interface BaseConnection {
@@ -758,6 +770,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     message: WireMessageV1,
   ): Promise<boolean> {
     switch (message.type) {
+      // Issue #511. Answered on the socket it arrived on and never routed:
+      // a peer built on the WHATWG `WebSocket` (the node's Node 22 global,
+      // the browser's) cannot send a transport-level ping, so this is its
+      // only way to tell a live relay from a half-open socket that will
+      // never deliver another frame. Same for both roles, hence here rather
+      // than in the node/client switches below.
+      case 'ping': {
+        const reply: Pong = { type: 'pong', protocolVersion: PROTOCOL_V1, nonce: message.nonce };
+        sendDirect(connection, reply);
+        return true;
+      }
       case 'device_register':
         await store.devices.upsert({
           deviceId: message.deviceId,
@@ -1100,6 +1123,28 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         fanOutSessionUpdate(message.sessionId, finalized);
         return;
       }
+      case 'session_archive_response': {
+        // #512: the owning node's reply to a client's session_archive_request.
+        // On success the session is actually gone — delete it from the
+        // store BEFORE publishing, so no client can race a fresh
+        // session_resume against a row every device is about to be told
+        // no longer exists.
+        if (message.result.outcome === 'ok') {
+          await store.sessions.deleteSession(message.sessionId);
+        }
+        // Published to every client of the account, not only the
+        // requester — exactly like presence's own account-wide client
+        // loop below (`handleClientMessage`): a second device holding the
+        // same board must drop the row too, or it keeps one pointing at a
+        // session that's already gone. There is no per-session subscriber
+        // list to fan this through (the session may no longer exist by
+        // the time this runs), hence the direct account-wide loop rather
+        // than `fanOutDirect`.
+        for (const client of registry.clients) {
+          if (client.accountId === connection.accountId) sendDirect(client, message);
+        }
+        return;
+      }
       case 'permission_request':
         fanOutDirect(message.sessionId, message);
         // #163: presence-aware push — a tool call awaiting approval is one
@@ -1352,6 +1397,45 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           privateEnvelope: record.privateEnvelope,
         };
         sendDirect(connection, announce);
+        return;
+      }
+      case 'session_archive_request': {
+        // #512's row-menu archive action: same account-ownership check as
+        // session_resume above. On a foreign/unknown session, reply
+        // directly with outcome: 'error' instead of silently dropping —
+        // unlike a routed request, there is no owning node that will ever
+        // answer this one, so a silent drop would just make the caller's
+        // own pending-request timeout the only way to learn it failed.
+        const record = await store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: session_archive_request for unknown/foreign session',
+          );
+          const errorResponse: SessionArchiveResponse = {
+            type: 'session_archive_response',
+            protocolVersion: PROTOCOL_V1,
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            result: { outcome: 'error', message: `unknown session ${message.sessionId}` },
+          };
+          sendDirect(connection, errorResponse);
+          return;
+        }
+        // Routed directly by the session's own nodeId, verbatim, keeping
+        // requestId — an owning node that isn't currently connected is the
+        // same "nothing to route to" case session_create/
+        // provision_target_request above already treat as a silent drop,
+        // relying on the requester's own pending-request timeout.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(record.meta.nodeId);
+        if (!nodeConnection) {
+          app.log.warn(
+            { sessionId: message.sessionId, nodeId: record.meta.nodeId },
+            'relay: session_archive_request owning node not connected',
+          );
+          return;
+        }
+        sendDirect(nodeConnection, message);
         return;
       }
       case 'session_create': {

@@ -41,6 +41,8 @@ import {
   type PromptInjectV1,
   type ProvisionProgress,
   type ProvisionTargetResult,
+  type SessionArchiveRequest,
+  type SessionArchiveResult,
   type SessionCreate,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
@@ -74,7 +76,12 @@ import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
-import { SessionManager, sessionWorktreeBranch, type Session } from './session-manager';
+import {
+  InvalidSessionTransitionError,
+  SessionManager,
+  sessionWorktreeBranch,
+  type Session,
+} from './session-manager';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
 import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
@@ -1592,6 +1599,9 @@ export class NodeDaemon extends EventEmitter {
       case 'session_create':
         this.handleSessionCreate(message);
         return;
+      case 'session_archive_request':
+        this.handleSessionArchiveRequest(message);
+        return;
       case 'prompt_inject':
         this.handlePromptInject(message);
         return;
@@ -1688,6 +1698,78 @@ export class NodeDaemon extends EventEmitter {
     // `undefined`/wrong-shaped or missing fields.
     const decrypted = await openJson<unknown>(message.sessionId, message.privateEnvelope, key);
     return parseSessionPrivateMetaV1(decrypted);
+  }
+
+  /**
+   * A client asked (via the relay) to archive one of this node's sessions
+   * — SPEC §7.2's board archive affordance, issue #512 (the counterpart
+   * to #507's worktree wiring that had no way to ever clean up after
+   * itself). Ends the session first, tolerating one that already ended
+   * (archiving a finished session is the common case), then always
+   * forgets the record and, when asked, tears down its isolated worktree
+   * and branch too — see {@link SessionManager.removeSession}'s own doc
+   * comment for exactly what `removeWorktree` does and doesn't touch.
+   * Always replies, exactly like `handleTargetFsListRequest`'s "never a
+   * silent hang" contract — including for a sessionId this node does not
+   * hold, which answers `ok`.
+   *
+   * That case is not hypothetical and not a race: `SessionManager` keeps its
+   * records in memory only, so every node restart forgets every session
+   * while the relay (backed by Postgres) still lists them. Copying
+   * `handlePromptInject`'s silent-ignore here made every such row
+   * permanently unarchivable — the client waits out its timeout and the row
+   * comes back on the next load, forever. Found by archiving a real session
+   * across a real node restart, which no test covered.
+   *
+   * `ok` is the honest answer rather than a convenient one: archiving asks
+   * for this session to stop existing, and for everything this node governs
+   * that already holds. What it cannot do is clean the forgotten session's
+   * worktree, since the path lives under its `projectPath` and that only
+   * ever travels inside the session's encrypted envelope (SPEC §8) — a
+   * session this node forgot is one whose folder it can no longer name.
+   * That leak belongs to the node's session state being memory-only, filed
+   * separately; refusing here would only add an unremovable row on top of it.
+   */
+  private handleSessionArchiveRequest(message: SessionArchiveRequest): void {
+    if (!this.sessionManager.getSession(message.sessionId)) {
+      console.warn(
+        `NodeDaemon: session_archive_request for a session this node no longer tracks ("${message.sessionId}"); reporting it archived so the row can be cleared`,
+      );
+      this.sendSessionArchiveResponse(message, { outcome: 'ok' });
+      return;
+    }
+    this.archiveSession(message.sessionId, message.removeWorktree)
+      .then(() => this.sendSessionArchiveResponse(message, { outcome: 'ok' }))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendSessionArchiveResponse(message, { outcome: 'error', message: detail });
+      });
+  }
+
+  private async archiveSession(sessionId: string, removeWorktree: boolean): Promise<void> {
+    try {
+      this.sessionManager.endSession(sessionId);
+    } catch (error) {
+      // Archiving an already-ended session is the common case (see this
+      // method's caller's doc comment) — anything else (e.g. the id
+      // vanishing between the existence check and here) is a real failure
+      // and must still surface as outcome: 'error'.
+      if (!(error instanceof InvalidSessionTransitionError)) throw error;
+    }
+    await this.sessionManager.removeSession(sessionId, { removeWorktree });
+  }
+
+  private sendSessionArchiveResponse(
+    message: SessionArchiveRequest,
+    result: SessionArchiveResult,
+  ): void {
+    this.relay.send({
+      type: 'session_archive_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      result,
+    });
   }
 
   /** A client injected a follow-up prompt (via the relay) into one of this node's sessions. */

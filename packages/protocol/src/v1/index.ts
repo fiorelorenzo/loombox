@@ -93,6 +93,17 @@ export {
   sessionWithPrivateEnvelope,
 } from './sessions';
 
+export type {
+  SessionArchiveRequest,
+  SessionArchiveResponse,
+  SessionArchiveResult,
+} from './session-lifecycle';
+export {
+  sessionArchiveRequest,
+  sessionArchiveResponse,
+  sessionArchiveResult,
+} from './session-lifecycle';
+
 export type { SessionUpdateEnvelopeV1 } from './transcript';
 export { sessionUpdateEnvelopeV1 } from './transcript';
 
@@ -249,6 +260,9 @@ export {
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';
 export { presence, resyncMarker, resyncRequest } from './presence';
 
+export type { Ping, Pong } from './heartbeat';
+export { HEARTBEAT_CAPABILITY, ping, pong } from './heartbeat';
+
 export type {
   LeaseDenial,
   LeaseGrant,
@@ -366,6 +380,11 @@ import {
   sessionResume,
   sessionWithPrivateEnvelope,
 } from './sessions';
+import {
+  sessionArchiveRequest,
+  sessionArchiveResponse,
+  sessionArchiveResult,
+} from './session-lifecycle';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import {
   acpConfigOptionChoiceV1,
@@ -501,6 +520,9 @@ export const schemasV1 = {
   sessionResume,
   sessionListRequest,
   sessionListV1,
+  sessionArchiveRequest,
+  sessionArchiveResponse,
+  sessionArchiveResult,
   sessionUpdateEnvelopeV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,

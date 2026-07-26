@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   type AmkEpochFetchResponse,
   type AmkEscrow,
@@ -26,6 +27,8 @@ import {
   type ProvisionTargetResult,
   type ResyncMarker,
   type SessionAnnounceV1,
+  type SessionArchiveRequest,
+  type SessionArchiveResponse,
   type SessionCreate,
   type SessionListV1,
   type SessionMetaPublic,
@@ -220,6 +223,31 @@ describe('relay v1', () => {
       expect(Array.isArray(result.capabilities)).toBe(true);
       expect(result.capabilities.length).toBeGreaterThan(0);
     });
+
+    it('advertises the heartbeat capability, which is what lets a peer arm a pong deadline', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+      });
+      expect(result.capabilities).toContain(HEARTBEAT_CAPABILITY);
+    });
+
+    it.each(['node', 'client'] as const)(
+      'answers a %s ping with a pong echoing the same nonce (issue #511)',
+      async (role) => {
+        const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+        closers.push(close);
+
+        const { socket } = await initConnection(url, { role, deviceId: 'd1', authToken: 't1' });
+        send(socket, { type: 'ping', protocolVersion: PROTOCOL_V1, nonce: 'probe-7' });
+
+        expect(await nextMessage(socket)).toMatchObject({ type: 'pong', nonce: 'probe-7' });
+      },
+    );
 
     it('closes an unsupported-version peer with an update-required notice instead of silently dropping it', async () => {
       const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
@@ -2950,6 +2978,227 @@ describe('relay v1', () => {
       } satisfies FsListResponse);
       const forwardedResponse = (await nextMessage(client)) as unknown as FsListResponse;
       expect(forwardedResponse.envelope).toEqual(notReallyEncryptedResponse);
+    });
+  });
+
+  describe('session_archive_request/session_archive_response (SPEC §7.2, issue #512): the row-menu archive action, account-checked and routed by sessionId like session_resume, published account-wide on success', () => {
+    it('routes session_archive_request to the node owning that session, byte-for-byte, keeping requestId', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_archive_route', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: SessionArchiveRequest = {
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_1',
+        sessionId: 'sess_archive_route',
+        removeWorktree: true,
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as SessionArchiveRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'removeWorktree', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('an archive request for an unknown sessionId gets outcome: "error" directly, without routing it anywhere', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_unknown',
+        sessionId: 'sess_nonexistent',
+        removeWorktree: false,
+      } satisfies SessionArchiveRequest);
+
+      const response = (await nextMessage(client)) as unknown as SessionArchiveResponse;
+      expect(response.type).toBe('session_archive_response');
+      expect(response.requestId).toBe('req_archive_unknown');
+      expect(response.result.outcome).toBe('error');
+    });
+
+    it("archiving a foreign account's session is refused: outcome: 'error' comes back directly and it is never routed to the owning node", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      const meta = makeSessionMeta({ id: 'sess_archive_foreign', accountId: 'acct_owner' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_intruder',
+        sessionId: 'sess_archive_foreign',
+        removeWorktree: true,
+      } satisfies SessionArchiveRequest);
+
+      const response = (await nextMessage(intruder)) as unknown as SessionArchiveResponse;
+      expect(response.result.outcome).toBe('error');
+
+      // The owning node must never have received it — assert directly
+      // rather than only inferring it from relay liveness (a node
+      // connection has no session_list_request-style benign round trip of
+      // its own to prove aliveness with).
+      await expect(nextMessage(node, 200)).rejects.toThrow(/timed out/);
+
+      // Prove the relay itself is still alive and responsive.
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const intruderNext = await nextMessage(intruder);
+      expect(intruderNext.type).toBe('session_list');
+    });
+
+    it("archiving with outcome: 'ok' deletes the session from the relay store and reaches every client of the account, not just the requester", async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_archive_ok', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await store.sessions.get('sess_archive_ok')).toBeDefined();
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must ALSO see
+      // the archive result, not just the requester (#512's whole point: a
+      // second device holding the same board must drop the row too).
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: SessionArchiveRequest = {
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_ok',
+        sessionId: 'sess_archive_ok',
+        removeWorktree: true,
+      };
+      send(requester, request);
+      const forwarded = (await nextMessage(node)) as unknown as SessionArchiveRequest;
+      expect(forwarded).toEqual(request);
+
+      const response: SessionArchiveResponse = {
+        type: 'session_archive_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        sessionId: 'sess_archive_ok',
+        result: { outcome: 'ok' },
+      };
+      send(node, response);
+
+      const requesterReply = (await nextMessage(requester)) as unknown as SessionArchiveResponse;
+      expect(requesterReply).toEqual(response);
+      const bystanderReply = (await nextMessage(bystander)) as unknown as SessionArchiveResponse;
+      expect(bystanderReply).toEqual(response);
+
+      expect(await store.sessions.get('sess_archive_ok')).toBeUndefined();
+    });
+
+    it("archiving with outcome: 'error' still reaches the requester but leaves the session in the relay store", async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_archive_err', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      send(requester, {
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_err',
+        sessionId: 'sess_archive_err',
+        removeWorktree: true,
+      } satisfies SessionArchiveRequest);
+      await nextMessage(node);
+
+      send(node, {
+        type: 'session_archive_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_archive_err',
+        sessionId: 'sess_archive_err',
+        result: { outcome: 'error', message: 'git worktree remove failed: exit code 128' },
+      } satisfies SessionArchiveResponse);
+
+      const requesterReply = (await nextMessage(requester)) as unknown as SessionArchiveResponse;
+      expect(requesterReply.result).toEqual({
+        outcome: 'error',
+        message: 'git worktree remove failed: exit code 128',
+      });
+      expect(await store.sessions.get('sess_archive_err')).toBeDefined();
     });
   });
 });

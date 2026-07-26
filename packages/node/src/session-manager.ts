@@ -335,21 +335,32 @@ export class SessionManager {
     return session;
   }
 
-  async removeSession(id: string): Promise<void> {
+  /**
+   * Removes a session's record, tearing down its isolated worktree and
+   * branch by default. Passing `removeWorktree: false` (SPEC §7.2's
+   * archive-without-cleanup choice, issue #512) instead just forgets the
+   * record and leaves disk exactly as it already was — for archiving a
+   * session whose worktree a caller deliberately wants to keep poking at.
+   *
+   * A `workInPlace` (or, for an `ssh:` session recorded directly by
+   * `NodeDaemon`, worktree-less) session has `branch === ''` and its
+   * `worktreePath` *is* `projectPath` — there is no worktree to remove,
+   * and `git worktree remove`/`rm -rf` on `projectPath` itself would
+   * destroy the user's actual working copy, so this never touches disk
+   * for one regardless of `removeWorktree`. Either no-disk case still
+   * releases the session's same-folder reservation (issue #68) — a
+   * force-remove can happen on a still-`running` session (never went
+   * through `endSession`), so this is the only release path guaranteed to
+   * run for it.
+   */
+  async removeSession(id: string, options: { removeWorktree?: boolean } = {}): Promise<void> {
+    const { removeWorktree = true } = options;
     const session = this.sessions.get(id);
     if (!session) {
       throw new Error(`no session with id ${id}`);
     }
 
-    // A `workInPlace` (or, for an `ssh:` session recorded directly by
-    // `NodeDaemon`, worktree-less) session has `branch === ''` and its
-    // `worktreePath` *is* `projectPath` — there is no worktree to remove,
-    // and `git worktree remove`/`rm -rf` on `projectPath` itself would
-    // destroy the user's actual working copy. Just forget the record, and
-    // release its same-folder reservation (issue #68) — a force-remove can
-    // happen on a still-`running` session (never went through `endSession`),
-    // so this is the only release path guaranteed to run for it.
-    if (!session.branch) {
+    if (!session.branch || !removeWorktree) {
       this.sameFolderGuard.release(session.projectPath, id);
       this.sessions.delete(id);
       return;
@@ -357,6 +368,13 @@ export class SessionManager {
 
     try {
       await runGit(['worktree', 'remove', '--force', session.worktreePath], session.projectPath);
+      // Only deletable once nothing has it checked out — `git branch -D`
+      // refuses outright on a branch still attached to a worktree, so this
+      // must run after the remove above succeeds, never before or in
+      // parallel (issue #512: without this, the repo accumulates one
+      // `loombox/session-*` branch per session forever, since nothing else
+      // ever prunes them).
+      await runGit(['branch', '-D', session.branch], session.projectPath);
     } finally {
       // Belt-and-suspenders: `git worktree remove` already deletes the
       // directory, but if it failed partway (or the dir was left behind)

@@ -35,6 +35,7 @@ import {
   type TranscriptState,
 } from '@loombox/providers-core';
 import {
+  HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   initializeResult,
   newDeviceBootstrapResponse,
@@ -48,10 +49,12 @@ import {
   type Initialize,
   type NewDeviceBootstrapRequest,
   type PermissionRequest,
+  type Pong,
   type ProvisionProgress,
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
   type SessionAnnounceV1,
+  type SessionArchiveResponse,
   type SessionListV1,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
@@ -142,7 +145,23 @@ export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
 const WS_OPEN = 1;
 
-/** Connection lifecycle exposed to the UI. v1 does not auto-reconnect (mirrors v0; see the class docstring). */
+/**
+ * A `setTimeout`/`setInterval` handle. Named rather than written inline as
+ * `ReturnType<typeof setTimeout>` at each use so every timer field in this
+ * class shares one contract; `setTimeout`/`setInterval` return the same
+ * handle type as each other in both environments this bundle runs in
+ * (`number` in a browser, `NodeJS.Timeout` under Node/SSR), so one alias
+ * covers both without committing to either concrete type.
+ */
+type TimerHandle = ReturnType<typeof setTimeout>;
+
+/**
+ * Connection lifecycle exposed to the UI. `'closed'` no longer means dead
+ * on arrival: an unexpected drop schedules a reconnect with backoff
+ * automatically (see the class docstring), so this value alone doesn't
+ * distinguish "retrying" from a deliberate `close()` — only the caller
+ * knows which one happened.
+ */
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
 /**
@@ -384,10 +403,40 @@ export interface RelayClientOptions {
    * few ms to stay fast.
    */
   turnIdleMs?: number;
+  /**
+   * Delay before the first reconnect attempt after an unexpected socket
+   * close (issue #511's "same class of bug" as `@loombox/node`'s
+   * `RelayConnection`; see the class docstring). Doubles on each further
+   * failure up to `maxBackoffMs`, and resets back to this the moment a
+   * handshake actually succeeds again. Defaults to 250ms; tests override
+   * it to a few ms to stay fast.
+   */
+  initialBackoffMs?: number;
+  /** Cap on the reconnect delay after repeated failures — see `initialBackoffMs`'s doc comment. Defaults to 10s. */
+  maxBackoffMs?: number;
+  /**
+   * How often (ms) to ping a relay that advertised `HEARTBEAT_CAPABILITY`
+   * in its handshake, tearing the socket down (triggering the same
+   * reconnect as an unexpected drop) if the previous ping's pong hasn't
+   * arrived by the next tick — the only way either peer can tell a
+   * half-open socket from a live one (`@loombox/protocol`'s
+   * `heartbeat.ts` doc comment). Never armed against a relay that didn't
+   * advertise the capability: an older relay drops an unknown frame
+   * silently rather than replying, so assuming a reply would kill an
+   * otherwise-healthy connection every interval instead of ever detecting
+   * anything. Defaults to 30s; tests override it to a few ms to stay fast.
+   */
+  heartbeatIntervalMs?: number;
 }
 
 /** Default for {@link RelayClientOptions.turnIdleMs}. */
 const DEFAULT_TURN_IDLE_MS = 1500;
+/** Default for {@link RelayClientOptions.initialBackoffMs}. */
+const DEFAULT_INITIAL_BACKOFF_MS = 250;
+/** Default for {@link RelayClientOptions.maxBackoffMs}. */
+const DEFAULT_MAX_BACKOFF_MS = 10_000;
+/** Default for {@link RelayClientOptions.heartbeatIntervalMs}. */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
 function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
@@ -729,8 +778,21 @@ const DEFAULT_CREATE_SESSION_TIMEOUT_MS = 10_000;
  * is no open connection, in which case it queues locally and persists to
  * the IndexedDB-backed offline outbox instead (SPEC §7.3, §7.24; issues
  * #128/#130), flushed in order once the turn settles or the connection
- * comes back. This client still does not itself auto-reconnect with backoff
- * (a caller decides when to call `connect()` again).
+ * comes back. An unexpected socket close now schedules a reconnect with
+ * capped exponential backoff automatically (`initialBackoffMs`/
+ * `maxBackoffMs`), mirroring `@loombox/node`'s `RelayConnection` fix for
+ * the identical bug (issue #511): the desktop app (`apps/desktop`,
+ * Electron) stays open for days, so a routine relay redeploy used to
+ * leave it permanently dead while the header chip's `'closed'` state kept
+ * claiming "Reconnecting…" — a label this client had never actually
+ * earned. `close()` stays a deliberate, non-retrying user action; every
+ * successful (re)connect, automatic or not, still drives
+ * `retryFailedAttachmentsOnReconnect`/`flushOutboxOnReconnect` exactly as
+ * a manual one would. Once open, and only if the relay's handshake
+ * advertised `HEARTBEAT_CAPABILITY`, this client also pings it
+ * (`heartbeatIntervalMs`) and reconnects if a pong is ever missing by the
+ * following tick, so a half-open socket can't look healthy forever
+ * (`@loombox/protocol`'s `heartbeat.ts` doc comment).
  *
  * All state is exposed as plain `svelte/store` readables (the `subscribe`
  * contract), which has no DOM dependency, so this whole module is unit
@@ -881,10 +943,47 @@ export class RelayClient {
     string,
     { resolve: (response: TargetUpdateResponse) => void; reject: (error: Error) => void }
   >();
+  /**
+   * requestId -> the pending {@link archiveSession} call it belongs to
+   * (SPEC §7.2's board archive affordance; issue #512).
+   * `session_archive_response` carries plain fields only (no envelope —
+   * see `@loombox/protocol`'s `session-lifecycle.ts` doc comment), so like
+   * {@link pendingTargetUpdateRequests} this resolves a `Promise` directly,
+   * no decrypt step needed. Unlike every other pending-request map here,
+   * an `outcome: 'ok'` response is also published to every OTHER client of
+   * the account (`packages/relay/src/relay.ts`'s account-wide fan-out) —
+   * {@link handleSessionArchiveResponse} drops the session from
+   * {@link sessionsStore} unconditionally on `'ok'`, independent of
+   * whether this map has a matching entry; only the pending promise itself
+   * is guarded by `requestId`, exactly like every sibling map here.
+   */
+  private readonly pendingArchiveRequests = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
-  private readonly turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly turnTimers = new Map<string, TimerHandle>();
   private socket: WebSocketLike | undefined;
   private awaitingInitializeResult = false;
+  /**
+   * Backing fields for reconnect-with-backoff (issue #511's "same class of
+   * bug" as `@loombox/node`'s `RelayConnection`) — `userClosed` is what
+   * tells a deliberate `close()` apart from a drop `scheduleReconnect`
+   * should retry.
+   */
+  private reconnectTimer: TimerHandle | undefined;
+  private backoffMs: number;
+  private userClosed = false;
+  private readonly initialBackoffMs: number;
+  private readonly maxBackoffMs: number;
+  /**
+   * Backing fields for the heartbeat (issue #511) — `pendingPingNonce` is
+   * the nonce of the ping still awaiting its pong, `undefined` once
+   * answered or before this connection has sent its first one.
+   */
+  private readonly heartbeatIntervalMs: number;
+  private heartbeatTimer: TimerHandle | undefined;
+  private pendingPingNonce: string | undefined;
 
   constructor(options: RelayClientOptions) {
     this.options = options;
@@ -895,6 +994,10 @@ export class RelayClient {
     this.devicePublicKey = options.devicePublicKey ?? randomBase64();
     this.outboxStorage = options.outboxStorage ?? createDefaultOutboxStorage(this.accountId);
     this.turnIdleMs = options.turnIdleMs ?? DEFAULT_TURN_IDLE_MS;
+    this.initialBackoffMs = options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
+    this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+    this.backoffMs = this.initialBackoffMs;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 
     const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
     if (!ctor) {
@@ -917,11 +1020,43 @@ export class RelayClient {
     void this.hydrateOutbox();
   }
 
-  /** Opens the connection (no-op if already connecting/open) and sends `initialize` once open. */
+  /**
+   * Opens the connection (no-op if already connecting/open) and sends
+   * `initialize` once open. Also re-arms auto-reconnect if a prior
+   * `close()` had disarmed it, and cancels a pending backoff retry so this
+   * always dials immediately rather than waiting out whatever delay was
+   * in flight.
+   */
   connect(): void {
+    this.userClosed = false;
     if (this.socket) return;
-    this.statusStore.set('connecting');
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.open();
+  }
 
+  /**
+   * Creates the socket and wires it up; never throws (issue #511, mirrors
+   * `@loombox/node`'s `RelayConnection`). A constructor failure is
+   * indistinguishable from a socket that opened and immediately died, so
+   * it gets the same treatment: surfaced as `'error'` and followed by a
+   * scheduled retry, rather than escaping the bare `setTimeout`
+   * `scheduleReconnect` runs this in and killing the retry chain for the
+   * life of this client.
+   */
+  private open(): void {
+    this.statusStore.set('connecting');
+    try {
+      this.attemptOpen();
+    } catch {
+      this.statusStore.set('error');
+      this.scheduleReconnect();
+    }
+  }
+
+  private attemptOpen(): void {
     const socket = new this.WebSocketCtor(withRelayWsPath(this.options.relayUrl));
     this.socket = socket;
     this.awaitingInitializeResult = true;
@@ -946,6 +1081,13 @@ export class RelayClient {
         this.awaitingInitializeResult = false;
         const result = initializeResult.safeParse(parsed);
         if (result.success) {
+          // A real handshake, not just a transport-level 'open', is what
+          // proves the relay is actually reachable and speaking this
+          // protocol version — resetting here (rather than on the
+          // socket's 'open' event) means a relay that accepts the TCP
+          // connection but keeps rejecting the handshake still backs off,
+          // instead of hot-looping at `initialBackoffMs` forever.
+          this.backoffMs = this.initialBackoffMs;
           this.statusStore.set('open');
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
@@ -961,19 +1103,55 @@ export class RelayClient {
           // connect too, since nothing can be queued before any prompt has
           // ever been sent.
           this.flushOutboxOnReconnect();
+          // Issue #511: only a relay that actually advertised the
+          // capability answers a ping at all — see
+          // `RelayClientOptions.heartbeatIntervalMs`'s doc comment for why
+          // arming this unconditionally would be worse than the bug it
+          // fixes.
+          if (result.data.capabilities.includes(HEARTBEAT_CAPABILITY)) {
+            this.startHeartbeat();
+          }
         } else {
+          // The relay rejects an incompatible/invalid handshake with an
+          // `update_required` notice (or an unparseable frame) then closes
+          // the socket (#108) — surface it rather than hanging silently.
+          // `onSocketGone` below still runs once that close/error arrives
+          // and schedules the actual reconnect.
           this.statusStore.set('error');
         }
         return;
       }
 
       const message = safeParseWireMessageV1(parsed);
-      if (message.success) this.handleInbound(message.data);
+      if (!message.success) return;
+      if (message.data.type === 'pong') {
+        this.handlePong(message.data);
+        return;
+      }
+      this.handleInbound(message.data);
     });
 
-    socket.addEventListener('close', () => {
-      this.socket = undefined;
-      this.awaitingInitializeResult = false;
+    // A socket is "gone" on whichever of 'close'/'error' arrives, and only
+    // the first one counts. This used to live in the 'close' handler
+    // alone, on the strength of a comment claiming "'close' always follows
+    // 'error'" — true for the browser's WebSocket this client normally
+    // runs under, but false for Node's (undici): a *failed connection
+    // attempt*, exactly what every retry hits while the relay is down,
+    // fires 'error' with no 'close' at all (the four-hour node outage
+    // issue #511 was filed for — see `@loombox/node`'s `RelayConnection`,
+    // whose `onSocketGone` this mirrors). This client isn't hit by that
+    // specific asymmetry today, but Electron and any future undici-backed
+    // path are one refactor away from being, so this is wired the same
+    // defensive way here rather than trusting a browser-only guarantee.
+    let gone = false;
+    const onSocketGone = (): void => {
+      if (gone) return;
+      gone = true;
+      this.stopHeartbeat();
+      // Only disown the socket if it is still the current one: a late
+      // event from a superseded attempt must never clear a newer live
+      // socket.
+      if (this.socket === socket) this.socket = undefined;
       this.statusStore.set('closed');
       // The connection is gone, so this client has no way left to observe
       // whether a turn it thought was active actually settled — clearing
@@ -983,20 +1161,81 @@ export class RelayClient {
       // once the socket reopens, so nothing queued is lost, only its
       // in-flight "settled" bookkeeping resets.
       this.clearAllTurnTimers();
-    });
-
-    // 'close' always follows 'error' for the WHATWG WebSocket, so status is
-    // set there too; this listener just keeps an error from going unhandled
-    // and surfaces the 'error' status a beat sooner for the UI.
-    socket.addEventListener('error', () => {
-      this.statusStore.set('error');
-    });
+      this.scheduleReconnect();
+    };
+    socket.addEventListener('close', onSocketGone);
+    socket.addEventListener('error', onSocketGone);
   }
 
-  /** Deliberately closes the connection. v1's client core does not auto-reconnect (Wave D.2/later). */
+  /**
+   * Schedules a reconnect with capped exponential backoff after an
+   * unexpected close — never after a deliberate `close()` (`userClosed`
+   * gates it), matching `@loombox/node`'s `RelayConnection` (issue #511).
+   */
+  private scheduleReconnect(): void {
+    if (this.userClosed) return;
+    const delay = this.backoffMs;
+    this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.userClosed) this.open();
+    }, delay);
+  }
+
+  /**
+   * Deliberately closes the connection: unlike an unexpected drop, this
+   * never schedules a reconnect (and cancels one if a retry was already
+   * pending), so a caller that wants back in has to call `connect()`
+   * itself — see the class docstring for why an unexpected drop behaves
+   * differently.
+   */
   close(): void {
+    this.userClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.stopHeartbeat();
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  /** Starts (or restarts) the heartbeat ping/pong-deadline cycle — see `RelayClientOptions.heartbeatIntervalMs`'s doc comment. Only ever called once a relay has proven it supports it. */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => this.heartbeatTick(), this.heartbeatIntervalMs);
+  }
+
+  /**
+   * One heartbeat tick: if the previous ping is still unanswered, the
+   * relay has had a full interval to reply and hasn't, so this socket is
+   * treated as dead and torn down through the same `onSocketGone` handler
+   * an actual drop would hit (issue #511) — otherwise sends a fresh ping and
+   * remembers its nonce for the next tick to check.
+   */
+  private heartbeatTick(): void {
+    if (this.pendingPingNonce !== undefined) {
+      this.socket?.close();
+      return;
+    }
+    const nonce = generateId('ping');
+    this.pendingPingNonce = nonce;
+    this.send({ type: 'ping', protocolVersion: PROTOCOL_V1, nonce });
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.pendingPingNonce = undefined;
+  }
+
+  /** Clears the deadline the matching {@link heartbeatTick} armed — a `nonce` mismatch means this is a late reply to an older ping already given up on, not proof the connection is alive right now (`@loombox/protocol`'s `heartbeat.ts` doc comment), so it's left in place. */
+  private handlePong(message: Pong): void {
+    if (message.nonce === this.pendingPingNonce) {
+      this.pendingPingNonce = undefined;
+    }
   }
 
   /**
@@ -1174,6 +1413,51 @@ export class RelayClient {
         nodeId: options.nodeId,
         targetId: options.targetId,
         requestId,
+      });
+    });
+  }
+
+  /**
+   * Archives one of this account's sessions (SPEC §7.2's board archive
+   * affordance; issue #512) — the row-menu "Archive session…" action.
+   * Routing metadata only, same boundary as `decommissionTarget`/
+   * `updateTarget` above: nothing here is encrypted (`@loombox/protocol`'s
+   * `session-lifecycle.ts` doc comment — `sessionId` already travels in
+   * the clear). Unlike those two, this REJECTS on a node-reported failure
+   * too (`outcome: 'error'`), not just a transport-level one — there is no
+   * `.ok`/`.message` shape for a caller to inspect here, since a failed
+   * archive is nothing to react to beyond surfacing the message.
+   */
+  archiveSession(
+    sessionId: string,
+    options: { removeWorktree: boolean },
+    timeoutMs = 30_000,
+  ): Promise<void> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot archive a session, no open connection'));
+    }
+    const requestId = generateId('archive');
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingArchiveRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_archive_response'));
+      }, timeoutMs);
+      this.pendingArchiveRequests.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'session_archive_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        sessionId,
+        removeWorktree: options.removeWorktree,
       });
     });
   }
@@ -2449,6 +2733,9 @@ export class RelayClient {
       case 'session_announce':
         this.handleSessionAnnounce(message);
         return;
+      case 'session_archive_response':
+        this.handleSessionArchiveResponse(message);
+        return;
       case 'session_update':
         this.handleSessionUpdate(message);
         return;
@@ -2535,6 +2822,33 @@ export class RelayClient {
           `RelayClient: failed to decrypt session_announce for ${message.session.id}: ${errorMessage(error)}`,
         );
       });
+  }
+
+  /**
+   * A `session_archive_response`, fanned out to every client of the
+   * account on `outcome: 'ok'` (issue #512's second-device consistency —
+   * `packages/relay/src/relay.ts`'s account-wide publish), not only the
+   * device that called {@link archiveSession}. So the sessions-store drop
+   * below runs on every `'ok'`, independent of whether `requestId` matches
+   * one of {@link pendingArchiveRequests}' own entries; only the pending
+   * promise's resolve/reject is guarded by that lookup, exactly like
+   * {@link handleDecommissionTargetResponse}'s own "requestId not pending
+   * means it isn't mine" guard.
+   */
+  private handleSessionArchiveResponse(message: SessionArchiveResponse): void {
+    if (message.result.outcome === 'ok') {
+      this.sessionsStore.update((sessions) =>
+        sessions.filter((session) => session.id !== message.sessionId),
+      );
+    }
+    const pending = this.pendingArchiveRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingArchiveRequests.delete(message.requestId);
+    if (message.result.outcome === 'ok') {
+      pending.resolve();
+    } else {
+      pending.reject(new Error(message.result.message));
+    }
   }
 
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {

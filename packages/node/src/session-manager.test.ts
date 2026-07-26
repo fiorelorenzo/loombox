@@ -138,6 +138,29 @@ describe('SessionManager', () => {
     await expect(manager.removeSession('unknown-id')).rejects.toThrow(/no session/i);
   });
 
+  it('also deletes the loombox/session-<id> branch once the worktree is removed (issue #512)', async () => {
+    const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+    await manager.removeSession(session.id);
+
+    const branches = await git(repoPath, ['branch', '--list', session.branch]);
+    expect(branches).toBe('');
+  });
+
+  it('removeSession({ removeWorktree: false }) forgets the record but leaves the worktree and branch on disk (issue #512 archive-without-cleanup)', async () => {
+    const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+    await manager.removeSession(session.id, { removeWorktree: false });
+
+    expect(manager.getSession(session.id)).toBeUndefined();
+    const dirStat = await stat(session.worktreePath);
+    expect(dirStat.isDirectory()).toBe(true);
+    const worktreeList = await git(repoPath, ['worktree', 'list', '--porcelain']);
+    expect(worktreeList).toContain(session.worktreePath);
+    const branches = await git(repoPath, ['branch', '--list', session.branch]);
+    expect(branches).toContain(session.branch);
+  });
+
   describe('workInPlace (issue #75)', () => {
     it('runs directly in projectPath instead of creating a worktree', async () => {
       const session = await manager.createSession({
@@ -166,6 +189,22 @@ describe('SessionManager', () => {
 
       expect(manager.getSession(session.id)).toBeUndefined();
       // projectPath itself must still exist and still be the git repo it was.
+      const dirStat = await stat(repoPath);
+      expect(dirStat.isDirectory()).toBe(true);
+      const insideWorkTree = await git(repoPath, ['rev-parse', '--is-inside-work-tree']);
+      expect(insideWorkTree).toBe('true');
+    });
+
+    it('removeSession({ removeWorktree: true }) on a workInPlace session still leaves projectPath untouched — there is no worktree of its own to remove (issue #512)', async () => {
+      const session = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+
+      await manager.removeSession(session.id, { removeWorktree: true });
+
+      expect(manager.getSession(session.id)).toBeUndefined();
       const dirStat = await stat(repoPath);
       expect(dirStat.isDirectory()).toBe(true);
       const insideWorkTree = await git(repoPath, ['rev-parse', '--is-inside-work-tree']);

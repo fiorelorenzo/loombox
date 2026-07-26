@@ -15,6 +15,7 @@ import {
   qrPairingResponse,
 } from './devices';
 import { initialize, initializeResult } from './handshake';
+import { ping, pong } from './heartbeat';
 import { leaseRelease, leaseReleaseResult, leaseRequest, leaseResult } from './lease';
 import { presence, resyncMarker, resyncRequest } from './presence';
 import { provisionProgress, provisionTargetRequest, provisionTargetResult } from './provisioning';
@@ -45,6 +46,7 @@ import {
   targetUpdateRequest,
   targetUpdateResponse,
 } from './target-lifecycle';
+import { sessionArchiveRequest, sessionArchiveResponse } from './session-lifecycle';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -69,6 +71,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   sessionResume,
   sessionListRequest,
   sessionListV1,
+  sessionArchiveRequest,
+  sessionArchiveResponse,
   sessionUpdateEnvelopeV1,
   promptInjectV1,
   permissionRequest,
@@ -106,6 +110,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   decommissionTargetResponse,
   targetUpdateRequest,
   targetUpdateResponse,
+  ping,
+  pong,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

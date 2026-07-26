@@ -5,7 +5,7 @@ import {
   type KeyObject,
   type webcrypto,
 } from 'node:crypto';
-import { mkdir as fsMkdir, mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
+import { mkdir as fsMkdir, mkdtemp, rm, stat, writeFile as fsWriteFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import {
   type EncryptedEnvelope,
   type PermissionRequest,
   type SessionAnnounceV1,
+  type SessionArchiveResponse,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
   type SessionWithPrivateEnvelope,
@@ -34,6 +35,7 @@ import {
 } from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from './node-daemon';
+import { SessionManager } from './session-manager';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { FakeTransport, type FakeExecHandler } from './ssh/fake-transport';
@@ -2778,5 +2780,248 @@ describe('permission_request push trigger (#373)', () => {
     } finally {
       await pushRelay.close();
     }
+  });
+});
+
+describe('NodeDaemon session archive (SPEC §7.2, issue #512)', () => {
+  it('deletes the worktree directory and its loombox/session-<id> branch when removeWorktree is true, forgets the record, and replies outcome: "ok"', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-worktree';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-worktree',
+      deviceId: 'device-node-archive-worktree',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    expect(session.branch).not.toBe('');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-worktree',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_worktree',
+      sessionId: session.id,
+      removeWorktree: true,
+    });
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.requestId).toBe('req_archive_worktree');
+    expect(response.sessionId).toBe(session.id);
+    expect(response.result).toEqual({ outcome: 'ok' });
+
+    await expect(stat(session.worktreePath)).rejects.toThrow();
+    const worktreeList = await git(projectPath, ['worktree', 'list', '--porcelain']);
+    expect(worktreeList).not.toContain(session.worktreePath);
+    const branches = await git(projectPath, ['branch', '--list', session.branch]);
+    expect(branches).toBe('');
+
+    // The relay's own board copy is gone too — a fresh session_list no
+    // longer carries it.
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const list = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    expect(list.sessions.some((s) => s.session.id === session.id)).toBe(false);
+  });
+
+  it('leaves the worktree and branch on disk when removeWorktree is false, but still forgets the record and drops it from the board', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-keep-worktree';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-keep-worktree',
+      deviceId: 'device-node-archive-keep-worktree',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-keep-worktree',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_keep_worktree',
+      sessionId: session.id,
+      removeWorktree: false,
+    });
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result).toEqual({ outcome: 'ok' });
+
+    const dirStat = await stat(session.worktreePath);
+    expect(dirStat.isDirectory()).toBe(true);
+    const worktreeList = await git(projectPath, ['worktree', 'list', '--porcelain']);
+    expect(worktreeList).toContain(session.worktreePath);
+    const branches = await git(projectPath, ['branch', '--list', session.branch]);
+    expect(branches).toContain(session.branch);
+
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const list = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    expect(list.sessions.some((s) => s.session.id === session.id)).toBe(false);
+  });
+
+  it('leaves the project folder alone for an in-place session even when removeWorktree is true — there is no worktree of its own to remove', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-inplace';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-inplace',
+      deviceId: 'device-node-archive-inplace',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({
+      projectPath,
+      provider: 'test-echo',
+      worktree: false,
+    });
+    expect(session.branch).toBe('');
+    expect(session.worktreePath).toBe(projectPath);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-inplace',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_inplace',
+      sessionId: session.id,
+      removeWorktree: true,
+    });
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result).toEqual({ outcome: 'ok' });
+
+    const dirStat = await stat(projectPath);
+    expect(dirStat.isDirectory()).toBe(true);
+    const insideWorkTree = await git(projectPath, ['rev-parse', '--is-inside-work-tree']);
+    expect(insideWorkTree).toBe('true');
+  });
+
+  it('a git failure archiving comes back as outcome: "error" with a usable message, instead of throwing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-git-failure';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-git-failure',
+      deviceId: 'device-node-archive-git-failure',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    // Sabotage the repo so the worktree/branch teardown's git commands
+    // genuinely fail, instead of faking an error return.
+    await rm(pathJoin(projectPath, '.git'), { recursive: true, force: true });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-git-failure',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_git_failure',
+      sessionId: session.id,
+      removeWorktree: true,
+    });
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result.outcome).toBe('error');
+    if (response.result.outcome !== 'error') throw new Error('unreachable');
+    expect(response.result.message.length).toBeGreaterThan(0);
+  });
+
+  it('answers ok for a session it no longer tracks, so a node restart cannot leave a permanently unarchivable row', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-archive-forgotten';
+
+    const sessionManager = new SessionManager();
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-archive-forgotten',
+      deviceId: 'device-node-archive-forgotten',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      sessionManager,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-archive-forgotten',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // Exactly what a node restart does to `SessionManager`'s in-memory
+    // records while the relay's Postgres-backed board keeps the row. Done
+    // through the manager's own API rather than a test-only hook, and
+    // without touching disk, so the worktree survives just as it would.
+    await sessionManager.removeSession(session.id, { removeWorktree: false });
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_forgotten',
+      sessionId: session.id,
+      removeWorktree: true,
+    });
+
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result).toEqual({ outcome: 'ok' });
+
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const list = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    expect(list.sessions.some((s) => s.session.id === session.id)).toBe(false);
   });
 });
