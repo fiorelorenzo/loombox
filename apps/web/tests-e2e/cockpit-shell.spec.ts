@@ -133,6 +133,31 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('drawer')).toHaveCount(0);
   });
 
+  test('exactly one h1 per view, and it names the view rather than the app', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const h1 = page.getByRole('heading', { level: 1 });
+
+    // The wordmark used to be an `<h1>` too, so every page carried two and one
+    // of them was always wrong: the app's name never changes, so it cannot be
+    // the heading of a view.
+    await page.getByTestId('session-row-item').first().click();
+    await expect(h1).toHaveCount(1);
+    // `fixtures.ts` announces this one session under exactly this title.
+    await expect(h1).toHaveText('E2E session');
+
+    for (const [destination, expected] of [
+      ['destination-inbox', /inbox/i],
+      ['destination-nodes', /nodes/i],
+    ] as const) {
+      await page.getByTestId(destination).click();
+      await expect(h1).toHaveCount(1);
+      await expect(h1).toHaveText(expected);
+    }
+  });
+
   test('the drawer carries only the open session workbench, not the global destinations', async ({
     page,
     loombox,

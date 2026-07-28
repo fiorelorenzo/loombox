@@ -2157,13 +2157,19 @@
         data-testid="sessions-column"
       >
         <div class="sidebar-brand">
-          <h1 class="sidebar-brand-mark">
+          <!-- Not an `<h1>`: the wordmark names the app, which never changes,
+               while the heading names the view, which is what the topbar's
+               session title and `PageLayout`'s page title already do. Two
+               `<h1>`s on one screen is what the old markup produced, and one
+               of them was always wrong. `BrandLockup`/`BrandMark` carry their
+               own accessible name, so nothing is lost by dropping the tag. -->
+          <div class="sidebar-brand-mark">
             {#if sessionsRailCollapsed}
               <BrandMark decorative={false} label="loombox" />
             {:else}
               <BrandLockup />
             {/if}
-          </h1>
+          </div>
           <IconButton
             label={sessionsCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             pressed={sessionsCollapsed}
@@ -2514,16 +2520,22 @@
           <div class="topbar-context">
             {#if mainView === 'session'}
               {#if selectedSession}
-                <span class="topbar-title" data-testid="cockpit-session-title"
-                  >{selectedSession.title}</span
-                >
+                <!-- The session's own `<h1>`, mirroring what `PageLayout`
+                     gives the three destination pages: whatever the main area
+                     is showing owns the page heading. The wordmark in the
+                     sidebar deliberately is not one - it names the app, which
+                     never changes, not the view, which is the whole point of a
+                     heading. -->
+                <h1 class="topbar-title" data-testid="cockpit-session-title">
+                  {selectedSession.title}
+                </h1>
                 <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
                   {projectDisplayName(selectedSession)}
                   <span aria-hidden="true">·</span>
                   {selectedSession.targetId}
                 </span>
               {:else}
-                <span class="topbar-title topbar-title-muted">No session selected</span>
+                <h1 class="topbar-title topbar-title-muted">No session selected</h1>
               {/if}
             {/if}
           </div>
@@ -4154,11 +4166,17 @@
     min-width: 0;
   }
 
+  /* An `<h1>` now (see the markup comment), so the global heading rule's
+     display sizing and margins have to be reset here - the topbar's title is
+     chrome-sized by design and must not grow just because its element became
+     semantic. */
   .topbar-title {
+    margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
     font-weight: 500;
   }
 
