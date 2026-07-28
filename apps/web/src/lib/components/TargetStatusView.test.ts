@@ -61,6 +61,7 @@ const TARGETS: TargetListEntry[] = [
     label: 'This machine',
     kind: 'local',
     reachable: true,
+    providers: ['claude'],
     health: HEALTHY,
   },
   {
@@ -70,6 +71,7 @@ const TARGETS: TargetListEntry[] = [
     kind: 'ssh',
     reachable: true,
     // No health sample yet.
+    providers: ['claude'],
   },
   {
     nodeId: 'node_2',
@@ -78,6 +80,7 @@ const TARGETS: TargetListEntry[] = [
     kind: 'ssh',
     reachable: true,
     health: { ...HEALTHY, healthy: false, cpuPercent: 0, memPercent: 0, diskPercent: 0 },
+    providers: ['claude'],
   },
   {
     nodeId: 'node_3',
@@ -85,6 +88,7 @@ const TARGETS: TargetListEntry[] = [
     label: 'offline box',
     kind: 'ssh',
     reachable: false,
+    providers: ['claude'],
   },
   {
     nodeId: 'node_4',
@@ -95,6 +99,7 @@ const TARGETS: TargetListEntry[] = [
     label: 'legacy box',
     kind: 'ssh',
     reachable: true,
+    providers: ['claude'],
     health: {
       cpuPercent: 20,
       memPercent: 25,
@@ -178,6 +183,7 @@ describe('TargetStatusView (issue #269)', () => {
         nodeId: 'node_hot',
         targetId: 'local',
         label: 'hot box',
+        providers: ['claude'],
         kind: 'local',
         reachable: true,
         health: { ...HEALTHY, loadPercent: 96, healthy: true },
@@ -297,6 +303,7 @@ describe('TargetStatusView load metric (v5 design spec §3: honest label, honest
         label: 'mixed box',
         kind: 'local',
         reachable: true,
+        providers: ['claude'],
         // Deliberately different values so a component that read the wrong
         // field would be caught red-handed.
         health: { ...HEALTHY, cpuPercent: 5, loadPercent: 77 },

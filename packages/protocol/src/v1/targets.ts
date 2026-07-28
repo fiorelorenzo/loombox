@@ -10,6 +10,23 @@ export const targetDescriptor = z.object({
   id: z.string().min(1),
   kind: targetKind,
   label: z.string().min(1),
+  /**
+   * The provider ids this target can ACTUALLY spawn an agent for (SPEC §5.5),
+   * so a session-creation UI never offers an agent that would fail at spawn
+   * time. Availability is per TARGET, not per node: an `ssh:` target runs the
+   * agent on the remote host, so what matters is the CLI on THAT machine's
+   * PATH, not the node's. The node probes each registered provider module's
+   * `requiredCommand` (the vendor CLI its bridge drives - `claude`, `codex`,
+   * `omp` - never `npx`) against the target's own PATH and lists what
+   * answered.
+   *
+   * An empty array is a legitimate, meaningful value: a reachable target with
+   * no agent CLI installed. Clients must render that as "nothing to run here"
+   * rather than falling back to a hardcoded guess, which is exactly the lie
+   * this field exists to remove - the web's picker used to offer a single
+   * hardcoded `claude` on every target, including ones without it installed.
+   */
+  providers: z.array(z.string().min(1)),
 });
 export type TargetDescriptor = z.infer<typeof targetDescriptor>;
 
@@ -126,6 +143,8 @@ export const targetListEntry = z.object({
   label: z.string().min(1),
   kind: targetKind,
   reachable: z.boolean(),
+  /** {@link targetDescriptor.providers} forwarded verbatim: what this target can actually spawn. The relay never invents or filters this - it is the node's own probe result, and a client picker reads it directly. */
+  providers: z.array(z.string().min(1)),
   health: targetHealth.optional(),
 });
 export type TargetListEntry = z.infer<typeof targetListEntry>;

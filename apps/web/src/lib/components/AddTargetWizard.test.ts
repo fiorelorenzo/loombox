@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +18,14 @@ afterEach(() => {
 });
 
 const NODES: TargetListEntry[] = [
-  { nodeId: 'node_1', targetId: 'local', label: 'This machine', kind: 'local', reachable: true },
+  {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  },
 ];
 
 function provisionResult(overrides: Partial<ProvisionTargetResult> = {}): ProvisionTargetResult {
@@ -77,6 +87,41 @@ describe('AddTargetWizard (issue #408)', () => {
   it('starts on the host-picker step once at least one node is found', async () => {
     render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
     await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+  });
+
+  // Four of the five host fields used to spell "(optional)" into their own
+  // uppercase caption while nothing was ever marked required, so the form
+  // shouted the rule and hid the exception.
+  it('marks only the one required field, instead of labelling the four optional ones', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+
+    const form = screen.getByTestId('add-target-host').closest('form');
+    expect(form).toBeTruthy();
+    expect(form?.textContent ?? '').not.toMatch(/optional/i);
+    // Exactly one required marker, on Host.
+    expect(form?.querySelectorAll('.ui-field-required').length).toBe(1);
+    expect((screen.getByTestId('add-target-host') as HTMLInputElement).required).toBe(true);
+  });
+
+  // `Field`'s caption is `text-transform: uppercase`, so a label holding a real
+  // path rendered `~/.SSH/CONFIG` - a path that does not exist on a
+  // case-sensitive filesystem. The rule this defends is therefore "no path in a
+  // label", checked on the label's own text: asserting the absence of
+  // `.SSH/CONFIG` would be worthless, because `text-transform` is purely visual
+  // and `textContent` reports the untransformed source either way (I wrote that
+  // version first; it survived mutation, which is how I noticed).
+  it('keeps case-sensitive paths out of the uppercased label, and in help instead', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-alias')).toBeTruthy());
+
+    const field = screen.getByTestId('add-target-alias').closest('[data-testid="ui-field"]');
+    const label = field?.querySelector('.ui-field-label');
+    expect(label?.textContent?.trim()).toBeTruthy();
+    expect(label?.textContent).not.toContain('/');
+
+    // The path still gets said, in help, which carries no text-transform.
+    expect(field?.querySelector('.ui-field-help')?.textContent).toContain('~/.ssh/config');
   });
 
   it('Next is disabled until a host is entered, then moves to the review step', async () => {
@@ -237,6 +282,75 @@ describe('AddTargetWizard (issue #408)', () => {
     await waitFor(() => expect(screen.getByTestId('add-target-done-close')).toBeTruthy());
     await fireEvent.click(screen.getByTestId('add-target-done-close'));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('lays the step progress out as a real horizontal row — `<ol>` holds only `<li>` children, and the dead vertical-parent/horizontal-child CSS mismatch is gone (design spec §0.5/§0.6)', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+
+    const list = screen.getByRole('list', { name: 'Add target progress' });
+    expect(list.tagName).toBe('OL');
+    expect(list.children.length).toBe(4);
+    expect(Array.from(list.children).every((child) => child.tagName === 'LI')).toBe(true);
+
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'AddTargetWizard.svelte'),
+      'utf8',
+    );
+    const styleBlock = source.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
+    const stepsRule = styleBlock.match(/\.wizard-steps\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(stepsRule).not.toMatch(/flex-direction:\s*column/);
+    expect(stepsRule).toMatch(/display:\s*flex/);
+
+    const stepRule = styleBlock.match(/\.wizard-step\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(stepRule).not.toMatch(/display:\s*inline-block/);
+    expect(stepRule).not.toMatch(/margin-right/);
+  });
+
+  it('never lets the four step labels wrap or overflow by accident: real-font measurement at 1440px/430px shows they fit with margin, so `flex-wrap` is kept as a deliberate (currently dormant) safety net rather than a speculative collapse treatment', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+
+    const list = screen.getByRole('list', { name: 'Add target progress' });
+    const labels = Array.from(list.querySelectorAll('.wizard-step')).map((el) =>
+      el.textContent?.trim(),
+    );
+    expect(labels).toEqual(['Host', 'Review', 'Provision', 'Done']);
+
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'AddTargetWizard.svelte'),
+      'utf8',
+    );
+    const styleBlock = source.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
+    const stepsRule = styleBlock.match(/\.wizard-steps\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(stepsRule).toMatch(/flex-wrap:\s*wrap/);
+  });
+
+  it('moves "Defaults to X" guidance into the field\'s help slot instead of the placeholder, fixing the lowercase inconsistency (design spec §0.4)', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+
+    const userInput = screen.getByTestId('add-target-user') as HTMLInputElement;
+    const labelInput = screen.getByTestId('add-target-label') as HTMLInputElement;
+
+    expect(userInput.placeholder).toBe('');
+    expect(labelInput.placeholder).toBe('');
+    expect(screen.getByText('Defaults to root')).toBeTruthy();
+    expect(screen.getByText('Defaults to the host')).toBeTruthy();
+    expect(userInput.getAttribute('aria-describedby')).toBeTruthy();
+    expect(labelInput.getAttribute('aria-describedby')).toBeTruthy();
+  });
+
+  it('no Field in this wizard renders prose as its control', async () => {
+    render(AddTargetWizard, { props: { open: true, client: fakeClient(), onClose: vi.fn() } });
+    await waitFor(() => expect(screen.getByTestId('add-target-host')).toBeTruthy());
+
+    const fields = screen.getAllByTestId('ui-field');
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      const control = field.querySelector('.ui-field-control');
+      expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
+    }
   });
 });
 

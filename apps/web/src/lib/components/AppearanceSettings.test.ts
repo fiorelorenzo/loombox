@@ -68,4 +68,11 @@ describe('AppearanceSettings (#195/#376 settings panel)', () => {
     // No preset stays visually "selected" once a custom accent is active.
     expect(screen.getByTestId('accent-preset-azure').getAttribute('aria-pressed')).toBe('false');
   });
+
+  it('renders Theme and Accent as one merged card, not two (design spec §0.8)', () => {
+    render(AppearanceSettings);
+    expect(screen.getAllByTestId('ui-card')).toHaveLength(1);
+    expect(screen.getByText('Theme')).toBeTruthy();
+    expect(screen.getByText('Accent')).toBeTruthy();
+  });
 });

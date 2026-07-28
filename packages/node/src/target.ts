@@ -93,11 +93,19 @@ export interface ExecutionTarget {
   readdirDetailed(path: string): Promise<DetailedDirEntry[]>;
 }
 
-/** The single `local` target every node exposes by default. */
+/**
+ * The single `local` target every node exposes by default. `providers`
+ * starts `[]` — a placeholder until `NodeDaemon`'s first announce/reconnect
+ * probes it for real (`./provider-availability.ts`, `./node-daemon.ts`'s
+ * `refreshProviderAvailability`); every outbound `target_announce` replaces
+ * it with that probe's latest cached result, so this literal's own value
+ * never actually reaches a client.
+ */
 export const DEFAULT_LOCAL_TARGET: TargetDescriptor = {
   id: 'local',
   kind: 'local',
   label: 'Local',
+  providers: [],
 };
 
 /**

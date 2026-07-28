@@ -87,9 +87,17 @@ export const claudeProvider: AcpProvider = {
  * §7.24: "ships in v2") — but it is fully typed and wired against the
  * registry's real `enrich(update, raw)` contract now, so v2 can fill in the
  * promotion in this one function body with no registry or call-site change.
+ *
+ * `requiredCommand` is `'claude'`, not `'npx'`: `CLAUDE_ACP_COMMAND` above
+ * is the launcher, but the vendor CLI the npx-resolved bridge wraps — and
+ * the one that must actually exist on the execution target's PATH — is
+ * `claude` itself (design spec "Provider availability is per TARGET, not
+ * per node": an `ssh:` target spawns remotely, so it's that host's PATH
+ * that matters, never the node's).
  */
 export const claudeProviderModule: AcpProviderModule = {
   id: 'claude',
+  requiredCommand: 'claude',
 
   spawnConfig(opts: { cwd: string }): AcpSpawnConfig {
     return {

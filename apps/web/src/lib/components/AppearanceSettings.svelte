@@ -74,94 +74,94 @@
 
 <div class="appearance-settings" data-testid="appearance-settings">
   <Card elevation="raised" padding="md" class="settings-card">
-    <section class="theme-section">
-      <h3>Theme</h3>
-      <div class="theme-options" role="radiogroup" aria-label="Theme">
-        {#each THEME_OPTIONS as option (option.value)}
-          <button
-            type="button"
-            class="theme-option"
-            class:selected={$themePreference === option.value}
-            aria-pressed={$themePreference === option.value}
-            onclick={() => themeStore.setTheme(option.value)}
-            data-testid={`theme-option-${option.value}`}
-          >
-            <span class="theme-option-icon" aria-hidden="true">
-              {#if option.value === 'system'}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <rect x="2.5" y="4" width="15" height="10" rx="1.5" />
-                  <path d="M7 17.5h6M10 14v3.5" stroke-linecap="round" />
-                </svg>
-              {:else if option.value === 'dark'}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path
-                    d="M17 11.4A7 7 0 1 1 8.6 3 5.6 5.6 0 0 0 17 11.4Z"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              {:else}
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <circle cx="10" cy="10" r="3.5" />
-                  <path
-                    d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1 4.7 4.7"
-                    stroke-linecap="round"
-                  />
+    <div class="appearance-sections">
+      <section class="theme-section">
+        <h3>Theme</h3>
+        <div class="theme-options" role="radiogroup" aria-label="Theme">
+          {#each THEME_OPTIONS as option (option.value)}
+            <button
+              type="button"
+              class="theme-option"
+              class:selected={$themePreference === option.value}
+              aria-pressed={$themePreference === option.value}
+              onclick={() => themeStore.setTheme(option.value)}
+              data-testid={`theme-option-${option.value}`}
+            >
+              <span class="theme-option-icon" aria-hidden="true">
+                {#if option.value === 'system'}
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2.5" y="4" width="15" height="10" rx="1.5" />
+                    <path d="M7 17.5h6M10 14v3.5" stroke-linecap="round" />
+                  </svg>
+                {:else if option.value === 'dark'}
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path
+                      d="M17 11.4A7 7 0 1 1 8.6 3 5.6 5.6 0 0 0 17 11.4Z"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                {:else}
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="10" cy="10" r="3.5" />
+                    <path
+                      d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1 4.7 4.7"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                {/if}
+              </span>
+              {option.label}
+            </button>
+          {/each}
+        </div>
+      </section>
+
+      <section class="accent-section">
+        <h3>Accent</h3>
+        <div class="accent-swatches" role="radiogroup" aria-label="Accent preset">
+          {#each ACCENT_PRESET_KEYS as key (key)}
+            {@const isSelected = $accentSelection.type === 'preset' && $accentSelection.key === key}
+            <button
+              type="button"
+              class="accent-swatch"
+              class:selected={isSelected}
+              aria-pressed={isSelected}
+              style:background={ACCENT_PRESETS[key].dark}
+              onclick={() => accentStore.setPreset(key)}
+              data-testid={`accent-preset-${key}`}
+              title={ACCENT_PRESET_LABELS[key]}
+            >
+              {#if isSelected}
+                <svg
+                  class="accent-swatch-check"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                >
+                  <path d="M5 10.5 8.5 14 15 6.5" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
               {/if}
-            </span>
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </section>
-  </Card>
+              <span class="sr-only">{ACCENT_PRESET_LABELS[key]}</span>
+            </button>
+          {/each}
+        </div>
 
-  <Card elevation="raised" padding="md" class="settings-card">
-    <section class="accent-section">
-      <h3>Accent</h3>
-      <div class="accent-swatches" role="radiogroup" aria-label="Accent preset">
-        {#each ACCENT_PRESET_KEYS as key (key)}
-          {@const isSelected = $accentSelection.type === 'preset' && $accentSelection.key === key}
-          <button
-            type="button"
-            class="accent-swatch"
-            class:selected={isSelected}
-            aria-pressed={isSelected}
-            style:background={ACCENT_PRESETS[key].dark}
-            onclick={() => accentStore.setPreset(key)}
-            data-testid={`accent-preset-${key}`}
-            title={ACCENT_PRESET_LABELS[key]}
-          >
-            {#if isSelected}
-              <svg
-                class="accent-swatch-check"
-                viewBox="0 0 20 20"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                aria-hidden="true"
-              >
-                <path d="M5 10.5 8.5 14 15 6.5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            {/if}
-            <span class="sr-only">{ACCENT_PRESET_LABELS[key]}</span>
-          </button>
-        {/each}
-      </div>
-
-      <label class="custom-accent" class:selected={$accentSelection.type === 'custom'}>
-        <span class="custom-accent-swatch">
-          <input
-            type="color"
-            value={customHex}
-            oninput={onCustomHexInput}
-            data-testid="custom-accent-input"
-            aria-label="Custom accent color"
-          />
-        </span>
-        Custom
-      </label>
-    </section>
+        <label class="custom-accent" class:selected={$accentSelection.type === 'custom'}>
+          <span class="custom-accent-swatch">
+            <input
+              type="color"
+              value={customHex}
+              oninput={onCustomHexInput}
+              data-testid="custom-accent-input"
+              aria-label="Custom accent color"
+            />
+          </span>
+          Custom
+        </label>
+      </section>
+    </div>
   </Card>
 </div>
 
@@ -171,6 +171,16 @@
     flex-direction: column;
     gap: var(--space-md);
     font-size: var(--text-small-size);
+  }
+
+  /* Theme and Accent used to be two separate cards (one field's worth of
+     chrome each, design spec §0.8's "one card per field" finding); this
+     is the gap between them now that they're two `<section>`s sharing
+     one card instead. */
+  .appearance-sections {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
   }
 
   .theme-section,

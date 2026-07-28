@@ -62,6 +62,17 @@ describe('codexProvider', () => {
     expect(moduleSpawnConfig.args).toEqual(['-y', '@agentclientprotocol/codex-acp']);
   });
 
+  // requiredCommand is the field the design spec's per-TARGET availability
+  // probe reads (issue coverage for that new AcpProviderModule field): it
+  // must name the vendor CLI the npx bridge wraps, never the npx launcher
+  // itself — concretely, this devbox has claude-agent-acp/codex-acp both
+  // resolvable via npx, but only `claude` (not `codex`) is actually on
+  // PATH, which is exactly the asymmetry per-target probing exists to catch.
+  it('requiredCommand names the vendor CLI (codex), never the npx launcher', () => {
+    expect(codexProviderModule.requiredCommand).toBe('codex');
+    expect(codexProviderModule.requiredCommand).not.toBe('npx');
+  });
+
   it('drives a full prompt/response turn through the fixture ACP agent', async () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-codex-'));
 

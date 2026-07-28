@@ -1,5 +1,5 @@
 {
-  "name": "@loombox/supervisor",
+  "name": "@loombox/providers-ohmypi",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,11 +8,7 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
-    "@loombox/providers-claude": "workspace:*",
-    "@loombox/providers-codex": "workspace:*",
-    "@loombox/providers-core": "workspace:*",
-    "@loombox/providers-ohmypi": "workspace:*",
-    "node-pty": "^1.1.0"
+    "@loombox/providers-core": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

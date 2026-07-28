@@ -25,18 +25,28 @@ afterEach(() => {
 describe('ProviderRegistry: register/lookup', () => {
   it('looks up a registered module by its provider id', () => {
     const registry = new ProviderRegistry();
-    const stub: AcpProviderModule = { id: 'stub', spawnConfig: () => ({ command: 'x', args: [] }) };
+    const stub: AcpProviderModule = {
+      id: 'stub',
+      requiredCommand: 'stub-cli',
+      spawnConfig: () => ({ command: 'x', args: [] }),
+    };
 
     expect(registry.lookup('stub')).toBeUndefined();
     registry.register(stub);
     expect(registry.lookup('stub')).toBe(stub);
+    expect(registry.lookup('stub')?.requiredCommand).toBe('stub-cli');
   });
 
   it('replaces a module registered under an id it already holds', () => {
     const registry = new ProviderRegistry();
-    const first: AcpProviderModule = { id: 'dup', spawnConfig: () => ({ command: 'a', args: [] }) };
+    const first: AcpProviderModule = {
+      id: 'dup',
+      requiredCommand: 'a-cli',
+      spawnConfig: () => ({ command: 'a', args: [] }),
+    };
     const second: AcpProviderModule = {
       id: 'dup',
+      requiredCommand: 'b-cli',
       spawnConfig: () => ({ command: 'b', args: [] }),
     };
 
@@ -52,8 +62,16 @@ describe('ProviderRegistry: register/lookup', () => {
     expect(registry.lookup('gemini')).toBeUndefined();
 
     // Registering under the reserved id works with the same plain API as any other.
-    registry.register({ id: 'gemini', spawnConfig: () => ({ command: 'gemini-acp', args: [] }) });
+    registry.register({
+      id: 'gemini',
+      requiredCommand: 'gemini-acp',
+      spawnConfig: () => ({ command: 'gemini-acp', args: [] }),
+    });
     expect(registry.lookup('gemini')?.id).toBe('gemini');
+  });
+
+  it('reserves the "ohmypi" id too, alongside "gemini" (RESERVED_PROVIDER_IDS is the full v1 roadmap set, not just the unregistered-by-default ones)', () => {
+    expect(RESERVED_PROVIDER_IDS).toContain('ohmypi');
   });
 });
 
@@ -70,6 +88,7 @@ describe('ProviderRegistry: enrich', () => {
     const calls: Array<{ update: AcpTranscriptUpdate; raw: unknown }> = [];
     registry.register({
       id: 'with-enrich',
+      requiredCommand: 'with-enrich-cli',
       spawnConfig: () => ({ command: 'x', args: [] }),
       enrich(update, raw) {
         calls.push({ update, raw });
@@ -86,7 +105,11 @@ describe('ProviderRegistry: enrich', () => {
 
   it('is skipped (pure pass-through) when the module supplies no enrich hook', () => {
     const registry = new ProviderRegistry();
-    registry.register({ id: 'no-enrich', spawnConfig: () => ({ command: 'x', args: [] }) });
+    registry.register({
+      id: 'no-enrich',
+      requiredCommand: 'no-enrich-cli',
+      spawnConfig: () => ({ command: 'x', args: [] }),
+    });
 
     const enriched = registry.enrich('no-enrich', sampleUpdate, { anything: true });
     expect(enriched).toBe(sampleUpdate);
@@ -103,6 +126,7 @@ describe('ProviderRegistry: generic-tier fallback session', () => {
     const registry = new ProviderRegistry();
     const stub: AcpProviderModule = {
       id: 'stub-generic',
+      requiredCommand: 'stub-generic-cli',
       // Deliberately ignores opts.cwd for the spawn itself (matching
       // client.test.ts's pattern): the fixture agent doesn't need a real
       // cwd to run, only session/new's cwd argument does.
@@ -140,6 +164,7 @@ describe('ProviderRegistry: live wiring into AcpClient (issue #181)', () => {
     const registry = new ProviderRegistry();
     registry.register({
       id: 'shout',
+      requiredCommand: 'shout-cli',
       spawnConfig: () => ({ command: process.execPath, args: [FIXTURE_PATH] }),
       enrich(update) {
         return update.kind === 'agent_message_chunk'

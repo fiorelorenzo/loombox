@@ -204,7 +204,7 @@ function makeSessionMeta(overrides: Partial<SessionMetaPublic> = {}): SessionMet
 }
 
 function makeTarget(overrides: Partial<TargetDescriptor> = {}): TargetDescriptor {
-  return { id: 'target_1', kind: 'local', label: 'local machine', ...overrides };
+  return { id: 'target_1', kind: 'local', label: 'local machine', providers: [], ...overrides };
 }
 
 describe('relay v1', () => {
@@ -402,6 +402,7 @@ describe('relay v1', () => {
             label: 'This machine',
             kind: 'local',
             reachable: true,
+            providers: [],
           },
           {
             nodeId: 'node_1',
@@ -409,6 +410,7 @@ describe('relay v1', () => {
             label: 'devbox',
             kind: 'ssh',
             reachable: true,
+            providers: [],
           },
         ]),
       );
@@ -481,6 +483,86 @@ describe('relay v1', () => {
         platform: 'linux',
         arch: 'x64',
       });
+    });
+
+    it("carries a target's providers array through to the client, byte-for-byte, rather than stripping it (#516-class defect)", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [
+          makeTarget({
+            id: 'local',
+            kind: 'local',
+            label: 'Local',
+            providers: ['claude', 'ohmypi'],
+          }),
+        ],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_providers',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      // Zod's `.object()` strips keys its schema does not know, so a relay
+      // (or a `targetListEntry` schema) that has fallen behind the node's
+      // `providers` probe would silently drop it here, and the web picker
+      // would fall back to guessing what a target can run - exactly the
+      // #521-class defect this pins against.
+      expect(response.targets[0]?.providers).toEqual(['claude', 'ohmypi']);
+    });
+
+    it('carries an empty providers array through as [], not dropped, coerced to undefined, or defaulted to something non-empty', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Local', providers: [] })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_no_providers',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      // An empty array is a meaningful, distinct state (a reachable target
+      // with no agent CLI installed) - not the same as "unknown"/absent, so
+      // this must survive as `[]`, never `undefined` and never a fallback.
+      expect(response.targets[0]?.providers).toEqual([]);
+      expect(response.targets[0]).toHaveProperty('providers');
     });
 
     it("never returns another account's targets", async () => {
@@ -1099,7 +1181,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_dirpicker',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1164,7 +1246,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_foreign',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1202,7 +1284,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_dirpicker_reply',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1268,7 +1350,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_dirpicker_ttl',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1332,7 +1414,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_sshdisco',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1391,7 +1473,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_sshdisco_foreign',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1427,7 +1509,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_sshdisco_reply',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1493,7 +1575,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_sshdisco_ttl',
-        targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1560,7 +1642,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_decommission',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1618,7 +1700,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_decommission_foreign',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1655,7 +1737,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_decommission_reply',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1726,7 +1808,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_decommission_ttl',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1791,7 +1873,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_update',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1826,7 +1908,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_update_foreign',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1861,7 +1943,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_update_reply',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1924,7 +2006,7 @@ describe('relay v1', () => {
         type: 'target_announce',
         protocolVersion: PROTOCOL_V1,
         nodeId: 'node_update_ttl',
-        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+        targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: [] }],
       } satisfies TargetAnnounce);
       await new Promise((resolve) => setTimeout(resolve, 50));
 

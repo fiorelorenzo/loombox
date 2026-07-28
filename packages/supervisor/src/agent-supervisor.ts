@@ -1,5 +1,7 @@
 import type { AcpChildProcess, AcpMcpServerConfig, AcpProvider } from '@loombox/providers-core';
 import { claudeProvider } from '@loombox/providers-claude';
+import { codexProvider } from '@loombox/providers-codex';
+import { ohmypiProvider } from '@loombox/providers-ohmypi';
 
 import type { AttachmentChannel } from './attachment-channel';
 import { AgentSession } from './agent-session';
@@ -15,7 +17,13 @@ export interface AgentSupervisorStartOptions {
 }
 
 export interface AgentSupervisorOptions {
-  /** Providers registered on construction; defaults to just claudeProvider. Tests inject fixtures here. */
+  /**
+   * Providers registered on construction; defaults to the three real,
+   * verified v1 providers (design spec "Provider availability is per
+   * TARGET, not per node": `claude`, `codex`, `ohmypi` — `gemini` stays
+   * reserved with no spawn recipe, and `generic` is a fallback tier, never
+   * a default registration). Tests inject fixtures here.
+   */
   providers?: AcpProvider[];
   /**
    * Where this supervisor's `TranscriptStore` persists session state
@@ -61,7 +69,7 @@ export class AgentSupervisor {
   private attachmentChannel: AttachmentChannel | undefined;
 
   constructor(options: AgentSupervisorOptions = {}) {
-    for (const provider of options.providers ?? [claudeProvider]) {
+    for (const provider of options.providers ?? [claudeProvider, codexProvider, ohmypiProvider]) {
       this.providers.set(provider.id, provider);
     }
     this.store = new TranscriptStore({ stateDir: options.stateDir });

@@ -179,8 +179,8 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       amk: generateAmk(),
       stateDir: nodeStateDir,
       targets: [
-        { id: 'local', kind: 'local', label: 'This machine' },
-        { id: 'ssh:devbox', kind: 'ssh', label: 'devbox' },
+        { id: 'local', kind: 'local', label: 'This machine', providers: [] },
+        { id: 'ssh:devbox', kind: 'ssh', label: 'devbox', providers: [] },
       ],
       sshTargets: [{ id: 'ssh:devbox', label: 'devbox', host: '10.0.0.5' }],
       sshTransportFactory: () => {
@@ -224,7 +224,7 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       accountId,
       amk: generateAmk(),
       stateDir: nodeStateDir,
-      targets: [{ id: 'ssh:flaky', kind: 'ssh', label: 'flaky' }],
+      targets: [{ id: 'ssh:flaky', kind: 'ssh', label: 'flaky', providers: [] }],
       sshTargets: [{ id: 'ssh:flaky', label: 'flaky', host: '10.0.0.9' }],
       sshTransportFactory: () => failingTransport,
       resourceSampling: { enabled: true, intervalMs: 200, timeoutMs: 2000 },

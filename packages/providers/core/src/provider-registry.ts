@@ -1,14 +1,14 @@
 import type { AcpSpawnConfig, AcpTranscriptUpdate } from './types';
 
 /**
- * Provider ids the roadmap already names (SPEC.md §5.5): `claude` and
- * `codex` ship v1 adapter modules, `gemini` is reserved for a future v2
+ * Provider ids the roadmap already names (SPEC.md §5.5): `claude`, `codex`,
+ * and `ohmypi` ship v1 adapter modules, `gemini` is reserved for a future v2
  * module, and `generic` is the fallback tier any other ACP agent gets
  * automatically. Purely documentation/convention — `ProviderRegistry` itself
  * accepts any string id, so registering under `'gemini'` later needs no core
  * API change (issue #181's last acceptance bullet).
  */
-export const RESERVED_PROVIDER_IDS = ['claude', 'codex', 'gemini', 'generic'] as const;
+export const RESERVED_PROVIDER_IDS = ['claude', 'codex', 'ohmypi', 'gemini', 'generic'] as const;
 
 /**
  * The v1 per-provider adapter module contract (SPEC.md §5.5): the spawn
@@ -30,6 +30,15 @@ export const RESERVED_PROVIDER_IDS = ['claude', 'codex', 'gemini', 'generic'] as
  */
 export interface AcpProviderModule {
   readonly id: string;
+  /**
+   * The vendor CLI this provider's bridge drives, which must exist on the
+   * execution target's PATH. An `npx` bridge names the CLI it wraps, never
+   * `npx`. Provider availability is per-TARGET (not per-node): an `ssh:`
+   * target spawns the agent on the remote host, so what matters is this
+   * command's presence on THAT machine, never the node's own PATH (design
+   * spec "Provider availability is per TARGET, not per node").
+   */
+  requiredCommand: string;
   spawnConfig(opts: { cwd: string }): AcpSpawnConfig;
   enrich?(update: AcpTranscriptUpdate, raw: unknown): AcpTranscriptUpdate;
 }

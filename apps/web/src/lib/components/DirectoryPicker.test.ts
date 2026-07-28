@@ -28,8 +28,8 @@ function fakeClient(
 }
 
 describe('DirectoryPicker (SPEC §7.25 directory picker; issue #474)', () => {
-  it('shows a quiet prompt instead of erroring when no target is selected yet', () => {
-    render(DirectoryPicker, {
+  it('keeps the same labelled input shape (disabled), rather than swapping to prose, when no target is selected yet (design spec §0.7)', () => {
+    const { container } = render(DirectoryPicker, {
       props: {
         client: undefined,
         nodeId: undefined,
@@ -38,7 +38,10 @@ describe('DirectoryPicker (SPEC §7.25 directory picker; issue #474)', () => {
         onChange: vi.fn(),
       },
     });
-    expect(screen.getByTestId('directory-picker-no-target')).toBeTruthy();
+    const input = screen.getByTestId('directory-picker-input') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.queryByTestId('directory-picker-no-target')).toBeNull();
+    expect(container.querySelector('p')).toBeNull();
   });
 
   it('browses the target on mount (empty path == "let the node pick") and lists dirs then files', async () => {

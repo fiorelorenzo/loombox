@@ -2607,8 +2607,8 @@ describe('RelayClient: listTargets (issue #383)', () => {
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_1',
       targets: [
-        { id: 'local', kind: 'local', label: 'This machine' },
-        { id: 'ssh_devbox', kind: 'ssh', label: 'devbox' },
+        { id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] },
+        { id: 'ssh_devbox', kind: 'ssh', label: 'devbox', providers: ['claude'] },
       ],
     });
     // Give the relay a beat to record the announce before the client asks.
@@ -2628,6 +2628,7 @@ describe('RelayClient: listTargets (issue #383)', () => {
           label: 'This machine',
           kind: 'local',
           reachable: true,
+          providers: ['claude'],
         },
         {
           nodeId: 'node_1',
@@ -2635,6 +2636,7 @@ describe('RelayClient: listTargets (issue #383)', () => {
           label: 'devbox',
           kind: 'ssh',
           reachable: true,
+          providers: ['claude'],
         },
       ]),
     );
@@ -2655,7 +2657,7 @@ describe('RelayClient: listTargets (issue #383)', () => {
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_owner',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -2698,7 +2700,7 @@ describe('RelayClient: listTargets (issue #383)', () => {
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_health',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
     node.send({
@@ -2762,7 +2764,7 @@ describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_1',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -2843,7 +2845,7 @@ describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_2',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -2911,7 +2913,7 @@ describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_3',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -2962,7 +2964,7 @@ describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate 
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_1',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -3039,7 +3041,7 @@ describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate 
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_2',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -3094,7 +3096,7 @@ describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate 
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_3',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -3145,7 +3147,7 @@ describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 conn
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_1',
-      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -3217,7 +3219,7 @@ describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 conn
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_2',
-      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -3279,7 +3281,7 @@ describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 conn
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_3',
-      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box' }],
+      targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'Dev box', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -4332,7 +4334,7 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_create_1',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -4414,7 +4416,7 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: 'node_create_2',
-      targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 

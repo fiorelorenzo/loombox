@@ -24,9 +24,9 @@
    * "whatever's typed there is `projectPath`" semantics it replaces.
    *
    * `client`/`nodeId`/`targetId` undefined (no target picked yet, or not
-   * connected) renders a quiet empty prompt rather than erroring — mirrors
-   * `NewSessionDialog`'s own "undefined client renders closed for content"
-   * convention.
+   * connected) keeps this widget's own shape — the same labelled path
+   * input, just `disabled` — rather than swapping it for a prose message;
+   * see the forms-and-providers migration note below.
    *
    * IA v4 (design spec §3.4; issue #507): `NewSessionDialog` dropped this
    * component entirely: a project's folder is now picked once, in
@@ -52,6 +52,15 @@
    * never-defined `--color-fill-hover` (issue #508's §5 token-hygiene
    * finding) by switching to `--color-fill-subtle`, matching every sibling
    * hover rule in this file.
+   *
+   * Forms-and-providers migration (design spec §0.7, 2026-07-28): the
+   * no-target state used to swap this whole widget out for a single
+   * `<p>` of prose ("Pick a target to browse its folders."), which is
+   * exactly what gave `AddProjectDialog`'s three fields three different
+   * shapes. It now renders the identical, merely-disabled path input
+   * instead, so the field's shape never changes — only whether you can
+   * type in it — and the guidance moves to `AddProjectDialog`'s own
+   * `Field help` slot, next to the other two fields' own help text.
    */
   import type { FsEntryV1, TargetFsListResponsePayloadV1 } from '@loombox/protocol';
   import { untrack } from 'svelte';
@@ -262,9 +271,17 @@
 
 <div class="directory-picker" data-testid="directory-picker">
   {#if !client || !nodeId || !targetId}
-    <p class="hint" data-testid="directory-picker-no-target">
-      Pick a target to browse its folders.
-    </p>
+    <div class="path-form">
+      <label for="directory-picker-path" class="visually-hidden">Project folder</label>
+      <Input
+        id="directory-picker-path"
+        monospace
+        value={pathInputValue}
+        disabled
+        placeholder="/home/you/project"
+        dataTestId={inputTestId}
+      />
+    </div>
   {:else}
     <div class="path-form">
       <label for="directory-picker-path" class="visually-hidden">Project folder</label>

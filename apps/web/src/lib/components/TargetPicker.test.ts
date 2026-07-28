@@ -8,8 +8,22 @@ import TargetPicker from './TargetPicker.svelte';
 afterEach(() => cleanup());
 
 const TARGETS: TargetListEntry[] = [
-  { nodeId: 'node_1', targetId: 'local', label: 'This machine', kind: 'local', reachable: true },
-  { nodeId: 'node_1', targetId: 'ssh_devbox', label: 'devbox', kind: 'ssh', reachable: false },
+  {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  },
+  {
+    nodeId: 'node_1',
+    targetId: 'ssh_devbox',
+    label: 'devbox',
+    kind: 'ssh',
+    reachable: false,
+    providers: ['claude'],
+  },
 ];
 
 describe('TargetPicker (issue #385)', () => {

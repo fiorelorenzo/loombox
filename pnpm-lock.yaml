@@ -237,6 +237,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/providers/ohmypi:
+    dependencies:
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/relay:
     dependencies:
       '@fastify/rate-limit':
@@ -296,9 +302,15 @@ importers:
       '@loombox/providers-claude':
         specifier: workspace:*
         version: link:../providers/claude
+      '@loombox/providers-codex':
+        specifier: workspace:*
+        version: link:../providers/codex
       '@loombox/providers-core':
         specifier: workspace:*
         version: link:../providers/core
+      '@loombox/providers-ohmypi':
+        specifier: workspace:*
+        version: link:../providers/ohmypi
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0

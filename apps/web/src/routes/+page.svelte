@@ -1324,6 +1324,22 @@
     return target?.label ?? session.targetId;
   }
 
+  /** The provider ids `project`'s own target can actually spawn (forms + real providers design spec §2/§3): looked up from the already-polled `targetStatusEntries` (issue #269) the exact same way {@link sessionTargetLabel} finds a session's target. A target this device hasn't heard from yet (or has fallen out of the list) reads as zero providers, same as a genuinely bare one — `NewSessionDialog` treats both identically until the next poll fills it in. */
+  function providersForProject(project: Project): string[] {
+    const target = targetStatusEntries.find(
+      (entry) => entry.nodeId === project.nodeId && entry.targetId === project.targetId,
+    );
+    return target?.providers ?? [];
+  }
+
+  /** `project`'s own target, named for a human — mirrors {@link sessionTargetLabel}'s identical label-with-id-fallback idiom; used only to name the target in `NewSessionDialog`'s zero-providers message. */
+  function targetLabelForProject(project: Project): string {
+    const target = targetStatusEntries.find(
+      (entry) => entry.nodeId === project.nodeId && entry.targetId === project.targetId,
+    );
+    return target?.label ?? project.targetId;
+  }
+
   /** Sessions with a pending item in the cross-project attention inbox (issues #167/#168) — the row's "needs attention" affordance, reusing `attentionInboxItems` already tracked above rather than a new subscription. */
   const sessionsNeedingAttention = $derived(
     new Set(attentionInboxItems.map((item) => item.sessionId)),
@@ -3049,11 +3065,10 @@
     open={newSessionOpen}
     project={newSessionProject}
     {client}
+    providers={providersForProject(newSessionProject)}
+    targetLabel={targetLabelForProject(newSessionProject)}
     onClose={() => (newSessionOpen = false)}
     onCreated={handleSessionCreated}
-    onGitRepoResolved={(isGitRepo) => {
-      if (newSessionProject) projectStore.setGitRepo(newSessionProject.id, isGitRepo);
-    }}
   />
 {/if}
 

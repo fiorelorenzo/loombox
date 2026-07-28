@@ -100,58 +100,58 @@
 
 <div class="notification-preferences" data-testid="notification-preferences">
   <Card elevation="raised" padding="md">
-    <section class="quiet-hours">
-      <h3>Quiet hours</h3>
-      <Checkbox
-        checked={quietHoursEnabled}
-        label="Mute notifications during quiet hours"
-        onCheckedChange={onQuietHoursEnabledChange}
-        dataTestId="quiet-hours-enabled"
-      />
-      {#if quietHoursEnabled}
-        <div class="quiet-range">
-          <Input
-            type="time"
-            value={quietStart}
-            onchange={onQuietStartChange}
-            ariaLabel="Quiet hours start"
-            dataTestId="quiet-hours-start"
-          />
-          <span class="quiet-range-sep">to</span>
-          <Input
-            type="time"
-            value={quietEnd}
-            onchange={onQuietEndChange}
-            ariaLabel="Quiet hours end"
-            dataTestId="quiet-hours-end"
-          />
-        </div>
-      {/if}
-    </section>
-  </Card>
-
-  {#if projectPaths.length > 0}
-    <Card elevation="raised" padding="md">
-      <section class="muted-projects">
-        <h3>Mute per project</h3>
-        <ul>
-          {#each projectPaths as projectPath (projectPath)}
-            <li>
-              <!-- `label={projectPath}` uses Checkbox's own label typography
-                   directly rather than a separate `.project-path`-styled
-                   sibling; the path is the only content in this row anyway. -->
-              <Checkbox
-                checked={preferences.mutedProjects.includes(projectPath)}
-                label={projectPath}
-                onCheckedChange={(checked) => toggleProjectMuted(projectPath, checked)}
-                dataTestId={`mute-project-${projectPath}`}
-              />
-            </li>
-          {/each}
-        </ul>
+    <div class="notification-sections">
+      <section class="quiet-hours">
+        <h3>Quiet hours</h3>
+        <Checkbox
+          checked={quietHoursEnabled}
+          label="Mute notifications during quiet hours"
+          onCheckedChange={onQuietHoursEnabledChange}
+          dataTestId="quiet-hours-enabled"
+        />
+        {#if quietHoursEnabled}
+          <div class="quiet-range">
+            <Input
+              type="time"
+              value={quietStart}
+              onchange={onQuietStartChange}
+              ariaLabel="Quiet hours start"
+              dataTestId="quiet-hours-start"
+            />
+            <span class="quiet-range-sep">to</span>
+            <Input
+              type="time"
+              value={quietEnd}
+              onchange={onQuietEndChange}
+              ariaLabel="Quiet hours end"
+              dataTestId="quiet-hours-end"
+            />
+          </div>
+        {/if}
       </section>
-    </Card>
-  {/if}
+
+      {#if projectPaths.length > 0}
+        <section class="muted-projects">
+          <h3>Mute per project</h3>
+          <ul>
+            {#each projectPaths as projectPath (projectPath)}
+              <li>
+                <!-- `label={projectPath}` uses Checkbox's own label typography
+                     directly rather than a separate `.project-path`-styled
+                     sibling; the path is the only content in this row anyway. -->
+                <Checkbox
+                  checked={preferences.mutedProjects.includes(projectPath)}
+                  label={projectPath}
+                  onCheckedChange={(checked) => toggleProjectMuted(projectPath, checked)}
+                  dataTestId={`mute-project-${projectPath}`}
+                />
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+    </div>
+  </Card>
 </div>
 
 <style>
@@ -160,6 +160,16 @@
     flex-direction: column;
     gap: var(--space-md);
     font-size: var(--text-small-size);
+  }
+
+  /* Quiet hours and muted projects used to be two separate cards (one
+     field's worth of chrome each, design spec §0.8's "one card per
+     field" finding); this is the gap between them now that they're two
+     `<section>`s sharing one card instead. */
+  .notification-sections {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
   }
 
   .quiet-hours,

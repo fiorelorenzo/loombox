@@ -89,9 +89,13 @@
 
 <div class={`ui-field ${className}`.trim()} data-testid="ui-field">
   {#if grouped}
-    <span id={labelId} class="ui-field-label">{label}</span>
+    <span id={labelId} class="ui-field-label">
+      {label}{#if required}<span class="ui-field-required" aria-hidden="true">*</span>{/if}
+    </span>
   {:else}
-    <label for={controlId} id={labelId} class="ui-field-label">{label}</label>
+    <label for={controlId} id={labelId} class="ui-field-label">
+      {label}{#if required}<span class="ui-field-required" aria-hidden="true">*</span>{/if}
+    </label>
   {/if}
   <div class="ui-field-control">
     {@render children({
@@ -137,6 +141,20 @@
     text-transform: uppercase;
     font-weight: var(--text-caption-weight);
     color: var(--color-text-secondary);
+  }
+
+  /* Marks the REQUIRED field, not the optional ones. Before this, five labels
+     across two forms spelled "(optional)" into the label text itself while
+     `required` was never once set by any call site, so `aria-required` was
+     always false and a sighted user got no required signal at all. Marking the
+     exception is the whole point, and in the add-target wizard the exception is
+     "required": one of its five fields is. `aria-hidden` because the control
+     itself carries the real `aria-required`, so a screen reader would
+     otherwise hear the asterisk twice. */
+  .ui-field-required {
+    margin-left: 0.15em;
+    color: var(--color-danger);
+    font-weight: var(--text-caption-weight);
   }
 
   .ui-field-control {

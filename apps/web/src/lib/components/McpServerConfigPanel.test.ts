@@ -108,4 +108,16 @@ describe('McpServerConfigPanel (issue #188)', () => {
     expect(storage.get()).toEqual([]);
     expect(screen.queryByTestId(`mcp-server-${noSecretPreset.config.name}`)).toBeNull();
   });
+
+  it('no Field in this panel renders prose as its control (design spec §0.7, applied repo-wide)', () => {
+    render(McpServerConfigPanel, {
+      props: { projectPath: '/tmp/project', storage: createInMemoryMcpServerConfigStorage() },
+    });
+    const fields = screen.getAllByTestId('ui-field');
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      const control = field.querySelector('.ui-field-control');
+      expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
+    }
+  });
 });

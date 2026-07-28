@@ -60,6 +60,16 @@ describe('claudeProvider', () => {
     expect(moduleSpawnConfig.args).toEqual(['-y', '@agentclientprotocol/claude-agent-acp']);
   });
 
+  // requiredCommand is the field the design spec's per-TARGET availability
+  // probe reads (issue coverage for that new AcpProviderModule field): it
+  // must name the vendor CLI the npx bridge wraps, never the npx launcher
+  // itself, or a target with claude-agent-acp cached but no real `claude`
+  // binary would be advertised as able to run Claude Code.
+  it('requiredCommand names the vendor CLI (claude), never the npx launcher', () => {
+    expect(claudeProviderModule.requiredCommand).toBe('claude');
+    expect(claudeProviderModule.requiredCommand).not.toBe('npx');
+  });
+
   it('drives a full prompt/response turn through the fixture ACP agent', async () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-claude-'));
 

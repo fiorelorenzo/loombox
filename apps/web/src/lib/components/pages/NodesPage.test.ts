@@ -13,6 +13,7 @@ const TARGETS: TargetListEntry[] = [
     targetId: 'local',
     label: 'This machine',
     kind: 'local',
+    providers: ['claude'],
     reachable: true,
   },
 ];
