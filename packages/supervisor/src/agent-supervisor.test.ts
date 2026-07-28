@@ -12,7 +12,7 @@ import type {
   AcpUpdate,
 } from '@loombox/providers-core';
 
-import { AgentSupervisor } from './agent-supervisor';
+import { AgentSupervisor, DEFAULT_PROVIDER_REQUIREMENTS } from './agent-supervisor';
 import type { AgentSession } from './agent-session';
 
 // Reuses the same hermetic fixture agent packages/providers/core and
@@ -134,6 +134,32 @@ describe('AgentSupervisor', () => {
     // deliberately NOT advertised").
     expect(supervisor.getProvider('gemini')).toBeUndefined();
     expect(supervisor.getProvider('generic')).toBeUndefined();
+  });
+
+  // The invariant behind DEFAULT_PROVIDER_REQUIREMENTS existing at all: a node
+  // advertises per-target availability by probing these CLIs, and THIS
+  // supervisor is what later spawns whatever the user picked. Two separately
+  // maintained lists would drift, and the failure mode is silent and bad - a
+  // picker offering an agent nothing can start.
+  it('advertises requirements for exactly the providers it registers, so the two sets cannot drift', () => {
+    const supervisor = new AgentSupervisor({ stateDir });
+
+    expect(DEFAULT_PROVIDER_REQUIREMENTS.length).toBeGreaterThan(0);
+    for (const { id, requiredCommand } of DEFAULT_PROVIDER_REQUIREMENTS) {
+      expect(supervisor.getProvider(id)?.id).toBe(id);
+      // The vendor CLI its bridge drives, never the launcher: `npx` here would
+      // make every target look capable of running everything.
+      expect(requiredCommand).not.toBe('npx');
+      expect(requiredCommand).toBeTruthy();
+    }
+  });
+
+  it('names the real vendor CLI for each default provider', () => {
+    expect([...DEFAULT_PROVIDER_REQUIREMENTS]).toEqual([
+      { id: 'claude', requiredCommand: 'claude' },
+      { id: 'codex', requiredCommand: 'codex' },
+      { id: 'ohmypi', requiredCommand: 'omp' },
+    ]);
   });
 
   it('rejects starting with an unregistered provider id', async () => {

@@ -2,7 +2,7 @@ export const PACKAGE_NAME = '@loombox/supervisor';
 
 export { AgentSession } from './agent-session';
 export type { AgentSessionSpawnOptions } from './agent-session';
-export { AgentSupervisor } from './agent-supervisor';
+export { AgentSupervisor, DEFAULT_PROVIDER_REQUIREMENTS } from './agent-supervisor';
 export type { AgentSupervisorOptions, AgentSupervisorStartOptions } from './agent-supervisor';
 
 // v1: attachment resolution over the existing node-to-supervisor control

@@ -1,11 +1,42 @@
 import type { AcpChildProcess, AcpMcpServerConfig, AcpProvider } from '@loombox/providers-core';
-import { claudeProvider } from '@loombox/providers-claude';
-import { codexProvider } from '@loombox/providers-codex';
-import { ohmypiProvider } from '@loombox/providers-ohmypi';
+import { claudeProvider, claudeProviderModule } from '@loombox/providers-claude';
+import { codexProvider, codexProviderModule } from '@loombox/providers-codex';
+import { ohmypiProvider, ohmypiProviderModule } from '@loombox/providers-ohmypi';
 
 import type { AttachmentChannel } from './attachment-channel';
 import { AgentSession } from './agent-session';
 import { TranscriptStore } from './transcript-store';
+
+/**
+ * The provider set a default `AgentSupervisor` can actually spawn, paired with
+ * the v1 module that declares which vendor CLI each one needs.
+ *
+ * ONE list on purpose. A node advertises per-target provider availability by
+ * probing these CLIs (`@loombox/node`'s `provider-availability`), and this
+ * supervisor is what later spawns the agent the user picked. Two separate
+ * arrays would drift, and the failure is silent in the worst direction: a
+ * picker offering an agent nothing can start. Deriving both from here means
+ * "what we advertise" and "what we can spawn" cannot disagree.
+ */
+const DEFAULT_PROVIDERS = [
+  { provider: claudeProvider, module: claudeProviderModule },
+  { provider: codexProvider, module: codexProviderModule },
+  { provider: ohmypiProvider, module: ohmypiProviderModule },
+] as const;
+
+/**
+ * `{ id, requiredCommand }` for each default provider — structurally exactly
+ * `@loombox/node`'s `ProviderAvailabilityCandidate`, so a node's composition
+ * root can hand this straight to `createNode({ providerCandidates })` with no
+ * hand-maintained duplicate of the list.
+ */
+export const DEFAULT_PROVIDER_REQUIREMENTS: readonly {
+  readonly id: string;
+  readonly requiredCommand: string;
+}[] = DEFAULT_PROVIDERS.map(({ module }) => ({
+  id: module.id,
+  requiredCommand: module.requiredCommand,
+}));
 
 export interface AgentSupervisorStartOptions {
   /** Absolute path the agent runs against; passed as both the spawn cwd and the ACP session cwd. */
@@ -69,7 +100,7 @@ export class AgentSupervisor {
   private attachmentChannel: AttachmentChannel | undefined;
 
   constructor(options: AgentSupervisorOptions = {}) {
-    for (const provider of options.providers ?? [claudeProvider, codexProvider, ohmypiProvider]) {
+    for (const provider of options.providers ?? DEFAULT_PROVIDERS.map(({ provider: p }) => p)) {
       this.providers.set(provider.id, provider);
     }
     this.store = new TranscriptStore({ stateDir: options.stateDir });
