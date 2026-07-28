@@ -348,6 +348,60 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
   });
 });
 
+describe('new session: real per-target providers (forms + real providers design spec §2/§3)', () => {
+  it("keys the dialog's available providers by the project's own (nodeId, targetId) — not just the first target in the list — and shows the sole one as a context-line fact", async () => {
+    mountCockpit({
+      sessions: [makeSession()],
+      targets: [
+        // Listed first on purpose: a `providersForProject` regression that
+        // grabbed `targetStatusEntries[0]` instead of matching by id would
+        // read this unrelated target's providers instead.
+        {
+          nodeId: 'node_2',
+          targetId: 'ssh_build',
+          label: 'Build box',
+          kind: 'ssh',
+          reachable: true,
+          providers: ['claude', 'ohmypi'],
+        },
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          reachable: true,
+          providers: ['codex'],
+        },
+      ],
+    });
+
+    await fireEvent.click(await screen.findByTestId('project-new-session-row'));
+
+    expect(screen.queryByTestId('new-session-provider')).toBeNull();
+    expect(screen.getByTestId('new-session-agent-fact').textContent).toContain('Codex');
+  });
+
+  it("names the target in the zero-providers message using the target list's own label, not the raw target id", async () => {
+    mountCockpit({
+      sessions: [makeSession()],
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: "Ada's MacBook",
+          kind: 'local',
+          reachable: true,
+          providers: [],
+        },
+      ],
+    });
+
+    await fireEvent.click(await screen.findByTestId('project-new-session-row'));
+
+    expect(screen.getByText(/no agent cli/i).textContent).toContain("Ada's MacBook");
+  });
+});
+
 describe('session archive (SPEC §7.2 board archive; issue #512)', () => {
   it('the row menu offers "Archive session…" alongside Target status/Copy project path', async () => {
     mountCockpit({ sessions: [makeSession()] });

@@ -400,24 +400,26 @@
 </script>
 
 {#snippet stepProgress()}
-  <ol class="wizard-steps" aria-label="Add target progress">
+  <div class="wizard-progress">
     <div class="wizard-steps-track">
       <div
         class="wizard-steps-fill thread-draw-fill"
         style={`--thread-draw-progress: ${stepProgressPercent}%`}
       ></div>
     </div>
-    {#each STEPS as s, index (s.id)}
-      <li
-        class="wizard-step"
-        class:done={index < stepIndex}
-        class:current={index === stepIndex}
-        aria-current={index === stepIndex ? 'step' : undefined}
-      >
-        {s.label}
-      </li>
-    {/each}
-  </ol>
+    <ol class="wizard-steps" aria-label="Add target progress">
+      {#each STEPS as s, index (s.id)}
+        <li
+          class="wizard-step"
+          class:done={index < stepIndex}
+          class:current={index === stepIndex}
+          aria-current={index === stepIndex ? 'step' : undefined}
+        >
+          {s.label}
+        </li>
+      {/each}
+    </ol>
+  </div>
 {/snippet}
 
 {#snippet dialogBody()}
@@ -491,7 +493,7 @@
       </div>
     {:else}
       <form class="host-form" onsubmit={goToReview}>
-        <Field label="Host">
+        <Field label="Host" required>
           {#snippet children({ id, describedBy, errorId, invalid, required })}
             <Input
               {id}
@@ -507,7 +509,7 @@
           {/snippet}
         </Field>
 
-        <Field label="User (optional)">
+        <Field label="User" help="Defaults to root">
           {#snippet children({ id, describedBy, errorId, invalid, required })}
             <Input
               {id}
@@ -516,13 +518,12 @@
               {invalid}
               {required}
               bind:value={user}
-              placeholder="defaults to root"
               dataTestId="add-target-user"
             />
           {/snippet}
         </Field>
 
-        <Field label="Port (optional)">
+        <Field label="Port" help="Defaults to 22">
           {#snippet children({ id, describedBy, errorId, invalid, required })}
             <Input
               {id}
@@ -532,13 +533,12 @@
               {required}
               type="number"
               bind:value={port}
-              placeholder="22"
               dataTestId="add-target-port"
             />
           {/snippet}
         </Field>
 
-        <Field label="~/.ssh/config alias (optional)">
+        <Field label="Config alias" help="Matches an entry in the node's own ~/.ssh/config">
           {#snippet children({ id, describedBy, errorId, invalid, required })}
             <Input
               {id}
@@ -548,13 +548,12 @@
               {required}
               monospace
               bind:value={alias}
-              placeholder="matches an entry the node already knows"
               dataTestId="add-target-alias"
             />
           {/snippet}
         </Field>
 
-        <Field label="Label (optional)">
+        <Field label="Label" help="Defaults to the host">
           {#snippet children({ id, describedBy, errorId, invalid, required })}
             <Input
               {id}
@@ -563,7 +562,6 @@
               {invalid}
               {required}
               bind:value={label}
-              placeholder="Defaults to the host"
               dataTestId="add-target-label"
             />
           {/snippet}
@@ -689,14 +687,15 @@
      "thread-draw" row: "anything that fills or reveals") across the top
      of the wizard, plus a labeled step list below it (issue #431's
      surface direction: "clear step progression using thread-draw for the
-     progress indicator"). */
-  .wizard-steps {
+     progress indicator"). `.wizard-steps-track` sits as a sibling of the
+     `<ol>` now, not a child of it — an `<ol>` may only contain `<li>`s
+     (issue's own §0.6 finding) — both wrapped in `.wizard-progress` so
+     they still move together as one visual unit. */
+  .wizard-progress {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
     margin: 0 0 var(--space-sm);
-    padding: 0;
-    list-style: none;
   }
 
   .wizard-steps-track {
@@ -713,9 +712,36 @@
     background: var(--color-accent);
   }
 
+  /* A real horizontal row (§0.5 finding: this used to sit under a
+     `flex-direction: column` parent while each `<li>` declared
+     `inline-block` + `margin-right` for a row layout that never actually
+     applied). `justify-content: space-between` spreads the four labels
+     under the full-width track above them, so each roughly sits under
+     its own share of the fill.
+
+     Checked at 1440px AND 430px (design spec's own call-out that four
+     labels in a row "may genuinely not fit" there) with the real
+     `Inter Variable` font: at 430px this row has 375px to work with and
+     the four labels ("Host"/"Review"/"Provision"/"Done") need ~154px —
+     comfortable room to spare, still true all the way down to a 320px
+     viewport. So there is no narrow-viewport collapse (no ticks, no
+     hidden text): that would be solving a problem this content doesn't
+     have. `flex-wrap: wrap` is the one narrow-safety line kept anyway —
+     free today (it never triggers), and it turns "a future, longer step
+     name quietly overflows past the dialog edge" into "wraps onto a
+     second row", a deliberate fallback rather than an accidental one, if
+     that ever stops being true. */
+  .wizard-steps {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--space-2xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
   .wizard-step {
-    display: inline-block;
-    margin-right: var(--space-md);
     color: var(--color-text-muted);
     font-size: var(--text-small-size);
     font-weight: 500;
@@ -733,7 +759,14 @@
   .host-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
+    /* `Field` gaps its own label/control/help by `--space-3xs`, and its doc
+       comment requires anything stacking Fields to beat that by at least
+       `--space-sm` or nothing groups. This was `--space-2xs`: measured in a
+       browser, 4px between fields against 2px inside them, so the five fields
+       read as one flat run of alternating text and boxes. `--space-md` is what
+       `NewSessionDialog`'s `.session-form` and `AddProjectDialog`'s
+       `.project-form` already use - this form was the outlier. */
+    gap: var(--space-md);
   }
 
   .link-button {

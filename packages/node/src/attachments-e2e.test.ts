@@ -199,7 +199,7 @@ let nodeStateDir: string;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
-const SSH_TARGET = { id: 'devbox', kind: 'ssh' as const, label: 'Dev box' };
+const SSH_TARGET = { id: 'devbox', kind: 'ssh' as const, label: 'Dev box', providers: [] };
 const SSH_TARGET_CONFIG = { id: 'devbox', label: 'Dev box', host: 'devbox.invalid', user: 'dev' };
 
 beforeEach(async () => {

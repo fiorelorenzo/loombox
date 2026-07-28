@@ -37,11 +37,25 @@ export interface Project {
   path: string;
   /**
    * Whether `path` is inside a git work tree, learned from the directory
-   * picker's `gitRepo` flag. `undefined` means "not established yet" — an
-   * adopted project (see {@link ProjectStore.adoptFromSessions}) has never
-   * been browsed to, and a node older than the flag never reports it. Callers
-   * must treat `undefined` as unknown rather than as `false`: SPEC §7.1's
-   * worktree choice is offered only on a confirmed `true`.
+   * picker's `gitRepo` flag. Callers must treat `undefined` as unknown, never
+   * as `false`: SPEC §7.1's worktree choice is offered only on a confirmed
+   * `true`.
+   *
+   * Since the forms wave this is known for every project added through
+   * `AddProjectDialog` — that dialog resolves it on submit even for a path
+   * typed rather than browsed to, so the flag is never left unset on a folder
+   * a human chose. `undefined` now has exactly ONE remaining source:
+   * {@link ProjectStore.adoptFromSessions}, which materialises a project from
+   * a session's `projectPath` alone and has by definition never browsed it.
+   *
+   * That last case is why this stays optional rather than becoming a required
+   * boolean. The alternatives are both worse: defaulting adopted projects to
+   * `false` would assert "not a repo" about a folder nobody looked at, and
+   * probing every adopted project would fire a `browseDirectory` fan-out on
+   * startup to populate a field that only decides whether one radio group
+   * renders. Unknown is the honest value, and omitting `worktree` from
+   * `session_create` leaves the node's own per-target default in charge — see
+   * `CreateSessionOptions.worktree`.
    */
   isGitRepo?: boolean;
   createdAt: number;

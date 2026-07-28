@@ -49,7 +49,7 @@
    * label is now a real, visible `--text-caption-size` uppercase word in
    * the gutter — `You` for the user's own turns, the provider's display
    * name for an agent turn or its thought (`providerId`, mapped through
-   * `PROVIDER_ROLE_LABELS` below, defaulting to "Agent" for an
+   * `$lib/providers`'s shared `PROVIDER_LABELS.role` map, defaulting to "Agent" for an
    * unrecognized or omitted id) — so telling a user turn from an agent
    * turn no longer depends on noticing the gutter dot's colour, and a
    * screen reader gets the same word a sighted reader does. The user's
@@ -66,18 +66,11 @@
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core';
   import { itemCopyText } from '$lib/copy';
+  import { PROVIDER_LABELS } from '$lib/providers';
   import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
   import WovenLoader from './WovenLoader.svelte';
   import Icon from './icons/Icon.svelte';
-
-  /** RESERVED_PROVIDER_IDS (`@loombox/providers-core`) mapped onto the short display name design spec v5 §4 wants in the gutter. Deliberately local rather than exported: this is a presentation-only label table, not a provider-identity contract anything else should read. An id outside this set (or no id at all — a caller that hasn't wired session context through yet) falls back to "Agent", never a raw provider slug. */
-  const PROVIDER_ROLE_LABELS: Record<string, string> = {
-    claude: 'Claude',
-    codex: 'Codex',
-    gemini: 'Gemini',
-    generic: 'Agent',
-  };
 
   interface Props {
     item: TranscriptMessageItem;
@@ -130,7 +123,7 @@
   // and its content already reads as a thought via the timer/italic body
   // below, so the gutter word doesn't need a third value to say so again.
   const roleLabel = $derived(
-    role === 'user' ? 'You' : (providerId && PROVIDER_ROLE_LABELS[providerId]) || 'Agent',
+    role === 'user' ? 'You' : (providerId && PROVIDER_LABELS[providerId]?.role) || 'Agent',
   );
 
   let expanded = $state(false);

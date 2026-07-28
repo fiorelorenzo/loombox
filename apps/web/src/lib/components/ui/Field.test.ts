@@ -70,4 +70,26 @@ describe('Field (coherence v5 design spec §1, issue #508)', () => {
     expect(label.hasAttribute('for')).toBe(false);
     expect(label.id).toBeTruthy();
   });
+
+  // Before the forms wave `required` was ARIA-only: five labels across two
+  // forms spelled "(optional)" into their own text and no call site ever set
+  // `required`, so a sighted user got no required signal at all while a screen
+  // reader got a permanently-false one.
+  it('marks a required field visibly, not only through ARIA', () => {
+    render(Field, { props: { label: 'Host', required: true, children: inputSnippet() } });
+    const label = screen.getByText(/Host/);
+    expect(label.textContent).toContain('*');
+    expect(screen.getByTestId('field-child-input').dataset.required).toBe('true');
+  });
+
+  it('leaves an optional field unmarked, so the marker means something', () => {
+    render(Field, { props: { label: 'Label', children: inputSnippet() } });
+    expect(screen.getByText(/Label/).textContent).not.toContain('*');
+  });
+
+  it('hides the marker from assistive tech, which already hears aria-required', () => {
+    render(Field, { props: { label: 'Host', required: true, children: inputSnippet() } });
+    const marker = screen.getByText('*');
+    expect(marker.getAttribute('aria-hidden')).toBe('true');
+  });
 });

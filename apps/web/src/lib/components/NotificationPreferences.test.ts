@@ -98,4 +98,21 @@ describe('NotificationPreferences (#166)', () => {
     expect(storage.get().quietHours).toBeUndefined();
     expect(screen.queryByTestId('quiet-hours-start')).toBeNull();
   });
+
+  it('renders quiet hours and muted projects as one merged card, not two (design spec §0.8)', () => {
+    const storage = createInMemoryNotificationPreferencesStorage();
+    render(NotificationPreferences, {
+      props: { projectPaths: ['/repo/a'], storage },
+    });
+    expect(screen.getAllByTestId('ui-card')).toHaveLength(1);
+    expect(screen.getByText('Quiet hours')).toBeTruthy();
+    expect(screen.getByText('Mute per project')).toBeTruthy();
+  });
+
+  it('still renders exactly one card when there are no known projects to mute', () => {
+    render(NotificationPreferences, {
+      props: { projectPaths: [], storage: createInMemoryNotificationPreferencesStorage() },
+    });
+    expect(screen.getAllByTestId('ui-card')).toHaveLength(1);
+  });
 });

@@ -21,4 +21,12 @@ describe('createGenericProvider', () => {
     const module = createGenericProvider('id', { command: 'agent', args: [] });
     expect(module.enrich).toBeUndefined();
   });
+
+  it('requiredCommand names the same command the spawn recipe launches (no vendor bridge to distinguish it from)', () => {
+    const module = createGenericProvider('my-custom-agent', {
+      command: 'my-agent',
+      args: ['--acp'],
+    });
+    expect(module.requiredCommand).toBe('my-agent');
+  });
 });

@@ -10,7 +10,14 @@ import type { DirectoryPickerClient } from './DirectoryPicker.svelte';
 afterEach(() => cleanup());
 
 const TARGETS: TargetListEntry[] = [
-  { nodeId: 'node_1', targetId: 'local', label: 'This machine', kind: 'local', reachable: true },
+  {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  },
 ];
 
 function fakeClient(
@@ -80,12 +87,20 @@ describe('AddProjectDialog (design spec §3.4, §4.2; issue #507)', () => {
 
   it('auto-selects the first reachable target, skipping an unreachable one', () => {
     const targets: TargetListEntry[] = [
-      { nodeId: 'node_1', targetId: 'flaky', label: 'Flaky box', kind: 'ssh', reachable: false },
+      {
+        nodeId: 'node_1',
+        targetId: 'flaky',
+        label: 'Flaky box',
+        kind: 'ssh',
+        reachable: false,
+        providers: ['claude'],
+      },
       {
         nodeId: 'node_2',
         targetId: 'local',
         label: 'This machine',
         kind: 'local',
+        providers: ['claude'],
         reachable: true,
       },
     ];
@@ -256,7 +271,87 @@ describe('AddProjectDialog (design spec §3.4, §4.2; issue #507)', () => {
     await fireEvent.input(screen.getByTestId('add-project-name'), { target: { value: '  ' } });
     await fireEvent.click(screen.getByTestId('add-project-submit'));
 
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ name: undefined }));
+    // Submit is async now (it resolves the folder's git status first), so the
+    // report lands a microtask later than it used to.
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ name: undefined })),
+    );
+  });
+
+  // The submit-time git-status probe (forms wave). A path the operator TYPED
+  // rather than browsed to never went through `DirectoryPicker`'s `gitRepo`
+  // round trip, so without this the project would be registered with an
+  // unknown git status and silently lose the isolated-worktree option in
+  // `NewSessionDialog` even when it genuinely is a repo.
+  it('resolves the git status of a typed path on submit, rather than registering it unknown', async () => {
+    const client = fakeClient({
+      '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
+      '/typed/repo': { outcome: 'ok', path: '/typed/repo', gitRepo: true, entries: [] },
+    });
+    const onCreated = vi.fn();
+    render(AddProjectDialog, {
+      props: { open: true, targets: TARGETS, client, onClose: vi.fn(), onCreated },
+    });
+
+    await fireEvent.input(screen.getByTestId('add-project-path'), {
+      target: { value: '/typed/repo' },
+    });
+    await fireEvent.click(screen.getByTestId('add-project-submit'));
+
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/typed/repo', isGitRepo: true }),
+      ),
+    );
+  });
+
+  it('refuses to register a folder it cannot read, naming the path and the target', async () => {
+    const client = fakeClient({
+      '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
+      '/nope': { outcome: 'error', reason: 'ENOENT' } as never,
+    });
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    render(AddProjectDialog, {
+      props: { open: true, targets: TARGETS, client, onClose, onCreated },
+    });
+
+    await fireEvent.input(screen.getByTestId('add-project-path'), { target: { value: '/nope' } });
+    await fireEvent.click(screen.getByTestId('add-project-submit'));
+
+    // One assertion on the whole sentence: "This machine" also appears in the
+    // target picker, so matching it alone finds two nodes.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Could not read /nope on This machine. Check the path and try again.'),
+      ).toBeTruthy(),
+    );
+    expect(onCreated).not.toHaveBeenCalled();
+    // Still open, so the operator can fix the path instead of losing the form.
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('registers a readable folder whose git status the node never reported, as unknown rather than false', async () => {
+    const client = fakeClient({
+      '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
+      // `ok`, no `gitRepo`: the folder reads fine, the status is just unknown.
+      '/typed/plain': { outcome: 'ok', path: '/typed/plain', entries: [] },
+    });
+    const onCreated = vi.fn();
+    render(AddProjectDialog, {
+      props: { open: true, targets: TARGETS, client, onClose: vi.fn(), onCreated },
+    });
+
+    await fireEvent.input(screen.getByTestId('add-project-path'), {
+      target: { value: '/typed/plain' },
+    });
+    await fireEvent.click(screen.getByTestId('add-project-submit'));
+
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/typed/plain', isGitRepo: undefined }),
+      ),
+    );
   });
 
   it('Cancel closes without creating a project', async () => {
@@ -285,9 +380,17 @@ describe('AddProjectDialog (design spec §3.4, §4.2; issue #507)', () => {
         targetId: 'local',
         label: 'This machine',
         kind: 'local',
+        providers: ['claude'],
         reachable: true,
       },
-      { nodeId: 'node_2', targetId: 'devbox', label: 'Devbox', kind: 'ssh', reachable: true },
+      {
+        nodeId: 'node_2',
+        targetId: 'devbox',
+        label: 'Devbox',
+        kind: 'ssh',
+        reachable: true,
+        providers: ['claude'],
+      },
     ];
     const client = fakeClient({
       '': { outcome: 'ok', path: '/home/lorenzo', entries: [] },
@@ -312,5 +415,82 @@ describe('AddProjectDialog (design spec §3.4, §4.2; issue #507)', () => {
       expect((screen.getByTestId('add-project-path') as HTMLInputElement).value).not.toBe('/tmp/x'),
     );
     expect((screen.getByTestId('add-project-name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps every field the same shape — label + control, never prose swapped in for a control — even with no targets to pick', () => {
+    render(AddProjectDialog, {
+      props: {
+        open: true,
+        targets: [],
+        client: fakeClient({}),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+      },
+    });
+
+    const fields = screen.getAllByTestId('ui-field');
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      const control = field.querySelector('.ui-field-control');
+      expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
+    }
+
+    // The folder field keeps its labelled input shape, just disabled, with
+    // the "pick a target" guidance moved to Field's help slot instead of
+    // swapped in as the control (design spec §0.7).
+    const pathInput = screen.getByTestId('add-project-path') as HTMLInputElement;
+    expect(pathInput.disabled).toBe(true);
+    expect(screen.getByText('Pick a target to browse its folders.').tagName).toBe('P');
+  });
+
+  it("gives the target picker a visible label, matching the folder and name fields' shape", () => {
+    render(AddProjectDialog, {
+      props: {
+        open: true,
+        targets: TARGETS,
+        client: fakeClient({ '': { outcome: 'ok', path: '/home/lorenzo', entries: [] } }),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+      },
+    });
+
+    const fields = screen.getAllByTestId('ui-field');
+    const labels = fields.map((field) => field.querySelector('.ui-field-label')?.textContent);
+    expect(labels).toContain('Target');
+    expect(labels).toContain('Project folder');
+    expect(labels).toContain('Name');
+    for (const field of fields) {
+      const control = field.querySelector('.ui-field-control');
+      expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
+    }
+  });
+
+  it('the folder field help text disappears, and the control becomes usable, once a target is selected', async () => {
+    const client = fakeClient({ '': { outcome: 'ok', path: '/home/lorenzo', entries: [] } });
+    render(AddProjectDialog, {
+      props: { open: true, targets: TARGETS, client, onClose: vi.fn(), onCreated: vi.fn() },
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText('Pick a target to browse its folders.')).toBeNull(),
+    );
+    expect((screen.getByTestId('add-project-path') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('moves "Defaults to the folder name" into the field\'s help slot instead of the placeholder', () => {
+    render(AddProjectDialog, {
+      props: {
+        open: true,
+        targets: TARGETS,
+        client: fakeClient({ '': { outcome: 'ok', path: '/home/lorenzo', entries: [] } }),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+      },
+    });
+
+    const nameInput = screen.getByTestId('add-project-name') as HTMLInputElement;
+    expect(nameInput.placeholder).toBe('');
+    expect(screen.getByText('Defaults to the folder name')).toBeTruthy();
+    expect(nameInput.getAttribute('aria-describedby')).toBeTruthy();
   });
 });

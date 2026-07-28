@@ -2,7 +2,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { TargetFsListResponsePayloadV1 } from '@loombox/protocol';
 import type { Project } from '$lib/projects';
 import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svelte';
 
@@ -18,14 +17,16 @@ const PROJECT: Project = {
   createdAt: 0,
 };
 
+/** The default fixture used by every test that isn't specifically about the
+ * Agent field itself: exactly one available provider, matching this
+ * suite's pre-existing `provider: 'claude'` assertions from before real
+ * providers existed. */
+const PROVIDERS = ['claude'];
+const TARGET_LABEL = 'local';
+
 function fakeClient(overrides: Partial<NewSessionClient> = {}): NewSessionClient {
   return {
     createSession: vi.fn().mockResolvedValue('sess_new_1'),
-    // Resolves the `isGitRepo` probe (issue #507) for tests that never
-    // touch it directly: a project fixture with a known `isGitRepo`
-    // never triggers a probe in the first place, so this default is only
-    // ever exercised by the "probes when unknown" tests below.
-    browseDirectory: vi.fn().mockResolvedValue({ outcome: 'ok', path: PROJECT.path, entries: [] }),
     ...overrides,
   };
 }
@@ -36,13 +37,15 @@ async function fillPrompt(): Promise<void> {
   });
 }
 
-describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507)', () => {
+describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507; forms + real providers design spec §2/§3)', () => {
   it('is not rendered while closed', () => {
     render(NewSessionDialog, {
       props: {
         open: false,
         project: PROJECT,
         client: fakeClient(),
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
         onCreated: vi.fn(),
         onClose: vi.fn(),
       },
@@ -56,6 +59,8 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         open: true,
         project: PROJECT,
         client: fakeClient(),
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
         onCreated: vi.fn(),
         onClose: vi.fn(),
       },
@@ -73,6 +78,8 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         open: true,
         project: PROJECT,
         client: fakeClient(),
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
         onCreated: vi.fn(),
         onClose: vi.fn(),
       },
@@ -90,7 +97,15 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     const onCreated = vi.fn();
     const onClose = vi.fn();
     render(NewSessionDialog, {
-      props: { open: true, project: PROJECT, client, onCreated, onClose },
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated,
+        onClose,
+      },
     });
 
     await fillPrompt();
@@ -114,7 +129,15 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     });
     const onClose = vi.fn();
     render(NewSessionDialog, {
-      props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose },
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose,
+      },
     });
 
     await fillPrompt();
@@ -133,7 +156,15 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         ),
     });
     render(NewSessionDialog, {
-      props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose: vi.fn() },
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose: vi.fn(),
+      },
     });
 
     await fillPrompt();
@@ -159,7 +190,15 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       ),
     });
     render(NewSessionDialog, {
-      props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose: vi.fn() },
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose: vi.fn(),
+      },
     });
 
     await fillPrompt();
@@ -173,13 +212,47 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     const client = fakeClient();
     const onClose = vi.fn();
     render(NewSessionDialog, {
-      props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose },
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose,
+      },
     });
 
     await fireEvent.click(screen.getByText('Cancel'));
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(client.createSession).not.toHaveBeenCalled();
+  });
+
+  it('issues no browseDirectory call at all — the workspace probe is gone (forms + real providers design spec §1/§3, defect #2)', async () => {
+    const browseDirectory = vi.fn();
+    // A real `RelayClient` still has `browseDirectory` (it serves other
+    // callers, e.g. `AddProjectDialog`); this fixture keeps it present but
+    // unused, so the assertion below proves this component genuinely never
+    // calls it rather than merely lacking the method to call.
+    const client = { ...fakeClient(), browseDirectory };
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: { ...PROJECT, isGitRepo: undefined },
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose: vi.fn(),
+      },
+    });
+
+    await fillPrompt();
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    await waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    expect(browseDirectory).not.toHaveBeenCalled();
   });
 
   describe('the Workspace control (SPEC §7.1 per-session worktree choice)', () => {
@@ -189,12 +262,28 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
           open: true,
           project: { ...PROJECT, isGitRepo: false },
           client: fakeClient(),
+          providers: PROVIDERS,
+          targetLabel: TARGET_LABEL,
           onCreated: vi.fn(),
           onClose: vi.fn(),
         },
       });
       expect(screen.queryByTestId('new-session-workspace')).toBeNull();
-      expect(screen.queryByTestId('new-session-workspace-probing')).toBeNull();
+    });
+
+    it('is absent, with no probe or loading state, when the project has never been resolved as a git repo at all', () => {
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: { ...PROJECT, isGitRepo: undefined },
+          client: fakeClient(),
+          providers: PROVIDERS,
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+      expect(screen.queryByTestId('new-session-workspace')).toBeNull();
     });
 
     it('is present, defaulting to Isolated worktree, when the project is a confirmed git repo', () => {
@@ -203,6 +292,8 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
           open: true,
           project: PROJECT,
           client: fakeClient(),
+          providers: PROVIDERS,
+          targetLabel: TARGET_LABEL,
           onCreated: vi.fn(),
           onClose: vi.fn(),
         },
@@ -219,7 +310,15 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     it('picking In place sends worktree: false; the untouched default sends worktree: true', async () => {
       const client = fakeClient();
       render(NewSessionDialog, {
-        props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose: vi.fn() },
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: PROVIDERS,
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
       });
 
       await fillPrompt();
@@ -237,144 +336,106 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         }),
       );
     });
+  });
 
-    it('probes browseDirectory when isGitRepo is unknown, shows a loading state meanwhile, then renders the choice once resolved true and reports it via onGitRepoResolved', async () => {
-      let resolveBrowse: (payload: TargetFsListResponsePayloadV1) => void = () => {};
-      const client = fakeClient({
-        browseDirectory: vi.fn(
-          () =>
-            new Promise<TargetFsListResponsePayloadV1>((resolve) => {
-              resolveBrowse = resolve;
-            }),
+  describe('the Agent field (forms + real providers design spec §2/§3, defect #1: real per-target providers, never a hardcoded guess)', () => {
+    it('renders no Select and no zero-agent notice when exactly one provider is available; the sole agent instead appears as a fact in the context line', () => {
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+      expect(screen.queryByTestId('new-session-provider')).toBeNull();
+      expect(screen.getByTestId('new-session-agent-fact').textContent).toContain('Codex');
+    });
+
+    it('submits the sole available provider even though no Select was ever rendered for it', async () => {
+      const client = fakeClient();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      await fillPrompt();
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+      await waitFor(() =>
+        expect(client.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'codex' }),
         ),
-      });
-      const onGitRepoResolved = vi.fn();
-      render(NewSessionDialog, {
-        props: {
-          open: true,
-          project: { ...PROJECT, isGitRepo: undefined },
-          client,
-          onCreated: vi.fn(),
-          onClose: vi.fn(),
-          onGitRepoResolved,
-        },
-      });
-
-      expect(client.browseDirectory).toHaveBeenCalledWith({
-        nodeId: 'node_1',
-        targetId: 'local',
-        path: '/home/dev/loombox',
-      });
-      expect(screen.getByTestId('new-session-workspace-probing')).toBeTruthy();
-      expect(screen.queryByTestId('new-session-workspace')).toBeNull();
-
-      resolveBrowse({ outcome: 'ok', path: '/home/dev/loombox', entries: [], gitRepo: true });
-
-      await waitFor(() => expect(screen.getByTestId('new-session-workspace')).toBeTruthy());
-      expect(screen.queryByTestId('new-session-workspace-probing')).toBeNull();
-      expect(onGitRepoResolved).toHaveBeenCalledWith(true);
+      );
     });
 
-    it('drops the control and sends no worktree field when the probe resolves to a confirmed non-repo, reporting that via onGitRepoResolved', async () => {
-      const client = fakeClient({
-        browseDirectory: vi.fn().mockResolvedValue({
-          outcome: 'ok',
-          path: '/home/dev/loombox',
-          entries: [],
-          gitRepo: false,
-        }),
-      });
-      const onGitRepoResolved = vi.fn();
+    it('renders a real Select, labelled from the shared provider names, when two or more providers are available, and submits whichever one is picked', async () => {
+      const client = fakeClient();
       render(NewSessionDialog, {
         props: {
           open: true,
-          project: { ...PROJECT, isGitRepo: undefined },
+          project: PROJECT,
           client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
           onCreated: vi.fn(),
           onClose: vi.fn(),
-          onGitRepoResolved,
         },
       });
 
-      await waitFor(() => expect(screen.queryByTestId('new-session-workspace-probing')).toBeNull());
-      expect(screen.queryByTestId('new-session-workspace')).toBeNull();
-      expect(onGitRepoResolved).toHaveBeenCalledWith(false);
+      expect(screen.queryByTestId('new-session-agent-fact')).toBeNull();
+      await fireEvent.click(screen.getByTestId('new-session-provider-trigger'));
+      expect(screen.getByTestId('new-session-provider-option-claude').textContent).toContain(
+        'Claude Code',
+      );
+      expect(screen.getByTestId('new-session-provider-option-codex').textContent).toContain(
+        'Codex',
+      );
 
+      await fireEvent.click(screen.getByTestId('new-session-provider-option-codex'));
       await fillPrompt();
       await fireEvent.click(screen.getByTestId('new-session-submit'));
 
       await waitFor(() =>
-        expect(client.createSession).toHaveBeenCalledWith({
-          targetId: 'local',
-          provider: 'claude',
-          projectPath: '/home/dev/loombox',
-          title: undefined,
-          prompt: 'get started',
-        }),
+        expect(client.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'codex' }),
+        ),
       );
     });
 
-    it('omits the control and sends no worktree field when the probe itself fails, without calling onGitRepoResolved', async () => {
-      const client = fakeClient({
-        browseDirectory: vi
-          .fn()
-          .mockRejectedValue(
-            new Error('RelayClient: timed out waiting for target_fs_list_response'),
-          ),
-      });
-      const onGitRepoResolved = vi.fn();
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('disables submission and explains why, naming the target, when the target has no agent CLI at all — never falling back to a hardcoded claude', async () => {
+      const client = fakeClient();
       render(NewSessionDialog, {
         props: {
           open: true,
-          project: { ...PROJECT, isGitRepo: undefined },
+          project: PROJECT,
           client,
+          providers: [],
+          targetLabel: 'Build server',
           onCreated: vi.fn(),
           onClose: vi.fn(),
-          onGitRepoResolved,
         },
       });
-
-      await waitFor(() => expect(screen.queryByTestId('new-session-workspace-probing')).toBeNull());
-      expect(screen.queryByTestId('new-session-workspace')).toBeNull();
-      expect(onGitRepoResolved).not.toHaveBeenCalled();
 
       await fillPrompt();
-      await fireEvent.click(screen.getByTestId('new-session-submit'));
+      const submit = screen.getByTestId('new-session-submit') as HTMLButtonElement;
+      expect(submit.disabled).toBe(true);
+      expect(screen.queryByTestId('new-session-provider')).toBeNull();
+      expect(screen.queryByTestId('new-session-agent-fact')).toBeNull();
+      expect(screen.getByText(/no agent cli/i).textContent).toContain('Build server');
 
-      await waitFor(() =>
-        expect(client.createSession).toHaveBeenCalledWith({
-          targetId: 'local',
-          provider: 'claude',
-          projectPath: '/home/dev/loombox',
-          title: undefined,
-          prompt: 'get started',
-        }),
-      );
-      warnSpy.mockRestore();
-    });
-
-    it('omits the control and sends no worktree field when the node is too old to report gitRepo at all', async () => {
-      const client = fakeClient({
-        browseDirectory: vi
-          .fn()
-          .mockResolvedValue({ outcome: 'ok', path: '/home/dev/loombox', entries: [] }),
-      });
-      const onGitRepoResolved = vi.fn();
-      render(NewSessionDialog, {
-        props: {
-          open: true,
-          project: { ...PROJECT, isGitRepo: undefined },
-          client,
-          onCreated: vi.fn(),
-          onClose: vi.fn(),
-          onGitRepoResolved,
-        },
-      });
-
-      await waitFor(() => expect(screen.queryByTestId('new-session-workspace-probing')).toBeNull());
-      expect(screen.queryByTestId('new-session-workspace')).toBeNull();
-      expect(onGitRepoResolved).not.toHaveBeenCalled();
+      await fireEvent.click(submit);
+      expect(client.createSession).not.toHaveBeenCalled();
     });
   });
 });

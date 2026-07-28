@@ -255,7 +255,7 @@ let nodeStateDir: string;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
-const SSH_TARGET = { id: 'devbox', kind: 'ssh' as const, label: 'Dev box' };
+const SSH_TARGET = { id: 'devbox', kind: 'ssh' as const, label: 'Dev box', providers: [] };
 const SSH_TARGET_CONFIG = { id: 'devbox', label: 'Dev box', host: 'devbox.invalid', user: 'dev' };
 
 beforeEach(async () => {
@@ -492,7 +492,12 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     // not deterministically on node B. A distinct id sidesteps that and
     // isolates this test to exactly what it means to prove: the SAME
     // sessionId contended across two different nodes.
-    const SSH_TARGET_B = { id: 'devbox-b', kind: 'ssh' as const, label: 'Dev box B' };
+    const SSH_TARGET_B = {
+      id: 'devbox-b',
+      kind: 'ssh' as const,
+      label: 'Dev box B',
+      providers: [],
+    };
     const SSH_TARGET_CONFIG_B = {
       id: 'devbox-b',
       label: 'Dev box B',

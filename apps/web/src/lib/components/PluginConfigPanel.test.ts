@@ -116,4 +116,16 @@ describe('PluginConfigPanel (issue #191)', () => {
       },
     ]);
   });
+
+  it('no Field in this panel renders prose as its control (design spec §0.7, applied repo-wide)', () => {
+    render(PluginConfigPanel, {
+      props: { projectPath: '/tmp/project', storage: createInMemoryPluginConfigStorage() },
+    });
+    const fields = screen.getAllByTestId('ui-field');
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      const control = field.querySelector('.ui-field-control');
+      expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
+    }
+  });
 });

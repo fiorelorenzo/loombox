@@ -71,9 +71,18 @@ export const codexProvider: AcpProvider = {
  * not just message chunks). `enrich()` is a deliberate pass-through/no-op
  * body — see `codexProvider`'s doc comment for why — but it is fully typed
  * and wired against the registry's real `enrich(update, raw)` contract now.
+ *
+ * `requiredCommand` is `'codex'`, not `'npx'`: `CODEX_ACP_COMMAND` above is
+ * the launcher, but the vendor CLI the npx-resolved bridge wraps — and the
+ * one that must actually exist on the execution target's PATH — is `codex`
+ * itself (design spec "Provider availability is per TARGET, not per node":
+ * an `ssh:` target spawns remotely, so it's that host's PATH that matters,
+ * never the node's — verified concretely on the devbox, where `claude` and
+ * `omp` are on PATH but `codex` is not).
  */
 export const codexProviderModule: AcpProviderModule = {
   id: 'codex',
+  requiredCommand: 'codex',
 
   spawnConfig(opts: { cwd: string }): AcpSpawnConfig {
     return {

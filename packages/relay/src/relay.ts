@@ -1353,6 +1353,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               label: target.label,
               kind: target.kind,
               reachable,
+              providers: target.providers,
               ...(health ? { health } : {}),
             });
           }

@@ -20,6 +20,15 @@ import type { AcpProviderModule, AcpSpawnConfig } from '@loombox/providers-core'
 export function createGenericProvider(id: string, spawnConfig: AcpSpawnConfig): AcpProviderModule {
   return {
     id,
+    // The generic tier has no vendor CLI behind a bridge (unlike claude's/
+    // codex's npx-wrapped bridges) — the caller-supplied spawnConfig.command
+    // *is* the whole agent, so requiredCommand deliberately names that same
+    // value, not a copy-paste slip. It also never gates a picker: `generic`
+    // is deliberately never advertised to users (SPEC "generic is NOT
+    // advertised" — it's the fallback tier for an unknown provider, not a
+    // pickable agent), so this field exists only to satisfy
+    // AcpProviderModule's contract, not to drive any availability check.
+    requiredCommand: spawnConfig.command,
     spawnConfig(opts: { cwd: string }): AcpSpawnConfig {
       return { ...spawnConfig, cwd: opts.cwd };
     },

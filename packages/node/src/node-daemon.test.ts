@@ -1992,7 +1992,7 @@ describe('NodeDaemon connection management (redesign v2 §3.3 Reconnect/Update/R
       accountId,
       amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box' }],
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box', providers: [] }],
       sshTargets: [{ id: targetId, label: 'Dev box', host: '100.87.202.117', user: 'dev' }],
       sshTransportFactory: () => transport,
     });
@@ -2149,7 +2149,7 @@ describe('NodeDaemon connection management (redesign v2 §3.3 Reconnect/Update/R
       accountId,
       amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 2' }],
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 2', providers: [] }],
       sshTargets: [{ id: targetId, label: 'Dev box 2', host: '100.87.202.117', user: 'dev' }],
       sshTransportFactory: () => transport,
       targetUpdate: {
@@ -2204,7 +2204,7 @@ describe('NodeDaemon connection management (redesign v2 §3.3 Reconnect/Update/R
       accountId,
       amk,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 3' }],
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box 3', providers: [] }],
       sshTargets: [{ id: targetId, label: 'Dev box 3', host: '100.87.202.117', user: 'dev' }],
       sshTransportFactory: () => transport,
       // No `targetUpdate` configured.

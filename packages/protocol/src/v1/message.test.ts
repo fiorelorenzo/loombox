@@ -97,7 +97,7 @@ const messagesByType: Record<string, unknown> = {
     type: 'target_announce',
     protocolVersion: 1,
     nodeId: 'node-1',
-    targets: [{ id: 'local', kind: 'local', label: 'This machine' }],
+    targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
   },
   target_list_request: {
     type: 'target_list_request',
@@ -115,6 +115,7 @@ const messagesByType: Record<string, unknown> = {
         label: 'This machine',
         kind: 'local',
         reachable: true,
+        providers: ['claude'],
       },
     ],
   },

@@ -27,28 +27,34 @@
    * per-session, never per-project.
    *
    * `project.isGitRepo` decides whether the Workspace control renders at
-   * all: `true` shows it, `false` (confirmed not a repo) omits it outright,
-   * and `undefined` (an adopted project nobody has ever browsed to, or one
-   * registered before this field existed) is genuinely unknown rather than
-   * `false`, so this dialog resolves it itself on open via one
-   * `browseDirectory` call against the project's own path, the same source
-   * `AddProjectDialog`/`DirectoryPicker` read `gitRepo` from. A failed
-   * probe or an older node that omits the field both leave it unknown: the
-   * control stays hidden and no `worktree` field is sent at all, which per
-   * `CreateSessionOptions.worktree`'s own doc comment leaves the node's
-   * per-target default in charge rather than guessing here.
-   * `onGitRepoResolved` reports a definitively-learned value back up so the
-   * caller can persist it (`ProjectStore.setGitRepo`) and skip this same
-   * probe next time; omitted, the dialog still works, it just re-probes on
-   * every open.
+   * all: only a confirmed `true` shows it. `AddProjectDialog` resolves it
+   * once, when the project is registered (`DirectoryPicker`'s own
+   * `gitRepo` flag), so it is already a settled fact by the time this
+   * dialog can ever open (forms + real providers design spec §1/§3,
+   * defect #2) — no probe, no loading state, and no reflow while the user
+   * is mid-keystroke, unlike the `browseDirectory` round trip this file
+   * used to fire on every open. A project this device has only ever
+   * adopted from a session and never actually browsed to simply has no
+   * worktree choice to offer, exactly like a confirmed non-repo; per
+   * `CreateSessionOptions.worktree`'s own doc comment that just leaves the
+   * node's per-target default in charge rather than guessing here.
    *
-   * The probe is kicked off from its OWN `$effect`, separate from the one
-   * that resets the form on open, and deliberately never resets anything:
-   * if the caller echoes a resolved `isGitRepo` back through an updated
-   * `project` prop while this dialog is still open (e.g. after
-   * `onGitRepoResolved` round-trips through the project store), that must
-   * only ever stop the probe from re-firing, never wipe a title/prompt the
-   * user has already started typing.
+   * Agent availability is real now too (forms + real providers design spec
+   * §2/§3, defect #1): `providers` is `TargetListEntry.providers` for
+   * `project`'s own target — the relay's verbatim forward of the node's own
+   * PATH probe for each registered `AcpProviderModule.requiredCommand` —
+   * never a hardcoded guess. Two or more renders an actual `Select`;
+   * exactly one is shown as a fact in the context line instead of a
+   * dropdown with nothing to choose (the ticket's most visible defect: a
+   * one-option `<select>` as the form's first, most prominent field); zero
+   * disables submission with a message naming the target rather than
+   * silently offering an agent that would fail at spawn.
+   *
+   * Field order (design spec §3, defects #3/#4): the starting prompt is the
+   * only thing the user must actually supply, so it now leads and is the
+   * largest control on the form; Title trails last, and its "defaults to
+   * the project folder" copy moved out of the placeholder (which vanishes
+   * on the first keystroke) into `Field`'s own persistent `help` slot.
    *
    * Deck migration (redesign v2 §2 "One button language", issue #464):
    * every hand-rolled `.btn*` gives way to the shared `Button` primitive.
@@ -66,8 +72,7 @@
    */
   import type { CreateSessionOptions } from '$lib/relay-client';
   import type { Project } from '$lib/projects';
-  import type { DirectoryPickerClient } from './DirectoryPicker.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { PROVIDER_LABELS } from '$lib/providers';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
@@ -78,7 +83,7 @@
   import Select, { type SelectOption } from './ui/Select.svelte';
   import TextArea from './ui/TextArea.svelte';
 
-  export interface NewSessionClient extends DirectoryPickerClient {
+  export interface NewSessionClient {
     createSession: (options: CreateSessionOptions) => Promise<string>;
   }
 
@@ -86,17 +91,28 @@
     open: boolean;
     project: Project;
     client: NewSessionClient | undefined;
+    /**
+     * The provider ids `project`'s own target can actually spawn right now
+     * (`TargetListEntry.providers`, forwarded verbatim from the node's own
+     * probe of each registered `AcpProviderModule.requiredCommand` against
+     * that target's PATH — design spec §2). An empty array is a real,
+     * meaningful answer ("reachable, nothing installed"), not "still
+     * loading": the caller only ever renders this dialog once its own
+     * target list has resolved at least once.
+     */
+    providers: string[];
+    /** `project`'s own target, named for a human where possible — used only to name it in the zero-providers message below. Mirrors `+page.svelte`'s own `sessionTargetLabel` label-with-id-fallback idiom. */
+    targetLabel: string;
     onClose: () => void;
     onCreated: (sessionId: string) => void;
-    /** Reports a definitively-learned `isGitRepo` once this dialog had to probe for it itself (`project.isGitRepo` was `undefined`); see the file doc comment. Only ever called with a real `true`/`false`, never for a failed or inconclusive probe. */
-    onGitRepoResolved?: (isGitRepo: boolean) => void;
   }
 
-  const { open, project, client, onClose, onCreated, onGitRepoResolved }: Props = $props();
+  const { open, project, client, providers, targetLabel, onClose, onCreated }: Props = $props();
 
-  /** The only agent option today (SPEC's locked "Claude-only" v1 call), shown as a real `Select` rather than hidden, so the field is honest about being extensible later without pretending there's a choice yet. */
-  const PROVIDER_OPTIONS: SelectOption[] = [{ id: 'claude', label: 'Claude Code' }];
-  let selectedProvider = $state('claude');
+  const providerOptions: SelectOption[] = $derived(
+    providers.map((id) => ({ id, label: PROVIDER_LABELS[id]?.name ?? id })),
+  );
+  let selectedProvider = $state('');
   type WorkspaceChoice = 'worktree' | 'in-place';
   let workspaceChoice = $state<WorkspaceChoice>('worktree');
 
@@ -120,68 +136,18 @@
   let creating = $state(false);
   let createError = $state<string | undefined>(undefined);
 
-  /** A definitively-learned `isGitRepo`, once this dialog's own probe resolves: `undefined` until then, and forever if the probe fails or the node omits the field (both mean "still unknown", never "false"). */
-  let probedIsGitRepo = $state<boolean | undefined>(undefined);
-  let probing = $state(false);
-  /** Flips once the probe attempt finishes, success or not, so `resolvingWorkspace` below knows to stop showing the loading state even when `probedIsGitRepo` stayed unknown. */
-  let probeSettled = $state(false);
-
-  /** `project.isGitRepo` wins whenever it's known; the local probe result only ever fills in for as long as it stays `undefined`. */
-  const effectiveIsGitRepo = $derived(project.isGitRepo ?? probedIsGitRepo);
-  const resolvingWorkspace = $derived(project.isGitRepo === undefined && !probeSettled);
-
   // Resets the per-session fields every time the dialog actually opens.
   // This effect's ONLY reactive read is `open`, deliberately never
-  // `project`/`client` (see the file doc comment's "never resets anything"
-  // paragraph above): re-opening for the same or a different project must
-  // never look mid-session-typing like a stale re-render.
+  // `project`/`client`/`providers`: re-opening for the same or a different
+  // project must never look mid-session-typing like a stale re-render.
   $effect(() => {
     if (!open) return;
     resetForm();
   });
 
-  // Kicks off the `isGitRepo` probe once `open` and `client` are both
-  // ready, but ONLY takes action: never resets `probing`/`probeSettled`
-  // itself, so a `project` prop update this dialog's own probe indirectly
-  // caused (the `onGitRepoResolved` round trip) just finds the guards
-  // already tripped and no-ops, rather than re-probing in a loop.
-  $effect(() => {
-    if (!open || !client) return;
-    if (project.isGitRepo !== undefined) return;
-    if (probing || probeSettled) return;
-    void probeGitRepo();
-  });
-
-  async function probeGitRepo(): Promise<void> {
-    if (!client) return;
-    probing = true;
-    try {
-      const result = await client.browseDirectory({
-        nodeId: project.nodeId,
-        targetId: project.targetId,
-        path: project.path,
-      });
-      if (result.outcome === 'ok' && result.gitRepo !== undefined) {
-        probedIsGitRepo = result.gitRepo;
-        onGitRepoResolved?.(result.gitRepo);
-      }
-      // A `{outcome:'error'}` reply, or an `ok` one that simply omits
-      // `gitRepo` (an older node), both leave `probedIsGitRepo` unknown:
-      // the Workspace control stays hidden and no `worktree` field is ever
-      // sent, per this file's own doc comment.
-    } catch (error) {
-      console.warn(
-        'NewSessionDialog: failed to resolve whether the project folder is a git repository',
-        project.path,
-        error,
-      );
-    } finally {
-      probing = false;
-      probeSettled = true;
-    }
-  }
-
-  const canSubmit = $derived(!creating && client !== undefined && prompt.trim() !== '');
+  const canSubmit = $derived(
+    !creating && client !== undefined && providers.length > 0 && prompt.trim() !== '',
+  );
 
   async function handleSubmit(event: Event): Promise<void> {
     event.preventDefault();
@@ -194,9 +160,9 @@
         provider: selectedProvider,
         projectPath: project.path,
         // Only a CONFIRMED git repo ever gets a `worktree` value at all:
-        // when the folder isn't a repo, or that's still unknown, there is
-        // no genuine per-session choice to send (see `effectiveIsGitRepo`).
-        ...(effectiveIsGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
+        // when the folder isn't a repo, there is no genuine per-session
+        // choice to send (see the file doc comment).
+        ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
         prompt: prompt.trim(),
       });
@@ -225,15 +191,12 @@
   }
 
   function resetForm(): void {
-    selectedProvider = 'claude';
+    selectedProvider = providers[0] ?? '';
     workspaceChoice = 'worktree';
     title = '';
     prompt = '';
     creating = false;
     createError = undefined;
-    probedIsGitRepo = undefined;
-    probing = false;
-    probeSettled = false;
   }
 
   function handleClose(): void {
@@ -245,27 +208,47 @@
   <p class="project-context" data-testid="new-session-project-context">
     <span class="project-context-name">{project.name}</span>
     <span class="project-context-path font-mono">{project.path}</span>
+    {#if providers.length === 1}
+      <span class="project-context-agent" data-testid="new-session-agent-fact">
+        {PROVIDER_LABELS[providers[0]]?.name ?? providers[0]}
+      </span>
+    {/if}
   </p>
 
   <form class="session-form" onsubmit={handleSubmit}>
-    <Field label="Agent" grouped>
-      <Select
-        value={selectedProvider}
-        options={PROVIDER_OPTIONS}
-        onChange={(id) => (selectedProvider = id)}
-        label="Agent"
-        dataTestId="new-session-provider"
-      />
+    <Field label="Starting prompt" required>
+      {#snippet children({ id, describedBy, errorId, invalid, required })}
+        <TextArea
+          {id}
+          {describedBy}
+          {errorId}
+          {invalid}
+          {required}
+          bind:value={prompt}
+          rows={6}
+          placeholder="What should the agent do first?"
+          dataTestId="new-session-prompt"
+        />
+      {/snippet}
     </Field>
 
-    {#if resolvingWorkspace}
-      <Field label="Workspace" grouped>
-        <p class="status-line" data-testid="new-session-workspace-probing">
-          <WovenLoader size="sm" label="Checking whether the project folder is a git repository" />
-          Checking the project folder…
-        </p>
+    {#if providers.length >= 2}
+      <Field label="Agent" grouped>
+        <Select
+          value={selectedProvider}
+          options={providerOptions}
+          onChange={(id) => (selectedProvider = id)}
+          label="Agent"
+          dataTestId="new-session-provider"
+        />
       </Field>
-    {:else if effectiveIsGitRepo === true}
+    {:else if providers.length === 0}
+      <ErrorNotice
+        message={`No agent CLI was found on ${targetLabel}. Install claude, codex, or omp there and try again.`}
+      />
+    {/if}
+
+    {#if project.isGitRepo === true}
       <Field label="Workspace" grouped>
         {#snippet children({ labelId })}
           <RadioGroup
@@ -279,7 +262,7 @@
       </Field>
     {/if}
 
-    <Field label="Title (optional)">
+    <Field label="Title" help="Defaults to the project folder">
       {#snippet children({ id, describedBy, errorId, invalid, required })}
         <Input
           {id}
@@ -288,23 +271,7 @@
           {invalid}
           {required}
           bind:value={title}
-          placeholder="Defaults to the project folder"
           dataTestId="new-session-title"
-        />
-      {/snippet}
-    </Field>
-
-    <Field label="Starting prompt">
-      {#snippet children({ id, describedBy, errorId, invalid, required })}
-        <TextArea
-          {id}
-          {describedBy}
-          {errorId}
-          {invalid}
-          {required}
-          bind:value={prompt}
-          placeholder="What should the agent do first?"
-          dataTestId="new-session-prompt"
         />
       {/snippet}
     </Field>
@@ -335,24 +302,18 @@
 </Dialog>
 
 <style>
-  .status-line {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
-  }
-
+  /* Context, not a field (forms + real providers design spec §3/§5,
+     defect #9): no control fill, no input radius — just a quiet hairline
+     under the summary so it still reads as one block, distinct from the
+     real controls below it. */
   .project-context {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: var(--space-2xs) var(--space-sm);
     margin: 0;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-fill-subtle);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
     font-size: var(--text-small-size);
   }
 
@@ -365,6 +326,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--color-text-secondary);
+  }
+
+  .project-context-agent {
     color: var(--color-text-secondary);
   }
 

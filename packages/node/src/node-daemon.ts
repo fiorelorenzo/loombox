@@ -89,6 +89,10 @@ import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
 import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
 import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
+import {
+  probeProviderAvailability,
+  type ProviderAvailabilityCandidate,
+} from './provider-availability';
 import { TargetHealthSampler } from './target-health-sampler';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
@@ -163,6 +167,20 @@ export interface NodeDaemonOptions {
   sshTargets?: SshTargetConfig[];
   /** Builds the `RemoteTransport` for a given `ssh:` target; defaults to a real `Ssh2Transport`. Tests inject a `LocalProcessTransport`/`FakeTransport` factory instead. */
   sshTransportFactory?: (config: SshTargetConfig) => RemoteTransport;
+  /**
+   * The provider CLIs this node checks for on each target's own PATH
+   * before announcing `TargetDescriptor.providers` (SPEC §5.5;
+   * `./provider-availability.ts`). Each candidate names a provider id and
+   * the vendor CLI its ACP bridge needs on PATH — `AcpProviderModule.
+   * requiredCommand`, once `@loombox/providers-core` grows one per real
+   * provider module; this node has no compile-time dependency on that
+   * package's module shape, only this minimal `{ id, requiredCommand }`
+   * structural type, so a real registered-module list is already
+   * assignable here with no import. Defaults to `[]`: with nothing to
+   * check for, every target simply announces `providers: []` (a
+   * legitimate, empty-but-reachable result) and no target is ever probed.
+   */
+  providerCandidates?: ProviderAvailabilityCandidate[];
   /**
    * Per-target CPU/RAM/disk sampling (SPEC §7.16/§7.21; issues #253/#269).
    * `enabled` defaults to `false`: constructing a `NodeDaemon` never spins up
@@ -705,6 +723,17 @@ export class NodeDaemon extends EventEmitter {
   /** Redesign v2 §3.3; issue #476 — see `NodeDaemonOptions.targetUpdate`'s doc comment; `undefined` until a caller configures it. */
   private readonly targetUpdateOptions?: NodeDaemonOptions['targetUpdate'];
   private readonly targetUpdateMonitor?: TargetUpdateMonitor;
+  /** See `NodeDaemonOptions.providerCandidates`'s doc comment. */
+  private readonly providerCandidates: ProviderAvailabilityCandidate[];
+  /**
+   * Latest probed `TargetDescriptor.providers` per target id (SPEC §5.5) —
+   * refreshed by {@link refreshProviderAvailability} on this node's first
+   * connect and every reconnect thereafter (never on
+   * `targetHealthSampler`'s hot resource-sample interval). Cleared for a
+   * target the instant {@link forgetSshTarget} drops it, same as every
+   * other per-target index this class keeps.
+   */
+  private readonly providerAvailability = new Map<string, string[]>();
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -786,6 +815,7 @@ export class NodeDaemon extends EventEmitter {
     this.targetUpdateMonitor = options.targetUpdate
       ? new TargetUpdateMonitor({ pinnedVersion: options.targetUpdate.pinnedVersion })
       : undefined;
+    this.providerCandidates = options.providerCandidates ?? [];
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -805,9 +835,10 @@ export class NodeDaemon extends EventEmitter {
     // reconnects) must re-announce everything this node still holds.
     this.relay.on('open', () => {
       this._connected = true;
-      this.reannounceAll();
       this.sendAmkEpochFetchRequest();
-      this.emit('connected');
+      void this.reannounceAll().then(() => {
+        this.emit('connected');
+      });
     });
     this.relay.on('close', () => {
       this._connected = false;
@@ -1611,11 +1642,58 @@ export class NodeDaemon extends EventEmitter {
       type: 'target_announce',
       protocolVersion: PROTOCOL_V1,
       nodeId: this.nodeId,
-      targets: this.targets,
+      targets: this.targets.map((target) => ({
+        ...target,
+        providers: this.providerAvailability.get(target.id) ?? [],
+      })),
     });
   }
 
-  private reannounceAll(): void {
+  /**
+   * Refreshes {@link providerAvailability} for every currently-held target
+   * (SPEC §5.5) — probed once when this node first builds/announces its
+   * target set and again on every reconnect (both routed through
+   * `reannounceAll`, which awaits this before it builds the outgoing
+   * `target_announce`, so the very announce that follows already carries
+   * fresh data rather than a stale placeholder). Deliberately not driven
+   * by `targetHealthSampler`'s interval: installing a CLI is rare, so a
+   * reconnect's cadence is plenty granular, and the sampler is a hot path
+   * this must stay off of. A no-op when `providerCandidates` is empty — no
+   * `ExecutionTarget` is even requested, so this never opens an `ssh:`
+   * connection a caller hasn't opted into probing.
+   *
+   * Never throws: a target this node can't even get an `ExecutionTarget`
+   * for (an `ssh:` target with no matching `sshTargets` entry, or one
+   * whose pooled transport fails to connect) degrades to `providers: []`
+   * for that target alone, exactly like `probeProviderAvailability`'s own
+   * internal probe failures — one unreachable target never blocks or
+   * blanks out any other target's result.
+   */
+  private async refreshProviderAvailability(): Promise<void> {
+    if (this.providerCandidates.length === 0) return;
+    await Promise.all(
+      this.targets.map(async (target) => {
+        try {
+          const executionTarget = await this.getExecutionTarget(target.id);
+          const providers = await probeProviderAvailability(
+            executionTarget,
+            this.providerCandidates,
+            target.id,
+          );
+          this.providerAvailability.set(target.id, providers);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: provider availability probe failed for target "${target.id}": ${message}`,
+          );
+          this.providerAvailability.set(target.id, []);
+        }
+      }),
+    );
+  }
+
+  private async reannounceAll(): Promise<void> {
+    await this.refreshProviderAvailability();
     this.sendTargetAnnounce();
     // A fresh connection means the relay has no `target_status` for this
     // node either (it drops everything on socket close, same as
@@ -2477,6 +2555,7 @@ export class NodeDaemon extends EventEmitter {
     this.sshTargetConfigs.delete(targetId);
     this.sshExecutionTargets.delete(targetId);
     this.remoteRunners.delete(targetId);
+    this.providerAvailability.delete(targetId);
     this.targetHealthSampler.removeProbe(targetId);
     this.sshTransportPool.close(targetId).catch(() => {});
     this.sendTargetAnnounce();

@@ -123,6 +123,19 @@ describe('AgentSupervisor', () => {
     expect(supervisor.get(session.id)).toBe(session);
   });
 
+  it('with no explicit providers option, defaults to registering all three real, verified providers (claude, codex, ohmypi)', () => {
+    const supervisor = new AgentSupervisor({ stateDir });
+
+    expect(supervisor.getProvider('claude')?.id).toBe('claude');
+    expect(supervisor.getProvider('codex')?.id).toBe('codex');
+    expect(supervisor.getProvider('ohmypi')?.id).toBe('ohmypi');
+    // gemini stays reserved (no spawn recipe) and generic is a fallback
+    // tier, never a default registration (design spec "generic is
+    // deliberately NOT advertised").
+    expect(supervisor.getProvider('gemini')).toBeUndefined();
+    expect(supervisor.getProvider('generic')).toBeUndefined();
+  });
+
   it('rejects starting with an unregistered provider id', async () => {
     const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
 

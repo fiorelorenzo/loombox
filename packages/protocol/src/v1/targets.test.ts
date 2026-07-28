@@ -23,7 +23,12 @@ describe('targetKind', () => {
 });
 
 describe('targetDescriptor', () => {
-  const valid = { id: 'target-1', kind: 'ssh' as const, label: 'devbox' };
+  const valid = {
+    id: 'target-1',
+    kind: 'ssh' as const,
+    label: 'devbox',
+    providers: ['claude', 'ohmypi'],
+  };
 
   it('parses a valid target descriptor', () => {
     expect(targetDescriptor.parse(valid)).toEqual(valid);
@@ -33,6 +38,24 @@ describe('targetDescriptor', () => {
     const { label: _label, ...rest } = valid;
     expect(() => targetDescriptor.parse(rest)).toThrow();
   });
+
+  it('rejects a missing providers list, rather than defaulting it', () => {
+    // Required on purpose: a silently-defaulted `[]` would be
+    // indistinguishable from a genuinely agent-less target, and an older
+    // node's announce must fail loudly instead of looking like a machine
+    // with nothing installed. This is the mirror of the bug in #521, where
+    // a field the relay's schema didn't know was dropped without a trace.
+    const { providers: _providers, ...rest } = valid;
+    expect(() => targetDescriptor.parse(rest)).toThrow();
+  });
+
+  it('accepts an empty providers list: a reachable target with no agent CLI', () => {
+    expect(targetDescriptor.parse({ ...valid, providers: [] }).providers).toEqual([]);
+  });
+
+  it('rejects an empty provider id inside the list', () => {
+    expect(() => targetDescriptor.parse({ ...valid, providers: [''] })).toThrow();
+  });
 });
 
 describe('targetAnnounce', () => {
@@ -41,8 +64,8 @@ describe('targetAnnounce', () => {
     protocolVersion: 1,
     nodeId: 'node-1',
     targets: [
-      { id: 'local', kind: 'local' as const, label: 'This machine' },
-      { id: 'ssh:devbox', kind: 'ssh' as const, label: 'devbox' },
+      { id: 'local', kind: 'local' as const, label: 'This machine', providers: ['claude'] },
+      { id: 'ssh:devbox', kind: 'ssh' as const, label: 'devbox', providers: [] },
     ],
   };
 
@@ -212,6 +235,7 @@ describe('targetListEntry', () => {
     label: 'This machine',
     kind: 'local' as const,
     reachable: true,
+    providers: ['claude', 'ohmypi'],
   };
 
   it('parses a valid entry with no health yet', () => {
@@ -263,6 +287,7 @@ describe('targetList', () => {
         label: 'This machine',
         kind: 'local' as const,
         reachable: true,
+        providers: ['claude', 'codex', 'ohmypi'],
       },
       {
         nodeId: 'node-1',
@@ -270,6 +295,7 @@ describe('targetList', () => {
         label: 'devbox',
         kind: 'ssh' as const,
         reachable: false,
+        providers: [],
       },
     ],
   };

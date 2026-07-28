@@ -25,6 +25,7 @@
   import AppearanceSettings from '../AppearanceSettings.svelte';
   import NotificationPreferences from '../NotificationPreferences.svelte';
   import PushNotificationToggle from '../PushNotificationToggle.svelte';
+  import Card from '../ui/Card.svelte';
   import PageLayout from './PageLayout.svelte';
 
   interface Props {
@@ -67,7 +68,9 @@
     {#if deviceId}
       <section class="settings-section">
         <h2>Push notifications</h2>
-        <PushNotificationToggle {relayBaseUrl} {authToken} {deviceId} />
+        <Card elevation="raised" padding="md">
+          <PushNotificationToggle {relayBaseUrl} {authToken} {deviceId} />
+        </Card>
       </section>
     {/if}
   </div>
@@ -80,15 +83,17 @@
     gap: var(--space-xl);
   }
 
-  /* Same small-uppercase treatment the old Drawer `.settings-tab` gave
-     these section headings (`+page.svelte`'s own `.settings-section h3`
-     rule): kept identical on purpose, just retargeted from `h3` to `h2`
-     now that the page title above claims `h1`. */
+  /* A real section heading now, not the tiny uppercase-tracked caption
+     look every card's own `h3` (and `ui/Field`'s label) already uses
+     for a field group — reusing that look here is what made a page
+     section and a card's internal field group read as the same
+     hierarchy level, tellable apart only by which one sat higher on the
+     page (design spec §0.8). `--text-body-size`, sentence case, mirrors
+     the pre-auth sign-in screen's own minimal `.appearance-settings-panel
+     h2` in `+page.svelte` — the one other place this app already draws
+     a heading one step down from a page's `h1`. */
   .settings-section h2 {
     margin: 0 0 var(--space-sm);
-    font-size: var(--text-small-size);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-muted);
+    font-size: var(--text-body-size);
   }
 </style>
