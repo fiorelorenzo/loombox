@@ -6,13 +6,14 @@
    * field to match on directly.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"): the outer frame is now the same
-   * gutter-plus-content row every tool-call widget uses (`GenericToolRow`
-   * / `BashWidget` / `EditWriteWidget`), not its own raised card. Status is
-   * a `StatusDot` + short label, never the raw enum. The header toggles
-   * the checklist body's expand/collapse, defaulting open. The per-entry
-   * ☑/☐ marks are unaffected (out of this pass's scope, matching
-   * `PlanCard`'s identical, untouched marker convention).
+   * §3.4 "One tool-call anatomy"), converged onto the shared card language
+   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
+   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
+   * / `BashWidget` / `EditWriteWidget`). Status is a `StatusDot` + short
+   * label, never the raw enum. The header toggles the checklist body's
+   * expand/collapse, defaulting open. The per-entry ☑/☐ marks are
+   * unaffected (out of this pass's scope, matching `PlanCard`'s identical,
+   * untouched marker convention).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws a shared glyph next to the title, same
@@ -25,8 +26,10 @@
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { isTodoInput, TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
+  import ToolCallGutter from '../ToolCallGutter.svelte';
   import Icon from '../icons/Icon.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
+  import ToolCard from './ToolCard.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -43,10 +46,8 @@
 </script>
 
 <div class="todo-widget" data-testid="todo-widget">
-  <div class="gutter" aria-hidden="true">
-    <Icon name="tool-generic" class="type-icon" />
-  </div>
-  <div class="content">
+  <ToolCallGutter icon="tool-generic" />
+  <ToolCard>
     <div class="header-line">
       <button
         type="button"
@@ -79,7 +80,7 @@
         {/each}
       </ul>
     {/if}
-  </div>
+  </ToolCard>
 </div>
 
 <style>
@@ -89,20 +90,6 @@
     width: 100%;
     min-width: 0;
     font-size: var(--text-small-size);
-  }
-
-  .gutter {
-    flex: 0 0 var(--gutter);
-    width: var(--gutter);
-    display: flex;
-    justify-content: center;
-    padding-top: var(--space-2xs);
-  }
-
-  .content {
-    flex: 1;
-    min-width: 0;
-    padding: var(--space-2xs) 0;
   }
 
   .header-line {
@@ -141,11 +128,6 @@
 
   .row-header[aria-expanded='false'] :global(.disclosure-icon) {
     transform: rotate(-90deg);
-  }
-
-  :global(.type-icon) {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
   }
 
   .title {

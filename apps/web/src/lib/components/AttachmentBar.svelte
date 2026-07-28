@@ -241,14 +241,14 @@
   }
 
   .name {
-    font-size: 0.78rem;
+    font-size: var(--text-small-size);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .status {
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
     color: var(--color-text-secondary);
   }
 

@@ -22,20 +22,29 @@ function messageItem(extra: Partial<TranscriptMessageItem> = {}): TranscriptMess
 describe('MessageItem', () => {
   it('renders an agent message with its text visible', () => {
     render(MessageItem, { props: { item: messageItem() } });
-    expect(screen.getByText('agent')).toBeTruthy();
+    // No providerId passed: falls back to the generic "Agent" label rather
+    // than the raw role word (design spec v5 §4).
+    expect(screen.getByText('Agent')).toBeTruthy();
     expect(screen.getByText('Hello there')).toBeTruthy();
   });
 
-  it('renders a user message distinctly', () => {
+  it("renders an agent message under the session's own provider name when one is given", () => {
+    render(MessageItem, { props: { item: messageItem(), providerId: 'claude' } });
+    expect(screen.getByText('Claude')).toBeTruthy();
+  });
+
+  it('renders a user message distinctly, labelled "You"', () => {
     render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
-    expect(screen.getByText('user')).toBeTruthy();
+    expect(screen.getByText('You')).toBeTruthy();
   });
 
   it('collapses a thought by default, expandable on tap', async () => {
     render(MessageItem, {
       props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
     });
-    expect(screen.getByText('thought')).toBeTruthy();
+    // A thought is still the agent speaking (§4's gutter word doesn't gain
+    // a third value) — "Thought for" already carries the aside itself.
+    expect(screen.getByText('Agent')).toBeTruthy();
     expect(screen.queryByText('secret reasoning')).toBeNull();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Show thought' }));
@@ -208,11 +217,42 @@ describe('MessageItem: one timeline metaphor (redesign v3 §3.4)', () => {
     expect(userClasses.sort()).toEqual(agentClasses.sort());
   });
 
-  it('never renders an uppercase USER/AGENT/THOUGHT word in the visible content flow — the role is an sr-only label', () => {
+  it('never renders the raw USER/AGENT/THOUGHT role word in the visible content flow — the gutter carries a friendly label instead', () => {
     render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
     const content = document.querySelector('.content');
-    expect(content?.textContent ?? '').not.toMatch(/\b(USER|AGENT|THOUGHT)\b/);
-    // The sr-only role label lives in the gutter, not the content flow.
-    expect(document.querySelector('.gutter')?.textContent?.trim()).toBe('user');
+    expect(content?.textContent ?? '').not.toMatch(/\b(USER|AGENT|THOUGHT)\b/i);
+  });
+});
+
+describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
+  it('tells a user turn from an agent turn by a real, visible, accessible role-label word in the gutter — not only by the glyph colour', () => {
+    render(MessageItem, { props: { item: messageItem() } });
+    // The agent glyph carries no accessible name of its own (aria-hidden) —
+    // if role were encoded in colour alone, an accessibility tree diff
+    // between the two roles would show nothing. The label text itself is
+    // the distinguishing, accessible signal.
+    const agentGlyph = document.querySelector('.glyph');
+    expect(agentGlyph?.getAttribute('aria-hidden')).toBe('true');
+    const agentLabel = screen.getByText('Agent');
+    expect(agentLabel.getAttribute('aria-hidden')).not.toBe('true');
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    const userLabel = screen.getByText('You');
+    expect(userLabel.getAttribute('aria-hidden')).not.toBe('true');
+    // Different, real words — not the same node re-styled by colour alone.
+    expect(userLabel.textContent).not.toBe(agentLabel.textContent);
+  });
+
+  it("labels an agent turn with the session's own provider name, not a generic word, when one is known", () => {
+    render(MessageItem, { props: { item: messageItem(), providerId: 'codex' } });
+    expect(screen.getByText('Codex')).toBeTruthy();
+    expect(screen.queryByText('Agent')).toBeNull();
+  });
+
+  it("puts the user's own turn on a raised surface, on top of (never instead of) the label", () => {
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    expect(screen.getByTestId('message-item').className).toMatch(/\buser\b/);
+    expect(screen.getByText('You')).toBeTruthy();
   });
 });

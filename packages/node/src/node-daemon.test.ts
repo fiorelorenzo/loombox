@@ -146,6 +146,23 @@ function crashProvider(): AcpProvider {
   };
 }
 
+// Issue #516's real repro, minified: a process that spawns successfully but
+// never speaks the ACP handshake at all (no stdout, ever), standing in for
+// "npm exec sat for nine minutes without completing the handshake" without
+// this test suite actually waiting nine minutes. Self-exits after 3s so a
+// test overriding `sessionStartTimeoutMs` far below that never leaves an
+// orphaned child process behind once the assertion under test has run.
+function hangProvider(): AcpProvider {
+  return {
+    id: 'test-hang',
+    spawnConfig: () => ({
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 3000)'],
+    }),
+    enrich: (update) => update,
+  };
+}
+
 // packages/providers/core's own `session/request_permission` fixture (issue
 // #178, also reused by packages/supervisor's own persistence tests) — issue
 // #373's coverage needs a real live 'permission_required' attention
@@ -602,6 +619,9 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     // session-creation time (`wireAgentSession`), before this phone
     // subscribed — backfill it via the existing resync mechanism, exactly
     // like a client that opens a session it didn't just create would.
+    // Two session_status events are now buffered from creation (issue
+    // #516): the early 'starting' sent before the agent existed, then the
+    // real snapshot once it came up — this test cares about the latter.
     phone.send({
       type: 'resync_request',
       protocolVersion: PROTOCOL_V1,
@@ -609,14 +629,9 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       sinceSeq: 0,
     });
 
-    const [initialStatus] = await waitForDecryptedKinds(
-      phone,
-      session.id,
-      key,
-      ['session_status'],
-      1,
-    );
-    expect(initialStatus).toMatchObject({ kind: 'session_status', status: 'awaiting_input' });
+    const statusEvents = await waitForDecryptedKinds(phone, session.id, key, ['session_status'], 2);
+    expect(statusEvents[0]).toMatchObject({ kind: 'session_status', status: 'starting' });
+    expect(statusEvents[1]).toMatchObject({ kind: 'session_status', status: 'awaiting_input' });
 
     const [initialCatalog] = await waitForDecryptedKinds(
       phone,
@@ -768,6 +783,224 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       1,
     );
   });
+
+  it('announces the session and a "starting" session_status before the agent is ready (issue #516)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-starting';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-starting',
+      deviceId: 'device-node-starting',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-starting-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(sessionId, { title: 'starting', projectPath }, key);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-starting',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-echo',
+      privateEnvelope,
+    });
+
+    // On the board (relay's session_list, sourced from session_announce)
+    // immediately, well before this assertion cares what the agent is doing.
+    await waitForSessionInList(phone, sessionId);
+
+    // `session_update` only fans out live to a client already subscribed
+    // (`session_resume`) — this phone never resumed, so it asks the relay's
+    // resync ring for everything buffered since seq 0 instead, exactly like
+    // a client catching up after being offline the whole time.
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      sinceSeq: 0,
+    });
+    const events = await waitForDecryptedKinds(phone, sessionId, key, ['session_status'], 2);
+    expect(events[0]?.status).toBe('starting');
+    expect(events[1]?.status).not.toBe('starting');
+  }, 15000);
+
+  it('bounds an agent spawn that never resolves: the session reaches "error" within the timeout, and stays present and archivable (issue #516)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-start-timeout';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-timeout',
+      deviceId: 'device-node-timeout',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [hangProvider()] }),
+      // Real repro was 9 minutes; this test only needs the race to resolve
+      // well inside its own timeout budget, not to reproduce the real delay.
+      sessionStartTimeoutMs: 200,
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-timeout-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'hangs forever', projectPath },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-timeout',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-hang',
+      privateEnvelope,
+    });
+
+    // The session exists on the board immediately, before the agent (which
+    // never comes up) would ever have been "ready".
+    await waitForSessionInList(phone, sessionId);
+
+    // See the "starting" test's comment: this phone never `session_resume`d,
+    // so it resyncs the full ring instead of relying on live fanout. The
+    // 'error' status lands only once `sessionStartTimeoutMs` actually
+    // elapses, an async event with no signal this test can await directly,
+    // so this re-sends the resync request until both events are buffered —
+    // the same "poll the real observable state" pattern `waitForSessionInList`
+    // above already uses for the same reason.
+    let events: Awaited<ReturnType<typeof waitForDecryptedKinds>> = [];
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        sinceSeq: 0,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const seen = await waitForDecryptedKinds(
+        phone,
+        sessionId,
+        key,
+        ['session_status'],
+        0,
+        0,
+      ).catch(() => []);
+      // Each poll re-sends resync_request, which replays the whole ring
+      // again — dedupe by `seq` (the relay's own authoritative ordering)
+      // rather than trusting `phone.messages`' raw length.
+      const bySeq = new Map(seen.map((event) => [event.seq, event]));
+      events = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+      if (events.some((event) => event.status === 'error')) break;
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for session ${sessionId} to reach "error"`);
+      }
+    }
+    expect(events[0]?.status).toBe('starting');
+    expect(events[1]?.status).toBe('error');
+
+    // Still present and archivable — not a silent disappearance, and no
+    // worktree left untracked (issue #515's failure mode, avoided here).
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req_archive_timeout',
+      sessionId,
+      removeWorktree: true,
+    });
+    const response = (await phone.waitFor(
+      (m) => m.type === 'session_archive_response',
+    )) as SessionArchiveResponse;
+    expect(response.result).toEqual({ outcome: 'ok' });
+  }, 15000);
+
+  it('says so when an agent spawn fails after it had already timed out, instead of dropping it on the floor (issue #516)', async () => {
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      const amk = generateAmk();
+      const accountId = 'acct-session-start-late-failure';
+
+      // `Promise.race` subscribes to both sides, so a spawn that rejects
+      // after the timeout won is handled and then discarded - no crash, but
+      // no trace either. Silence is exactly how #511 and #516 stayed hidden,
+      // so the one thing this must not do is nothing.
+      //
+      // The spawn is a hand-held promise rather than a delayed one: the test
+      // fires the late rejection itself, after the timeout has demonstrably
+      // already won, so the ordering this depends on is enforced rather than
+      // hoped for.
+      const spawn = Promise.withResolvers<never>();
+      // A real supervisor with only `start` swapped: `NodeDaemon`'s
+      // constructor wires itself into `setAttachmentChannel`, so a bare
+      // object literal is not a substitute for one.
+      const supervisor = new AgentSupervisor({ providers: [] });
+      supervisor.start = () => spawn.promise;
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-late-failure',
+        deviceId: 'device-node-late-failure',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor,
+        sessionStartTimeoutMs: 30,
+      });
+      await waitForConnected(node);
+
+      await expect(
+        node.createSession({ projectPath, provider: 'test-late-failure' }),
+      ).rejects.toThrow(/did not complete within/);
+
+      spawn.reject(new Error('agent died long after we gave up'));
+
+      // The rejection is delivered on the microtask queue; one macrotask is
+      // strictly past it. No duration to tune, so nothing here gets slower
+      // or racier on a loaded machine.
+      const flushed = Promise.withResolvers<void>();
+      setImmediate(() => flushed.resolve());
+      await flushed.promise;
+
+      expect(
+        warnings.some(
+          (line) =>
+            line.includes('already timed out') && line.includes('agent died long after we gave up'),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 15000);
 
   it("threads the private envelope's worktree: false into an in-place session (issue #507)", async () => {
     const amk = generateAmk();

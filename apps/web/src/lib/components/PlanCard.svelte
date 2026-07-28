@@ -29,12 +29,22 @@
    * widgets read as one consistent family.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "Canvas and transcript" — "keep the shape"): the card itself keeps
-   * its raised-tier box (unlike messages/tool calls, which dropped theirs),
-   * but now sits behind a `.plan-gutter` spacer the same `var(--gutter)`
-   * width as every other row's gutter, so its left edge lines up with the
-   * rest of the timeline's content column instead of reading as a foreign
-   * card flush against the canvas edge.
+   * §3.4 "Canvas and transcript" — "keep the shape"): the card sits behind
+   * a `.plan-gutter` spacer the same `var(--gutter)` width as every other
+   * row's gutter, so its left edge lines up with the rest of the
+   * timeline's content column instead of reading as a foreign card flush
+   * against the canvas edge.
+   *
+   * Design spec v5 §4 "one card language for tool calls": the raised-tier
+   * box the paragraph above once described is gone — a raised, shadowed
+   * card next to `PermissionCard`'s own raised/bordered treatment made two
+   * different surfaces look like the same kind of "this needs attention"
+   * interrupt, when only `PermissionCard` actually is one. `.plan-card`
+   * now carries the same flat, hairline-bordered `.tool-card` recipe
+   * `GenericToolRow`/`tool-widgets/*` share (via their own `ToolCard`) —
+   * inlined here rather than importing that component, since Plan's
+   * header/entries/actions already own their own padding and wrapping
+   * would double it up.
    */
   import type { AcpPlanEntry } from '@loombox/providers-core';
   import CopyButton from './CopyButton.svelte';
@@ -57,23 +67,33 @@
 
 <div class="plan-row">
   <div class="plan-gutter" aria-hidden="true"></div>
-  <div class="plan-card" class:active data-testid="plan-card">
-    <button
-      type="button"
-      class="plan-header"
-      onclick={onToggle}
-      aria-expanded={!collapsed}
-      aria-label={collapsed ? 'Expand plan' : 'Collapse plan'}
-    >
-      <span class="chevron">{collapsed ? '▸' : '▾'}</span>
-      <span class="title">Plan</span>
-      <span class="progress">{completedCount}/{entries.length}</span>
-      {#if active}
-        <span class="shimmer" data-testid="plan-shimmer">
-          <StatusDot tone="info" pulse label="Plan in progress" />
-        </span>
-      {/if}
-    </button>
+  <div class="plan-card tool-card" class:active data-testid="plan-card">
+    <!-- The copy affordance sits in the header, not in a row of its own under
+         the entries: `revealOnHover` means that row was invisible but still
+         claimed its height, so the card always ended in a band of dead space.
+         Header-right is also where every other transcript surface puts copy,
+         so this is one pattern instead of two. -->
+    <div class="plan-header-row">
+      <button
+        type="button"
+        class="plan-header"
+        onclick={onToggle}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand plan' : 'Collapse plan'}
+      >
+        <span class="chevron">{collapsed ? '▸' : '▾'}</span>
+        <span class="title">Plan</span>
+        <span class="progress">{completedCount}/{entries.length}</span>
+        {#if active}
+          <span class="shimmer" data-testid="plan-shimmer">
+            <StatusDot tone="info" pulse label="Plan in progress" />
+          </span>
+        {/if}
+      </button>
+      <div class="plan-copy">
+        <CopyButton text={copyText} label="Copy plan" revealOnHover />
+      </div>
+    </div>
 
     {#if !collapsed}
       <ol class="plan-entries">
@@ -86,9 +106,6 @@
           </li>
         {/each}
       </ol>
-      <div class="plan-actions">
-        <CopyButton text={copyText} label="Copy plan" revealOnHover />
-      </div>
     {/if}
   </div>
 </div>
@@ -110,18 +127,23 @@
     width: var(--gutter);
   }
 
-  /* raised tier (elevation ladder §3): PlanCard is named directly in the
-     ladder's table — the one transcript item that keeps its box (redesign
-     v3 §3.4 "keep the shape"). */
+  /* Flat tier (design spec v5 §4 "one card language"): the identical
+     `background`/`border`/`border-radius` recipe `ToolCard` gives
+     `GenericToolRow`/`tool-widgets/*`, inlined here since Plan's own
+     header/entries/actions padding would double up under that shared
+     wrapper (see the class-level doc comment). Deliberately no
+     `box-shadow` — that weight is reserved for `PermissionCard` alone. */
+  .tool-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+  }
+
   .plan-card {
     flex: 1;
     min-width: 0;
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
     overflow: hidden;
-    font-size: 0.9rem;
+    font-size: var(--text-small-size);
     /* Single un-staggered beat-in (redesign brief §2), mount-once same as
        MessageItem/ToolCallRow. */
     animation: beat-in var(--duration-base) var(--ease-beat) both;
@@ -143,8 +165,8 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    padding: var(--space-sm) 0.7rem;
-    background: var(--color-fill-subtle);
+    padding: var(--space-sm) var(--space-md);
+    background: none;
     border: none;
     cursor: pointer;
     color: inherit;
@@ -169,7 +191,7 @@
   .plan-entries {
     list-style: none;
     margin: 0;
-    padding: var(--space-xs) 0.7rem;
+    padding: var(--space-xs) var(--space-md);
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
@@ -217,10 +239,20 @@
     font-weight: 600;
   }
 
-  .plan-actions {
+  /* Header-right, overlaid on the toggle's own band rather than stacked in a
+     reserved row - see the markup comment for why the old `.plan-actions` row
+     had to go. */
+  .plan-header-row {
     display: flex;
-    justify-content: flex-end;
-    padding: 0 var(--space-sm) var(--space-xs);
+    align-items: center;
+    background: var(--color-fill-subtle);
+  }
+
+  .plan-copy {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding-right: var(--space-sm);
   }
 
   /* Copy affordance reveals on card hover/focus-within (redesign v3 §3.4
@@ -238,7 +270,7 @@
   @media (pointer: coarse) {
     .plan-header {
       min-height: 2.75rem;
-      padding: 0.65rem 0.9rem;
+      padding: var(--space-md) var(--space-lg);
     }
   }
 </style>

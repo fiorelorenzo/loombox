@@ -31,21 +31,30 @@
    * §3.4 "Canvas and transcript" — one timeline metaphor): the root
    * `.message-item` is a full-width row split into a fixed `.gutter`
    * (`var(--gutter)`) carrying the role glyph, and `.content` flowing in
-   * the remaining width — never a bubble, never right-aligned, never an
-   * uppercase `USER`/`AGENT`/`THOUGHT` word in the content flow. The role
-   * lives as the gutter glyph (decorative) plus an `sr-only` label right
-   * beside it, and `user` is told apart from `agent` with a hairline/tint
-   * on the gutter itself, never a different box — the old right-aligned
-   * accent-subtle bubble and the agent's full-width "card" look are both
-   * gone; every row reads the same shape. A plain CSS `animation`
-   * (`beat-in`, `--duration-base`/`--ease-beat`) plays once when the root
-   * element is first mounted into the keyed `{#each item.id}` list and
-   * never replays on the in-place prop updates that stream text into the
-   * same DOM node (verified by the existing "DOM node stays the same
-   * instance" test) — the un-staggered single beat-in the brief specifies
-   * for live-streamed arrivals. Reduced motion is handled for free: this
-   * animation is written entirely against `--duration-base`/`--ease-*`,
-   * which `tokens.css` already zeroes under `prefers-reduced-motion`.
+   * the remaining width — never a bubble, never right-aligned. `user` is
+   * told apart from `agent` with a hairline/tint on the gutter itself,
+   * never a different box — the old right-aligned accent-subtle bubble
+   * and the agent's full-width "card" look are both gone; every row reads
+   * the same shape. A plain CSS `animation` (`beat-in`,
+   * `--duration-base`/`--ease-beat`) plays once when the root element is
+   * first mounted into the keyed `{#each item.id}` list and never replays
+   * on the in-place prop updates that stream text into the same DOM node
+   * (verified by the existing "DOM node stays the same instance" test) —
+   * the un-staggered single beat-in the brief specifies for live-streamed
+   * arrivals. Reduced motion is handled for free: this animation is
+   * written entirely against `--duration-base`/`--ease-*`, which
+   * `tokens.css` already zeroes under `prefers-reduced-motion`.
+   *
+   * Design spec v5 §4 "every turn states its role": v3's `sr-only` role
+   * label is now a real, visible `--text-caption-size` uppercase word in
+   * the gutter — `You` for the user's own turns, the provider's display
+   * name for an agent turn or its thought (`providerId`, mapped through
+   * `PROVIDER_ROLE_LABELS` below, defaulting to "Agent" for an
+   * unrecognized or omitted id) — so telling a user turn from an agent
+   * turn no longer depends on noticing the gutter dot's colour, and a
+   * screen reader gets the same word a sighted reader does. The user's
+   * own turns additionally sit on `--color-surface-raised`, a second,
+   * redundant cue layered on top of the label rather than instead of it.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the "Show thought" disclosure affordance draws its chevron from
@@ -62,15 +71,25 @@
   import WovenLoader from './WovenLoader.svelte';
   import Icon from './icons/Icon.svelte';
 
+  /** RESERVED_PROVIDER_IDS (`@loombox/providers-core`) mapped onto the short display name design spec v5 §4 wants in the gutter. Deliberately local rather than exported: this is a presentation-only label table, not a provider-identity contract anything else should read. An id outside this set (or no id at all — a caller that hasn't wired session context through yet) falls back to "Agent", never a raw provider slug. */
+  const PROVIDER_ROLE_LABELS: Record<string, string> = {
+    claude: 'Claude',
+    codex: 'Codex',
+    gemini: 'Gemini',
+    generic: 'Agent',
+  };
+
   interface Props {
     item: TranscriptMessageItem;
     /** True while this thought's turn is still streaming with no message content yet (issue #136); meaningless for a non-thought item. Defaults false so every other caller/test is unaffected. */
     thinking?: boolean;
     /** True while this item's own turn is still live (issue #137's flush-on-`turn_ended` trigger). Defaults false, which flushes immediately — the correct behavior for replayed history and for every caller that doesn't pass it. */
     turnActive?: boolean;
+    /** The session's `ClientSessionMeta.provider` (e.g. `'claude'`) — only meaningful for an agent/thought row; a user row's label is always "You" regardless. Omitted falls back to the generic "Agent" label rather than guessing. */
+    providerId?: string;
   }
 
-  const { item, thinking = false, turnActive = false }: Props = $props();
+  const { item, thinking = false, turnActive = false, providerId }: Props = $props();
 
   // Deliberately a one-time read of `item.text.length` at mount (`untrack`
   // opts out of the reactive dependency Svelte would otherwise warn about),
@@ -104,6 +123,14 @@
       : item.kind === 'agent_thought_chunk'
         ? 'thought'
         : 'agent',
+  );
+
+  // "You" for the user; the provider's own name for both an agent message
+  // and its thought — a thought is still the same speaker, just an aside,
+  // and its content already reads as a thought via the timer/italic body
+  // below, so the gutter word doesn't need a third value to say so again.
+  const roleLabel = $derived(
+    role === 'user' ? 'You' : (providerId && PROVIDER_ROLE_LABELS[providerId]) || 'Agent',
   );
 
   let expanded = $state(false);
@@ -140,7 +167,7 @@
 >
   <div class="gutter">
     <span class="glyph" aria-hidden="true"></span>
-    <span class="sr-only">{role}</span>
+    <span class="role-label">{roleLabel}</span>
   </div>
   <div class="content">
     {#if role === 'thought'}
@@ -187,12 +214,22 @@
     }
   }
 
+  /* Right-aligned, not centred: `CLAUDE` and `GEMINI` are wider than a
+     centred 3.5rem column could hold, so they used to bleed out of the
+     gutter and sit flush against the first word of the message. Aligning to
+     the inner edge and reserving padding there means the labels form one
+     clean rule against the content column however long the provider's name
+     is, and nothing can ever touch the prose. */
   .gutter {
     flex: 0 0 var(--gutter);
     width: var(--gutter);
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--space-3xs);
     padding-top: var(--space-sm);
+    padding-right: var(--space-sm);
+    overflow: hidden;
   }
 
   .glyph {
@@ -202,15 +239,47 @@
     background: var(--color-text-muted);
   }
 
+  /* Design spec v5 §4: the word every reader actually scans for; the dot
+     above it stays as a secondary, at-a-glance cue. */
+  .role-label {
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line);
+    letter-spacing: var(--text-caption-tracking);
+    font-weight: var(--text-caption-weight);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    text-align: right;
+    white-space: nowrap;
+  }
+
   /* Distinguish user from agent with a hairline/tint on the gutter itself
      — never a different box (the old right-aligned accent-subtle bubble,
-     and the agent's competing full-width "card" look, are both gone). */
+     and the agent's competing full-width "card" look, are both gone).
+     Design spec v5 §4 adds a second, redundant cue on top: the user's own
+     turns additionally sit on `--color-surface-raised`, so the label word
+     is never the *only* thing distinguishing the two — colour, tint, and
+     word all agree. */
+  .message-item.user {
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
   .message-item.user .gutter {
     box-shadow: inset 2px 0 0 0 var(--color-accent);
   }
 
   .message-item.user .glyph {
     background: var(--color-accent);
+  }
+
+  .message-item.thought .glyph {
+    opacity: 0.5;
+  }
+
+  .message-item.thought .role-label {
+    opacity: 0.5;
   }
 
   .message-item.thought .glyph {
@@ -249,7 +318,7 @@
 
   .thinking-timer {
     flex-shrink: 0;
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
     opacity: 0.55;
     font-variant-numeric: tabular-nums;
   }
@@ -294,17 +363,5 @@
   .message-item:hover :global(.copy-button-reveal),
   .message-item:focus-within :global(.copy-button-reveal) {
     opacity: 1;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 </style>

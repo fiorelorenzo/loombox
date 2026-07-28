@@ -229,7 +229,7 @@
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-md);
     cursor: pointer;
-    font-size: 0.82rem;
+    font-size: var(--text-small-size);
     transition:
       background-color var(--duration-fast) var(--ease-beat),
       border-color var(--duration-fast) var(--ease-beat);
@@ -267,7 +267,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-md);
-    font-size: 0.68rem;
+    font-size: var(--text-caption-size);
     color: var(--color-text-muted);
   }
 </style>

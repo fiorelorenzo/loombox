@@ -16,6 +16,7 @@ import {
   AgentSupervisor,
   TerminalSupervisor,
   type AgentSession,
+  type AgentSupervisorStartOptions,
   type AttentionState,
   type AttentionStatus,
   type TerminalSession,
@@ -46,6 +47,7 @@ import {
   type SessionCreate,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
+  type SessionStatusV1,
   type SshDiscoveryRequest,
   type SshDiscoveryResultV1,
   type TargetDescriptor,
@@ -82,6 +84,7 @@ import {
   sessionWorktreeBranch,
   type Session,
 } from './session-manager';
+import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
 import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
@@ -221,8 +224,32 @@ export interface NodeDaemonOptions {
    * fast. Defaults to `SshTransportPool`'s own (production-sane) defaults.
    */
   sshReconnect?: ReconnectingTransportOptions;
-  /** Injected for tests; defaults to a fresh instance. */
+  /**
+   * Injected for tests; defaults to a `SessionManager` backed by a fresh
+   * `SessionStore({ stateDir })` (issue #515) — every node persists its
+   * session records across a restart unless a caller injects its own
+   * `SessionManager` (e.g. a bare in-memory one, matching every pre-#515
+   * test in `session-manager.test.ts`).
+   */
   sessionManager?: SessionManager;
+  /**
+   * Ceiling on how long `AgentSupervisor.start()` may take before a `local`
+   * session's creation gives up on it (issue #516). Defaults to 120_000
+   * (120s): the observed real-world worst case — a cold `npm exec` registry
+   * install plus a stalled ACP handshake — ran for nine minutes with no
+   * ceiling at all; 120s is comfortably past a warm-cache spawn (normally
+   * well under a second) while still failing fast enough that a client
+   * isn't left staring at a spinner for minutes on a genuinely stuck agent.
+   * The session's worktree is never torn down when this fires — see
+   * {@link createSessionInternal}'s doc comment for why an `error` status
+   * the user can see and archive is the honest outcome, not a silent
+   * rollback. Not (yet) applied to `createSshSessionInternal`'s
+   * `startWithChild()` call — issue #516 flagged that path as sharing the
+   * same unbounded-spawn shape, but bounding it needs its own decision
+   * about what "give up" means for a remote, possibly-detached process,
+   * which is out of this option's scope.
+   */
+  sessionStartTimeoutMs?: number;
   /**
    * Injected for tests (e.g. to register a fixture provider); defaults to a
    * fresh instance. When left default, `NodeDaemon` wires its own
@@ -435,7 +462,26 @@ function isPermissionRequestDetail(detail: unknown): detail is { requestId: stri
   );
 }
 
-/** Thrown by {@link resolveSessionRelativePath} for a request that would read outside the session's project root. */
+/**
+ * Thrown by {@link NodeDaemon}'s internal `startAgentWithTimeout` when
+ * `AgentSupervisor.start()` doesn't resolve within
+ * `NodeDaemonOptions.sessionStartTimeoutMs` (issue #516). Never surfaces to
+ * the relay/client directly — `createSessionInternal` catches it, reports
+ * the session as `'error'` (see {@link NodeDaemon.sendSessionStatus}), and
+ * rethrows only to the direct in-process caller of `createSession()`.
+ */
+class SessionStartTimeoutError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(
+      `NodeDaemon: agent spawn for session ${sessionId} did not complete within ${timeoutMs}ms (issue #516)`,
+    );
+    this.name = 'SessionStartTimeoutError';
+  }
+}
+
 class PathTraversalError extends Error {
   constructor(readonly requestedPath: string) {
     super(`path escapes the session's project root: ${requestedPath}`);
@@ -592,6 +638,8 @@ export class NodeDaemon extends EventEmitter {
   private amkEpoch: number;
   private readonly targets: TargetDescriptor[];
   private readonly sessionManager: SessionManager;
+  /** See `NodeDaemonOptions.sessionStartTimeoutMs`'s doc comment. */
+  private readonly sessionStartTimeoutMs: number;
   private readonly relay: RelayConnection;
   private readonly attachmentResolver: AttachmentResolver;
   private readonly supervisor: AgentSupervisor;
@@ -666,7 +714,10 @@ export class NodeDaemon extends EventEmitter {
     this.amk = options.amk;
     this.amkEpoch = options.amkEpoch ?? 0;
     this.targets = options.targets ?? [DEFAULT_LOCAL_TARGET];
-    this.sessionManager = options.sessionManager ?? new SessionManager();
+    this.sessionManager =
+      options.sessionManager ??
+      new SessionManager({ store: new SessionStore({ stateDir: options.stateDir }) });
+    this.sessionStartTimeoutMs = options.sessionStartTimeoutMs ?? 120_000;
     this.relay = new RelayConnection({
       relayUrl: options.relayUrl,
       deviceId: options.deviceId,
@@ -885,6 +936,22 @@ export class NodeDaemon extends EventEmitter {
     }
   }
 
+  /**
+   * Creates a `local` (or routes to {@link createSshSessionInternal} for an
+   * `ssh:`) session. For `local`: cuts the git worktree via `SessionManager`
+   * — the only step with no failure mode worth hiding — then announces the
+   * session (issue #516: `session_announce` plus a `'starting'`
+   * `session_status`) *before* ever calling `AgentSupervisor.start()`, so
+   * the board shows the session coming up the instant its worktree exists
+   * rather than staying empty for however long that spawn takes. The spawn
+   * itself is bounded by `sessionStartTimeoutMs` (default 120s — see that
+   * option's doc comment for why): on timeout this reports `'error'` and
+   * rethrows, but deliberately never tears the worktree back down — by the
+   * time `'starting'` went out the session is already on the board, so an
+   * `error` row the user can see and archive is the honest outcome, not a
+   * silent disappearance that leaves an unexplained worktree behind it
+   * (exactly the failure mode issue #516 was filed over).
+   */
   private async createSessionInternal(opts: {
     sessionId?: string;
     projectPath: string;
@@ -921,13 +988,86 @@ export class NodeDaemon extends EventEmitter {
       // false` opts into running directly in `projectPath`.
       workInPlace: opts.worktree === false,
     });
-    const agentSession = await this.supervisor.start({
-      workspacePath: session.worktreePath,
-      providerId: opts.provider,
-      mcpServers,
-    });
+
+    await this.announce(session, opts.targetId, opts.title);
+    await this.sendSessionStatus(session.id, 'starting');
+
+    let agentSession: AgentSession;
+    try {
+      agentSession = await this.startAgentWithTimeout({
+        workspacePath: session.worktreePath,
+        providerId: opts.provider,
+        mcpServers,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`NodeDaemon: session ${session.id} failed to start: ${message}`);
+      await this.sendSessionStatus(session.id, 'error').catch((sendError: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to report session ${session.id}'s start failure to the relay: ${
+            sendError instanceof Error ? sendError.message : String(sendError)
+          }`,
+        );
+      });
+      throw error;
+    }
 
     return this.finishSessionCreation(session, agentSession, opts);
+  }
+
+  /**
+   * Races `AgentSupervisor.start()` against `sessionStartTimeoutMs`,
+   * rejecting with {@link SessionStartTimeoutError} if the spawn hasn't
+   * resolved in time (issue #516). A late resolution after the timeout has
+   * already fired is not left running unsupervised: nothing else will ever
+   * hold this `AgentSession` (the caller already reported `'error'` and
+   * moved on), so it's stopped immediately rather than becoming an orphaned
+   * process this node has forgotten about — the exact failure mode #516
+   * and #515 both describe, just for the agent process instead of the
+   * worktree.
+   */
+  private async startAgentWithTimeout(
+    startOptions: AgentSupervisorStartOptions,
+  ): Promise<AgentSession> {
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(
+          new SessionStartTimeoutError(startOptions.workspacePath, this.sessionStartTimeoutMs),
+        );
+      }, this.sessionStartTimeoutMs);
+      timer.unref?.();
+    });
+    const startPromise = this.supervisor.start(startOptions).then(
+      (agentSession) => {
+        clearTimeout(timer);
+        if (timedOut) {
+          this.supervisor.stop(agentSession.id);
+        }
+        return agentSession;
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        // A spawn that fails AFTER the timeout already lost the race is
+        // dropped on the floor by `Promise.race` - handled, since race
+        // subscribed to this promise, but invisible. Silently swallowing
+        // "the agent died" is how #511 and #516 both stayed hidden for so
+        // long, so it gets said out loud here. Rethrowing is deliberate and
+        // safe: race has settled, so this goes nowhere, and the pre-timeout
+        // path still needs the rejection to propagate.
+        if (timedOut) {
+          console.warn(
+            `NodeDaemon: agent spawn for ${startOptions.workspacePath} failed after it had already timed out: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        throw error;
+      },
+    );
+    return Promise.race([startPromise, timeoutPromise]);
   }
 
   /**
@@ -1247,7 +1387,7 @@ export class NodeDaemon extends EventEmitter {
     // above (no send happens synchronously), and `forwardInitialSessionState`
     // below — which does send — runs only once announce has actually gone
     // out.
-    await this.announce(bridge);
+    await this.announce(bridge.session, bridge.targetId, bridge.title);
     this.forwardInitialSessionState(bridge);
 
     return session;
@@ -1404,26 +1544,65 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
-  private async announce(bridge: SessionBridge): Promise<void> {
-    const key = await this.getSessionKey(bridge.session.id);
+  /**
+   * Sends `session_announce` (SPEC §5.6/§8's clear routing metadata plus
+   * the encrypted `{title, projectPath}` envelope). Takes the session's
+   * identifying fields directly, not a `SessionBridge`, so it can be called
+   * before a bridge exists — {@link createSessionInternal} announces a
+   * `local` session's `'starting'` status the moment its worktree lands,
+   * well before `AgentSupervisor.start()` (and therefore any `AgentSession`
+   * to put in a bridge) has even been called (issue #516).
+   */
+  private async announce(session: Session, targetId: string, title: string): Promise<void> {
+    const key = await this.getSessionKey(session.id);
     const privateMeta: SessionPrivateMetaV1 = {
-      title: bridge.title,
-      projectPath: bridge.session.projectPath,
+      title,
+      projectPath: session.projectPath,
     };
-    const privateEnvelope = await sealJson(bridge.session.id, privateMeta, key);
+    const privateEnvelope = await sealJson(session.id, privateMeta, key);
     const meta: SessionMetaPublic = {
-      id: bridge.session.id,
+      id: session.id,
       nodeId: this.nodeId,
-      targetId: bridge.targetId,
+      targetId,
       accountId: this.accountId,
-      provider: bridge.session.provider,
-      createdAt: bridge.session.createdAt,
+      provider: session.provider,
+      createdAt: session.createdAt,
     };
     this.relay.send({
       type: 'session_announce',
       protocolVersion: PROTOCOL_V1,
       session: meta,
       privateEnvelope,
+    });
+  }
+
+  /**
+   * Pushes one `session_status` lifecycle event (SPEC §7.13/§7.24;
+   * `@loombox/protocol`'s `session-events.ts`) straight to the relay,
+   * sealed under this session's derived key — the same envelope shape
+   * `encryptAndSendUpdate` sends for a bridge that already exists, but
+   * usable before one does. Only needed for the two transitions that fall
+   * outside a bridge's lifetime: `'starting'`, sent right after
+   * {@link announce} while the agent is still spawning, and an `'error'`
+   * reported when that spawn times out (issue #516) — every other status
+   * transition rides `wireAgentSession`'s `'attention'` listener once a
+   * bridge exists. The relay reassigns the authoritative `seq` on receipt
+   * (see `SessionBridge.seq`'s doc comment), so the placeholder `0` here
+   * never needs to agree with a bridge's own counter.
+   */
+  private async sendSessionStatus(sessionId: string, status: SessionStatusV1): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(
+      sessionId,
+      { kind: 'session_status', status, updatedAt: new Date().toISOString() },
+      key,
+    );
+    this.relay.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 0,
+      envelope,
     });
   }
 
@@ -1445,7 +1624,7 @@ export class NodeDaemon extends EventEmitter {
     // `target_list` looking healthless until the next interval tick.
     this.sendTargetStatus();
     for (const bridge of this.bridges.values()) {
-      this.announce(bridge).catch((error: unknown) => {
+      this.announce(bridge.session, bridge.targetId, bridge.title).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`NodeDaemon: failed to re-announce session ${bridge.session.id}: ${message}`);
       });

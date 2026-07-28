@@ -437,14 +437,14 @@
     .options :global(.ui-button),
     .options-overflow :global(.ui-button) {
       min-height: 2.75rem;
-      padding: 0.55rem 0.9rem;
-      font-size: 0.95rem;
+      padding: var(--space-sm) var(--space-lg);
+      font-size: var(--text-body-size);
     }
 
     .overflow-toggle {
       min-height: 2.75rem;
-      padding: 0.55rem 0.9rem;
-      font-size: 0.95rem;
+      padding: var(--space-sm) var(--space-lg);
+      font-size: var(--text-body-size);
     }
   }
 </style>

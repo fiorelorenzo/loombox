@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InvalidSessionTransitionError, SessionManager } from './session-manager';
+import { SessionStore } from './session-store';
 
 const execFileAsync = promisify(execFile);
 
@@ -475,6 +476,68 @@ describe('SessionManager', () => {
       expect(() => manager.pauseSession('does-not-exist')).toThrow(/no session/i);
       expect(() => manager.resumeSession('does-not-exist')).toThrow(/no session/i);
       expect(() => manager.endSession('does-not-exist')).toThrow(/no session/i);
+    });
+  });
+
+  describe('persistence (issue #515)', () => {
+    let stateDir: string;
+
+    beforeEach(async () => {
+      stateDir = await mkdtemp(join(tmpdir(), 'loombox-session-store-'));
+      tempDirs.push(stateDir);
+    });
+
+    it('lists sessions loaded from a populated sessions.json on construction', async () => {
+      const seeding = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await seeding.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const reloaded = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const listed = reloaded.listSessions();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.id).toBe(created.id);
+      expect(listed[0]?.projectPath).toBe(repoPath);
+      // Honest reload (issue #515): the agent behind this record died with
+      // the previous process, so it comes back 'disconnected', never
+      // pretending to still be 'running'.
+      expect(listed[0]?.state).toBe('disconnected');
+    });
+
+    it('a session created through one instance is visible to a second instance built on the same stateDir', async () => {
+      const first = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await first.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const second = new SessionManager({ store: new SessionStore({ stateDir }) });
+      expect(second.getSession(created.id)?.id).toBe(created.id);
+    });
+
+    it('a reloaded, disconnected session is archivable (can end, then be removed)', async () => {
+      const first = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await first.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const second = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const ended = second.endSession(created.id);
+      expect(ended.state).toBe('ended');
+      await second.removeSession(created.id, { removeWorktree: false });
+      expect(second.getSession(created.id)).toBeUndefined();
+
+      // The removal itself persisted too — a third instance sees nothing left.
+      const third = new SessionManager({ store: new SessionStore({ stateDir }) });
+      expect(third.listSessions()).toHaveLength(0);
+    });
+
+    it('a bare `new SessionManager()` with no store stays memory-only (no sessions.json written)', async () => {
+      const bare = new SessionManager();
+      await bare.createSession({ projectPath: repoPath, provider: 'claude' });
+      await expect(stat(join(stateDir, 'sessions.json'))).rejects.toThrow();
+    });
+
+    it('keeps an already-"ended" record ended on reload rather than marking it "disconnected"', async () => {
+      const first = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await first.createSession({ projectPath: repoPath, provider: 'claude' });
+      first.endSession(created.id);
+
+      const second = new SessionManager({ store: new SessionStore({ stateDir }) });
+      expect(second.getSession(created.id)?.state).toBe('ended');
     });
   });
 });

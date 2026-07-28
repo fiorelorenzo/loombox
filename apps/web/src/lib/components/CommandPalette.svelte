@@ -220,10 +220,10 @@
   }
 
   .palette-input {
-    padding: var(--space-sm) 0.15rem;
+    padding: var(--space-sm) var(--space-3xs);
     border: none;
     border-bottom: 1px solid var(--color-border);
-    font-size: 1rem;
+    font-size: var(--text-body-size);
     background: transparent;
     color: inherit;
     font-family: inherit;
@@ -315,7 +315,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-md);
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
     color: var(--color-text-muted);
   }
 

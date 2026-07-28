@@ -33,8 +33,14 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'func
 
 afterEach(() => cleanup());
 
+// `loadPercent`/`hostname`/`platform`/`arch` deliberately match what
+// `@loombox/node`'s sampler always sends now (issue #507 v5 §3) —
+// `cpuPercent` stays present too (mandatory on the wire) but at the SAME
+// value, since production nodes mirror it for back-compat; tests that need
+// to prove the two are read independently use their own fixtures below.
 const HEALTHY = {
   cpuPercent: 40,
+  loadPercent: 40,
   memPercent: 60,
   memUsedBytes: 6_000_000_000,
   memTotalBytes: 10_000_000_000,
@@ -43,6 +49,9 @@ const HEALTHY = {
   diskTotalBytes: 100_000_000_000,
   healthy: true,
   sampledAt: Date.UTC(2026, 6, 23, 12, 0, 0),
+  hostname: 'devbox-node-1',
+  platform: 'linux',
+  arch: 'x64',
 };
 
 const TARGETS: TargetListEntry[] = [
@@ -77,9 +86,35 @@ const TARGETS: TargetListEntry[] = [
     kind: 'ssh',
     reachable: false,
   },
+  {
+    nodeId: 'node_4',
+    targetId: 'legacy',
+    // A node that predates `loadPercent`/`hostname`/`platform`/`arch`
+    // entirely (v5 §3's "an older node must not render a hole") — only the
+    // wire's pre-existing mandatory fields are present.
+    label: 'legacy box',
+    kind: 'ssh',
+    reachable: true,
+    health: {
+      cpuPercent: 20,
+      memPercent: 25,
+      memUsedBytes: 2_000_000_000,
+      memTotalBytes: 8_000_000_000,
+      diskPercent: 15,
+      diskUsedBytes: 10_000_000_000,
+      diskTotalBytes: 100_000_000_000,
+      healthy: true,
+      sampledAt: Date.UTC(2026, 6, 23, 12, 0, 0),
+    },
+  },
 ];
 
 const noop = () => {};
+
+/** Every meter/sampled-time/action lives behind a per-row disclosure now (v5 design spec §3) — tests that need them must open it first. */
+async function expandRow(key: string): Promise<void> {
+  await fireEvent.click(screen.getByTestId(`target-row-toggle-${key}`));
+}
 
 describe('TargetStatusView (issue #269)', () => {
   it('lists every target with its label, kind, and node id', () => {
@@ -88,14 +123,15 @@ describe('TargetStatusView (issue #269)', () => {
     });
 
     const rows = screen.getAllByTestId('target-status-row');
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     expect(screen.getByText('This machine')).toBeTruthy();
     expect(screen.getByText('devbox')).toBeTruthy();
     expect(screen.getByText('flaky box')).toBeTruthy();
     expect(screen.getByText('offline box')).toBeTruthy();
+    expect(screen.getByText('legacy box')).toBeTruthy();
   });
 
-  it('shows CPU/RAM/disk percentages for a target with a health reading', () => {
+  it('shows load/mem/disk percentages for a target with a health reading', () => {
     render(TargetStatusView, {
       props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
@@ -144,7 +180,7 @@ describe('TargetStatusView (issue #269)', () => {
         label: 'hot box',
         kind: 'local',
         reachable: true,
-        health: { ...HEALTHY, cpuPercent: 96, healthy: true },
+        health: { ...HEALTHY, loadPercent: 96, healthy: true },
       },
     ];
     render(TargetStatusView, {
@@ -227,6 +263,107 @@ describe('TargetStatusView (issue #269)', () => {
   });
 });
 
+describe('TargetStatusView identity — "which machine" (v5 design spec §3)', () => {
+  it("shows the sample's real hostname and platform/arch next to the target label", () => {
+    render(TargetStatusView, {
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    expect(screen.getByTestId('target-identity-node_1:local').textContent).toBe(
+      'devbox-node-1 · linux/x64',
+    );
+  });
+
+  it('degrades cleanly (no identity segment, no stray "undefined") for an older node that never sent hostname/platform/arch', () => {
+    render(TargetStatusView, {
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    expect(screen.queryByTestId('target-identity-node_4:legacy')).toBeNull();
+    const row = screen.getByTestId('target-status-row-node_4:legacy');
+    expect(row.textContent).not.toContain('undefined');
+    expect(row.textContent).not.toContain(' · ');
+    // The row still reads fine without it — the target's own label survives.
+    expect(row.textContent).toContain('legacy box');
+  });
+});
+
+describe('TargetStatusView load metric (v5 design spec §3: honest label, honest field)', () => {
+  it('labels the metric "Load" and reads loadPercent rather than the deprecated cpuPercent', () => {
+    const mismatched: TargetListEntry[] = [
+      {
+        nodeId: 'node_mix',
+        targetId: 'local',
+        label: 'mixed box',
+        kind: 'local',
+        reachable: true,
+        // Deliberately different values so a component that read the wrong
+        // field would be caught red-handed.
+        health: { ...HEALTHY, cpuPercent: 5, loadPercent: 77 },
+      },
+    ];
+    render(TargetStatusView, {
+      props: { targets: mismatched, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    const metric = screen.getByTestId('metric-load');
+    expect(metric.textContent).toContain('Load');
+    expect(metric.textContent).toContain('77%');
+    expect(metric.textContent).not.toContain('5%');
+  });
+
+  it('shows an em dash rather than silently falling back to cpuPercent when a peer predates loadPercent', () => {
+    render(TargetStatusView, {
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    // "legacy box" has `cpuPercent: 20` but no `loadPercent` at all.
+    const row = screen.getByTestId('target-status-row-node_4:legacy');
+    const metric = row.querySelector('[data-testid="metric-load"]');
+    expect(metric?.textContent).toContain('—');
+    expect(metric?.textContent).not.toContain('20%');
+  });
+});
+
+describe('TargetStatusView expansion (v5 design spec §3: meters/absolute time/actions move behind a disclosure)', () => {
+  it('starts collapsed, then reveals the meters, the absolute sample time, and the actions once opened', async () => {
+    render(TargetStatusView, {
+      props: {
+        targets: TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        client: fakeActionsClient(),
+      },
+    });
+
+    const toggle = screen.getByTestId('target-row-toggle-node_1:local');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('target-expansion')).toBeNull();
+    expect(screen.queryByTestId('load-meter')).toBeNull();
+    expect(screen.queryByTestId('target-actions')).toBeNull();
+
+    await fireEvent.click(toggle);
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('load-meter')).toBeTruthy();
+    expect(screen.getByTestId('mem-meter')).toBeTruthy();
+    expect(screen.getByTestId('disk-meter')).toBeTruthy();
+    // Absolute, not the row header's terse relative age — pinned to UTC so
+    // this is deterministic regardless of where the test runs.
+    expect(screen.getByTestId('target-sampled-at').textContent).toContain(
+      'Jul 23, 2026, 12:00:00 PM',
+    );
+    expect(screen.getByTestId('target-actions')).toBeTruthy();
+    expect(screen.getByTestId('target-action-reconnect-node_1:local')).toBeTruthy();
+
+    // Toggling again collapses it back.
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('target-expansion')).toBeNull();
+  });
+});
+
 function decommissionResponse(
   overrides: Partial<DecommissionTargetResponse> = {},
 ): DecommissionTargetResponse {
@@ -302,7 +439,7 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
     expect(screen.queryAllByTestId('target-actions')).toHaveLength(0);
   });
 
-  it('shows Reconnect on every target but Update/Edit/Remove only for ssh: targets', () => {
+  it('shows Reconnect on every target but Update/Edit/Remove only for ssh: targets', async () => {
     render(TargetStatusView, {
       props: {
         targets: TARGETS,
@@ -312,6 +449,9 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         client: fakeActionsClient(),
       },
     });
+
+    await expandRow('node_1:local');
+    await expandRow('node_1:ssh_devbox');
 
     // The local target: Reconnect only.
     expect(screen.getByTestId('target-action-reconnect-node_1:local')).toBeTruthy();
@@ -338,6 +478,7 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
       },
     });
 
+    await expandRow('node_1:ssh_devbox');
     await fireEvent.click(screen.getByTestId('target-action-reconnect-node_1:ssh_devbox'));
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
@@ -355,6 +496,7 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
       },
     });
 
+    await expandRow('node_1:ssh_devbox');
     await fireEvent.click(screen.getByTestId('target-action-update-node_1:ssh_devbox'));
     expect(updateTarget).toHaveBeenCalledWith({ nodeId: 'node_1', targetId: 'ssh_devbox' });
 
@@ -376,6 +518,8 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
         client: fakeActionsClient({ decommissionTarget }),
       },
     });
+
+    await expandRow('node_1:ssh_devbox');
 
     await fireEvent.click(screen.getByTestId('target-action-remove-node_1:ssh_devbox'));
     expect(decommissionTarget).not.toHaveBeenCalled();
@@ -410,6 +554,7 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
       },
     });
 
+    await expandRow('node_1:ssh_devbox');
     await fireEvent.click(screen.getByTestId('target-action-edit-node_1:ssh_devbox'));
 
     // Prefilled with the target's label, straight to manual entry (no

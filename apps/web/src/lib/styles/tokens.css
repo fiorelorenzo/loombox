@@ -53,11 +53,28 @@
   /* ---------------------------------------------------------------- */
   --measure: 90ch; /* long-form prose in the transcript */
   --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
-  --gutter: 2rem; /* the transcript timeline's role-glyph column */
+  /* Widened from 2rem (coherence v5 design spec §4, issue #508): the
+     gutter now carries a visible `--text-caption-size` role word (You /
+     the provider's name / Tool) under the glyph, not just a bare dot —
+     2rem never fit a word like "GEMINI" on one line. 3.5rem then proved
+     too tight in practice: the words are centred no longer but aligned to
+     the inner edge with `--space-sm` of reserved padding, and at
+     `--text-caption-size` + `--text-caption-tracking` an uppercase
+     "CLAUDE" needs ~3.1rem before that padding is counted, so it sat flush
+     against the first word of every message. */
+  --gutter: 4.75rem;
   --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
   --sidebar-width-collapsed: 3.5rem;
   --nav-row-height: 2.5rem; /* 40px — v4 primary destination row height, spec 3.1 */
   --nav-icon-size: 1.25rem; /* 20px — same rows' icon size */
+  /* Mobile bottom tabbar's own height (< --bp-desktop, design spec v4
+     §3.5's tab strip). `+page.svelte`'s shell padding, sidebar sheet and
+     drawer bottom-sheet offsets all read this instead of repeating the
+     literal, so the one place that actually sets the tabbar's height is
+     also the only place that can change it (coherence v5 §5, issue #508 —
+     the audit's "off-scale padding" flag on `.shell`'s `padding-bottom`
+     was this token missing, not a spacing-scale mismatch). */
+  --tabbar-height: 3.5rem;
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */

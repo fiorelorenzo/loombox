@@ -54,6 +54,15 @@
    * every hand-rolled `.btn*` gives way to the shared `Button` primitive.
    * Deck v3 restyle (redesign v3 design spec §3.5, issue #502): the Agent
    * field's native `<select>` gives way to the shared `ui/Select` primitive.
+   *
+   * Coherence v5 migration (design spec §1, issue #508): the Agent,
+   * Workspace, Title, and Starting-prompt fields, and the actions row,
+   * now go through the shared `Field`/`Input`/`TextArea`/`RadioGroup`/
+   * `FormActions` primitives instead of each hand-rolling its own label,
+   * input/textarea styling, radio-card markup, and action-row layout —
+   * see `Field.svelte`'s own doc comment, which cites this file's
+   * pre-migration Agent-field-vs-Title-field inconsistency as its
+   * motivating example.
    */
   import type { CreateSessionOptions } from '$lib/relay-client';
   import type { Project } from '$lib/projects';
@@ -62,7 +71,12 @@
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Field from './ui/Field.svelte';
+  import FormActions from './ui/FormActions.svelte';
+  import Input from './ui/Input.svelte';
+  import RadioGroup, { type RadioOption } from './ui/RadioGroup.svelte';
   import Select, { type SelectOption } from './ui/Select.svelte';
+  import TextArea from './ui/TextArea.svelte';
 
   export interface NewSessionClient extends DirectoryPickerClient {
     createSession: (options: CreateSessionOptions) => Promise<string>;
@@ -85,6 +99,22 @@
   let selectedProvider = $state('claude');
   type WorkspaceChoice = 'worktree' | 'in-place';
   let workspaceChoice = $state<WorkspaceChoice>('worktree');
+
+  /** SPEC §7.1's two per-session choices — see `RadioGroup.svelte`'s own doc comment for why these render as description-bearing cards, not bare native radios. */
+  const WORKSPACE_OPTIONS: RadioOption[] = [
+    {
+      value: 'worktree',
+      label: 'Isolated worktree',
+      description:
+        'A fresh branch under .loombox/worktrees/, so several agents can work on this project at once.',
+    },
+    {
+      value: 'in-place',
+      label: 'In place',
+      description: 'Directly in the project folder. Only one session at a time can do this.',
+    },
+  ];
+
   let title = $state('');
   let prompt = $state('');
   let creating = $state(false);
@@ -218,83 +248,72 @@
   </p>
 
   <form class="session-form" onsubmit={handleSubmit}>
-    <span class="field-label">Agent</span>
-    <Select
-      value={selectedProvider}
-      options={PROVIDER_OPTIONS}
-      onChange={(id) => (selectedProvider = id)}
-      label="Agent"
-      dataTestId="new-session-provider"
-    />
+    <Field label="Agent" grouped>
+      <Select
+        value={selectedProvider}
+        options={PROVIDER_OPTIONS}
+        onChange={(id) => (selectedProvider = id)}
+        label="Agent"
+        dataTestId="new-session-provider"
+      />
+    </Field>
 
     {#if resolvingWorkspace}
-      <span class="field-label">Workspace</span>
-      <p class="status-line" data-testid="new-session-workspace-probing">
-        <WovenLoader size="sm" label="Checking whether the project folder is a git repository" />
-        Checking the project folder…
-      </p>
+      <Field label="Workspace" grouped>
+        <p class="status-line" data-testid="new-session-workspace-probing">
+          <WovenLoader size="sm" label="Checking whether the project folder is a git repository" />
+          Checking the project folder…
+        </p>
+      </Field>
     {:else if effectiveIsGitRepo === true}
-      <span class="field-label" id="new-session-workspace-label">Workspace</span>
-      <div
-        role="radiogroup"
-        aria-labelledby="new-session-workspace-label"
-        class="workspace-picker"
-        data-testid="new-session-workspace"
-      >
-        <button
-          type="button"
-          role="radio"
-          aria-checked={workspaceChoice === 'worktree'}
-          class="workspace-option"
-          class:selected={workspaceChoice === 'worktree'}
-          onclick={() => (workspaceChoice = 'worktree')}
-          data-testid="new-session-workspace-worktree"
-        >
-          <span class="workspace-option-title">Isolated worktree</span>
-          <span class="workspace-option-desc"
-            >A fresh branch under .loombox/worktrees/, so several agents can work on this project at
-            once.</span
-          >
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={workspaceChoice === 'in-place'}
-          class="workspace-option"
-          class:selected={workspaceChoice === 'in-place'}
-          onclick={() => (workspaceChoice = 'in-place')}
-          data-testid="new-session-workspace-in-place"
-        >
-          <span class="workspace-option-title">In place</span>
-          <span class="workspace-option-desc"
-            >Directly in the project folder. Only one session at a time can do this.</span
-          >
-        </button>
-      </div>
+      <Field label="Workspace" grouped>
+        {#snippet children({ labelId })}
+          <RadioGroup
+            value={workspaceChoice}
+            options={WORKSPACE_OPTIONS}
+            onChange={(v) => (workspaceChoice = v as WorkspaceChoice)}
+            labelledBy={labelId}
+            dataTestId="new-session-workspace"
+          />
+        {/snippet}
+      </Field>
     {/if}
 
-    <label for="new-session-title">Title (optional)</label>
-    <input
-      id="new-session-title"
-      type="text"
-      placeholder="Defaults to the project folder"
-      bind:value={title}
-      data-testid="new-session-title"
-    />
+    <Field label="Title (optional)">
+      {#snippet children({ id, describedBy, errorId, invalid, required })}
+        <Input
+          {id}
+          {describedBy}
+          {errorId}
+          {invalid}
+          {required}
+          bind:value={title}
+          placeholder="Defaults to the project folder"
+          dataTestId="new-session-title"
+        />
+      {/snippet}
+    </Field>
 
-    <label for="new-session-prompt">Starting prompt</label>
-    <textarea
-      id="new-session-prompt"
-      rows="3"
-      placeholder="What should the agent do first?"
-      bind:value={prompt}
-      data-testid="new-session-prompt"></textarea>
+    <Field label="Starting prompt">
+      {#snippet children({ id, describedBy, errorId, invalid, required })}
+        <TextArea
+          {id}
+          {describedBy}
+          {errorId}
+          {invalid}
+          {required}
+          bind:value={prompt}
+          placeholder="What should the agent do first?"
+          dataTestId="new-session-prompt"
+        />
+      {/snippet}
+    </Field>
 
     {#if createError}
       <ErrorNotice message={createError} />
     {/if}
 
-    <div class="actions">
+    <FormActions>
       <Button variant="secondary" onclick={handleClose}>Cancel</Button>
       <Button
         type="submit"
@@ -305,7 +324,7 @@
       >
         Create session
       </Button>
-    </div>
+    </FormActions>
   </form>
 {/snippet}
 
@@ -352,99 +371,9 @@
   .session-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .session-form label,
-  .session-form .field-label {
-    display: block;
-    margin-top: var(--space-xs);
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-  }
-
-  .session-form input,
-  .session-form textarea {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    font-family: inherit;
-    font-size: var(--text-body-size);
-    resize: vertical;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .session-form input:focus-visible,
-  .session-form textarea:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  /* Mirrors `TargetPicker`'s own `.target-option`/`.selected` treatment
-     (raised elevation tier, 2px accent left-bar on selection, redesign
-     brief §4's "accent reserved for meaning"), duplicated rather than
-     shared, same call as `ErrorNotice`'s own doc comment: Svelte's
-     per-component style scoping makes a cross-component token-only style
-     the simpler, more obviously-correct choice over a forced shared
-     primitive. */
-  .workspace-picker {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .workspace-option {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-    text-align: left;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    border-left: 2px solid transparent;
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-sm);
-    color: inherit;
-    cursor: pointer;
-    transition:
-      background-color var(--duration-fast) var(--ease-beat),
-      border-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
-  }
-
-  .workspace-option:active {
-    transform: scale(0.995);
-  }
-
-  .workspace-option:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  .workspace-option:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .workspace-option.selected {
-    border-left-color: var(--color-accent);
-    background: var(--color-accent-subtle);
-  }
-
-  .workspace-option-title {
-    font-weight: 500;
-  }
-
-  .workspace-option-desc {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
+    /* Comfortably above `Field`'s own internal label-to-control gap, so each
+       label reads as belonging to the box beneath it rather than floating
+       between two of them. See `ui/Field.svelte`'s note on that contract. */
+    gap: var(--space-md);
   }
 </style>

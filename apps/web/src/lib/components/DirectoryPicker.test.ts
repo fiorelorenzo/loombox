@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -385,5 +388,14 @@ describe('DirectoryPicker (SPEC §7.25 directory picker; issue #474)', () => {
     });
 
     expect(client.browseDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('`.recent-path:hover` reads `--color-fill-subtle`, a real defined token, not silently doing nothing (issue #508 token-hygiene finding: the property it referenced before this fix was never declared anywhere in styles/*.css). `styles/tokens.test.ts` guards the general no-undefined-custom-property contract repo-wide; this pins the specific rule that regression lived in.', () => {
+    const sourcePath = join(dirname(fileURLToPath(import.meta.url)), 'DirectoryPicker.svelte');
+    const source = readFileSync(sourcePath, 'utf8');
+    const styleBlock = source.match(/<style>([\s\S]*)<\/style>/)?.[1];
+    const hoverRule = styleBlock?.match(/\.recent-path:hover\s*\{([^}]*)\}/);
+    expect(hoverRule).not.toBeNull();
+    expect(hoverRule?.[1]).toContain('var(--color-fill-subtle)');
   });
 });

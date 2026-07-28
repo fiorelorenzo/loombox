@@ -1,6 +1,9 @@
 <script lang="ts">
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Button from './ui/Button.svelte';
+  import Field from './ui/Field.svelte';
+  import Input from './ui/Input.svelte';
+  import FormActions from './ui/FormActions.svelte';
 
   /**
    * A Recovery Code text entry + submit — the "new device" bootstrap half of
@@ -22,6 +25,15 @@
    * while busy (the brief's "thread-draw for the escrow/pairing in-flight
    * state," §6), and the error surfaces via the real `ErrorNotice`
    * primitive.
+   *
+   * Coherence v5 migration (design spec §1, issue #508): the label+input
+   * pair now composes the shared `Field`/`Input` primitives (monospace, per
+   * that primitive's own "path/host/command/identifier" rule — a recovery
+   * code is exactly that) and the submit row moves onto `FormActions`
+   * (`align="start"`, since this form's single button sits left-aligned,
+   * not in a Dialog footer); the busy `in-flight-track` bar now sits as a
+   * plain sibling below `FormActions` rather than nested inside it, since
+   * it's a status indicator, not an action.
    */
   interface Props {
     /** Fires with the raw (un-normalized) text the user typed — `@loombox/crypto`'s `normalizeRecoveryCode` runs on the receiving end, so this form doesn't need to duplicate that logic to validate input shape. */
@@ -47,23 +59,29 @@
 </script>
 
 <form class="recovery-code-entry-form" onsubmit={handleSubmit}>
-  <label for="recovery-code-input">Recovery Code</label>
-  <input
-    id="recovery-code-input"
-    type="text"
-    class="font-mono"
-    autocomplete="off"
-    autocapitalize="characters"
-    spellcheck="false"
-    placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
-    bind:value={code}
-    disabled={busy}
-    data-testid="recovery-code-input"
-  />
+  <Field label="Recovery Code">
+    {#snippet children({ id, describedBy, errorId, invalid, required })}
+      <Input
+        {id}
+        {describedBy}
+        {errorId}
+        {invalid}
+        {required}
+        monospace
+        bind:value={code}
+        disabled={busy}
+        autocomplete="off"
+        autocapitalize="characters"
+        spellcheck={false}
+        placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+        dataTestId="recovery-code-input"
+      />
+    {/snippet}
+  </Field>
   {#if error}
     <ErrorNotice message={error} />
   {/if}
-  <div class="submit-row">
+  <FormActions align="start">
     <Button
       type="submit"
       variant="primary"
@@ -73,12 +91,14 @@
     >
       {busy ? 'Verifying…' : submitLabel}
     </Button>
-    {#if busy}
+  </FormActions>
+  {#if busy}
+    <div class="in-flight-wrap">
       <span class="in-flight-track" aria-hidden="true">
         <span class="thread-draw-fill-loop in-flight-bar"></span>
       </span>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </form>
 
 <style>
@@ -88,32 +108,10 @@
     gap: var(--space-sm);
   }
 
-  label {
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-  }
-
-  input {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-fill-subtle);
-    color: inherit;
-    font-size: 0.95rem;
-    letter-spacing: 0.04em;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: 1px;
-  }
-
-  .submit-row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    align-items: flex-start;
+  /* Breathing room from `FormActions`'s own bottom edge — this bar is a
+     status indicator, not another action, so it sits outside the row. */
+  .in-flight-wrap {
+    margin-top: var(--space-2xs);
   }
 
   /* thread-draw for the bootstrap in-flight state (redesign brief §6). */

@@ -122,6 +122,27 @@ describe('targetHealth', () => {
     };
     expect(targetHealth.parse(failed)).toEqual(failed);
   });
+
+  it('accepts loadPercent and hostname/platform/arch as additive optional fields', () => {
+    const withNewFields = {
+      ...valid,
+      loadPercent: 82.5, // clamped to [0, 100] on the wire same as cpuPercent — the sampler clamps before ever sending
+      hostname: 'devbox-node-1',
+      platform: 'linux',
+      arch: 'x64',
+    };
+    expect(targetHealth.parse(withNewFields)).toEqual(withNewFields);
+  });
+
+  it('still parses a payload from an older peer that predates loadPercent/hostname/platform/arch', () => {
+    expect(targetHealth.parse(valid)).toEqual(valid);
+    expect(targetHealth.parse(valid).loadPercent).toBeUndefined();
+    expect(targetHealth.parse(valid).hostname).toBeUndefined();
+  });
+
+  it('rejects a non-string hostname', () => {
+    expect(() => targetHealth.parse({ ...valid, hostname: 42 })).toThrow();
+  });
 });
 
 describe('targetResourceSample', () => {

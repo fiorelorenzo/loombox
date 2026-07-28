@@ -6,6 +6,7 @@ import { TargetHealthSampler } from './target-health-sampler';
 function sample(overrides: Partial<ResourceSample> = {}): ResourceSample {
   return {
     cpuPercent: 10,
+    loadPercent: 10,
     memPercent: 20,
     memUsedBytes: 1,
     memTotalBytes: 2,

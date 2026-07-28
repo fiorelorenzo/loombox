@@ -1,7 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    // `lib` is deliberately a step ahead of `target`: it declares which
+    // runtime APIs exist, and `engines.node` is `>=22`, which ships the whole
+    // ES2024 library (`Promise.withResolvers`, `Object.groupBy`, the RegExp
+    // `v` flag). `target` stays at ES2022 because it governs emitted syntax
+    // and nothing here needs newer. Raised when a test reached for
+    // `Promise.withResolvers` - required by this repo's own
+    // `ts-promise-with-resolvers` rule - and TS2550 refused it despite Node
+    // having shipped it in v22.
+    "lib": ["ES2024"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",

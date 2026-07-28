@@ -79,8 +79,8 @@
   h3 {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;

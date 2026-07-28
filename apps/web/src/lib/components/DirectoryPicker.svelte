@@ -42,6 +42,16 @@
    * ...) gets a human, retryable `ErrorNotice` rather than that rejected
    * promise's own wire-phrased `Error#message` (issue #505); see
    * `navigate`'s `catch` block for the reasoning.
+   *
+   * Coherence v5 migration (design spec §1, issue #508): the manual "go to
+   * path" field now composes the shared `ui/Input` primitive instead of a
+   * hand-rolled `<input>` (its own visually-hidden `<label for>` stays —
+   * `Field` isn't used here since `AddProjectDialog`, this component's only
+   * caller, already renders a visible grouped label around the whole
+   * widget). Also fixes `.recent-path:hover`'s reference to the
+   * never-defined `--color-fill-hover` (issue #508's §5 token-hygiene
+   * finding) by switching to `--color-fill-subtle`, matching every sibling
+   * hover rule in this file.
    */
   import type { FsEntryV1, TargetFsListResponsePayloadV1 } from '@loombox/protocol';
   import { untrack } from 'svelte';
@@ -49,6 +59,7 @@
   import { Icon } from './icons';
   import WovenLoader from './WovenLoader.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Input from './ui/Input.svelte';
 
   export interface DirectoryPickerClient {
     browseDirectory: (
@@ -257,14 +268,14 @@
   {:else}
     <div class="path-form">
       <label for="directory-picker-path" class="visually-hidden">Project folder</label>
-      <input
+      <Input
         id="directory-picker-path"
-        type="text"
-        placeholder="/home/you/project"
+        monospace
         value={pathInputValue}
         oninput={handlePathInput}
         onkeydown={handlePathKeydown}
-        data-testid={inputTestId}
+        placeholder="/home/you/project"
+        dataTestId={inputTestId}
       />
     </div>
 
@@ -385,23 +396,6 @@
     font-size: var(--text-small-size);
   }
 
-  .path-form input {
-    width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    font-family: var(--font-mono);
-    font-size: var(--text-body-size);
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .path-form input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
   .breadcrumb {
     display: flex;
     flex-wrap: wrap;
@@ -472,7 +466,7 @@
   }
 
   .recent-path:hover {
-    background: var(--color-fill-hover);
+    background: var(--color-fill-subtle);
     color: var(--color-text-primary);
   }
 

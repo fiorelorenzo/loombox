@@ -32,6 +32,8 @@
     type NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
   import Card from './ui/Card.svelte';
+  import Checkbox from './ui/Checkbox.svelte';
+  import Input from './ui/Input.svelte';
 
   interface Props {
     /** Distinct project paths available to mute, from the caller's live session list. */
@@ -100,35 +102,28 @@
   <Card elevation="raised" padding="md">
     <section class="quiet-hours">
       <h3>Quiet hours</h3>
-      <label class="quiet-toggle">
-        <span class="toggle-switch">
-          <input
-            type="checkbox"
-            checked={quietHoursEnabled}
-            onchange={(event) =>
-              onQuietHoursEnabledChange((event.currentTarget as HTMLInputElement).checked)}
-            data-testid="quiet-hours-enabled"
-          />
-          <span class="toggle-switch-track" aria-hidden="true"></span>
-        </span>
-        Mute notifications during quiet hours
-      </label>
+      <Checkbox
+        checked={quietHoursEnabled}
+        label="Mute notifications during quiet hours"
+        onCheckedChange={onQuietHoursEnabledChange}
+        dataTestId="quiet-hours-enabled"
+      />
       {#if quietHoursEnabled}
         <div class="quiet-range">
-          <input
+          <Input
             type="time"
             value={quietStart}
             onchange={onQuietStartChange}
-            aria-label="Quiet hours start"
-            data-testid="quiet-hours-start"
+            ariaLabel="Quiet hours start"
+            dataTestId="quiet-hours-start"
           />
           <span class="quiet-range-sep">to</span>
-          <input
+          <Input
             type="time"
             value={quietEnd}
             onchange={onQuietEndChange}
-            aria-label="Quiet hours end"
-            data-testid="quiet-hours-end"
+            ariaLabel="Quiet hours end"
+            dataTestId="quiet-hours-end"
           />
         </div>
       {/if}
@@ -142,22 +137,15 @@
         <ul>
           {#each projectPaths as projectPath (projectPath)}
             <li>
-              <label>
-                <span class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={preferences.mutedProjects.includes(projectPath)}
-                    onchange={(event) =>
-                      toggleProjectMuted(
-                        projectPath,
-                        (event.currentTarget as HTMLInputElement).checked,
-                      )}
-                    data-testid={`mute-project-${projectPath}`}
-                  />
-                  <span class="toggle-switch-track" aria-hidden="true"></span>
-                </span>
-                <span class="project-path">{projectPath}</span>
-              </label>
+              <!-- `label={projectPath}` uses Checkbox's own label typography
+                   directly rather than a separate `.project-path`-styled
+                   sibling; the path is the only content in this row anyway. -->
+              <Checkbox
+                checked={preferences.mutedProjects.includes(projectPath)}
+                label={projectPath}
+                onCheckedChange={(checked) => toggleProjectMuted(projectPath, checked)}
+                dataTestId={`mute-project-${projectPath}`}
+              />
             </li>
           {/each}
         </ul>
@@ -184,46 +172,29 @@
   h3 {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
   }
 
-  .quiet-toggle {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    cursor: pointer;
-    color: var(--color-text-primary);
-  }
-
+  /* Indents the time-range row to align under the label text above it,
+     not under the toggle switch itself: `--space-2xl` (2rem) is
+     `ui/Checkbox`'s own `.ui-checkbox-track` width, `--space-sm` its gap
+     to the label (issue #508 token-hygiene finding — this was a bare
+     `2rem` literal that happened to equal the token, not a genuine gap in
+     the spacing scale). */
   .quiet-range {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-    padding-left: calc(2rem + var(--space-sm));
+    padding-left: calc(var(--space-2xl) + var(--space-sm));
     animation: beat-in var(--duration-base) var(--ease-beat);
   }
 
   .quiet-range-sep {
     color: var(--color-text-muted);
-  }
-
-  .quiet-range input[type='time'] {
-    font: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .quiet-range input[type='time']:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .muted-projects ul {
@@ -245,80 +216,6 @@
     border-top: none;
   }
 
-  .muted-projects label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-xs) var(--space-2xs);
-    cursor: pointer;
-  }
-
-  .project-path {
-    font-family: var(--font-mono);
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-    overflow-wrap: anywhere;
-  }
-
-  /* A tactile toggle switch built on a real, still-fully-functional
-     `<input type="checkbox">` — only `appearance` is suppressed, so
-     `checked`/`onchange`/`data-testid` behavior is byte-for-byte the same
-     as the plain checkbox this replaces visually. */
-  .toggle-switch {
-    position: relative;
-    display: inline-flex;
-    flex-shrink: 0;
-    width: 2rem;
-    height: 1.15rem;
-  }
-
-  .toggle-switch input {
-    position: absolute;
-    inset: 0;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-    z-index: 1;
-  }
-
-  .toggle-switch-track {
-    position: absolute;
-    inset: 0;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    border: 1px solid var(--color-border);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch-track::before {
-    content: '';
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: calc(1.15rem - 4px);
-    height: calc(1.15rem - 4px);
-    border-radius: var(--radius-full);
-    background: var(--color-text-secondary);
-    transition:
-      transform var(--duration-fast) var(--ease-beat),
-      background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track::before {
-    background: var(--color-accent);
-    transform: translateX(calc(2rem - 1.15rem));
-  }
-
-  .toggle-switch input:focus-visible + .toggle-switch-track {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
   @keyframes beat-in {
     from {
       opacity: 0;
@@ -328,29 +225,6 @@
     to {
       opacity: 1;
       transform: translateY(0);
-    }
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133): a coarse pointer
-     gets a larger toggle/time-input hit target than the default. */
-  @media (pointer: coarse) {
-    .toggle-switch {
-      width: 2.75rem;
-      height: 1.5rem;
-    }
-
-    .toggle-switch-track::before {
-      width: calc(1.5rem - 4px);
-      height: calc(1.5rem - 4px);
-    }
-
-    .toggle-switch input:checked + .toggle-switch-track::before {
-      transform: translateX(calc(2.75rem - 1.5rem));
-    }
-
-    .quiet-range input[type='time'] {
-      min-height: 2.75rem;
-      font-size: 1rem;
     }
   }
 </style>

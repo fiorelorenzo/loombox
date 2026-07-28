@@ -10,8 +10,9 @@ import {
 } from './session-events';
 
 describe('sessionStatusEventV1', () => {
-  it('accepts every reconciled AttentionStatus value', () => {
+  it('accepts every valid session status value, including "starting" (issue #516)', () => {
     for (const status of [
+      'starting',
       'working',
       'awaiting_input',
       'permission_required',
