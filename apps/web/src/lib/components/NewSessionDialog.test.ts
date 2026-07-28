@@ -124,6 +124,30 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('rephrases a transport timeout instead of leaking the wire identifier, and does not claim the session failed (issue #505 precedent)', async () => {
+    const client = fakeClient({
+      createSession: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient.createSession: timed out waiting for session sess_abc'),
+        ),
+    });
+    render(NewSessionDialog, {
+      props: { open: true, project: PROJECT, client, onCreated: vi.fn(), onClose: vi.fn() },
+    });
+
+    await fillPrompt();
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    // The node creates the worktree before the agent is up and only announces
+    // afterwards, so a timeout here is not evidence the session failed - the
+    // copy must not say it did, and must not name a wire message either.
+    const notice = await screen.findByTestId('ui-error-notice');
+    expect(notice.textContent).not.toContain('sess_abc');
+    expect(notice.textContent).not.toContain('RelayClient');
+    expect(notice.textContent).toContain('may still appear');
+  });
+
   it('shows the woven-thread loading motif on the submit button while creating', async () => {
     let resolveCreate: (id: string) => void = () => {};
     const client = fakeClient({
