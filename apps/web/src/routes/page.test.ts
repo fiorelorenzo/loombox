@@ -261,7 +261,6 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     const destinations = await screen.findByTestId('sidebar-destinations');
     expect(screen.getByTestId('destination-inbox')).toBeTruthy();
     expect(screen.getByTestId('destination-nodes')).toBeTruthy();
-    expect(screen.getByTestId('destination-settings')).toBeTruthy();
 
     const projectsHeading = screen.getByText('Projects');
     const order = destinations.compareDocumentPosition(projectsHeading);
@@ -312,6 +311,40 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.queryByTestId('drawer-tab-inbox')).toBeNull();
     expect(screen.queryByTestId('drawer-tab-targets')).toBeNull();
     expect(screen.queryByTestId('drawer-tab-settings')).toBeNull();
+  });
+
+  it('the page title renders exactly once for each destination, never duplicated in the topbar (coherence v5 §2)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('destination-inbox');
+
+    await fireEvent.click(screen.getByTestId('destination-inbox'));
+    expect(await screen.findAllByRole('heading', { name: 'Inbox', level: 1 })).toHaveLength(1);
+    expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('destination-nodes'));
+    expect(await screen.findAllByRole('heading', { name: 'Nodes', level: 1 })).toHaveLength(1);
+    expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('account-menu-toggle'));
+    await fireEvent.click(screen.getByRole('menuitem', { name: /appearance.*settings/i }));
+    expect(await screen.findAllByRole('heading', { name: 'Settings', level: 1 })).toHaveLength(1);
+    expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
+  });
+
+  it('Settings is reachable only from the account menu, not the sidebar or the mobile tabbar (coherence v5 §2)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('destination-inbox');
+
+    // The tabbar's own `<nav>` renders unconditionally in this jsdom
+    // render (it's hidden by a `@media` query below `--bp-desktop`, not an
+    // `{#if}`), so its absence here is unconditional too, same as the
+    // sidebar's.
+    expect(screen.queryByTestId('destination-settings')).toBeNull();
+    expect(screen.queryByTestId('tabbar-settings')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('account-menu-toggle'));
+    await fireEvent.click(screen.getByRole('menuitem', { name: /appearance.*settings/i }));
+    expect(await screen.findByTestId('settings-page')).toBeTruthy();
   });
 });
 

@@ -82,3 +82,11 @@ describe('GenericToolRow', () => {
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
   });
 });
+
+describe('GenericToolRow: shared tool-card treatment (design spec v5 §4)', () => {
+  it('states its role as the visible word "Tool" in the gutter, and renders its content through the shared flat ToolCard', () => {
+    const { container } = render(GenericToolRow, { props: { item } });
+    expect(screen.getByText('Tool')).toBeTruthy();
+    expect(container.querySelector('.tool-card')).toBeTruthy();
+  });
+});

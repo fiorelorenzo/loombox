@@ -54,13 +54,33 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
 
 /**
  * The session-status vocabulary (SPEC §7.13/§5.6's attention-worthy states).
- * Deliberately reuses `@loombox/supervisor`'s already-shipped `AttentionStatus`
- * vocabulary verbatim (`packages/supervisor/src/transcript-store.ts`) rather
- * than inventing a second taxonomy for the same concept — that status is
- * exactly what `AgentSession` already computes and is what `@loombox/node`
- * forwards here unchanged, just now reaching the wire.
+ * `'working'` through `'exited'` reuse `@loombox/supervisor`'s already-shipped
+ * `AttentionStatus` vocabulary verbatim (`packages/supervisor/src/
+ * transcript-store.ts`) rather than inventing a second taxonomy for the
+ * same concept — that status is exactly what `AgentSession` already
+ * computes and is what `@loombox/node` forwards here unchanged, just now
+ * reaching the wire.
+ *
+ * `'starting'` (issue #516) is the one member with no `AttentionStatus`
+ * counterpart: it exists for the window between a session's worktree
+ * landing on disk and its agent process actually finishing `AcpClient.
+ * newSession()` — `@loombox/node` announces the session (`session_announce`
+ * plus this status) the moment the worktree exists, before ever calling
+ * `AgentSupervisor.start()`, because that spawn has no ceiling on how long
+ * it can take (a cold `npm exec` registry install was observed sitting for
+ * nine minutes) and the alternative — waiting for the agent before telling
+ * anyone the session exists — is what let a real session's worktree get
+ * created with nothing tracking it anywhere (SPEC §5.6/§7.22's "sessions
+ * survive" is broken worse by a slow spawn than by a disconnect). This is
+ * an enum *widening*: an older peer's zod validation on this field simply
+ * rejects/drops a `session_status` envelope carrying `'starting'` (it never
+ * reaches a value this package's own schema would have accepted before),
+ * degrading to "no status update yet" rather than crashing — acceptable
+ * because the very next transition (to `'working'`/`'awaiting_input'`/
+ * `'error'`) is a value every peer, old or new, already understands.
  */
 export const sessionStatusV1 = z.enum([
+  'starting',
   'working',
   'awaiting_input',
   'permission_required',

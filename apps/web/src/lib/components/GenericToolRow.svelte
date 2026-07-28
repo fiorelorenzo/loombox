@@ -8,9 +8,10 @@
    * itself never needs to know about the bespoke tier.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"): `[kind icon in the gutter] title …
-   * [status]`, the same shape every tool-call widget uses now (`BashWidget`
-   * / `EditWriteWidget` / `TodoWidget`) — no visible kind chip (the old
+   * §3.4 "One tool-call anatomy"), converged onto the shared card language
+   * by design spec v5 §4: `[ToolCallGutter] ToolCard[ title … status ]`,
+   * the same shape every tool-call widget uses now (`BashWidget` /
+   * `EditWriteWidget` / `TodoWidget`) — no visible kind chip (the old
    * uppercase `toolKind` badge is gone; the kind lives as the gutter icon
    * plus an `sr-only` label, same discipline as `MessageItem`'s role), and
    * status is a `StatusDot` + short human label (`$lib/tool-widgets.ts`'s
@@ -31,8 +32,8 @@
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): every tool call that lands here (tier-2, no bespoke widget) is by
    * definition the "any other tool" case, so it always draws the shared
-   * `tool-generic` glyph — decorative, the kind is carried by the `sr-only`
-   * label right beside it.
+   * `tool-generic` glyph via `ToolCallGutter` — decorative, the kind is
+   * carried by the `sr-only` label right beside it.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import {
@@ -44,6 +45,8 @@
   } from '$lib/tool-widgets';
   import CopyButton from './CopyButton.svelte';
   import Icon from './icons/Icon.svelte';
+  import ToolCallGutter from './ToolCallGutter.svelte';
+  import ToolCard from './tool-widgets/ToolCard.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
@@ -80,10 +83,8 @@
   data-tool-kind={item.toolKind ?? 'other'}
   data-testid="generic-tool-row"
 >
-  <div class="gutter" aria-hidden="true">
-    <Icon name="tool-generic" class="type-icon" />
-  </div>
-  <div class="content">
+  <ToolCallGutter icon="tool-generic" />
+  <ToolCard>
     <div class="header-line">
       <button
         type="button"
@@ -133,7 +134,7 @@
         </div>
       {/if}
     {/if}
-  </div>
+  </ToolCard>
 </div>
 
 <style>
@@ -145,25 +146,9 @@
     font-size: var(--text-small-size);
   }
 
-  .gutter {
-    flex: 0 0 var(--gutter);
-    width: var(--gutter);
-    display: flex;
-    justify-content: center;
-    padding-top: var(--space-2xs);
-  }
-
-  :global(.type-icon) {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-  }
-
-  .content {
-    flex: 1;
-    min-width: 0;
-    padding: var(--space-2xs) 0;
-  }
-
+  /* Layout-in-row and padding both live in `ToolCard` itself now (see its
+     own doc comment on why a class handed through here would be pruned as
+     unused CSS). */
   .header-line {
     display: flex;
     align-items: center;

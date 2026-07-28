@@ -186,7 +186,11 @@
      (a child component) renders, not on anything `Dialog` renders directly,
      so Svelte's per-component style scoping would otherwise never match it.
      Position/background/z-index are `Overlay`'s own concern now; this is
-     just the dialog-specific centering layout layered on top. */
+     just the dialog-specific centering layout layered on top. `6vh` is a
+     viewport-proportional breathing margin, not a `--space-*` quantity —
+     it must scale with the *viewport's* height so a short window still
+     leaves room above/below the panel, which no rem-based token can do
+     (issue #508 token-hygiene audit: considered and kept literal). */
   :global(.dialog-backdrop) {
     display: flex;
     align-items: flex-start;

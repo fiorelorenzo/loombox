@@ -10,12 +10,13 @@
    * (`$lib/terminal.ts`), not a fork per widget.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"): the outer frame is now the same
-   * gutter-plus-content row every tool-call widget uses (`GenericToolRow`
-   * / `EditWriteWidget` / `TodoWidget`) rather than its own raised card —
-   * `TerminalOutput`'s own dark terminal-screen surface (untouched) is the
-   * one thing here that still reads as a boxed surface, on purpose (it's
-   * meant to look like an actual console). Status is a `StatusDot` + short
+   * §3.4 "One tool-call anatomy"), converged onto the shared card language
+   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
+   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
+   * / `EditWriteWidget` / `TodoWidget`) — `TerminalOutput`'s own dark
+   * terminal-screen surface (untouched) is the one thing here that still
+   * reads as its own boxed surface, on purpose (it's meant to look like an
+   * actual console). Status is a `StatusDot` + short
    * label, never the raw enum. The header toggles the terminal body's
    * expand/collapse, defaulting open.
    *
@@ -34,8 +35,10 @@
   } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import TerminalOutput from '../TerminalOutput.svelte';
+  import ToolCallGutter from '../ToolCallGutter.svelte';
   import Icon from '../icons/Icon.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
+  import ToolCard from './ToolCard.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -52,10 +55,8 @@
 </script>
 
 <div class="bash-widget" data-testid="bash-widget">
-  <div class="gutter" aria-hidden="true">
-    <Icon name="tool-bash" class="type-icon" />
-  </div>
-  <div class="content">
+  <ToolCallGutter icon="tool-bash" />
+  <ToolCard>
     <div class="header-line">
       <button
         type="button"
@@ -81,7 +82,7 @@
         <TerminalOutput {command} content={output} status={item.status} />
       </div>
     {/if}
-  </div>
+  </ToolCard>
 </div>
 
 <style>
@@ -90,20 +91,6 @@
     align-items: flex-start;
     width: 100%;
     min-width: 0;
-  }
-
-  .gutter {
-    flex: 0 0 var(--gutter);
-    width: var(--gutter);
-    display: flex;
-    justify-content: center;
-    padding-top: var(--space-2xs);
-  }
-
-  .content {
-    flex: 1;
-    min-width: 0;
-    padding: var(--space-2xs) 0;
   }
 
   .header-line {
@@ -148,11 +135,6 @@
 
   .title {
     flex: 1;
-  }
-
-  :global(.type-icon) {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
   }
 
   .status {

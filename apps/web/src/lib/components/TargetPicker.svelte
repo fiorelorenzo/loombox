@@ -134,7 +134,7 @@
     gap: var(--space-xs);
     margin-left: auto;
     color: var(--color-text-secondary);
-    font-size: 0.7rem;
+    font-size: var(--text-caption-size);
     min-width: 0;
   }
 

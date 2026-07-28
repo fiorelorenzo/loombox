@@ -8,14 +8,15 @@
    * re-rendering the diff itself.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"): the outer frame is now the same
-   * gutter-plus-content row every tool-call widget uses (`GenericToolRow`
-   * / `BashWidget` / `TodoWidget`), not its own raised card — `DiffViewer`
-   * keeps its own nested card treatment unchanged. Status is a `StatusDot`
-   * + short label, never the raw enum. The header toggles the diff body's
-   * expand/collapse, defaulting open (so a mid-stream/malformed diff still
-   * renders — and can still throw into `ToolCallRow`'s error boundary —
-   * exactly as before).
+   * §3.4 "One tool-call anatomy"), converged onto the shared card language
+   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
+   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
+   * / `BashWidget` / `TodoWidget`) — `DiffViewer` keeps its own nested card
+   * treatment unchanged. Status is a `StatusDot` + short label, never the
+   * raw enum. The header toggles the diff body's expand/collapse,
+   * defaulting open (so a mid-stream/malformed diff still renders — and
+   * can still throw into `ToolCallRow`'s error boundary — exactly as
+   * before).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws the shared `tool-edit` glyph next to the title,
@@ -24,8 +25,10 @@
   import type { TranscriptToolCallItem } from '@loombox/providers-core';
   import { TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import DiffViewer from '../DiffViewer.svelte';
+  import ToolCallGutter from '../ToolCallGutter.svelte';
   import Icon from '../icons/Icon.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
+  import ToolCard from './ToolCard.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -41,10 +44,8 @@
 </script>
 
 <div class="edit-write-widget" data-testid="edit-write-widget">
-  <div class="gutter" aria-hidden="true">
-    <Icon name="tool-edit" class="type-icon" />
-  </div>
-  <div class="content">
+  <ToolCallGutter icon="tool-edit" />
+  <ToolCard>
     <button
       type="button"
       class="row-header"
@@ -65,7 +66,7 @@
         <DiffViewer path={diff.path} oldText={diff.oldText} newText={diff.newText} />
       </div>
     {/if}
-  </div>
+  </ToolCard>
 </div>
 
 <style>
@@ -74,20 +75,6 @@
     align-items: flex-start;
     width: 100%;
     min-width: 0;
-  }
-
-  .gutter {
-    flex: 0 0 var(--gutter);
-    width: var(--gutter);
-    display: flex;
-    justify-content: center;
-    padding-top: var(--space-2xs);
-  }
-
-  .content {
-    flex: 1;
-    min-width: 0;
-    padding: var(--space-2xs) 0;
   }
 
   .row-header {
@@ -121,11 +108,6 @@
 
   .row-header[aria-expanded='false'] :global(.disclosure-icon) {
     transform: rotate(-90deg);
-  }
-
-  :global(.type-icon) {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
   }
 
   .title {

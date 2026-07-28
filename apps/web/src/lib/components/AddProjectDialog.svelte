@@ -45,6 +45,9 @@
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import Field from './ui/Field.svelte';
+  import FormActions from './ui/FormActions.svelte';
+  import Input from './ui/Input.svelte';
 
   interface Props {
     open: boolean;
@@ -150,34 +153,39 @@
   {/if}
 
   <form class="project-form" onsubmit={handleSubmit}>
-    <span class="field-label" id="add-project-path-label">Project folder</span>
-    <div role="group" aria-labelledby="add-project-path-label">
-      <DirectoryPicker
-        {client}
-        nodeId={selectedNodeId}
-        targetId={selectedTargetId}
-        value={path}
-        onChange={handleDirectoryChange}
-        inputTestId="add-project-path"
-      />
-    </div>
+    <Field label="Project folder" grouped>
+      {#snippet children({ labelId })}
+        <div role="group" aria-labelledby={labelId}>
+          <DirectoryPicker
+            {client}
+            nodeId={selectedNodeId}
+            targetId={selectedTargetId}
+            value={path}
+            onChange={handleDirectoryChange}
+            inputTestId="add-project-path"
+          />
+        </div>
+      {/snippet}
+    </Field>
 
-    <label for="add-project-name">Name</label>
-    <input
-      id="add-project-name"
-      type="text"
-      placeholder="Defaults to the folder name"
-      value={name}
-      oninput={handleNameInput}
-      data-testid="add-project-name"
-    />
+    <Field label="Name">
+      {#snippet children({ id })}
+        <Input
+          {id}
+          value={name}
+          oninput={handleNameInput}
+          placeholder="Defaults to the folder name"
+          dataTestId="add-project-name"
+        />
+      {/snippet}
+    </Field>
 
-    <div class="actions">
+    <FormActions>
       <Button variant="secondary" onclick={handleClose}>Cancel</Button>
       <Button type="submit" variant="primary" disabled={!canSubmit} dataTestId="add-project-submit">
         Add project
       </Button>
-    </div>
+    </FormActions>
   </form>
 {/snippet}
 
@@ -196,37 +204,8 @@
   .project-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .project-form label,
-  .project-form .field-label {
-    display: block;
-    margin-top: var(--space-xs);
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-  }
-
-  .project-form input {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    font-family: inherit;
-    font-size: var(--text-body-size);
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .project-form input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
+    /* Above `Field`'s own label-to-control gap, so the pairs group — see
+       `ui/Field.svelte`'s note on that contract. */
+    gap: var(--space-md);
   }
 </style>

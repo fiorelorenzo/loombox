@@ -143,7 +143,7 @@
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
     background: var(--color-fill-subtle);
-    font-size: 1.05rem;
+    font-size: var(--text-title-size);
     letter-spacing: 0.05em;
     word-break: break-all;
     user-select: all;

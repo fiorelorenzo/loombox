@@ -3,6 +3,9 @@
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import StatusDot from './ui/StatusDot.svelte';
   import Button from './ui/Button.svelte';
+  import Field from './ui/Field.svelte';
+  import Input from './ui/Input.svelte';
+  import FormActions from './ui/FormActions.svelte';
 
   /**
    * The device-authorization approval card (issue #387's `/device` route):
@@ -26,6 +29,12 @@
    * the real `ErrorNotice` primitive, and the terminal approved/denied
    * states lead with a `StatusDot` (success/danger) per the brief's
    * "StatusDot for state."
+   *
+   * Coherence v5 migration (design spec §1, issue #508): the label+input
+   * pair now composes the shared `Field`/`Input` primitives (monospace, for
+   * the same "identifier" reason `RecoveryCodeEntryForm`'s code field
+   * does), and the Approve/Deny row moves onto `FormActions align="start"`
+   * (left-aligned, not a Dialog footer).
    */
   interface Props {
     /** Pre-filled from `?user_code=`, if the node's `verification_uri_complete` was followed; still editable. */
@@ -80,23 +89,29 @@
   </div>
 {:else}
   <form class="device-approve-form" onsubmit={handleApprove}>
-    <label for="device-user-code-input">Code shown on the device</label>
-    <input
-      id="device-user-code-input"
-      type="text"
-      class="font-mono"
-      autocomplete="off"
-      autocapitalize="characters"
-      spellcheck="false"
-      placeholder="XXXX-XXXX"
-      bind:value={userCode}
-      disabled={busy}
-      data-testid="device-user-code-input"
-    />
+    <Field label="Code shown on the device">
+      {#snippet children({ id, describedBy, errorId, invalid, required })}
+        <Input
+          {id}
+          {describedBy}
+          {errorId}
+          {invalid}
+          {required}
+          monospace
+          bind:value={userCode}
+          disabled={busy}
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck={false}
+          placeholder="XXXX-XXXX"
+          dataTestId="device-user-code-input"
+        />
+      {/snippet}
+    </Field>
     {#if error}
       <ErrorNotice message={error} />
     {/if}
-    <div class="device-approve-actions">
+    <FormActions align="start">
       <Button
         type="submit"
         variant="primary"
@@ -115,7 +130,7 @@
       >
         Deny
       </Button>
-    </div>
+    </FormActions>
     {#if busy}
       <span class="in-flight-track" aria-hidden="true">
         <span class="thread-draw-fill-loop in-flight-bar"></span>
@@ -128,34 +143,6 @@
   .device-approve-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  label {
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-  }
-
-  input {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-fill-subtle);
-    color: inherit;
-    font-size: 1.1rem;
-    letter-spacing: 0.08em;
-    text-align: center;
-    text-transform: uppercase;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: 1px;
-  }
-
-  .device-approve-actions {
-    display: flex;
     gap: var(--space-sm);
   }
 

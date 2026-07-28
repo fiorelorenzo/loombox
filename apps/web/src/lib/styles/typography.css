@@ -47,10 +47,17 @@
   /* The smallest readable role (redesign v3 design spec §3.2): row meta,
      badge counts, relative timestamps, group headers. Named rather than
      left as a scatter of one-off `font-size: 0.7rem` declarations, which is
-     what the cockpit had grown before the sidebar rewrite. */
+     what the cockpit had grown before the sidebar rewrite. `--text-caption-
+     tracking` was the missing half of that same cleanup (coherence v5
+     design spec §1/§5, issue #508): every uppercase caption label — the
+     section `h3`s here and `ui/Field`'s own generated label — had
+     independently landed on the identical `0.08em` `letter-spacing`
+     literal, which is exactly the "genuinely missing scale step" case the
+     spec calls for naming instead of re-inlining. */
   --text-caption-size: 0.7rem;
   --text-caption-line: 1rem;
   --text-caption-weight: 500;
+  --text-caption-tracking: 0.08em;
 
   --text-code-size: 0.85rem;
   --text-code-line: 1.4rem;

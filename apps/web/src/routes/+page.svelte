@@ -200,13 +200,6 @@
    */
   let mainView = $state<'session' | 'inbox' | 'nodes' | 'settings'>('session');
 
-  /** Display titles for the three `mainView` destinations (design spec v4 §3.6's header): matches each page's own `PageLayout` title exactly (`InboxPage`/`NodesPage`/`SettingsPage`), so the topbar and the page body never disagree about what "here" is called. */
-  const MAIN_VIEW_TITLES: Record<'inbox' | 'nodes' | 'settings', string> = {
-    inbox: 'Inbox',
-    nodes: 'Nodes',
-    settings: 'Settings',
-  };
-
   /**
    * The Drawer state (redesign brief `docs/design/redesign.md` §1/§7, issue
    * #427; narrowed by design spec v4 §3.5, issue #507). Used to cover six
@@ -1287,9 +1280,16 @@
     if (!target.reachable) return 'unreachable';
     if (!target.health) return 'no-data';
     if (!target.health.healthy) return 'unreachable';
-    const { cpuPercent, memPercent, diskPercent } = target.health;
+    // `loadPercent`, never the deprecated `cpuPercent` those two used to
+    // share: same number, but the old name claimed it was utilisation when
+    // it has always been a load-average proxy (v5 design spec §3). A peer
+    // that predates the field reports no load at all, which must not read as
+    // a healthy zero - `TargetStatusView` shows an em dash for exactly this,
+    // so the dot abstains here too rather than inventing good news.
+    const { loadPercent, memPercent, diskPercent } = target.health;
+    if (loadPercent === undefined) return 'no-data';
     if (
-      cpuPercent >= TARGET_OVERLOAD_PERCENT ||
+      loadPercent >= TARGET_OVERLOAD_PERCENT ||
       memPercent >= TARGET_OVERLOAD_PERCENT ||
       diskPercent >= TARGET_OVERLOAD_PERCENT
     ) {
@@ -2218,16 +2218,6 @@
               <span class="sr-only">Some targets need attention</span>
             {/if}
           </button>
-          <button
-            type="button"
-            class="destination-row"
-            class:active={mainView === 'settings'}
-            onclick={() => (mainView = 'settings')}
-            data-testid="destination-settings"
-          >
-            <span class="destination-icon"><Icon name="settings" size="100%" /></span>
-            <span class="destination-label">Settings</span>
-          </button>
         </nav>
 
         <div class="sidebar-divider" role="separator" aria-orientation="horizontal"></div>
@@ -2514,28 +2504,27 @@
              on the right. The brand and the account moved into the
              sidebar; the always-green connection dot is gone, replaced by
              a chip that only appears when there is something wrong and
-             something to do about it. Design spec v4 §3.6 adds one case:
-             while a destination page is showing, the left zone is that
-             page's own title instead of the session breadcrumb, and the
-             right zone drops every session-scoped control (Files/
-             Terminal/Config/Export); none of them apply to a page. -->
+             something to do about it. Coherence v5 §2/§0.1: the topbar's
+             own title span is gone — a destination page carries its title
+             in `PageLayout`'s real `<h1>` now, so this left zone shows
+             ONLY the session breadcrumb, and only while a session is open
+             (§3.3's mainView === 'session' gate); the right zone (below)
+             still drops every session-scoped control while a page shows. -->
         <header class="topbar">
           <div class="topbar-context">
-            {#if mainView !== 'session'}
-              <span class="topbar-title" data-testid="cockpit-page-title"
-                >{MAIN_VIEW_TITLES[mainView]}</span
-              >
-            {:else if selectedSession}
-              <span class="topbar-title" data-testid="cockpit-session-title"
-                >{selectedSession.title}</span
-              >
-              <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
-                {projectDisplayName(selectedSession)}
-                <span aria-hidden="true">·</span>
-                {selectedSession.targetId}
-              </span>
-            {:else}
-              <span class="topbar-title topbar-title-muted">No session selected</span>
+            {#if mainView === 'session'}
+              {#if selectedSession}
+                <span class="topbar-title" data-testid="cockpit-session-title"
+                  >{selectedSession.title}</span
+                >
+                <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                  {projectDisplayName(selectedSession)}
+                  <span aria-hidden="true">·</span>
+                  {selectedSession.targetId}
+                </span>
+              {:else}
+                <span class="topbar-title topbar-title-muted">No session selected</span>
+              {/if}
             {/if}
           </div>
 
@@ -2731,6 +2720,7 @@
                         ? isThoughtStillThinking(transcript, item.turnId)
                         : false}
                       turnActive={transcript?.turnActive ?? false}
+                      providerId={selectedSession?.provider}
                     />
                   {:else}
                     <ToolCallRow
@@ -2816,29 +2806,49 @@
               </div>
 
               <form class="composer" onsubmit={submitPrompt}>
+                <!-- Design spec v5 §4: the composer is the last entry in the
+                     timeline, not a chat box bolted to the bottom of one. It
+                     takes the same fixed role gutter every transcript item
+                     uses, so the column of role words runs unbroken from the
+                     first turn into the thing you are about to say. -->
                 <div class="composer-row">
-                  <textarea
-                    bind:this={composerTextarea}
-                    bind:value={draft}
-                    oninput={handleComposerInput}
-                    onkeydown={handleComposerKeydown}
-                    placeholder="Send a follow-up prompt… (type @ to reference a file)"
-                    aria-label="Follow-up prompt"
-                    rows="1"
-                    data-testid="composer-input"></textarea>
-                  <div class="composer-actions">
-                    <TurnStopControl
-                      turnActive={transcript?.turnActive ?? false}
-                      onStop={stopSession}
-                    />
-                    <Button type="submit" disabled={sendDisabled} ariaLabel="Send prompt"
-                      >Send</Button
-                    >
+                  <div class="composer-gutter" aria-hidden="true">
+                    <span class="composer-caret">›</span>
+                    <span class="composer-role">You</span>
+                  </div>
+                  <div class="composer-field">
+                    <textarea
+                      bind:this={composerTextarea}
+                      bind:value={draft}
+                      oninput={handleComposerInput}
+                      onkeydown={handleComposerKeydown}
+                      placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                      aria-label="Follow-up prompt"
+                      aria-describedby="composer-hint"
+                      rows="1"
+                      data-testid="composer-input"></textarea>
+                    <!-- Inline with the controls rather than a detached line
+                         underneath: a hint that costs its own row reads as
+                         chrome, and this one is only ever consulted once. -->
+                    <div class="composer-field-footer">
+                      <p class="composer-hint" id="composer-hint">
+                        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+                      </p>
+                      <div class="composer-actions">
+                        <TurnStopControl
+                          turnActive={transcript?.turnActive ?? false}
+                          onStop={stopSession}
+                        />
+                        <Button
+                          type="submit"
+                          variant="secondary"
+                          disabled={sendDisabled}
+                          ariaLabel="Send prompt">Send</Button
+                        >
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <p class="composer-hint" aria-hidden="true">
-                  <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
-                </p>
               </form>
             </div>
           {/if}
@@ -2999,19 +3009,6 @@
         <Icon name="command" class="tabbar-icon" />
         <span>Command</span>
       </button>
-      <button
-        type="button"
-        class="tabbar-item"
-        class:active={mainView === 'settings'}
-        onclick={() => {
-          mainView = 'settings';
-          sessionsSheetOpen = false;
-        }}
-        data-testid="tabbar-settings"
-      >
-        <Icon name="settings" class="tabbar-icon" />
-        <span>Settings</span>
-      </button>
     </nav>
   {/if}
 </main>
@@ -3141,7 +3138,7 @@
   }
 
   .appearance-settings-panel h2 {
-    font-size: 1rem;
+    font-size: var(--text-body-size);
     margin: 0 0 var(--space-sm);
   }
 
@@ -3407,6 +3404,9 @@
     cursor: pointer;
     font-size: var(--text-body-size);
     text-align: left;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
   .destination-row:hover {
@@ -3417,6 +3417,20 @@
   .destination-row.active {
     background: var(--color-fill);
     color: var(--color-text-primary);
+  }
+
+  /* Coherence v5 §2: this row had hover but neither of the two states
+     `Button.svelte`/`IconButton.svelte` give every other clickable
+     surface — same `--focus-ring-*`/tension-press tokens, just applied
+     here since a sidebar row isn't routed through either primitive. */
+  .destination-row:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .destination-row:active {
+    transform: scale(0.98);
+    background: var(--color-fill);
   }
 
   .destination-icon {
@@ -3557,11 +3571,21 @@
     padding: var(--space-xs) var(--space-sm);
     font-size: var(--text-small-size);
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
   .popover-menu button:hover,
   .popover-menu button:focus-visible {
     background: var(--color-fill-subtle);
+  }
+
+  /* Coherence v5 §2: these already had hover/focus; press (tension-press,
+     `Button.svelte`'s own token) was the missing state. */
+  .popover-menu button:active {
+    transform: scale(0.98);
+    background: var(--color-fill);
   }
 
   .popover-menu button.danger {
@@ -3804,11 +3828,26 @@
     font-size: var(--text-small-size);
     font-weight: 600;
     text-align: left;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
   .project-group-header:hover {
     color: var(--color-text-primary);
     background: var(--color-fill-subtle);
+  }
+
+  /* Same `Button.svelte`/`IconButton.svelte` tokens as `.destination-row`
+     above (coherence v5 §2). */
+  .project-group-header:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .project-group-header:active {
+    transform: scale(0.98);
+    background: var(--color-fill);
   }
 
   .project-group-header-renaming {
@@ -4004,11 +4043,26 @@
     color: inherit;
     cursor: pointer;
     text-align: left;
+    transition:
+      background-color var(--duration-fast) var(--ease-beat),
+      transform var(--duration-instant) var(--ease-beat);
   }
 
   .account-trigger:hover,
   .account-trigger[aria-expanded='true'] {
     background: var(--color-fill-subtle);
+  }
+
+  /* Same `Button.svelte`/`IconButton.svelte` tokens as `.destination-row`
+     above (coherence v5 §2). */
+  .account-trigger:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .account-trigger:active {
+    transform: scale(0.98);
+    background: var(--color-fill);
   }
 
   .account-avatar {
@@ -4249,6 +4303,12 @@
     border-color: var(--color-border-strong);
   }
 
+  /* Everything below the transcript - the live plan, queued prompts, the
+     permission bar, the toolbar and the composer - is one docked strip, and
+     says so with a single hairline across the top. Without it each of those
+     read as a stray transcript item that had fallen to the bottom of the
+     canvas, which is exactly how the plan looked: a floating card with a gap
+     above it and nothing tying it to anything. */
   .canvas-footer {
     width: 100%;
     max-width: var(--measure);
@@ -4257,6 +4317,8 @@
     flex-direction: column;
     gap: var(--space-sm);
     flex-shrink: 0;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
   }
 
   .composer-toolbar {
@@ -4280,24 +4342,59 @@
     gap: var(--space-2xs);
   }
 
+  /* No pill, no filled surface: the border and the rounded box were the two
+     things that made this read as a chat widget rather than the tail of the
+     transcript. The hairline that separates the docked strip from the
+     transcript lives on `.canvas-footer`, one level up, so it is drawn once
+     for the whole strip rather than again here. */
   .composer-row {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--space-sm);
-    padding: var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-surface);
-    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
-  .composer-row:focus-within {
-    border-color: var(--color-border-strong);
+  /* Mirrors `MessageItem`'s `.gutter` exactly — same token, same centring —
+     so the role column does not jog by a pixel where the transcript ends and
+     the composer begins. */
+  .composer-gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-3xs);
+    padding-top: var(--space-3xs);
   }
 
-  .composer-row textarea {
+  /* A prompt caret rather than `MessageItem`'s dot: this row is the one entry
+     that hasn't happened yet, and a caret is the register a developer already
+     reads as "type here". */
+  .composer-caret {
+    font-family: var(--font-mono);
+    font-size: var(--text-body-size);
+    line-height: 1;
+    color: var(--color-text-primary);
+  }
+
+  .composer-role {
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line);
+    letter-spacing: var(--text-caption-tracking);
+    font-weight: var(--text-caption-weight);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+  }
+
+  .composer-field {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .composer-field textarea {
+    width: 100%;
     max-height: 40vh;
     resize: none;
     border: none;
@@ -4305,15 +4402,31 @@
     color: inherit;
     font: inherit;
     line-height: var(--text-body-line);
+    padding: 0;
   }
 
-  .composer-row textarea::placeholder {
+  .composer-field textarea::placeholder {
     color: var(--color-text-muted);
   }
 
-  .composer-row textarea:focus,
-  .composer-row textarea:focus-visible {
+  /* The focus ring lives on the strip, not the textarea: an outline drawn
+     around a borderless full-measure textarea reads as a box appearing out of
+     nowhere. */
+  .composer-field textarea:focus,
+  .composer-field textarea:focus-visible {
     outline: none;
+  }
+
+  .composer-row:focus-within .composer-caret {
+    color: var(--color-accent);
+  }
+
+  .composer-field-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
   }
 
   .composer-actions {
@@ -4321,11 +4434,11 @@
     align-items: center;
     gap: var(--space-xs);
     flex-shrink: 0;
+    margin-left: auto;
   }
 
   .composer-hint {
     margin: 0;
-    text-align: right;
     font-size: var(--text-caption-size);
     color: var(--color-text-muted);
   }
@@ -4468,7 +4581,7 @@
          opened the sessions sheet could not close it again (defect B9). */
       z-index: var(--z-overlay);
       display: flex;
-      height: 3.5rem;
+      height: var(--tabbar-height);
       align-items: stretch;
       justify-content: space-around;
       border-top: 1px solid var(--color-border);
@@ -4510,13 +4623,13 @@
     }
 
     .shell {
-      padding-bottom: 3.5rem;
+      padding-bottom: var(--tabbar-height);
     }
 
     .sidebar {
       position: fixed;
       top: 0;
-      bottom: 3.5rem;
+      bottom: var(--tabbar-height);
       left: 0;
       z-index: var(--z-sticky);
       width: min(20rem, 85vw) !important;
@@ -4534,7 +4647,7 @@
       top: 0;
       left: 0;
       right: 0;
-      bottom: 3.5rem;
+      bottom: var(--tabbar-height);
       z-index: calc(var(--z-sticky) - 1);
       border: none;
       background: var(--color-overlay);
@@ -4566,7 +4679,7 @@
       top: auto;
       left: 0;
       right: 0;
-      bottom: 3.5rem;
+      bottom: var(--tabbar-height);
       width: 100%;
       height: 60vh;
       border-left: none;

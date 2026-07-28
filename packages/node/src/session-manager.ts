@@ -4,6 +4,7 @@ import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { SessionStore } from './session-store';
 import { SameFolderConflictError, SameFolderGuard } from './same-folder-guard';
 
 const execFileAsync = promisify(execFile);
@@ -43,10 +44,25 @@ export interface Session {
  * A session's lifecycle state (SPEC §7.1 "Sessions can be paused, resumed,
  * and reconnected"; issue #67). A freshly created session starts `'running'`
  * (its agent is spawned immediately by `NodeDaemon`, never created inert);
- * `'ended'` is terminal — no further transition is valid out of it. See
- * {@link assertValidTransition} for the full transition table.
+ * `'ended'` is terminal — no further transition is valid out of it.
+ *
+ * `'disconnected'` (issue #515) is the honest state a record loaded from a
+ * `SessionStore`-backed manager's on-disk `sessions.json` comes back in: a
+ * node restart means the agent process that made a saved `'running'` or
+ * `'paused'` record true is simply gone, and pretending otherwise would let
+ * a client believe it can resume into a live agent that no longer exists.
+ * It is deliberately not `'ended'` — the session is still real (its
+ * worktree/branch are still on disk, its row still belongs on the board)
+ * and still needs to be listable and archivable so that worktree can
+ * finally be cleaned up (the whole point of #515); it just cannot be
+ * `pause`d/`resume`d back into life, since there is no agent behind it to
+ * pause or resume — the only legal transition out of it is `end`, exactly
+ * like `'ended'` itself already has none. A record already saved as
+ * `'ended'` stays `'ended'` on reload: that state was already honest
+ * regardless of the process that wrote it. See {@link assertValidTransition}
+ * for the full transition table.
  */
-export type SessionLifecycleState = 'running' | 'paused' | 'ended';
+export type SessionLifecycleState = 'running' | 'paused' | 'ended' | 'disconnected';
 
 /** A lifecycle transition {@link SessionManager} rejects (e.g. resuming a session that was never paused, or any transition out of `'ended'`). */
 export class InvalidSessionTransitionError extends Error {
@@ -66,6 +82,7 @@ const VALID_TRANSITIONS: Record<
 > = {
   running: { pause: 'paused', end: 'ended' },
   paused: { resume: 'running', end: 'ended' },
+  disconnected: { end: 'ended' },
   ended: {},
 };
 
@@ -242,9 +259,41 @@ async function ensureLoomboxDirIsSelfIgnoring(projectPath: string): Promise<void
  * coexist on the same project regardless of what's running in place — "using
  * worktrees removes the restriction".
  */
+export interface SessionManagerOptions {
+  /**
+   * Persists this manager's session records across a process restart (issue
+   * #515). Optional and `undefined` by default so every existing
+   * `new SessionManager()` call — most of this file's own tests included —
+   * keeps its original memory-only behavior with zero disk I/O; only a
+   * caller (`NodeDaemon`) that actually wants restart survival wires one in.
+   */
+  store?: SessionStore;
+}
+
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
   private readonly sameFolderGuard = new SameFolderGuard();
+  private readonly store?: SessionStore;
+
+  constructor(options: SessionManagerOptions = {}) {
+    this.store = options.store;
+    for (const loaded of this.store?.load() ?? []) {
+      // Reload on boot (issue #515): a record saved as 'running'/'paused'
+      // described a live agent process that died with the previous node
+      // process — see `SessionLifecycleState`'s doc comment for why
+      // 'disconnected', not 'ended', is the honest state to bring it back
+      // in. A record already 'ended' needs no rewriting; that was already
+      // true regardless of which process wrote it.
+      const session =
+        loaded.state === 'ended' ? loaded : { ...loaded, state: 'disconnected' as const };
+      this.sessions.set(session.id, session);
+    }
+  }
+
+  /** Writes the manager's complete current record set to `store`, if one was configured. A no-op otherwise — see `SessionManagerOptions.store`'s doc comment. */
+  private persist(): void {
+    this.store?.save([...this.sessions.values()]);
+  }
 
   async createSession({
     projectPath,
@@ -292,6 +341,7 @@ export class SessionManager {
     };
 
     this.sessions.set(id, session);
+    this.persist();
     return session;
   }
 
@@ -307,6 +357,7 @@ export class SessionManager {
   pauseSession(id: string): Session {
     const session = this.requireSession(id);
     applyTransition(session, 'pause');
+    this.persist();
     return session;
   }
 
@@ -314,6 +365,7 @@ export class SessionManager {
   resumeSession(id: string): Session {
     const session = this.requireSession(id);
     applyTransition(session, 'resume');
+    this.persist();
     return session;
   }
 
@@ -324,6 +376,7 @@ export class SessionManager {
     if (!session.branch) {
       this.sameFolderGuard.release(session.projectPath, id);
     }
+    this.persist();
     return session;
   }
 
@@ -363,6 +416,7 @@ export class SessionManager {
     if (!session.branch || !removeWorktree) {
       this.sameFolderGuard.release(session.projectPath, id);
       this.sessions.delete(id);
+      this.persist();
       return;
     }
 
@@ -381,6 +435,7 @@ export class SessionManager {
       // make sure removeSession is idempotent about disk state.
       await rm(session.worktreePath, { recursive: true, force: true });
       this.sessions.delete(id);
+      this.persist();
     }
   }
 }

@@ -49,10 +49,25 @@ export type TargetListRequest = z.infer<typeof targetListRequest>;
  * `[0, 100]` by the sampler even though CPU load can nominally exceed 100%
  * on an overloaded multi-core host — this is a display figure, not a raw
  * ratio. Still routing metadata only, per SPEC §8's boundary: how loaded a
- * host is, never anything about what's running on it.
+ * host is, never anything about what's running on it (a hostname is not a
+ * secret that boundary hides either — see `provisioning.ts`'s doc comment).
+ *
+ * `cpuPercent` is a **misnomer kept only for wire back-compat**: every
+ * sampler has always computed it from load average (a run-queue-length
+ * proxy: runnable *and* uninterruptible-sleep tasks), never true CPU
+ * utilization — a host can read 100% here while its cores sit mostly idle.
+ * `loadPercent` is the identical figure under its honest name; new code
+ * should read that one instead and label it "Load", not "CPU". Both
+ * `loadPercent` and the identification fields below (`hostname`/
+ * `platform`/`arch`) are **optional additions**: a node that predates them
+ * never sends them, and this schema still parses its `cpuPercent`-only
+ * payload; a node running this schema always sends all of them.
  */
 export const targetHealth = z.object({
+  /** @deprecated Load-average-derived, not CPU utilization — see this schema's own doc comment. Kept for back-compat; read `loadPercent` instead. */
   cpuPercent: z.number().min(0).max(100),
+  /** The honestly-named replacement for the deprecated `cpuPercent` above (identical value): 1-minute load average normalized by core count. Optional only because an older node has never sent it. */
+  loadPercent: z.number().min(0).max(100).optional(),
   memPercent: z.number().min(0).max(100),
   memUsedBytes: z.number().nonnegative(),
   memTotalBytes: z.number().nonnegative(),
@@ -62,6 +77,12 @@ export const targetHealth = z.object({
   healthy: z.boolean(),
   /** Milliseconds since epoch, when this sample was taken (the node's clock). */
   sampledAt: z.number(),
+  /** This target's machine hostname — lets a UI tell apart two targets sharing a generic label like "Local". Optional: an older node has never sent it. */
+  hostname: z.string().min(1).optional(),
+  /** `'linux'`/`'darwin'`/... (`os.platform()`'s vocabulary, including over `ssh:`). Optional: an older node has never sent it. */
+  platform: z.string().min(1).optional(),
+  /** `'x64'`/`'arm64'`/... (`os.arch()`'s vocabulary, including over `ssh:`). Optional: an older node has never sent it. */
+  arch: z.string().min(1).optional(),
 });
 export type TargetHealth = z.infer<typeof targetHealth>;
 

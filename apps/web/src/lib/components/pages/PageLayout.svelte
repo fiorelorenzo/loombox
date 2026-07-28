@@ -64,6 +64,17 @@
     gap: var(--space-lg);
   }
 
+  /* Coherence v5 §2: this `<h1>` used to carry no rule of its own at all,
+     which is why it never matched anything — the type scale's `title`
+     role (also `h2`'s own app-wide default in `typography.css`), not the
+     bigger `display` role `typography.css` gives a bare `h1` globally,
+     which is reserved for the brand lockup, not a page destination. */
+  .page-header h1 {
+    font-size: var(--text-title-size);
+    line-height: var(--text-title-line);
+    font-weight: var(--text-title-weight);
+  }
+
   .page-header-actions {
     display: flex;
     align-items: center;

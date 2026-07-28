@@ -125,7 +125,11 @@ test.describe('cockpit shell', () => {
     await page.getByTestId('session-target-status-link').click();
 
     // v4: target status is a destination in the main area, not a drawer tab.
-    await expect(page.getByTestId('cockpit-page-title')).toHaveText(/nodes/i);
+    // Coherence v5 §2: the topbar's own title span is gone, so the page
+    // title lives only in `PageLayout`'s real `<h1>` now.
+    await expect(page.getByTestId('nodes-page').getByRole('heading', { level: 1 })).toHaveText(
+      /nodes/i,
+    );
     await expect(page.getByTestId('drawer')).toHaveCount(0);
   });
 
@@ -155,7 +159,9 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('composer-input')).toBeVisible();
 
     await page.getByTestId('destination-inbox').click();
-    await expect(page.getByTestId('cockpit-page-title')).toHaveText(/inbox/i);
+    await expect(page.getByTestId('inbox-page').getByRole('heading', { level: 1 })).toHaveText(
+      /inbox/i,
+    );
     // The transcript is replaced, not overlaid: no drawer, no scrim.
     await expect(page.getByTestId('composer-input')).toHaveCount(0);
     await expect(page.getByTestId('drawer')).toHaveCount(0);
@@ -163,6 +169,71 @@ test.describe('cockpit shell', () => {
     // Returning is one click, because the session stayed selected.
     await page.getByTestId('session-row-item').first().click();
     await expect(page.getByTestId('composer-input')).toBeVisible();
+  });
+
+  test('the composer reads as the last entry in the timeline, not a chat box', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.getByTestId('session-row-item').first().click();
+    const input = page.getByTestId('composer-input');
+    await expect(input).toBeVisible();
+
+    // Coherence v5 §4: the hint is wired to the field rather than floating
+    // under it as decoration, so a screen reader gets it at the same moment
+    // a sighted reader does.
+    const hintId = await input.getAttribute('aria-describedby');
+    expect(hintId).toBeTruthy();
+    await expect(page.locator(`#${hintId}`)).toContainText('Enter');
+
+    // The two things that made this a chat widget: a rounded pill and a
+    // filled surface of its own. Both gone - the composer draws no box at all.
+    const row = page.locator('.composer-row');
+    const radius = await row.evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).toBe('0px');
+
+    // What separates the composer from the transcript is one hairline across
+    // the whole docked strip (plan, queued prompts, permissions, composer),
+    // drawn once on the footer rather than per element - otherwise each of
+    // those reads as a stray transcript item that fell to the bottom.
+    const footerBorder = await page
+      .locator('.canvas-footer')
+      .evaluate((el) => getComputedStyle(el).borderTopWidth);
+    expect(footerBorder).not.toBe('0px');
+
+    // Same role column the transcript runs, so it does not restart at the
+    // composer. Compared against the shared `--gutter` token rather than
+    // against a rendered transcript item: this fixture's session has no
+    // updates yet, so there is no item to measure, and the token IS the
+    // contract both surfaces are meant to read.
+    const { gutterWidth, token } = await page.locator('.composer-gutter').evaluate((el) => ({
+      gutterWidth: getComputedStyle(el).width,
+      token: getComputedStyle(document.documentElement).getPropertyValue('--gutter').trim(),
+    }));
+    expect(token).not.toBe('');
+    const remPx = await page.evaluate(
+      () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
+    );
+    expect(parseFloat(gutterWidth)).toBeCloseTo(parseFloat(token) * remPx, 1);
+  });
+
+  test('Settings is reachable from the account menu, not the sidebar or the mobile tabbar', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+
+    // Coherence v5 §2: removed from both places the redesign closed —
+    // the sidebar's primary destinations and the mobile tabbar (hidden by
+    // a `@media` query, not conditionally rendered, so its absence here is
+    // unconditional too).
+    await expect(page.getByTestId('destination-settings')).toHaveCount(0);
+    await expect(page.getByTestId('tabbar-settings')).toHaveCount(0);
+
+    await page.getByTestId('account-menu-toggle').click();
+    await page.getByRole('menuitem', { name: /appearance.*settings/i }).click();
+    await expect(page.getByTestId('settings-page')).toBeVisible();
   });
 
   test('sessions are nested under their project, and creation is project-scoped', async ({

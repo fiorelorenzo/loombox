@@ -85,6 +85,9 @@
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import Field from './ui/Field.svelte';
+  import FormActions from './ui/FormActions.svelte';
+  import Input from './ui/Input.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
 
   export interface AddTargetClient {
@@ -473,7 +476,7 @@
             </li>
           {/each}
         </ul>
-        <div class="actions">
+        <FormActions>
           <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
             Cancel
           </Button>
@@ -484,54 +487,87 @@
           >
             Enter manually
           </Button>
-        </div>
+        </FormActions>
       </div>
     {:else}
       <form class="host-form" onsubmit={goToReview}>
-        <label for="add-target-host">Host</label>
-        <input
-          id="add-target-host"
-          type="text"
-          placeholder="10.0.0.5 or devbox.example.com"
-          bind:value={host}
-          data-testid="add-target-host"
-        />
+        <Field label="Host">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              monospace
+              bind:value={host}
+              placeholder="10.0.0.5 or devbox.example.com"
+              dataTestId="add-target-host"
+            />
+          {/snippet}
+        </Field>
 
-        <label for="add-target-user">User (optional)</label>
-        <input
-          id="add-target-user"
-          type="text"
-          placeholder="defaults to root"
-          bind:value={user}
-          data-testid="add-target-user"
-        />
+        <Field label="User (optional)">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              bind:value={user}
+              placeholder="defaults to root"
+              dataTestId="add-target-user"
+            />
+          {/snippet}
+        </Field>
 
-        <label for="add-target-port">Port (optional)</label>
-        <input
-          id="add-target-port"
-          type="number"
-          placeholder="22"
-          bind:value={port}
-          data-testid="add-target-port"
-        />
+        <Field label="Port (optional)">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              type="number"
+              bind:value={port}
+              placeholder="22"
+              dataTestId="add-target-port"
+            />
+          {/snippet}
+        </Field>
 
-        <label for="add-target-alias">~/.ssh/config alias (optional)</label>
-        <input
-          id="add-target-alias"
-          type="text"
-          placeholder="matches an entry the node already knows"
-          bind:value={alias}
-          data-testid="add-target-alias"
-        />
+        <Field label="~/.ssh/config alias (optional)">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              monospace
+              bind:value={alias}
+              placeholder="matches an entry the node already knows"
+              dataTestId="add-target-alias"
+            />
+          {/snippet}
+        </Field>
 
-        <label for="add-target-label">Label (optional)</label>
-        <input
-          id="add-target-label"
-          type="text"
-          placeholder="Defaults to the host"
-          bind:value={label}
-          data-testid="add-target-label"
-        />
+        <Field label="Label (optional)">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              bind:value={label}
+              placeholder="Defaults to the host"
+              dataTestId="add-target-label"
+            />
+          {/snippet}
+        </Field>
 
         {#if candidates.length > 0}
           <button
@@ -544,12 +580,12 @@
           </button>
         {/if}
 
-        <div class="actions">
+        <FormActions>
           <Button variant="secondary" dataTestId="add-target-cancel" onclick={handleClose}>
             Cancel
           </Button>
           <Button type="submit" disabled={!canReview} dataTestId="add-target-next">Next</Button>
-        </div>
+        </FormActions>
       </form>
     {/if}
   {:else if step === 'review'}
@@ -568,12 +604,12 @@
         {#if port}<li><span>Port</span><span>{port}</span></li>{/if}
         {#if alias}<li><span>Alias</span><span>{alias}</span></li>{/if}
       </ul>
-      <div class="actions">
+      <FormActions>
         <Button variant="secondary" dataTestId="add-target-back" onclick={goBackToPickHost}>
           Back
         </Button>
         <Button dataTestId="add-target-confirm" onclick={confirmAndProvision}>Continue</Button>
-      </div>
+      </FormActions>
     </div>
   {:else if step === 'progress'}
     <div class="progress" data-testid="add-target-progress">
@@ -613,11 +649,11 @@
           {/if}
         </p>
       {/if}
-      <div class="actions">
+      <FormActions>
         <Button dataTestId="add-target-done-close" onclick={handleClose}>
           {result?.ok ? 'Done' : 'Close'}
         </Button>
-      </div>
+      </FormActions>
     </div>
   {/if}
 {/snippet}
@@ -698,28 +734,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
-  }
-
-  .host-form label {
-    margin-top: var(--space-xs);
-    font-size: var(--text-small-size);
-    color: var(--color-text-secondary);
-  }
-
-  .host-form input {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    font-family: inherit;
-    font-size: var(--text-body-size);
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .host-form input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .link-button {
@@ -889,13 +903,6 @@
     border-radius: var(--radius-lg);
     background: var(--color-success-subtle);
     border: 1px solid var(--color-success);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
   }
 
   .error {

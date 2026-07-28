@@ -89,6 +89,13 @@ describe('PermissionCard: rendering', () => {
   });
 });
 
+describe('PermissionCard: the deliberate exception to the shared card language (design spec v5 §4)', () => {
+  it('never carries the shared flat .tool-card class every other tool surface converges on — interrupting is its own, heavier job', () => {
+    render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });
+    expect(screen.getByTestId('permission-card').className).not.toMatch(/\btool-card\b/);
+  });
+});
+
 describe('PermissionCard: option buttons', () => {
   it('calls onResolve with the clicked option', async () => {
     const onResolve = vi.fn();

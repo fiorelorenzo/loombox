@@ -136,11 +136,11 @@
     right: -0.25rem;
     min-width: 1rem;
     height: 1rem;
-    padding: 0 0.2rem;
+    padding: 0 var(--space-2xs);
     border-radius: var(--radius-full);
     background: var(--color-accent);
     color: var(--color-accent-contrast);
-    font-size: 0.6rem;
+    font-size: var(--text-caption-size);
     font-weight: 700;
     line-height: 1rem;
     text-align: center;

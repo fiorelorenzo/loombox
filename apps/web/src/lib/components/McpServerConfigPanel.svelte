@@ -64,8 +64,11 @@
   } from '$lib/mcp-server-store';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
+  import Checkbox from './ui/Checkbox.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Field from './ui/Field.svelte';
+  import Input from './ui/Input.svelte';
 
   interface Props {
     projectPath: string;
@@ -192,23 +195,13 @@
         <ul class="server-list" data-testid="mcp-server-list">
           {#each records as record (record.config.name)}
             <li class="server-row" data-testid={`mcp-server-${record.config.name}`}>
-              <label class="toggle-row">
-                <span class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={record.enabled}
-                    onchange={(event) =>
-                      handleToggle(
-                        record.config.name,
-                        (event.currentTarget as HTMLInputElement).checked,
-                      )}
-                    data-testid={`server-enabled-${record.config.name}`}
-                  />
-                  <span class="toggle-switch-track" aria-hidden="true"></span>
-                </span>
-                <span class="server-name">{record.config.name}</span>
-                <span class="server-transport">{record.config.transport}</span>
-              </label>
+              <Checkbox
+                checked={record.enabled}
+                label={record.config.name}
+                onCheckedChange={(checked) => handleToggle(record.config.name, checked)}
+                dataTestId={`server-enabled-${record.config.name}`}
+              />
+              <span class="server-transport">{record.config.transport}</span>
               {#each requiredSecretNames(record.config) as secretName (secretName)}
                 <span
                   class="secret-badge"
@@ -237,24 +230,50 @@
     <section class="manual-add">
       <h3>Add a custom server</h3>
       <div class="manual-form">
-        <input
-          type="text"
-          placeholder="Server name"
-          bind:value={manualName}
-          data-testid="manual-add-name"
-        />
-        <input
-          type="text"
-          placeholder="Command"
-          bind:value={manualCommand}
-          data-testid="manual-add-command"
-        />
-        <input
-          type="text"
-          placeholder="Args (comma separated)"
-          bind:value={manualArgs}
-          data-testid="manual-add-args"
-        />
+        <Field label="Server name">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              bind:value={manualName}
+              placeholder="e.g. filesystem"
+              dataTestId="manual-add-name"
+            />
+          {/snippet}
+        </Field>
+        <Field label="Command">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              monospace
+              bind:value={manualCommand}
+              placeholder="e.g. npx @modelcontextprotocol/server-filesystem"
+              dataTestId="manual-add-command"
+            />
+          {/snippet}
+        </Field>
+        <Field label="Args (comma separated)">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              monospace
+              bind:value={manualArgs}
+              placeholder="e.g. --root, /home/user"
+              dataTestId="manual-add-args"
+            />
+          {/snippet}
+        </Field>
         <Button
           variant="primary"
           size="sm"
@@ -283,8 +302,8 @@
   h3 {
     margin: 0 0 var(--space-sm);
     font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
@@ -322,7 +341,7 @@
 
   .preset-description {
     color: var(--color-text-secondary);
-    font-size: 0.78rem;
+    font-size: var(--text-small-size);
   }
 
   .server-row {
@@ -330,17 +349,6 @@
     align-items: center;
     gap: var(--space-sm);
     flex-wrap: wrap;
-  }
-
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    cursor: pointer;
-  }
-
-  .server-name {
-    color: var(--color-text-primary);
   }
 
   .server-transport {
@@ -354,7 +362,7 @@
     color: var(--color-warning);
     border-radius: var(--radius-sm);
     padding: var(--space-3xs) var(--space-xs);
-    font-size: 0.72rem;
+    font-size: var(--text-caption-size);
   }
 
   /* `Button`'s own scope hides this class from the file's hash (same
@@ -365,109 +373,9 @@
     margin-left: auto;
   }
 
-  /* A tactile toggle switch built on a real, still-fully-functional
-     `<input type="checkbox">` — only `appearance` is suppressed, so
-     `checked`/`onchange`/`data-testid` behavior is byte-for-byte the same
-     as the plain checkbox this replaces visually (mirrors the
-     `NotificationPreferences`/#434 pattern). */
-  .toggle-switch {
-    position: relative;
-    display: inline-flex;
-    flex-shrink: 0;
-    width: 2rem;
-    height: 1.15rem;
-  }
-
-  .toggle-switch input {
-    position: absolute;
-    inset: 0;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-    z-index: 1;
-  }
-
-  .toggle-switch-track {
-    position: absolute;
-    inset: 0;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    border: 1px solid var(--color-border);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch-track::before {
-    content: '';
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: calc(1.15rem - 4px);
-    height: calc(1.15rem - 4px);
-    border-radius: var(--radius-full);
-    background: var(--color-text-secondary);
-    transition:
-      transform var(--duration-fast) var(--ease-beat),
-      background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track::before {
-    background: var(--color-accent);
-    transform: translateX(calc(2rem - 1.15rem));
-  }
-
-  .toggle-switch input:focus-visible + .toggle-switch-track {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
   .manual-form {
     display: flex;
     gap: var(--space-xs);
     flex-wrap: wrap;
-  }
-
-  .manual-form input {
-    flex: 1 1 10rem;
-    font: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .manual-form input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133): `Button` already
-     sizes itself for `(pointer: coarse)`; only the toggle switch (not a
-     `Button`) needs its own rule here. */
-  @media (pointer: coarse) {
-    .toggle-switch {
-      width: 2.75rem;
-      height: 1.5rem;
-    }
-
-    .toggle-switch-track::before {
-      width: calc(1.5rem - 4px);
-      height: calc(1.5rem - 4px);
-    }
-
-    .toggle-switch input:checked + .toggle-switch-track::before {
-      transform: translateX(calc(2.75rem - 1.5rem));
-    }
-
-    .manual-form input {
-      min-height: 2.75rem;
-      font-size: 1rem;
-    }
   }
 </style>

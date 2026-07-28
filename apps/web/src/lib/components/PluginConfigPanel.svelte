@@ -40,8 +40,11 @@
   } from '$lib/plugin-store';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
+  import Checkbox from './ui/Checkbox.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import Field from './ui/Field.svelte';
+  import Input from './ui/Input.svelte';
 
   interface Props {
     projectPath: string;
@@ -109,23 +112,13 @@
         <ul class="plugin-list" data-testid="plugin-list">
           {#each records as record (record.config.name)}
             <li class="plugin-row" data-testid={`plugin-${record.config.name}`}>
-              <label class="toggle-row">
-                <span class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={record.enabled}
-                    onchange={(event) =>
-                      handleToggle(
-                        record.config.name,
-                        (event.currentTarget as HTMLInputElement).checked,
-                      )}
-                    data-testid={`plugin-enabled-${record.config.name}`}
-                  />
-                  <span class="toggle-switch-track" aria-hidden="true"></span>
-                </span>
-                <span class="plugin-name">{record.config.name}</span>
-                <span class="plugin-source">{record.config.source}</span>
-              </label>
+              <Checkbox
+                checked={record.enabled}
+                label={record.config.name}
+                onCheckedChange={(checked) => handleToggle(record.config.name, checked)}
+                dataTestId={`plugin-enabled-${record.config.name}`}
+              />
+              <span class="plugin-source">{record.config.source}</span>
               <Button
                 variant="danger"
                 size="sm"
@@ -146,13 +139,35 @@
     <section class="add">
       <h3>Add a plugin</h3>
       <div class="add-form">
-        <input type="text" placeholder="Name" bind:value={newName} data-testid="plugin-add-name" />
-        <input
-          type="text"
-          placeholder="Source"
-          bind:value={newSource}
-          data-testid="plugin-add-source"
-        />
+        <Field label="Name">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              bind:value={newName}
+              placeholder="e.g. commit-lint"
+              dataTestId="plugin-add-name"
+            />
+          {/snippet}
+        </Field>
+        <Field label="Source">
+          {#snippet children({ id, describedBy, errorId, invalid, required })}
+            <Input
+              {id}
+              {describedBy}
+              {errorId}
+              {invalid}
+              {required}
+              monospace
+              bind:value={newSource}
+              placeholder="e.g. @loombox-plugins/commit-lint"
+              dataTestId="plugin-add-source"
+            />
+          {/snippet}
+        </Field>
         <Button variant="primary" size="sm" onclick={handleAdd} dataTestId="plugin-add-submit">
           Add
         </Button>
@@ -176,8 +191,8 @@
   h3 {
     margin: 0 0 var(--space-sm);
     font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
@@ -206,17 +221,6 @@
     padding-top: 0;
   }
 
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    cursor: pointer;
-  }
-
-  .plugin-name {
-    color: var(--color-text-primary);
-  }
-
   .plugin-source {
     color: var(--color-text-muted);
     font-size: var(--text-small-size);
@@ -231,108 +235,9 @@
     margin-left: auto;
   }
 
-  /* A tactile toggle switch built on a real, still-fully-functional
-     `<input type="checkbox">` — only `appearance` is suppressed, so
-     `checked`/`onchange`/`data-testid` behavior is byte-for-byte the same
-     as the plain checkbox this replaces visually. */
-  .toggle-switch {
-    position: relative;
-    display: inline-flex;
-    flex-shrink: 0;
-    width: 2rem;
-    height: 1.15rem;
-  }
-
-  .toggle-switch input {
-    position: absolute;
-    inset: 0;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-    z-index: 1;
-  }
-
-  .toggle-switch-track {
-    position: absolute;
-    inset: 0;
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    border: 1px solid var(--color-border);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch-track::before {
-    content: '';
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: calc(1.15rem - 4px);
-    height: calc(1.15rem - 4px);
-    border-radius: var(--radius-full);
-    background: var(--color-text-secondary);
-    transition:
-      transform var(--duration-fast) var(--ease-beat),
-      background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-  }
-
-  .toggle-switch input:checked + .toggle-switch-track::before {
-    background: var(--color-accent);
-    transform: translateX(calc(2rem - 1.15rem));
-  }
-
-  .toggle-switch input:focus-visible + .toggle-switch-track {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
   .add-form {
     display: flex;
     gap: var(--space-xs);
     flex-wrap: wrap;
-  }
-
-  .add-form input {
-    flex: 1 1 10rem;
-    font: inherit;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: inherit;
-    transition: border-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .add-form input:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  /* Touch-optimized controls (SPEC.md §7.3, issue #133): `Button` already
-     sizes itself for `(pointer: coarse)`; only the toggle switch (not a
-     `Button`) needs its own rule here. */
-  @media (pointer: coarse) {
-    .toggle-switch {
-      width: 2.75rem;
-      height: 1.5rem;
-    }
-
-    .toggle-switch-track::before {
-      width: calc(1.5rem - 4px);
-      height: calc(1.5rem - 4px);
-    }
-
-    .toggle-switch input:checked + .toggle-switch-track::before {
-      transform: translateX(calc(2.75rem - 1.5rem));
-    }
-
-    .add-form input {
-      min-height: 2.75rem;
-      font-size: 1rem;
-    }
   }
 </style>

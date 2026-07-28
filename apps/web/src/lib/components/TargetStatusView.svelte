@@ -71,6 +71,21 @@
    * collapses to just the Refresh action, now a compact `IconButton`
    * rather than a labeled `Button`. `onClose` is gone from its props;
    * the caller (`+page.svelte`'s Drawer) owns closing the panel.
+   *
+   * Coherence v5 (`docs/superpowers/specs/2026-07-28-coherence-v5-design.md`
+   * §3): each card becomes one dense row. The header line now answers
+   * "which machine" directly — the target's label, then the sample's own
+   * `hostname`/`platform`/`arch` (a target labeled "Local" on two different
+   * boxes used to be indistinguishable) — plus tabular-nums load/mem/disk
+   * readings and a terse relative age. The meters, the absolute sample
+   * time, and the Reconnect/Update/Edit/Remove actions all move behind a
+   * per-row disclosure (`expandedKeys`, collapsed by default, same
+   * `SvelteSet` posture as `busyKeys` below) instead of always rendering.
+   * `cpuPercent` is a load-average proxy that has always been mislabelled
+   * as CPU (`@loombox/protocol`'s own doc comment on `targetHealth`); this
+   * view reads the honestly-named `loadPercent` instead and labels it
+   * "Load" — `cpuPercent` stays on the wire only for a peer that predates
+   * `loadPercent` and is deliberately never read here.
    */
   import type {
     DecommissionTargetResponse,
@@ -131,6 +146,18 @@
   let editWizardOpen = $state(false);
   let editingTarget = $state<EditingTarget | undefined>(undefined);
 
+  /** Rows currently showing their expansion — the meters, the absolute sample time, and (when `client` is passed) the Reconnect/Update/Edit/Remove actions (v5 design spec §3). Collapsed by default: the whole point of the dense row is that none of that has to render until asked for. */
+  const expandedKeys = new SvelteSet<string>();
+
+  function toggleExpanded(target: TargetListEntry): void {
+    const key = rowKey(target);
+    if (expandedKeys.has(key)) {
+      expandedKeys.delete(key);
+    } else {
+      expandedKeys.add(key);
+    }
+  }
+
   /** The overload threshold this view flags — deliberately not configurable at v1 (a fixed, documented figure is more legible than a per-target setting nobody has looked at yet); §7.16's own configurable per-target limits are the future consumer of this same sampling data. */
   const OVERLOAD_PERCENT = 90;
 
@@ -152,9 +179,13 @@
     if (!target.reachable) return 'node-offline';
     if (!target.health) return 'no-data';
     if (!target.health.healthy) return 'unreachable';
-    const { cpuPercent, memPercent, diskPercent } = target.health;
+    // Reads `loadPercent`, never the deprecated `cpuPercent` (v5 design spec §3) — see
+    // this file's own doc comment. `loadPercent` is optional only for a peer that
+    // predates it; a genuinely missing reading just can't push this into "overloaded"
+    // on its own, mem/disk still can.
+    const { loadPercent, memPercent, diskPercent } = target.health;
     if (
-      cpuPercent >= OVERLOAD_PERCENT ||
+      (loadPercent !== undefined && loadPercent >= OVERLOAD_PERCENT) ||
       memPercent >= OVERLOAD_PERCENT ||
       diskPercent >= OVERLOAD_PERCENT
     ) {
@@ -188,10 +219,16 @@
     healthy: 'health-ok',
   };
 
-  function meterLevel(percent: number): 'ok' | 'elevated' | 'high' {
+  function meterLevel(percent: number | undefined): 'ok' | 'elevated' | 'high' {
+    if (percent === undefined) return 'ok';
     if (percent >= OVERLOAD_PERCENT) return 'high';
     if (percent >= 75) return 'elevated';
     return 'ok';
+  }
+
+  /** A percent reading, or an em dash when the sample never carried one. Only `loadPercent` can be missing here (an older peer that predates it) — `memPercent`/`diskPercent` are mandatory on the wire. */
+  function formatPercent(percent: number | undefined): string {
+    return percent === undefined ? '—' : `${Math.round(percent)}%`;
   }
 
   function formatBytes(bytes: number): string {
@@ -202,12 +239,42 @@
     return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
   }
 
-  function formatSampledAt(health: TargetHealth): string {
+  function isNonEmpty(value: string | undefined): value is string {
+    return typeof value === 'string' && value.length > 0;
+  }
+
+  /**
+   * "Which machine" (v5 design spec §3) — joins the sample's real `hostname` with its
+   * `platform`/`arch`, e.g. `devbox-node-1 · linux/x64`. This is the fix for Lorenzo's
+   * actual complaint: a target labeled "Local" reads identically whether it is the
+   * devbox or the Mac. Every piece is independently optional (an older node predates
+   * all three), so a missing one is simply left out rather than rendering a stray
+   * "undefined" or a bare " · " — an older node's row degrades to just the target
+   * label, not a hole.
+   */
+  function targetIdentity(health: TargetHealth | undefined): string | undefined {
+    if (!health) return undefined;
+    const platformArch = [health.platform, health.arch].filter(isNonEmpty).join('/');
+    const parts = [health.hostname, platformArch].filter(isNonEmpty);
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
+
+  /** Terse relative age for the row header (e.g. "28s", "5m") — the dense row's own compact echo of {@link formatAbsoluteSampledAt}, which the expansion carries in full (v5 design spec §3 moves the absolute time behind the disclosure). */
+  function formatRelativeAge(health: TargetHealth): string {
     const ageMs = Date.now() - health.sampledAt;
-    if (ageMs < 5_000) return 'just now';
-    if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s ago`;
-    if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m ago`;
-    return `${Math.round(ageMs / 3_600_000)}h ago`;
+    if (ageMs < 1_000) return 'now';
+    if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s`;
+    if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m`;
+    return `${Math.round(ageMs / 3_600_000)}h`;
+  }
+
+  /** Absolute sample time for the expansion, pinned to UTC/en-US rather than the viewer's own locale/timezone — the same sample reads identically everywhere (including in tests) instead of silently shifting with whoever is looking at it. */
+  function formatAbsoluteSampledAt(health: TargetHealth): string {
+    return new Date(health.sampledAt).toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+      timeZone: 'UTC',
+    });
   }
 
   /**
@@ -323,17 +390,24 @@
       {#each targets as target (rowKey(target))}
         {@const state = healthState(target)}
         {@const icon = HEALTH_ICONS[state]}
+        {@const key = rowKey(target)}
+        {@const expanded = expandedKeys.has(key)}
+        {@const identity = targetIdentity(target.health)}
         <li class="target-row" data-testid="target-status-row">
           <div
-            data-testid={`target-status-row-${rowKey(target)}`}
+            data-testid={`target-status-row-${key}`}
             class="target-row-inner"
             data-health={state}
             class:focused={isFocused(target)}
           >
-            <div class="target-heading">
-              <strong>{target.label}</strong>
-              <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
-              <span class="node-id font-mono">{target.nodeId}</span>
+            <button
+              type="button"
+              class="row-header"
+              onclick={() => toggleExpanded(target)}
+              aria-expanded={expanded}
+              data-testid={`target-row-toggle-${key}`}
+            >
+              <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
               <span class="agent-health-badge" data-testid="agent-health-badge" data-state={state}
                 ><StatusDot
                   tone={HEALTH_TONES[state]}
@@ -341,131 +415,171 @@
                   size="sm"
                 />{#if icon}<Icon name={icon} />{/if}{HEALTH_LABELS[state]}</span
               >
-            </div>
-
-            {#if target.health}
-              {@const health = target.health}
-              <div class="meters">
-                <div class="meter-row">
-                  <span class="meter-label">CPU</span>
-                  <div class="meter" data-testid="cpu-meter">
-                    <div
-                      class="meter-fill thread-draw-fill"
-                      data-level={meterLevel(health.cpuPercent)}
-                      style={`--thread-draw-progress: ${Math.min(100, health.cpuPercent)}%`}
-                    ></div>
-                  </div>
-                  <span class="meter-value">{Math.round(health.cpuPercent)}%</span>
-                </div>
-                <div class="meter-row">
-                  <span class="meter-label">RAM</span>
-                  <div class="meter" data-testid="mem-meter">
-                    <div
-                      class="meter-fill thread-draw-fill"
-                      data-level={meterLevel(health.memPercent)}
-                      style={`--thread-draw-progress: ${Math.min(100, health.memPercent)}%`}
-                    ></div>
-                  </div>
-                  <span class="meter-value"
-                    >{Math.round(health.memPercent)}% ({formatBytes(health.memUsedBytes)} / {formatBytes(
-                      health.memTotalBytes,
-                    )})</span
-                  >
-                </div>
-                <div class="meter-row">
-                  <span class="meter-label">Disk</span>
-                  <div class="meter" data-testid="disk-meter">
-                    <div
-                      class="meter-fill thread-draw-fill"
-                      data-level={meterLevel(health.diskPercent)}
-                      style={`--thread-draw-progress: ${Math.min(100, health.diskPercent)}%`}
-                    ></div>
-                  </div>
-                  <span class="meter-value"
-                    >{Math.round(health.diskPercent)}% ({formatBytes(health.diskUsedBytes)} / {formatBytes(
-                      health.diskTotalBytes,
-                    )})</span
-                  >
-                </div>
-              </div>
-              <span class="sampled-at">Updated {formatSampledAt(health)}</span>
-            {:else}
-              <p class="no-data">No data yet.</p>
-            {/if}
-
-            {#if client}
-              <div class="target-actions" data-testid="target-actions">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onclick={reconnect}
-                  dataTestId={`target-action-reconnect-${rowKey(target)}`}
+              <span class="target-label">{target.label}</span>
+              <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
+              {#if identity}
+                <span class="target-identity font-mono" data-testid={`target-identity-${key}`}
+                  >{identity}</span
                 >
-                  Reconnect
-                </Button>
-                {#if target.kind === 'ssh'}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={busyKeys.has(rowKey(target))}
-                    disabled={busyKeys.has(rowKey(target))}
-                    onclick={() => runUpdate(target)}
-                    dataTestId={`target-action-update-${rowKey(target)}`}
-                  >
-                    Update
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={busyKeys.has(rowKey(target))}
-                    onclick={() => openEdit(target)}
-                    dataTestId={`target-action-edit-${rowKey(target)}`}
-                  >
-                    Edit
-                  </Button>
-                  {#if confirmingRemove.has(rowKey(target))}
-                    <span
-                      class="remove-confirm"
-                      data-testid={`target-action-remove-confirmbar-${rowKey(target)}`}
+              {/if}
+              <span class="target-metrics">
+                {#if target.health}
+                  {@const health = target.health}
+                  <span class="metric" data-testid="metric-load">
+                    <span class="metric-label">Load</span><span class="metric-value"
+                      >{formatPercent(health.loadPercent)}</span
                     >
-                      Remove this target?
+                  </span>
+                  <span class="metric" data-testid="metric-mem">
+                    <span class="metric-label">RAM</span><span class="metric-value"
+                      >{formatPercent(health.memPercent)}</span
+                    >
+                  </span>
+                  <span class="metric" data-testid="metric-disk">
+                    <span class="metric-label">Disk</span><span class="metric-value"
+                      >{formatPercent(health.diskPercent)}</span
+                    >
+                  </span>
+                  <span class="target-age">{formatRelativeAge(health)}</span>
+                {:else}
+                  <span class="no-data">No data yet</span>
+                {/if}
+              </span>
+            </button>
+
+            {#if expanded}
+              <div class="target-expansion" data-testid="target-expansion">
+                <p class="node-id font-mono">Node {target.nodeId}</p>
+                {#if target.health}
+                  {@const health = target.health}
+                  <div class="meters">
+                    <div class="meter-row">
+                      <span class="meter-label">Load</span>
+                      <div class="meter" data-testid="load-meter">
+                        <div
+                          class="meter-fill thread-draw-fill"
+                          data-level={meterLevel(health.loadPercent)}
+                          style={`--thread-draw-progress: ${Math.min(100, health.loadPercent ?? 0)}%`}
+                        ></div>
+                      </div>
+                      <span class="meter-value">{formatPercent(health.loadPercent)}</span>
+                    </div>
+                    <div class="meter-row">
+                      <span class="meter-label">RAM</span>
+                      <div class="meter" data-testid="mem-meter">
+                        <div
+                          class="meter-fill thread-draw-fill"
+                          data-level={meterLevel(health.memPercent)}
+                          style={`--thread-draw-progress: ${Math.min(100, health.memPercent)}%`}
+                        ></div>
+                      </div>
+                      <span class="meter-value"
+                        >{formatPercent(health.memPercent)} ({formatBytes(health.memUsedBytes)} / {formatBytes(
+                          health.memTotalBytes,
+                        )})</span
+                      >
+                    </div>
+                    <div class="meter-row">
+                      <span class="meter-label">Disk</span>
+                      <div class="meter" data-testid="disk-meter">
+                        <div
+                          class="meter-fill thread-draw-fill"
+                          data-level={meterLevel(health.diskPercent)}
+                          style={`--thread-draw-progress: ${Math.min(100, health.diskPercent)}%`}
+                        ></div>
+                      </div>
+                      <span class="meter-value"
+                        >{formatPercent(health.diskPercent)} ({formatBytes(health.diskUsedBytes)} / {formatBytes(
+                          health.diskTotalBytes,
+                        )})</span
+                      >
+                    </div>
+                  </div>
+                  <p class="sampled-at" data-testid="target-sampled-at">
+                    Sampled {formatAbsoluteSampledAt(health)}
+                  </p>
+                  <p class="overload-note">
+                    Flags overloaded at {OVERLOAD_PERCENT}% load, memory, or disk.
+                  </p>
+                {:else}
+                  <p class="no-data">No data yet.</p>
+                {/if}
+
+                {#if client}
+                  <div class="target-actions" data-testid="target-actions">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onclick={reconnect}
+                      dataTestId={`target-action-reconnect-${key}`}
+                    >
+                      Reconnect
+                    </Button>
+                    {#if target.kind === 'ssh'}
                       <Button
                         size="sm"
                         variant="secondary"
-                        disabled={busyKeys.has(rowKey(target))}
-                        onclick={() => cancelRemove(target)}
-                        dataTestId={`target-action-remove-cancel-${rowKey(target)}`}
+                        loading={busyKeys.has(key)}
+                        disabled={busyKeys.has(key)}
+                        onclick={() => runUpdate(target)}
+                        dataTestId={`target-action-update-${key}`}
                       >
-                        Cancel
+                        Update
                       </Button>
                       <Button
                         size="sm"
-                        variant="danger"
-                        loading={busyKeys.has(rowKey(target))}
-                        onclick={() => confirmRemove(target)}
-                        dataTestId={`target-action-remove-confirm-${rowKey(target)}`}
+                        variant="secondary"
+                        disabled={busyKeys.has(key)}
+                        onclick={() => openEdit(target)}
+                        dataTestId={`target-action-edit-${key}`}
                       >
-                        Remove
+                        Edit
                       </Button>
-                    </span>
-                  {:else}
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      disabled={busyKeys.has(rowKey(target))}
-                      onclick={() => startRemove(target)}
-                      dataTestId={`target-action-remove-${rowKey(target)}`}
-                    >
-                      Remove
-                    </Button>
+                      {#if confirmingRemove.has(key)}
+                        <span
+                          class="remove-confirm"
+                          data-testid={`target-action-remove-confirmbar-${key}`}
+                        >
+                          Remove this target?
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busyKeys.has(key)}
+                            onclick={() => cancelRemove(target)}
+                            dataTestId={`target-action-remove-cancel-${key}`}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            loading={busyKeys.has(key)}
+                            onclick={() => confirmRemove(target)}
+                            dataTestId={`target-action-remove-confirm-${key}`}
+                          >
+                            Remove
+                          </Button>
+                        </span>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={busyKeys.has(key)}
+                          onclick={() => startRemove(target)}
+                          dataTestId={`target-action-remove-${key}`}
+                        >
+                          Remove
+                        </Button>
+                      {/if}
+                    {/if}
+                  </div>
+                  {#if actionMessages[key]}
+                    <p class="action-message" data-testid={`target-action-message-${key}`}>
+                      {actionMessages[key]}
+                    </p>
                   {/if}
                 {/if}
               </div>
-              {#if actionMessages[rowKey(target)]}
-                <p class="action-message" data-testid={`target-action-message-${rowKey(target)}`}>
-                  {actionMessages[rowKey(target)]}
-                </p>
-              {/if}
             {/if}
           </div>
         </li>
@@ -529,7 +643,6 @@
   .target-row-inner {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
@@ -563,11 +676,39 @@
     box-shadow: 0 0 0 1px var(--color-accent);
   }
 
-  .target-heading {
+  /* The dense row itself (v5 design spec §3): a plain full-width button so
+     the whole line — not just a small chevron — toggles the expansion,
+     matching `BashWidget`/`GenericToolRow`'s own disclosure convention. */
+  .row-header {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: var(--space-xs);
+    gap: var(--space-sm);
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row-header:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    border-radius: var(--radius-sm);
+  }
+
+  :global(.disclosure-icon) {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .row-header[aria-expanded='false'] :global(.disclosure-icon) {
+    transform: rotate(-90deg);
   }
 
   .kind-badge {
@@ -580,9 +721,21 @@
     background: var(--color-fill);
   }
 
+  .target-label {
+    font-weight: 600;
+  }
+
+  /* "Which machine" (v5 design spec §3) — the sample's real hostname/
+     platform/arch, right next to the target's own label. */
+  .target-identity {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
   .node-id {
     font-size: var(--text-small-size);
     opacity: 0.7;
+    margin: 0;
   }
 
   /* Health/status badge (redesign brief §6, issue #436): a `StatusDot`
@@ -593,7 +746,6 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2xs);
-    margin-left: auto;
     font-size: var(--text-small-size);
     font-weight: 600;
     padding: var(--space-2xs) var(--space-sm);
@@ -616,6 +768,51 @@
   .agent-health-badge[data-state='node-offline'] {
     color: var(--color-danger);
     background: var(--color-danger-subtle);
+  }
+
+  /* Load/mem/disk plus the relative age, pushed to the row's trailing edge
+     (v5 design spec §3's "column of targets stays scannable") — tabular
+     figures so the digits themselves don't jitter the column width as a
+     row's numbers change on refresh. */
+  .target-metrics {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-small-size);
+  }
+
+  .metric {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+  }
+
+  .metric-label {
+    color: var(--color-text-muted);
+  }
+
+  .metric-value {
+    color: var(--color-text-secondary);
+  }
+
+  .target-age {
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The disclosure body: meters, absolute sample time, overload threshold,
+     and (when a `client` is passed) the connection-management actions —
+     all moved here from the always-visible row (v5 design spec §3). */
+  .target-expansion {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin-top: var(--space-sm);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border-subtle);
   }
 
   .meters {
@@ -668,9 +865,17 @@
   }
 
   .sampled-at {
-    align-self: flex-end;
+    margin: 0;
     font-size: var(--text-small-size);
     opacity: 0.6;
+  }
+
+  /* The overload threshold, named rather than left as folklore (v5 design
+     spec §3's own phrasing). */
+  .overload-note {
+    margin: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
   }
 
   /* Connection management actions (redesign v2 §3.3; issue #476). */
@@ -679,7 +884,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-xs);
-    margin-top: var(--space-2xs);
   }
 
   .remove-confirm {

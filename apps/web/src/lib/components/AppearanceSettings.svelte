@@ -185,7 +185,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-caption-size);
     line-height: var(--text-caption-line);
-    letter-spacing: 0.08em;
+    letter-spacing: var(--text-caption-tracking);
     text-transform: uppercase;
     color: var(--color-text-muted);
     font-weight: 600;
