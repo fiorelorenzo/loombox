@@ -173,7 +173,22 @@
       onCreated(sessionId);
       onClose();
     } catch (error) {
-      createError = error instanceof Error ? error.message : String(error);
+      // Same wire-identifier leak issue #505 fixed in `DirectoryPicker` and
+      // `ArchiveSessionDialog`, but the honest wording is the opposite one.
+      // A timeout here does NOT mean nothing happened: the node creates the
+      // session's worktree first and only announces it once the agent is
+      // ready, and bringing an agent up can outlast this wait (a cold
+      // `npm exec` of the provider package, a loaded machine). So the
+      // session is quite likely on its way and will appear on the board by
+      // itself - telling the user it failed would be the wrong lie in the
+      // other direction. Every other error is written for a human by the
+      // node already and is shown verbatim; the real message still reaches a
+      // developer via `console.warn`.
+      console.warn('NewSessionDialog: createSession failed', error);
+      const raw = error instanceof Error ? error.message : String(error);
+      createError = raw.includes('timed out waiting')
+        ? 'The agent is taking a while to start. The session may still appear on its own in a moment; if it does not, the node may be offline.'
+        : raw;
     } finally {
       creating = false;
     }
