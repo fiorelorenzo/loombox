@@ -138,12 +138,20 @@ function waitForConnected(node: NodeDaemon): Promise<void> {
 
 let relay: StartedRelay;
 let projectPath: string;
+// Every createNode() below passes this as `stateDir` so its default-
+// constructed session/mcp stores never touch the real ~/.loombox/node
+// (same discipline node-daemon.test.ts applies). Each test in this file
+// only ever constructs one `node`, so a single per-test dir is enough —
+// there is no second, independently-lived node here that would need its
+// own directory to avoid silently sharing persisted session state.
+let nodeStateDir: string;
 let node: NodeDaemon | undefined;
 let phones: TestPhone[] = [];
 
 beforeEach(async () => {
   relay = await startRelay();
   projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-amk-epoch-e2e-test-'));
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-amk-epoch-e2e-state-test-'));
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
@@ -165,6 +173,7 @@ afterEach(async () => {
   node = undefined;
   phones = [];
   await rm(projectPath, { recursive: true, force: true });
+  await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
 });
 
@@ -187,6 +196,7 @@ describe('AMK epoch rotation end to end (SPEC §8, issue #116): a surviving node
 
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-survivor',
       deviceId: 'device-survivor',
       devicePublicKey: survivorPublicKeyBase64,
@@ -346,6 +356,7 @@ describe('NodeDaemon AMK epoch adoption edge cases (#116)', () => {
     const accountId = 'acct-adopt-noop';
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-noop',
       deviceId: 'device-noop',
       devicePublicKey: randomBase64(),
@@ -375,6 +386,7 @@ describe('NodeDaemon AMK epoch adoption edge cases (#116)', () => {
     const accountId = 'acct-revoke-method';
     node = createNode({
       relayUrl: relay.url,
+      stateDir: nodeStateDir,
       nodeId: 'node-actor',
       deviceId: 'device-actor-3',
       devicePublicKey: randomBase64(),

@@ -148,12 +148,25 @@ function waitForConnected(node: NodeDaemon): Promise<void> {
 let relayA: StartedRelay | undefined;
 let relayB: StartedRelay | undefined;
 let projectPath: string;
+// nodeA and nodeB model the *same* physical node's identity (same nodeId/
+// deviceId/devicePublicKey/AMK) reconnecting after the relay rebuild, but
+// they are two independently-live `NodeDaemon` JS instances within this one
+// test (nodeA is never closed before nodeB is constructed — both are only
+// torn down in `afterEach`). Two live `SessionStore`/`McpConfigStore`/etc.
+// pointed at the same on-disk directory at once would be exactly the kind
+// of silent shared-state behavior the persisting SessionManager (#515) now
+// makes possible, so each gets its own throwaway `stateDir` rather than
+// sharing one.
+let nodeAStateDir: string;
+let nodeBStateDir: string;
 let nodeA: NodeDaemon | undefined;
 let nodeB: NodeDaemon | undefined;
 let phones: TestPhone[] = [];
 
 beforeEach(async () => {
   projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-dr-reenrollment-test-'));
+  nodeAStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-dr-reenrollment-nodeA-state-'));
+  nodeBStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-dr-reenrollment-nodeB-state-'));
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
@@ -177,6 +190,8 @@ afterEach(async () => {
   nodeB = undefined;
   phones = [];
   await rm(projectPath, { recursive: true, force: true });
+  await rm(nodeAStateDir, { recursive: true, force: true });
+  await rm(nodeBStateDir, { recursive: true, force: true });
   await relayA?.close();
   await relayB?.close();
   relayA = undefined;
@@ -212,6 +227,7 @@ describe('relay-rebuild re-enrollment disaster recovery (SPEC §8, §14; issue #
         accountId,
         amk: originalAmk,
         amkEpoch: 0,
+        stateDir: nodeAStateDir,
         supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
       });
       await waitForConnected(nodeA);
@@ -263,6 +279,7 @@ describe('relay-rebuild re-enrollment disaster recovery (SPEC §8, §14; issue #
         accountId,
         amk: originalAmk,
         amkEpoch: 0,
+        stateDir: nodeBStateDir,
         supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
       });
       await waitForConnected(nodeB);

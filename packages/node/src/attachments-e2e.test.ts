@@ -195,6 +195,7 @@ class TestPhone {
 
 let relay: StartedRelay;
 let projectPath: string;
+let nodeStateDir: string;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
@@ -204,6 +205,7 @@ const SSH_TARGET_CONFIG = { id: 'devbox', label: 'Dev box', host: 'devbox.invali
 beforeEach(async () => {
   relay = await startRelay();
   projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-attachments-e2e-test-'));
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-attachments-e2e-state-'));
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
@@ -225,6 +227,7 @@ afterEach(async () => {
   node = undefined;
   phone = undefined;
   await rm(projectPath, { recursive: true, force: true });
+  await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
 });
 
@@ -235,6 +238,7 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
     const blobSource = new FakeBlobSource();
 
     node = createNode({
+      stateDir: nodeStateDir,
       relayUrl: relay.url,
       nodeId: 'node-attach-local',
       deviceId: 'device-node-attach-local',
@@ -329,6 +333,7 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
     const blobSource = new FakeBlobSource();
 
     node = createNode({
+      stateDir: nodeStateDir,
       relayUrl: relay.url,
       nodeId: 'node-attach-ssh',
       deviceId: 'device-node-attach-ssh',
@@ -419,6 +424,7 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
     };
 
     node = createNode({
+      stateDir: nodeStateDir,
       relayUrl: relay.url,
       nodeId: 'node-attach-none',
       deviceId: 'device-node-attach-none',
@@ -466,6 +472,7 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
     const blobSource = new FakeBlobSource(); // nothing seeded
 
     node = createNode({
+      stateDir: nodeStateDir,
       relayUrl: relay.url,
       nodeId: 'node-attach-missing',
       deviceId: 'device-node-attach-missing',
@@ -536,6 +543,7 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
     const blobSource = new FakeBlobSource();
 
     node = createNode({
+      stateDir: nodeStateDir,
       relayUrl: relay.url,
       nodeId: 'node-file-event-decoupled',
       deviceId: 'device-node-file-event-decoupled',
