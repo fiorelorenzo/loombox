@@ -414,6 +414,75 @@ describe('relay v1', () => {
       );
     });
 
+    it("carries a sample's hostname/platform/arch and loadPercent through to the client, rather than stripping them (issue #516 follow-up)", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Local' })],
+      } satisfies TargetAnnounce);
+      // The store drops a sample for a target it has not seen announced yet
+      // (`updateHealth`'s `nodeByTarget` guard), and the relay handles each
+      // frame in its own async task, so the announce has to have landed first.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      send(node, {
+        type: 'target_status',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        samples: [
+          {
+            targetId: 'local',
+            cpuPercent: 42,
+            loadPercent: 42,
+            memPercent: 31,
+            memUsedBytes: 5_000_000_000,
+            memTotalBytes: 16_000_000_000,
+            diskPercent: 35,
+            diskUsedBytes: 175_000_000_000,
+            diskTotalBytes: 500_000_000_000,
+            healthy: true,
+            sampledAt: 1_700_000_000_000,
+            hostname: 'devbox',
+            platform: 'linux',
+            arch: 'x64',
+          },
+        ],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_health',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      // Zod's `.object()` strips keys its schema does not know, so a relay
+      // build older than the node's silently drops these and the UI shows an
+      // em dash for load and no machine identity at all - which is exactly
+      // what a stale prod container did, with nothing anywhere reporting it.
+      // This is the assertion that would have caught it.
+      expect(response.targets[0]?.health).toMatchObject({
+        loadPercent: 42,
+        hostname: 'devbox',
+        platform: 'linux',
+        arch: 'x64',
+      });
+    });
+
     it("never returns another account's targets", async () => {
       const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
       closers.push(close);
