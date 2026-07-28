@@ -7,8 +7,29 @@ import type { SshTargetConfig } from '../target';
 import { RemoteProcessRunner } from './remote-process-runner';
 import type { RemoteTransport } from './remote-transport';
 
-/** Where a node persists verified `ssh:` targets when no `stateDir` is injected. Mirrors `@loombox/supervisor`'s `defaultStateDir()` convention, under this package's own subdirectory. */
+/**
+ * Where a node persists verified `ssh:` targets, its identity, its MCP config
+ * and (since #515) its session records, when no `stateDir` is injected.
+ * Mirrors `@loombox/supervisor`'s `defaultStateDir()` convention, under this
+ * package's own subdirectory.
+ *
+ * **Refuses to answer under Vitest.** These stores used to be read-mostly, so
+ * a test that forgot to inject a `stateDir` was harmless. Session persistence
+ * changed that: `NodeDaemon` now defaults to a persisting `SessionManager`, so
+ * the same omission writes into the developer's own `~/.loombox/node`. It
+ * already happened - three e2e test files left 35 phantom session records in
+ * mine, which a real node would have reloaded on boot, and which made the
+ * suite share one mutable file across test files. Throwing here turns that
+ * class of mistake from silent corruption into a failure at the first write,
+ * for every future store as well as today's.
+ */
 export function defaultNodeStateDir(): string {
+  if (process.env.VITEST) {
+    throw new Error(
+      'defaultNodeStateDir(): refusing to use the real node state directory from a test. ' +
+        'Pass an explicit `stateDir` (see any `mkdtemp` in packages/node/src/*.test.ts).',
+    );
+  }
   const xdgStateHome = process.env.XDG_STATE_HOME;
   if (xdgStateHome && xdgStateHome.trim() !== '') {
     return path.join(xdgStateHome, 'loombox', 'node');

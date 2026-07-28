@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import {
   envelopeToWire,
@@ -11,6 +14,14 @@ import {
 import { wireAmkEpochAdoption, type AmkEpochIdentity } from './amk-epoch';
 import { NodeDaemon } from './node-daemon';
 
+let nodeStateDir: string;
+beforeEach(async () => {
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-amk-epoch-state-'));
+});
+afterEach(async () => {
+  await rm(nodeStateDir, { recursive: true, force: true });
+});
+
 /** A bare, never-connected `NodeDaemon` — `new NodeDaemon(...)` doesn't dial the relay itself (only `createNode`'s extra `.connect()` call does), so this is safe to construct in a pure unit test. */
 function bareDaemon(): NodeDaemon {
   return new NodeDaemon({
@@ -21,6 +32,7 @@ function bareDaemon(): NodeDaemon {
     authToken: 'acct-unit',
     accountId: 'acct-unit',
     amk: new Uint8Array(32),
+    stateDir: nodeStateDir,
   });
 }
 

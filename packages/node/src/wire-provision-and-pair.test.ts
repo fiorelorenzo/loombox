@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateEcdhKeyPair, exportPublicKeyRaw } from '@loombox/crypto';
 import { PROTOCOL_V1, type ProvisionTargetRequest } from '@loombox/protocol';
 
@@ -6,10 +10,25 @@ import { NodeDaemon } from './node-daemon';
 import type { ProvisionAndPairOptions, ProvisionAndPairResult } from './ssh/provision-and-pair';
 import { resolveTargetConfig, wireProvisionAndPair } from './wire-provision-and-pair';
 
+// Every test below constructs a `NodeDaemon` via `bareDaemon()`, which now
+// requires a `stateDir` (defaultNodeStateDir() throws under VITEST — issue
+// #515: NodeDaemon defaults to a persisting SessionManager/McpConfigStore/
+// NodeMcpSecretManager/SshTargetStore, so an unscoped node would otherwise
+// write into the developer's real `~/.loombox/node`). Matches the
+// `nodeStateDir` pattern in `node-daemon.test.ts`.
+let nodeStateDir: string;
+beforeEach(async () => {
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-wire-provision-and-pair-state-'));
+});
+afterEach(async () => {
+  await rm(nodeStateDir, { recursive: true, force: true });
+});
+
 /** A bare, never-connected `NodeDaemon` (mirrors `amk-epoch.test.ts`'s own helper) — safe to construct and `.emit()` on directly in a pure unit test. */
 function bareDaemon(amk = new Uint8Array(32)): NodeDaemon {
   return new NodeDaemon({
     relayUrl: 'ws://127.0.0.1:0',
+    stateDir: nodeStateDir,
     nodeId: 'node-acting',
     deviceId: 'device-acting',
     devicePublicKey: 'YWJjZA==',

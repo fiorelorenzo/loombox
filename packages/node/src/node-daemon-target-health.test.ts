@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { PROTOCOL_V1, type TargetList, type WireMessageV1 } from '@loombox/protocol';
 import { generateAmk } from '@loombox/crypto';
@@ -6,7 +9,6 @@ import { startRelay, type StartedRelay } from '@loombox/relay';
 
 import { createNode, type NodeDaemon } from './node-daemon';
 import { FakeTransport } from './ssh/fake-transport';
-
 /** A bare client speaking just enough of the v1 handshake to send `target_list_request` and read back `target_list` (issues #253/#269's status view is the eventual consumer of this same flow). */
 class TargetListClient {
   private readonly socket: WebSocket;
@@ -83,9 +85,11 @@ class TargetListClient {
 let relay: StartedRelay;
 let node: NodeDaemon | undefined;
 let client: TargetListClient | undefined;
+let nodeStateDir: string;
 
 beforeEach(async () => {
   relay = await startRelay();
+  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-target-health-state-'));
 });
 
 afterEach(async () => {
@@ -93,6 +97,7 @@ afterEach(async () => {
   client?.close();
   node = undefined;
   client = undefined;
+  await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
 });
 
@@ -107,6 +112,7 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       authToken: accountId,
       accountId,
       amk: generateAmk(),
+      stateDir: nodeStateDir,
     });
 
     client = new TargetListClient(relay.url, { accountId });
@@ -128,6 +134,7 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       authToken: accountId,
       accountId,
       amk: generateAmk(),
+      stateDir: nodeStateDir,
       resourceSampling: { enabled: true, intervalMs: 200, timeoutMs: 2000 },
     });
 
@@ -170,6 +177,7 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       authToken: accountId,
       accountId,
       amk: generateAmk(),
+      stateDir: nodeStateDir,
       targets: [
         { id: 'local', kind: 'local', label: 'This machine' },
         { id: 'ssh:devbox', kind: 'ssh', label: 'devbox' },
@@ -215,6 +223,7 @@ describe('NodeDaemon resource-sampling wire integration (issues #253/#269)', () 
       authToken: accountId,
       accountId,
       amk: generateAmk(),
+      stateDir: nodeStateDir,
       targets: [{ id: 'ssh:flaky', kind: 'ssh', label: 'flaky' }],
       sshTargets: [{ id: 'ssh:flaky', label: 'flaky', host: '10.0.0.9' }],
       sshTransportFactory: () => failingTransport,

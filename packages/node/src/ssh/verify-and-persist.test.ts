@@ -8,6 +8,7 @@ import { FakeTransport } from './fake-transport';
 import { LocalProcessTransport } from './local-process-transport';
 import {
   classifyConnectError,
+  defaultNodeStateDir,
   SshTargetStore,
   verifyAndPersistSshTarget,
 } from './verify-and-persist';
@@ -29,6 +30,34 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(stateDir, { recursive: true, force: true });
+});
+
+describe('defaultNodeStateDir', () => {
+  it('refuses to hand a test the real node state directory', () => {
+    // Every node store defaults to this path, and since issue #515 one of them
+    // WRITES session records. A test that forgets to inject a `stateDir`
+    // therefore corrupts the developer's own `~/.loombox/node` - it already
+    // left 35 phantom sessions in mine, which a real node reloads on boot.
+    // Failing loudly at the first call is the only version of this that cannot
+    // be forgotten again by the next store that gets added.
+    expect(process.env.VITEST).toBeTruthy();
+    expect(() => defaultNodeStateDir()).toThrow(/refusing to use the real node state directory/);
+  });
+
+  it('resolves normally outside a test run, honouring XDG_STATE_HOME', () => {
+    const vitest = process.env.VITEST;
+    const xdg = process.env.XDG_STATE_HOME;
+    delete process.env.VITEST;
+    process.env.XDG_STATE_HOME = '/tmp/xdg-probe';
+    try {
+      expect(defaultNodeStateDir()).toBe(path.join('/tmp/xdg-probe', 'loombox', 'node'));
+    } finally {
+      if (vitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = vitest;
+      if (xdg === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = xdg;
+    }
+  });
 });
 
 describe('classifyConnectError', () => {
