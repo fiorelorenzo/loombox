@@ -1,6 +1,8 @@
 import { argv } from 'node:process';
 import { pathToFileURL } from 'node:url';
 
+import { DEFAULT_PROVIDER_REQUIREMENTS } from '@loombox/supervisor';
+
 import { bootstrapAmkFromRecoveryCode, type AmkBootstrapper } from './amk-bootstrap';
 import { wireAmkEpochAdoption } from './amk-epoch';
 import { adoptWrappedAmkFromFile, type AdoptWrappedAmkFileOptions } from './amk-handoff-file';
@@ -227,6 +229,14 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
+    // What each target can actually run (SPEC §5.5). Sourced from
+    // `@loombox/supervisor`'s own default provider set, NOT a list maintained
+    // here: the supervisor is what later spawns the agent, so deriving the
+    // advertised set from the spawnable set is what stops a picker offering an
+    // agent nothing can start. Without this the probe is a no-op and every
+    // target announces `providers: []`, which a client correctly reads as "no
+    // agent CLI installed here" and refuses to create a session on.
+    providerCandidates: [...DEFAULT_PROVIDER_REQUIREMENTS],
     // Issues #253/#269: on for every real node started this way (tests
     // build `NodeDaemon`/`createNode` directly and get the option's own
     // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
