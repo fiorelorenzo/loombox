@@ -131,6 +131,20 @@ forward is idempotent — a live one is reused, a stale one replaced — and it 
 the **same** local port number, because CDP hands back a `webSocketDebuggerUrl` of
 `ws://127.0.0.1:<remote-port>` that clients then use verbatim.
 
+You can also **drive** it, not just read it: clicks, real keystrokes, keyboard-only
+combobox and radio interaction all reach the app's own handlers. Verified end to end
+against the deployed PWA — `Cmd+K` opened the palette and the app moved focus into its
+input, typing narrowed the results to "No matches.", and a whole New session form was
+filled (prompt, Agent switched with `ArrowDown`/`Enter`, workspace radio, title) until
+the app enabled its own submit button. That last part is the check worth copying: assert
+on state the app derives, so a passing result means the app reacted rather than that you
+mutated its DOM.
+
+Two practical notes. `tab.fill` times out on this app's textarea even though the element
+is visible, hit-testable and stable — use `tab.click(selector)` then
+`page.keyboard.type(...)`, which works. And stop short of anything with real side
+effects: creating a session really does spawn an agent on the node.
+
 Things that cost real time to find out, so do not re-derive them:
 
 - **A fresh origin is a new device.** The dev server is a different origin from
