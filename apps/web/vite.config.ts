@@ -81,4 +81,15 @@ export default defineConfig({
       },
     }),
   ],
+  ssr: {
+    // `@xterm/xterm` is CommonJS, and `InteractiveTerminal.svelte` imports
+    // `{ Terminal }` from it at module scope (it only ever *constructs* one in
+    // `onMount`, so nothing runs server-side). Left external, `vite dev`'s SSR
+    // module runner resolves that named import against the raw CJS file and
+    // throws "Named export 'Terminal' not found", 500ing every page - the
+    // production build is unaffected, which is why this went unnoticed: CI
+    // drives Playwright against `vite preview` on the built output, never the
+    // dev server. Bundling it through vite's CJS interop makes both agree.
+    noExternal: ['@xterm/xterm'],
+  },
 });
