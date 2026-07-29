@@ -259,12 +259,26 @@ passed its health gate but turned out to have a real bug. On prodbox:
 ```bash
 ssh prodbox
 cd /opt/apps/loombox
-prev=$(jq -r .previousSha DEPLOYED.json)
-ln -sfn "$prev" releases/current
+prev=$(jq -r '.previousSha // empty' DEPLOYED.json)
+# Empty means there is nothing to roll back TO: this is the first deploy the
+# pipeline ever made on this box. Re-deploy a known-good tag instead.
+[ -n "$prev" ] && [ -d "releases/$prev" ] || echo 'no previous release on this box'
+ln -sfn "$prev" releases/current.tmp && mv -T releases/current.tmp releases/current
 cd deploy/web
 docker compose -f docker-compose.yml -f docker-compose.live.yml \
   up -d --force-recreate --no-build --no-deps web
 ```
+
+(`ln -sfn` + `mv -T` rather than a bare `ln -sfn` onto the live symlink: the
+swap is then atomic, so a reader never catches `current` mid-replacement. The
+`-n` matters either way, since without it `ln` would helpfully create the new
+link _inside_ the directory the old one points at.)
+
+`--force-recreate` is load-bearing and was measured: `docker compose restart`
+does re-resolve a flipped symlink, but it never re-reads compose config, so
+only a recreate is correct in every case. Verified live on 2026-07-29 by
+flipping between two real releases and watching the served
+`_app/version.json` change.
 
 That covers the common case (web-only). If the release you're undoing also
 rebuilt the relay, its pre-deploy image was tagged before the rebuild as

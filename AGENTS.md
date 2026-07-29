@@ -197,19 +197,48 @@ Things that cost real time to find out, so do not re-derive them:
   "cannot read the page" as "navigate", never as a fatal error — that is why
   `mac-desktop-cdp.mjs` bounds every request and returns `null` instead of throwing.
 
-## Deploying the web PWA fast (no Docker build)
+## Shipping to prod: a `v*` tag, not a script
 
 ```bash
-scripts/deploy-web.sh    # build locally -> rsync build/ -> restart web on prodbox
+git tag -a v0.2.0 -m "..." && git push origin v0.2.0   # this is the deploy
 ```
 
-The prod web container bind-mounts the host's `build/` dir (a prodbox-local
-`deploy/web/docker-compose.live.yml` overlay), so a web deploy is just an adapter-node
-build on the devbox plus rsync plus a container restart, in well under a minute. Avoid
-`docker compose build web` on the shared prodbox: it is slow and has repeatedly served
-a **stale, cached** build (a rebuild silently reused an old source COPY layer, so the
-deployed bundle lacked the just-pushed fix). Verify a web deploy by fetching the served
-chunk hash, not by trusting that the build ran.
+`.github/workflows/deploy-prod.yml` takes it from there, on a self-hosted runner that
+lives on prodbox (the box takes SSH only over Tailscale, so a runner sitting on it and
+talking outbound is what makes this work at all). It refuses a tag whose `ci.yml` run
+is not a completed success, builds the web bundle on a GitHub-hosted runner, and hands
+it to `scripts/deploy-prod.sh`, which unpacks it into `releases/<sha>`, flips
+`releases/current`, rebuilds only the images whose inputs actually changed, health-gates
+the result, and rolls back if the gate fails. **`/opt/apps/loombox/DEPLOYED.json` is the
+answer to "what is live"** — tag, commit, when, and the input hashes the next deploy
+compares against. Read it instead of guessing; the deploy dir is not a git checkout.
+
+`scripts/deploy-web.sh` is the fast ITERATION path, not a release: it builds locally and
+puts prod on its own `releases/iter-<sha>-<stamp>` directory, leaving the tagged release
+intact beside it and printing the one command that goes back. After running it, prod is
+off-tag and `DEPLOYED.json` describes the tag rather than the running bytes.
+
+Avoid `docker compose build web` on the shared prodbox: it is slow and has repeatedly
+served a **stale, cached** build (a rebuild silently reused an old source COPY layer, so
+the deployed bundle lacked the just-pushed fix). Never accept a green `curl` as proof a
+deploy landed either. Both scripts compare SvelteKit's own build identity
+(`client/_app/version.json`) between the artifact and what the public site serves, which
+is the only check that actually distinguishes "deployed" from "still serving the old one".
+
+## Running the whole thing locally (relay + node + web)
+
+```bash
+scripts/dev.sh            # relay + node daemon + web, HMR, both inspectors
+scripts/dev.sh --stop     # ...including the dev Postgres
+```
+
+Production parity on purpose: real Postgres, real Better Auth, real device-authorization
+flow for the node. Ports are fixed because the GitHub OAuth callback is registered
+against them (postgres 5435, relay 8790, web 5173, inspectors 9230/9231), and the script
+preflights each one and names whatever is squatting it. Everything is on `localhost`
+because `http://localhost` is a secure context per spec, so WebCrypto works with no
+certificate and no Chromium flags; from the Mac the script opens the reverse forwards so
+the same URLs resolve there. See CONTRIBUTING.md for the one-time OAuth App setup.
 
 ## Build order
 
