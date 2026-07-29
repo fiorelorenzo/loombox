@@ -136,13 +136,35 @@
   let creating = $state(false);
   let createError = $state<string | undefined>(undefined);
 
-  // Resets the per-session fields every time the dialog actually opens.
-  // This effect's ONLY reactive read is `open`, deliberately never
-  // `project`/`client`/`providers`: re-opening for the same or a different
-  // project must never look mid-session-typing like a stale re-render.
+  /**
+   * Tracks the previous `open` so the reset below fires on the closed -> open
+   * TRANSITION only. A plain `let`, deliberately not `$state`: it is bookkeeping
+   * for the effect, and making it reactive would feed the effect its own writes.
+   */
+  let wasOpen = false;
+
+  // Resets the per-session fields when the dialog actually opens - the
+  // transition, not merely "this effect ran while `open` was true". That
+  // distinction is the whole fix, and it was measured rather than reasoned:
+  //
+  // `resetForm()` reads `providers` (for the default `selectedProvider`), and a
+  // Svelte 5 `$effect` tracks reads made inside the functions it calls, so this
+  // effect used to depend on `providers` too. That prop's identity churns
+  // constantly in production - `+page.svelte` derives it from issue #269's
+  // polled target list - so the reset re-ran on ordinary re-renders. Driving the
+  // built app against the deployed relay, a prompt typed into the open dialog
+  // was wiped within one second, repeatedly, which made the field unusable.
+  //
+  // Gating on the transition fixes that at the root, and covers the sibling case
+  // an `untrack` around `resetForm` would miss: `open` being re-assigned the
+  // same `true` (any parent handing down a fresh props object, and
+  // `@testing-library/svelte`'s `rerender`) re-runs the effect just the same.
+  // One guard, both causes; an operator's half-typed sentence now survives
+  // everything except genuinely reopening the dialog.
   $effect(() => {
-    if (!open) return;
-    resetForm();
+    const isOpen = open;
+    if (isOpen && !wasOpen) resetForm();
+    wasOpen = isOpen;
   });
 
   const canSubmit = $derived(
