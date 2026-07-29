@@ -20,8 +20,8 @@
  * expects — the exact same resolve path a manual tap on `PermissionCard`
  * uses, never a second, parallel one.
  */
-import type { AcpPermissionOption, PermissionQueueState } from '@loombox/providers-core';
-import { headPermissionRequest } from '@loombox/providers-core';
+import type { AcpPermissionOption, PermissionQueueState } from '@loombox/providers-core/browser';
+import { headPermissionRequest } from '@loombox/providers-core/browser';
 
 /** The two push-notification actions that resolve a permission request; `'open'` (and a plain, non-`action` click) just navigates — nothing to resolve. */
 export type ResolvingPushAction = 'approve' | 'deny';

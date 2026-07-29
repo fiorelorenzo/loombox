@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AcpClient, McpServerSecretMissingError } from './client';
+import { AcpClient } from './client';
+import { McpServerSecretMissingError } from './mcp-secret-grants';
 import type { AcpMcpServerConfig, AcpUpdate } from './types';
 
 // Issue #190: proves the configured MCP server set passed to

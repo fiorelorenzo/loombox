@@ -28,7 +28,7 @@
    * into `completed`.
    */
   import { untrack } from 'svelte';
-  import type { TranscriptToolCallItem } from '@loombox/providers-core';
+  import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import { resolveToolWidgetKind } from '$lib/tool-widgets';
   import EditWriteWidget from './tool-widgets/EditWriteWidget.svelte';
   import BashWidget from './tool-widgets/BashWidget.svelte';

@@ -3,7 +3,7 @@ import {
   createTranscriptState,
   reduceTranscript,
   type TranscriptState,
-} from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { copyToClipboard, exportTranscriptText, itemCopyText } from './copy';
 

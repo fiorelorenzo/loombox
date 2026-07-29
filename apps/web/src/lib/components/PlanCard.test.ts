@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AcpPlanEntry } from '@loombox/providers-core';
+import type { AcpPlanEntry } from '@loombox/providers-core/browser';
 import PlanCard from './PlanCard.svelte';
 
 afterEach(() => cleanup());

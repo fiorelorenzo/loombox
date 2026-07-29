@@ -21,7 +21,7 @@ import {
   parsePluginConfig,
   type PluginConfig,
   type PluginConfigRecord,
-} from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
 
 export interface PluginConfigStorage {
   get(): PluginConfigRecord[];

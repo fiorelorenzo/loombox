@@ -6,7 +6,7 @@ import {
   createPermissionQueueState,
   enqueuePermissionRequest,
   type PermissionQueueState,
-} from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
 import PermissionQueueBar from './PermissionQueueBar.svelte';
 
 afterEach(() => cleanup());

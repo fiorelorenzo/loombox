@@ -53,7 +53,7 @@
    * text jammed against the controls), plus a `title` spelling out both
    * numbers for anyone hovering.
    */
-  import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core';
+  import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core/browser';
   import Button from './ui/Button.svelte';
   import Select from './ui/Select.svelte';
 

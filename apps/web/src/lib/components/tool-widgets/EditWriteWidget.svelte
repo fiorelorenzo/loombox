@@ -22,7 +22,7 @@
    * #468): the header draws the shared `tool-edit` glyph next to the title,
    * the same convention `BashWidget`/`TodoWidget` use.
    */
-  import type { TranscriptToolCallItem } from '@loombox/providers-core';
+  import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import { TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import DiffViewer from '../DiffViewer.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';

@@ -30,9 +30,36 @@
  * Nothing about being granted a secret changes that.
  * --------------------------------------------------------------------- */
 
-import { McpServerSecretMissingError } from './client';
 import type { McpServerConfig, McpServerVarDecl } from './mcp-config';
 import type { AcpMcpKeyValue, AcpMcpServerConfig } from './types';
+
+/**
+ * Thrown when a configured MCP server declares an env var (`stdio`) or header
+ * (`http`/`sse`) whose per-server secret grant (issue #189) hasn't resolved yet
+ * (`value: undefined`) — session creation fails up front with this clear,
+ * actionable error instead of starting the agent silently without the secret it
+ * asked for (SPEC.md §7.7's second acceptance bullet). No `session/new` request
+ * is ever sent in this case.
+ *
+ * Lives here, beside the grant logic that raises it, rather than in `client.ts`
+ * where it started: this module is browser-safe and `client.ts` is not (it
+ * spawns the agent), so importing the class back out of `client.ts` dragged the
+ * whole Node-only graph — `node:child_process`, and fatally
+ * `node:events` — into any client bundle that touched secret grants. `AcpClient`
+ * still throws it, now importing it from here.
+ */
+export class McpServerSecretMissingError extends Error {
+  constructor(
+    readonly serverName: string,
+    readonly variableName: string,
+  ) {
+    super(
+      `AcpClient.newSession: MCP server "${serverName}" is missing a required secret grant ` +
+        `for "${variableName}" — grant it before starting a session.`,
+    );
+    this.name = 'McpServerSecretMissingError';
+  }
+}
 
 function grantKey(serverName: string, secretName: string): string {
   return `${serverName} ${secretName}`;

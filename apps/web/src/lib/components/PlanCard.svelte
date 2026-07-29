@@ -46,7 +46,7 @@
    * header/entries/actions already own their own padding and wrapping
    * would double it up.
    */
-  import type { AcpPlanEntry } from '@loombox/providers-core';
+  import type { AcpPlanEntry } from '@loombox/providers-core/browser';
   import CopyButton from './CopyButton.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 

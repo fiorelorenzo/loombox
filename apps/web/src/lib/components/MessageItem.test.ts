@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { TranscriptMessageItem } from '@loombox/providers-core';
+import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
 import MessageItem from './MessageItem.svelte';
 
 afterEach(() => cleanup());

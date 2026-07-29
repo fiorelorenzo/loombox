@@ -23,7 +23,7 @@
    * as an interim stand-in — a purpose-built checklist glyph is a natural
    * follow-up for whoever next touches the icon set.
    */
-  import type { TranscriptToolCallItem } from '@loombox/providers-core';
+  import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import { isTodoInput, TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';

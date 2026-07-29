@@ -1,4 +1,4 @@
-import type { TranscriptState } from '@loombox/providers-core';
+import type { TranscriptState } from '@loombox/providers-core/browser';
 
 /**
  * Whether a thought item is still "live" — the source for `MessageItem`'s

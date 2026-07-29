@@ -33,7 +33,7 @@ import {
   type PendingPermissionRequest,
   type PermissionQueueState,
   type TranscriptState,
-} from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,

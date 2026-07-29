@@ -10,8 +10,11 @@
     AcpSessionStatus,
     PermissionQueueState,
     TranscriptState,
-  } from '@loombox/providers-core';
-  import { createPermissionQueueState, headPermissionRequest } from '@loombox/providers-core';
+  } from '@loombox/providers-core/browser';
+  import {
+    createPermissionQueueState,
+    headPermissionRequest,
+  } from '@loombox/providers-core/browser';
   import { APP_TAGLINE } from '$lib/constants';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import {

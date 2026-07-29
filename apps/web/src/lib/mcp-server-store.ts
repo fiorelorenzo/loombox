@@ -31,9 +31,9 @@ import {
   requiredSecrets,
   type McpServerConfig,
   type McpServerConfigRecord,
-} from '@loombox/providers-core';
-import type { McpServerPreset } from '@loombox/providers-core';
-import { instantiateMcpPreset } from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
+import type { McpServerPreset } from '@loombox/providers-core/browser';
+import { instantiateMcpPreset } from '@loombox/providers-core/browser';
 
 export interface McpServerConfigStorage {
   get(): McpServerConfigRecord[];

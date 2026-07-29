@@ -30,7 +30,7 @@
    * testid has no override. Every other `data-testid` is unchanged; only
    * markup/CSS move.
    */
-  import { PluginConfigError, type PluginConfig } from '@loombox/providers-core';
+  import { PluginConfigError, type PluginConfig } from '@loombox/providers-core/browser';
   import {
     addPluginConfig,
     createLocalStoragePluginConfigStorage,

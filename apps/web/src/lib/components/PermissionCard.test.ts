@@ -2,7 +2,7 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PendingPermissionRequest } from '@loombox/providers-core';
+import type { PendingPermissionRequest } from '@loombox/providers-core/browser';
 import PermissionCard from './PermissionCard.svelte';
 
 afterEach(() => cleanup());

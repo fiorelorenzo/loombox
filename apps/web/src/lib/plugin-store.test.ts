@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PluginConfig } from '@loombox/providers-core';
+import type { PluginConfig } from '@loombox/providers-core/browser';
 import {
   addPluginConfig,
   createInMemoryPluginConfigStorage,
