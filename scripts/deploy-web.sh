@@ -8,18 +8,22 @@
 # take it from there (see CONTRIBUTING.md) — that's the one that health-gates
 # the result and records what's live in DEPLOYED.json. This script exists so
 # you can iterate on the web app against real prod infra (real Postgres,
-# real relay, real OAuth) without cutting a release for every fix. It
-# overwrites whatever release is CURRENTLY live IN PLACE — the next real tag
-# deploy unpacks a fresh releases/<sha> and cleanly supersedes whatever this
-# script left behind.
+# real relay, real OAuth) without cutting a release for every fix.
+#
+# It never overwrites the tagged release in place. Doing that would leave
+# DEPLOYED.json still naming the tag while the bytes on disk were something
+# else, which is exactly the "what is actually deployed?" question this whole
+# layout exists to answer. Instead it unpacks into its own
+# releases/iter-<sha>-<stamp> directory and flips releases/current at it, so
+# the deviation is visible in one `ls -l`, the tagged release stays intact
+# beside it, and going back is a flip (this script prints the command).
 #
 # Builds the SvelteKit PWA locally (fast, no box contention), rsyncs the
-# adapter-node `build/` over the release directory releases/current already
-# points at, and restarts the web container. NO Docker image build: the prod
-# web container bind-mounts that release dir from the host
-# (deploy/web/docker-compose.live.yml), so shipping new code is just rsync +
-# restart. This sidesteps the slow, cache-prone `docker compose build` on
-# the shared box.
+# adapter-node `build/` into a new release directory, and points the running
+# container at it. NO Docker image build: the prod web container bind-mounts
+# the release directory from the host (deploy/web/docker-compose.live.yml),
+# so shipping new code is just rsync + recreate. This sidesteps the slow,
+# cache-prone `docker compose build` on the shared box.
 #
 # Usage (from the devbox, on the branch whose web you want live):
 #   scripts/deploy-web.sh
@@ -60,19 +64,23 @@ echo ">> build web (@loombox/web)"
 pnpm --filter @loombox/web build >/dev/null
 echo "   built $(git rev-parse --short HEAD)"
 
-echo ">> rsync build/ -> $PRODBOX:$HOST_BUILD_DIR"
+ITER_RELEASE="iter-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+echo ">> unpack into releases/$ITER_RELEASE and flip current at it"
 rsync -az --delete --timeout=110 -e 'ssh -o BatchMode=yes' \
-  apps/web/build/ "$PRODBOX:$HOST_BUILD_DIR/"
+  apps/web/build/ "$PRODBOX:$DEPLOY_DIR/releases/$ITER_RELEASE/"
 
-echo ">> restart web container"
-# A plain restart is enough here (verified empirically — see
-# scripts/deploy-prod.sh's comment at its flip site): it's the same release
-# directory the container already has mounted, just with new files rsynced
-# into it, so this is only about restarting the Node process to pick up
-# fresh JS, not about re-resolving a changed mount source.
-ssh -o BatchMode=yes -o ConnectTimeout=25 "$PRODBOX" \
-  'cd /opt/apps/loombox/deploy/web && docker compose -f docker-compose.yml -f docker-compose.live.yml restart web' \
-  2>&1 | tail -1
+# `up -d --force-recreate`, not `restart`: the mount SOURCE changes here (a
+# different release directory), and a restart re-resolves the symlink but
+# never re-reads compose config, so the container has to be recreated for the
+# new target to take. scripts/deploy-prod.sh's flip site has the same note.
+ssh -o BatchMode=yes -o ConnectTimeout=60 "$PRODBOX" "
+  set -e
+  cd $DEPLOY_DIR/releases
+  ln -sfn '$ITER_RELEASE' current.tmp && mv -T current.tmp current
+  cd $DEPLOY_DIR/deploy/web
+  docker compose -f docker-compose.yml -f docker-compose.live.yml up -d \
+    --force-recreate --no-build --no-deps web
+" 2>&1 | tail -1
 
 echo ">> verify"
 sleep 6
@@ -82,3 +90,24 @@ for _ in $(seq 1 8); do
   sleep 4
 done
 echo ">> app.loombox.dev: $s"
+
+# A 200 is not proof the new bundle is live: AGENTS.md records this box
+# serving a stale build behind a green curl. Compare SvelteKit's own build
+# identity, the same check scripts/deploy-prod.sh's health gate makes.
+want="$(jq -r .version apps/web/build/client/_app/version.json)"
+got="$(curl -fsS -H 'Cache-Control: no-cache' --max-time 10 \
+  https://app.loombox.dev/_app/version.json 2>/dev/null | jq -r '.version // empty')"
+if [ "$want" = "$got" ]; then
+  echo ">> served build == this build ($want)"
+else
+  echo "!! served build ($got) is NOT this build ($want)" >&2
+  exit 1
+fi
+
+cat <<EOF
+
+>> prod is now off-tag, serving releases/$ITER_RELEASE
+   DEPLOYED.json still names the last tagged deploy, which is true of the
+   tag, not of these bytes. To put the tagged release back:
+     ssh $PRODBOX "cd $DEPLOY_DIR/releases && ln -sfn \\\$(jq -r .sha $DEPLOY_DIR/DEPLOYED.json) current.tmp && mv -T current.tmp current && cd $DEPLOY_DIR/deploy/web && docker compose -f docker-compose.yml -f docker-compose.live.yml up -d --force-recreate --no-build --no-deps web"
+EOF
