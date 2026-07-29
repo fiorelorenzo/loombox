@@ -238,13 +238,31 @@ describe('start: accountId resolution (issue #380)', () => {
     await started.stop();
   });
 
-  it('rejects with a clear error rather than silently using authToken as accountId, when the default resolver cannot resolve a real session (e.g. this relay has no Better Auth mounted)', async () => {
-    relay = await startRelay(); // stub mode: no `auth`, so /api/auth/* 404s
+  // The relay is now the authority on what its own bearers mean, and it
+  // answers for every kind it accepts (`GET /account`). On a relay
+  // deliberately run without Postgres/Better Auth - the documented zero-config
+  // mode - that answer is the stub resolver's, so a node no longer needs
+  // LOOMBOX_ACCOUNT_ID just to talk to one. It used to refuse to start here,
+  // because it asked Better Auth directly and got a 404.
+  it('resolves accountId from the relay itself, so a relay with no Better Auth mounted still works', async () => {
+    relay = await startRelay(); // stub mode: any non-empty bearer is its own account
     const amk = generateAmk();
     const env = envFor(relay.url, stateDir, amk);
 
-    // No `resolveAccountId` override: exercises the real default
-    // (`resolveAccountIdViaRelay`) against a relay that can't answer it.
+    // No `resolveAccountId` override: exercises the real default,
+    // `resolveAccountIdViaRelay`, over real HTTP against this relay.
+    const started = await start({ env, argv: [] });
+
+    await expect(started.node.whenConnected()).resolves.toBeUndefined();
+    await started.stop();
+  });
+
+  it('rejects with a clear error rather than silently using authToken as accountId, when the relay cannot answer at all', async () => {
+    const amk = generateAmk();
+    // A relay URL nothing is listening on: the resolver's request fails, and
+    // the one thing it must never do is shrug and use the token as the id.
+    const env = envFor('ws://127.0.0.1:1/ws', stateDir, amk);
+
     await expect(start({ env, argv: [] })).rejects.toThrow(ConfigError);
   });
 });
