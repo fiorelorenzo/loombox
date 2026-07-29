@@ -1327,12 +1327,23 @@
     return target?.label ?? session.targetId;
   }
 
+  /**
+   * One shared empty list, so "this target announced nothing" is a stable value
+   * rather than a fresh array on every render. Never mutated - it is only ever
+   * read, and handed down as a prop.
+   */
+  const NO_PROVIDERS: string[] = [];
+
   /** The provider ids `project`'s own target can actually spawn (forms + real providers design spec §2/§3): looked up from the already-polled `targetStatusEntries` (issue #269) the exact same way {@link sessionTargetLabel} finds a session's target. A target this device hasn't heard from yet (or has fallen out of the list) reads as zero providers, same as a genuinely bare one — `NewSessionDialog` treats both identically until the next poll fills it in. */
   function providersForProject(project: Project): string[] {
     const target = targetStatusEntries.find(
       (entry) => entry.nodeId === project.nodeId && entry.targetId === project.targetId,
     );
-    return target?.providers ?? [];
+    // `NO_PROVIDERS` rather than a fresh `[]`: this is read on every render while
+    // `NewSessionDialog` is open, and a new array identity each time is prop churn
+    // that consumers have to defend against (it used to wipe the open form - see
+    // that component's reset effect).
+    return target?.providers ?? NO_PROVIDERS;
   }
 
   /** `project`'s own target, named for a human — mirrors {@link sessionTargetLabel}'s identical label-with-id-fallback idiom; used only to name the target in `NewSessionDialog`'s zero-providers message. */

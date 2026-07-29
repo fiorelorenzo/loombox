@@ -7,6 +7,21 @@ import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svel
 
 afterEach(() => cleanup());
 
+// Closing the dialog runs `Overlay.svelte`'s exit transition, which calls
+// `element.animate()` - absent in jsdom. Same minimal no-op stub as
+// `routes/page.test.ts` and `TargetStatusView.test.ts`, for the same reason.
+if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+  Element.prototype.animate = () =>
+    ({
+      finished: Promise.resolve(),
+      cancel: () => {},
+      play: () => {},
+      pause: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as Animation;
+}
+
 const PROJECT: Project = {
   id: 'proj_1',
   name: 'loombox',
@@ -436,6 +451,90 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
 
       await fireEvent.click(submit);
       expect(client.createSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the open form survives prop churn (measured against a real relay)', () => {
+    /**
+     * `providers` gets a new array identity on every parent render: `+page.svelte`
+     * derives it from the polled target list, and issue #269's health sampler
+     * repolls every few seconds. `resetForm()` reads `providers`, so before
+     * `untrack` the reset effect depended on it and wiped whatever was typed -
+     * within one second, over and over, driving the built app against the
+     * deployed relay. Same contents, new identity, is the whole scenario.
+     */
+    it('keeps a typed prompt when providers arrives as a new array with identical contents', async () => {
+      const { rerender } = render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      const prompt = screen.getByTestId('new-session-prompt') as HTMLTextAreaElement;
+      await fireEvent.input(prompt, { target: { value: 'do not lose this' } });
+      expect(prompt.value).toBe('do not lose this');
+
+      for (let i = 0; i < 3; i += 1) {
+        await rerender({ providers: ['claude'] });
+      }
+
+      expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(
+        'do not lose this',
+      );
+    });
+
+    it('keeps a typed prompt even when the provider list genuinely changes under it', async () => {
+      const { rerender } = render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      const prompt = screen.getByTestId('new-session-prompt') as HTMLTextAreaElement;
+      await fireEvent.input(prompt, { target: { value: 'still here' } });
+      // A second agent finishing installation on the target is not a reason to
+      // throw away the sentence the operator is halfway through.
+      await rerender({ providers: ['claude', 'ohmypi'] });
+
+      expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(
+        'still here',
+      );
+    });
+
+    it('still resets when the dialog is genuinely reopened', async () => {
+      const { rerender } = render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      await fireEvent.input(screen.getByTestId('new-session-prompt'), {
+        target: { value: 'from the previous session' },
+      });
+      await rerender({ open: false });
+      await rerender({ open: true });
+
+      await waitFor(() =>
+        expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(''),
+      );
     });
   });
 });
