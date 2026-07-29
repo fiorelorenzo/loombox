@@ -49,6 +49,55 @@ pnpm format             # apply Prettier
 The CI gate (`.github/workflows/ci.yml`) runs lint + format check + typecheck +
 test + the license scan on every PR. Keep `main` green.
 
+## Local dev loop
+
+`scripts/dev.sh` brings up relay + node daemon + web PWA together as plain
+host processes (`tsx watch` / `vite dev`), so you get real HMR and
+attachable debuggers at full production parity: a real Postgres database,
+real Better Auth, and a real GitHub OAuth device/session flow, not a
+stubbed one. There's no offline mode — see AGENTS.md and the script's own
+header comment for why that's deliberate.
+
+One-time setup: run `scripts/dev.sh` once. It copies `.env.dev.example` to
+the gitignored `.env.dev.local` and stops, telling you to register a GitHub
+OAuth App on your own GitHub account (Settings > Developer settings >
+OAuth Apps > New OAuth App) with Homepage URL `http://localhost:5173` and
+Authorization callback URL `http://localhost:8790/api/auth/callback/github`,
+then paste the generated client id/secret into `.env.dev.local`. Everything
+else in that file — the Better Auth signing secret, the node daemon's
+device token — either fills itself in or is optional until you actually
+need the node; see the comments in `.env.dev.example` for the full flow.
+Run `scripts/dev.sh` again and it brings up a dockerized dev Postgres, then
+the relay, then the web app, waiting on each one's own health check before
+starting the next rather than racing them.
+
+The port map is fixed on purpose — the GitHub callback above and Better
+Auth's trusted-origins check are both registered against these exact ports:
+
+| Service         | Address                                          |
+| --------------- | ------------------------------------------------ |
+| web (HMR)       | http://localhost:5173                            |
+| relay           | http://localhost:8790 (`ws://localhost:8790/ws`) |
+| postgres        | 127.0.0.1:5435                                   |
+| relay inspector | 127.0.0.1:9230                                   |
+| node inspector  | 127.0.0.1:9231                                   |
+
+To attach a debugger, point Chrome's `chrome://inspect` (or VS Code's
+"Attach to Node Process") at `127.0.0.1:9230` for the relay or
+`127.0.0.1:9231` for the node — both stay open for the life of the process,
+across every `tsx watch` restart. `Ctrl+C` stops relay/node/web but leaves
+Postgres running, since it holds your signed-in account and sessions;
+re-onboarding through GitHub OAuth on every restart would defeat the point
+of the loop. Use `scripts/dev.sh --stop` to also stop Postgres, or
+`--fresh` to wipe its data and start over with a clean database.
+
+If you're testing the desktop app on the Mac (see AGENTS.md), `scripts/dev.sh`
+opens reverse SSH forwards automatically (`--no-mac` to skip them) so the
+Mac's own `http://localhost:5173` reaches this box's dev server — the same
+"localhost is a secure context" reasoning as the GitHub callback above, so
+the app's E2E crypto works on the Mac with no certificate and no Chromium
+flags.
+
 ## Conventions
 
 - **Commits:** [Conventional Commits](https://www.conventionalcommits.org/).
@@ -70,16 +119,26 @@ and there is no registry configured (`access: "restricted"` in
 [.changeset/config.json](.changeset/config.json) is just the safe default, it
 never gets exercised). "Releasing" here means: bump versions, write
 `CHANGELOG.md` entries, tag the commit, and create a GitHub Release per
-package. `apps/web`, `apps/mobile`, and `tooling/eslint-config` are listed in
-`.changeset/config.json`'s `ignore` array because they aren't independently
-released packages.
+package.
 
-**As a contributor:** when your change affects a released package
-(`packages/*` other than `eslint-config`), run `pnpm changeset` before opening
-your PR, pick the affected package(s) and a semver bump, and write a short
-summary. The generated Markdown file goes in `.changeset/` and is committed
-alongside your change. Purely internal changes (docs, CI/tooling, tests with
-no package behavior change) don't need one.
+`.changeset/config.json`'s `ignore` array is deliberately **empty**, so every
+workspace package versions together. It used to list `@loombox/web`,
+`@loombox/mobile` and the eslint config as "not independently released", and
+that broke the release workflow outright: Changesets refuses a changeset that
+mentions both an ignored and a non-ignored package, and almost every real
+change here touches `apps/web` alongside `packages/*`. Six of thirteen pending
+changesets were in that state, `release.yml` had failed on every push to main
+for as long as those changesets existed, so no version PR was ever opened and
+every package sat at `0.0.0`. Ignoring the app that changes most also meant it
+got no changelog. Keep the array empty: a package that genuinely has nothing
+to say in a release simply has no changeset mentioning it, which already
+leaves it alone.
+
+**As a contributor:** when your change affects any package or app, run
+`pnpm changeset` before opening your PR, pick the affected package(s) and a
+semver bump, and write a short summary. The generated Markdown file goes in
+`.changeset/` and is committed alongside your change. Purely internal changes
+(docs, CI/tooling, tests with no package behavior change) don't need one.
 
 **What happens after merge** (`.github/workflows/release.yml`, using
 [changesets/action](https://github.com/changesets/action)):
@@ -102,3 +161,126 @@ come from the changeset(s) that landed on `main`. The workflow needs
 "Allow GitHub Actions to create and approve pull requests" enabled under
 **Settings → Actions → General → Workflow permissions** (already on for this
 repo) or it can't open the Version Packages PR.
+
+## Deploying to prod
+
+loombox ships to prodbox (`app.loombox.dev`, `relay.loombox.dev`) via a
+tag-triggered pipeline: pushing a `vX.Y.Z` tag deploys that exact commit,
+automatically, through a self-hosted GitHub Actions runner that lives on
+prodbox. `.github/workflows/deploy-prod.yml` and `scripts/deploy-prod.sh`
+are the mechanics (heavily commented); this section covers what a human
+needs to know.
+
+This is independent of the [Releases](#releases) changesets flow above:
+changesets tags individual packages (`@loombox/relay@0.4.0`, etc.) purely
+for changelog/GitHub-Release bookkeeping and never deploys anything. A
+`vX.Y.Z` tag is a separate, deliberate "ship main to prod now" marker a
+human cuts by hand. The two tag namespaces can't collide (`v*` vs.
+`@loombox/*@*`), so there's no ambiguity about which triggers what.
+
+### Cutting a release tag
+
+From a `main` you already expect to be green in CI — the pipeline checks
+this itself and refuses to deploy otherwise, see below:
+
+```bash
+git checkout main && git pull
+git tag -a v2026.07.29 -m "deploy 2026-07-29"   # see below for the version
+git push origin v2026.07.29
+```
+
+There's no single "loombox version" tracked anywhere — every package under
+`packages/*` versions independently via changesets — so this tag is just a
+human-facing marker of deploy history, not a package version. A date-based
+tag like the example above is the least confusing convention (it answers
+"when did this ship" without implying a semver bump of anything in
+particular), but a plain incrementing `vX.Y.Z` works too; either is fine as
+long as it sorts after the previous one. Check the last one with:
+`git tag -l 'v*' | sort -V | tail -1`.
+
+### What the pipeline does
+
+1. **`build-web`** (GitHub-hosted `ubuntu-latest`): checks out the tag,
+   installs the workspace, builds `@loombox/web`, uploads `apps/web/build/`
+   as an artifact. Runs off-box on purpose — prodbox has 4 shared vCPUs and
+   also hosts pitchbox and embertold, so the monorepo install and build
+   never touch it.
+2. **`deploy`** (self-hosted, on prodbox): first confirms the tagged commit
+   has a completed, successful `ci.yml` run. A tag is pushed by hand, and
+   per [AGENTS.md](AGENTS.md)'s local-verification notes this repo's merge
+   gate is procedural rather than a branch-protection rule (private
+   free-tier repo, no "required checks"), so nothing else stops someone
+   tagging a commit CI never saw or already failed. This is the backstop.
+   It then runs `scripts/deploy-prod.sh`, which:
+   - syncs the tagged source into `/opt/apps/loombox` (relay's `.env` and
+     backups, and the release/deploy-record state below, are excluded from
+     the sync and never touched);
+   - unpacks the built web bundle into a new `releases/<sha>/` and
+     atomically flips the `releases/current` symlink at it;
+   - rebuilds the relay's and/or web's Docker image only if something that
+     actually affects that image changed (the dependency lockfile, or,
+     for the relay, its own source) — most deploys are web-only content
+     changes and rebuild nothing, so the relay isn't even restarted (a
+     restart would drop every live WebSocket connection for no reason);
+   - health-gates the result against the relay's `/health`, the public
+     site, and a comparison of the served build's identity against what
+     was actually just deployed — a green HTTP status alone has, before,
+     turned out to still be serving a stale cached Docker layer;
+   - on any failure past the flip, rolls back to the last known-good
+     release/image itself and fails the workflow red. Only on success does
+     it record `DEPLOYED.json` and prune old releases.
+
+A web-only deploy usually finishes in a couple of minutes; a relay rebuild
+(rare) takes longer.
+
+### Checking what's live
+
+```bash
+ssh prodbox cat /opt/apps/loombox/DEPLOYED.json
+```
+
+Shows the deployed tag, commit, timestamp, who/what triggered it, the
+previous commit (today's rollback target), and the content hashes the next
+deploy diffs against to decide whether either image needs rebuilding.
+`releases/current` on prodbox is a symlink to `releases/<sha>/`; the
+running web container is whatever it currently resolves to
+(`deploy/web/docker-compose.live.yml` bind-mounts it straight in). A quick
+check that doesn't need SSH at all: `curl -s
+https://app.loombox.dev/_app/version.json` — compare it against
+`apps/web/build/client/_app/version.json` from the commit you expect to be
+live.
+
+### Rolling back by hand
+
+The pipeline already rolls itself back automatically when a deploy's own
+health gate fails. Hand-rollback is for the other case: a release that
+passed its health gate but turned out to have a real bug. On prodbox:
+
+```bash
+ssh prodbox
+cd /opt/apps/loombox
+prev=$(jq -r .previousSha DEPLOYED.json)
+ln -sfn "$prev" releases/current
+cd deploy/web
+docker compose -f docker-compose.yml -f docker-compose.live.yml \
+  up -d --force-recreate --no-build --no-deps web
+```
+
+That covers the common case (web-only). If the release you're undoing also
+rebuilt the relay, its pre-deploy image was tagged before the rebuild as
+`relay-relay:latest-rollback` — restore it the same way
+`scripts/deploy-prod.sh`'s own rollback path does:
+
+```bash
+docker tag relay-relay:latest-rollback relay-relay:latest
+cd /opt/apps/loombox/deploy/relay
+docker compose up -d --force-recreate --no-build --no-deps relay
+```
+
+(That rollback tag only exists if a relay rebuild actually ran during the
+deploy you're undoing — `DEPLOYED.json`'s `inputs.relaySrc` changing
+between the last two deploys is how to tell.)
+
+For fast iteration on the web app against real prod infra without cutting a
+release tag for every fix, see `scripts/deploy-web.sh`'s header — it's the
+unofficial, faster sibling of this pipeline, not a replacement for it.
