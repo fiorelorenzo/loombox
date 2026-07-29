@@ -98,6 +98,66 @@ The desktop shell comes from the branch; the UI it loads is the deployed PWA
 (`app.loombox.dev`) unless `PWA_URL` overrides it. So to test unmerged **web** changes,
 either deploy them to `app.loombox.dev` first or point `PWA_URL` at a dev server.
 
+Note the shell comes from **origin**, since the Mac hard-resets to it: a desktop-side
+change you have not pushed will not be there. And that reset discards uncommitted work
+in the Mac's checkout.
+
+## Debugging the desktop app on the Mac (from the devbox)
+
+```bash
+# once: the dev server the app will load, bound to the tailnet so the Mac reaches it
+#   (via hub/tmux, not a bare backgrounded shell — an orphaned `vite dev` holds the port for days)
+pnpm --filter @loombox/web exec vite dev --host "$(tailscale ip -4 | head -1)"
+
+scripts/mac-desktop.sh --debug     # launch + open CDP/inspector + forward both here
+scripts/mac-desktop.sh --reload    # reload the app window, ~2s, no relaunch
+PWA_URL=https://app.loombox.dev scripts/mac-desktop.sh --debug   # debug the prod bundle
+```
+
+`--debug` adds two argv flags and forwards both ports to this box, so the Mac's window
+is drivable from here:
+
+- **renderer** on `127.0.0.1:9222` — DOM, console, network, `evaluate`, screenshots.
+  Point omp's `browser` tool at it: `{"action":"open","app":{"cdp_url":"http://127.0.0.1:9222"}}`,
+  then `tab.evaluate` / `tab.screenshot` / `tab.click` as if the app were local.
+- **main process** on `127.0.0.1:9229` — the Electron/Node inspector, for
+  `Runtime.evaluate` against main-process state (verified: reading `process.argv` back
+  out of the running app). The main process currently logs nothing, and stdout is lost
+  through `open` anyway, so the inspector is the way to see it.
+
+It is opt-in on purpose: CDP is arbitrary JS in the app's context, which means the AMK
+in `localStorage` and every decrypted session. Ports are loopback on both ends. The
+forward is idempotent — a live one is reused, a stale one replaced — and it must use
+the **same** local port number, because CDP hands back a `webSocketDebuggerUrl` of
+`ws://127.0.0.1:<remote-port>` that clients then use verbatim.
+
+Things that cost real time to find out, so do not re-derive them:
+
+- **A fresh origin is a new device.** The dev server is a different origin from
+  `app.loombox.dev`, so it has its own empty `localStorage`: no session, no AMK, and it
+  lands on the sign-in screen. Onboard it once through SPEC §8's real "new device"
+  recovery-code path and it persists; do not script copying the AMK across origins.
+  The relay only accepts that origin because it is in `LOOMBOX_TRUSTED_ORIGINS` on
+  prodbox (one env var drives both Better Auth's CSRF check and the CORS allowlist).
+  A devbox tailnet-IP change means updating it there too.
+- **`screencapture` over SSH does not work**, even with Screen Recording granted — it
+  fails `could not create image from display`. Use a CDP screenshot (renderer only, no
+  macOS permission needed, and deterministic). Accessibility *does* work, so window
+  title/geometry is available:
+  `ssh mac 'osascript -e "tell application \"System Events\" to tell (first process whose name contains \"Electron\") to get {name, position, size} of first window"'`
+- **`launchctl setenv` cannot deliver env to the app.** `launchctl getenv` reads the
+  value straight back, which makes it look like it worked, but a LaunchServices-started
+  app on macOS 26 does not inherit it. That is why the URL override is the
+  `--pwa-url=` argv flag (`open --args` does deliver). Do not "fix" it back to env.
+- **A route-module edit can leave the window on a 500 page.** SvelteKit's dev client
+  refreshes in place instead of reloading, and if that first request races vite's SSR
+  invalidation it paints its 500 and stays there. The server is fine (`curl` returns
+  200); `--reload` clears it.
+- **Do not run `pnpm --filter @loombox/web build` (or the Playwright suite, which
+  builds) while the dev server is up.** They share `.svelte-kit/`, and rewriting it
+  under the running server thrashes the window with a burst of reloads — measured: ~10
+  reload events per sync, repeating — and can 500 a request that lands mid-rewrite.
+
 ## Deploying the web PWA fast (no Docker build)
 
 ```bash
