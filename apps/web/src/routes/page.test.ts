@@ -346,6 +346,31 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     await fireEvent.click(screen.getByRole('menuitem', { name: /appearance.*settings/i }));
     expect(await screen.findByTestId('settings-page')).toBeTruthy();
   });
+
+  it('the sidebar toggle announces which state it is in, since the glyph itself no longer changes', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    const toggle = await screen.findByTestId('sidebar-collapse-toggle');
+
+    // The whole point of this assertion: the control used to carry a
+    // mirrored glyph as its state indicator, and the mirror was a no-op (the
+    // chevron it drew was symmetric about the axis it was flipped on), so
+    // for a while the button silently looked identical in both states. The
+    // panel glyph is deliberately NOT mirrored now, which makes
+    // `aria-pressed` and the label the only things that distinguish the two
+    // states — so they are what a regression here has to break.
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Collapse sidebar');
+
+    await fireEvent.click(toggle);
+
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.getAttribute('aria-label')).toBe('Expand sidebar');
+
+    await fireEvent.click(toggle);
+
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Collapse sidebar');
+  });
 });
 
 describe('new session: real per-target providers (forms + real providers design spec §2/§3)', () => {

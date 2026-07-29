@@ -32,6 +32,7 @@ const EXPECTED_NAMES = [
   'copy',
   'pin',
   'close',
+  'sidebar-panel',
 ] as const;
 
 describe('icon-paths (#502 redesign v3 icon set)', () => {
