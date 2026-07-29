@@ -1,0 +1,52 @@
+# prodbox overlay: bind-mount a versioned release directory over the image's
+# baked-in apps/web/build, instead of serving whatever got COPY'd in at
+# `docker build` time.
+#
+# Why this is committed now, not left prodbox-local (this file used to argue
+# the opposite — read on):
+#
+# This file used to exist ONLY on prodbox. The reasoning was that it's a
+# purely local speed hack for scripts/deploy-web.sh's hand-run rsync loop,
+# so it didn't belong in a repo meant to describe the product. That held as
+# long as deploys were hand-made rsyncs a human ran from memory of what's
+# supposed to happen. It INVERTS once a CI pipeline is doing the deploying
+# (scripts/deploy-prod.sh, .github/workflows/deploy-prod.yml): config that
+# exists only on the box is exactly what a repeatable deploy can't
+# reproduce, can't diff in code review, and can't recreate on a fresh box
+# after a disk failure. So it now lives in git like everything else the
+# deploy depends on.
+#
+# Why the indirection — releases/<sha>/ plus a `current` symlink — instead
+# of bind-mounting apps/web/build directly:
+#
+# releases/<sha>/ is immutable once written; a deploy never edits a release
+# in place, it writes a brand new directory and only then repoints
+# `current`. That makes a rollback a symlink flip plus a container recreate
+# (seconds, nothing rebuilt, nothing re-unpacked) instead of needing the OLD
+# build output to still be sitting there un-overwritten, which a direct
+# apps/web/build mount can't guarantee once the next deploy has already
+# rsynced over it.
+#
+# Why `--force-recreate`, not a plain `restart`, on every flip (verified on
+# this box with a scratch compose project — see scripts/deploy-prod.sh's
+# comment at the flip site for the full writeup): a plain `docker compose
+# restart` DOES pick up a flipped symlink target on this Docker version,
+# confirmed empirically — restart tears the container down and re-
+# establishes its mounts on the way back up, it isn't pinned to whatever the
+# symlink resolved to at `create` time. We still force-recreate
+# unconditionally rather than leaning on that, because the FIRST deploy run
+# under this pipeline also changes the mount's SOURCE PATH (this file,
+# apps/web/build -> releases/current), and only a recreate re-reads compose
+# config — restart never does. One command that's correct on every run beats
+# branching on "did the compose file change this time".
+#
+# Usage, from /opt/apps/loombox/deploy/web (scripts/deploy-prod.sh and
+# scripts/deploy-web.sh both already do this for you):
+#   docker compose -f docker-compose.yml -f docker-compose.live.yml \
+#     up -d --force-recreate --no-build --no-deps web
+services:
+  web:
+    volumes:
+      # read-only: this container only ever serves a release, never writes
+      # into one.
+      - ../../releases/current:/app/apps/web/build:ro

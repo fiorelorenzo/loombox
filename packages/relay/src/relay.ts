@@ -1843,6 +1843,27 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     return reply.code(204).send();
   });
 
+  // Answers "which account does this bearer belong to?" for ANY token this
+  // relay accepts, which is the point: `accountIdFromBearer` runs the same
+  // `resolveAccountId` the WS handshake does, so a relay-native device token
+  // (#387/#398), a Better Auth session, and the dev stub all resolve here
+  // exactly as they do everywhere else.
+  //
+  // It exists because a resident node could not answer that question for
+  // itself. `@loombox/node` used to ask Better Auth's `/api/auth/get-session`
+  // directly, which only knows about browser sessions, so a node that
+  // bootstrapped through the intended device-authorization flow died on
+  // startup ("not a valid, active Better Auth session") holding a token this
+  // relay would have accepted on the WS a moment later. Measured on a real
+  // node against a real relay: same persisted token, connected fine once
+  // `LOOMBOX_ACCOUNT_ID` was set by hand, which is exactly the workaround
+  // this endpoint removes.
+  app.get('/account', async (request, reply) => {
+    const accountId = await accountIdFromBearer(request.headers.authorization);
+    if (!accountId) return reply.code(401).send({ error: 'invalid or missing auth token' });
+    return reply.code(200).send({ accountId });
+  });
+
   // #387: the device-authorization-grant REST endpoints — see
   // `device-auth-routes.ts`'s own doc comment. `accountIdFromBearer` above
   // is what makes `/device/approve`/`/device/deny` (the operator's browser)

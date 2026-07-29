@@ -7,6 +7,9 @@
   "access": "restricted",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@loombox/web", "@loombox/mobile", "@loombox/eslint-config"],
-  "privatePackages": { "version": true, "tag": true }
+  "ignore": [],
+  "privatePackages": {
+    "version": true,
+    "tag": true
+  }
 }

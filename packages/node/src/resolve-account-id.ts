@@ -1,11 +1,12 @@
 import { ConfigError } from './config';
 
 /**
- * Resolves this node's `authToken` (a Better Auth bearer token, SPEC §8) to
- * the `accountId` it belongs to. Injected as `StartOptions.resolveAccountId`
- * (`main.ts`) so tests never have to make a real network call; production
- * uses {@link resolveAccountIdViaRelay}, the real HTTP-backed implementation
- * below.
+ * Resolves this node's `authToken` to the `accountId` it belongs to. The token
+ * is whatever bearer the relay accepts: usually a relay-native device token
+ * this node minted for itself (#387/#398), or a Better Auth session (SPEC §8).
+ * Injected as `StartOptions.resolveAccountId` (`main.ts`) so tests never have
+ * to make a real network call; production uses
+ * {@link resolveAccountIdViaRelay}, the real HTTP-backed implementation below.
  */
 export type AccountIdResolver = (relayUrl: string, authToken: string) => Promise<string>;
 
@@ -24,29 +25,87 @@ export function relayHttpBaseUrl(wsUrl: string): string {
 }
 
 /**
- * The real, HTTP-backed {@link AccountIdResolver} (issue #380). Calls the
- * relay's Better Auth `GET /api/auth/get-session` with `authToken` as an
- * `Authorization: Bearer` header — the identical resolution
- * `packages/relay/src/auth.ts`'s `resolveAccountIdViaBetterAuth` performs
- * in-process server-side, and `apps/web/src/lib/auth-store.ts` performs the
- * same way over HTTP client-side — and returns the resolved `user.id`. A
- * node that goes through this function therefore always agrees with both
- * the relay and the web client on which account a session belongs to, so
- * the relay's own `session.accountId !== connection.accountId` check
- * (`packages/relay/src/relay.ts`) never drops a real session.
+ * The real, HTTP-backed {@link AccountIdResolver} (issue #380). Asks the relay
+ * itself, via `GET /account`, which account the presented bearer belongs to.
+ *
+ * That endpoint is the only correct place to ask, because the relay accepts
+ * more than one kind of bearer and only it knows the whole set: a
+ * relay-native device token (#387's approval grant, #398's zero-touch mint),
+ * a Better Auth session, or - on a relay deliberately run without Postgres -
+ * the dev stub. `GET /account` resolves all of them through the exact same
+ * `resolveAccountId` the WS handshake uses, so a node always agrees with the
+ * relay about which account it is, and the relay's own
+ * `session.accountId !== connection.accountId` check never drops a real
+ * session.
+ *
+ * This used to call Better Auth's `/api/auth/get-session` directly, which
+ * knows about browser sessions and nothing else. The result was that a node
+ * which bootstrapped the intended way - `device-login.ts`, operator approves
+ * a code in the browser, token persisted - then died on startup complaining
+ * its token was "not a valid, active Better Auth session", while holding a
+ * token the relay accepted on the WS seconds later. The only way through was
+ * setting `LOOMBOX_ACCOUNT_ID` by hand, defeating the point of the flow.
  *
  * Never falls back to any stub value: an unreachable relay, a non-2xx
- * response, or a token Better Auth doesn't recognize (missing, expired,
- * revoked, or simply never issued — "token wiring" is a separate, later
- * concern) all throw a {@link ConfigError} rather than let the node start up
- * scoped to the wrong account.
+ * response, or a token the relay does not recognize (missing, expired,
+ * revoked, never issued) all throw a {@link ConfigError} rather than let the
+ * node start up scoped to the wrong account.
  */
 export async function resolveAccountIdViaRelay(
   relayUrl: string,
   authToken: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
-  const url = `${relayHttpBaseUrl(relayUrl)}/api/auth/get-session`;
+  const base = relayHttpBaseUrl(relayUrl);
+  const url = `${base}/account`;
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { headers: { authorization: `Bearer ${authToken}` } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`could not resolve accountId: request to ${url} failed: ${message}`);
+  }
+
+  // A relay older than this node has no `/account` route. Self-hosters
+  // upgrade the two independently, so fall back to the Better Auth session
+  // lookup this function used to do rather than break a working deployment.
+  // That path cannot resolve a device token, which is why it is the fallback
+  // and not the primary.
+  if (response.status === 404) {
+    return resolveAccountIdViaBetterAuthSession(base, authToken, fetchImpl);
+  }
+
+  if (!response.ok) {
+    throw new ConfigError(
+      `could not resolve accountId: ${url} responded with HTTP ${response.status}` +
+        (response.status === 401
+          ? ' - the relay does not recognize this authToken (LOOMBOX_AUTH_TOKEN). If it was' +
+            ' minted for a different relay, or has been revoked, delete the persisted' +
+            ' device token and let the node link again.'
+          : ''),
+    );
+  }
+
+  const accountId = await readAccountId(response, url);
+  if (accountId === undefined) {
+    throw new ConfigError(`could not resolve accountId: ${url} returned no accountId`);
+  }
+  return accountId;
+}
+
+/**
+ * The pre-`GET /account` resolution, kept only for a relay older than this
+ * node (see the 404 branch above). Reads `user.id` out of Better Auth's
+ * `GET /api/auth/get-session`, so it works for a browser session token and
+ * fails for every relay-native device token.
+ */
+async function resolveAccountIdViaBetterAuthSession(
+  base: string,
+  authToken: string,
+  fetchImpl: typeof fetch,
+): Promise<string> {
+  const url = `${base}/api/auth/get-session`;
 
   let response: Response;
   try {
@@ -69,18 +128,32 @@ export async function resolveAccountIdViaRelay(
     throw new ConfigError(`could not resolve accountId: ${url} did not return valid JSON`);
   }
 
-  const userId =
-    body !== null && typeof body === 'object' && 'user' in body
-      ? (body as { user?: { id?: unknown } }).user?.id
-      : undefined;
+  let userId: unknown;
+  if (body !== null && typeof body === 'object' && 'user' in body) {
+    const user = body.user;
+    if (user !== null && typeof user === 'object' && 'id' in user) userId = user.id;
+  }
 
   if (typeof userId !== 'string' || userId.length === 0) {
     throw new ConfigError(
-      'could not resolve accountId: authToken (LOOMBOX_AUTH_TOKEN) is not a valid, active ' +
-        'Better Auth session — sign in again and update the token, or set LOOMBOX_ACCOUNT_ID ' +
-        'explicitly if this relay intentionally runs without Better Auth',
+      'could not resolve accountId: this relay is too old to expose GET /account, and the ' +
+        'authToken (LOOMBOX_AUTH_TOKEN) is not a valid, active Better Auth session either - ' +
+        'upgrade the relay so device tokens resolve, or set LOOMBOX_ACCOUNT_ID explicitly',
     );
   }
 
   return userId;
+}
+
+/** Reads `accountId` out of a JSON response body, or `undefined` when the body is not an object or the field is absent/empty. */
+async function readAccountId(response: Response, url: string): Promise<string | undefined> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new ConfigError(`could not resolve accountId: ${url} did not return valid JSON`);
+  }
+  if (body === null || typeof body !== 'object' || !('accountId' in body)) return undefined;
+  const value = body.accountId;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

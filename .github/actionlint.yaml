@@ -1,0 +1,12 @@
+# actionlint config (docs: https://github.com/rhysd/actionlint/blob/main/docs/config.md).
+#
+# actionlint's built-in label set is GitHub-hosted runners only; it has no
+# way to know about our self-hosted prodbox runner's labels and flags
+# `runs-on: [self-hosted, prodbox]` as unknown without this. Full label set
+# on the actual runner (registered by hand, not by CI) is
+# self-hosted,Linux,X64,prodbox — deploy-prod.yml only needs the two that
+# uniquely single out this box (self-hosted is already a recognized built-in
+# label; only prodbox needs declaring here).
+self-hosted-runner:
+  labels:
+    - prodbox

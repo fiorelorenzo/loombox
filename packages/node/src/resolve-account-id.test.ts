@@ -12,12 +12,8 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe('resolveAccountIdViaRelay (issue #380)', () => {
-  it("GETs the relay's Better Auth /api/auth/get-session with the bearer token, and returns user.id", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse(200, { session: { id: 'sess-1' }, user: { id: 'user-abc-123' } }),
-      );
+  it("GETs the relay's own /account with the bearer token, and returns accountId", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { accountId: 'user-abc-123' }));
 
     const accountId = await resolveAccountIdViaRelay(
       'wss://relay.loombox.dev/ws',
@@ -28,19 +24,72 @@ describe('resolveAccountIdViaRelay (issue #380)', () => {
     expect(accountId).toBe('user-abc-123');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://relay.loombox.dev/api/auth/get-session');
+    expect(url).toBe('https://relay.loombox.dev/account');
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer the-bearer-token');
   });
 
-  it('converts ws:// (not just wss://) to http://', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse(200, { session: {}, user: { id: 'user-1' } }));
+  // The regression this endpoint exists for: a node that linked itself through
+  // the device-authorization flow holds a relay-native device token, which is
+  // not a Better Auth session at all. Asking Better Auth about it used to fail
+  // the node's startup outright while the relay would have accepted the very
+  // same token on the WS handshake.
+  it('resolves a token Better Auth knows nothing about, without ever asking Better Auth', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { accountId: 'acct-from-node' }));
 
-    await resolveAccountIdViaRelay('ws://127.0.0.1:8787/ws', 'tok', fetchImpl);
+    const accountId = await resolveAccountIdViaRelay(
+      'ws://127.0.0.1:8790/ws',
+      'device-token-only-the-relay-knows',
+      fetchImpl,
+    );
+
+    expect(accountId).toBe('acct-from-node');
+    const calledUrls = fetchImpl.mock.calls.map((call) => call[0] as string);
+    expect(calledUrls).toEqual(['http://127.0.0.1:8790/account']);
+  });
+
+  it('converts ws:// (not just wss://) to http://', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { accountId: 'user-1' }));
+
+    await resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'tok', fetchImpl);
 
     const [url] = fetchImpl.mock.calls[0] as [string];
-    expect(url).toBe('http://127.0.0.1:8787/api/auth/get-session');
+    expect(url).toBe('http://127.0.0.1:8790/account');
+  });
+
+  it('falls back to Better Auth get-session when the relay is too old to expose /account', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(404, { error: 'not found' }))
+      .mockResolvedValueOnce(jsonResponse(200, { session: { id: 'sess-1' }, user: { id: 'u-9' } }));
+
+    const accountId = await resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'tok', fetchImpl);
+
+    expect(accountId).toBe('u-9');
+    const calledUrls = fetchImpl.mock.calls.map((call) => call[0] as string);
+    expect(calledUrls).toEqual([
+      'http://127.0.0.1:8790/account',
+      'http://127.0.0.1:8790/api/auth/get-session',
+    ]);
+  });
+
+  it('throws when neither /account nor the Better Auth fallback recognizes the token', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(404, {}))
+      .mockResolvedValueOnce(jsonResponse(200, { session: null, user: null }));
+
+    await expect(
+      resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'bad', fetchImpl),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  it('does not fall back on a 401: the relay answered, and its answer was no', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(401, { error: 'invalid' }));
+
+    await expect(
+      resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'revoked', fetchImpl),
+    ).rejects.toThrow(/HTTP 401/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('throws a ConfigError when the relay request itself fails (e.g. unreachable)', async () => {
@@ -54,22 +103,6 @@ describe('resolveAccountIdViaRelay (issue #380)', () => {
     );
   });
 
-  it('throws a ConfigError on a non-2xx response (e.g. Better Auth not mounted on this relay)', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(404, {}));
-
-    await expect(
-      resolveAccountIdViaRelay('ws://127.0.0.1:8787/ws', 'tok', fetchImpl),
-    ).rejects.toThrow(/HTTP 404/);
-  });
-
-  it('throws a ConfigError when the session is null (invalid/expired/unrecognized token) rather than falling back to the raw token', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, null));
-
-    await expect(
-      resolveAccountIdViaRelay('ws://127.0.0.1:8787/ws', 'bad-token', fetchImpl),
-    ).rejects.toThrow(ConfigError);
-  });
-
   it('throws a ConfigError when the response body is not valid JSON', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -80,15 +113,15 @@ describe('resolveAccountIdViaRelay (issue #380)', () => {
     } as unknown as Response);
 
     await expect(
-      resolveAccountIdViaRelay('ws://127.0.0.1:8787/ws', 'tok', fetchImpl),
+      resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'tok', fetchImpl),
     ).rejects.toThrow(/valid JSON/);
   });
 
   it('never returns the raw authToken as a fallback accountId', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { session: {}, user: {} }));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {}));
 
     await expect(
-      resolveAccountIdViaRelay('ws://127.0.0.1:8787/ws', 'the-token-itself', fetchImpl),
+      resolveAccountIdViaRelay('ws://127.0.0.1:8790/ws', 'the-token-itself', fetchImpl),
     ).rejects.toThrow(ConfigError);
   });
 });
