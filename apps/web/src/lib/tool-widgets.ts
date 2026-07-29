@@ -1,4 +1,4 @@
-import type { AcpToolCallStatus, TranscriptToolCallItem } from '@loombox/providers-core';
+import type { AcpToolCallStatus, TranscriptToolCallItem } from '@loombox/providers-core/browser';
 import { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
 
 /**

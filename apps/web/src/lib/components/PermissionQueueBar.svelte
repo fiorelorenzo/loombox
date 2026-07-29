@@ -16,8 +16,8 @@
    * `RelayClient.cancelPermissionRequests`, so no card's spinner survives
    * past the press.
    */
-  import type { AcpPermissionOption, PermissionQueueState } from '@loombox/providers-core';
-  import { headPermissionRequest, listPermissionRequests } from '@loombox/providers-core';
+  import type { AcpPermissionOption, PermissionQueueState } from '@loombox/providers-core/browser';
+  import { headPermissionRequest, listPermissionRequests } from '@loombox/providers-core/browser';
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';
   import StatusDot from './ui/StatusDot.svelte';

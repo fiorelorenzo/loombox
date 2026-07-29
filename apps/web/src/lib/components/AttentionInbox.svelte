@@ -59,7 +59,7 @@
    * selector, since the class lands on `Button`'s own scope, not this
    * component's.
    */
-  import type { AcpPermissionOption } from '@loombox/providers-core';
+  import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { AttentionInboxItem } from '../relay-client';
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';

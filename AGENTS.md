@@ -149,10 +149,26 @@ Things that cost real time to find out, so do not re-derive them:
   value straight back, which makes it look like it worked, but a LaunchServices-started
   app on macOS 26 does not inherit it. That is why the URL override is the
   `--pwa-url=` argv flag (`open --args` does deliver). Do not "fix" it back to env.
-- **A route-module edit can leave the window on a 500 page.** SvelteKit's dev client
-  refreshes in place instead of reloading, and if that first request races vite's SSR
-  invalidation it paints its 500 and stays there. The server is fine (`curl` returns
-  200); `--reload` clears it.
+- **A plain-http dev origin is not a secure context**, so `crypto.subtle` is missing
+  and the app cannot generate or unwrap an AMK — every session stays unreadable.
+  `--debug` therefore also passes
+  `--unsafely-treat-insecure-origin-as-secure=<origin>` plus its required
+  `--user-data-dir` (a dedicated `~/.loombox-desktop-debug` profile, so the dev
+  origin's session persists and the normal profile is untouched). Verified with a real
+  AES-GCM round trip in the window, not just a feature check.
+- **Client code must import `@loombox/providers-core/browser`, never the barrel.** The
+  barrel exports `AcpClient`/`PermissionQueue`/`ConfigOptionStore`, which extend Node's
+  `EventEmitter`; `vite build` tree-shakes them away, but `vite dev` evaluates every
+  module and `node:events` is an empty stub in the client, so the app painted fine and
+  then died on hydration ~5s later with `Cannot access "node:events.EventEmitter"`.
+  Watch for indirect paths: a pure module importing one symbol (an error class) out of
+  a Node-only module drags the whole graph back in.
+- **Do not trust an empty `page.on('console')`** when driving the app over
+  `app.cdp_url`: those listeners never fire against an attached Electron renderer, so
+  a page that is loudly erroring looks silent. That cost real time here. Install the
+  capture in the page instead, before hydration:
+  `page.evaluateOnNewDocument(() => { window.__cap = []; ... })`, then read
+  `window.__cap`. That is what finally surfaced the error above.
 - **Do not run `pnpm --filter @loombox/web build` (or the Playwright suite, which
   builds) while the dev server is up.** They share `.svelte-kit/`, and rewriting it
   under the running server thrashes the window with a burst of reloads — measured: ~10

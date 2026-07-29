@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { McpServerSecretMissingError } from './client';
 import { parseMcpServerConfigList } from './mcp-config';
-import { McpSecretGrantStore, resolveMcpServerConfigs } from './mcp-secret-grants';
+import {
+  McpSecretGrantStore,
+  resolveMcpServerConfigs,
+  McpServerSecretMissingError,
+} from './mcp-secret-grants';
 
 const CONFIGS = parseMcpServerConfigList([
   {

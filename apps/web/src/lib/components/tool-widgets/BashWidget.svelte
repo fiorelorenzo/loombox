@@ -26,7 +26,7 @@
    * `TodoWidget` use — decorative, since the "Bash" label right next to it
    * already carries the meaning.
    */
-  import type { TranscriptToolCallItem } from '@loombox/providers-core';
+  import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import {
     bashCommand,
     toolCallOutputText,

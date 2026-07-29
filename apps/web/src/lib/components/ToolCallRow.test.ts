@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { TranscriptToolCallItem } from '@loombox/providers-core';
+import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
 import ToolCallRow from './ToolCallRow.svelte';
 
 afterEach(() => cleanup());

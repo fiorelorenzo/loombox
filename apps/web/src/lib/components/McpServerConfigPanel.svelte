@@ -52,7 +52,7 @@
     McpServerConfigError,
     type McpServerConfig,
     type McpServerPreset,
-  } from '@loombox/providers-core';
+  } from '@loombox/providers-core/browser';
   import {
     addMcpServerConfig,
     addMcpServerFromPreset,

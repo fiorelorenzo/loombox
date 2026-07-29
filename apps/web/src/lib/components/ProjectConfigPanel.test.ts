@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from '@loombox/providers-core';
+import { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from '@loombox/providers-core/browser';
 import { createInMemoryMcpServerConfigStorage } from '$lib/mcp-server-store';
 import { createInMemoryPluginConfigStorage } from '$lib/plugin-store';
 import ProjectConfigPanel from './ProjectConfigPanel.svelte';

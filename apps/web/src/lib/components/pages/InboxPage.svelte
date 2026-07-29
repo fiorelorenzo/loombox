@@ -16,7 +16,7 @@
    * shell swaps the component name there and leaves every prop expression
    * untouched.
    */
-  import type { AcpPermissionOption } from '@loombox/providers-core';
+  import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { AttentionInboxItem } from '$lib/relay-client';
   import AttentionInbox from '../AttentionInbox.svelte';
   import PageLayout from './PageLayout.svelte';

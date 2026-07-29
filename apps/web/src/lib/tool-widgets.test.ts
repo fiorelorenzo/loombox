@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TranscriptToolCallItem } from '@loombox/providers-core';
+import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
 import {
   bashCommand,
   classifyRawInput,

@@ -64,7 +64,7 @@
    * button's own visible text already carries the accessible name.
    */
   import { untrack } from 'svelte';
-  import type { TranscriptMessageItem } from '@loombox/providers-core';
+  import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
   import { itemCopyText } from '$lib/copy';
   import { PROVIDER_LABELS } from '$lib/providers';
   import { TextPacer } from '$lib/text-pacer';

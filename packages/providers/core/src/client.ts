@@ -9,6 +9,7 @@ import { deriveFeatureFlags } from './capabilities';
 import type { AcpFeatureFlags } from './capabilities';
 import { ConfigOptionStore } from './config-options';
 import { PermissionQueue } from './permission-queue';
+import { McpServerSecretMissingError } from './mcp-secret-grants';
 import type { PermissionResolveResult } from './permission-queue';
 import type { ProviderRegistry } from './provider-registry';
 import { createTranscriptState, reduceTranscript } from './transcript';
@@ -141,27 +142,6 @@ export interface NewSessionOptions {
    * to an empty list, matching this client's pre-#190 behavior.
    */
   mcpServers?: AcpMcpServerConfig[];
-}
-
-/**
- * Thrown by `AcpClient.newSession` when a configured MCP server declares an
- * env var (`stdio`) or header (`http`/`sse`) whose per-server secret grant
- * (issue #189) hasn't resolved yet (`value: undefined`) — session creation
- * fails up front with this clear, actionable error instead of starting the
- * agent silently without the secret it asked for (SPEC.md §7.7's second
- * acceptance bullet). No `session/new` request is ever sent in this case.
- */
-export class McpServerSecretMissingError extends Error {
-  constructor(
-    readonly serverName: string,
-    readonly variableName: string,
-  ) {
-    super(
-      `AcpClient.newSession: MCP server "${serverName}" is missing a required secret grant ` +
-        `for "${variableName}" — grant it before starting a session.`,
-    );
-    this.name = 'McpServerSecretMissingError';
-  }
 }
 
 /**

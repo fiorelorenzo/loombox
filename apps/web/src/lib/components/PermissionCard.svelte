@@ -18,8 +18,8 @@
    * when `actionable` (SPEC.md §7.24's nested-visibility rule: only the
    * current FIFO head is actionable).
    */
-  import type { AcpPermissionOption } from '@loombox/providers-core';
-  import type { PendingPermissionRequest } from '@loombox/providers-core';
+  import type { AcpPermissionOption } from '@loombox/providers-core/browser';
+  import type { PendingPermissionRequest } from '@loombox/providers-core/browser';
   import DiffViewer from './DiffViewer.svelte';
   import Button from './ui/Button.svelte';
   import StatusDot from './ui/StatusDot.svelte';

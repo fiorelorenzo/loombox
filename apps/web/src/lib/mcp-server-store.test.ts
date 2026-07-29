@@ -4,7 +4,7 @@ import {
   instantiateMcpPreset,
   parseMcpServerConfig,
   requiredSecrets,
-} from '@loombox/providers-core';
+} from '@loombox/providers-core/browser';
 import {
   addMcpServerConfig,
   addMcpServerFromPreset,

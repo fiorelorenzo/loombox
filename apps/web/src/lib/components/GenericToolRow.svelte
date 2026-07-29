@@ -35,7 +35,7 @@
    * `tool-generic` glyph via `ToolCallGutter` — decorative, the kind is
    * carried by the `sr-only` label right beside it.
    */
-  import type { TranscriptToolCallItem } from '@loombox/providers-core';
+  import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import {
     classifyRawInput,
     toolCallOutputText,

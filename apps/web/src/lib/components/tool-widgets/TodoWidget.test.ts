@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { TranscriptToolCallItem } from '@loombox/providers-core';
+import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
 import TodoWidget from './TodoWidget.svelte';
 
 afterEach(() => cleanup());

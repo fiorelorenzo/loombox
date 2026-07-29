@@ -2,8 +2,8 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPermissionQueueState } from '@loombox/providers-core';
-import type { AcpSessionStatus, PermissionQueueState } from '@loombox/providers-core';
+import { createPermissionQueueState } from '@loombox/providers-core/browser';
+import type { AcpSessionStatus, PermissionQueueState } from '@loombox/providers-core/browser';
 import { APP_NAME } from '$lib/constants';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
 import type {

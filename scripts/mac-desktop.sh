@@ -59,12 +59,10 @@ for arg in "$@"; do
 done
 BRANCH="${BRANCH:-$CURRENT_BRANCH}"
 
-# `--reload` reloads the window of an ALREADY-running debug session and exits:
-# no publish, no reset, no reinstall, no relaunch. It earns its place because
-# after an edit to a route module, SvelteKit's dev client refreshes in place
-# rather than reloading, and if that first request races vite's SSR
-# invalidation it paints a 500 page and stays there - the app is fine, the view
-# is stale, and one reload fixes it.
+# `--reload` re-navigates the window of an ALREADY-running debug session and
+# exits: no publish, no reset, no reinstall, no relaunch. Useful whenever the
+# view is stale rather than the app broken - after a web deploy, or to force a
+# fresh load without paying for a full relaunch.
 if [ "$RELOAD_ONLY" = 1 ]; then
   command -v node >/dev/null 2>&1 || { echo "!! node not on PATH (needed for the CDP call)" >&2; exit 1; }
   curl -sf -o /dev/null --max-time 4 "http://127.0.0.1:${CDP_PORT}/json/version" || {
@@ -72,21 +70,7 @@ if [ "$RELOAD_ONLY" = 1 ]; then
     echo "     $0 --debug" >&2
     exit 1
   }
-  node -e '
-    const port = process.argv[1];
-    (async () => {
-      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = targets.find((t) => t.type === "page");
-      if (!page) throw new Error("no page target on the debug port");
-      const ws = new WebSocket(page.webSocketDebuggerUrl);
-      await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-      ws.send(JSON.stringify({ id: 1, method: "Page.reload", params: { ignoreCache: true } }));
-      await new Promise((res) => { ws.onmessage = (e) => { if (JSON.parse(e.data).id === 1) res(); }; });
-      ws.close();
-      console.log(`>> reloaded ${page.url}`);
-    })().catch((e) => { console.error(`!! ${e.message}`); process.exit(1); });
-  ' "$CDP_PORT"
-  exit 0
+  exec node "${SELF_REPO}/scripts/mac-desktop-cdp.mjs" "$CDP_PORT" navigate
 fi
 
 # Debug mode defaults the app at the devbox's own dev server (HMR: edit a file
@@ -138,13 +122,25 @@ BANNER=">> loombox desktop -> ${MAC_HOST} @ ${BRANCH}${PWA_URL:+  (PWA: ${PWA_UR
 [ "$DEBUG" = 1 ] && BANNER="$BANNER  [debug]"
 echo "$BANNER"
 
-# Debug mode is two Chromium/Node argv flags, nothing more: the renderer's CDP
-# endpoint and the main process's Node inspector. Both bind loopback on the Mac
-# and are opt-in because CDP is arbitrary JS in the app's context, which means
-# the AMK in localStorage and every decrypted session.
+# Debug mode is argv flags, nothing more: the renderer's CDP endpoint and the
+# main process's Node inspector. Both bind loopback on the Mac and are opt-in
+# because CDP is arbitrary JS in the app's context, which means the AMK in
+# localStorage and every decrypted session.
 DEBUG_ARGS=""
+SECURE_ORIGIN=""
 if [ "$DEBUG" = 1 ]; then
   DEBUG_ARGS="--remote-debugging-port=${CDP_PORT} --inspect=${INSPECT_PORT}"
+
+  # A plain-http dev origin is NOT a secure context, and that is fatal rather
+  # than cosmetic here: no `crypto.subtle`, so the app cannot generate or unwrap
+  # an AMK and the entire session view stays unreachable behind onboarding.
+  # (Verified on the real window: `isSecureContext: false`, `crypto.subtle`
+  # undefined on http://<tailnet-ip>:5173.) Chromium grants one named origin the
+  # secure treatment, but only alongside its own profile dir, so the remote side
+  # pairs this with `--user-data-dir` once it knows the Mac's $HOME.
+  case "$PWA_URL" in
+    http://*) SECURE_ORIGIN="$PWA_URL" ;;
+  esac
 fi
 
 # The remote flow runs as one heredoc'd script piped to the Mac's bash. Branch,
@@ -158,7 +154,7 @@ fi
 # the debug flags first landed in $3 and made the remote `cd` to `--`. Quoting
 # each value keeps empties as real empty arguments, and keeps the two debug flags
 # a single $4 that only `open` word-splits.
-REMOTE_ARGV="$(printf '%q ' "$BRANCH" "$PWA_URL" "${LOOMBOX_MAC_REPO:-}" "$DEBUG_ARGS")"
+REMOTE_ARGV="$(printf '%q ' "$BRANCH" "$PWA_URL" "${LOOMBOX_MAC_REPO:-}" "$DEBUG_ARGS" "$SECURE_ORIGIN")"
 # shellcheck disable=SC2087
 ssh -o BatchMode=yes -o ConnectTimeout=25 "$MAC_HOST" "bash -s -- $REMOTE_ARGV" <<'REMOTE'
 set -euo pipefail
@@ -166,6 +162,7 @@ BRANCH="$1"
 PWA_URL="${2:-}"
 REPO="${3:-}"
 DEBUG_ARGS="${4:-}"
+SECURE_ORIGIN="${5:-}"
 
 # Auto-detect the checkout if not pinned via LOOMBOX_MAC_REPO.
 if [ -z "$REPO" ]; then
@@ -219,6 +216,14 @@ EAPP="$(find "$REPO/node_modules/.pnpm" -maxdepth 6 -name Electron.app -type d 2
 launchctl unsetenv LOOMBOX_DESKTOP_PWA_URL 2>/dev/null || true
 APP_ARGS=""
 [ -n "$PWA_URL" ] && APP_ARGS="--pwa-url=$PWA_URL"
+# Pair the named-origin exemption with its own profile dir, which Chromium
+# requires for it to take effect. A stable path (and one with NO spaces, since
+# these flags are deliberately word-split below) so the dev origin's session and
+# AMK persist between debug launches without touching the normal profile.
+if [ -n "$SECURE_ORIGIN" ]; then
+  DEBUG_ARGS="$DEBUG_ARGS --unsafely-treat-insecure-origin-as-secure=$SECURE_ORIGIN"
+  DEBUG_ARGS="$DEBUG_ARGS --user-data-dir=$HOME/.loombox-desktop-debug"
+fi
 # Word-splitting is the point for both: each is either empty or whole flags.
 # shellcheck disable=SC2086
 open -n -a "$EAPP" --args "$REPO/apps/desktop" $APP_ARGS $DEBUG_ARGS
@@ -259,6 +264,14 @@ if [ "$DEBUG" = 1 ]; then
   echo ">> forwarding debug ports from ${MAC_HOST}"
   forward "$CDP_PORT" "renderer" || true
   forward "$INSPECT_PORT" "main process" || true
+
+  # Confirm the window actually rendered the app rather than reporting "launched"
+  # and leaving a stale 500 on screen (the window's first request races vite's
+  # cold SSR compile often enough that this is the normal case, not the rare one).
+  if command -v node >/dev/null 2>&1 &&
+    curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${CDP_PORT}/json/version"; then
+    node "${SELF_REPO}/scripts/mac-desktop-cdp.mjs" "$CDP_PORT" settle "$PWA_URL" || true
+  fi
 
   cat <<HINTS
 

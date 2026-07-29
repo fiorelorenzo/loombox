@@ -11,7 +11,7 @@ import {
   generateRecoveryCode,
   importAesGcmKey,
 } from '@loombox/crypto';
-import { createTranscriptState, reduceTranscript } from '@loombox/providers-core';
+import { createTranscriptState, reduceTranscript } from '@loombox/providers-core/browser';
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,

@@ -1,7 +1,27 @@
-export const PACKAGE_NAME = '@loombox/providers-core';
+/**
+ * The browser-safe entry point of this package (`@loombox/providers-core/browser`).
+ *
+ * Everything here is pure logic — reducers, parsers, catalogs, types — with no
+ * `node:` import anywhere in its module graph. The main barrel (`./index`) also
+ * exports `AcpClient`, `PermissionQueue` and `ConfigOptionStore`, which extend
+ * Node's `EventEmitter` and (for `AcpClient`) spawn the agent process, so a
+ * client bundle importing the barrel pulls those in too.
+ *
+ * That is exactly the failure `permission-queue-state.ts`'s doc comment already
+ * describes one layer down: `node:events` externalizes to an empty stub in a
+ * client-side Vite build, so `class X extends EventEmitter {}` throws the moment
+ * the module is evaluated. A production `vite build` hides it — Rollup
+ * tree-shakes the unused classes away — but `vite dev` evaluates every module it
+ * serves, so the web app died on hydration with
+ * `Cannot access "node:events.EventEmitter" in client code`, ~5s after painting
+ * a perfectly healthy-looking page.
+ *
+ * So the split that already existed per-module now exists at the entry point:
+ * browser code imports this, Node code imports the barrel. Adding a `node:`
+ * import to any module re-exported below re-breaks the client, which is the
+ * point — it belongs behind the barrel instead.
+ */
 
-export { AcpClient } from './client';
-export type { AcpChildProcess, AcpClientOptions, NewSessionOptions } from './client';
 export type {
   AcpAgentInfo,
   AcpContentBlock,
@@ -13,9 +33,6 @@ export type {
   AcpUpdate,
   AcpUpdateKind,
 } from './types';
-
-// v1: the fuller ACP update surface + transcript reducer (SPEC.md §7.24,
-// §5.5). Additive to the v0 exports above, which are unchanged.
 export type {
   AcpDiff,
   AcpMessageChunkKind,
@@ -42,11 +59,6 @@ export type {
   TranscriptToolCallItem,
   UsageRecord,
 } from './transcript';
-
-// v1: session-lifecycle wire events — status badge / config-options push /
-// turn-started-ended (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149).
-// Additive to the transcript-reducer exports above; `reduceSessionEvent` is
-// the reducer entry point over this wider union.
 export type {
   AcpConfigOptionsEvent,
   AcpConfigOptionUpdateEvent,
@@ -57,36 +69,16 @@ export type {
   AcpTurnEndedEvent,
   AcpTurnStartedEvent,
 } from './types';
-
-// v1: session lifecycle (issue #176) — resume/list/cancel + replay live on
-// AcpClient itself; the types below are the wire/domain shapes they use.
 export type { AcpSessionSummary } from './types';
-
-// v1: capability-negotiation-gated feature flags (SPEC.md §5.5; issue #180).
 export { deriveFeatureFlags } from './capabilities';
 export type { AcpFeatureFlags } from './capabilities';
 export type { AcpAgentCapabilities, AcpPromptCapabilities } from './types';
-
-// v1: the session/request_permission FIFO queue state machine (SPEC.md
-// §7.24; issue #178).
-export { PermissionQueue } from './permission-queue';
-export type {
-  EnqueuePermissionRequestInput,
-  PendingPermissionRequest,
-  PermissionResolveResult,
-} from './permission-queue';
 export type {
   AcpPermissionOption,
   AcpPermissionOptionKind,
   AcpPermissionOutcome,
   AcpRequestPermissionParams,
 } from './types';
-
-// v1: the pure, EventEmitter-free core `PermissionQueue` delegates to
-// (Wave D.2, issue #144/#145/#146/#147) — a consumer that cannot safely
-// extend `node:events` (a browser bundle) uses these functions directly to
-// build its own reactive queue store over the exact same FIFO/nested-
-// visibility/cancel-all rules, instead of re-implementing them.
 export {
   cancelAllPermissionRequests,
   createPermissionQueueState,
@@ -97,26 +89,12 @@ export {
   resolvePermissionRequest,
 } from './permission-queue-state';
 export type { PermissionQueueState } from './permission-queue-state';
-
-// v1: config-option (model/mode/reasoning-effort) state (SPEC.md §7.24;
-// issue #179).
-export { ConfigOptionStore } from './config-options';
-export type { ConfigOptionChangeEvent } from './config-options';
 export type { AcpConfigOption, AcpConfigOptionChoice } from './types';
-
-// v1: the provider-module registry + enrich() hook extension point
-// (SPEC.md §5.5; issue #181).
 export { ProviderRegistry, RESERVED_PROVIDER_IDS } from './provider-registry';
 export type { AcpProviderModule } from './provider-registry';
-
-// v1: image hand-off content blocks + shared magic-byte sniffing (SPEC.md
-// §7.25; issues #157/#159).
 export { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
 export type { SniffedImageMimeType } from './image';
 export type { AcpImageContentBlock, AcpResourceLinkContentBlock } from './types';
-
-// v1: configured MCP servers fed into `session/new` (SPEC.md §7.7; issue
-// #190).
 export type {
   AcpMcpHttpServerConfig,
   AcpMcpKeyValue,
@@ -124,11 +102,6 @@ export type {
   AcpMcpSseServerConfig,
   AcpMcpStdioServerConfig,
 } from './types';
-
-// v1: the MCP server configuration data model — parser/validator for a raw
-// user config into the typed `McpServerConfig` list, the required-secrets
-// declaration, and the global-plus-project-overrides merge algorithm
-// (SPEC.md §7.7; issue #187).
 export {
   McpServerConfigError,
   parseMcpServerConfig,
@@ -145,26 +118,13 @@ export type {
   McpSseServerConfig,
   McpStdioServerConfig,
 } from './mcp-config';
-
-// v1: the per-server MCP secret grant model — grant/revoke ACL plus the
-// resolver that turns a declared `McpServerConfig` list into the
-// `AcpMcpServerConfig` list `AcpClient.newSession` consumes, failing fast
-// on an ungranted/missing secret (SPEC.md §7.7, §7.17; issue #189).
 export {
   McpSecretGrantStore,
   McpServerSecretMissingError,
   resolveMcpServerConfigs,
 } from './mcp-secret-grants';
-
-// v1: quick-add MCP server presets — a small starter catalog, each
-// expanding to the exact same `McpServerConfig` shape a hand-entered
-// server produces (SPEC.md §7.7; issue #188).
 export { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from './mcp-presets';
 export type { McpServerPreset } from './mcp-presets';
-
-// v1: agent plugin/extension management, independent of the MCP-server
-// list — data model, parser/validator, and the global-plus-project-
-// overrides resolver (SPEC.md §7.7; issue #191).
 export {
   PluginConfigError,
   parsePluginConfig,
@@ -172,3 +132,8 @@ export {
   resolveEffectivePlugins,
 } from './plugin-config';
 export type { PluginConfig, PluginConfigRecord } from './plugin-config';
+export type {
+  EnqueuePermissionRequestInput,
+  PendingPermissionRequest,
+  PermissionResolveResult,
+} from './permission-queue-state';

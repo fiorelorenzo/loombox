@@ -1,4 +1,4 @@
-import type { TranscriptItem, TranscriptState } from '@loombox/providers-core';
+import type { TranscriptItem, TranscriptState } from '@loombox/providers-core/browser';
 
 /**
  * Copy & export (SPEC.md §7.24 "Copy & export"; issue #150). `copyToClipboard`
