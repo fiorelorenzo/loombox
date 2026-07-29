@@ -2207,7 +2207,7 @@
             class="sidebar-collapse-toggle"
             dataTestId="sidebar-collapse-toggle"
           >
-            <Icon name="collapse-chevron" class={sessionsCollapsed ? 'flip' : ''} />
+            <Icon name="sidebar-panel" />
           </IconButton>
         </div>
 
@@ -3391,14 +3391,24 @@
     padding: var(--space-sm) 0;
   }
 
-  /* Expanded, the control is quiet until the sidebar is hovered or holds
-     focus — it is a preference, not a primary action. It is always visible
-     while collapsed (see above) and on a coarse pointer, which has no
-     hover to reveal it with. */
-  .sidebar:not(.collapsed):not(:hover):not(:focus-within)
-    .sidebar-brand
-    :global(.sidebar-collapse-toggle) {
-    opacity: 0;
+  /* The control is always visible, just quiet until the sidebar is hovered or
+     holds focus: it is a preference rather than a primary action, but it is
+     also the only pointer affordance for shutting the sidebar (`Mod+B` is the
+     other, and nobody guesses a shortcut), so hiding it outright meant the
+     column could only be closed by someone who happened to hover the header.
+     Full opacity while collapsed and on a coarse pointer, neither of which has
+     a hover state to reveal anything with. Below `--bp-desktop` it is
+     `display: none` (see the narrow-viewport block): there the sidebar is an
+     overlay sheet, not a column to collapse. */
+  .sidebar-brand :global(.sidebar-collapse-toggle) {
+    opacity: 0.55;
+    transition: opacity var(--duration-fast) var(--ease-beat);
+  }
+
+  .sidebar:hover .sidebar-brand :global(.sidebar-collapse-toggle),
+  .sidebar:focus-within .sidebar-brand :global(.sidebar-collapse-toggle),
+  .sidebar.collapsed .sidebar-brand :global(.sidebar-collapse-toggle) {
+    opacity: 1;
   }
 
   @media (hover: none) {
@@ -3407,13 +3417,14 @@
     }
   }
 
-  .sidebar-brand :global(.sidebar-collapse-toggle) {
-    transition: opacity var(--duration-fast) var(--ease-beat);
-  }
-
-  .sidebar-brand :global(.icon.flip) {
-    transform: scaleX(-1);
-  }
+  /* No mirrored variant of the glyph on purpose. Flipping it would move the
+     marked column to the right, which reads as "the panel moves to the other
+     side" rather than "the panel is shut" — and the state is already carried,
+     accessibly and visibly, by `IconButton`'s own `aria-pressed` styling
+     (accent-subtle fill + accent border) plus the label flipping between
+     Collapse and Expand. The chevron this replaced did have a `scaleX(-1)`
+     variant, but its path was symmetric about x=32, so that transform drew an
+     identical glyph: the control had never actually shown its state. */
 
   /* ------------------------------------------------------------------ */
   /* Primary destinations (design spec v4 §3.1): Inbox/Nodes/Settings, now */

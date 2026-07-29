@@ -53,6 +53,7 @@ export const ICON_NAMES = [
   'copy',
   'pin',
   'close',
+  'sidebar-panel',
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -196,4 +197,21 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
 
   // An X — close/dismiss.
   close: ['M18 18 L46 46', 'M46 18 L18 46'],
+
+  // A panel with one column marked — the Sessions sidebar's own show/hide
+  // control, and deliberately NOT a chevron. Two reasons it is drawn as the
+  // object rather than a direction. First, `collapse-chevron` is the
+  // disclosure mark eight rows already use (tool calls, message expand,
+  // project groups), so spending it on a whole panel made one glyph mean two
+  // unrelated things. Second, a chevron only says "that way", while every
+  // comparable tool (VS Code, Zed, Linear) names the surface being toggled.
+  //
+  // It is also asymmetric on purpose: the caller mirrors it with
+  // `scaleX(-1)` to show which side the panel is on, and the chevron this
+  // replaced was symmetric about x=32 — so that mirror rendered an identical
+  // glyph and the control silently had no state at all.
+  'sidebar-panel': [
+    'M18 12 H46 A6 6 0 0 1 52 18 V46 A6 6 0 0 1 46 52 H18 A6 6 0 0 1 12 46 V18 A6 6 0 0 1 18 12 Z',
+    'M27 12 V52',
+  ],
 };
