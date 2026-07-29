@@ -9,6 +9,9 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.dev.example
+# .env.dev.local (scripts/dev.sh's local dev loop config) is covered by the
+# .env.* pattern above like every other real .env file - never committed.
 .turbo/
 .pnpm-store/
 

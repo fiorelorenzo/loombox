@@ -1,0 +1,41 @@
+# loombox local dev loop - the Postgres half (scripts/dev.sh).
+#
+# This is the ONLY containerized piece of the dev loop: relay, node, and web
+# all run as plain host processes (`tsx watch` / `vite dev`) so HMR and
+# --inspect both work normally. Only the database needs to be "a real
+# service" for production parity (real Postgres-backed RelayStore, real
+# Better Auth), so it's the only thing here - contrast with
+# deploy/relay/docker-compose.yml, which containerizes the relay itself for
+# prodbox.
+#
+# Run from the repo root (scripts/dev.sh does this for you):
+#   docker compose -f deploy/dev/docker-compose.yml -p loombox-dev up -d
+#
+# Credentials are hardcoded, unlike deploy/relay/docker-compose.yml's
+# ${POSTGRES_PASSWORD:?...}: this is published on 127.0.0.1 only, holds
+# throwaway data any contributor can wipe with `scripts/dev.sh --fresh`, and
+# is never reachable from outside this host. There is no secret here worth
+# a .env file for - hardcoding it is what keeps the loop zero-config.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loombox
+      POSTGRES_PASSWORD: loombox
+      POSTGRES_DB: loombox
+    ports:
+      # 5435, not Postgres's usual 5432 and not 5433 either: both were already
+      # taken on this box when this was written (5433 by an unrelated project's
+      # container). scripts/dev.sh preflights the port and names the squatter.
+      - '127.0.0.1:5435:5432'
+    volumes:
+      - loombox-dev-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U loombox -d loombox']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  loombox-dev-pg-data:
