@@ -45,17 +45,49 @@ CDP_PORT="${LOOMBOX_CDP_PORT:-9222}"
 INSPECT_PORT="${LOOMBOX_INSPECT_PORT:-9229}"
 WEB_PORT="${LOOMBOX_WEB_PORT:-5173}"
 DEBUG=0
+RELOAD_ONLY=0
 BRANCH=""
 
-# `--debug` is positional-agnostic so both orders read naturally.
+# Flags are positional-agnostic so any order reads naturally.
 for arg in "$@"; do
   case "$arg" in
     --debug) DEBUG=1 ;;
+    --reload) RELOAD_ONLY=1 ;;
     -*) echo "!! unknown flag: $arg" >&2; exit 2 ;;
     *) [ -z "$BRANCH" ] && BRANCH="$arg" ;;
   esac
 done
 BRANCH="${BRANCH:-$CURRENT_BRANCH}"
+
+# `--reload` reloads the window of an ALREADY-running debug session and exits:
+# no publish, no reset, no reinstall, no relaunch. It earns its place because
+# after an edit to a route module, SvelteKit's dev client refreshes in place
+# rather than reloading, and if that first request races vite's SSR
+# invalidation it paints a 500 page and stays there - the app is fine, the view
+# is stale, and one reload fixes it.
+if [ "$RELOAD_ONLY" = 1 ]; then
+  command -v node >/dev/null 2>&1 || { echo "!! node not on PATH (needed for the CDP call)" >&2; exit 1; }
+  curl -sf -o /dev/null --max-time 4 "http://127.0.0.1:${CDP_PORT}/json/version" || {
+    echo "!! nothing answering CDP on ${CDP_PORT}; start a debug session first:" >&2
+    echo "     $0 --debug" >&2
+    exit 1
+  }
+  node -e '
+    const port = process.argv[1];
+    (async () => {
+      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      const page = targets.find((t) => t.type === "page");
+      if (!page) throw new Error("no page target on the debug port");
+      const ws = new WebSocket(page.webSocketDebuggerUrl);
+      await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+      ws.send(JSON.stringify({ id: 1, method: "Page.reload", params: { ignoreCache: true } }));
+      await new Promise((res) => { ws.onmessage = (e) => { if (JSON.parse(e.data).id === 1) res(); }; });
+      ws.close();
+      console.log(`>> reloaded ${page.url}`);
+    })().catch((e) => { console.error(`!! ${e.message}`); process.exit(1); });
+  ' "$CDP_PORT"
+  exit 0
+fi
 
 # Debug mode defaults the app at the devbox's own dev server (HMR: edit a file
 # here, the Mac window updates) rather than the deployed PWA. An explicit
