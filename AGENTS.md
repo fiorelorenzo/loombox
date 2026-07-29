@@ -173,6 +173,15 @@ Things that cost real time to find out, so do not re-derive them:
   builds) while the dev server is up.** They share `.svelte-kit/`, and rewriting it
   under the running server thrashes the window with a burst of reloads — measured: ~10
   reload events per sync, repeating — and can 500 a request that lands mid-rewrite.
+- **A remote GUI launch must redirect its stdio.** The app inherits ssh's
+  descriptors, and ssh does not close the session while anything still holds its
+  stdout, so `open ... --args ...` without `>/dev/null 2>&1` blocks the whole script
+  after printing "launched" until the app exits (observed as a 15-minute hang).
+- **A renderer can be left wedged by a CDP client that detached mid-flight**, and it
+  fails asymmetrically: `Page.*` and `Target.*` keep answering while
+  `Runtime.evaluate` never replies at all. A `Page.navigate` unwedges it. So treat
+  "cannot read the page" as "navigate", never as a fatal error — that is why
+  `mac-desktop-cdp.mjs` bounds every request and returns `null` instead of throwing.
 
 ## Deploying the web PWA fast (no Docker build)
 

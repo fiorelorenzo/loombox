@@ -225,8 +225,13 @@ if [ -n "$SECURE_ORIGIN" ]; then
   DEBUG_ARGS="$DEBUG_ARGS --user-data-dir=$HOME/.loombox-desktop-debug"
 fi
 # Word-splitting is the point for both: each is either empty or whole flags.
+#
+# Redirecting to /dev/null is what keeps this from hanging: the launched app
+# inherits these descriptors, and ssh does not close the session while anything
+# still holds its stdout - so without this, the whole script blocks after
+# printing "launched" until the app itself exits (observed: a 15-minute hang).
 # shellcheck disable=SC2086
-open -n -a "$EAPP" --args "$REPO/apps/desktop" $APP_ARGS $DEBUG_ARGS
+open -n -a "$EAPP" --args "$REPO/apps/desktop" $APP_ARGS $DEBUG_ARGS >/dev/null 2>&1
 echo ">> launched${APP_ARGS:+ $APP_ARGS}${DEBUG_ARGS:+ $DEBUG_ARGS}"
 REMOTE
 
