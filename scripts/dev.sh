@@ -65,6 +65,11 @@ COMPOSE=(docker compose -f "$COMPOSE_FILE" -p loombox-dev)
 readonly RELAY_PATTERN="--inspect=127.0.0.1:${RELAY_INSPECT_PORT}"
 readonly NODE_PATTERN="--inspect=127.0.0.1:${NODE_INSPECT_PORT}"
 readonly WEB_PATTERN="vite dev --host 127.0.0.1 --port ${WEB_PORT}"
+# Must stay byte-identical to scripts/mac-desktop.sh's MAC_FWD_ARGS: that script
+# opens the same tunnel when this loop was started with the Mac unreachable (or
+# --no-mac), and both replace a stale one with `pkill -f "ssh $MAC_FWD_ARGS
+# $MAC_HOST"`, so one differing flag leaves each unable to clear the other's
+# forward — and the fresh -R then fails with the remote port already bound.
 readonly MAC_FWD_ARGS="-f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -R ${WEB_PORT}:127.0.0.1:${WEB_PORT} -R ${RELAY_PORT}:127.0.0.1:${RELAY_PORT}"
 
 # --- flags -------------------------------------------------------------

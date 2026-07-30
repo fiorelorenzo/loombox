@@ -13,26 +13,34 @@
 #   MAC_HOST              ssh host/alias of the Mac        (default: mac)
 #   LOOMBOX_MAC_REPO      loombox checkout path on the Mac (default: auto-detect)
 #   PWA_URL               URL the app loads                (default: the app's own
-#                         https://app.loombox.dev; in --debug, this box's dev server)
+#                         https://app.loombox.dev; --hmr points it at this box)
 #   LOOMBOX_CDP_PORT      renderer CDP port                (default: 9222)
 #   LOOMBOX_INSPECT_PORT  main-process inspector port      (default: 9229)
-#   LOOMBOX_WEB_PORT      dev server port to point --debug at (default: 5173)
 #
 # The desktop shell (Electron main/preload/window) comes from the branch; the UI
-# it loads is the deployed PWA unless PWA_URL overrides it.
+# it loads is the deployed PWA unless --hmr or PWA_URL overrides it.
+#
+# --hmr loads THIS box's `vite dev` server instead, so editing a file here updates
+# the Mac window in place. The window reaches it as http://localhost:5173, through
+# the reverse SSH forwards `scripts/dev.sh` opens (this script re-opens them if the
+# Mac cannot reach the port), never as http://<tailnet-ip>:5173 — and that is not a
+# nicety, the whole local loop is localhost-shaped: `localhost` is a secure context
+# per spec, so `crypto.subtle` exists and the app can unwrap its AMK; the dev relay
+# only sends `Access-Control-Allow-Origin` for http://localhost:5173; the app dials
+# ws://localhost:8790/ws; and the GitHub OAuth App's callback is registered on
+# localhost:8790. The tunnel carries 8790 too, so all four hold on the Mac.
 #
 # --debug adds the two argv flags that open the renderer's CDP endpoint and the
-# main process's Node inspector, forwards both to this box, and points the app at
-# this box's `vite dev` server (HMR: edit a file here, the Mac window updates).
-# It is opt-in because CDP is arbitrary JS execution in the app's context, which
-# includes the AMK in localStorage and every decrypted session. See AGENTS.md
-# ("Debugging the desktop app on the Mac") for the full loop.
+# main process's Node inspector, and forwards both to this box. It implies --hmr
+# unless PWA_URL says otherwise. It is opt-in because CDP is arbitrary JS execution
+# in the app's context, which includes the AMK in localStorage and every decrypted
+# session. See AGENTS.md ("Debugging the desktop app on the Mac") for the full loop.
 #
 # Usage (from the devbox):
 #   scripts/mac-desktop.sh                 # the branch we're on now (auto-published)
 #   scripts/mac-desktop.sh some-branch     # a specific branch (must be on origin)
-#   PWA_URL=http://localhost:5173 scripts/mac-desktop.sh
-#   scripts/mac-desktop.sh --debug         # + CDP/inspector, pointed at our dev server
+#   scripts/mac-desktop.sh --hmr           # + live-reload against this box's dev loop
+#   scripts/mac-desktop.sh --debug         # + CDP/inspector (implies --hmr)
 #   PWA_URL=https://app.loombox.dev scripts/mac-desktop.sh --debug   # debug prod bundle
 set -euo pipefail
 
@@ -43,8 +51,19 @@ MAC_HOST="${MAC_HOST:-mac}"
 PWA_URL="${PWA_URL:-}"
 CDP_PORT="${LOOMBOX_CDP_PORT:-9222}"
 INSPECT_PORT="${LOOMBOX_INSPECT_PORT:-9229}"
-WEB_PORT="${LOOMBOX_WEB_PORT:-5173}"
+# Fixed, not env-overridable, exactly as in scripts/dev.sh: the GitHub OAuth App's
+# callback URL and the relay's LOOMBOX_TRUSTED_ORIGINS are registered against these
+# exact ports, so a "just use another port" override would silently break login on
+# the Mac too.
+readonly WEB_PORT=5173
+readonly RELAY_PORT=8790
+# Must stay byte-identical to scripts/dev.sh's MAC_FWD_ARGS: both scripts replace a
+# stale tunnel with `pkill -f "ssh $MAC_FWD_ARGS $MAC_HOST"`, so a single differing
+# flag would leave each unable to clear the other's forward — and the fresh -R would
+# then fail with the remote port already bound.
+readonly MAC_FWD_ARGS="-f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -R ${WEB_PORT}:127.0.0.1:${WEB_PORT} -R ${RELAY_PORT}:127.0.0.1:${RELAY_PORT}"
 DEBUG=0
+HMR=0
 RELOAD_ONLY=0
 BRANCH=""
 
@@ -53,11 +72,20 @@ for arg in "$@"; do
   case "$arg" in
     --debug) DEBUG=1 ;;
     --reload) RELOAD_ONLY=1 ;;
+    --hmr) HMR=1 ;;
     -*) echo "!! unknown flag: $arg" >&2; exit 2 ;;
     *) [ -z "$BRANCH" ] && BRANCH="$arg" ;;
   esac
 done
 BRANCH="${BRANCH:-$CURRENT_BRANCH}"
+
+# --debug's whole point was iterating on the app, and it has always defaulted to
+# this box's dev server rather than the deployed bundle. That stays true now that
+# the HMR route is its own flag: --debug implies --hmr unless PWA_URL says
+# otherwise, and --hmr alone gives the live-reload loop without opening CDP.
+if [ "$DEBUG" = 1 ] && [ -z "$PWA_URL" ]; then
+  HMR=1
+fi
 
 # `--reload` re-navigates the window of an ALREADY-running debug session and
 # exits: no publish, no reset, no reinstall, no relaunch. Useful whenever the
@@ -73,36 +101,52 @@ if [ "$RELOAD_ONLY" = 1 ]; then
   exec node "${SELF_REPO}/scripts/mac-desktop-cdp.mjs" "$CDP_PORT" navigate
 fi
 
-# Debug mode defaults the app at the devbox's own dev server (HMR: edit a file
-# here, the Mac window updates) rather than the deployed PWA. An explicit
-# PWA_URL always wins, so `PWA_URL=https://app.loombox.dev ... --debug` debugs
-# the production bundle instead.
-DEV_SERVER_URL=""
-if [ "$DEBUG" = 1 ] && [ -z "$PWA_URL" ]; then
-  command -v tailscale >/dev/null 2>&1 || {
-    echo "!! tailscale CLI not found; the Mac reaches this box over the tailnet" >&2
-    echo "   (set PWA_URL explicitly to skip dev-server autodetection)" >&2
-    exit 1
-  }
-  DEV_HOST="$(tailscale ip -4 2>/dev/null | head -1)"
-  [ -n "$DEV_HOST" ] || { echo "!! could not resolve this box's tailnet IP" >&2; exit 1; }
-  DEV_SERVER_URL="http://${DEV_HOST}:${WEB_PORT}"
-  PWA_URL="$DEV_SERVER_URL"
+# --hmr points the app at this box's dev server, reached as http://localhost:<web
+# port> through the reverse SSH forwards (see the header for why localhost and not
+# the tailnet IP). An explicit PWA_URL always wins, so
+# `PWA_URL=https://app.loombox.dev ... --debug` debugs the production bundle.
+if [ "$HMR" = 1 ] && [ -z "$PWA_URL" ]; then
+  PWA_URL="http://localhost:${WEB_PORT}"
 
-  # The dev server is long-lived, so this script never starts one (an
-  # agent-spawned `vite dev` reparents to init and leaks the port for days —
-  # see the janitor notes in the shared agent docs). Fail loud with the exact
-  # command instead. Bind the tailnet IP, never 0.0.0.0: this is a public VPS,
-  # and UFW's tailscale0 allow is not a reason to also listen on the public one.
-  if ! curl -sf -o /dev/null --max-time 4 "$DEV_SERVER_URL"; then
-    echo "!! no dev server answering on ${DEV_SERVER_URL}" >&2
-    echo "   start one first (it must bind the tailnet IP so the Mac can reach it):" >&2
-    echo "     pnpm --filter @loombox/web exec vite dev --host ${DEV_HOST}" >&2
-    echo "   or debug the deployed bundle instead:" >&2
-    echo "     PWA_URL=https://app.loombox.dev $0 ${BRANCH} --debug" >&2
+  # The loop is long-lived, so this script never starts one (an agent-spawned
+  # `vite dev` reparents to init and leaks the port for days — see the janitor
+  # notes in the shared agent docs). Fail loud with the exact command instead.
+  if ! curl -sf -o /dev/null --max-time 4 "http://127.0.0.1:${WEB_PORT}"; then
+    echo "!! no dev server answering on http://127.0.0.1:${WEB_PORT}" >&2
+    echo "   bring the local loop up first (relay + node + web):" >&2
+    echo "     scripts/dev.sh" >&2
+    echo "   or run against the deployed bundle instead (drop --hmr):" >&2
+    echo "     $0 ${BRANCH}" >&2
     exit 1
   fi
-  echo ">> dev server reachable at ${DEV_SERVER_URL} (HMR loop)"
+
+  # `scripts/dev.sh` opens these forwards, but only best-effort: it skips them when
+  # the Mac is unreachable at loop start, and a laptop that slept since takes the
+  # tunnel down with it. Ask the Mac, the only side that can tell, and re-open
+  # rather than pointing a window at a dead port.
+  mac_reaches_dev_server() {
+    # shellcheck disable=SC2029  # ${WEB_PORT} is meant to expand here, client-side
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$MAC_HOST" \
+      "curl -sf -o /dev/null --max-time 5 http://localhost:${WEB_PORT}" 2>/dev/null
+  }
+  if mac_reaches_dev_server; then
+    echo ">> ${MAC_HOST} already reaches this box's dev server on localhost:${WEB_PORT}"
+  else
+    echo ">> opening reverse forwards to ${MAC_HOST} (its localhost -> this loop)"
+    pkill -f -- "ssh $MAC_FWD_ARGS $MAC_HOST" 2>/dev/null || true
+    # shellcheck disable=SC2086  # a fixed set of ssh flags; word-splitting is the point
+    # shellcheck disable=SC2029  # $MAC_HOST is ssh's destination, not a remote command: -N runs none
+    if ! ssh $MAC_FWD_ARGS "$MAC_HOST"; then
+      echo "!! could not forward ${WEB_PORT}/${RELAY_PORT} to ${MAC_HOST}" >&2
+      echo "   something on the Mac may already hold one of them" >&2
+      exit 1
+    fi
+    if ! mac_reaches_dev_server; then
+      echo "!! forwarded, but the Mac still cannot reach localhost:${WEB_PORT}" >&2
+      exit 1
+    fi
+    echo "   done — that origin is a real secure context on the Mac, no flags needed"
+  fi
 fi
 
 if [ "$BRANCH" = "main" ]; then
@@ -119,6 +163,7 @@ else
 fi
 
 BANNER=">> loombox desktop -> ${MAC_HOST} @ ${BRANCH}${PWA_URL:+  (PWA: ${PWA_URL})}"
+[ "$HMR" = 1 ] && BANNER="$BANNER  [hmr]"
 [ "$DEBUG" = 1 ] && BANNER="$BANNER  [debug]"
 echo "$BANNER"
 
@@ -127,21 +172,28 @@ echo "$BANNER"
 # because CDP is arbitrary JS in the app's context, which means the AMK in
 # localStorage and every decrypted session.
 DEBUG_ARGS=""
-SECURE_ORIGIN=""
 if [ "$DEBUG" = 1 ]; then
   DEBUG_ARGS="--remote-debugging-port=${CDP_PORT} --inspect=${INSPECT_PORT}"
-
-  # A plain-http dev origin is NOT a secure context, and that is fatal rather
-  # than cosmetic here: no `crypto.subtle`, so the app cannot generate or unwrap
-  # an AMK and the entire session view stays unreachable behind onboarding.
-  # (Verified on the real window: `isSecureContext: false`, `crypto.subtle`
-  # undefined on http://<tailnet-ip>:5173.) Chromium grants one named origin the
-  # secure treatment, but only alongside its own profile dir, so the remote side
-  # pairs this with `--user-data-dir` once it knows the Mac's $HOME.
-  case "$PWA_URL" in
-    http://*) SECURE_ORIGIN="$PWA_URL" ;;
-  esac
 fi
+
+# A plain-http origin that is NOT localhost is not a secure context, and that is
+# fatal rather than cosmetic here: no `crypto.subtle`, so the app cannot generate or
+# unwrap an AMK and the whole session view stays unreachable behind onboarding.
+# (Verified on the real window: `isSecureContext: false`, `crypto.subtle` undefined
+# on http://<tailnet-ip>:5173.) Chromium grants one named origin the secure
+# treatment, but only alongside its own profile dir, so the remote side pairs this
+# with `--user-data-dir` once it knows the Mac's $HOME.
+#
+# --hmr never comes through here: it reaches this box as http://localhost:<web port>
+# through the reverse forwards, and localhost is secure by spec. This is the one
+# other route that needs it — pointing the window at http://<tailnet-ip>:5173 to
+# iterate against the PRODUCTION relay, whose LOOMBOX_TRUSTED_ORIGINS carries that
+# exact origin (the dev relay only ever trusts http://localhost:<web port>).
+SECURE_ORIGIN=""
+case "$PWA_URL" in
+  http://localhost:* | http://127.0.0.1:*) ;;
+  http://*) SECURE_ORIGIN="$PWA_URL" ;;
+esac
 
 # The remote flow runs as one heredoc'd script piped to the Mac's bash. Branch,
 # PWA override, repo-path override and the debug flags go in as positional args
@@ -254,6 +306,7 @@ if [ "$DEBUG" = 1 ]; then
     pkill -f "ssh $args $MAC_HOST" 2>/dev/null || true
     # Word-splitting `args` is intended: they are separate ssh options.
     # shellcheck disable=SC2086
+    # shellcheck disable=SC2029  # $MAC_HOST is ssh's destination, not a remote command: -N runs none
     ssh $args "$MAC_HOST" || {
       echo "   !! ${name}: could not forward ${port}" >&2
       return 1
@@ -286,6 +339,14 @@ if [ "$DEBUG" = 1 ]; then
      http://127.0.0.1:${INSPECT_PORT}          curl -s localhost:${INSPECT_PORT}/json/list
    stop forwarding
      pkill -f 'ssh -f -N .* -L ${CDP_PORT}:127.0.0.1:${CDP_PORT}'
+HINTS
+fi
+
+if [ "$HMR" = 1 ]; then
+  cat <<HINTS
+   HMR: edit apps/web on this box and the Mac window updates in place
+     dev origin       ${PWA_URL}  (secure context, no Chromium flags)
+     stop forwarding  pkill -f 'ssh .* -R ${WEB_PORT}:127.0.0.1:${WEB_PORT}'
 HINTS
 fi
 

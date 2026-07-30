@@ -105,14 +105,23 @@ in the Mac's checkout.
 ## Debugging the desktop app on the Mac (from the devbox)
 
 ```bash
-# once: the dev server the app will load, bound to the tailnet so the Mac reaches it
-#   (via hub/tmux, not a bare backgrounded shell — an orphaned `vite dev` holds the port for days)
-pnpm --filter @loombox/web exec vite dev --host "$(tailscale ip -4 | head -1)"
-
-scripts/mac-desktop.sh --debug     # launch + open CDP/inspector + forward both here
+scripts/dev.sh                     # once: the local loop (relay + node + web) this box serves
+scripts/mac-desktop.sh --hmr       # launch pointed at it — edit apps/web here, the window updates
+scripts/mac-desktop.sh --debug     # + CDP/inspector forwarded here (implies --hmr)
 scripts/mac-desktop.sh --reload    # reload the app window, ~2s, no relaunch
 PWA_URL=https://app.loombox.dev scripts/mac-desktop.sh --debug   # debug the prod bundle
 ```
+
+`--hmr` is the live-reload loop, and it needs no CDP, so it is not gated behind
+`--debug`'s arbitrary-JS access. The window loads `http://localhost:5173`, which the
+reverse SSH forwards `scripts/dev.sh` opens (the launcher re-opens them when the Mac
+cannot reach the port, since a slept laptop takes the tunnel down) carry back to this
+box's `vite dev`. Measured on the real window: an edit here reached the Mac in **71ms**,
+and a `window.__hmrProbe` planted beforehand survived it, so the module is hot-swapped
+rather than the page reloaded. `localhost` is also why it needs no Chromium flags — see
+the two bullets on secure contexts below. What it does not cover is the shell itself:
+Electron main/preload come from the Mac's checkout, so a change there still means
+re-running the launcher.
 
 `--debug` adds two argv flags and forwards both ports to this box, so the Mac's window
 is drivable from here:
@@ -151,9 +160,11 @@ Things that cost real time to find out, so do not re-derive them:
   `app.loombox.dev`, so it has its own empty `localStorage`: no session, no AMK, and it
   lands on the sign-in screen. Onboard it once through SPEC §8's real "new device"
   recovery-code path and it persists; do not script copying the AMK across origins.
-  The relay only accepts that origin because it is in `LOOMBOX_TRUSTED_ORIGINS` on
-  prodbox (one env var drives both Better Auth's CSRF check and the CORS allowlist).
-  A devbox tailnet-IP change means updating it there too.
+  Whichever relay that origin talks to must carry it in `LOOMBOX_TRUSTED_ORIGINS` (one
+  env var drives both Better Auth's CSRF check and the CORS allowlist): the dev relay
+  gets `http://localhost:5173` from `scripts/dev.sh`, and prodbox's carries
+  `https://app.loombox.dev` plus this box's tailnet dev origin (so a devbox tailnet-IP
+  change means updating it there too).
 - **`screencapture` over SSH does not work**, even with Screen Recording granted — it
   fails `could not create image from display`. Use a CDP screenshot (renderer only, no
   macOS permission needed, and deterministic). Accessibility *does* work, so window
@@ -163,13 +174,24 @@ Things that cost real time to find out, so do not re-derive them:
   value straight back, which makes it look like it worked, but a LaunchServices-started
   app on macOS 26 does not inherit it. That is why the URL override is the
   `--pwa-url=` argv flag (`open --args` does deliver). Do not "fix" it back to env.
-- **A plain-http dev origin is not a secure context**, so `crypto.subtle` is missing
-  and the app cannot generate or unwrap an AMK — every session stays unreadable.
-  `--debug` therefore also passes
-  `--unsafely-treat-insecure-origin-as-secure=<origin>` plus its required
-  `--user-data-dir` (a dedicated `~/.loombox-desktop-debug` profile, so the dev
-  origin's session persists and the normal profile is untouched). Verified with a real
-  AES-GCM round trip in the window, not just a feature check.
+- **`localhost` is a secure context, a tailnet IP is not**, and that decides the whole
+  HMR route. On `http://<tailnet-ip>:5173` `isSecureContext` is false, so `crypto.subtle`
+  is missing and the app can neither generate nor unwrap an AMK: every session stays
+  unreadable behind onboarding. Reaching the same dev server as `http://localhost:5173`
+  through the reverse tunnel needs no exemption at all (verified on the window:
+  `isSecureContext: true`, `crypto.subtle` present, launched with only `--pwa-url`), and
+  it is what the dev relay expects anyway — it sends `Access-Control-Allow-Origin` for
+  `http://localhost:5173` and no header at all for a tailnet origin, so those responses
+  are blocked. The tunnel carries 8790 too, so `ws://localhost:8790/ws` opens from the
+  Mac's renderer (verified) and the OAuth callback registered on localhost:8790 holds.
+- **One route still needs the insecure-origin exemption**: pointing the window at
+  `http://<devbox-tailnet-ip>:5173` to iterate against the PRODUCTION relay, which does
+  trust that exact origin. `PWA_URL=http://<ip>:5173 scripts/mac-desktop.sh` passes
+  `--unsafely-treat-insecure-origin-as-secure=<origin>` plus the `--user-data-dir`
+  Chromium requires alongside it (`~/.loombox-desktop-debug`, so that origin's session
+  persists and the normal profile is untouched). Verified with a real AES-GCM round trip
+  in the window, not just a feature check. It is applied by URL shape, so it no longer
+  takes `--debug`, and `--hmr` never goes through it.
 - **Client code must import `@loombox/providers-core/browser`, never the barrel.** The
   barrel exports `AcpClient`/`PermissionQueue`/`ConfigOptionStore`, which extend Node's
   `EventEmitter`; `vite build` tree-shakes them away, but `vite dev` evaluates every
@@ -191,6 +213,11 @@ Things that cost real time to find out, so do not re-derive them:
   descriptors, and ssh does not close the session while anything still holds its
   stdout, so `open ... --args ...` without `>/dev/null 2>&1` blocks the whole script
   after printing "launched" until the app exits (observed as a 15-minute hang).
+- **Do not pipe this launcher through `head`.** `scripts/mac-desktop.sh --hmr | head -8`
+  closes the pipe early, so ssh dies of EPIPE and the remote flow is cut mid-way — in one
+  run right before its `pkill`, so the previous instance survived and two windows stacked.
+  It reads exactly like a bug in the stop step, and it is not: the same run redirected to
+  a file goes 1 instance in, 1 instance out. Redirect and read the file.
 - **A renderer can be left wedged by a CDP client that detached mid-flight**, and it
   fails asymmetrically: `Page.*` and `Target.*` keep answering while
   `Runtime.evaluate` never replies at all. A `Page.navigate` unwedges it. So treat
