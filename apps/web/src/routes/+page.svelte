@@ -1611,16 +1611,34 @@
    * `shouldSuppressPush`) relies entirely on this sync. A no-op wherever
    * there is no controlling service worker yet (unsupported browser, or the
    * very first load before the SW has taken control).
+   *
+   * `$state.snapshot` is load-bearing, and its absence took the whole app
+   * down in production: `notificationPreferences` is a `$state` proxy, and
+   * structured clone cannot clone a Proxy, so `postMessage` threw
+   * `DataCloneError: #<Object> could not be cloned`. This runs early in
+   * `onMount`, well before the session is restored, so the app never issued
+   * its `/api/auth/get-session` request at all and sat on "Checking session…"
+   * forever — on every visit AFTER the first, since the worker only controls
+   * the page from the second load on. `tests-e2e/pwa-shell.spec.ts` covers
+   * exactly that second visit now.
+   *
+   * The `try`/`catch` is deliberate belt-and-braces on top of the snapshot: a
+   * notification-preference sync has no business being able to stop someone
+   * signing in, whatever a future payload puts in this message.
    */
   function syncNotificationPreferencesToServiceWorker(): void {
     if (typeof navigator === 'undefined' || !navigator.serviceWorker?.controller) return;
     const sessionProjectMap: Record<string, string> = {};
     for (const session of sessions) sessionProjectMap[session.id] = session.projectPath;
-    navigator.serviceWorker.controller.postMessage({
-      type: 'loombox:notification-prefs-sync',
-      preferences: notificationPreferences,
-      sessionProjectMap,
-    });
+    try {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'loombox:notification-prefs-sync',
+        preferences: $state.snapshot(notificationPreferences),
+        sessionProjectMap,
+      });
+    } catch (error) {
+      console.warn('loombox: could not sync notification preferences to the service worker', error);
+    }
   }
 
   function onNotificationPreferencesChange(preferences: NotificationPreferencesData): void {
