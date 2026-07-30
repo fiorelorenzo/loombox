@@ -16,11 +16,10 @@
    */
   import { onMount } from 'svelte';
   import { env as publicEnv } from '$env/dynamic/public';
-  import { APP_TAGLINE } from '$lib/constants';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
   import { approveDevice, denyDevice, type DeviceApprovalOutcome } from '$lib/device-approve';
-  import BrandLockup from '$lib/components/BrandLockup.svelte';
   import DeviceApprove from '$lib/components/DeviceApprove.svelte';
+  import GateShell from '$lib/components/GateShell.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Card from '$lib/components/ui/Card.svelte';
@@ -134,24 +133,19 @@
   });
 </script>
 
-<main>
-  <header>
-    <h1 class="brand-heading"><BrandLockup /></h1>
-    <p>{APP_TAGLINE}</p>
-  </header>
-
+<GateShell width="wide">
   <Card elevation="floating" padding="lg" class="device-approve-card">
     <h2>Link a device</h2>
 
     {#if !authChecked}
-      <p class="empty loading-line">
-        <WovenLoader label="Checking session" />
-        Checking session…
-      </p>
+      <div class="gate-checking">
+        <WovenLoader size="md" label="Checking session" />
+        <p>Checking session…</p>
+      </div>
     {:else if !authSession}
       <div class="sign-in">
         <p>Sign in to approve this device.</p>
-        <Button variant="primary" onclick={signInWithGithub}>Sign in with GitHub</Button>
+        <Button variant="primary" fullWidth onclick={signInWithGithub}>Sign in with GitHub</Button>
         {#if authError}
           <ErrorNotice message={authError} />
         {/if}
@@ -168,22 +162,13 @@
       />
     {/if}
   </Card>
-</main>
+</GateShell>
 
 <style>
-  main {
-    max-width: 32rem;
-    margin: 0 auto;
-    padding: var(--space-xl) var(--space-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-  }
-
-  header p {
-    color: var(--color-text-secondary);
-    margin: var(--space-2xs) 0 0;
-  }
+  /* The composition (centring, the woven field, the lockup + tagline, the
+     theme control) is `GateShell`'s — this route used to hand-roll its own
+     top-aligned `max-width` column with a duplicate header, which is why it
+     and the sign-in gate drifted apart in the first place. */
 
   /* `Card` renders its own outer element in its own component scope (see
      that file's `Card`-vs-`className` doc comment); `:global()` here is the
@@ -212,17 +197,21 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    align-items: flex-start;
   }
 
-  .empty {
-    color: var(--color-text-muted);
-  }
-
-  .loading-line {
+  /* Matches the sign-in gate's own checking state (`routes/+page.svelte`), so
+     the two screens that can both say "Checking session…" say it identically:
+     the woven motif at `md`, centred, not a 12px speck inline with the text. */
+  .gate-checking {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: var(--space-xs);
+    gap: var(--space-md);
+    padding: var(--space-md) 0;
+  }
+
+  .gate-checking p {
     margin: 0;
+    color: var(--color-text-secondary);
   }
 </style>
