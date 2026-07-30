@@ -302,6 +302,15 @@ open -n -a "$EAPP" --args "$REPO/apps/desktop" $APP_ARGS $DEBUG_ARGS >/dev/null 
 echo ">> launched${APP_ARGS:+ $APP_ARGS}${DEBUG_ARGS:+ $DEBUG_ARGS}"
 REMOTE
 
+# The exact ssh options a debug forward is opened with. Shared, because the
+# non-debug branch below has to `pkill` precisely what the debug branch created:
+# a launch without `--debug` used to leave the previous run's two forwards alive,
+# pointing at an app that no longer exposes CDP, and this box's own janitor is
+# there because leaked port-holders are a real nuisance here.
+debug_fwd_args() {
+  echo "-f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L ${1}:127.0.0.1:${1}"
+}
+
 if [ "$DEBUG" = 1 ]; then
   # Forward each debug port to THE SAME local port number, never a remapped one:
   # CDP's /json/list hands back a `webSocketDebuggerUrl` of
@@ -309,7 +318,8 @@ if [ "$DEBUG" = 1 ]; then
   # 9333->9222 forward yields URLs that point at nothing on this side.
   forward() {
     local port="$1" name="$2"
-    local args="-f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L ${port}:127.0.0.1:${port}"
+    local args
+    args="$(debug_fwd_args "$port")"
 
     # Already answering through an existing forward? Reuse it.
     if curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${port}/json/version"; then
@@ -355,6 +365,16 @@ if [ "$DEBUG" = 1 ]; then
    stop forwarding
      pkill -f 'ssh -f -N .* -L ${CDP_PORT}:127.0.0.1:${CDP_PORT}'
 HINTS
+else
+  # This launch exposes no CDP, so any forward still standing from an earlier
+  # `--debug` run now points at nothing. Reap both rather than leaving two dead
+  # listeners on 9222/9229 for the next reader to wonder about.
+  for p in "$CDP_PORT" "$INSPECT_PORT"; do
+    # shellcheck disable=SC2029  # $MAC_HOST is ssh's destination, not a remote command
+    if pkill -f "ssh $(debug_fwd_args "$p") $MAC_HOST" 2>/dev/null; then
+      echo ">> dropped a stale debug forward on ${p} (this launch has no CDP)"
+    fi
+  done
 fi
 
 if [ "$HMR" = 1 ]; then
