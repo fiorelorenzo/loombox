@@ -1,5 +1,12 @@
 import type { Page } from '@playwright/test';
-import { announceSession, expect, FakeNode, test, type LoomboxFixture } from './fixtures';
+import {
+  announceSession,
+  expect,
+  FakeNode,
+  sendSessionUpdate,
+  test,
+  type LoomboxFixture,
+} from './fixtures';
 import { randomBase64 } from './harness/relay-harness';
 
 /**
@@ -319,5 +326,64 @@ test.describe('cockpit shell', () => {
     // v2 spent the header's highest-attention corner on a permanently green
     // dot. A healthy connection is now silent.
     await expect(page.getByTestId('connection-status-chip')).toHaveCount(0);
+  });
+
+  test('a session row spends a dot only on a status worth showing, and reserves its slot either way', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const row = page.getByTestId('session-row-item').first();
+    const title = row.locator('strong');
+
+    // Same rule as the header chip above. Every neutral tone — no status yet,
+    // awaiting input, exited — used to draw an identical grey speck in the
+    // row's leading indent, so the dot could not be read as meaning anything.
+    await expect(row.getByTestId('ui-status-dot')).toHaveCount(0);
+    const quiet = await title.boundingBox();
+
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'session_status',
+      status: 'working',
+      updatedAt: new Date().toISOString(),
+    });
+
+    // `working` is one of the three tones that do mean something, so a dot
+    // arrives — into a column that was already holding its width. A title that
+    // jogged sideways the moment its session started working would be a worse
+    // defect than the speck this replaced, and jsdom cannot see either.
+    await expect(row.getByTestId('ui-status-dot')).toHaveCount(1);
+    const working = await title.boundingBox();
+    expect(working?.x).toBe(quiet?.x);
+  });
+
+  test('the role words in the transcript and in the composer form one unbroken column', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'agent_message_chunk',
+      turnId: 'turn-column',
+      messageId: 'msg-column',
+      text: 'One turn, so the transcript has a role word to line up against.',
+    });
+
+    const turn = page.getByTestId('message-item').first().locator('.role-label');
+    const composer = page.locator('.composer-role');
+    await expect(turn).toBeVisible();
+    await expect(composer).toBeVisible();
+
+    // The composer's comment claims it "takes the same fixed role gutter every
+    // transcript item uses". It did not: the transcript's gutter is
+    // right-aligned (`CLAUDE` is too wide to centre), the composer's was
+    // `align-items: center`, so YOU sat on a different vertical line from every
+    // agent word above it. Right edges, because that is the edge the alignment
+    // is defined against and it holds for any provider name length.
+    const turnBox = await turn.boundingBox();
+    const composerBox = await composer.boundingBox();
+    const turnRight = (turnBox?.x ?? 0) + (turnBox?.width ?? 0);
+    const composerRight = (composerBox?.x ?? 0) + (composerBox?.width ?? 0);
+    expect(Math.abs(turnRight - composerRight)).toBeLessThan(1);
   });
 });

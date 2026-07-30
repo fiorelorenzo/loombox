@@ -67,6 +67,13 @@
   --sidebar-width-collapsed: 3.5rem;
   --nav-row-height: 2.5rem; /* 40px — v4 primary destination row height, spec 3.1 */
   --nav-icon-size: 1.25rem; /* 20px — same rows' icon size */
+  /* `StatusDot`'s two diameters. A token because callers have to reserve the
+     dot's slot without it: the sidebar's session rows only draw a dot for the
+     three tones that mean something, so the grid column has to hold its width
+     whether one is there or not, and a literal repeated at the call site drifts
+     from the component the first time the component changes. */
+  --status-dot-size-sm: 0.55rem;
+  --status-dot-size-md: 0.85rem;
   /* Mobile bottom tabbar's own height (< --bp-desktop, design spec v4
      §3.5's tab strip). `+page.svelte`'s shell padding, sidebar sheet and
      drawer bottom-sheet offsets all read this instead of repeating the

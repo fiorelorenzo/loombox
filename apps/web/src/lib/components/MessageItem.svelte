@@ -159,7 +159,6 @@
   data-testid="message-item"
 >
   <div class="gutter">
-    <span class="glyph" aria-hidden="true"></span>
     <span class="role-label">{roleLabel}</span>
   </div>
   <div class="content">
@@ -225,15 +224,8 @@
     overflow: hidden;
   }
 
-  .glyph {
-    width: var(--space-xs);
-    height: var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-text-muted);
-  }
-
-  /* Design spec v5 §4: the word every reader actually scans for; the dot
-     above it stays as a secondary, at-a-glance cue. */
+  /* Design spec v5 §4: the word every reader actually scans for, and now the
+     only mark in this column. */
   .role-label {
     font-size: var(--text-caption-size);
     line-height: var(--text-caption-line);
@@ -263,19 +255,16 @@
     box-shadow: inset 2px 0 0 0 var(--color-accent);
   }
 
-  .message-item.user .glyph {
-    background: var(--color-accent);
-  }
-
-  .message-item.thought .glyph {
-    opacity: 0.5;
+  /* The accent used to sit on a 4px dot above this word. On a right-aligned
+     column it landed over the label's last letter, unattached to anything, and
+     read as dirt on the screen rather than as a cue - and the tone it carried
+     for an agent turn was `--color-text-muted`, which is to say nothing at all.
+     The word carries it now: same information, legible, one mark per turn. */
+  .message-item.user .role-label {
+    color: var(--color-accent);
   }
 
   .message-item.thought .role-label {
-    opacity: 0.5;
-  }
-
-  .message-item.thought .glyph {
     opacity: 0.5;
   }
 

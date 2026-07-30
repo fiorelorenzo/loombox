@@ -41,7 +41,6 @@
     {#each prompts as prompt (prompt.id)}
       <li class="queued-item" data-testid="queued-prompt">
         <div class="gutter">
-          <span class="glyph" aria-hidden="true"></span>
           <span class="role-label">You</span>
         </div>
         <div class="content">
@@ -88,26 +87,24 @@
     width: var(--gutter);
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-end;
     gap: var(--space-3xs);
     padding-top: var(--space-sm);
+    padding-right: var(--space-sm);
   }
 
-  .glyph {
-    width: var(--space-xs);
-    height: var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-accent);
-    opacity: 0.6;
-  }
-
+  /* Same as `MessageItem`'s and the composer's: the word is the mark, in the
+     accent that says "yours", right-aligned onto the shared column. The 4px
+     accent dot that used to sit above it is gone with the rest of them. */
   .role-label {
     font-size: var(--text-caption-size);
     line-height: var(--text-caption-line);
     letter-spacing: var(--text-caption-tracking);
     font-weight: var(--text-caption-weight);
     text-transform: uppercase;
-    color: var(--color-text-muted);
+    color: var(--color-accent);
+    text-align: right;
+    white-space: nowrap;
   }
 
   /* What's left to say "not sent yet" once the bubble geometry is gone: a

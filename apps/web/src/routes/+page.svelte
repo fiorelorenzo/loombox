@@ -662,6 +662,23 @@
   const accountInitial = $derived(accountLabel.charAt(0).toUpperCase() || '?');
 
   /**
+   * The same identity, shortened for the sidebar's own account button. That row
+   * is only as wide as the sidebar, so a full address gets truncated
+   * mid-domain there ("e2e-1785…@example.c…") while the menu it opens repeats
+   * the whole thing one line above it.
+   *
+   * This shortens the LABEL rather than reading `email` directly, because
+   * `displayName` is very often an address too: Better Auth stores whatever
+   * `name` a sign-up sent, and an email/password sign-up commonly sends the
+   * address itself (the e2e harness does exactly that). Keying off the field
+   * instead of the value left the trigger unchanged for every such account.
+   * A real name from an OAuth provider passes through untouched.
+   */
+  const accountShortLabel = $derived(
+    accountLabel.includes('@') ? accountLabel.split('@')[0] : accountLabel,
+  );
+
+  /**
    * The header's connection state (redesign v3 design spec §3.3). Rendered
    * ONLY when the connection is not healthy: a permanently green dot in the
    * app's highest-attention corner spent those pixels saying nothing, so a
@@ -2006,6 +2023,7 @@
       {@const statusLabel = sessionStatus
         ? SESSION_STATUS_LABELS[sessionStatus]
         : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
         class="session-row"
         class:menu-open={sessionRowMenuFor === session.id}
@@ -2018,13 +2036,32 @@
           onclick={() => selectSession(session.id)}
           title={`${session.title}\n${session.projectPath} · ${session.targetId}\n${statusLabel}`}
         >
-          <span class="session-status" data-testid="session-status-badge">
-            <StatusDot
-              tone={sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
-              pulse={sessionStatus === 'working'}
-              label={statusLabel}
-              size="sm"
-            />
+          <!-- The dot is drawn ONLY when it has something to say, which is the
+               rule the header's own connection state already follows (see
+               `connectionNotice`'s doc comment: "a permanently green dot in the
+               app's highest-attention corner spent those pixels saying
+               nothing"). Every neutral tone - no status yet, awaiting input,
+               exited - used to render an identical grey speck in the row's
+               leading indent, so the dot could not be read as meaning anything;
+               `working`, `permission_required` and `error` are the three that
+               can. The label still reaches a screen reader either way.
+
+               The wrapper is NOT inside the branch: `.sr-only` is
+               position-absolute, so a bare one is out of flow, `.session-main`
+               auto-places into the dot's grid column, and the title jogs 16px
+               sideways the moment a session starts working (measured before
+               this span was hoisted out: x=30.4 quiet vs x=46.3 working). -->
+          <span class="session-status">
+            {#if statusTone === 'neutral'}
+              <span class="sr-only">{statusLabel}</span>
+            {:else}
+              <StatusDot
+                tone={statusTone}
+                pulse={sessionStatus === 'working'}
+                label={statusLabel}
+                size="sm"
+              />
+            {/if}
           </span>
           <span class="session-main">
             <span class="session-title-row">
@@ -2448,10 +2485,12 @@
               >
                 Appearance &amp; settings
               </button>
+              <!-- Not `danger`: signing out ends a session on this device and
+                   nothing else. The red belonged to the surfaces that destroy
+                   something (archiving a session, removing a connection). -->
               <button
                 type="button"
                 role="menuitem"
-                class="danger"
                 onclick={() => {
                   closeSidebarMenus();
                   void signOut();
@@ -2474,7 +2513,7 @@
             data-testid="account-menu-toggle"
           >
             <span class="account-avatar" aria-hidden="true">{accountInitial}</span>
-            <span class="account-name">{accountLabel}</span>
+            <span class="account-name">{accountShortLabel}</span>
             <Icon name="more" class="account-chevron" />
           </button>
         </div>
@@ -2823,7 +2862,6 @@
                      first turn into the thing you are about to say. -->
                 <div class="composer-row">
                   <div class="composer-gutter" aria-hidden="true">
-                    <span class="composer-caret">›</span>
                     <span class="composer-role">You</span>
                   </div>
                   <div class="composer-field">
@@ -3629,7 +3667,7 @@
     flex: 1;
     min-width: 0;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: var(--status-dot-size-sm) minmax(0, 1fr);
     align-items: center;
     gap: var(--space-sm);
     text-align: left;
@@ -3655,9 +3693,15 @@
     outline-offset: calc(var(--focus-ring-offset) * -1);
   }
 
+  /* Fixed, not `auto`: the dot itself only appears for the three tones that
+     mean something, so an intrinsic column would collapse for every quiet row
+     and every title would jog a dot's width sideways the moment its session
+     started working. The slot is reserved either way. */
   .session-status {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    width: var(--status-dot-size-sm);
   }
 
   .session-main {
@@ -4294,36 +4338,34 @@
     gap: var(--space-sm);
   }
 
-  /* Mirrors `MessageItem`'s `.gutter` exactly — same token, same centring —
-     so the role column does not jog by a pixel where the transcript ends and
-     the composer begins. */
+  /* Mirrors `MessageItem`'s `.gutter`: same token, same right alignment, same
+     inner padding, so the column of role words runs unbroken from the last turn
+     into the one you are typing. It used to claim "same centring" while
+     actually being `align-items: center` against the transcript's `flex-end`,
+     which put YOU on a different vertical line from every CLAUDE above it. */
   .composer-gutter {
     flex: 0 0 var(--gutter);
     width: var(--gutter);
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-end;
     gap: var(--space-3xs);
     padding-top: var(--space-3xs);
+    padding-right: var(--space-sm);
   }
 
-  /* A prompt caret rather than `MessageItem`'s dot: this row is the one entry
-     that hasn't happened yet, and a caret is the register a developer already
-     reads as "type here". */
-  .composer-caret {
-    font-family: var(--font-mono);
-    font-size: var(--text-body-size);
-    line-height: 1;
-    color: var(--color-text-primary);
-  }
-
+  /* Same right-aligned register as `MessageItem`'s `.role-label`, in the
+     composer's own accent (this row IS your turn), so YOU reads as the live end
+     of the same column CLAUDE sits in. */
   .composer-role {
     font-size: var(--text-caption-size);
     line-height: var(--text-caption-line);
     letter-spacing: var(--text-caption-tracking);
     font-weight: var(--text-caption-weight);
     text-transform: uppercase;
-    color: var(--color-text-muted);
+    color: var(--color-accent);
+    text-align: right;
+    white-space: nowrap;
   }
 
   .composer-field {
@@ -4356,10 +4398,6 @@
   .composer-field textarea:focus,
   .composer-field textarea:focus-visible {
     outline: none;
-  }
-
-  .composer-row:focus-within .composer-caret {
-    color: var(--color-accent);
   }
 
   .composer-field-footer {

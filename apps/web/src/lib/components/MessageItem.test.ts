@@ -225,14 +225,8 @@ describe('MessageItem: one timeline metaphor (redesign v3 §3.4)', () => {
 });
 
 describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
-  it('tells a user turn from an agent turn by a real, visible, accessible role-label word in the gutter — not only by the glyph colour', () => {
+  it('tells a user turn from an agent turn by a real, visible, accessible role-label word in the gutter', () => {
     render(MessageItem, { props: { item: messageItem() } });
-    // The agent glyph carries no accessible name of its own (aria-hidden) —
-    // if role were encoded in colour alone, an accessibility tree diff
-    // between the two roles would show nothing. The label text itself is
-    // the distinguishing, accessible signal.
-    const agentGlyph = document.querySelector('.glyph');
-    expect(agentGlyph?.getAttribute('aria-hidden')).toBe('true');
     const agentLabel = screen.getByText('Agent');
     expect(agentLabel.getAttribute('aria-hidden')).not.toBe('true');
     cleanup();
@@ -242,6 +236,20 @@ describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
     expect(userLabel.getAttribute('aria-hidden')).not.toBe('true');
     // Different, real words — not the same node re-styled by colour alone.
     expect(userLabel.textContent).not.toBe(agentLabel.textContent);
+  });
+
+  it('puts no decorative mark in that gutter beside the word', () => {
+    // Every turn used to carry a 4px dot above the label: `--color-text-muted`
+    // for an agent, accent for the user. Right-aligned, it landed over the
+    // label's last letter and read as dirt on the screen; muted, it said
+    // nothing an agent turn did not already say. The accent moved onto the word
+    // itself, so the cue survives and the speck does not.
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+
+    const gutter = document.querySelector('.gutter');
+    expect(gutter).toBeTruthy();
+    expect(gutter?.children).toHaveLength(1);
+    expect(gutter?.querySelector('[aria-hidden="true"]')).toBeNull();
   });
 
   it("labels an agent turn with the session's own provider name, not a generic word, when one is known", () => {
