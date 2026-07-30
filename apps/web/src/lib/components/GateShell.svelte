@@ -3,8 +3,16 @@
    * The shared composition for every pre-cockpit screen — checking session,
    * signed-out sign-in, first-run onboarding, and the device-approval page at
    * `/device`: one viewport-centred column (brand lockup, tagline, then the
-   * caller's own panel) on a low-contrast woven field, with a single theme
-   * control pinned to the bottom.
+   * caller's own panel) on a low-contrast woven field.
+   *
+   * It carries no chrome of its own. An earlier version pinned a theme toggle
+   * to a corner, on the reasoning that a blinding light screen is hard to sign
+   * in through — but the saved preference is already applied by then
+   * (`theme.ts`'s `init()` runs in `+layout.svelte`'s `onMount`), and its
+   * default, `system`, follows the OS, so anyone in a dark desktop gets a dark
+   * gate without asking. A control that changes nothing for almost everyone
+   * does not earn a place on the one screen that should say exactly one thing.
+   * Appearance lives in the cockpit's own settings, after sign-in.
    *
    * It exists because those screens had no layout at all. `+page.svelte`'s
    * `main` is a top-aligned flex column — its comment claimed the pre-cockpit
@@ -38,10 +46,8 @@
   import type { Snippet } from 'svelte';
 
   import { APP_TAGLINE } from '$lib/constants';
-  import { themeStore } from '$lib/theme';
 
   import BrandLockup from './BrandLockup.svelte';
-  import Button from './ui/Button.svelte';
 
   interface Props {
     /** The screen's own panel — typically one `<Card elevation="floating">`. */
@@ -57,11 +63,6 @@
   }
 
   const { children, footer, width = 'panel' }: Props = $props();
-
-  // `themeStore.preference` is a `Readable`, so it needs a top-level binding
-  // for `$`-auto-subscription (the same reason `+page.svelte` mirrors it into
-  // local state around its own manual `subscribe`).
-  const themePreference = themeStore.preference;
 </script>
 
 <div class="gate-shell" data-testid="gate-shell" data-width={width}>
@@ -78,24 +79,6 @@
     {#if footer}
       <footer class="gate-footer">{@render footer()}</footer>
     {/if}
-  </div>
-
-  <!-- The gate's only chrome. The old header carried this plus an "Appearance"
-       toggle that opened the whole accent/style panel before the app even knew
-       who you were; in the cockpit both live in the account menu (coherence v5
-       §2), so the gate keeps just the one control it plausibly needs: reading a
-       blinding light screen well enough to sign in. SPEC §4 "no emoji in
-       product chrome" — a text label, not a glyph, states the current mode. -->
-  <div class="gate-chrome">
-    <Button
-      variant="secondary"
-      size="sm"
-      onclick={() => themeStore.toggleTheme()}
-      ariaLabel={`Switch theme (currently ${$themePreference})`}
-      dataTestId="theme-toggle"
-    >
-      {$themePreference}
-    </Button>
   </div>
 </div>
 
@@ -202,17 +185,8 @@
     color: var(--color-text-secondary);
   }
 
-  .gate-chrome {
-    position: absolute;
-    right: var(--space-lg);
-    bottom: var(--space-lg);
-  }
-
   /* On a phone the column IS the whole screen, so the field's fade would clip
-     awkwardly around it, and the control has to move off the right edge, where
-     it landed on top of the panel. It stays absolute on purpose: `position:
-     static` makes it a flex item of this row-direction shell, which parks it
-     beside the column and straight over the card (seen on a 390px viewport). */
+     awkwardly around it. */
   @media (max-width: 480px) {
     .gate-shell {
       padding: var(--space-lg);
@@ -220,12 +194,6 @@
 
     .gate-field {
       display: none;
-    }
-
-    .gate-chrome {
-      right: auto;
-      left: 50%;
-      transform: translateX(-50%);
     }
   }
 </style>
