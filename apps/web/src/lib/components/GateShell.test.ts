@@ -16,14 +16,25 @@ function panelSnippet(testId: string) {
 }
 
 describe('GateShell (the composition every pre-cockpit screen shares)', () => {
-  it('frames the caller panel with the brand lockup, the tagline and the theme control', () => {
+  it('frames the caller panel with the brand lockup and the tagline', () => {
     render(GateShell, { props: { children: panelSnippet('gate-panel-content') } });
 
     expect(screen.getByTestId('gate-shell')).toBeTruthy();
     expect(screen.getByTestId('brand-lockup')).toBeTruthy();
     expect(screen.getByText(APP_TAGLINE)).toBeTruthy();
     expect(screen.getByTestId('gate-panel-content')).toBeTruthy();
-    expect(screen.getByTestId('theme-toggle')).toBeTruthy();
+  });
+
+  it('adds no chrome of its own around that panel', () => {
+    // The shell used to pin a theme toggle to a corner. The saved preference is
+    // already applied by the time any gate screen renders, and its default
+    // (`system`) follows the OS, so the control changed nothing for almost
+    // everyone while being the only button on the screen that was not the point
+    // of it. Appearance lives in the cockpit, after sign-in.
+    render(GateShell, { props: { children: panelSnippet('gate-panel-content') } });
+
+    expect(screen.queryByTestId('theme-toggle')).toBeNull();
+    expect(screen.getByTestId('gate-shell').querySelectorAll('button')).toHaveLength(0);
   });
 
   it('draws the brand exactly once, where the gate screens used to draw it twice', () => {
