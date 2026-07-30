@@ -27,9 +27,10 @@
    *
    * Restyle (redesign brief `docs/design/redesign.md` §6, issue #430): the
    * "first impression" surface, so it earns the `floating` elevation tier
-   * (§3) and the EmptyState-language dimmed `BrandMark` (§4/§6) anchored
-   * above the step content. The `choose`/`first-device`/`new-device` mode
-   * switch, previously an instant `if/else` swap, now gets the
+   * (§3). It is centred inside `GateShell`, which carries the brand lockup
+   * above it — an earlier version drew its own dimmed `BrandMark` here too,
+   * which made two marks on one screen. The `choose`/`first-device`/
+   * `new-device` mode switch, previously an instant `if/else` swap, now gets the
    * `--duration-slow` "page-level narrative" crossfade (§2's motion table)
    * via a `{#key mode}`-scoped entrance animation — kept to a plain CSS
    * `animation` (not a Svelte `transition:`) deliberately, so a mode change
@@ -58,7 +59,6 @@
     type BootstrapAmkResult,
     type WebSocketConstructor,
   } from '$lib/relay-client';
-  import BrandMark from './BrandMark.svelte';
   import Button from './ui/Button.svelte';
   import RecoveryCodeCard from './RecoveryCodeCard.svelte';
   import RecoveryCodeEntryForm from './RecoveryCodeEntryForm.svelte';
@@ -153,7 +153,6 @@
 </script>
 
 <section class="onboarding-gate" data-testid="onboarding-gate">
-  <BrandMark class="onboarding-gate-mark" />
   {#key mode}
     <div class="onboarding-step">
       {#if mode === 'choose'}
@@ -235,15 +234,11 @@
     box-shadow: var(--shadow-lg);
   }
 
-  /* EmptyState's dimmed-BrandMark language (redesign brief §4/§6), anchored
-     above the step content so it stays put while the step below crossfades. */
-  .onboarding-gate :global(.onboarding-gate-mark) {
-    align-self: center;
-    width: 2.5rem;
-    height: 2.5rem;
-    opacity: 0.16;
-    color: var(--color-text-primary);
-  }
+  /* The dimmed `BrandMark` that used to be anchored here is gone: this card is
+     centred inside `GateShell`, which already carries the full `BrandLockup`
+     right above it, so the mark was the brand drawn a second time within one
+     screen (the sign-in gate had the same duplication through `EmptyState`).
+     The step content below is the only thing on this card now. */
 
   .onboarding-step {
     display: flex;

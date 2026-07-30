@@ -15,7 +15,6 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
-  import { APP_TAGLINE } from '$lib/constants';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import {
     RelayClient,
@@ -50,7 +49,6 @@
     SESSION_STATUS_UNKNOWN_LABEL,
   } from '$lib/session-status';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
-  import { themeStore, type ThemePreference } from '$lib/theme';
   import {
     createLocalStorageNotificationPreferencesStorage,
     defaultNotificationPreferences,
@@ -67,7 +65,6 @@
   } from '$lib/projects';
   import AddProjectDialog from '$lib/components/AddProjectDialog.svelte';
   import ArchiveSessionDialog from '$lib/components/ArchiveSessionDialog.svelte';
-  import AppearanceSettings from '$lib/components/AppearanceSettings.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
@@ -76,6 +73,7 @@
   import CopyButton from '$lib/components/CopyButton.svelte';
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
+  import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
@@ -91,7 +89,9 @@
   import Card from '$lib/components/ui/Card.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
+  import Field from '$lib/components/ui/Field.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
+  import Input from '$lib/components/ui/Input.svelte';
   import Overlay from '$lib/components/ui/Overlay.svelte';
   import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
@@ -500,17 +500,6 @@
   let notificationPreferences = $state<NotificationPreferencesData>(
     defaultNotificationPreferences(),
   );
-  // Design tokens' theme toggle (SPEC.md §4/issue #195): mirrors
-  // `$lib/theme.ts`'s store so the settings panel's toggle reflects the
-  // current preference; the actual `data-theme` DOM effect and
-  // localStorage persistence happen in `theme.ts` itself, not here.
-  let themePreference = $state<ThemePreference>('system');
-  // Appearance settings (SPEC.md §4; issues #194/#376: theme radios and the
-  // accent preset/custom picker) are now the other section of the Drawer's
-  // "settings" tab post-authentication, and the sign-in screen's own
-  // minimal `activeDrawer === 'settings'` affordance pre-authentication.
-  // `AppearanceSettings` itself owns all the reading/writing against
-  // `theme.ts`/`accent.ts`.
 
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
@@ -1640,20 +1629,6 @@
   }
 
   /**
-   * The active-toggle visual (redesign v2 §2 "shell button consolidation",
-   * issue #462): every hand-rolled `.foo-toggle`/`.drawer-tab`/`.active`
-   * ruleset this file used to define per button collapses into ONE shared
-   * `warp-toggle-active` class (see this file's own stylesheet) layered on
-   * top of the shared `Button` primitive via its `class` prop — `Button`
-   * itself has no notion of a persisted "pressed" visual (only `IconButton`
-   * does, via `pressed`/`aria-pressed`), so a plain text toggle button still
-   * needs *some* way to show which tab/panel is currently open.
-   */
-  function toggleActiveClass(active: boolean): string {
-    return active ? 'warp-toggle-active' : '';
-  }
-
-  /**
    * How far off the bottom still counts as "following" (issue #508). A
    * couple of lines of slack, because sub-pixel rounding and a growing last
    * item routinely leave `scrollTop` a hair short of the exact bottom, and
@@ -1803,19 +1778,10 @@
   }
 
   onMount(() => {
-    // Design tokens' theme toggle (issue #195): `+layout.svelte` already
-    // called `themeStore.init()` (the DOM/localStorage side effect); this
-    // subscription only mirrors the resulting value into local state so
-    // the toggle button below can render the right label/icon.
-    const unsubscribeTheme = themeStore.preference.subscribe((value) => {
-      themePreference = value;
-    });
-
     // Design spec v4 §4.2: mirrors the project registry's store into
-    // `projects`, created eagerly at module scope above (its default
-    // storage is SSR-safe), but the subscription itself lives here so
-    // every subscription in this component starts/stops in the same
-    // place, matching `themeStore`'s identical pattern right above.
+    // `projects`, created eagerly at module scope above (its default storage
+    // is SSR-safe), but the subscription itself lives here so every
+    // subscription in this component starts/stops in the same place.
     const unsubscribeProjects = projectStore.subscribe((value) => {
       projects = value;
     });
@@ -1914,7 +1880,6 @@
       });
 
     return () => {
-      unsubscribeTheme();
       unsubscribeProjects();
       unsubscribeAuthSession();
       unsubscribeNarrow();
@@ -1928,100 +1893,85 @@
 <svelte:window onkeydown={handleGlobalKeydown} onpointerdown={handleWindowPointerDown} />
 
 <main class:cockpit={cockpitReady}>
-  {#if !cockpitReady}
-    <!-- Checking session / sign-in / onboarding: the redesign brief reserves
-         the full `BrandLockup` for these screens ("where nothing competes
-         for attention", §1) — only the cockpit below gets the new compact
-         3-zone header. -->
-    <header class="header-lockup">
-      <h1 class="brand-heading"><BrandLockup /></h1>
-      <p>{APP_TAGLINE}</p>
-      <div class="header-actions">
-        <!-- SPEC.md §4 "Tone of voice ... No emoji in product chrome" — a text
-             label, not an icon glyph, states the toggle's current mode. -->
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={() => themeStore.toggleTheme()}
-          ariaLabel={`Switch theme (currently ${themePreference})`}
-          dataTestId="theme-toggle"
-        >
-          {themePreference}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          class={toggleActiveClass(activeDrawer === 'settings')}
-          onclick={() => toggleDrawer('settings')}
-          dataTestId="appearance-settings-toggle"
-        >
-          Appearance
-        </Button>
-      </div>
-    </header>
-
-    {#if activeDrawer === 'settings'}
-      <section class="appearance-settings-panel">
-        <h2>Appearance</h2>
-        <AppearanceSettings />
-      </section>
-    {/if}
-  {/if}
-
   {#if !authChecked}
-    <section class="connection">
-      <p class="empty loading-line">
-        <WovenLoader label="Checking session" />
-        Checking session…
-      </p>
-    </section>
+    <!-- Checking the session. The same centred panel the sign-in state uses,
+         in the same place, so resolving the session swaps the panel's contents
+         without moving anything on screen. The weave is the motif at `md`
+         (2.5rem): this used to be `WovenLoader`'s default `sm` (1em, so 12px)
+         on a line stranded in the window's top-left corner, while the lockup
+         above it was centred. -->
+    <GateShell>
+      <Card elevation="floating" padding="lg">
+        <div class="gate-checking">
+          <WovenLoader size="md" label="Checking session" />
+          <p>Checking session…</p>
+        </div>
+      </Card>
+    </GateShell>
   {:else if !authSession}
-    <!-- Signed-out sign-in gate (redesign brief §4/§6, issue #430): the
-         other half of "the first impression" alongside the header's full
-         `BrandLockup` above — an `EmptyState` (its dimmed-`BrandMark`
-         language) carrying the one primary `Button` CTA, with the
-         self-hoster's Relay URL override de-emphasized below it. -->
-    <section class="connection sign-in">
-      <EmptyState message="Sign in to load your sessions and connect to your nodes.">
-        {#snippet cta()}
-          <Button variant="primary" onclick={signInWithGithub}>Sign in with GitHub</Button>
-        {/snippet}
-      </EmptyState>
-      <div class="relay-url-row">
-        <label for="relay-url">Relay URL</label>
-        <input id="relay-url" type="text" bind:value={relayUrl} />
-      </div>
+    <!-- The signed-out gate (redesign brief §4/§6, issue #430): lead, one
+         primary action, the reassurance that belongs next to a sign-in button,
+         then the self-hoster's Relay URL override folded into a disclosure —
+         through the app's own `Field` + `Input` rather than the bare
+         `<label>` + `<input>` this screen hand-rolled. `EmptyState` used to
+         carry this, but its documented job is "empty sessions, empty inbox,
+         empty targets": it dressed the front door as "nothing here yet", and
+         its dimmed `BrandMark` drew the brand a second time ~110px under the
+         lockup's own. -->
+    <GateShell>
+      <Card elevation="floating" padding="lg">
+        <p class="gate-lead">Sign in to load your sessions and connect to your nodes.</p>
+        <Button variant="primary" fullWidth onclick={signInWithGithub}>Sign in with GitHub</Button>
+        <p class="gate-fineprint">
+          Every session is encrypted end to end. Your keys never leave your devices.
+        </p>
+        {#if authError}
+          <ErrorNotice message={authError} />
+        {/if}
+        <details class="gate-selfhost">
+          <summary>Self-hosting your own relay?</summary>
+          <div class="gate-selfhost-body">
+            <Field label="Relay URL">
+              {#snippet children({ id, describedBy })}
+                <Input {id} {describedBy} bind:value={relayUrl} monospace />
+              {/snippet}
+            </Field>
+          </div>
+        </details>
+      </Card>
+    </GateShell>
+  {:else if onboardingNeeded}
+    <!-- First-run onboarding (redesign v3 design spec §3.1) in the same shell,
+         so the app does not re-centre itself between signing in and setting
+         this device up. `wide`, since the steps carry a Recovery Code and its
+         explanation rather than a single button. The identity + connection +
+         sign-out row that used to sit above it is the shell's footer now. -->
+    <!-- A `{#snippet}` body is not narrowed by the branch that encloses it (it
+         is rendered later, by the component it is passed to), so the footer
+         below reads the account off a const bound out here instead. -->
+    {@const session = authSession}
+    <GateShell width="wide">
+      <OnboardingGate
+        accountId={authSession.accountId}
+        {relayUrl}
+        authToken={authSession.token}
+        onFirstDevice={handleFirstDeviceOnboarded}
+        onNewDevice={handleNewDeviceOnboarded}
+      />
       {#if authError}
         <ErrorNotice message={authError} />
       {/if}
-    </section>
-  {:else if onboardingNeeded}
-    <!-- Onboarding (redesign v3 design spec §3.1): the cockpit's own chrome
-         used to be duplicated here as a row of ghost buttons — Inbox, Nodes
-         & targets, Jump to…, Mute & quiet hours — none of which has anything
-         to act on before this device even holds the account key. What is
-         left is identity, live connection state, and the way out. -->
-    <section class="connection">
-      <span class="account">{authSession.accountId}</span>
-      <span class="status" data-status={status}>
-        {#if status === 'connecting'}
-          <WovenLoader label="Connecting to the relay" />
-        {/if}
-        {connectionNotice?.label ?? 'Connected'}
-      </span>
-      <Button variant="ghost" size="sm" onclick={signOut}>Sign out</Button>
-    </section>
-    {#if authError}
-      <ErrorNotice message={authError} />
-    {/if}
-
-    <OnboardingGate
-      accountId={authSession.accountId}
-      {relayUrl}
-      authToken={authSession.token}
-      onFirstDevice={handleFirstDeviceOnboarded}
-      onNewDevice={handleNewDeviceOnboarded}
-    />
+      {#snippet footer()}
+        <span class="account">{session.accountId}</span>
+        <span class="status" data-status={status}>
+          {#if status === 'connecting'}
+            <WovenLoader label="Connecting to the relay" />
+          {/if}
+          {connectionNotice?.label ?? 'Connected'}
+        </span>
+        <Button variant="ghost" size="sm" onclick={signOut}>Sign out</Button>
+      {/snippet}
+    </GateShell>
   {:else}
     <!-- The cockpit (redesign v3 design spec §3.1-§3.4): ONE sidebar (brand,
          primary action, filter, sessions, secondary nav, account) beside a
@@ -3106,161 +3056,76 @@
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
 
 <style>
-  main {
-    display: flex;
-    flex-direction: column;
-    min-height: 100dvh;
-    gap: var(--space-lg);
-    padding: var(--space-lg);
-  }
-
-  /* The cockpit (redesign v3 design spec §3.1) resets the plain stacked-
-     column padding/gap above in favour of a sidebar + workspace row that
-     fills the viewport edge to edge; the pre-cockpit screens (checking
-     session / sign-in / onboarding) keep the original padded, centered
-     column layout untouched.
+  /* The pre-cockpit screens (checking session / sign-in / onboarding) own
+     their own full-viewport, centred layout in `GateShell`, so `main` adds
+     nothing for them at all. It used to be a top-aligned padded flex column
+     here — under a comment claiming the gate kept "the original padded,
+     centered column layout", which that rule never had (no `justify-content`,
+     no `align-items`, no `max-width`) — and that is exactly what left those
+     screens hugging the top of the window.
 
      `height`, not `min-height`: the sidebar's own footer (secondary nav +
      account) is pinned to the bottom of a column that must therefore END at
      the viewport, and `min-height` lets a tall transcript push it off the
      bottom of the screen instead. */
   main.cockpit {
+    display: flex;
+    flex-direction: column;
     height: 100dvh;
-    gap: 0;
-    padding: 0;
     overflow: hidden;
   }
 
-  .header-lockup {
-    position: relative;
+  /* The gate's panel internals. `GateShell` owns the composition around them
+     (centring, the woven field, the lockup); these are just the contents of
+     the one floating `Card` it centres. */
+  .gate-checking {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-md) 0;
+  }
+
+  .gate-checking p {
+    margin: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .gate-lead {
+    margin: 0 0 var(--space-md);
+    color: var(--color-text-secondary);
     text-align: center;
   }
 
-  .brand-heading {
-    display: flex;
-    justify-content: center;
-    margin: 0;
+  .gate-fineprint {
+    margin: var(--space-md) 0 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-caption-size);
+    text-align: center;
   }
 
-  .header-lockup p {
-    margin: var(--space-2xs) 0 0;
-    opacity: 0.7;
+  /* The self-hoster's escape hatch: present, but not competing with the one
+     action every other visitor is here for. */
+  .gate-selfhost {
+    margin-top: var(--space-md);
+    border-top: 1px solid var(--color-border-subtle);
+    padding-top: var(--space-sm);
+    font-size: var(--text-caption-size);
   }
 
-  /* Brand lockup (issue #194) + theme/appearance toggles (issue #195/#376):
-     pinned to the header's top-right corner rather than crowding the
-     centered lockup/tagline. */
-  .header-actions {
-    position: absolute;
-    top: 0;
-    right: 0;
-    display: flex;
-    gap: var(--space-2xs);
-  }
-
-  /* The active-toggle visual shared by every consolidated `Button`-based
-     toggle in this file (issue #462) — see `toggleActiveClass`'s own doc
-     comment. `Button` itself has no persisted "pressed" visual (only
-     `IconButton` does via `pressed`/`aria-pressed`), so a plain text toggle
-     button needs this instead. `:global` because `class` lands on the
-     `<button>` `Button.svelte` renders, not an element `+page.svelte`
-     renders directly (same reason `Dialog.svelte`'s `:global(.dialog-backdrop)`
-     exists). */
-  :global(.warp-toggle-active) {
-    background: var(--color-accent-subtle);
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-
-  .appearance-settings-panel {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-  }
-
-  .appearance-settings-panel h2 {
-    font-size: var(--text-body-size);
-    margin: 0 0 var(--space-sm);
-  }
-
-  .connection {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-
-  /* The sign-in gate (redesign brief §4/§6) stacks its `EmptyState` +
-     Relay URL override as a centered column instead of `.connection`'s
-     default flex-wrap row — two classes on the one element gives this
-     higher specificity than the bare `.connection` rule above without
-     touching the other screens that still use `.connection` alone. */
-  .connection.sign-in {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-lg);
-  }
-
-  .relay-url-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-sm);
-  }
-
-  .relay-url-row label {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
-  }
-
-  .relay-url-row input {
-    max-width: 24rem;
-  }
-
-  .connection input {
-    flex: 1;
-    min-width: 10rem;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-fill-subtle);
-    color: inherit;
-    font: inherit;
-  }
-
-  .connection input:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
-  }
-
-  /* A shared baseline for the connection bar's own plain buttons ("Sign in
-     with GitHub", "Jump to…", "Sign out") so they read as this app's UI
-     rather than the browser's default unstyled `<button>` — the toggle
-     buttons in this same bar (`.inbox-toggle`, `.notification-settings-
-     toggle`) already draw this exact look, this just extends it to the
-     rest instead of leaving them as an inconsistent outlier. This bar only
-     renders now while checking session/signed-out/onboarding — the
-     cockpit's own header below replaced it there. */
-  .connection button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-md);
-    background: transparent;
-    padding: var(--space-2xs) var(--space-sm);
+  .gate-selfhost summary {
     cursor: pointer;
-    color: inherit;
-    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
   }
 
-  .connection button:hover {
-    background: var(--color-fill-subtle);
-  }
-
-  .connection button:focus-visible {
+  .gate-selfhost summary:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  .gate-selfhost-body {
+    margin-top: var(--space-sm);
   }
 
   .status {

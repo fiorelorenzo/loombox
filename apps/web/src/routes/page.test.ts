@@ -217,6 +217,26 @@ describe('shell +page.svelte', () => {
     expect(screen.getByText('Checking session…')).toBeTruthy();
     expect(screen.getByTestId('woven-loader')).toBeTruthy();
   });
+
+  it('centres that wait in the shared gate composition, drawing the brand once', () => {
+    // Both halves of this used to be wrong on the same screen: the lockup was
+    // centred by a page header while the "Checking session…" line was a plain
+    // block in the top-left corner of an uncentred column, and the signed-out
+    // state under it drew a second, dimmed brand mark through `EmptyState`.
+    render(Page);
+
+    expect(screen.getByTestId('gate-shell')).toBeTruthy();
+    expect(screen.getAllByTestId('brand-mark')).toHaveLength(1);
+  });
+
+  it('renders the waiting weave at panel size, not the 1em inline one', () => {
+    // `WovenLoader`'s default size is `sm` (1em), which is what this screen
+    // used to pass by omission: a 12px speck as the only thing on an otherwise
+    // empty window. `md` is the 2.5rem motif /style-reference documents.
+    render(Page);
+
+    expect(screen.getByTestId('woven-loader').dataset.size).toBe('md');
+  });
 });
 
 // ---------------------------------------------------------------------
