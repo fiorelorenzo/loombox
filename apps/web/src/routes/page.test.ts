@@ -237,6 +237,39 @@ describe('shell +page.svelte', () => {
 
     expect(screen.getByTestId('woven-loader').dataset.size).toBe('md');
   });
+
+  it('posts a structured-cloneable payload to a controlling service worker, and never lets that sync block the session check', () => {
+    // This one is a dead-app regression, not a cosmetic one. `onMount` syncs
+    // the notification preferences to the worker BEFORE restoring the session,
+    // and it used to post the `$state` proxy itself. Structured clone cannot
+    // clone a Proxy, so `postMessage` threw `DataCloneError` and took the rest
+    // of `onMount` with it: no `/api/auth/get-session` request, "Checking
+    // session…" forever. It only bit from the SECOND visit on, when the worker
+    // actually controls the page, which is why nothing caught it until
+    // production. `tests-e2e/pwa-shell.spec.ts` drives that second visit; this
+    // asserts the payload contract directly.
+    const posted: unknown[] = [];
+    const postMessage = vi.fn((message: unknown) => {
+      // Throws exactly as the browser does if anything here is a proxy.
+      posted.push(structuredClone(message));
+    });
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: { controller: { postMessage } },
+      configurable: true,
+    });
+
+    try {
+      render(Page);
+
+      expect(postMessage).toHaveBeenCalled();
+      expect(posted[0]).toMatchObject({ type: 'loombox:notification-prefs-sync' });
+      // And the screen still got to its "checking the session" state, i.e.
+      // `onMount` carried on past the sync.
+      expect(screen.getByText('Checking session…')).toBeTruthy();
+    } finally {
+      Reflect.deleteProperty(navigator, 'serviceWorker');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------
