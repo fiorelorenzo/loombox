@@ -120,6 +120,21 @@ if [ "$HMR" = 1 ] && [ -z "$PWA_URL" ]; then
     exit 1
   fi
 
+  # A sleeping laptop is the common case, and it has to be told apart from a
+  # busy port before either probe below runs: `MAC_FWD_ARGS` deliberately
+  # carries no `ConnectTimeout` (it must stay byte-identical to dev.sh's), so
+  # an unreachable host makes the forward hang on the TCP timeout and then
+  # report "something may already hold that port", which is simply wrong.
+  # Measured: 280s to the wrong diagnosis. Same probe dev.sh uses.
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$MAC_HOST" true 2>/dev/null; then
+    echo "!! ${MAC_HOST} is not reachable over ssh - asleep, or off the tailnet?" >&2
+    echo "   --hmr needs it: the window loads http://localhost:${WEB_PORT} on the Mac," >&2
+    echo "   which only resolves through a reverse forward back to this box." >&2
+    echo "   Wake it, or drop --hmr to run against the deployed bundle:" >&2
+    echo "     $0 ${BRANCH}" >&2
+    exit 1
+  fi
+
   # `scripts/dev.sh` opens these forwards, but only best-effort: it skips them when
   # the Mac is unreachable at loop start, and a laptop that slept since takes the
   # tunnel down with it. Ask the Mac, the only side that can tell, and re-open
