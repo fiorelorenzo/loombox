@@ -87,13 +87,13 @@
   }
 
   .ui-status-dot-sm {
-    width: 0.55rem;
-    height: 0.55rem;
+    width: var(--status-dot-size-sm);
+    height: var(--status-dot-size-sm);
   }
 
   .ui-status-dot-md {
-    width: 0.85rem;
-    height: 0.85rem;
+    width: var(--status-dot-size-md);
+    height: var(--status-dot-size-md);
   }
 
   .ui-status-dot-core {
