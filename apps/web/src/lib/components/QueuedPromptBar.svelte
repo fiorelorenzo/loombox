@@ -139,4 +139,23 @@
     margin: 0;
     white-space: pre-wrap;
   }
+
+  /* Below `--bp-mobile` the role column collapses and the word moves above
+     the turn — see `MessageItem`'s own copy of this block for the
+     measurement and the reasoning. Every surface sharing this column moves at
+     the same breakpoint or the timeline's one rule becomes several. */
+  @media (max-width: 479px) {
+    .queued-item {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .gutter {
+      flex: 0 0 auto;
+      width: auto;
+      align-items: flex-start;
+      padding-right: 0;
+      padding-bottom: 0;
+    }
+  }
 </style>

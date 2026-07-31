@@ -350,20 +350,28 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.queryByTestId('drawer')).toBeNull();
   });
 
-  it('the drawer exposes only Files/Terminal/Config now that Inbox/Nodes/Settings are pages (spec §3.5)', async () => {
+  it('the workbench exposes only Files/Terminal/Config now that Inbox/Nodes/Settings are pages (spec §3.5)', async () => {
     mountCockpit({ sessions: [makeSession()] });
     await screen.findByTestId('file-tree-toggle');
 
-    await fireEvent.click(screen.getByTestId('file-tree-toggle'));
+    // The topbar's panel switch is the one place these three are offered
+    // (2026-07-31): the Drawer's own tab strip was the same group a second
+    // time and is gone, so this reads the switch rather than the strip.
+    const panels = screen.getByRole('group', { name: 'Panels' });
+    expect(panels.querySelectorAll('button')).toHaveLength(3);
+    expect(screen.getByTestId('file-tree-toggle')).toBeTruthy();
+    expect(screen.getByTestId('terminal-toggle')).toBeTruthy();
+    expect(screen.getByTestId('project-config-toggle')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-toggle')).toBeNull();
+    expect(screen.queryByTestId('targets-toggle')).toBeNull();
+    expect(screen.queryByTestId('settings-toggle')).toBeNull();
 
-    const tabs = await screen.findAllByRole('tab');
-    expect(tabs).toHaveLength(3);
-    expect(screen.getByTestId('drawer-tab-files')).toBeTruthy();
-    expect(screen.getByTestId('drawer-tab-terminal')).toBeTruthy();
-    expect(screen.getByTestId('drawer-tab-config')).toBeTruthy();
-    expect(screen.queryByTestId('drawer-tab-inbox')).toBeNull();
-    expect(screen.queryByTestId('drawer-tab-targets')).toBeNull();
-    expect(screen.queryByTestId('drawer-tab-settings')).toBeNull();
+    // And nothing anywhere still claims to be a tab: the strip was the only
+    // `role="tab"` in this shell.
+    await fireEvent.click(screen.getByTestId('file-tree-toggle'));
+    expect(await screen.findByTestId('drawer')).toBeTruthy();
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    expect(screen.getByTestId('drawer-title').textContent).toContain('Files');
   });
 
   it('the page title renders exactly once for each destination, never duplicated in the topbar (coherence v5 §2)', async () => {

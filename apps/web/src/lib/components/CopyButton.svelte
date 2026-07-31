@@ -35,6 +35,12 @@
    * always-visible-but-dim treatment unchanged. Either way the button is
    * never actually removed, and a coarse (touch) pointer — which has no
    * hover to reveal it with — always sees it.
+   *
+   * `prominent` is the opposite opt-in (Lorenzo's ask, 2026-07-31): full
+   * strength, no dimming at all. The 0.5 resting opacity exists because this
+   * icon repeats on every single transcript row; a lone "Export transcript"
+   * in the topbar has no such repetition to apologise for, and sitting at
+   * half strength beside full-strength neighbours it read as disabled.
    */
   import { copyToClipboard } from '$lib/copy';
   import { Icon } from './icons';
@@ -49,15 +55,28 @@
     copyFn?: (text: string) => Promise<void>;
     /** Hidden until the containing row is hovered/focus-within instead of permanently dim-visible (redesign v3 §3.4 "Copy affordances"); opt-in per call site — see the file doc comment. */
     revealOnHover?: boolean;
+    /** Full strength, no dimming — for a standalone call site (e.g. the topbar's "Export transcript") where the resting dim above reads as disabled rather than as quiet. */
+    prominent?: boolean;
   }
 
-  const { text, label = 'Copy', copyFn = copyToClipboard, revealOnHover = false }: Props = $props();
+  const {
+    text,
+    label = 'Copy',
+    copyFn = copyToClipboard,
+    revealOnHover = false,
+    prominent = false,
+  }: Props = $props();
 
   let copied = $state(false);
   let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
   const classNames = $derived(
-    ['copy-button', copied && 'copied', revealOnHover && 'copy-button-reveal']
+    [
+      'copy-button',
+      copied && 'copied',
+      revealOnHover && 'copy-button-reveal',
+      prominent && 'copy-button-prominent',
+    ]
       .filter(Boolean)
       .join(' '),
   );
@@ -87,6 +106,13 @@
 
   :global(.copy-button:hover),
   :global(.copy-button:focus-visible) {
+    opacity: 1;
+  }
+
+  /* Two classes, so this wins over the dim resting state above and over the
+     coarse-pointer rule at the bottom of this file regardless of source
+     order. */
+  :global(.copy-button.copy-button-prominent) {
     opacity: 1;
   }
 

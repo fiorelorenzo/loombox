@@ -346,4 +346,54 @@
   .message-item:focus-within :global(.copy-button-reveal) {
     opacity: 1;
   }
+
+  /* Below `--bp-mobile` the role column collapses and the word moves above
+     the turn (Lorenzo's ask, 2026-07-31). The measurement that forced it: on
+     a 390px phone the column spent 84px of the width on a six-letter word,
+     leaving the prose a 244px measure that broke sentences every five or six
+     words. What design spec v5 §4 actually asks for is that every turn state
+     its role in a word rather than a colour — it says nothing about the word
+     sitting beside the text, and above it is where a phone reader already
+     scans. So the word survives, the geometry goes.
+
+     Every other surface sharing this column collapses at the same breakpoint
+     (`QueuedPromptBar`, `ToolCallGutter` and its four widget rows,
+     `PlanCard`, the composer in `+page.svelte`) — they have to move together
+     or the timeline's one rule becomes several that nearly line up, which is
+     the exact defect the gutter was introduced to fix. `composer-strip`'s
+     Playwright guard measures them against each other for that reason.
+
+     The gutter's accent thread goes with the column rather than moving to the
+     row's own left edge, which sounds like the obvious relocation and paints
+     nothing: a `user` row deliberately bleeds `--space-sm` outside the
+     transcript list (the `margin-inline`/`padding-inline` pair above), and
+     `.items` is an `overflow: auto` scroller, so it clips exactly the strip
+     that thread would live in — measured at 390px, the row's border box sits
+     at x=3.8 while the first painted pixel of its own background is at 11.4.
+     Nothing is lost: this file's own comment above calls the raised surface a
+     deliberately redundant second cue, and on a phone the white card and the
+     accent word are both still there. */
+  @media (max-width: 479px) {
+    .message-item {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .gutter {
+      flex: 0 0 auto;
+      width: auto;
+      align-items: flex-start;
+      padding-right: 0;
+    }
+
+    .content {
+      padding-top: var(--space-3xs);
+    }
+
+    /* The 2px thread this column used to carry would now be a stub floating
+       beside the word — the "dirt on the screen" note above, again. */
+    .message-item.user .gutter {
+      box-shadow: none;
+    }
+  }
 </style>
