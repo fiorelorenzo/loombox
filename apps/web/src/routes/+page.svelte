@@ -508,16 +508,21 @@
   // it defaults `false` during SSR).
   let narrowViewport = $state(false);
   /**
-   * The composer's own mini-toolbar collapse (redesign brief
+   * The composer's picker collapse (redesign brief
    * `docs/design/redesign.md` §1: "below 480px, the composer's mini-toolbar
    * (mode/attach/context meter) collapses under a single '···' expand
    * affordance", issue #439). Manual toggle only matters at/below
-   * `narrowViewport` (480px) — see `composerToolbarVisible` below, which
-   * also force-expands whenever there's a real pending attachment to show,
-   * so a file the user already attached never hides behind an unopened
-   * "···".
+   * `narrowViewport` (480px) — see `configControlsVisible` below.
+   *
+   * Narrowed when the toolbar folded into the composer's own control row
+   * (Lorenzo's ask, 2026-07-30): it now hides ONLY the model/mode pickers.
+   * The attach trigger, the context/cost meter and Send are always on
+   * screen, so a phone no longer hides the figures a user watches behind an
+   * unopened "···", and the old "force-expand while an attachment is
+   * pending" clause is gone with the reason for it — pending chips render
+   * above the textarea now, never inside this collapse.
    */
-  let composerToolbarExpanded = $state(false);
+  let configControlsExpanded = $state(false);
   /** A live ref to the composer `<textarea>` (auto-grow + programmatic height reset, redesign brief §4 "Inputs", issue #439). */
   let composerTextarea: HTMLTextAreaElement | undefined = $state(undefined);
   // Stale-approve/deny discard note for the selected session (SPEC §7.3;
@@ -632,10 +637,8 @@
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
 
-  /** See `composerToolbarExpanded`'s own doc comment above — the effective visibility the template renders on. */
-  const composerToolbarVisible = $derived(
-    !narrowViewport || composerToolbarExpanded || attachments.length > 0,
-  );
+  /** See `configControlsExpanded`'s own doc comment above — the effective visibility the template renders the model/mode pickers on. */
+  const configControlsVisible = $derived(!narrowViewport || configControlsExpanded);
 
   /**
    * True once the full four-zone Warp Deck shell (rail/sessions/canvas/
@@ -785,7 +788,7 @@
     queuedPrompts = [];
     staleNotice = undefined;
     fileTree = new Map();
-    composerToolbarExpanded = false;
+    configControlsExpanded = false;
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client.permissionQueueFor(id).subscribe((value) => {
@@ -1088,7 +1091,7 @@
     fileTree = new Map();
     filePickerOpen = false;
     atTriggerStart = undefined;
-    composerToolbarExpanded = false;
+    configControlsExpanded = false;
     newSessionOpen = false;
     newSessionProject = undefined;
     addProjectOpen = false;
@@ -2818,84 +2821,92 @@
                 narrow={narrowViewport}
               />
 
-              <!-- The composer's own mini-toolbar (redesign brief §1/§6, issue
-                   #439): ConfigBar's mode toggle + context/cost meter and
-                   AttachmentBar's attach trigger/chip row share one quiet strip
-                   directly above the composer, collapsing under a single "···"
-                   below `--bp-mobile`/480px (`narrowViewport`). -->
-              <div class="composer-toolbar" data-testid="composer-toolbar">
-                {#if composerToolbarVisible}
-                  <div class="composer-toolbar-controls" data-testid="composer-toolbar-controls">
-                    <AttachmentBar
-                      {attachments}
-                      onFiles={attachFiles}
-                      onRetry={retryAttachment}
-                      onRemove={removeAttachment}
-                    />
-                    <ConfigBar
-                      options={configOptions}
-                      usage={transcript?.usage}
-                      cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
-                      onChange={changeConfigOption}
-                    />
-                  </div>
-                {/if}
-                {#if narrowViewport}
-                  <IconButton
-                    label={composerToolbarExpanded
-                      ? 'Hide composer options'
-                      : 'More composer options'}
-                    pressed={composerToolbarExpanded}
-                    onclick={() => (composerToolbarExpanded = !composerToolbarExpanded)}
-                    class="composer-toolbar-expand"
-                  >
-                    <Icon name="more" />
-                  </IconButton>
-                {/if}
-              </div>
-
               <form class="composer" onsubmit={submitPrompt}>
                 <!-- Design spec v5 §4: the composer is the last entry in the
                      timeline, not a chat box bolted to the bottom of one. It
                      takes the same fixed role gutter every transcript item
                      uses, so the column of role words runs unbroken from the
-                     first turn into the thing you are about to say. -->
+                     first turn into the thing you are about to say.
+
+                     One strip, not two (Lorenzo's ask, 2026-07-30): the attach
+                     trigger, the pickers and the context/cost figures used to
+                     sit in a mini-toolbar ABOVE the composer, with a keyboard
+                     hint occupying the row below the textarea. They now share
+                     that one row under the text, so everything about the turn
+                     you are composing reads inside the field's own column. -->
                 <div class="composer-row">
                   <div class="composer-gutter" aria-hidden="true">
                     <span class="composer-role">You</span>
                   </div>
-                  <div class="composer-field">
-                    <textarea
-                      bind:this={composerTextarea}
-                      bind:value={draft}
-                      oninput={handleComposerInput}
-                      onkeydown={handleComposerKeydown}
-                      placeholder="Send a follow-up prompt… (type @ to reference a file)"
-                      aria-label="Follow-up prompt"
-                      aria-describedby="composer-hint"
-                      rows="1"
-                      data-testid="composer-input"></textarea>
-                    <!-- Inline with the controls rather than a detached line
-                         underneath: a hint that costs its own row reads as
-                         chrome, and this one is only ever consulted once. -->
-                    <div class="composer-field-footer">
-                      <p class="composer-hint" id="composer-hint">
-                        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
-                      </p>
-                      <div class="composer-actions">
-                        <TurnStopControl
-                          turnActive={transcript?.turnActive ?? false}
-                          onStop={stopSession}
-                        />
-                        <Button
-                          type="submit"
-                          variant="secondary"
-                          disabled={sendDisabled}
-                          ariaLabel="Send prompt">Send</Button
-                        >
+                  <!-- The drop/paste zone wraps the field (see AttachmentBar's
+                       doc comment): dropping a file on the textarea, or pasting
+                       an image into it, used to do nothing at all. -->
+                  <AttachmentBar
+                    {attachments}
+                    onFiles={attachFiles}
+                    onRetry={retryAttachment}
+                    onRemove={removeAttachment}
+                  >
+                    {#snippet field({ pickFiles })}
+                      <div class="composer-field">
+                        <textarea
+                          bind:this={composerTextarea}
+                          bind:value={draft}
+                          oninput={handleComposerInput}
+                          onkeydown={handleComposerKeydown}
+                          placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                          aria-label="Follow-up prompt"
+                          aria-describedby="composer-hint"
+                          rows="1"
+                          data-testid="composer-input"></textarea>
+                        <!-- Screen-reader only: the row below is full of live
+                             facts now (agent, model, context, cost), and a
+                             keyboard hint read once in a lifetime does not get
+                             to compete with them for the same pixels. It stays
+                             in the DOM because `aria-describedby` above points
+                             at it. -->
+                        <p class="composer-hint sr-only" id="composer-hint">
+                          <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+                        </p>
+                        <div class="composer-controls" data-testid="composer-controls">
+                          <IconButton label="Attach image" onclick={pickFiles}>
+                            <Icon name="attach" />
+                          </IconButton>
+                          {#if narrowViewport}
+                            <IconButton
+                              label={configControlsExpanded
+                                ? 'Hide composer options'
+                                : 'More composer options'}
+                              pressed={configControlsExpanded}
+                              onclick={() => (configControlsExpanded = !configControlsExpanded)}
+                            >
+                              <Icon name="more" />
+                            </IconButton>
+                          {/if}
+                          <ConfigBar
+                            options={configOptions}
+                            usage={transcript?.usage}
+                            cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+                            onChange={changeConfigOption}
+                            providerId={selectedSession?.provider}
+                            compact={!configControlsVisible}
+                          />
+                          <div class="composer-actions">
+                            <TurnStopControl
+                              turnActive={transcript?.turnActive ?? false}
+                              onStop={stopSession}
+                            />
+                            <Button
+                              type="submit"
+                              variant="secondary"
+                              disabled={sendDisabled}
+                              ariaLabel="Send prompt">Send</Button
+                            >
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    {/snippet}
+                  </AttachmentBar>
                 </div>
               </form>
             </div>
@@ -4306,21 +4317,6 @@
     border-top: 1px solid var(--color-border);
   }
 
-  .composer-toolbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-
-  .composer-toolbar-controls {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    flex: 1;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
   .composer {
     display: flex;
     flex-direction: column;
@@ -4400,14 +4396,19 @@
     outline: none;
   }
 
-  .composer-field-footer {
+  /* The one strip the composer has: attach, the pickers, the context/cost
+     figures, then the send controls. `align-items: center` rather than the
+     row's `flex-start` because these are controls of one height, not text
+     that has to share a baseline with the gutter. */
+  .composer-controls {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     flex-wrap: wrap;
   }
 
+  /* `margin-left: auto` so Send hugs the right edge on whichever line it lands:
+     beside the figures on a desktop, on its own wrapped line on a phone. */
   .composer-actions {
     display: flex;
     align-items: center;
@@ -4418,13 +4419,6 @@
 
   .composer-hint {
     margin: 0;
-    font-size: var(--text-caption-size);
-    color: var(--color-text-muted);
-  }
-
-  .composer-hint kbd {
-    font-family: var(--font-mono);
-    font-size: inherit;
   }
 
   .empty {

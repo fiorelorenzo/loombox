@@ -18,20 +18,27 @@
    *
    * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439): "collapses
    * to a paperclip IconButton that only expands into a chip row once
-   * something's attached" — the trigger is now icon-only (adopts the shared
-   * `IconButton` primitive; no fixed testid collision since this component's
-   * own load-bearing testids/labels are all preserved verbatim), and Retry
-   * adopts the shared `Button` (`danger`/`sm`) — neither needs an attribute
-   * `IconButton`/`Button` can't pass through, unlike this file's own root
-   * drop-zone (which keeps its hand-rolled markup: it needs the raw
-   * `ondrop`/`ondragover`/`ondragleave`/`onpaste` handlers on the exact
-   * element `attachment-bar`'s tests target).
+   * something's attached" — Retry adopts the shared `Button` (`danger`/`sm`).
    *
-   * Deck migration (issue #469): both glyphs (the paperclip trigger, the
-   * chip's remove control) now draw from the shared bespoke icon set
-   * (`icons/Icon.svelte`, issue #457) — `attach`/`close` — instead of a
-   * one-off inline SVG and a bare `×` character.
+   * Deck migration (issue #469): the chip's remove control draws from the
+   * shared bespoke icon set (`icons/Icon.svelte`, issue #457) — `close` —
+   * instead of a bare `×` character.
+   *
+   * Composer strip (Lorenzo's ask, 2026-07-30): this component now WRAPS the
+   * composer field rather than sitting in a strip beside it, and renders it
+   * through the `field` snippet — which receives `pickFiles`, so the
+   * paperclip lives in the composer's own control row (under the textarea,
+   * beside Send) while the picking/dropping/pasting behaviour stays here.
+   * That is not only layout: the drop zone and the paste handler used to be
+   * a strip the user never interacted with, so dropping a file ON the
+   * textarea, or pasting an image INTO it, did nothing at all — the only
+   * live target was the little bar above. Wrapping the field fixes both,
+   * since `drop`/`paste` bubble out of the textarea into this element.
+   * The wrapper is no longer `tabindex="0"` for the same reason: the
+   * textarea inside it is what a user focuses, and a focusable div in front
+   * of it only added a dead tab stop.
    */
+  import type { Snippet } from 'svelte';
   import type { ComposerAttachment } from '../attachments';
   import Button from './ui/Button.svelte';
   import IconButton from './ui/IconButton.svelte';
@@ -42,9 +49,11 @@
     onFiles: (files: File[]) => void;
     onRetry: (id: string) => void;
     onRemove: (id: string) => void;
+    /** The composer field this wraps. Receives `pickFiles` so the caller can place the attach trigger inside its own control row. */
+    field?: Snippet<[{ pickFiles: () => void }]>;
   }
 
-  const { attachments, onFiles, onRetry, onRemove }: Props = $props();
+  const { attachments, onFiles, onRetry, onRemove, field }: Props = $props();
 
   let fileInput: HTMLInputElement | undefined = $state(undefined);
   let dragActive = $state(false);
@@ -86,13 +95,11 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="attachment-bar"
   class:drag-active={dragActive}
   data-testid="attachment-bar"
-  tabindex="0"
   ondrop={handleDrop}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
@@ -107,10 +114,6 @@
     aria-label="Attach images"
     onchange={handleInputChange}
   />
-  <IconButton label="Attach image" onclick={pickFiles} class="pick-button">
-    <Icon name="attach" />
-  </IconButton>
-
   {#if attachments.length > 0}
     <ul class="chips">
       {#each attachments as attachment (attachment.id)}
@@ -159,13 +162,20 @@
       {/each}
     </ul>
   {/if}
+
+  {@render field?.({ pickFiles })}
 </div>
 
 <style>
+  /* Wraps the composer field, so it takes the field's own place in the
+     composer row (`flex: 1`) and stacks: pending chips first, then whatever
+     the caller renders. The drag tint therefore lights up the whole field a
+     file is about to land in, not a strip beside it. */
   .attachment-bar {
+    flex: 1;
+    min-width: 0;
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
+    flex-direction: column;
     gap: var(--space-sm);
     border-radius: var(--radius-lg);
     transition: background-color var(--duration-fast) var(--ease-beat);
@@ -179,10 +189,6 @@
 
   .file-input {
     display: none;
-  }
-
-  :global(.pick-button) {
-    align-self: center;
   }
 
   .chips {
