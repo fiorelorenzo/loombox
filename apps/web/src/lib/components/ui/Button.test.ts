@@ -86,4 +86,32 @@ describe('Button (issue #428 Warp Deck shared UI primitives)', () => {
     const overridden = screen.getByTestId('appearance-save-button');
     expect(overridden.textContent).toContain('Save theme');
   });
+
+  it('sets no aria-pressed at all unless it is really a toggle', () => {
+    render(Button, { props: { children: textSnippet('Send') } });
+    // ARIA's own guidance: absent, not "false", on a control that does not
+    // toggle — a plain action button announced as an unpressed toggle is a
+    // worse lie than saying nothing.
+    expect(screen.getByTestId('ui-button').hasAttribute('aria-pressed')).toBe(false);
+  });
+
+  it('carries a toggle state in the accessibility tree, not only in a tint', () => {
+    render(Button, { props: { children: textSnippet('Files'), pressed: false } });
+    const button = screen.getByTestId('ui-button');
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(button.classList.contains('ui-button-pressed')).toBe(false);
+
+    cleanup();
+    render(Button, { props: { children: textSnippet('Files'), pressed: true } });
+    const on = screen.getByTestId('ui-button');
+    expect(on.getAttribute('aria-pressed')).toBe('true');
+    expect(on.classList.contains('ui-button-pressed')).toBe(true);
+  });
+
+  it('takes a hover tooltip, for a control whose visible word is hidden at some widths', () => {
+    render(Button, {
+      props: { children: textSnippet('Files'), ariaLabel: 'Files', title: 'Files' },
+    });
+    expect(screen.getByTestId('ui-button').getAttribute('title')).toBe('Files');
+  });
 });

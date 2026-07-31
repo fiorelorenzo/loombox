@@ -221,20 +221,47 @@
   let activeDrawer = $state<DrawerTab | null>(null);
 
   /**
-   * The Drawer's tab strip, as data (v3 design spec §3.6, kept from v3).
-   * Design spec v4 §3.5 drops `inbox`/`targets`/`settings` from this array:
-   * those three are `mainView` destinations now, not Drawer tabs, leaving
-   * only the session's own workbench. All three remaining tabs are
-   * session-scoped and drop out when nothing is selected, exactly as
-   * before.
+   * The three workbench panels, as data. Was the Drawer's own tab strip (v3
+   * design spec §3.6), which v4 §3.5 had already gutted from six tabs to
+   * these three by moving `inbox`/`targets`/`settings` out to `mainView`
+   * destinations. The strip itself is gone now (Lorenzo's ask, 2026-07-31):
+   * the topbar's panel switch and that strip were two controls for one
+   * choice, both labelled "Panels", 40px apart once the Drawer stopped
+   * covering the topbar — so the switch that is always on screen won, and
+   * the Drawer's header states which panel it is showing instead of offering
+   * the same three buttons again.
+   *
+   * All three are session-scoped: the switch drops out of the topbar when no
+   * session is selected, exactly as the strip did.
    */
-  const DRAWER_TABS: { id: DrawerTab; label: string; icon: IconName; sessionScoped: boolean }[] = [
-    { id: 'files', label: 'Files', icon: 'file', sessionScoped: true },
-    { id: 'terminal', label: 'Terminal', icon: 'terminal', sessionScoped: true },
-    { id: 'config', label: 'Config', icon: 'settings', sessionScoped: true },
+  const DRAWER_PANELS: {
+    id: DrawerTab;
+    /** The word on the switch wherever the topbar has room for it. */
+    label: string;
+    /** The accessible name, which must contain `label` (WCAG 2.5.3) and may say more than the pixels do. */
+    name: string;
+    icon: IconName;
+    /** Preserved per-panel selectors, from back when each of these was its own hand-written button. */
+    testId: string;
+  }[] = [
+    { id: 'files', label: 'Files', name: 'Files', icon: 'file', testId: 'file-tree-toggle' },
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      name: 'Terminal',
+      icon: 'terminal',
+      testId: 'terminal-toggle',
+    },
+    {
+      id: 'config',
+      label: 'Config',
+      name: 'Project config',
+      icon: 'settings',
+      testId: 'project-config-toggle',
+    },
   ];
-  const drawerTabs = $derived(
-    DRAWER_TABS.filter((tab) => !tab.sessionScoped || selectedSessionId !== undefined),
+  const activeDrawerLabel = $derived(
+    DRAWER_PANELS.find((panel) => panel.id === activeDrawer)?.label ?? 'Panel',
   );
   /** The Drawer's persistent-column mode at `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` and above (redesign brief §1's "toggle, persisted per-user"); below that width this is ignored and the Drawer is always an overlay/bottom-sheet — see this file's style block. Restored from `localStorage` in `onMount` below. */
   let drawerPinned = $state(false);
@@ -1707,21 +1734,6 @@
   });
 
   /**
-   * Keeps the Drawer's active tab visible (redesign v3 design spec §3.6).
-   * The tab strip is one horizontally-scrolling row rather than two wrapped
-   * ones, so with six tabs in a 26rem panel the selected one can start off
-   * screen — reachable, but invisible, which is worse than the wrapping it
-   * replaced. Re-runs whenever `active` flips, because an attachment's
-   * argument is part of its reactive dependency set.
-   */
-  function revealActiveTab(active: boolean) {
-    return (node: Element) => {
-      if (!active) return;
-      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    };
-  }
-
-  /**
    * The Drawer's own enter/exit motion (redesign brief §1: "drawer/sheet
    * slide", `tokens.css`'s `--duration-base`/`--ease-shuttle`) — needed now
    * that the overlay-mode Drawer mounts/unmounts through the shared
@@ -2604,43 +2616,58 @@
             {/if}
 
             {#if selectedSessionId && mainView === 'session'}
-              <IconButton
-                label="Files"
-                pressed={activeDrawer === 'files'}
-                onclick={() => toggleDrawer('files')}
-                dataTestId="file-tree-toggle"
-              >
-                <Icon name="file" />
-              </IconButton>
-              <IconButton
-                label="Terminal"
-                pressed={activeDrawer === 'terminal'}
-                onclick={() => toggleDrawer('terminal')}
-                dataTestId="terminal-toggle"
-              >
-                <Icon name="terminal" />
-              </IconButton>
-              <IconButton
-                label="Project config"
-                pressed={activeDrawer === 'config'}
-                onclick={() => toggleDrawer('config')}
-                dataTestId="project-config-toggle"
-              >
-                <Icon name="settings" />
-              </IconButton>
+              <!-- One drawer, three panels — so one bordered segmented group,
+                   not three peers of everything else in this corner (VS Code's
+                   panel tabs). Five identical grey glyphs sat here: nothing
+                   said the first three were the same drawer, nothing said
+                   which was open, and no word for any of them existed
+                   anywhere on screen — only a `title` a pointer had to hover
+                   for, which a touch device never gets at all. The word rides
+                   beside each glyph wherever the topbar has the room (below
+                   that, the group is still one object with one selected
+                   segment, which is most of what was missing). -->
+              <div class="panel-switch" role="group" aria-label="Panels">
+                {#each DRAWER_PANELS as panel (panel.id)}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="panel-choice"
+                    pressed={activeDrawer === panel.id}
+                    ariaLabel={panel.name}
+                    title={panel.name}
+                    onclick={() => toggleDrawer(panel.id)}
+                    dataTestId={panel.testId}
+                  >
+                    <Icon name={panel.icon} />
+                    <span class="panel-word">{panel.label}</span>
+                  </Button>
+                {/each}
+              </div>
+              <!-- A session action, not a fourth panel: it keeps the bare
+                   glyph on purpose, so the contrast with the group beside it
+                   is what says "this one does something rather than opening
+                   something". `prominent` because the dim resting state this
+                   button was built for belongs to the copy icon that repeats
+                   on every transcript row - here it read as disabled. -->
               <CopyButton
                 text={transcript ? exportTranscriptText(transcript) : ''}
                 label="Export transcript"
                 copyFn={exportTranscript}
+                prominent
               />
             {/if}
-            <IconButton
-              label="Jump to… (Ctrl/Cmd+K)"
+            <Button
+              variant="ghost"
+              size="sm"
+              class="palette-trigger"
+              ariaLabel="Jump to… (Ctrl/Cmd+K)"
+              title="Jump to… (Ctrl/Cmd+K)"
               onclick={() => (paletteOpen = true)}
               dataTestId="command-palette-toggle"
             >
               <Icon name="command" />
-            </IconButton>
+              <span class="panel-word">Jump to…</span>
+            </Button>
           </div>
         </header>
 
@@ -2937,23 +2964,16 @@
           out:drawerSlide
         >
           <div class="drawer-header">
-            <div class="drawer-tabs" role="tablist" aria-label="Panels">
-              {#each drawerTabs as tab (tab.id)}
-                <button
-                  type="button"
-                  role="tab"
-                  class="drawer-tab"
-                  class:active={activeDrawer === tab.id}
-                  aria-selected={activeDrawer === tab.id}
-                  onclick={() => setActiveDrawer(tab.id)}
-                  data-testid={`drawer-tab-${tab.id}`}
-                  {@attach revealActiveTab(activeDrawer === tab.id)}
-                >
-                  <Icon name={tab.icon} class="drawer-tab-icon" />
-                  <span>{tab.label}</span>
-                </button>
-              {/each}
-            </div>
+            <!-- States which panel this is; it does not offer the choice
+                 again. The three buttons that used to live here were the
+                 topbar's panel switch a second time, both groups labelled
+                 "Panels" — and while this Drawer was an overlay pinned to
+                 `top: 0` they physically overlapped it (measured: the overlay
+                 covered all 167px of the topbar's control cluster, and a click
+                 aimed at the palette landed on this header's pin button
+                 instead). One switch, one place, whether this panel is open,
+                 closed, overlaid or pinned. -->
+            <h2 class="drawer-title" data-testid="drawer-title">{activeDrawerLabel}</h2>
             <div class="drawer-header-actions">
               <IconButton
                 label={drawerPinned ? 'Unpin panel' : 'Pin panel'}
@@ -4130,7 +4150,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-md);
-    height: 3rem;
+    height: var(--topbar-height);
     flex-shrink: 0;
     padding: 0 var(--space-lg);
     border-bottom: 1px solid var(--color-border);
@@ -4179,6 +4199,70 @@
     align-items: center;
     gap: var(--space-2xs);
     flex-shrink: 0;
+  }
+
+  /* The three-way panel switch: one bordered object with a selected segment,
+     the same segmented idiom `ConfigBar`'s mode control already uses (the
+     border/radius/overflow on the group, the hairline between the segments,
+     `Button`'s `ghost` for each). Reached into with `:global`, same as that
+     bar: only the tint this control needs on top of `Button`'s own
+     hover/focus/press behaviour is declared here. */
+  .panel-switch {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-right: var(--space-2xs);
+  }
+
+  .panel-switch :global(.panel-choice) {
+    border: none;
+    border-radius: 0;
+    color: var(--color-text-secondary);
+    padding-inline: var(--space-xs);
+  }
+
+  .panel-switch :global(.panel-choice + .panel-choice) {
+    border-left: 1px solid var(--color-border);
+  }
+
+  /* `ghost` underlines its label on hover, which is right for a text button
+     and wrong for a segment of chrome — killed for every segment, including
+     the open one (which keeps its own tint below and would otherwise pick the
+     underline back up the moment a pointer crossed it). */
+  .panel-switch :global(.panel-choice:hover) {
+    text-decoration: none;
+  }
+
+  .panel-switch :global(.panel-choice:not([aria-pressed='true']):hover) {
+    background: var(--color-fill-subtle);
+    color: var(--color-text-primary);
+  }
+
+  /* The open panel. `Button`'s pressed treatment already tints the segment
+     accent-subtle; the accent text colour is what this adds, and the accent
+     BORDER that treatment also carries is moot here because the group owns
+     the only border (`border: none` above wins on specificity) — otherwise
+     the selected segment would double the group's own hairline. */
+  .panel-switch :global(.panel-choice[aria-pressed='true']) {
+    color: var(--color-accent);
+  }
+
+  :global(.palette-trigger:hover) {
+    text-decoration: none;
+  }
+
+  /* The word beside each glyph. Hidden below the width where the topbar can
+     hold it without crowding the session title — the accessible name and the
+     tooltip are props on the button itself, so nothing is lost from the
+     accessibility tree when the pixels go (see the markup). Spacing lives on
+     the word, not as a `gap` on `Button`'s label: `PermissionCard`'s
+     shortcut-plus-name buttons already space themselves that way, and a gap
+     on the shared primitive would double theirs. */
+  .panel-word {
+    display: none;
+    margin-left: var(--space-2xs);
   }
 
   /* Rendered only when the connection is NOT healthy (spec §3.3): the v2
@@ -4331,8 +4415,15 @@
   .composer-row {
     display: flex;
     align-items: flex-start;
-    gap: var(--space-sm);
   }
+
+  /* Deliberately NO `gap`: this row's 7.6px of space between the role word and
+     the field is the gutter's own `padding-right` below, exactly as it is on
+     every transcript row. A `gap: var(--space-sm)` here added that space a
+     SECOND time, outside the 4.75rem column, so at 1440px the textarea began
+     at x=493.8 while the prose above it began at 486.2 — the one column the
+     whole timeline is built on, off by 7.6px on the row you type into.
+     `cockpit-shell.spec.ts` measures the two against each other now. */
 
   /* Mirrors `MessageItem`'s `.gutter`: same token, same right alignment, same
      inner padding, so the column of role words runs unbroken from the last turn
@@ -4362,6 +4453,27 @@
     color: var(--color-accent);
     text-align: right;
     white-space: nowrap;
+  }
+
+  /* Below `--bp-mobile` the transcript's role column collapses and every
+     row's word moves above its content (see `MessageItem`'s own copy of that
+     block for the measurement). The composer is the last row of that same
+     timeline, so YOU moves above the field with the rest of them — leaving it
+     beside the textarea would keep the one indent the whole change exists to
+     remove, on the row where the phone's width matters most. */
+  @media (max-width: 479px) {
+    .composer-row {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--space-3xs);
+    }
+
+    .composer-gutter {
+      flex: 0 0 auto;
+      width: auto;
+      align-items: flex-start;
+      padding-right: 0;
+    }
   }
 
   .composer-field {
@@ -4439,9 +4551,29 @@
   /* Drawer                                                              */
   /* ------------------------------------------------------------------ */
 
+  /* The same rule as `.drawer` below, for the same reason and one layer up:
+     `Overlay`'s backdrop is full-viewport, so in overlay mode it covered the
+     topbar too — and being the click-to-dismiss surface, it INTERCEPTED the
+     switch. Measured: `elementFromPoint` at the palette button's centre
+     returned this backdrop, so a click meant for "open Terminal instead"
+     spent itself closing the panel. Dimming the canvas is the point of the
+     backdrop; dimming the control strip above it never was. Set through
+     `Overlay`'s own `--overlay-top` hook rather than a `:global` override,
+     which its scoped rule outranks (see that component's comment). */
+  :global(.drawer-backdrop) {
+    --overlay-top: var(--topbar-height);
+  }
+
+  /* Starts BELOW the topbar, not at `top: 0`. As an overlay it used to cover
+     the whole right end of the topbar — measured at 1280px: the panel it
+     opened covered all 167px of the control cluster that opens it, and
+     `elementFromPoint` at the palette button's centre returned this panel's
+     own pin button. The panel a control opens must not swallow the control.
+     Below `--bp-tablet` this becomes a bottom sheet and overrides `top`
+     again (see that media query). */
   .drawer {
     position: fixed;
-    top: 0;
+    top: var(--topbar-height);
     right: 0;
     bottom: 0;
     width: min(26rem, 90vw);
@@ -4463,42 +4595,22 @@
     flex-shrink: 0;
   }
 
-  /* One scrolling row, never two wrapped ones (spec §3.6 / defect D1). */
-  .drawer-tabs {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3xs);
+  /* The panel's own name (see the markup): what the duplicate tab strip that
+     used to sit here was hiding behind three buttons. Chrome-sized, like the
+     topbar's own title — the heading rule's `display`/margins have to be
+     reset for the same reason that one does. */
+  .drawer-title {
+    margin: 0;
     min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .drawer-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .drawer-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-    padding: var(--space-2xs) var(--space-xs);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    font-size: var(--text-small-size);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .drawer-tab:hover {
-    color: var(--color-text-primary);
-  }
-
-  .drawer-tab.active {
-    background: var(--color-fill);
-    color: var(--color-text-primary);
+    font-size: var(--text-small-size);
+    line-height: var(--text-body-line);
+    font-weight: 500;
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
   }
 
   .drawer-header-actions {
@@ -4661,10 +4773,20 @@
   }
 
   /* At `--bp-wide` (1280px) and above the Drawer can be pinned as a
-     persistent third column instead of an overlay. */
+     persistent third column instead of an overlay, and the topbar's own
+     controls say their names. That second threshold is measured, not
+     guessed: at 1280px the whole right-hand cluster with every word visible
+     is 344px of a 992px topbar, so the session title and its breadcrumb
+     still get two thirds of the row. Below it the sidebar is a sheet and the
+     words would be competing with the title for a much narrower row, so the
+     cluster falls back to its 153px icon-only form. */
   @media (min-width: 1280px) {
     .drawer-header-actions :global(.drawer-pin-toggle) {
       display: inline-flex;
+    }
+
+    .panel-word {
+      display: inline;
     }
   }
 

@@ -65,4 +65,24 @@
     text-transform: uppercase;
     color: var(--color-text-muted);
   }
+
+  /* Below `--bp-mobile` the role column collapses and this caption moves
+     above the tool card (see `MessageItem`'s own copy of this block for the
+     measurement). Stacked, the glyph and the word read better side by side
+     than in a two-line stack of their own, so the column becomes a row. The
+     four widget rows that place this component (`GenericToolRow`,
+     `BashWidget`, `EditWriteWidget`, `TodoWidget`) each switch to a column at
+     the same breakpoint — a flex child cannot turn its own parent, and they
+     must all move together or the timeline's one rule becomes several. */
+  @media (max-width: 479px) {
+    .tool-gutter {
+      flex: 0 0 auto;
+      width: auto;
+      flex-direction: row;
+      align-items: center;
+      gap: var(--space-2xs);
+      padding-right: 0;
+      padding-top: var(--space-xs);
+    }
+  }
 </style>

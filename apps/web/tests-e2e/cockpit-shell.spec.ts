@@ -29,6 +29,28 @@ async function gotoCockpit(page: Page, loombox: LoomboxFixture): Promise<void> {
 }
 
 /**
+ * One agent turn plus one tool call: the two transcript row types that share
+ * the timeline's role column with the composer, so a test can measure all
+ * three against each other.
+ */
+async function seedTurnWithToolCall(loombox: LoomboxFixture): Promise<void> {
+  await sendSessionUpdate(loombox.node, loombox.session, {
+    kind: 'agent_message_chunk',
+    turnId: 'turn-column',
+    messageId: 'msg-column',
+    text: 'One turn, so the transcript has a role word and a measurable line of prose.',
+  });
+  await sendSessionUpdate(loombox.node, loombox.session, {
+    kind: 'tool_call',
+    id: 'tool-column',
+    turnId: 'turn-column',
+    title: 'Read packages/relay/src/router.ts',
+    toolKind: 'read',
+    status: 'completed',
+  });
+}
+
+/**
  * The cockpit shell, covering both redesigns it has been through.
  *
  * v3 (design spec `2026-07-25-redesign-v3-design.md` §3.1-§3.6) gave it one
@@ -165,21 +187,26 @@ test.describe('cockpit shell', () => {
     }
   });
 
-  test('the drawer carries only the open session workbench, not the global destinations', async ({
+  test('the workbench carries only the open session panels, not the global destinations', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
+    const panels = page.getByRole('group', { name: 'Panels' });
+    await expect(panels.getByRole('button')).toHaveCount(3);
     await page.getByTestId('file-tree-toggle').click();
     await expect(page.getByTestId('drawer')).toBeVisible();
 
     // v3 shipped six tabs, three of which repeated the sidebar's own
     // navigation. Inbox, Nodes and Settings are pages now and must not be
-    // reachable as a tab as well.
-    await expect(page.getByTestId('drawer-tab-inbox')).toHaveCount(0);
-    await expect(page.getByTestId('drawer-tab-targets')).toHaveCount(0);
-    await expect(page.getByTestId('drawer-tab-settings')).toHaveCount(0);
-    await expect(page.getByTestId('drawer-tab-files')).toBeVisible();
+    // reachable as a panel as well. The Drawer's own tab strip — the second
+    // copy of this switch — is gone too, so the panel it has open is stated
+    // rather than offered again.
+    await expect(page.getByTestId('inbox-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('targets-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('settings-toggle')).toHaveCount(0);
+    await expect(page.getByRole('tab')).toHaveCount(0);
+    await expect(page.getByTestId('drawer-title')).toHaveText('Files');
   });
 
   test('a destination switches the main area and keeps the session selected', async ({
@@ -385,5 +412,149 @@ test.describe('cockpit shell', () => {
     const turnRight = (turnBox?.x ?? 0) + (turnBox?.width ?? 0);
     const composerRight = (composerBox?.x ?? 0) + (composerBox?.width ?? 0);
     expect(Math.abs(turnRight - composerRight)).toBeLessThan(1);
+  });
+
+  test('the panel switch opens one panel at a time, and says which one is open', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const files = page.getByTestId('file-tree-toggle');
+    const terminal = page.getByTestId('terminal-toggle');
+    const config = page.getByTestId('project-config-toggle');
+
+    // Three peers of everything else in that corner became one group of three
+    // toggles. The state used to live only in a background tint, which is to
+    // say nowhere at all for a screen reader; `aria-pressed` is the assertion
+    // that matters and the reason these route through `Button`'s new `pressed`
+    // rather than a class.
+    await expect(files).toHaveAttribute('aria-pressed', 'false');
+    await files.click();
+    await expect(files).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('file-tree-panel-wrapper')).toBeVisible();
+    await expect(terminal).toHaveAttribute('aria-pressed', 'false');
+    await expect(config).toHaveAttribute('aria-pressed', 'false');
+
+    // Deliberately asserted: at this width the Drawer is an overlay with a
+    // click-to-dismiss backdrop, and that backdrop used to cover the topbar.
+    // The switch below could not be clicked at all — `elementFromPoint` at
+    // these buttons returned the backdrop, so the click closed the panel
+    // instead of switching it. If the Drawer ever stops being an overlay here,
+    // this guard has stopped guarding that and should be moved, not deleted.
+    await expect(page.getByTestId('drawer-backdrop')).toBeVisible();
+    // One drawer: opening another panel closes the first, it never ends up
+    // with two segments claiming to be open.
+    await terminal.click();
+    await expect(terminal).toHaveAttribute('aria-pressed', 'true');
+    await expect(files).toHaveAttribute('aria-pressed', 'false');
+
+    // And the open one closes on a second click, which is what makes these
+    // toggles rather than a radio group.
+    await terminal.click();
+    await expect(terminal).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('the topbar controls show their words where there is room and keep their names where there is not', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const filesWord = page.getByTestId('file-tree-toggle').locator('.panel-word');
+    const paletteWord = page.getByTestId('command-palette-toggle').locator('.panel-word');
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(filesWord).toBeVisible();
+    await expect(paletteWord).toBeVisible();
+
+    // Below `--bp-wide` the words go, and this is the half that matters: the
+    // five glyphs this replaced had no word ANYWHERE, only a `title` a pointer
+    // had to hover for. The accessible name is a prop on the button, not the
+    // hidden span, so it survives the pixels going.
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await expect(filesWord).toBeHidden();
+    await expect(paletteWord).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Files' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Jump to/ })).toBeVisible();
+  });
+
+  test('every timeline row shares one text column, the composer included', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await seedTurnWithToolCall(loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const prose = page.getByTestId('message-text').first();
+    const toolCard = page.getByTestId('tool-card').first();
+    const textarea = page.getByTestId('composer-input');
+    await expect(prose).toBeVisible();
+    await expect(toolCard).toBeVisible();
+
+    const proseBox = await prose.boundingBox();
+    const toolBox = await toolCard.boundingBox();
+    const fieldBox = await textarea.boundingBox();
+
+    // The test above measures the role WORDS' right edges, which lined up
+    // while the column they define did not: `.composer-row` carried a
+    // `gap: var(--space-sm)` on top of the same 4.75rem gutter, so the field
+    // began 7.6px right of the prose (measured 493.8 against 486.2 at 1440px).
+    // A word is not the column; the text is.
+    expect(Math.abs((proseBox?.x ?? 0) - (toolBox?.x ?? 0))).toBeLessThan(1);
+    expect(Math.abs((proseBox?.x ?? 0) - (fieldBox?.x ?? 0))).toBeLessThan(1);
+  });
+
+  test('on a phone the role column collapses and every row keeps one left edge', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await seedTurnWithToolCall(loombox);
+    await page.setViewportSize({ width: 390, height: 780 });
+
+    const label = page.getByTestId('message-item').first().locator('.role-label');
+    const prose = page.getByTestId('message-text').first();
+    const toolCard = page.getByTestId('tool-card').first();
+    const textarea = page.getByTestId('composer-input');
+    await expect(label).toBeVisible();
+
+    const labelBox = await label.boundingBox();
+    const proseBox = await prose.boundingBox();
+    const toolBox = await toolCard.boundingBox();
+    const fieldBox = await textarea.boundingBox();
+
+    // Above the turn, not beside it: 84px of a 390px phone went to a
+    // six-letter word, which left the prose a 244px measure.
+    expect((labelBox?.y ?? 0) + (labelBox?.height ?? 0)).toBeLessThanOrEqual(
+      (proseBox?.y ?? 0) + 1,
+    );
+    expect(Math.abs((labelBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
+
+    // What the collapse is FOR. 244px before, 316px measured after.
+    expect(proseBox?.width ?? 0).toBeGreaterThan(300);
+
+    // Every other surface sharing that column has to move at the same
+    // breakpoint, or the timeline's one rule becomes several that nearly line
+    // up — which is the defect the column was introduced to fix.
+    expect(Math.abs((toolBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
+    expect(Math.abs((fieldBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
+  });
+
+  test('the role column is still beside the turn one breakpoint up', async ({ page, loombox }) => {
+    await gotoCockpit(page, loombox);
+    await seedTurnWithToolCall(loombox);
+    await page.setViewportSize({ width: 768, height: 900 });
+
+    const label = page.getByTestId('message-item').first().locator('.role-label');
+    const prose = page.getByTestId('message-text').first();
+    await expect(label).toBeVisible();
+    const labelBox = await label.boundingBox();
+    const proseBox = await prose.boundingBox();
+
+    // The collapse is a phone rule (`--bp-mobile`), not a "narrow" one: a
+    // tablet has room for the column and keeps it, so the media query must not
+    // leak upward.
+    expect((labelBox?.x ?? 0) + (labelBox?.width ?? 0)).toBeLessThan(proseBox?.x ?? 0);
+    expect(Math.abs((labelBox?.y ?? 0) - (proseBox?.y ?? 0))).toBeLessThan(4);
   });
 });

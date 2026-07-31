@@ -28,6 +28,17 @@
    * needs the fully generic slot. Plain nested content (`<Button>Retry</Button>`)
    * is all a caller needs to write; Svelte compiles that into the
    * `children` snippet automatically.
+   *
+   * `pressed` opts a button into being a real toggle: it sets `aria-pressed`
+   * and switches to the accent-subtle background + accent border, exactly
+   * as `IconButton`'s own `pressed` already does. Added for the topbar's
+   * three-way panel switch (Files/Terminal/Config), where the selected
+   * segment has to be selected in the accessibility tree and not merely
+   * tinted — a segmented control whose state lives only in a background
+   * colour tells a screen reader nothing. Omit it entirely for a plain
+   * action, per ARIA's guidance not to set `aria-pressed` on a control that
+   * isn't a toggle. `title` is the matching hover tooltip, for the widths
+   * where such a control hides its own visible word.
    */
   import type { Snippet } from 'svelte';
   import WovenLoader from '../WovenLoader.svelte';
@@ -46,6 +57,10 @@
     onclick?: (event: MouseEvent) => void;
     /** Accessible-name override — only needed when `children` isn't plain readable text (e.g. an icon-plus-label pairing where the icon stays `aria-hidden`). */
     ariaLabel?: string;
+    /** Omit for a plain action; set for a real toggle (drives `aria-pressed` and the pressed treatment). */
+    pressed?: boolean;
+    /** Native hover tooltip — pair it with `ariaLabel` on a control whose visible label is hidden at some widths. */
+    title?: string;
     /** Additional class name(s) merged onto the root `<button>`. */
     class?: string;
     /**
@@ -69,6 +84,8 @@
     fullWidth = false,
     onclick,
     ariaLabel,
+    pressed,
+    title,
     class: className = '',
     dataTestId = 'ui-button',
     children,
@@ -81,9 +98,12 @@
   {type}
   class={`ui-button ui-button-${variant} ui-button-${size} ${className}`.trim()}
   class:ui-button-full={fullWidth}
+  class:ui-button-pressed={pressed === true}
   disabled={isDisabled}
   aria-busy={loading || undefined}
   aria-label={ariaLabel}
+  aria-pressed={pressed}
+  {title}
   {onclick}
   data-testid={dataTestId}
   data-variant={variant}
@@ -199,6 +219,14 @@
   .ui-button-danger:not(:disabled):hover,
   .ui-button-danger:not(:disabled):active {
     background: var(--color-danger-subtle);
+  }
+
+  /* aria-pressed=true — the same accent-subtle fill + accent border
+     `IconButton` uses for a pressed toggle, so the two primitives read
+     identically when a surface mixes them. */
+  .ui-button-pressed {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same

@@ -82,6 +82,17 @@
      the audit's "off-scale padding" flag on `.shell`'s `padding-bottom`
      was this token missing, not a spacing-scale mismatch). */
   --tabbar-height: 3.5rem;
+  /* The cockpit topbar's own height, for the same reason `--tabbar-height`
+     above is a token: the overlay Drawer has to start below the topbar
+     rather than covering the controls that open it, and a literal `3rem`
+     repeated there drifts from the one rule that actually sets the height. */
+  --topbar-height: 3rem;
+  /* `Overlay`'s backdrop top edge — a per-caller hook, not a scale value:
+     declared here so the token-hygiene test below has a definition to
+     resolve, and so the default (a full-viewport scrim) is stated in the
+     same layer as the heights it is set from. The cockpit's Drawer
+     overrides it on its own backdrop; see `Overlay.svelte`. */
+  --overlay-top: 0px;
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */

@@ -124,9 +124,20 @@
 {/if}
 
 <style>
+  /* `--overlay-top` lets a caller pull the backdrop's top edge down without
+     fighting this scoped rule's specificity (a `:global(.my-backdrop)` rule
+     at the call site loses to `.overlay-backdrop.svelte-hash`, and winning by
+     source order is not a contract). The cockpit's Drawer sets it to the
+     topbar's height: the backdrop is the click-to-dismiss surface, so while it
+     covered the topbar it INTERCEPTED the very control that opens the Drawer.
+     `tokens.css` declares the 0 default — a full-viewport scrim, which is what
+     every other caller gets. */
   .overlay-backdrop {
     position: fixed;
-    inset: 0;
+    top: var(--overlay-top);
+    right: 0;
+    bottom: 0;
+    left: 0;
     background: var(--color-overlay);
   }
 </style>

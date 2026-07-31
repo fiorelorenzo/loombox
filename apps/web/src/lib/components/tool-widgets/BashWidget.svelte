@@ -166,4 +166,14 @@
     margin-top: var(--space-xs);
     min-width: 0;
   }
+
+  /* Below `--bp-mobile` the role column collapses, so this row stacks its
+     `ToolCallGutter` caption above the card — see that component's own copy
+     of this block, and `MessageItem`'s for the measurement. */
+  @media (max-width: 479px) {
+    .bash-widget {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
 </style>
