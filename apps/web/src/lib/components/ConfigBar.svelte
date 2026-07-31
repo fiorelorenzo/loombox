@@ -52,8 +52,37 @@
    * figure and the cost muted beside it (previously undifferentiated grey
    * text jammed against the controls), plus a `title` spelling out both
    * numbers for anyone hovering.
+   *
+   * Composer strip (Lorenzo's ask, 2026-07-30): this bar moved from a strip
+   * of its own ABOVE the composer to the one control row directly under the
+   * textarea, so the composer owns one strip instead of two. Three changes
+   * came with the move:
+   *
+   *  - The visible word "Model" is gone. The value already reads as a model
+   *    name ("Sonnet 4.5"), so the label spent a word to say nothing; the
+   *    agent's own name stands in front of the picker instead, which is the
+   *    fact that was missing ("which agent am I talking to"). The `Select`
+   *    keeps `Model` as its ACCESSIBLE name — the agent name is a sibling
+   *    fact, never marked up as that control's label.
+   *  - The meter reports the context in use AGAINST ITS MAXIMUM ("76k /
+   *    200k") rather than a bare percentage, plus a 3px track that carries
+   *    the percentage pre-attentively: context exhaustion is the one thing
+   *    you want to notice without reading, and the track tints amber at 80%
+   *    and red at 95%. No figure is encoded twice — the track IS the
+   *    percentage, the numbers ARE the absolutes, and the `title` spells
+   *    both out in words.
+   *  - `compact` is for a caller with no room (below `--bp-mobile`, where it
+   *    collapses the pickers behind a "···"): the pickers and the agent name
+   *    go, and the meter drops the denominator, keeping the track, the used
+   *    count and the cost. Measured, not guessed — at 390px the full meter is
+   *    215px of a ~300px content width, which wrapped Send onto a line of its
+   *    own and cost the composer half the screen. The ratio is not lost with
+   *    the denominator: the track IS the ratio, and the `title` still spells
+   *    every figure out. The old strip hid all of it behind the "···", so the
+   *    first thing to disappear on a phone was the number a user watches.
    */
   import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core/browser';
+  import { PROVIDER_LABELS } from '$lib/providers';
   import Button from './ui/Button.svelte';
   import Select from './ui/Select.svelte';
 
@@ -62,12 +91,30 @@
     usage: UsageRecord | undefined;
     cumulativeCostUsd: number;
     onChange: (category: string, optionId: string) => void;
+    /** The session's ACP provider id — named in front of the model picker so the row says which agent is answering. */
+    providerId?: string | undefined;
+    /** For a caller with no room: pickers and agent name hidden, meter shortened to track + used + cost. */
+    compact?: boolean;
   }
 
-  const { options, usage, cumulativeCostUsd, onChange }: Props = $props();
+  const {
+    options,
+    usage,
+    cumulativeCostUsd,
+    onChange,
+    providerId,
+    compact = false,
+  }: Props = $props();
 
   const modeOption = $derived(options.find((option) => option.category === 'mode'));
   const otherOptions = $derived(options.filter((option) => option.category !== 'mode'));
+
+  // Falls back to the raw id rather than dropping the fact: an unrecognized
+  // provider still tells a user more than a blank does (same reasoning as
+  // `NewSessionDialog`'s own `PROVIDER_LABELS[id]?.name ?? id`).
+  const agentName = $derived(
+    providerId ? (PROVIDER_LABELS[providerId]?.name ?? providerId) : undefined,
+  );
 
   // §7.9/§16: the live percentage meter excludes usage attributable to a
   // subagent tool call; the cumulative cost figure never does (folded in
@@ -78,13 +125,21 @@
       : undefined,
   );
 
+  /** The context figures behind the meter, present only when the same §7.9 guard `contextPercent` applies holds — a used count with no window to measure it against is noise, not information. */
+  const contextTokens = $derived(
+    contextPercent !== undefined && usage?.tokensUsed !== undefined && usage.contextWindow
+      ? { used: usage.tokensUsed, max: usage.contextWindow }
+      : undefined,
+  );
+
   // Bullet 2 of the v3 Controls slice: a clear, hoverable explanation of
   // both meter figures — the percentage is turn-scoped and subagent-free,
   // the cost is the whole session and always includes subagent spend
-  // (see the `contextPercent` comment above).
+  // (see the `contextPercent` comment above). It is also where the
+  // percentage is stated in words now that the track carries it visually.
   const meterTitle = $derived(
-    contextPercent !== undefined
-      ? `${contextPercent}% of the context window used this turn · $${cumulativeCostUsd.toFixed(2)} spent this session`
+    contextTokens
+      ? `${contextPercent}% of the context window used this turn (${contextTokens.used.toLocaleString('en-US')} of ${contextTokens.max.toLocaleString('en-US')} tokens) · $${cumulativeCostUsd.toFixed(2)} spent this session`
       : `$${cumulativeCostUsd.toFixed(2)} spent this session`,
   );
 
@@ -94,40 +149,76 @@
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
   }
+
+  /** Token counts abbreviated to the unit a context window is discussed in ("76k / 200k"), so the pair stays readable at caption size in a row that also holds controls. */
+  function formatTokens(count: number): string {
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    if (count >= 1_000) return `${Math.round(count / 1_000)}k`;
+    return `${count}`;
+  }
 </script>
 
 <div class="config-bar" data-testid="config-bar">
-  {#each otherOptions as option (option.category)}
-    <div class="control" data-testid={`config-option-${option.category}`}>
-      <span class="label">{categoryLabel(option.category)}</span>
-      <Select
-        value={option.current ?? ''}
-        options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
-        onChange={(optionId) => onChange(option.category, optionId)}
-        label={categoryLabel(option.category)}
-        size="sm"
-      />
-    </div>
-  {/each}
+  {#if !compact}
+    {#if agentName}
+      <span class="agent" data-testid="config-agent">{agentName}</span>
+    {/if}
 
-  {#if modeOption}
-    <div class="control mode" role="group" aria-label="Mode" data-testid="config-option-mode">
-      {#each modeOption.choices as choice (choice.id)}
-        <Button
-          variant="ghost"
+    {#each otherOptions as option (option.category)}
+      <div class="control" data-testid={`config-option-${option.category}`}>
+        <!-- The model picker's own value already reads as a model name, so it
+             takes the agent name above as its visible neighbour instead of a
+             label repeating the category. Every other category keeps its word:
+             a bare "High" would not say what it measures. -->
+        {#if option.category !== 'model'}
+          <span class="label">{categoryLabel(option.category)}</span>
+        {/if}
+        <Select
+          value={option.current ?? ''}
+          options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
+          onChange={(optionId) => onChange(option.category, optionId)}
+          label={categoryLabel(option.category)}
           size="sm"
-          class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
-          onclick={() => onChange('mode', choice.id)}
-        >
-          {choice.name}
-        </Button>
-      {/each}
-    </div>
+        />
+      </div>
+    {/each}
+
+    {#if modeOption}
+      <div class="control mode" role="group" aria-label="Mode" data-testid="config-option-mode">
+        {#each modeOption.choices as choice (choice.id)}
+          <Button
+            variant="ghost"
+            size="sm"
+            class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
+            onclick={() => onChange('mode', choice.id)}
+          >
+            {choice.name}
+          </Button>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   <div class="meter" data-testid="context-meter" title={meterTitle}>
-    {#if contextPercent !== undefined}
-      <span class="meter-primary">{contextPercent}% context</span>
+    {#if contextTokens}
+      <!-- The track is the percentage; the numbers are the absolutes. Hidden
+           from the accessibility tree because it re-states, in pixels, what
+           the figures beside it and the `title` already say in words. -->
+      <span
+        class="track"
+        class:high={contextPercent !== undefined && contextPercent >= 80}
+        class:full={contextPercent !== undefined && contextPercent >= 95}
+        data-testid="context-track"
+        data-fill={contextPercent}
+        aria-hidden="true"
+      >
+        <span class="track-fill" style:width={`${contextPercent}%`}></span>
+      </span>
+      <span class="meter-primary">{formatTokens(contextTokens.used)}</span>
+      {#if !compact}
+        <span class="meter-sep" aria-hidden="true">/</span>
+        <span class="meter-max">{formatTokens(contextTokens.max)}</span>
+      {/if}
       <span class="meter-sep" aria-hidden="true">·</span>
     {/if}
     <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
@@ -135,7 +226,17 @@
 </div>
 
 <style>
+  /* Takes the row's spare width so `.meter`'s `margin-left: auto` right-aligns
+     the figures against the send controls, instead of the whole bar shrinking
+     to its content and leaving the meter jammed against the last picker.
+
+     Deliberately NOT `min-width: 0`: that let the bar shrink below its own
+     min-content on a phone, and the meter — which must not break a figure
+     across lines — overflowed straight over the Send button (caught in a 390px
+     capture, where "$1.74" was painted through "Send"). At `auto` the row wraps
+     Send onto its own line instead, which is what a flex row is for. */
   .config-bar {
+    flex: 1;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -151,6 +252,13 @@
 
   .label {
     color: var(--color-text-secondary);
+  }
+
+  /* The agent answering, not a control: same secondary register as a picker's
+     label, but in the app's own voice rather than uppercase chrome. */
+  .agent {
+    color: var(--color-text-secondary);
+    white-space: nowrap;
   }
 
   .mode {
@@ -180,16 +288,18 @@
     color: var(--color-accent);
   }
 
-  /* A clear right-aligned slot (v3 §3.5): bordered off from the controls
-     rather than jammed against them, percentage as the primary figure,
-     cost muted beside it — see the `title` for the full explanation. */
+  /* Right-aligned against the send controls (v3 §3.5). The vertical rule this
+     slot used to carry is gone: it separated the meter from pickers sitting
+     right beside it in the old strip, and in the composer row — where
+     `margin-left: auto` already opens a gap of real space — it read as an
+     orphan pipe with nothing on its left. */
   .meter {
     margin-left: auto;
     display: flex;
     align-items: baseline;
     gap: var(--space-2xs);
-    padding-left: var(--space-md);
-    border-left: 1px solid var(--color-border);
+    /* One figure per side of the slash, never a number split across lines. */
+    white-space: nowrap;
     font-family: var(--font-mono);
     font-feature-settings: var(--font-feature-tabular);
     font-size: var(--text-small-size);
@@ -201,8 +311,39 @@
   }
 
   .meter-sep,
+  .meter-max,
   .meter-cost {
     color: var(--color-text-muted);
+  }
+
+  /* 3px of pre-attentive signal: you register "nearly full" without reading a
+     number. Centred against a baseline-aligned row, so it sits with the digits
+     rather than on them. */
+  .track {
+    align-self: center;
+    width: 2.5rem;
+    height: 3px;
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-border);
+    overflow: hidden;
+  }
+
+  .track-fill {
+    display: block;
+    height: 100%;
+    background: var(--color-text-secondary);
+    transition: width var(--duration-base) var(--ease-beat);
+  }
+
+  /* Amber approaching the wall, red at it: the two points where what you do
+     next changes (wrap up the turn / expect a compaction). */
+  .track.high .track-fill {
+    background: var(--color-warning);
+  }
+
+  .track.full .track-fill {
+    background: var(--color-danger);
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same

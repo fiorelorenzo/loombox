@@ -2,6 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRawSnippet } from 'svelte';
 import type { ComposerAttachment } from '../attachments';
 import AttachmentBar from './AttachmentBar.svelte';
 
@@ -31,7 +32,6 @@ describe('AttachmentBar: rendering (SPEC §7.25)', () => {
       props: { attachments: [], onFiles: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() },
     });
     expect(screen.queryByTestId('attachment-chip')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Attach image' })).toBeTruthy();
   });
 
   it('renders a preview image when previewUrl is set', () => {
@@ -153,5 +153,64 @@ describe('AttachmentBar: interaction', () => {
     });
     await fireEvent.click(screen.getByRole('button', { name: 'Remove photo.png' }));
     expect(onRemove).toHaveBeenCalledWith('a3');
+  });
+});
+
+/**
+ * The wrapper's whole reason to exist (Lorenzo's ask, 2026-07-30): it wraps the
+ * composer field so a file dropped ON the textarea, or an image pasted INTO it,
+ * actually attaches. Before the move the handlers sat on a strip beside the
+ * field that a user never touched, so both gestures silently did nothing.
+ */
+describe('AttachmentBar: wrapping the composer field', () => {
+  /** A stand-in for `+page.svelte`'s field: a textarea plus a trigger wired to the `pickFiles` the snippet is handed. */
+  const field = createRawSnippet<[{ pickFiles: () => void }]>((args) => ({
+    render: () =>
+      `<div><textarea data-testid="composer-input"></textarea><button type="button" data-testid="attach">Attach</button></div>`,
+    setup: (element: Element) => {
+      const trigger = element.querySelector('[data-testid="attach"]');
+      trigger?.addEventListener('click', () => args().pickFiles());
+    },
+  }));
+
+  it('attaches a file dropped on the field itself, not just on a strip beside it', async () => {
+    const onFiles = vi.fn();
+    render(AttachmentBar, {
+      props: { attachments: [], onFiles, onRetry: vi.fn(), onRemove: vi.fn(), field },
+    });
+    const file = pngFile('dropped-on-the-textarea.png');
+    await fireEvent.drop(screen.getByTestId('composer-input'), { dataTransfer: { files: [file] } });
+    expect(onFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it('attaches an image pasted into the textarea, where a user actually pastes', async () => {
+    const onFiles = vi.fn();
+    render(AttachmentBar, {
+      props: { attachments: [], onFiles, onRetry: vi.fn(), onRemove: vi.fn(), field },
+    });
+    const file = pngFile('pasted-into-the-textarea.png');
+    await fireEvent.paste(screen.getByTestId('composer-input'), {
+      clipboardData: { files: [file] },
+    });
+    expect(onFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it('hands the field a pickFiles that opens the picker, so the trigger can live in the caller row', async () => {
+    render(AttachmentBar, {
+      props: { attachments: [], onFiles: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn(), field },
+    });
+    const input = screen.getByLabelText('Attach images') as HTMLInputElement;
+    const opened = vi.spyOn(input, 'click');
+    await fireEvent.click(screen.getByTestId('attach'));
+    expect(opened).toHaveBeenCalled();
+  });
+
+  // A focusable wrapper in front of the textarea was only ever there so a
+  // `paste` could land on it; the textarea it wraps is what a user focuses now.
+  it('adds no tab stop of its own in front of the field', () => {
+    render(AttachmentBar, {
+      props: { attachments: [], onFiles: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn(), field },
+    });
+    expect(screen.getByTestId('attachment-bar').hasAttribute('tabindex')).toBe(false);
   });
 });
