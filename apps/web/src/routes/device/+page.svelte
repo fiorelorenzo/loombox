@@ -68,8 +68,16 @@
   }
 
   async function signInWithGithub(): Promise<void> {
+    authError = undefined;
     const store = await ensureAuthStore();
-    await store.signInWithGithub(window.location.href);
+    // `signInWithGithub` throws when the relay reports the sign-in failed
+    // (e.g. it has no GitHub provider configured at all) — unhandled here,
+    // that was a rejected promise in the console and a dead button on screen.
+    try {
+      await store.signInWithGithub(window.location.href);
+    } catch (cause) {
+      authError = cause instanceof Error ? cause.message : String(cause);
+    }
   }
 
   async function handleApprove(userCode: string): Promise<void> {

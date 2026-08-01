@@ -263,4 +263,26 @@ describe('AuthStore', () => {
     const asBearer = (await asBearerRes.json()) as { user?: { id?: string } };
     expect(asBearer.user?.id).toBe(signed.accountId);
   });
+
+  // The hermetic relay above configures `enableEmailPasswordForTests` and NO
+  // social provider, which is exactly the state a freshly-cloned dev loop's
+  // relay starts in (no `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` in its env):
+  // Better Auth answers `404 PROVIDER_NOT_FOUND`. Its client reports that in
+  // `{ error }` instead of throwing, so `signInWithGithub` used to resolve as
+  // if it had started a redirect - leaving a Sign-in button that did nothing
+  // at all, with no message anywhere. This is the whole reason local GitHub
+  // login "silently didn't work" rather than saying why.
+  it('signInWithGithub rejects, naming the relay, when that relay has no GitHub provider', async () => {
+    const store = new AuthStore({ relayBaseUrl, storage: createInMemoryAuthStorage() });
+
+    // Both halves matter: the phrase says what is wrong, the URL says WHICH
+    // relay is wrong - the local loop's, not the production one the same UI
+    // usually talks to.
+    await expect(store.signInWithGithub('http://localhost:5173/')).rejects.toThrow(
+      'has no GitHub login configured',
+    );
+    await expect(store.signInWithGithub('http://localhost:5173/')).rejects.toThrow(relayBaseUrl);
+    // Nothing was signed in, and no half-session was persisted.
+    expect(get(store.session)).toBeUndefined();
+  });
 });
