@@ -105,11 +105,29 @@ in the Mac's checkout.
 ## Debugging the desktop app on the Mac (from the devbox)
 
 ```bash
-scripts/dev.sh                     # once: the local loop (relay + node + web) this box serves
-scripts/mac-desktop.sh --hmr       # launch pointed at it — edit apps/web here, the window updates
-scripts/mac-desktop.sh --debug     # + CDP/inspector forwarded here (implies --hmr)
+scripts/mac-desktop.sh --dev       # one command: the local loop here + the window there
+scripts/mac-desktop.sh --dev --debug   # + CDP/inspector forwarded back to this box
 scripts/mac-desktop.sh --reload    # reload the app window, ~2s, no relaunch
 PWA_URL=https://app.loombox.dev scripts/mac-desktop.sh --debug   # debug the prod bundle
+```
+
+`--dev` is the whole session in one command: it brings the loop up here (postgres,
+relay, node daemon, web, against the **dev** GitHub OAuth app in `.env.dev.local`),
+launches the app on the Mac pointed at it, and then holds the terminal while both
+run. Quitting the app on the Mac stops the loop here; Ctrl+C here quits the app
+there. Nothing is left running on either side, which matters on this shared box —
+a leaked `vite dev` holds its port for days. It reuses a loop you already have up
+rather than starting a second one, and leaves that one alone on the way out.
+Postgres survives on purpose (it holds the account and its sessions, so a restart
+does not mean signing in again); `--dev --fresh` wipes it, `scripts/dev.sh --stop`
+stops it.
+
+The older two-step form still works and is what `--dev` runs underneath:
+
+```bash
+scripts/dev.sh                     # the local loop (relay + node + web) this box serves
+scripts/mac-desktop.sh --hmr       # launch pointed at it — edit apps/web here, the window updates
+scripts/mac-desktop.sh --debug     # + CDP/inspector forwarded here (implies --hmr)
 ```
 
 `--hmr` is the live-reload loop, and it needs no CDP, so it is not gated behind
@@ -257,6 +275,7 @@ is the only check that actually distinguishes "deployed" from "still serving the
 ```bash
 scripts/dev.sh            # relay + node daemon + web, HMR, both inspectors
 scripts/dev.sh --stop     # ...including the dev Postgres
+scripts/mac-desktop.sh --dev   # the same loop + a desktop window on the Mac, one command
 ```
 
 Production parity on purpose: real Postgres, real Better Auth, real device-authorization
