@@ -13,6 +13,10 @@
 #   scripts/dev.sh --no-mac     # skip the reverse SSH forwards to the Mac
 #   scripts/dev.sh --stop       # tear everything down, including Postgres
 #
+# To drive a desktop window on the Mac from the same session, run
+# `scripts/mac-desktop.sh --dev` instead: it starts this script, launches the app
+# against it, and stops this script again when that app quits.
+#
 # Port map. Fixed, not env-overridable: the GitHub OAuth App's callback URL
 # and LOOMBOX_TRUSTED_ORIGINS below are registered against these exact
 # ports, so a "just use another port" override would silently break login.
@@ -305,10 +309,25 @@ esac
 # misleads.
 preflight_ports || exit 1
 
+# The dev node's own state dir (identity keypair, persisted device token), kept
+# separate from any resident node on this host — see the node section below, which
+# exports it. Resolved up here because --fresh has to wipe it in the same breath
+# as the database.
+NODE_STATE_DIR="${LOOMBOX_NODE_STATE_DIR:-$HOME/.loombox/node-dev}"
+
 # --- postgres ------------------------------------------------------------
 if [ "$FRESH" = 1 ]; then
   echo ">> --fresh: dropping the dev postgres volume for a clean database"
   "${COMPOSE[@]}" down -v
+  # The node's persisted state has to go with it: its device token and identity
+  # keypair only mean anything to the database that registered them, so against a
+  # wiped one the node starts, gets HTTP 401 resolving its account, and exits —
+  # every time, until someone deletes this by hand. Measured on the first --fresh
+  # run of this loop: "the relay does not recognize this authToken".
+  if [ -e "$NODE_STATE_DIR" ]; then
+    echo "   ...and the dev node's state it was registered in ($NODE_STATE_DIR)"
+    rm -rf "$NODE_STATE_DIR"
+  fi
 fi
 
 echo ">> starting dev postgres (127.0.0.1:${DEV_POSTGRES_PORT})"
@@ -361,8 +380,8 @@ fi
 # --- node daemon -------------------------------------------------------
 # Dev-specific state dir (identity keypair, persisted device token) so this
 # never shares state with a real resident node already running on this host
-# (packages/node/src/config.ts's LOOMBOX_NODE_STATE_DIR).
-NODE_STATE_DIR="${LOOMBOX_NODE_STATE_DIR:-$HOME/.loombox/node-dev}"
+# (packages/node/src/config.ts's LOOMBOX_NODE_STATE_DIR). Resolved next to the
+# postgres section above, which wipes it along with the database on --fresh.
 NODE_ID="${LOOMBOX_NODE_ID:-dev-$(hostname -s 2>/dev/null || echo devbox)}"
 export LOOMBOX_RELAY_URL="ws://127.0.0.1:${RELAY_PORT}/ws"
 export LOOMBOX_NODE_ID="$NODE_ID"
