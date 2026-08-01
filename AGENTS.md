@@ -310,8 +310,16 @@ than no board.
   deploy-affecting work, verified on prod the way "Shipping to prod" describes),
   not when the code is written. Merged but something is still open? Say so in a
   comment and leave it `In Progress`.
-- This board carries a single custom field: `Status` (`Todo` / `In Progress` /
-  `Done`). Priority and component live in labels, not in board fields.
+- Board fields, the same four on every one of Lorenzo's roadmap boards on
+  purpose: `Status` (`Todo` / `In Progress` / `Done`), `Priority` (P0-P3),
+  `Effort` (S/M/L/XL) and `Parallel` (Yes/No, whether a parallel agent can take
+  the issue without colliding with other work). Set all four on anything you
+  file. Never write a value that is not already an option, read the schema
+  instead of guessing, and never add, rename or drop a field on this board
+  alone: the convention is shared across the projects.
+- `Priority` and the `p0`/`p1`/`p2` labels say the same thing here: the field
+  was backfilled from the labels, and the other repos keep both too, so set
+  both when you file or re-triage an issue.
 
 **Comment when a reader would want to know.** A decision taken, an approach
 tried and abandoned, a blocker hit, a surprise in the code, a scope change, a
