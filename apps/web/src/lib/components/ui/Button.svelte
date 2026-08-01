@@ -110,7 +110,10 @@
   data-size={size}
 >
   {#if loading}
-    <WovenLoader size="sm" label="Working" />
+    <!-- `tone="inherit"` so the weave paints in the label's colour: the loader's
+         accent default is this button's own background on `primary`, which made
+         a busy state that measured correct and showed nothing. -->
+    <WovenLoader size="sm" tone="inherit" label="Working" />
   {/if}
   <span class="ui-button-label">{@render children()}</span>
 </button>

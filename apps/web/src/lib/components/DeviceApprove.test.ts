@@ -9,7 +9,12 @@ afterEach(() => cleanup());
 describe('DeviceApprove (#387)', () => {
   it('pre-fills the user code from initialUserCode, and both buttons are enabled', () => {
     render(DeviceApprove, {
-      props: { initialUserCode: 'WXYZ-2345', onApprove: vi.fn(), onDeny: vi.fn() },
+      props: {
+        initialUserCode: 'WXYZ-2345',
+        onApprove: vi.fn(),
+        onDeny: vi.fn(),
+        onDone: vi.fn(),
+      },
     });
 
     const input = screen.getByTestId('device-user-code-input') as HTMLInputElement;
@@ -19,7 +24,7 @@ describe('DeviceApprove (#387)', () => {
   });
 
   it('disables both buttons until a non-empty code is present', async () => {
-    render(DeviceApprove, { props: { onApprove: vi.fn(), onDeny: vi.fn() } });
+    render(DeviceApprove, { props: { onApprove: vi.fn(), onDeny: vi.fn(), onDone: vi.fn() } });
 
     const approve = screen.getByTestId('device-approve-submit') as HTMLButtonElement;
     const deny = screen.getByTestId('device-deny-submit') as HTMLButtonElement;
@@ -34,7 +39,7 @@ describe('DeviceApprove (#387)', () => {
 
   it('calls onApprove with the typed code on submit', async () => {
     const onApprove = vi.fn();
-    render(DeviceApprove, { props: { onApprove, onDeny: vi.fn() } });
+    render(DeviceApprove, { props: { onApprove, onDeny: vi.fn(), onDone: vi.fn() } });
 
     const input = screen.getByTestId('device-user-code-input') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'WXYZ-2345' } });
@@ -46,7 +51,7 @@ describe('DeviceApprove (#387)', () => {
   it('calls onDeny with the typed code, not onApprove', async () => {
     const onApprove = vi.fn();
     const onDeny = vi.fn();
-    render(DeviceApprove, { props: { onApprove, onDeny } });
+    render(DeviceApprove, { props: { onApprove, onDeny, onDone: vi.fn() } });
 
     const input = screen.getByTestId('device-user-code-input') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'WXYZ-2345' } });
@@ -58,7 +63,13 @@ describe('DeviceApprove (#387)', () => {
 
   it('disables the input and both buttons, and shows a busy label, while busy', () => {
     render(DeviceApprove, {
-      props: { initialUserCode: 'WXYZ-2345', onApprove: vi.fn(), onDeny: vi.fn(), busy: true },
+      props: {
+        initialUserCode: 'WXYZ-2345',
+        onApprove: vi.fn(),
+        onDeny: vi.fn(),
+        onDone: vi.fn(),
+        busy: true,
+      },
     });
 
     expect((screen.getByTestId('device-user-code-input') as HTMLInputElement).disabled).toBe(true);
@@ -75,6 +86,7 @@ describe('DeviceApprove (#387)', () => {
         initialUserCode: 'WXYZ-2345',
         onApprove: vi.fn(),
         onDeny: vi.fn(),
+        onDone: vi.fn(),
         error: 'That code is invalid or has expired.',
       },
     });
@@ -84,7 +96,7 @@ describe('DeviceApprove (#387)', () => {
 
   it('renders the approved outcome instead of the form once settled', () => {
     render(DeviceApprove, {
-      props: { onApprove: vi.fn(), onDeny: vi.fn(), outcome: 'approved' },
+      props: { onApprove: vi.fn(), onDeny: vi.fn(), onDone: vi.fn(), outcome: 'approved' },
     });
 
     expect(screen.getByTestId('device-approve-outcome-approved')).toBeTruthy();
@@ -93,10 +105,29 @@ describe('DeviceApprove (#387)', () => {
 
   it('renders the denied outcome instead of the form once settled', () => {
     render(DeviceApprove, {
-      props: { onApprove: vi.fn(), onDeny: vi.fn(), outcome: 'denied' },
+      props: { onApprove: vi.fn(), onDeny: vi.fn(), onDone: vi.fn(), outcome: 'denied' },
     });
 
     expect(screen.getByTestId('device-approve-outcome-denied')).toBeTruthy();
     expect(screen.queryByTestId('device-user-code-input')).toBeNull();
+  });
+
+  // A settled card used to end in "you can close this tab", which is a dead end
+  // in the desktop shell: no tab, no address bar. Both outcomes now offer the
+  // way out, and it is the same control in both, so neither can regress alone.
+  it.each(['approved', 'denied'] as const)('offers a way out of the %s state', async (outcome) => {
+    const onDone = vi.fn();
+    render(DeviceApprove, { props: { onApprove: vi.fn(), onDeny: vi.fn(), onDone, outcome } });
+
+    const done = screen.getByTestId('device-approve-done');
+    expect(done.textContent).toContain('Open loombox');
+    await fireEvent.click(done);
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer it mid-flow, while the code is still being entered', () => {
+    render(DeviceApprove, { props: { onApprove: vi.fn(), onDeny: vi.fn(), onDone: vi.fn() } });
+
+    expect(screen.queryByTestId('device-approve-done')).toBeNull();
   });
 });

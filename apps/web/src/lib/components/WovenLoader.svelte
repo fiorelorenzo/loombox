@@ -53,6 +53,16 @@
     size?: 'sm' | 'md';
     /** `loading` (default) for an indeterminate wait; `working` for a continuous, ongoing process (e.g. a live agent turn); `skeleton` for loading-placeholder chrome (e.g. transcript rows not yet decrypted). */
     variant?: 'loading' | 'working' | 'skeleton';
+    /**
+     * `accent` (default) draws the threads in the accent colour, for a loader on
+     * a plain surface. `inherit` takes the surrounding `color` instead, which is
+     * what a loader INSIDE a filled control needs: on a primary `Button` the
+     * accent-on-accent default painted the weave in exactly the button's own
+     * background, so the busy state was invisible on screen while every
+     * attribute said it was there (measured on the sign-in gate: button
+     * background and all five thread strokes both `rgb(31, 127, 208)`).
+     */
+    tone?: 'accent' | 'inherit';
     /** Forces the static reduced-motion fallback regardless of the media query. */
     reducedMotion?: boolean;
     /** Accessible name for the `role="status"` root. */
@@ -64,6 +74,7 @@
   const {
     size = 'sm',
     variant = 'loading',
+    tone = 'accent',
     reducedMotion = false,
     label = 'Loading',
     class: className = '',
@@ -71,12 +82,13 @@
 </script>
 
 <span
-  class={`woven-loader woven-loader-${size} woven-loader-${variant} ${className}`.trim()}
+  class={`woven-loader woven-loader-${size} woven-loader-${variant} woven-loader-tone-${tone} ${className}`.trim()}
   role="status"
   aria-label={label}
   data-testid="woven-loader"
   data-size={size}
   data-variant={variant}
+  data-tone={tone}
   data-reduced-motion={reducedMotion ? 'true' : 'false'}
 >
   <svg
@@ -100,7 +112,19 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+  }
+
+  /* The default: a loader on a plain surface, drawn in the accent. Set as a
+     class rather than on `.woven-loader` itself so `tone="inherit"` is a real
+     alternative — a rule on the element always beats an inherited value, so a
+     hardcoded `color` here would leave a caller no way to hand its own colour
+     down (see the `tone` prop's doc comment for what that cost). */
+  .woven-loader-tone-accent {
     color: var(--color-accent);
+  }
+
+  .woven-loader-tone-inherit {
+    color: inherit;
   }
 
   .woven-loader-sm {

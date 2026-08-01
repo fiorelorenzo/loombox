@@ -57,6 +57,10 @@ describe('Button (issue #428 Warp Deck shared UI primitives)', () => {
     expect(button.disabled).toBe(true);
     expect(button.getAttribute('aria-busy')).toBe('true');
     expect(screen.getByTestId('woven-loader')).toBeTruthy();
+    // Inheriting the label's colour, not the loader's accent default: on a
+    // primary button that default IS the background, so the busy state rendered
+    // accent-on-accent and nothing showed (measured on the sign-in gate).
+    expect(screen.getByTestId('woven-loader').getAttribute('data-tone')).toBe('inherit');
   });
 
   it('supports an explicit ariaLabel override for non-text content', () => {

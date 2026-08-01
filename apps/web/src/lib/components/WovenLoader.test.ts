@@ -25,6 +25,22 @@ describe('WovenLoader (#274 woven-thread loading/working motif)', () => {
     expect(root.classList.contains('woven-loader-loading')).toBe(true);
   });
 
+  it('draws in the accent by default, and inherits the surrounding colour on request', () => {
+    // `inherit` exists for a loader inside a filled control: the accent default
+    // is a primary Button's own background, so the weave was invisible there.
+    render(WovenLoader);
+    const accent = screen.getByTestId('woven-loader');
+    expect(accent.getAttribute('data-tone')).toBe('accent');
+    expect(accent.classList.contains('woven-loader-tone-accent')).toBe(true);
+    cleanup();
+
+    render(WovenLoader, { props: { tone: 'inherit' } });
+    const inherited = screen.getByTestId('woven-loader');
+    expect(inherited.getAttribute('data-tone')).toBe('inherit');
+    expect(inherited.classList.contains('woven-loader-tone-inherit')).toBe(true);
+    expect(inherited.classList.contains('woven-loader-tone-accent')).toBe(false);
+  });
+
   it('accepts a medium panel size and a continuous "working" variant', () => {
     render(WovenLoader, { props: { size: 'md', variant: 'working' } });
     const root = screen.getByTestId('woven-loader');
