@@ -135,6 +135,7 @@ export class AuthStore {
   private readonly sessionStore = writable<StoredAuthSession | undefined>(undefined);
   private readonly storage: AuthStorage;
   private readonly client: ReturnType<typeof createAuthClient>;
+  private readonly relayBaseUrl: string;
 
   constructor(options: AuthStoreOptions) {
     this.storage =
@@ -143,6 +144,7 @@ export class AuthStore {
         ? createInMemoryAuthStorage()
         : createLocalStorageAuthStorage());
     this.session = this.sessionStore;
+    this.relayBaseUrl = options.relayBaseUrl;
 
     const initial = this.storage.get();
     if (initial) this.sessionStore.set(initial);
@@ -153,9 +155,30 @@ export class AuthStore {
     });
   }
 
-  /** Starts the real Google/GitHub-style OAuth redirect (SPEC §8). The browser navigates away; call {@link restoreSession} on the page that receives the callback. */
+  /**
+   * Starts the real Google/GitHub-style OAuth redirect (SPEC §8). The browser
+   * navigates away; call {@link restoreSession} on the page that receives the
+   * callback.
+   *
+   * Better Auth's client REPORTS failures in `{ error }` rather than throwing,
+   * and the two other sign-in paths below already check it — this one didn't,
+   * so a relay that registers no GitHub provider (no `GITHUB_CLIENT_ID` /
+   * `GITHUB_CLIENT_SECRET` in its env: `packages/relay/src/main.ts`) answered
+   * `404 PROVIDER_NOT_FOUND`, this resolved anyway, and the button was simply
+   * dead — no navigation, no message, nothing in the UI to explain it. That is
+   * the exact state a fresh local dev loop starts in, so the message names
+   * both the relay and the missing config rather than passing Better Auth's
+   * bare "Provider not found" through.
+   */
   async signInWithGithub(callbackURL?: string): Promise<void> {
-    await this.client.signIn.social({ provider: 'github', callbackURL });
+    const { error } = await this.client.signIn.social({ provider: 'github', callbackURL });
+    if (!error) return;
+    if (error.code === 'PROVIDER_NOT_FOUND') {
+      throw new Error(
+        `The relay at ${this.relayBaseUrl} has no GitHub login configured (it registers the provider only when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are both set).`,
+      );
+    }
+    throw new Error(`GitHub sign-in failed: ${error.message ?? error.code ?? 'unknown error'}`);
   }
 
   /**

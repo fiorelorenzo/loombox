@@ -259,6 +259,47 @@ if [ -z "${GITHUB_CLIENT_ID:-}" ] || [ -z "${GITHUB_CLIENT_SECRET:-}" ]; then
   exit 1
 fi
 
+# A non-empty client id is not the same as a REAL one. This loop ran for three
+# days with `GITHUB_CLIENT_ID=Iv1.devplaceholder000` exported by hand to get
+# past the check above: every process came up, /health answered, and the only
+# symptom was that "Sign in with GitHub" bounced off github.com's own error
+# page — the one failure this script cannot see from the inside.
+#
+# GitHub has no endpoint that answers "is this a registered app?", but the
+# device-flow code endpoint distinguishes the two with no user session and no
+# secret (the device grant deliberately takes only a client id):
+#   unregistered id -> {"error":"Not Found"}
+#   real OAuth App  -> {"error":"device_flow_disabled"}, or a device code if
+#                      the app has the device flow switched on
+# Either of the latter two means the id names an app that exists, which is all
+# this check claims. Whether its callback URL matches $RELAY_PORT is something
+# only GitHub knows, and only at the end of a real login.
+GITHUB_APP_PROBE="$(curl -s --max-time 8 -X POST https://github.com/login/device/code \
+  -H 'Accept: application/json' -d "client_id=${GITHUB_CLIENT_ID}&scope=read:user" 2>/dev/null || true)"
+case "$GITHUB_APP_PROBE" in
+  '')
+    echo ">> could not reach github.com to check GITHUB_CLIENT_ID — continuing" >&2
+    ;;
+  *'"Not Found"'*)
+    cat >&2 <<EOF
+!! GITHUB_CLIENT_ID in $ENV_FILE is not a registered GitHub OAuth App
+   (github.com answers "Not Found" for it), so GitHub login cannot work in
+   this loop — the app would redirect to github.com and get an error page.
+
+   Register one, about two minutes:
+     1. https://github.com/settings/developers -> OAuth Apps -> New OAuth App
+     2. Homepage URL:               http://localhost:${WEB_PORT}
+     3. Authorization callback URL: http://localhost:${RELAY_PORT}/api/auth/callback/github
+     4. Register, "Generate a new client secret", paste both into $ENV_FILE.
+
+   It must be its own app, not the production one: an OAuth App has a single
+   callback URL, and GitHub requires the redirect host to match it (loopback
+   callbacks are the one exception, and only for the port).
+EOF
+    exit 1
+    ;;
+esac
+
 # Before anything binds: a squatted port here is the single most likely way
 # this loop goes wrong on a shared box, and every downstream symptom of it
 # misleads.
