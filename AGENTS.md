@@ -292,3 +292,87 @@ Ship in milestone order — **v0** (validation spike) → **v1** (core cockpit) 
 (trackers / git / editor / auth / connected accounts) → **v3** (voice / native / reach).
 See SPEC §12 and the GitHub Project. Do not build later-milestone work before its
 milestone.
+
+## The GitHub Project is the source of truth
+
+Current state and future roadmap live on **Project #4 "loombox roadmap"** (owner
+`fiorelorenzo`), not in this file, not in SPEC, and not in a chat transcript.
+SPEC says what loombox is, the board says where it stands. Keeping the board
+current is part of doing the work, not paperwork at the end: it is how Lorenzo
+sees state without reading session logs, so a board that lags reality is worse
+than no board.
+
+**Status is a claim about reality, keep it true.**
+
+- Before you write code for an issue, move it to `In Progress`. If what you are
+  about to do has no issue, create one first (see below), then start.
+- Move it to `Done` only when the change is merged and verified (and for
+  deploy-affecting work, verified on prod the way "Shipping to prod" describes),
+  not when the code is written. Merged but something is still open? Say so in a
+  comment and leave it `In Progress`.
+- This board carries a single custom field: `Status` (`Todo` / `In Progress` /
+  `Done`). Priority and component live in labels, not in board fields.
+
+**Comment when a reader would want to know.** A decision taken, an approach
+tried and abandoned, a blocker hit, a surprise in the code, a scope change, a
+finding that invalidates the issue as written. One comment per meaningful turn
+in the work, not one per commit, and no routine progress narration.
+
+**File the work you discover.** When something real surfaces mid-task or in a
+conversation with Lorenzo (a flake you tripped over, a follow-up the fix
+implies, a UX gap you noticed), open an issue for it instead of silently
+widening the current change or letting it evaporate. Then say in the current
+issue that you split it out, with a link.
+
+**Conventions for a new issue.** Match what the board already shows, do not
+invent a parallel style:
+
+- Title is a plain descriptive sentence naming the actual defect or change, e.g.
+  `node-daemon-ssh.test.ts leaks real setsid-detached echo-acp-agent.mjs
+  processes on every run`. Specific beats short.
+- Labels are lowercase and unprefixed here: a kind (`bug`, `feat`, `chore`,
+  `docs`, `spike`, `test`), a priority (`p0`, `p1`, `p2`) and the component(s)
+  (`client`, `node`, `relay`, `crypto`, `protocol`, `providers`, `permissions`,
+  `supervisor`, `transcript`, `terminal`, `editor`, `mcp`, `auth`, `trackers`,
+  `ci`, `security`, `testing`, `observability`, `infra`, `cloud`, ...).
+  `wave-N` is only for issues actually scheduled into a parallel-agent wave.
+  `epic` goes on epics only.
+- Milestone: one of the milestones still open (`v2`, `v3`, `far-future`) when
+  the work belongs to a spec milestone, see Build order above. Post-v1 issues
+  usually carry no milestone and are grouped by epic instead, so do not invent
+  one to fill the field.
+- **Every issue hangs off an epic.** Epics are titled `Epic: Name` (the older
+  SPEC-derived ones, #8 to #39, predate that prefix) and carry the `epic` label.
+  The post-v1 buckets are #558 client UX, #559 node daemon reliability, #560
+  test-suite reliability, #561 deployment and container runtime, plus the
+  feature epics #11 to #37 for spec work. If none of them fits, create a new
+  epic (`Epic: Name`, `epic` label, one per coherent area) and parent the issue
+  to it. An issue with no parent is a defect in the board.
+
+```bash
+# Read the schema, never guess an option value
+gh project field-list 4 --owner fiorelorenzo --format json
+gh label list -R fiorelorenzo/loombox --limit 100
+
+# Ids you need to move a card (fetch once, reuse)
+PROJECT_ID=$(gh project view 4 --owner fiorelorenzo --format json --jq '.id')
+gh project field-list 4 --owner fiorelorenzo --format json \
+  --jq '.fields[] | select(.name=="Status") | {id, options}'
+ITEM_ID=$(gh project item-list 4 --owner fiorelorenzo --format json --limit 500 \
+  --jq '.items[] | select(.content.number==<ISSUE>) | .id')
+
+gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" \
+  --field-id <STATUS_FIELD_ID> --single-select-option-id <OPTION_ID>
+
+# New issue: create, put it on the board, hang it off its epic
+gh issue create -R fiorelorenzo/loombox --title "..." --body "..." \
+  --label "bug,p1,node"
+gh project item-add 4 --owner fiorelorenzo --url <ISSUE_URL>
+gh api graphql -f query='mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){subIssue{number}}}' \
+  -f p="$(gh issue view <EPIC> -R fiorelorenzo/loombox --json id --jq '.id')" \
+  -f c="$(gh issue view <NEW>  -R fiorelorenzo/loombox --json id --jq '.id')"
+```
+
+`item-edit` is idempotent, so re-setting a value that is already correct is a
+fine way to make sure the board is right. An issue can have only one parent: to
+move it to a different epic, pass `replaceParent: true` in the same mutation.
