@@ -35,6 +35,12 @@
    * the same "identifier" reason `RecoveryCodeEntryForm`'s code field
    * does), and the Approve/Deny row moves onto `FormActions align="start"`
    * (left-aligned, not a Dialog footer).
+   *
+   * Both terminal states end in an `Open loombox` button (`onDone`): they used
+   * to end in the sentence "you can close this tab and return to the node",
+   * which is only true in a browser tab. In the desktop shell there is neither
+   * a tab nor an address bar, so a freshly linked node left you looking at a
+   * screen you could not leave (Lorenzo's ask, 2026-08-01).
    */
   interface Props {
     /** Pre-filled from `?user_code=`, if the node's `verification_uri_complete` was followed; still editable. */
@@ -47,9 +53,25 @@
     outcome?: 'approved' | 'denied';
     /** A failure to surface (invalid/expired/already-used code, network error, ...). */
     error?: string;
+    /**
+     * Leaves a settled card. Required, not optional: an approved/denied state
+     * with nothing to press is a dead end, and it is worst exactly where this
+     * flow matters most — the desktop shell has no tab to close and no address
+     * bar to type into, so "close this tab" left the operator stuck on this
+     * screen with a linked node they could not go and use.
+     */
+    onDone: () => void;
   }
 
-  const { initialUserCode = '', onApprove, onDeny, busy = false, outcome, error }: Props = $props();
+  const {
+    initialUserCode = '',
+    onApprove,
+    onDeny,
+    busy = false,
+    outcome,
+    error,
+    onDone,
+  }: Props = $props();
 
   // Seeds the editable field from `initialUserCode` once, on mount — never
   // re-syncs on a later prop change (there is none in practice, the caller
@@ -76,9 +98,12 @@
     <StatusDot tone="success" size="md" label="Linked" />
     <div class="device-approve-outcome-copy">
       <p>This device is linked to your account.</p>
-      <p class="hint">You can close this tab and return to the node.</p>
+      <p class="hint">The node picks it up on its own, no further step here.</p>
     </div>
   </div>
+  <Button variant="primary" fullWidth dataTestId="device-approve-done" onclick={onDone}>
+    Open loombox
+  </Button>
 {:else if outcome === 'denied'}
   <div class="device-approve-outcome" data-testid="device-approve-outcome-denied">
     <StatusDot tone="danger" size="md" label="Denied" />
@@ -87,6 +112,9 @@
       <p class="hint">The node was not linked to your account.</p>
     </div>
   </div>
+  <Button variant="secondary" fullWidth dataTestId="device-approve-done" onclick={onDone}>
+    Open loombox
+  </Button>
 {:else}
   <form class="device-approve-form" onsubmit={handleApprove}>
     <Field label="Code shown on the device">

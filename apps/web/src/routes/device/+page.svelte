@@ -39,6 +39,8 @@
   let authSession = $state<StoredAuthSession | undefined>(undefined);
   let authChecked = $state(false);
   let authError = $state<string | undefined>(undefined);
+  // See `signInWithGithub` below: true while the OAuth redirect is being set up.
+  let signingIn = $state(false);
 
   let initialUserCode = $state('');
   let busy = $state(false);
@@ -67,8 +69,16 @@
     return authStore;
   }
 
+  /**
+   * `signingIn` is the button's `loading` state, for the same reason the cockpit
+   * gate has one: the click costs a round trip to the relay before the browser
+   * leaves, and an unmarked gap there reads as a dead button. Not cleared on
+   * success, since the page is already on its way out.
+   */
   async function signInWithGithub(): Promise<void> {
+    if (signingIn) return;
     authError = undefined;
+    signingIn = true;
     const store = await ensureAuthStore();
     // `signInWithGithub` throws when the relay reports the sign-in failed
     // (e.g. it has no GitHub provider configured at all) — unhandled here,
@@ -77,6 +87,7 @@
       await store.signInWithGithub(window.location.href);
     } catch (cause) {
       authError = cause instanceof Error ? cause.message : String(cause);
+      signingIn = false;
     }
   }
 
@@ -112,6 +123,18 @@
     } else {
       error = messageFor(result);
     }
+  }
+
+  /**
+   * Leaves a settled card for the cockpit. A full navigation rather than a
+   * client-side `goto`, for the same reason this route is not folded into
+   * `routes/+page.svelte`: it is a separate entry point with its own
+   * `AuthStore`, so the cockpit should boot the way it does on any other cold
+   * start rather than inherit this page's state. Matches how sign-in already
+   * leaves here (`window.location.href`).
+   */
+  function leaveForCockpit(): void {
+    window.location.assign('/');
   }
 
   onMount(() => {
@@ -153,7 +176,13 @@
     {:else if !authSession}
       <div class="sign-in">
         <p>Sign in to approve this device.</p>
-        <Button variant="primary" fullWidth onclick={signInWithGithub}>Sign in with GitHub</Button>
+        <Button
+          variant="primary"
+          fullWidth
+          loading={signingIn}
+          dataTestId="sign-in-github"
+          onclick={signInWithGithub}>Sign in with GitHub</Button
+        >
         {#if authError}
           <ErrorNotice message={authError} />
         {/if}
@@ -167,6 +196,7 @@
         {busy}
         {outcome}
         {error}
+        onDone={leaveForCockpit}
       />
     {/if}
   </Card>

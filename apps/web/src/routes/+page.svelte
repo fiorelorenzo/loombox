@@ -147,6 +147,9 @@
   // sign-in gate doesn't flash before `restoreSession()` resolves.
   let authChecked = $state(false);
   let authError = $state<string | undefined>(undefined);
+  // True from the moment the sign-in button is pressed until either the browser
+  // leaves for GitHub or the attempt fails — see `signInWithGithub` below.
+  let signingIn = $state(false);
 
   // First-run AMK onboarding (SPEC §8; issue #384): `undefined` until this
   // device's AMK presence has actually been checked (avoids a flash of
@@ -1141,13 +1144,26 @@
     return authStore;
   }
 
-  /** SPEC §8: login is Google/GitHub OAuth only — this starts the real browser redirect to the relay's Better Auth. */
+  /**
+   * SPEC §8: login is Google/GitHub OAuth only — this starts the real browser
+   * redirect to the relay's Better Auth.
+   *
+   * `signingIn` is what the button reads as its `loading` state. It matters
+   * because the redirect is not instant: the click costs a round trip to the
+   * relay before the browser leaves, and with no feedback that gap reads as a
+   * dead button (Lorenzo's ask, 2026-08-01). It is deliberately NOT cleared on
+   * success — the page is on its way out, so the button stays busy until it
+   * unloads rather than flicking back to idle mid-navigation.
+   */
   async function signInWithGithub(): Promise<void> {
+    if (signingIn) return;
     authError = undefined;
+    signingIn = true;
     try {
       await ensureAuthStore().signInWithGithub(window.location.href);
     } catch (error) {
       authError = error instanceof Error ? error.message : String(error);
+      signingIn = false;
     }
   }
 
@@ -1971,7 +1987,13 @@
     <GateShell>
       <Card elevation="floating" padding="lg">
         <p class="gate-lead">Sign in to load your sessions and connect to your nodes.</p>
-        <Button variant="primary" fullWidth onclick={signInWithGithub}>Sign in with GitHub</Button>
+        <Button
+          variant="primary"
+          fullWidth
+          loading={signingIn}
+          dataTestId="sign-in-github"
+          onclick={signInWithGithub}>Sign in with GitHub</Button
+        >
         <p class="gate-fineprint">
           Every session is encrypted end to end. Your keys never leave your devices.
         </p>

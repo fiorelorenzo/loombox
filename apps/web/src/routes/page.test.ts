@@ -556,3 +556,70 @@ describe('session archive (SPEC §7.2 board archive; issue #512)', () => {
     expect(screen.queryByTestId('cockpit-session-title')).toBeNull();
   });
 });
+
+describe('sign-in gate', () => {
+  /**
+   * Mounts the gate rather than the cockpit: no AMK, no session, so
+   * `+page.svelte` renders the front door. `signInWithGithub` never settles,
+   * which is what the real one does too — it hands off to a full-page redirect,
+   * so the promise is still pending when the browser leaves.
+   */
+  function mountGate() {
+    const signInWithGithub = vi.fn(() => new Promise<void>(() => {}));
+    vi.mocked(AuthStore).mockImplementation(
+      () =>
+        ({
+          session: makeStore<StoredAuthSession | undefined>(undefined),
+          restoreSession: vi.fn().mockResolvedValue(undefined),
+          signInWithGithub,
+          signOut: vi.fn(),
+        }) as unknown as AuthStoreModule.AuthStore,
+    );
+    return { ...render(Page), signInWithGithub };
+  }
+
+  it('marks the sign-in button busy while the OAuth redirect is being set up', async () => {
+    // The click costs a round trip to the relay before the browser leaves. With
+    // nothing on the button, that gap reads as a dead control.
+    const { signInWithGithub } = mountGate();
+
+    const button = (await screen.findByTestId('sign-in-github')) as HTMLButtonElement;
+    expect(button.getAttribute('aria-busy')).toBeNull();
+
+    await fireEvent.click(button);
+
+    expect(signInWithGithub).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('sign-in-github').getAttribute('aria-busy')).toBe('true');
+    });
+    expect((screen.getByTestId('sign-in-github') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+
+    // And being busy means it cannot be fired twice by an impatient second click.
+    await fireEvent.click(screen.getByTestId('sign-in-github'));
+    expect(signInWithGithub).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the busy state and names the failure when the relay rejects the sign-in', async () => {
+    // The dev-loop case: a relay with no GitHub provider configured. The button
+    // has to come back, or the only way on is a reload.
+    vi.mocked(AuthStore).mockImplementation(
+      () =>
+        ({
+          session: makeStore<StoredAuthSession | undefined>(undefined),
+          restoreSession: vi.fn().mockResolvedValue(undefined),
+          signInWithGithub: vi.fn().mockRejectedValue(new Error('has no GitHub login configured')),
+          signOut: vi.fn(),
+        }) as unknown as AuthStoreModule.AuthStore,
+    );
+    render(Page);
+
+    await fireEvent.click(await screen.findByTestId('sign-in-github'));
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/has no GitHub login configured/)).toBeTruthy();
+    });
+    expect(screen.getByTestId('sign-in-github').getAttribute('aria-busy')).toBeNull();
+    expect((screen.getByTestId('sign-in-github') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
