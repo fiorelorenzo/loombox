@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '$lib/projects';
 import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svelte';
@@ -52,7 +53,7 @@ async function fillPrompt(): Promise<void> {
   });
 }
 
-describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507; forms + real providers design spec §2/§3)', () => {
+describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507; forms + real providers design spec §2/§3; title-first, optional-prompt reorder, issue #563)', () => {
   it('is not rendered while closed', () => {
     render(NewSessionDialog, {
       props: {
@@ -87,7 +88,7 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     expect(screen.queryByTestId('directory-picker')).toBeNull();
   });
 
-  it('the submit button is disabled until a starting prompt is provided', async () => {
+  it('the submit button is enabled with an empty form, since both the title and the starting prompt are optional', () => {
     render(NewSessionDialog, {
       props: {
         open: true,
@@ -101,10 +102,77 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     });
 
     const submit = screen.getByTestId('new-session-submit') as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
-
-    await fillPrompt();
     expect(submit.disabled).toBe(false);
+  });
+
+  it('submitting an empty form omits prompt entirely (not an empty string), and lets title default via title: undefined', async () => {
+    const client = fakeClient();
+    const onCreated = vi.fn();
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated,
+        onClose: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1'));
+    expect(client.createSession).toHaveBeenCalledWith({
+      targetId: 'local',
+      provider: 'claude',
+      projectPath: '/home/dev/loombox',
+      worktree: true,
+      title: undefined,
+      prompt: undefined,
+    });
+  });
+
+  it('orders the fields Title, Agent, Workspace, Starting prompt (issue #563: the task, not the first thing said, identifies a session)', () => {
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: PROJECT,
+        client: fakeClient(),
+        providers: ['claude', 'codex'],
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose: vi.fn(),
+      },
+    });
+
+    const title = screen.getByTestId('new-session-title');
+    const agent = screen.getByTestId('new-session-provider');
+    const workspace = screen.getByTestId('new-session-workspace');
+    const prompt = screen.getByTestId('new-session-prompt');
+
+    expect(title.compareDocumentPosition(agent) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(agent.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(workspace.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+      0,
+    );
+  });
+
+  it('focuses the title field when the dialog opens, not the (now-optional, no-longer-first) starting prompt', async () => {
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: PROJECT,
+        client: fakeClient(),
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated: vi.fn(),
+        onClose: vi.fn(),
+      },
+    });
+
+    await tick();
+    expect(document.activeElement).toBe(screen.getByTestId('new-session-title'));
   });
 
   it("submitting calls client.createSession with the project's target/path, provider claude, the default isolated-worktree choice, and the prompt, then reports the new session and closes", async () => {

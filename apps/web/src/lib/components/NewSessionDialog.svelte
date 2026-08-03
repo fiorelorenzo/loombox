@@ -50,11 +50,19 @@
    * disables submission with a message naming the target rather than
    * silently offering an agent that would fail at spawn.
    *
-   * Field order (design spec §3, defects #3/#4): the starting prompt is the
-   * only thing the user must actually supply, so it now leads and is the
-   * largest control on the form; Title trails last, and its "defaults to
-   * the project folder" copy moved out of the placeholder (which vanishes
-   * on the first keystroke) into `Field`'s own persistent `help` slot.
+   * Field order (issue #563, superseding the earlier design spec §3
+   * ordering): what identifies a session on the board is the task, not
+   * the first thing the operator happened to say to the agent, so Title
+   * now leads and is the field the dialog focuses on open (`Dialog`'s own
+   * focus trap always moves focus to the panel's first focusable element -
+   * see `Dialog.svelte` - so putting Title first in the DOM is the whole
+   * mechanism, no explicit `autofocus` needed). The starting prompt trails
+   * last and shrinks: both are optional, since creating a session with
+   * neither filled in is a legitimate "open it and talk to the agent from
+   * the composer later" flow. Title's "defaults to the project folder"
+   * copy stays in `Field`'s persistent `help` slot, since that is still
+   * exactly what the node does with an empty title
+   * (`packages/node/src/node-daemon.ts:921`).
    *
    * Deck migration (redesign v2 §2 "One button language", issue #464):
    * every hand-rolled `.btn*` gives way to the shared `Button` primitive.
@@ -167,9 +175,7 @@
     wasOpen = isOpen;
   });
 
-  const canSubmit = $derived(
-    !creating && client !== undefined && providers.length > 0 && prompt.trim() !== '',
-  );
+  const canSubmit = $derived(!creating && client !== undefined && providers.length > 0);
 
   async function handleSubmit(event: Event): Promise<void> {
     event.preventDefault();
@@ -186,7 +192,7 @@
         // choice to send (see the file doc comment).
         ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
-        prompt: prompt.trim(),
+        prompt: prompt.trim() || undefined,
       });
       onCreated(sessionId);
       onClose();
@@ -238,18 +244,17 @@
   </p>
 
   <form class="session-form" onsubmit={handleSubmit}>
-    <Field label="Starting prompt" required>
+    <Field label="Title" help="Defaults to the project folder">
       {#snippet children({ id, describedBy, errorId, invalid, required })}
-        <TextArea
+        <Input
           {id}
           {describedBy}
           {errorId}
           {invalid}
           {required}
-          bind:value={prompt}
-          rows={6}
-          placeholder="What should the agent do first?"
-          dataTestId="new-session-prompt"
+          bind:value={title}
+          placeholder="What is this task?"
+          dataTestId="new-session-title"
         />
       {/snippet}
     </Field>
@@ -284,16 +289,21 @@
       </Field>
     {/if}
 
-    <Field label="Title" help="Defaults to the project folder">
+    <Field
+      label="Starting prompt"
+      help="Optional - you can also say something later from the composer"
+    >
       {#snippet children({ id, describedBy, errorId, invalid, required })}
-        <Input
+        <TextArea
           {id}
           {describedBy}
           {errorId}
           {invalid}
           {required}
-          bind:value={title}
-          dataTestId="new-session-title"
+          bind:value={prompt}
+          rows={3}
+          placeholder="What should the agent do first?"
+          dataTestId="new-session-prompt"
         />
       {/snippet}
     </Field>
