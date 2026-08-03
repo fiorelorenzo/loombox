@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { writable, type Writable } from 'svelte/store';
 import type { TerminalClientState } from '$lib/relay-client';
@@ -315,5 +316,81 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
       unmount();
       instances.length = 0;
     }
+  });
+
+  describe('bounded wait + retry on the PTY handshake (issue #582)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('reaches a retryable timeout state when the terminal never opens (silent node)', async () => {
+      vi.useFakeTimers();
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      expect(screen.getByTestId('terminal-status').textContent?.trim()).toBe('Connecting…');
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const notice = screen.getByTestId('terminal-timeout');
+      // Honest wording (issue #582): a timeout here does NOT mean the
+      // request failed, only that this client stopped waiting — never the
+      // raw "Error: timeout", and it reuses the shell's existing
+      // node-offline phrasing (`DirectoryPicker`, issue #505).
+      expect(notice.textContent).not.toMatch(/error:\s*timeout/i);
+      expect(notice.textContent).toContain('stopped waiting');
+      expect(notice.textContent).toContain('may be asleep, offline');
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    });
+
+    it('a slow-but-alive node that opens just under the deadline never shows the timeout state', async () => {
+      vi.useFakeTimers();
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      let openedTerminalId = '';
+      client.terminalStore.subscribe((map) => {
+        const [id] = map.keys();
+        if (id) openedTerminalId = id;
+      })();
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      (client as unknown as { setStatus: (id: string, s: TerminalClientState) => void }).setStatus(
+        openedTerminalId,
+        { terminalId: openedTerminalId, status: 'open' },
+      );
+
+      // Advance well past where the original deadline would have landed —
+      // the stale timer must not fire a late, spurious timeout state.
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(screen.queryByTestId('terminal-timeout')).toBeNull();
+      expect(screen.queryByTestId('terminal-status')).toBeNull();
+    });
+
+    it('retry closes the stale terminal and opens a genuinely new one, not just clearing the error', async () => {
+      vi.useFakeTimers();
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      let firstTerminalId = '';
+      client.terminalStore.subscribe((map) => {
+        const [id] = map.keys();
+        if (id) firstTerminalId = id;
+      })();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(screen.getByTestId('terminal-timeout')).toBeTruthy();
+      expect(client.openCalls).toHaveLength(1);
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+      expect(client.closeCalls).toEqual([{ sessionId: 'sess-1', terminalId: firstTerminalId }]);
+      expect(client.openCalls).toHaveLength(2);
+      expect(screen.queryByTestId('terminal-timeout')).toBeNull();
+      expect(screen.getByTestId('terminal-status').textContent?.trim()).toBe('Connecting…');
+
+      // Still silent: the retried attempt fails again once ITS OWN bounded
+      // wait elapses, proving retry re-arms rather than a one-shot dismissal.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(screen.getByTestId('terminal-timeout')).toBeTruthy();
+    });
   });
 });

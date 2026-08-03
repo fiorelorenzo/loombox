@@ -38,9 +38,27 @@
    * The root `data-testid="file-tree-panel"`, every row/loading/error
    * `data-testid`, and the recursive expand/select behavior are all
    * unchanged.
+   *
+   * Bounded wait + retry (issue #582): `tree`'s `FileTreeDirectoryState` has
+   * no timeout of its own — `RelayClient.expandDirectory`'s underlying
+   * `fs_list_request` can sit `'loading'` forever against a node that never
+   * answers, indistinguishable from one that is merely slow. This panel
+   * owns its own bounded wait per path (`DIRECTORY_TIMEOUT_MS`, matching
+   * every other RelayClient request default), decoupled from `tree`'s own
+   * status: a path still `'loading'` when its timer fires gets this
+   * panel's own retryable `ErrorNotice`, worded like `DirectoryPicker`'s
+   * identical transport-timeout case (issue #505) — "may be asleep,
+   * offline, or on an older relay" is the shell's established node-offline
+   * phrasing, not a third one. Retry re-arms the timer AND calls
+   * `onExpand` again (mirrors `expandDirectory`'s own doc comment: call it
+   * again to re-fetch a path that came back `'error'`) rather than only
+   * clearing the local flag. A path that resolves on its own before the
+   * deadline (a slow-but-alive `'loaded'`/`'error'` landing late) clears
+   * its timer and never shows this panel's own error at all.
    */
+  import { onDestroy } from 'svelte';
   import type { FsEntryV1 } from '@loombox/protocol';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { joinTreePath, sortEntries } from '../file-tree';
   import type { FileTreeDirectoryState } from '../relay-client';
   import { Icon } from './icons';
@@ -58,6 +76,77 @@
   const { tree, onExpand, onSelectFile }: Props = $props();
 
   const expandedPaths = new SvelteSet<string>();
+
+  /**
+   * How long a directory may sit `'loading'` before this panel gives up
+   * waiting on its own (issue #582) — `tree` carries no timeout of its
+   * own. 10s matches every other request-shaped `RelayClient` default
+   * (`DEFAULT_CREATE_SESSION_TIMEOUT_MS`, `browseDirectory`'s own
+   * `timeoutMs`), so a stated wait means the same thing everywhere in the
+   * app.
+   */
+  const DIRECTORY_TIMEOUT_MS = 10_000;
+
+  /** Paths whose own bounded wait (above) has elapsed while `tree` still reports them `'loading'` — rendered instead of (never alongside) the normal loading/error/loaded branches below, and cleared the instant `tree` reports anything else for that path. */
+  let timedOutPaths = new SvelteSet<string>();
+  /** One armed `setTimeout` per currently-`'loading'` path; cleared as soon as that path resolves (or times out) so a late real answer never fires a stale callback. */
+  const pendingTimers = new SvelteMap<string, ReturnType<typeof setTimeout>>();
+
+  function clearTimer(path: string): void {
+    const timer = pendingTimers.get(path);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    pendingTimers.delete(path);
+  }
+
+  function armTimer(path: string): void {
+    if (pendingTimers.has(path)) return;
+    pendingTimers.set(
+      path,
+      setTimeout(() => {
+        pendingTimers.delete(path);
+        timedOutPaths.add(path);
+      }, DIRECTORY_TIMEOUT_MS),
+    );
+  }
+
+  // Arms/disarms one timer per path every time a NEW `tree` snapshot
+  // arrives (every `RelayClient` store update replaces the Map wholesale,
+  // never mutates in place). Still `'loading'` and not yet timed out gets
+  // a fresh timer; anything that resolved (`'loaded'`/`'error'`) —
+  // including a slow-but-alive answer landing right under the deadline —
+  // clears its timer and drops any stale timed-out flag, which is what
+  // keeps a genuinely slow node from ever showing this panel's own error.
+  $effect(() => {
+    const seen = new SvelteSet<string>();
+    for (const [path, state] of tree) {
+      seen.add(path);
+      if (state.status === 'loading') {
+        if (!timedOutPaths.has(path)) armTimer(path);
+      } else {
+        clearTimer(path);
+        timedOutPaths.delete(path);
+      }
+    }
+    for (const path of [...pendingTimers.keys()]) {
+      if (!seen.has(path)) clearTimer(path);
+    }
+    for (const path of [...timedOutPaths]) {
+      if (!seen.has(path)) timedOutPaths.delete(path);
+    }
+  });
+
+  onDestroy(() => {
+    for (const timer of pendingTimers.values()) clearTimeout(timer);
+    pendingTimers.clear();
+  });
+
+  /** Retry (issue #582): re-arms this path's own bounded wait AND calls `onExpand` again — never just clears the local flag, exactly like `expandDirectory`'s own doc comment describes retrying a directory that came back `'error'`. */
+  function retryDirectory(path: string): void {
+    timedOutPaths.delete(path);
+    armTimer(path);
+    onExpand(path);
+  }
 
   function toggle(path: string): void {
     if (expandedPaths.has(path)) {
@@ -80,7 +169,15 @@
 {#snippet dirContents(path: string)}
   {@const dirState = tree.get(path)}
   {@const entries = entriesFor(path)}
-  {#if dirState?.status === 'loading'}
+  {#if timedOutPaths.has(path)}
+    <div class="tree-error" data-testid="file-tree-error">
+      <ErrorNotice
+        message="This folder didn't answer in time. The node may be asleep, offline, or on an older relay."
+        retryable
+        onRetry={() => retryDirectory(path)}
+      />
+    </div>
+  {:else if dirState?.status === 'loading'}
     <p class="tree-status tree-status-loading" data-testid="file-tree-loading">
       <WovenLoader size="sm" label="Loading directory" />
       Loading…

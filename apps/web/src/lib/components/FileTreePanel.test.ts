@@ -66,6 +66,81 @@ describe('FileTreePanel (SPEC §7.4; issue #171)', () => {
     );
   });
 
+  describe('bounded wait + retry on a stuck directory (issue #582)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('reaches a retryable failure state when the root never answers (silent node)', async () => {
+      vi.useFakeTimers();
+      render(FileTreePanel, {
+        props: {
+          tree: tree({ '': { path: '', status: 'loading', entries: [] } }),
+          onExpand: vi.fn(),
+        },
+      });
+
+      expect(screen.getByTestId('file-tree-loading')).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const notice = screen.getByTestId('file-tree-error');
+      // The honest wording (issue #582): never the raw "Error: timeout", and
+      // it names what the delay probably means, matching the shell's
+      // existing node-offline phrasing (`DirectoryPicker`, issue #505).
+      expect(notice.textContent).not.toMatch(/error:\s*timeout/i);
+      expect(notice.textContent).toContain('may be asleep, offline, or on an older relay');
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    });
+
+    it('a slow-but-alive root that answers just under the deadline never shows the error', async () => {
+      vi.useFakeTimers();
+      const onExpand = vi.fn();
+      const { rerender } = render(FileTreePanel, {
+        props: {
+          tree: tree({ '': { path: '', status: 'loading', entries: [] } }),
+          onExpand,
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      await rerender({
+        tree: tree({
+          '': { path: '', status: 'loaded', entries: [{ name: 'a.ts', kind: 'file', size: 1 }] },
+        }),
+        onExpand,
+      });
+
+      // Advance well past where the original deadline would have landed —
+      // the stale timer must not fire a late, spurious error.
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(screen.queryByTestId('file-tree-error')).toBeNull();
+      expect(screen.getAllByTestId('file-tree-file')).toHaveLength(1);
+    });
+
+    it('retry re-requests the same path rather than only clearing the error', async () => {
+      vi.useFakeTimers();
+      const onExpand = vi.fn();
+      render(FileTreePanel, {
+        props: {
+          tree: tree({ '': { path: '', status: 'loading', entries: [] } }),
+          onExpand,
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(onExpand).not.toHaveBeenCalled();
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+      expect(onExpand).toHaveBeenCalledExactlyOnceWith('');
+      // Retry re-arms its own bounded wait rather than clearing the flag
+      // for good: still stuck (`tree` unchanged, mirroring a dead node),
+      // it fails again once that fresh wait elapses.
+      expect(screen.queryByTestId('file-tree-error')).toBeNull();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(screen.getByTestId('file-tree-error')).toBeTruthy();
+    });
+  });
+
   it('clicking a directory calls onExpand with its full relative path and reveals a nested loading state', async () => {
     const onExpand = vi.fn();
     render(FileTreePanel, {
