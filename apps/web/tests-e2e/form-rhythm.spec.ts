@@ -18,9 +18,19 @@ import { expect, test } from './fixtures';
  */
 async function measure(
   page: Page,
+  // Scopes the scan to a container's own subtree rather than the whole
+  // document. Needed now that the right sidebar (issue #571) can be open by
+  // default alongside a modal: its `ProjectConfigPanel` carries `ui-field`s
+  // of its own, and an unscoped `document.querySelectorAll` conflated a
+  // sidebar field pair with the dialog's, driving `tightestBetween` to 0.
+  // Optional (default the whole document) so the add-target wizard test
+  // below, which has no such sibling `ui-field` on screen, is unaffected.
+  rootSelector?: string,
 ): Promise<{ within: number[]; between: number[]; floorPx: number }> {
-  return page.evaluate(() => {
-    const fields = Array.from(document.querySelectorAll('[data-testid="ui-field"]'));
+  return page.evaluate((selector) => {
+    const root = selector ? document.querySelector(selector) : document;
+    if (!root) throw new Error(`measure(): no element matched ${selector}`);
+    const fields = Array.from(root.querySelectorAll('[data-testid="ui-field"]'));
     const within: number[] = [];
     const between: number[] = [];
     for (const field of fields) {
@@ -45,7 +55,7 @@ async function measure(
     const floorPx = probe.getBoundingClientRect().height;
     probe.remove();
     return { within, between, floorPx };
-  });
+  }, rootSelector);
 }
 
 function assertFieldsGroup(measured: {
@@ -107,6 +117,6 @@ test.describe('form rhythm (Field stacking contract)', () => {
     await page.getByTestId('project-new-session-row').first().click();
     await expect(page.getByTestId('new-session-prompt')).toBeVisible({ timeout: 30_000 });
 
-    assertFieldsGroup(await measure(page));
+    assertFieldsGroup(await measure(page, '[data-testid="dialog"]'));
   });
 });
