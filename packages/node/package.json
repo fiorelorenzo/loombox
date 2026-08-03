@@ -19,6 +19,7 @@
     "@loombox/crypto": "workspace:*",
     "@loombox/protocol": "workspace:*",
     "@loombox/providers-core": "workspace:*",
+    "@loombox/shared": "workspace:*",
     "@loombox/supervisor": "workspace:*",
     "@napi-rs/keyring": "^1.3.0",
     "check-disk-space": "^3.4.0",

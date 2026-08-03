@@ -239,3 +239,19 @@ export {
   openJson,
   sealJson,
 } from '@loombox/crypto';
+
+// v2: the live GitHub `TrackerBackend` — issues + comments only, slice 1
+// of SPEC §7.10's phased tracker delivery (issue #213). Credentials come
+// only from an injected `resolveCredential`, never this package's own
+// `./github-connect.ts`/`./keyring.ts` — see the module's own top comment.
+export type {
+  GithubCredential,
+  GithubTrackerBackendOptions,
+  ResolveGithubCredential,
+} from './github-tracker-backend';
+export {
+  GithubTrackerAccessError,
+  GithubTrackerBackend,
+  GithubTrackerRateLimitError,
+  GithubTrackerRequestError,
+} from './github-tracker-backend';
