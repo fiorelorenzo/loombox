@@ -50,6 +50,29 @@
    * change: the titlebar now carries the same bespoke `Icon` (`tool-bash`)
    * `TerminalOutput` adopted, so both terminal surfaces read as one family
    * instead of `StatusDot` and the "Terminal" text label standing alone.
+   *
+   * Bounded wait + retry (issue #582): `status = 'opening'` used to have no
+   * ceiling — the v6 audit hit this against a node that never answers a
+   * `terminal_open` and the titlebar just said "Terminal connecting"
+   * forever. This component now owns its own bounded wait
+   * (`OPEN_TIMEOUT_MS`) on top of `TerminalClientState['status']`, which
+   * has no timeout of its own: a mount/retry still `'opening'` when its
+   * timer fires shows a local, retryable `ErrorNotice` — worded, per
+   * `NewSessionDialog`'s identical "the agent is taking a while" case
+   * (issue #516), to say plainly that a timeout here does NOT mean the
+   * request failed, only that this client stopped waiting; "the node may
+   * be asleep, offline" reuses the exact phrasing `DirectoryPicker`/
+   * `ArchiveSessionDialog` already settled on (issue #505), not a third
+   * one. A real answer, however late, still clears it (`onTerminalOutput`'s
+   * subscribe callback below). Retry (`retryTerminal`) asks the node to
+   * close whichever attempt just timed out and opens a genuinely new one
+   * (`RelayClient.openTerminal`'s own doc comment: calling it again opens
+   * an ADDITIONAL terminal with its own id) — never just clears the flag.
+   * This is a SEPARATE failure surface from the hand-rolled `.status.error`
+   * banner below it: that one still renders verbatim node-reported errors
+   * (e.g. "no shell available") under the load-bearing `terminal-status`
+   * testid this file's other tests pin down; the new timeout state below
+   * has no such legacy constraint, so it uses `ErrorNotice` directly.
    */
   import { onDestroy, onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
@@ -57,6 +80,7 @@
   import type { TerminalClientState } from '$lib/relay-client';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
   import { Icon } from './icons';
+  import ErrorNotice from './ui/ErrorNotice.svelte';
 
   interface Props {
     sessionId: string;
@@ -78,25 +102,32 @@
   let terminalId: string | undefined;
   let unsubscribeOutput: (() => void) | undefined;
   let unsubscribeState: (() => void) | undefined;
+  /** Set once this mount/retry's own bounded wait on the PTY handshake elapses while `status` is still `'opening'` (issue #582) — `TerminalClientState['status']` has no such value of its own; this is purely local UI state, cleared the instant a real `'open'`/`'closed'`/`'error'` answer arrives, however late. */
+  let timedOut = $state(false);
+  let openTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   const statusTone = $derived<StatusTone>(
-    status === 'open'
-      ? 'success'
-      : status === 'error'
-        ? 'danger'
-        : status === 'closed'
-          ? 'neutral'
-          : 'info',
+    timedOut
+      ? 'danger'
+      : status === 'open'
+        ? 'success'
+        : status === 'error'
+          ? 'danger'
+          : status === 'closed'
+            ? 'neutral'
+            : 'info',
   );
 
   const statusLabel = $derived(
-    status === 'open'
-      ? 'Terminal connected'
-      : status === 'opening'
-        ? 'Terminal connecting'
-        : status === 'error'
-          ? `Terminal error: ${errorMessage ?? 'unknown error'}`
-          : 'Terminal closed',
+    timedOut
+      ? 'Terminal timed out waiting to open'
+      : status === 'open'
+        ? 'Terminal connected'
+        : status === 'opening'
+          ? 'Terminal connecting'
+          : status === 'error'
+            ? `Terminal error: ${errorMessage ?? 'unknown error'}`
+            : 'Terminal closed',
   );
 
   /** Reads a design token off `:root` at mount time so the xterm.js canvas (which cannot see CSS custom properties) draws from the same palette as everything around it, falling back to the dark/ink default for environments with no stylesheet (e.g. this file's jsdom tests). */
@@ -106,6 +137,23 @@
     return value || fallback;
   }
 
+  /** How long a mount/retry's own PTY handshake may sit `'opening'` before this component gives up waiting on its own (issue #582) — `TerminalClientState` carries no timeout of its own. 10s matches every other request-shaped `RelayClient` default. */
+  const OPEN_TIMEOUT_MS = 10_000;
+
+  function clearOpenTimeout(): void {
+    if (openTimeoutHandle === undefined) return;
+    clearTimeout(openTimeoutHandle);
+    openTimeoutHandle = undefined;
+  }
+
+  function armOpenTimeout(): void {
+    clearOpenTimeout();
+    openTimeoutHandle = setTimeout(() => {
+      openTimeoutHandle = undefined;
+      timedOut = true;
+    }, OPEN_TIMEOUT_MS);
+  }
+
   onMount(() => {
     unsubscribeState = client.terminalsFor(sessionId).subscribe((map) => {
       if (!terminalId) return;
@@ -113,6 +161,13 @@
       if (!state) return;
       status = state.status;
       errorMessage = state.error;
+      // A real answer, however late, is the honest resolution of this
+      // mount/retry's own bounded wait (issue #582's "a timeout does not
+      // mean the request failed" only holds if a late answer still lands).
+      if (state.status !== 'opening') {
+        clearOpenTimeout();
+        timedOut = false;
+      }
     });
 
     terminal = new Terminal({
@@ -130,25 +185,48 @@
     });
     if (container) terminal.open(container);
 
-    terminalId = client.openTerminal(sessionId, terminal.cols, terminal.rows);
-    const openedId = terminalId;
-
-    unsubscribeOutput = client.onTerminalOutput(sessionId, openedId, (chunk) => {
-      terminal?.write(chunk);
-    });
-
+    // Reads the CURRENT `terminalId` at send time rather than closing over
+    // one captured at mount (issue #582's retry opens an ADDITIONAL
+    // terminal with a new id — see `openNewTerminal` — and these two
+    // listeners, registered once, must follow it there).
     terminal.onData((data) => {
-      client.sendTerminalInput(sessionId, openedId, data);
+      if (terminalId) client.sendTerminalInput(sessionId, terminalId, data);
     });
 
     terminal.onResize(({ cols: newCols, rows: newRows }) => {
-      client.resizeTerminal(sessionId, openedId, newCols, newRows);
+      if (terminalId) client.resizeTerminal(sessionId, terminalId, newCols, newRows);
     });
+
+    openNewTerminal();
   });
+
+  /** Opens a fresh PTY (mount, and issue #582's retry): arms this attempt's own bounded wait and re-subscribes `onTerminalOutput` to the new `terminalId` — never reused, per `RelayClient.openTerminal`'s own doc comment. */
+  function openNewTerminal(): void {
+    if (!terminal) return;
+    unsubscribeOutput?.();
+    status = 'opening';
+    errorMessage = undefined;
+    timedOut = false;
+    terminalId = client.openTerminal(sessionId, terminal.cols, terminal.rows);
+    const openedId = terminalId;
+    unsubscribeOutput = client.onTerminalOutput(sessionId, openedId, (chunk) => {
+      terminal?.write(chunk);
+    });
+    armOpenTimeout();
+  }
+
+  /** Retry (issue #582): asks the node to close whichever attempt just timed out, then opens a genuinely new one — never just clears the local flag. */
+  function retryTerminal(): void {
+    clearOpenTimeout();
+    const staleId = terminalId;
+    if (staleId) client.closeTerminal(sessionId, staleId);
+    openNewTerminal();
+  }
 
   onDestroy(() => {
     unsubscribeOutput?.();
     unsubscribeState?.();
+    clearOpenTimeout();
     if (terminalId) client.closeTerminal(sessionId, terminalId);
     terminal?.dispose();
   });
@@ -162,11 +240,24 @@
 >
   <div class="terminal-titlebar">
     <Icon name="tool-bash" class="terminal-titlebar-icon" />
-    <StatusDot tone={statusTone} pulse={status === 'opening'} label={statusLabel} size="sm" />
+    <StatusDot
+      tone={statusTone}
+      pulse={status === 'opening' && !timedOut}
+      label={statusLabel}
+      size="sm"
+    />
     <span class="terminal-titlebar-label font-mono">Terminal</span>
   </div>
 
-  {#if status !== 'open'}
+  {#if timedOut}
+    <div class="terminal-timeout" data-testid="terminal-timeout">
+      <ErrorNotice
+        message="The terminal hasn't opened yet. This isn't necessarily a failure, we simply stopped waiting: the node may be asleep, offline, or slow to start the shell."
+        retryable
+        onRetry={retryTerminal}
+      />
+    </div>
+  {:else if status !== 'open'}
     <div class="status" class:error={status === 'error'} data-testid="terminal-status">
       {#if status === 'opening'}
         Connecting…
@@ -249,12 +340,20 @@
   /* Hand-styled to `ErrorNotice`'s own danger-tinted "raised" visual
      language rather than importing that component: this row's
      `terminal-status` testid and plain-text content are load-bearing for
-     this file's tests, and `ErrorNotice` hardcodes its own
-     `ui-error-notice` testid with no override. */
+     this file's tests (a node-reported failure, e.g. "no shell
+     available"), and `ErrorNotice` hardcodes its own `ui-error-notice`
+     testid with no override. The client-side bounded-wait timeout state
+     (issue #582, `.terminal-timeout` below) has no such legacy testid to
+     preserve, so IT does render through `ErrorNotice` directly. */
   .status.error {
     color: var(--color-danger);
     background: var(--color-danger-subtle);
     border-bottom-color: var(--color-danger);
+  }
+
+  .terminal-timeout {
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .xterm-container {
