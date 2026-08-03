@@ -32,5 +32,13 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.{test,spec}.ts'],
+    // relay-client.test.ts drives a real relay plus real crypto over real
+    // WebSockets (issue #529); its wait helpers are event-driven (resolve
+    // the instant a store/array/condition is satisfied, not on a poll
+    // tick), so raising this costs nothing on a passing run — it only
+    // widens how long a genuinely stuck run is given before vitest's own
+    // generic "Test timed out" preempts the helpers' own, more specific
+    // timeout errors.
+    testTimeout: 15_000,
   },
 });

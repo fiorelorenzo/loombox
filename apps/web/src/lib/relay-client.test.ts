@@ -197,19 +197,52 @@ class FakeNode {
   }
 }
 
-/** Waits until `predicate(get(store))` is true, or times out. */
+/**
+ * Waits until `predicate(get(store))` is true, or a genuine-hang safety net
+ * fires. Event-driven (subscribes and resolves off the store's own push
+ * notifications) rather than polling a fixed deadline: a deadline sized for
+ * "the real relay + real crypto this test drives finished in time" flakes
+ * under CI load (issue #529) because the wall-clock cost of that real work
+ * is exactly what varies with load, and a deadline generous enough to
+ * absorb the worst case is still just a slower flake, never a fix. Waiting
+ * on the store's own notification instead removes the guess entirely: this
+ * resolves the instant a satisfying value is pushed, however long that
+ * takes, and `timeoutMs` becomes a pure backstop against a value that never
+ * arrives (a real hang), so it can be generous with no cost to a passing
+ * run.
+ */
 async function waitForStore<T>(
   store: { subscribe: (run: (value: T) => void) => () => void },
   predicate: (value: T) => boolean,
-  timeoutMs = 3000,
+  timeoutMs = 10_000,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = get(store);
-    if (predicate(value)) return value;
-    if (Date.now() > deadline) throw new Error('waitForStore: timed out');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  const initial = get(store);
+  if (predicate(initial)) return initial;
+  return new Promise<T>((resolve, reject) => {
+    // A genuine wall-clock timer, deliberately: this isn't waiting out a
+    // race, it's a backstop against a store that never receives a
+    // satisfying value at all (a real hang in the real WebSocket/relay/
+    // crypto this test drives). There is no logical event to await instead
+    // — fake timers would require mocking that entire real I/O stack, which
+    // is precisely what makes this suite worth having. Kept generous
+    // (10s default) since, unlike a poll deadline, it never adds latency to
+    // a passing run — it only bounds how long a truly stuck run waits.
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error('waitForStore: timed out'));
+    }, timeoutMs);
+    // Every svelte store re-emits its current value synchronously on
+    // subscribe, i.e. `initial` again here, which already failed the
+    // predicate above — so this callback can never resolve (and therefore
+    // never call `unsubscribe`) during `store.subscribe()` itself, before
+    // the `const` below is assigned. No TDZ hazard.
+    const unsubscribe = store.subscribe((value) => {
+      if (!predicate(value)) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(value);
+    });
+  });
 }
 
 /**
@@ -225,15 +258,11 @@ async function waitForStore<T>(
 async function waitForStoreChange<T>(
   store: { subscribe: (run: (value: T) => void) => () => void },
   previous: T,
-  timeoutMs = 3000,
+  timeoutMs = 10_000,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = get(store);
-    if (value !== previous) return value;
-    if (Date.now() > deadline) throw new Error('waitForStoreChange: timed out');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  return waitForStore(store, (value) => value !== previous, timeoutMs).catch((error: Error) => {
+    throw new Error(error.message.replace('waitForStore', 'waitForStoreChange'));
+  });
 }
 
 /**
