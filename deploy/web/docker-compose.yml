@@ -18,6 +18,11 @@ services:
       # context is the repo root so pnpm can resolve the workspace
       context: ../..
       dockerfile: apps/web/Dockerfile
+    # tini as PID 1 (Docker's --init), not node: node never reaps children
+    # it didn't await, so a short-lived process (e.g. esbuild) turns into a
+    # permanent zombie. tini forwards SIGTERM, so `restart: unless-stopped`
+    # shutdown is unaffected. Same fix as pitchbox#218, filed here as #545.
+    init: true
     environment:
       HOST: 0.0.0.0
       PORT: 3000

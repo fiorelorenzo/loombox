@@ -40,6 +40,12 @@ services:
       # context is the repo root so pnpm can resolve the workspace
       context: ../..
       dockerfile: packages/relay/Dockerfile
+    # tini as PID 1 (Docker's --init), not node: node never reaps children
+    # it didn't await, so a short-lived process the relay code spawns (e.g.
+    # esbuild's dev-mode service) turns into a permanent zombie. tini
+    # forwards SIGTERM, so `restart: unless-stopped` shutdown is unaffected.
+    # Same fix as pitchbox#218, filed here as #545.
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
