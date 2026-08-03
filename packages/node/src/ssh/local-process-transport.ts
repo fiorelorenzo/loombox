@@ -14,6 +14,18 @@ import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './rem
 export class LocalProcessTransport implements RemoteTransport {
   private connected = false;
 
+  /**
+   * `env` defaults to this process's own `process.env`; a caller passes its
+   * own snapshot (e.g. with `HOME` overridden) to point everything
+   * `RemoteProcessRunner` resolves off `$HOME` — most importantly its
+   * un-overridable default baseDir, `resolveBaseDir()`'s
+   * `$HOME/.loombox/remote-sessions` — at a private directory instead of
+   * this real machine's actual home. Production's `Ssh2Transport` has no
+   * equivalent concept (a real remote host's `$HOME` is exactly what it
+   * should use), so this constructor exists for test isolation only.
+   */
+  constructor(private readonly options: { env?: NodeJS.ProcessEnv } = {}) {}
+
   async connect(): Promise<void> {
     this.connected = true;
   }
@@ -23,26 +35,30 @@ export class LocalProcessTransport implements RemoteTransport {
       throw new Error('LocalProcessTransport: not connected; call connect() first');
     }
 
-    return new Promise((resolve, reject) => {
-      const child = spawn('sh', ['-c', command], { stdio: ['pipe', 'pipe', 'pipe'] });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString('utf8');
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString('utf8');
-      });
-      child.on('error', reject);
-      child.on('close', (code) => {
-        resolve({ stdout, stderr, exitCode: code ?? -1 });
-      });
-
-      if (options.input !== undefined) {
-        child.stdin.write(options.input);
-      }
-      child.stdin.end();
+    const { promise, resolve, reject } = Promise.withResolvers<RemoteExecResult>();
+    const child = spawn('sh', ['-c', command], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: this.options.env ?? process.env,
     });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({ stdout, stderr, exitCode: code ?? -1 });
+    });
+
+    if (options.input !== undefined) {
+      child.stdin.write(options.input);
+    }
+    child.stdin.end();
+
+    return promise;
   }
 
   async close(): Promise<void> {

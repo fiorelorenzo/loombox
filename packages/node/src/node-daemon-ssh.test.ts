@@ -26,8 +26,11 @@ import {
 } from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from './node-daemon';
-import { LocalProcessTransport } from './ssh/local-process-transport';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
+import {
+  openRemoteSessionsSandbox,
+  type RemoteSessionsSandbox,
+} from './ssh/remote-sessions-test-sandbox';
 import { SessionLeaseManager } from './ssh/session-lease';
 
 const execFileAsync = promisify(execFile);
@@ -252,6 +255,7 @@ let remoteWorkspace: string;
 // constructed `McpConfigStore`/`NodeMcpSecretManager` (issues #187/#189)
 // never touch the real ~/.loombox/node.
 let nodeStateDir: string;
+let remoteSessions: RemoteSessionsSandbox | undefined;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
@@ -262,6 +266,7 @@ beforeEach(async () => {
   relay = await startRelay();
   remoteWorkspace = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-node-daemon-'));
   nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-node-daemon-state-'));
+  remoteSessions = openRemoteSessionsSandbox();
 });
 
 afterEach(async () => {
@@ -269,6 +274,8 @@ afterEach(async () => {
   phone?.close();
   node = undefined;
   phone = undefined;
+  await remoteSessions?.close();
+  remoteSessions = undefined;
   await rm(remoteWorkspace, { recursive: true, force: true });
   await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
@@ -290,7 +297,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -321,7 +328,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
   it('this node exiting does not kill the remote agent process, and a fresh runner reattaches to it (issue #80 acceptance)', async () => {
     const amk = generateAmk();
     const accountId = 'acct-ssh-survives-close';
-    const transport = new LocalProcessTransport();
+    const transport = remoteSessions!.createTransport();
 
     node = createNode({
       relayUrl: relay.url,
@@ -380,7 +387,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       leaseManager,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -444,7 +451,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       leaseManager,
       // This test simulates the owning node going silent (SPEC §9: "an
@@ -522,7 +529,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -537,7 +544,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET_B],
       sshTargets: [SSH_TARGET_CONFIG_B],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -640,7 +647,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
 
@@ -672,7 +679,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
 
@@ -711,7 +718,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -756,7 +763,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -786,7 +793,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -819,7 +826,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
@@ -854,7 +861,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
         amk,
         targets: [SSH_TARGET],
         sshTargets: [SSH_TARGET_CONFIG],
-        sshTransportFactory: () => new LocalProcessTransport(),
+        sshTransportFactory: () => remoteSessions!.createTransport(),
         remoteChildPollIntervalMs: 30,
         supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
       });
@@ -907,7 +914,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
         amk,
         targets: [SSH_TARGET],
         sshTargets: [SSH_TARGET_CONFIG],
-        sshTransportFactory: () => new LocalProcessTransport(),
+        sshTransportFactory: () => remoteSessions!.createTransport(),
         remoteChildPollIntervalMs: 30,
         supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
       });
@@ -931,7 +938,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     it('a new in-place session is allowed on the same folder once the first agent process actually exits', async () => {
       const amk = generateAmk();
       const accountId = 'acct-ssh-same-folder-reuse';
-      const transport = new LocalProcessTransport();
+      const transport = remoteSessions!.createTransport();
 
       node = createNode({
         relayUrl: relay.url,
@@ -1005,7 +1012,7 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
       amk,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
