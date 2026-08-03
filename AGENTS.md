@@ -317,9 +317,6 @@ than no board.
   file. Never write a value that is not already an option, read the schema
   instead of guessing, and never add, rename or drop a field on this board
   alone: the convention is shared across the projects.
-- `Priority` and the `p0`/`p1`/`p2` labels say the same thing here: the field
-  was backfilled from the labels, and the other repos keep both too, so set
-  both when you file or re-triage an issue.
 
 **Comment when a reader would want to know.** A decision taken, an approach
 tried and abandoned, a blocker hit, a surprise in the code, a scope change, a
@@ -338,13 +335,23 @@ invent a parallel style:
 - Title is a plain descriptive sentence naming the actual defect or change, e.g.
   `node-daemon-ssh.test.ts leaks real setsid-detached echo-acp-agent.mjs
   processes on every run`. Specific beats short.
-- Labels are lowercase and unprefixed here: a kind (`bug`, `feat`, `chore`,
-  `docs`, `spike`, `test`), a priority (`p0`, `p1`, `p2`) and the component(s)
-  (`client`, `node`, `relay`, `crypto`, `protocol`, `providers`, `permissions`,
-  `supervisor`, `transcript`, `terminal`, `editor`, `mcp`, `auth`, `trackers`,
-  `ci`, `security`, `testing`, `observability`, `infra`, `cloud`, ...).
-  `wave-N` is only for issues actually scheduled into a parallel-agent wave.
-  `epic` goes on epics only.
+- Labels follow one taxonomy, identical in every repo: exactly one `type:*`
+  (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`,
+  `security`, `spike`), exactly one of `priority:P0`-`priority:P3`, and one or
+  more `area:*` naming the surfaces the change touches. `epic` and `flagship`
+  (an epic, and headline work) are the only unprefixed labels. Priority is
+  deliberately in two places, the `Priority` board field and the `priority:*`
+  label, so set both.
+- `area:*` values here: `accounts`, `attachments`, `auth`, `client`, `cloud`,
+  `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`, `mcp`, `node`,
+  `notifications`, `observability`, `permissions`, `persistence`, `protocol`,
+  `providers`, `provisioning`, `relay`, `resources`, `supervisor`, `terminal`,
+  `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface
+  really is new, and never reintroduce an unprefixed or differently shaped
+  label.
+- `redesign`, `redesign-v2` and `wave-1`-`wave-7` are process markers (a
+  workstream, and the parallel-agent batches), not taxonomy. Leave them off a
+  new issue unless you are actually scheduling a wave.
 - Milestone: one of the milestones still open (`v2`, `v3`, `far-future`) when
   the work belongs to a spec milestone, see Build order above. Post-v1 issues
   usually carry no milestone and are grouped by epic instead, so do not invent
@@ -374,7 +381,7 @@ gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" \
 
 # New issue: create, put it on the board, hang it off its epic
 gh issue create -R fiorelorenzo/loombox --title "..." --body "..." \
-  --label "bug,p1,node"
+  --label "type:fix,priority:P1,area:node"
 gh project item-add 4 --owner fiorelorenzo --url <ISSUE_URL>
 gh api graphql -f query='mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){subIssue{number}}}' \
   -f p="$(gh issue view <EPIC> -R fiorelorenzo/loombox --json id --jq '.id')" \
