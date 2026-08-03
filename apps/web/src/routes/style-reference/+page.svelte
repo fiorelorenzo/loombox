@@ -18,12 +18,14 @@
   import WovenLoader from '$lib/components/WovenLoader.svelte';
   // Warp Deck shared UI primitives (redesign brief §4, issue #428) — see
   // the "Components" section appended at the end of this file's markup.
+  import Badge from '$lib/components/ui/Badge.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import Dialog from '$lib/components/ui/Dialog.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import ErrorNotice from '$lib/components/ui/ErrorNotice.svelte';
+  import Row from '$lib/components/ui/Row.svelte';
   import StatusDot from '$lib/components/ui/StatusDot.svelte';
 
   const neutralSwatches = [
@@ -250,6 +252,8 @@
   // appended at the end of this file's markup.
   let componentsDialogOpen = $state(false);
   let componentsDrawerPinned = $state(false);
+  let componentsRowClicks = $state(0);
+  let componentsRowActionClicks = $state(0);
 </script>
 
 <svelte:head>
@@ -568,10 +572,10 @@
     <h2 id="components-heading">Components (redesign brief §4, issue #428)</h2>
     <p class="motion-intro">
       The shared <code>lib/components/ui/</code> primitive set every wave-3 surface builds on —
-      <code>Button</code>, <code>IconButton</code>, <code>Card</code>, <code>Dialog</code>,
-      <code>EmptyState</code>, <code>ErrorNotice</code>, and <code>StatusDot</code>. Existing
-      surfaces keep their current markup until their own per-surface restyle issue; this page is
-      each primitive's variant/state gallery.
+      <code>Badge</code>, <code>Button</code>, <code>IconButton</code>, <code>Card</code>,
+      <code>Dialog</code>, <code>EmptyState</code>, <code>ErrorNotice</code>, <code>Row</code>, and
+      <code>StatusDot</code>. Existing surfaces keep their current markup until their own
+      per-surface restyle issue; this page is each primitive's variant/state gallery.
     </p>
 
     <h3>Button</h3>
@@ -587,6 +591,24 @@
       <Button disabled>Disabled</Button>
       <Button loading>Loading</Button>
     </div>
+
+    <h3>Badge (issue #579)</h3>
+    <div class="component-row">
+      <Badge>cli</Badge>
+      <Badge tone="success">healthy</Badge>
+      <Badge tone="warning">overloaded</Badge>
+      <Badge tone="danger">offline</Badge>
+      <Badge tone="info">preview</Badge>
+    </div>
+    <div class="component-row">
+      <Badge size="sm">Small</Badge>
+      <Badge size="md">Medium</Badge>
+      <Badge tone="success" dot dotLabel="Healthy">Healthy</Badge>
+    </div>
+    <p class="motion-token-job">
+      The last badge composes the real <code>StatusDot</code> (via <code>dot</code>) rather than
+      redrawing it — see <code>TargetStatusView</code>'s health badge.
+    </p>
 
     <h3>IconButton</h3>
     <div class="component-row">
@@ -670,6 +692,57 @@
         <p>PermissionCard, Dialog, Drawer (overlay), Command Palette.</p>
       </Card>
     </div>
+
+    <h3>Row (issue #579)</h3>
+    <ul class="row-sample-list">
+      <Row as="li" active>
+        {#snippet leading()}
+          <StatusDot tone="success" label="Working" pulse />
+        {/snippet}
+        <strong>Selected session</strong>
+        <small>demo/project · main.ts</small>
+        {#snippet trailing()}
+          <span class="row-sample-time">2m</span>
+        {/snippet}
+      </Row>
+      <Row as="li" onclick={() => (componentsRowClicks += 1)}>
+        {#snippet leading()}
+          <StatusDot tone="neutral" label="Idle" />
+        {/snippet}
+        <strong>Clickable row</strong>
+        <small>A plain &lt;li&gt; with its own onclick</small>
+        {#snippet trailing()}
+          <IconButton
+            label="Row action (does not also trigger the row's own click)"
+            onclick={() => (componentsRowActionClicks += 1)}
+          >
+            <svg
+              class="icon-glyph"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <circle cx="10" cy="10" r="1" />
+              <circle cx="10" cy="5" r="1" />
+              <circle cx="10" cy="15" r="1" />
+            </svg>
+          </IconButton>
+        {/snippet}
+      </Row>
+    </ul>
+    <p class="motion-token-job">
+      Row clicked {componentsRowClicks} time(s), row action clicked
+      {componentsRowActionClicks} time(s) — independently, never both from one click. It's a plain
+      <code>li</code>
+      synthesizing <code>role="button"</code>/<code>tabindex</code>/keydown (never a literal
+      <code>&lt;button&gt;</code>, since its trailing slot holds a real one — a real
+      <code>&lt;button&gt;</code>
+      cannot contain another interactive control). The trailing icon button's own click never
+      bubbles into the row's own <code>onclick</code>.
+    </p>
 
     <h3>Dialog — thread-lift entrance/exit, Esc/backdrop-click/focus-trap</h3>
     <div class="component-row">
@@ -1255,6 +1328,22 @@
     margin: 0;
     font-size: var(--text-small-size);
     opacity: 0.75;
+  }
+
+  .row-sample-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    max-width: 28rem;
+    margin-bottom: var(--space-md);
+  }
+
+  .row-sample-time {
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
   }
 
   .empty-state-sample {

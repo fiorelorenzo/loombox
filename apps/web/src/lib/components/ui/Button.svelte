@@ -92,6 +92,20 @@
      * site is untouched.
      */
     dataTestId?: string;
+    /**
+     * Arbitrary `data-*`/`aria-*` passthrough (issue #579) — e.g.
+     * `aria-expanded` for a disclosure toggle, or a call-site's own
+     * `data-testid`-adjacent marker attribute that isn't `dataTestId`
+     * itself. Named destructuring above pulls every prop `Button` owns
+     * (`variant`, `disabled`, `type`, `role`, `ariaChecked`, `tabindex`,
+     * `onkeydown`, …) out of the props object before this index signature
+     * ever sees them, so a caller passing e.g. `role="link"` still hits the
+     * named `role` prop, never this bag — there is no key both could claim.
+     * The rendered `<button>` also spreads this bag *before* every prop
+     * `Button` sets explicitly, so even a plain-JS caller bypassing the
+     * type system can't override one that way either.
+     */
+    [key: `data-${string}` | `aria-${string}`]: unknown;
     children: Snippet;
   }
 
@@ -113,12 +127,14 @@
     class: className = '',
     dataTestId = 'ui-button',
     children,
+    ...rest
   }: Props = $props();
 
   const isDisabled = $derived(disabled || loading);
 </script>
 
 <button
+  {...rest}
   {type}
   class={`ui-button ui-button-${variant} ui-button-${size} ${className}`.trim()}
   class:ui-button-full={fullWidth}

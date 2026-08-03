@@ -20,6 +20,7 @@
    * `EmptyState` primitive instead of a hand-styled `<p>`.
    */
   import type { TargetListEntry } from '$lib/relay-client';
+  import Badge from './ui/Badge.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 
@@ -56,10 +57,10 @@
         />
         <span class="label">{target.label}</span>
         <span class="meta">
-          <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
+          <Badge class="kind-badge" data-kind={target.kind}>{target.kind}</Badge>
           <span class="node-id font-mono">{target.nodeId}</span>
           {#if !target.reachable}
-            <span class="unreachable-badge">offline</span>
+            <Badge tone="danger">offline</Badge>
           {/if}
         </span>
       </button>
@@ -147,15 +148,12 @@
     vertical-align: bottom;
   }
 
-  .kind-badge {
+  /* `Badge` owns the pill's chrome (radius, padding, tone colors) now — this
+     is only the uppercase/tracking treatment `kind-badge` still wants on
+     top of it. `:global()` because `Badge` renders its own root in its own
+     component scope (same pattern as `AttentionInbox`'s `:global(.open)`). */
+  :global(.kind-badge) {
     text-transform: uppercase;
     letter-spacing: 0.02em;
-    padding: var(--space-3xs) var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-  }
-
-  .unreachable-badge {
-    color: var(--color-danger);
   }
 </style>

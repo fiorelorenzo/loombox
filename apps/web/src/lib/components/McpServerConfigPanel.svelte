@@ -62,6 +62,7 @@
     setMcpServerEnabled,
     type McpServerConfigStorage,
   } from '$lib/mcp-server-store';
+  import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import Checkbox from './ui/Checkbox.svelte';
@@ -203,12 +204,12 @@
               />
               <span class="server-transport">{record.config.transport}</span>
               {#each requiredSecretNames(record.config) as secretName (secretName)}
-                <span
-                  class="secret-badge"
-                  data-testid={`server-secret-badge-${record.config.name}-${secretName}`}
+                <Badge
+                  tone="warning"
+                  dataTestId={`server-secret-badge-${record.config.name}-${secretName}`}
                 >
                   Needs secret: {secretName}
-                </span>
+                </Badge>
               {/each}
               <Button
                 variant="danger"
@@ -355,14 +356,6 @@
     color: var(--color-text-muted);
     font-size: var(--text-small-size);
     font-family: var(--font-mono);
-  }
-
-  .secret-badge {
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-    border-radius: var(--radius-sm);
-    padding: var(--space-3xs) var(--space-xs);
-    font-size: var(--text-caption-size);
   }
 
   /* `Button`'s own scope hides this class from the file's hash (same

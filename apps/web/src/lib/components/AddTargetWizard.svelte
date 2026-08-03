@@ -568,14 +568,15 @@
         </Field>
 
         {#if candidates.length > 0}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             class="link-button"
-            data-testid="add-target-back-to-candidates"
+            dataTestId="add-target-back-to-candidates"
             onclick={() => (manualOverride = false)}
           >
             ← Back to detected hosts
-          </button>
+          </Button>
         {/if}
 
         <FormActions>
@@ -769,22 +770,17 @@
     gap: var(--space-md);
   }
 
-  .link-button {
+  /* `Button` ghost supplies focus-ring/disabled/press chrome now (issue
+     #579); this only pares its own padding/centering back to a plain
+     inline link and restores the accent color + permanent underline this
+     control has always looked like. `:global()` because `Button` renders
+     its own root in its own component scope. */
+  :global(.link-button) {
     align-self: flex-start;
     margin-top: var(--space-2xs);
     padding: 0;
-    border: none;
-    background: none;
     color: var(--color-accent);
-    font: inherit;
-    font-size: var(--text-small-size);
-    cursor: pointer;
     text-decoration: underline;
-  }
-
-  .link-button:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
   }
 
   .candidate-picker {

@@ -139,4 +139,40 @@ describe('Button (issue #428 Warp Deck shared UI primitives)', () => {
     await fireEvent.keyDown(button, { key: 'ArrowRight' });
     expect(onkeydown).toHaveBeenCalledTimes(1);
   });
+
+  it('passes through arbitrary data-*/aria-* attributes (issue #579), e.g. aria-expanded for a disclosure toggle', () => {
+    render(Button, {
+      props: {
+        children: textSnippet('More (3)'),
+        'aria-expanded': true,
+        'data-permission-overflow': 'true',
+      },
+    });
+    const button = screen.getByTestId('ui-button');
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(button.getAttribute('data-permission-overflow')).toBe('true');
+  });
+
+  it('never lets the data-*/aria-* passthrough bag override a prop Button owns', () => {
+    const onkeydown = vi.fn();
+    render(Button, {
+      props: {
+        children: textSnippet('Plan'),
+        role: 'radio',
+        ariaChecked: true,
+        tabindex: 0,
+        onkeydown,
+        disabled: false,
+        // A same-named literal attribute a caller might still try to pass —
+        // TypeScript already rejects `role`/`aria-checked` here (they are
+        // named props, not part of the index-signature bag), but this
+        // guards the runtime behaviour too, in case a plain-JS caller
+        // bypasses the type system.
+        ...{ 'aria-checked': false },
+      },
+    });
+    const button = screen.getByTestId('ui-button');
+    expect(button.getAttribute('role')).toBe('radio');
+    expect(button.getAttribute('aria-checked')).toBe('true');
+  });
 });

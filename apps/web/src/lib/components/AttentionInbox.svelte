@@ -55,15 +55,27 @@
    * layout and its own row-level hover (already provided by `.item:hover`)
    * don't match `Button`'s default centered/underline-on-hover ghost look,
    * so both are reset via the documented `class`-prop escape hatch
-   * (`Dialog`'s own doc comment names this same pattern) with a `:global`
    * selector, since the class lands on `Button`'s own scope, not this
    * component's.
+   *
+   * Row primitive (v6 design-system audit, issue #579): `.item` composes
+   * the shared `Row` (`as="li"`, no `onclick` of its own — only the nested
+   * Open `Button` is clickable) instead of hand-rolling its own leading/
+   * content/trailing flex layout. Leading is the `StatusDot`, trailing is
+   * the status label, and content is everything else (Open, the need
+   * line, and the inline `PermissionCard`/reply form) — `Row`'s content
+   * region is a column, not a single line, exactly because this row's own
+   * content already wasn't one. `data-kind`/`data-testid` reach `Row`'s
+   * root through its own `data-*` passthrough, so the existing
+   * `attention-inbox-item` selector and `dataset.kind` reads are
+   * unchanged.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { AttentionInboxItem } from '../relay-client';
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';
   import EmptyState from './ui/EmptyState.svelte';
+  import Row from './ui/Row.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
   import { SESSION_STATUS_LABELS, SESSION_STATUS_TONES } from '$lib/session-status';
 
@@ -154,21 +166,23 @@
     <ul>
       {#each items as item (itemKey(item))}
         {@const status = itemStatus(item)}
-        <li class="item" data-kind={item.kind} data-testid="attention-inbox-item">
-          <div class="item-header">
+        <Row as="li" class="item" data-kind={item.kind} dataTestId="attention-inbox-item">
+          {#snippet leading()}
             <StatusDot tone={status.tone} label={status.label} />
-            <Button
-              variant="ghost"
-              class="open"
-              onclick={() => onOpenSession(item.sessionId)}
-              dataTestId="attention-inbox-open"
-            >
-              <strong>{item.sessionTitle}</strong>
-              <small>{item.projectPath} · {item.nodeId}</small>
-            </Button>
+          {/snippet}
+          {#snippet trailing()}
             <span class="status-label" data-testid="attention-inbox-kind-badge">{status.label}</span
             >
-          </div>
+          {/snippet}
+          <Button
+            variant="ghost"
+            class="open"
+            onclick={() => onOpenSession(item.sessionId)}
+            dataTestId="attention-inbox-open"
+          >
+            <strong>{item.sessionTitle}</strong>
+            <small>{item.projectPath} · {item.nodeId}</small>
+          </Button>
           <p class="need" data-testid="attention-inbox-need">{needLabel(item)}</p>
           {#if item.kind === 'permission' && item.permission}
             {@const request = item.permission}
@@ -203,7 +217,7 @@
               >
             </form>
           {/if}
-        </li>
+        </Row>
       {/each}
     </ul>
   {/if}
@@ -229,38 +243,38 @@
      not a boxed card. Session-row visual language (redesign v3 design
      spec §3.6): the per-kind signal now lives on the leading `StatusDot`
      alone, not a second colored border — `PermissionCard` (rendered
-     inline below) keeps its own full `floating` tier untouched. */
-  .item {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
+     inline below) keeps its own full `floating` tier untouched. `Row`
+     (issue #579) now owns the leading/content/trailing flex layout and
+     the radius; this is only the background/border/animation this row
+     still wants on top of it. `:global()` because `Row` renders its own
+     root in its own component scope. */
+  :global(.item) {
     padding: var(--space-sm) var(--space-md);
     background: var(--color-surface);
     border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-lg);
     transition: background-color var(--duration-fast) var(--ease-beat);
     /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
        20ms/item, capped at 5 rows. */
     animation: beat-in var(--duration-base) var(--ease-beat) both;
   }
 
-  .item:hover {
+  :global(.item:hover) {
     background: var(--color-fill-subtle);
   }
 
-  .item:nth-child(2) {
+  :global(.item:nth-child(2)) {
     animation-delay: 20ms;
   }
 
-  .item:nth-child(3) {
+  :global(.item:nth-child(3)) {
     animation-delay: 40ms;
   }
 
-  .item:nth-child(4) {
+  :global(.item:nth-child(4)) {
     animation-delay: 60ms;
   }
 
-  .item:nth-child(n + 5) {
+  :global(.item:nth-child(n + 5)) {
     animation-delay: 80ms;
   }
 
@@ -276,18 +290,12 @@
     }
   }
 
-  .item-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-
   /* Sentence-case status wording next to the leading `StatusDot` (redesign
      v3 design spec §3.6) — color lives on the dot alone now, never
-     duplicated as a second per-kind tint on this text. */
+     duplicated as a second per-kind tint on this text. `Row`'s own
+     trailing region already supplies `margin-left: auto` (issue #579). */
   .status-label {
     flex-shrink: 0;
-    margin-left: auto;
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
   }

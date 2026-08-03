@@ -199,22 +199,17 @@
       {/each}
 
       {#if overflowOptions.length > 0}
-        <!--
-          Hand-styled to match Button's ghost variant rather than importing the
-          primitive: this control needs `data-testid`/`aria-expanded` on the real
-          button element itself (what the existing test queries and clicks), and
-          `Button` has no attribute passthrough for either.
-        -->
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           class="overflow-toggle"
           disabled={!actionable}
           aria-expanded={overflowOpen}
           onclick={() => (overflowOpen = !overflowOpen)}
-          data-testid="permission-overflow-toggle"
+          dataTestId="permission-overflow-toggle"
         >
           More ({overflowOptions.length})
-        </button>
+        </Button>
       {/if}
     </div>
 
@@ -369,33 +364,20 @@
     flex-wrap: nowrap;
   }
 
-  /* Hand-styled to match ui-button-ghost (see the template comment above on
-     why this isn't the imported `Button` component). */
-  .overflow-toggle {
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    padding: var(--space-2xs) var(--space-md);
-    background: transparent;
-    color: inherit;
+  /* `Button` ghost (`size="sm"`) now supplies the border/radius/padding/
+     color/hover-underline/disabled/focus-ring chrome (issue #579's
+     data-attribute/aria-attribute passthrough is what let `aria-expanded`
+     and `data-testid` reach the real `<button>` through it) — this is
+     only the toggle's own quieter resting opacity on top of that.
+     `:global()` because `Button` renders its own root in its own
+     component scope. */
+  :global(.overflow-toggle) {
     opacity: 0.75;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    cursor: pointer;
     transition: opacity var(--duration-fast) var(--ease-beat);
   }
 
-  .overflow-toggle:not(:disabled):hover {
+  :global(.overflow-toggle:not(:disabled):hover) {
     opacity: 1;
-    text-decoration: underline;
-  }
-
-  .overflow-toggle:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
-  }
-
-  .overflow-toggle:disabled {
-    cursor: not-allowed;
   }
 
   /* Scrollable option lists (issue #134): capped height so a long
@@ -430,18 +412,14 @@
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a
      coarse (touch) pointer, the confirm/deny/overflow buttons grow to at
      least the ~44px hit target both major mobile platforms recommend. The
-     option buttons are the shared `Button` primitive now (`size="sm"`,
-     which alone only grows to 2.5rem under coarse pointer) — this keeps the
-     permission card's own, slightly larger, pre-existing touch target. */
+     option buttons AND the overflow toggle are the shared `Button`
+     primitive now (`size="sm"`, which alone only grows to 2.5rem under
+     coarse pointer, and the overflow toggle is a `.ui-button` inside
+     `.options` too as of issue #579) — this keeps the permission card's
+     own, slightly larger, pre-existing touch target for both. */
   @media (pointer: coarse) {
     .options :global(.ui-button),
     .options-overflow :global(.ui-button) {
-      min-height: 2.75rem;
-      padding: var(--space-sm) var(--space-lg);
-      font-size: var(--text-body-size);
-    }
-
-    .overflow-toggle {
       min-height: 2.75rem;
       padding: var(--space-sm) var(--space-lg);
       font-size: var(--text-body-size);
