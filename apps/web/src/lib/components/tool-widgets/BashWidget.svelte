@@ -9,16 +9,16 @@
    * identically and share one chunk-boundary-safe decode path
    * (`$lib/terminal.ts`), not a fork per widget.
    *
-   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"), converged onto the shared card language
-   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
-   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
-   * / `EditWriteWidget` / `TodoWidget`) — `TerminalOutput`'s own dark
-   * terminal-screen surface (untouched) is the one thing here that still
-   * reads as its own boxed surface, on purpose (it's meant to look like an
-   * actual console). Status is a `StatusDot` + short
-   * label, never the raw enum. The header toggles the terminal body's
-   * expand/collapse, defaulting open.
+   * One level of card chrome (design spec `2026-08-03-cockpit-v6-design.md`
+   * §3.4, issue #576): `TerminalOutput`'s own dark terminal-screen surface
+   * is deliberately the one thing here that reads as a boxed surface (it's
+   * meant to look like an actual console) — `ToolCard` renders `surface=
+   * {false}` so it no longer wraps that in a second, redundant bordered
+   * card. The header row (icon, "Bash", status, disclosure) stays plain
+   * text directly above it. Status renders via the shared
+   * `ToolCallStatus` (a failed run is louder than a completed one; see
+   * that component's own doc comment). The header toggles the terminal
+   * body's expand/collapse, defaulting open.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): a small header identifies the widget's tool-call type via the
@@ -27,17 +27,12 @@
    * already carries the meaning.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
-  import {
-    bashCommand,
-    toolCallOutputText,
-    TOOL_CALL_STATUS_LABELS,
-    TOOL_CALL_STATUS_TONES,
-  } from '$lib/tool-widgets';
+  import { bashCommand, toolCallOutputText } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import TerminalOutput from '../TerminalOutput.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
-  import StatusDot from '../ui/StatusDot.svelte';
   import ToolCard from './ToolCard.svelte';
 
   interface Props {
@@ -50,13 +45,11 @@
   const copyText = $derived(output ? `$ ${command}\n${output}` : `$ ${command}`);
 
   let expanded = $state(true);
-  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
-  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
 </script>
 
 <div class="bash-widget" data-testid="bash-widget">
   <ToolCallGutter icon="tool-bash" />
-  <ToolCard>
+  <ToolCard surface={false}>
     <div class="header-line">
       <button
         type="button"
@@ -66,12 +59,7 @@
       >
         <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
         <span class="title">Bash</span>
-        {#if statusTone && statusLabel}
-          <span class="status">
-            <StatusDot tone={statusTone} label={statusLabel} size="sm" />
-            <span class="status-label" aria-hidden="true">{statusLabel}</span>
-          </span>
-        {/if}
+        <ToolCallStatus status={item.status} />
       </button>
       <div class="copy-row">
         <CopyButton text={copyText} label="Copy command and output" revealOnHover />
@@ -91,12 +79,6 @@
     align-items: flex-start;
     width: 100%;
     min-width: 0;
-  }
-
-  .header-line {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
   }
 
   .row-header {
@@ -135,19 +117,6 @@
 
   .title {
     flex: 1;
-  }
-
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-    font-weight: 400;
-  }
-
-  .status-label {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
   }
 
   .copy-row {
