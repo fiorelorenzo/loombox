@@ -21,7 +21,7 @@ export type {
 } from './transcript-store';
 
 // v1: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174).
-export { TerminalSession, TerminalSupervisor } from './terminal-supervisor';
+export { TerminalSession, TerminalSupervisor, defaultPtySpawn } from './terminal-supervisor';
 export type {
   PtyLike,
   PtySpawnFn,
