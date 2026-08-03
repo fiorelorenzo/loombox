@@ -28,3 +28,20 @@ export type {
   TerminalExitEvent,
   TerminalSpawnOptions,
 } from './terminal-supervisor';
+
+// v2: git-based checkpoint & rollback engine (SPEC §7.20; issue #266). No
+// AgentSupervisor/AgentSession wiring or wire-protocol surface yet — see
+// `./git-checkpoint-store.ts`'s module doc comment for why.
+export {
+  GitCheckpointStore,
+  CheckpointNotFoundError,
+  DetachedHeadError,
+  DirtySubmoduleError,
+  NotAGitWorktreeError,
+} from './git-checkpoint-store';
+export type {
+  GitCheckpoint,
+  GitCheckpointStoreOptions,
+  RestorePreview,
+  RestoreResult,
+} from './git-checkpoint-store';
