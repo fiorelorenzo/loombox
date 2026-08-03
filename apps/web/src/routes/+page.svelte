@@ -83,6 +83,7 @@
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
+  import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
@@ -428,9 +429,16 @@
    * `rightSidebarDock.open` directly, so the very first click — while this
    * dock is still running on its dynamic default — toggles from whatever
    * is actually on screen, not from the dock's own placeholder `false`.
+   * Issue #572 added the `closeOtherMobileSheets` call below: opening this
+   * sheet below `--bp-desktop` now dismisses the sessions sheet and the
+   * terminal dock first, per design spec §3.3's "exactly one of the
+   * three... at a time" rule — see that function's own doc comment
+   * (declared further down, alongside the terminal dock it was added
+   * for; hoisted, so this earlier call is fine).
    */
   function toggleRightSidebar(): void {
     const wasOpen = rightSidebarOpen;
+    if (!wasOpen) closeOtherMobileSheets('right-sidebar');
     rightSidebarHasUserPreference = true;
     rightSidebarDock.open = !wasOpen;
   }
@@ -618,16 +626,140 @@
   // the composer.
   let fileTree = $state<Map<string, FileTreeDirectoryState>>(new Map());
   // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174)
-  // used to be a Drawer tab; issue #571 takes it out of this panel
-  // entirely (it becomes its own bottom dock, issue #572) — mounting it is
-  // no longer reachable from this component at all until that lands. Each
-  // time it WAS opened it mounted a fresh `InteractiveTerminal`, which
-  // opens its own new terminal on mount and closes it on unmount (its own
-  // doc comment); #572 will need to decide whether the dock keeps it
-  // mounted-but-hidden instead, so a collapse/reopen doesn't drop the PTY
-  // (issue #173's "multiple terminals" stays the node/client's job below
-  // this component either way, not this page's).
-  //
+  // used to be a Drawer tab; issue #571 took it out of that panel
+  // entirely. It is its own bottom dock now (design spec §3.1/§3.2/§3.3,
+  // issue #572), built on the same shared `DockPanel` behaviour (issue
+  // #570) `sessionsDock`/`rightSidebarDock` above run on — see that
+  // block's own doc comment, which forward-referenced this one.
+  const TERMINAL_DOCK_STORAGE_KEY = 'loombox:terminal-dock';
+  /** A comfortable first-open height — independent of `MIN_TERMINAL_DOCK_HEIGHT_PX` below, so a first-time user gets a genuinely usable pane, not the bare minimum. */
+  const DEFAULT_TERMINAL_DOCK_HEIGHT_PX = 320;
+  /** Issue #572's own acceptance line: "min around 12rem". */
+  const MIN_TERMINAL_DOCK_HEIGHT_PX = 192;
+  /** A generous ceiling so a drag can't swallow the transcript/composer entirely — same reasoning as `MAX_RIGHT_SIDEBAR_WIDTH_PX` above, sized for this dock's own axis. */
+  const MAX_TERMINAL_DOCK_HEIGHT_PX = 640;
+
+  /**
+   * `DockPanelPersistence` for the terminal dock, mirroring
+   * `createRightSidebarDockPersistence` exactly (one JSON blob — this dock
+   * is new, so unlike the left sidebar's own adapter there is no existing
+   * user's legacy two-key shape to stay compatible with). PER-USER
+   * (`localStorage`, not `sessionStorage`), matching both the design
+   * spec's own wording ("height persisted per user") and every other dock
+   * in this file: nothing about §3.3's rules ties this dock's height to
+   * any one session, so there is no reason to scope it narrower than the
+   * other two.
+   */
+  function createTerminalDockPersistence(): DockPanelPersistence {
+    return {
+      load() {
+        const raw = localStorage.getItem(TERMINAL_DOCK_STORAGE_KEY);
+        if (!raw) return undefined;
+        try {
+          return JSON.parse(raw) as Partial<DockPanelState>;
+        } catch {
+          return undefined;
+        }
+      },
+      save(state) {
+        localStorage.setItem(TERMINAL_DOCK_STORAGE_KEY, JSON.stringify(state));
+      },
+    };
+  }
+
+  const terminalDockPersistence = createTerminalDockPersistence();
+  /**
+   * The terminal dock itself: `edge: 'bottom'`. `open: false` is the REAL
+   * default (unlike `rightSidebarDock`'s placeholder `false` — see that
+   * block's own doc comment): design spec decision #4 is unconditional
+   * ("closed by default... the layout must not move on its own"), so
+   * there is no dynamic-default `$derived` this dock needs the way
+   * `rightSidebarOpen` does. `terminalDock.open` alone is always the
+   * truth, restored from `TERMINAL_DOCK_STORAGE_KEY` if this browser has
+   * ever set it. `collapsedSize: 0`, same reasoning as
+   * `rightSidebarDock`'s: closing it removes it from the layout, not a
+   * rail — nothing in the design spec asks for a bottom rail either.
+   */
+  const terminalDock = new DockPanel({
+    edge: 'bottom',
+    open: false,
+    size: DEFAULT_TERMINAL_DOCK_HEIGHT_PX,
+    min: MIN_TERMINAL_DOCK_HEIGHT_PX,
+    max: MAX_TERMINAL_DOCK_HEIGHT_PX,
+    collapsedSize: 0,
+    persistence: terminalDockPersistence,
+    restored: () => preferencesRestored,
+  });
+
+  /**
+   * Below `--bp-desktop` (1024px) the terminal dock becomes a bottom sheet
+   * exactly like the right sidebar does at the same width (design spec
+   * §3.3's responsive table gives both the identical row: "docked" at
+   * ≥1024, "sheet" below it). Reusing `rightSidebarSheetViewport` rather
+   * than opening a second `matchMedia` subscription at the same number IS
+   * the "reconcile it with the existing mobile sheet" issue #572 asks
+   * for: one signal drives both panels' docked/sheet switch, so they can
+   * never drift onto two different breakpoints by accident.
+   */
+  const terminalDockSheetViewport = $derived(rightSidebarSheetViewport);
+
+  /**
+   * Sessions whose terminal has been opened at least once this page load
+   * — the mount gate for `InteractiveTerminal` in the template below
+   * (design spec decision #4: "never opens itself because a terminal
+   * happens to be alive" — a session nobody ever opened the dock for
+   * never opens a PTY either). Once a session is in this set, its
+   * `InteractiveTerminal` stays MOUNTED even while `terminalDock.open`
+   * later toggles closed: collapsing only hides it (`.terminal-dock`'s
+   * own height/transform in the template below), so a collapse/reopen
+   * round trip never re-runs `onMount`/`onDestroy` and never drops the
+   * PTY or its scrollback — today, before this dock existed, closing the
+   * old Drawer tab unmounted `InteractiveTerminal` and its own
+   * `onDestroy` killed the terminal outright, exactly what this issue's
+   * acceptance forbids. Plain `SvelteSet`, not persisted: it only needs
+   * to survive this tab's own lifetime.
+   */
+  const terminalOpenedSessionIds = new SvelteSet<string>();
+  $effect(() => {
+    if (terminalDock.open && selectedSessionId) terminalOpenedSessionIds.add(selectedSessionId);
+  });
+
+  /**
+   * Design spec §3.3's "below `--bp-desktop`, exactly one of the three
+   * panels may be open at a time, and it is a sheet" rule (issue #572) —
+   * called by whichever of the three sheets is ABOUT to open, so the
+   * other two are dismissed first instead of stacking. A no-op for
+   * whichever panel is currently DOCKED (not a sheet) at the present
+   * width: closing a docked panel here would fight the user's own docked
+   * preference for no reason, since two (or three) docked panels
+   * coexisting is exactly what ≥1024px wants (design spec §3.1: "None of
+   * them scrims. ... all three may be open together").
+   */
+  function closeOtherMobileSheets(opening: 'sessions' | 'right-sidebar' | 'terminal'): void {
+    if (opening !== 'sessions' && sessionsSheetOpen && sessionsSheetViewport) {
+      sessionsSheetOpen = false;
+    }
+    if (opening !== 'right-sidebar' && rightSidebarOpen && rightSidebarSheetViewport) {
+      closeRightSidebar();
+    }
+    if (opening !== 'terminal' && terminalDock.open && terminalDockSheetViewport) {
+      terminalDock.open = false;
+    }
+  }
+
+  /**
+   * Opens or closes the terminal dock — the topbar's one control for it
+   * (`terminal-dock-toggle` below), mirroring `toggleRightSidebar` except
+   * for the dynamic-default case that function's own doc comment
+   * describes: this dock has none (see `terminalDock`'s own doc comment),
+   * so there is no `hasUserPreference` gate to set alongside it.
+   */
+  function toggleTerminalDock(): void {
+    const wasOpen = terminalDock.open;
+    if (!wasOpen) closeOtherMobileSheets('terminal');
+    terminalDock.open = !wasOpen;
+  }
+
   // The project config surface (SPEC §7.7; issue #366) is now the right
   // sidebar's "Config" tab (`activeWorkbenchTab`); mounts the MCP-server
   // quick-add panel (#188) and the plugin/extension panel (#191). See
@@ -2041,6 +2173,12 @@
     // writes back the value it just read.
     sessionsDock.restore();
 
+    // Issue #572: restores the terminal dock's own persisted `{ open,
+    // size }` — same order requirement as `rightSidebarDock.restore()`/
+    // `sessionsDock.restore()` above, before `preferencesRestored` flips
+    // below.
+    terminalDock.restore();
+
     // Every preference above is now the persisted one, so the persistence
     // effects declared near the top of this component (and `sessionsDock`'s
     // own internal persistence, gated the same way) may start writing (see
@@ -2798,6 +2936,27 @@
                 <Icon name="sidebar-panel" />
                 <span class="panel-word">Workbench</span>
               </Button>
+              <!-- The terminal's own toggle (design spec §3.1/§3.2/§3.3,
+                   issue #572): a fourth zone alongside the left sidebar,
+                   canvas and right sidebar, not a fourth tab inside any of
+                   them — it left the right sidebar's `WORKBENCH_TABS`
+                   entirely (that panel's own doc comment above), so it
+                   gets the exact same "one control, opens/closes"
+                   treatment `workbench-toggle` gives the right sidebar,
+                   right beside it. -->
+              <Button
+                variant="ghost"
+                size="sm"
+                class="terminal-dock-toggle"
+                pressed={terminalDock.open}
+                ariaLabel="Terminal"
+                title="Terminal"
+                onclick={toggleTerminalDock}
+                dataTestId="terminal-dock-toggle"
+              >
+                <Icon name="terminal" />
+                <span class="panel-word">Terminal</span>
+              </Button>
               <!-- A session action, not a fourth panel: it keeps the bare
                    glyph on purpose, so the contrast with the group beside it
                    is what says "this one does something rather than opening
@@ -3238,6 +3397,69 @@
       {/if}
     </div>
 
+    <!-- The terminal dock (design spec §3.1/§3.2/§3.3, issue #572): a
+         sibling of `.shell`, not nested inside it — see `.terminal-dock`'s
+         own CSS doc comment for why. Gated on the same
+         `selectedSessionId && mainView === 'session'` pair the workbench
+         toggle and right sidebar use: there is nothing to open a terminal
+         ON without a selected session. The wrapper mounts once a
+         session's terminal has EVER been opened
+         (`terminalOpenedSessionIds`) and never unmounts again for that
+         session — `terminalDock.open` only ever drives its `height`/
+         `transform`/`inert`, never its presence in the DOM, so a
+         collapse/reopen round trip never touches `InteractiveTerminal`'s
+         own `onMount`/`onDestroy` (that component's own doc comment: it
+         opens a PTY on mount, closes it on destroy — this dock must never
+         trigger the second half of that on a mere collapse).
+         `{#key selectedSessionId}` still remounts it fresh whenever the
+         SELECTED session changes while the dock has content, same as any
+         other session-scoped panel — only collapsing and reopening THE
+         SAME session's dock is what issue #572's acceptance protects. -->
+    {#if selectedSessionId && mainView === 'session' && client}
+      {@const activeClient = client}
+      {#if terminalDockSheetViewport && terminalDock.open}
+        <button
+          type="button"
+          class="terminal-dock-backdrop"
+          aria-label="Close terminal"
+          onclick={() => (terminalDock.open = false)}
+          data-testid="terminal-dock-backdrop"
+        ></button>
+      {/if}
+      <div
+        class="terminal-dock"
+        class:terminal-dock-open={terminalDock.open}
+        class:sheet-open={terminalDockSheetViewport && terminalDock.open}
+        class:resizing={terminalDock.dragging}
+        inert={!terminalDock.open}
+        data-testid="terminal-dock"
+        style={terminalDockSheetViewport ? undefined : `height: ${terminalDock.effectiveSize}px`}
+      >
+        {#if !terminalDockSheetViewport}
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="terminal-dock-resize-handle"
+            role="separator"
+            aria-orientation={terminalDock.ariaOrientation}
+            aria-label="Resize terminal"
+            aria-valuenow={terminalDock.size}
+            aria-valuemin={terminalDock.min}
+            aria-valuemax={terminalDock.max}
+            tabindex="0"
+            onpointerdown={terminalDock.startDrag}
+            onkeydown={terminalDock.handleKeydown}
+            data-testid="terminal-dock-resize-handle"
+          ></div>
+        {/if}
+        {#if terminalOpenedSessionIds.has(selectedSessionId)}
+          {#key selectedSessionId}
+            <InteractiveTerminal sessionId={selectedSessionId} client={activeClient} />
+          {/key}
+        {/if}
+      </div>
+    {/if}
+
     <!-- Below `--bp-desktop` the sidebar becomes a sheet and this bar is the
          primary navigation. It deliberately sits ABOVE the sheet's own
          backdrop so the tab that opened the sheet can also close it — the v2
@@ -3248,7 +3470,11 @@
         type="button"
         class="tabbar-item"
         class:active={sessionsSheetOpen}
-        onclick={() => (sessionsSheetOpen = !sessionsSheetOpen)}
+        onclick={() => {
+          const opening = !sessionsSheetOpen;
+          if (opening) closeOtherMobileSheets('sessions');
+          sessionsSheetOpen = opening;
+        }}
         data-testid="tabbar-sessions"
       >
         <Icon name="sessions" class="tabbar-icon" />
@@ -4873,6 +5099,109 @@
     outline: none;
   }
 
+  /* The terminal dock (design spec §3.1/§3.2/§3.3, issue #572): built on
+     the shared `DockPanel` behaviour (issue #570), same as the left and
+     right sidebars — collapse (to nothing, `collapsedSize: 0`, same as
+     the right sidebar), drag-resize, persistence, no second hand-written
+     copy. A flex sibling of `.shell` inside `main.cockpit` (both direct
+     children of that flex COLUMN), not nested inside `.shell` itself: the
+     design spec §3.1 diagram draws this dock under ALL three columns
+     (left sidebar, canvas, right sidebar), not just under the canvas, so
+     it needs to sit outside the flex ROW those three share. Docked
+     (pushes the canvas up, no scrim — design spec §0.6) at/above
+     `--bp-desktop`; a dismissible bottom sheet below that (the
+     `@media (max-width: 1023px)` block further down, alongside the right
+     sidebar's own). Stays mounted at all times once a session's terminal
+     has ever been opened (`terminalOpenedSessionIds`) — `height`/
+     `transform` show or hide it, nothing ever unmounts
+     `InteractiveTerminal` on a collapse (issue #572's own acceptance
+     line: "collapsing and reopening... does not lose scrollback or kill
+     the PTY"). */
+  .terminal-dock {
+    position: relative;
+    flex-shrink: 0;
+    /* A flex item's own `min-height: auto` default would otherwise
+       override the `height: 0px` this wrapper's inline `style` sets while
+       closed (`terminalDock.effectiveSize` is `collapsedSize`, `0`) with
+       its CHILDREN's min-content size instead — the exact "collapsing
+       does nothing" bug the drag-resize and mobile-sheet e2e specs caught
+       (issue #572). */
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--color-surface);
+    transition: height var(--duration-base) var(--ease-shuttle);
+  }
+
+  /* `padding`/`border-top` live here, not on `.terminal-dock` itself: with
+     `box-sizing: border-box` (`typography.css`), a border+padding a `height:
+     0` box can't shrink INTO still forces a rendered floor of
+     `border + padding` (a content box can't go negative) — a few visible
+     pixels of "closed" chrome that both broke `height: 0` as a real "gone"
+     signal and was exactly what the drag-resize/mobile-sheet e2e specs
+     caught as "collapsing does nothing" (issue #572). Scoping them to
+     `.terminal-dock-open` makes the CLOSED box genuinely `0×width`, no
+     chrome left over.
+
+     The class is `terminal-dock-open`, not the shorter `open` a first
+     draft used: `AttentionInbox.svelte` already owns a GLOBAL (unscoped)
+     `:global(.open)` rule for its own menu, and Svelte's `class:` scoping
+     does not protect against an unrelated component's `:global()` rule
+     matching the same bare class name — it silently applied THAT rule's
+     `align-items: flex-start` here too, which broke `align-items: stretch`
+     (the flex default this wrapper's width relies on) and fed a real
+     shrink-to-nothing loop through `FitAddon.fit()` (each `fit()` measured
+     an already-narrower `.xterm-container`, `resize()`d narrower still,
+     which is what the drag/reflow e2e spec caught as cols collapsing
+     during a purely vertical drag). Prefixed and unique now, the way this
+     file's OTHER dock classes (`sheet-open`, `resizing`) already are. */
+  .terminal-dock.terminal-dock-open {
+    padding: var(--space-2xs);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .terminal-dock.resizing {
+    transition: none;
+  }
+
+  /* `InteractiveTerminal`'s own root is `height: 100%` (no `min-height` of
+     its own) — it fills whatever this wrapper gives it, tall-narrow or
+     wide-short alike, so no override is needed here beyond `flex: 1` to
+     claim the space `.terminal-dock-resize-handle` doesn't. */
+  .terminal-dock :global(.interactive-terminal) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The WAI-ARIA APG "Window Splitter" pattern, same exception to the
+     noninteractive-role rule `.right-sidebar-resize-handle` already
+     takes. Sits on the dock's own TOP edge (dragging it up grows a
+     bottom-anchored panel — `DockPanel`'s own `axisPos` already flips the
+     sign for a `bottom` edge, this is just where the handle sits
+     visually), the same "mirror image" relationship
+     `.right-sidebar-resize-handle`'s `left: -3px` has to
+     `.sidebar-resize-handle`'s `right: -3px`. Drag-resize is a
+     docked-mode-only affordance (the markup gates its own mount on
+     `!terminalDockSheetViewport`, same as the right sidebar's handle), so
+     no `@media` needs to hide it separately. */
+  .terminal-dock-resize-handle {
+    position: absolute;
+    top: -3px;
+    left: 0;
+    right: 0;
+    height: 6px;
+    cursor: row-resize;
+    background: transparent;
+    z-index: var(--z-raised);
+  }
+
+  .terminal-dock-resize-handle:hover,
+  .terminal-dock-resize-handle:focus-visible {
+    background: var(--color-accent-subtle);
+    outline: none;
+  }
+
   /* ------------------------------------------------------------------ */
   /* Mobile tab bar                                                      */
   /* ------------------------------------------------------------------ */
@@ -4992,6 +5321,78 @@
       width: min(26rem, 90vw);
       box-shadow: var(--shadow-lg);
       z-index: var(--z-overlay);
+    }
+
+    /* Design spec §3.3, issue #572: below `--bp-desktop` the terminal
+       dock is a dismissible BOTTOM sheet at every width in this block
+       (768-1023px AND, via the next media query's own narrower rules,
+       below 768px too) — unlike the right sidebar, which is a SIDE sheet
+       in this range and only becomes a bottom sheet below 768px, the
+       design spec's own responsive table (§3.3) gives the terminal dock
+       "bottom sheet" for both rows, so one `@media` block covers both
+       instead of splitting it the way `.right-sidebar` above needs to.
+       Reuses the sessions sidebar's own mechanism (`.sidebar`/
+       `.sidebar-backdrop`: always mounted, `transform` slides it
+       off/on-screen, a manually-conditioned backdrop button) rather than
+       `Overlay`'s conditional-mount one (`.right-sidebar`'s own, above):
+       `Overlay` unmounts its children on close, which is exactly what
+       this dock must never do to `InteractiveTerminal` (see
+       `.terminal-dock`'s own doc comment above) — this is the "reconcile
+       it with the existing mobile sheet" issue #572 asks for, choosing
+       the ALREADY-EXISTING mechanism that fits rather than inventing a
+       third one. */
+    .terminal-dock {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: var(--tabbar-height);
+      z-index: var(--z-sticky);
+      height: min(60vh, 32rem) !important;
+      /* `100%` alone (the pattern `.sidebar`'s own `translateX(-100%)`
+         uses) only clears an edge that sits FLUSH with the viewport — this
+         box's resting `bottom` is already inset by `--tabbar-height`
+         (56px) to leave room for the tab bar, so sliding down by exactly
+         its own height still leaves that 56px sliver on screen (measured:
+         a viewport-390×844 spec caught the sessions sheet's own toggle
+         failing to fully hide this dock after closing it). The extra
+         `+ var(--tabbar-height)` clears that gap too. */
+      transform: translateY(calc(100% + var(--tabbar-height)));
+      transition: transform var(--duration-base) var(--ease-shuttle);
+    }
+
+    /* `.terminal-dock-open`, not the bare `.terminal-dock` above:
+       `border-top-color` alone loses to `.terminal-dock.terminal-dock-open`'s
+       own full `border-top` shorthand (higher specificity) otherwise, and
+       this dock's border only exists at all once that class applies it
+       (see that rule's own doc comment). */
+    .terminal-dock.terminal-dock-open {
+      border-top-color: var(--color-border-strong);
+    }
+
+    .terminal-dock.sheet-open {
+      transform: translateY(0);
+    }
+
+    /* `top: var(--topbar-height)`, not `0`: this dock's own toggle lives
+       IN the topbar (unlike the sessions sidebar's, which lives in the
+       tabbar, already elevated above `.sidebar-backdrop` by z-index) — a
+       full-height backdrop would cover the very control that opens/closes
+       it, and any other topbar control (`workbench-toggle`) besides.
+       `.right-sidebar-backdrop` already fixed this exact bug once, via
+       `Overlay`'s own `--overlay-top` hook (see that rule's own doc
+       comment above); this backdrop is hand-rolled, not `Overlay`, so it
+       gets the same inset directly rather than through that hook. */
+    .terminal-dock-backdrop {
+      display: block;
+      position: fixed;
+      top: var(--topbar-height);
+      left: 0;
+      right: 0;
+      bottom: var(--tabbar-height);
+      z-index: calc(var(--z-sticky) - 1);
+      border: none;
+      background: var(--color-overlay);
+      cursor: default;
     }
   }
 
