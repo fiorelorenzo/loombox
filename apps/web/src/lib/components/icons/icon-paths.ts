@@ -24,6 +24,16 @@
  * cross — and adds the names the rest of the redesign consumes (chevron,
  * search, overflow, plus, refresh, check, alert, terminal, pin). Additive
  * and redraws only: every name that shipped in #457 still resolves.
+ *
+ * v6 turn-attribution pass (design spec `2026-08-03-cockpit-v6-design.md`
+ * §3.4, issue #575) adds five `provider-*` marks: the small glyph a
+ * transcript row now carries in place of the caption-case "CLAUDE"/"CODEX"/…
+ * word `MessageItem`'s gutter used to paint. Each is a plain abstract mark,
+ * not a reproduction of any provider's real logo — starburst for Claude,
+ * a hexagon with a cursor tick for Codex, two overlapping rings for Gemini,
+ * a literal π for loombox's own "Oh My Pi" harness, and a bare open ring
+ * for `provider-generic`, the same "deliberately plain" register as
+ * `FALLBACK_ICON_PATHS` for an unrecognized or omitted provider id.
  */
 
 export const ICON_NAMES = [
@@ -54,6 +64,11 @@ export const ICON_NAMES = [
   'pin',
   'close',
   'sidebar-panel',
+  'provider-claude',
+  'provider-codex',
+  'provider-gemini',
+  'provider-ohmypi',
+  'provider-generic',
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -214,4 +229,27 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
     'M18 12 H46 A6 6 0 0 1 52 18 V46 A6 6 0 0 1 46 52 H18 A6 6 0 0 1 12 46 V18 A6 6 0 0 1 18 12 Z',
     'M27 12 V52',
   ],
+
+  // A six-ray starburst through the centre — Claude's gutter glyph
+  // (issue #575). Deliberately abstract, not a copy of the real mark.
+  'provider-claude': ['M32 10 V54', 'M11 21 L53 43', 'M53 21 L11 43'],
+
+  // A hexagon (one bounded unit, the code-block shape) with a short
+  // vertical tick at its centre (a cursor) — Codex's gutter glyph.
+  'provider-codex': ['M32 8 L54 20 V44 L32 56 L10 44 V20 Z', 'M32 26 V38'],
+
+  // Two overlapping rings — "twins" — Gemini's gutter glyph.
+  'provider-gemini': [
+    'M12 32 A12 12 0 1 0 36 32 A12 12 0 1 0 12 32',
+    'M28 32 A12 12 0 1 0 52 32 A12 12 0 1 0 28 32',
+  ],
+
+  // A literal π — loombox's own "Oh My Pi" harness provider's gutter glyph.
+  'provider-ohmypi': ['M14 20 H50', 'M22 20 V48', 'M42 20 V48'],
+
+  // A bare open ring, no inner mark — the deliberately plain glyph for an
+  // unrecognized or omitted provider id, same register as
+  // `FALLBACK_ICON_PATHS` but its own name so a missing/legacy provider id
+  // still reads as "an agent", not as a broken icon reference.
+  'provider-generic': ['M18 32 A14 14 0 1 0 46 32 A14 14 0 1 0 18 32'],
 };

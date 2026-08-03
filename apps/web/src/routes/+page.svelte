@@ -38,6 +38,7 @@
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
+  import { showsAttribution } from '$lib/transcript-attribution';
   import {
     isNarrowViewport,
     TABLET_VIEWPORT_BREAKPOINT_PX,
@@ -2804,7 +2805,7 @@
               onscroll={onTranscriptScroll}
               data-testid="transcript-items"
             >
-              {#each transcript?.items ?? [] as item (item.id)}
+              {#each transcript?.items ?? [] as item, itemIndex (item.id)}
                 <li>
                   {#if item.type === 'message'}
                     <MessageItem
@@ -2814,6 +2815,7 @@
                         : false}
                       turnActive={transcript?.turnActive ?? false}
                       providerId={selectedSession?.provider}
+                      showAttribution={showsAttribution(transcript?.items ?? [], itemIndex)}
                     />
                   {:else}
                     <ToolCallRow
@@ -2864,11 +2866,20 @@
               />
 
               <form class="composer" onsubmit={submitPrompt}>
-                <!-- Design spec v5 §4: the composer is the last entry in the
-                     timeline, not a chat box bolted to the bottom of one. It
-                     takes the same fixed role gutter every transcript item
-                     uses, so the column of role words runs unbroken from the
-                     first turn into the thing you are about to say.
+                <!-- Design spec v6 §3.4 (issue #575): the composer is the
+                     last entry in the timeline, not a chat box bolted to the
+                     bottom of one. It takes the same fixed role gutter every
+                     transcript item uses, so the column runs unbroken from
+                     the first turn into the thing you are about to say — it
+                     no longer paints a caption-case "YOU" to do that (no
+                     transcript row does anymore, see `MessageItem`): the
+                     gutter's own accent bar mirrors exactly what a `user`
+                     transcript row draws on its `.gutter`, and the field's
+                     own bordered `--color-surface-raised` box (below) is
+                     that same row's raised surface. The whole strip stays
+                     `aria-hidden` — the textarea's own `aria-label` is this
+                     row's real accessible name, there never was one on the
+                     word this replaces.
 
                      One strip, not two (Lorenzo's ask, 2026-07-30): the attach
                      trigger, the pickers and the context/cost figures used to
@@ -2877,9 +2888,7 @@
                      that one row under the text, so everything about the turn
                      you are composing reads inside the field's own column. -->
                 <div class="composer-row">
-                  <div class="composer-gutter" aria-hidden="true">
-                    <span class="composer-role">You</span>
-                  </div>
+                  <div class="composer-gutter" aria-hidden="true"></div>
                   <!-- The drop/paste zone wraps the field (see AttachmentBar's
                        doc comment): dropping a file on the textarea, or pasting
                        an image into it, used to do nothing at all. -->
@@ -4443,10 +4452,21 @@
      `cockpit-shell.spec.ts` measures the two against each other now. */
 
   /* Mirrors `MessageItem`'s `.gutter`: same token, same right alignment, same
-     inner padding, so the column of role words runs unbroken from the last turn
-     into the one you are typing. It used to claim "same centring" while
-     actually being `align-items: center` against the transcript's `flex-end`,
-     which put YOU on a different vertical line from every CLAUDE above it. */
+     inner padding, so the column runs unbroken from the last turn into the
+     one you are typing. It used to claim "same centring" while actually
+     being `align-items: center` against the transcript's `flex-end`, which
+     put YOU on a different vertical line from every CLAUDE above it —
+     `cockpit-shell.spec.ts` measures the gutter boxes against each other
+     now, not a role word's bounding box (neither one exists to measure
+     anymore).
+
+     Design spec v6 §3.4 (issue #575): mirrors what a `user` transcript row
+     draws on ITS `.gutter` — no visible word, just the same inset accent
+     bar `.message-item.user .gutter` carries, so "your turn" reads the
+     same way here as it does above. `min-height` matches `MessageItem`'s
+     own copy of this rule: with no text content left, the box would
+     otherwise collapse to nothing and the accent bar would be an
+     unreadable sliver instead of a deliberate short mark. */
   .composer-gutter {
     flex: 0 0 var(--gutter);
     width: var(--gutter);
@@ -4456,28 +4476,20 @@
     gap: var(--space-3xs);
     padding-top: var(--space-3xs);
     padding-right: var(--space-sm);
-  }
-
-  /* Same right-aligned register as `MessageItem`'s `.role-label`, in the
-     composer's own accent (this row IS your turn), so YOU reads as the live end
-     of the same column CLAUDE sits in. */
-  .composer-role {
-    font-size: var(--text-caption-size);
-    line-height: var(--text-caption-line);
-    letter-spacing: var(--text-caption-tracking);
-    font-weight: var(--text-caption-weight);
-    text-transform: uppercase;
-    color: var(--color-accent);
-    text-align: right;
-    white-space: nowrap;
+    min-height: var(--text-body-line);
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
   }
 
   /* Below `--bp-mobile` the transcript's role column collapses and every
-     row's word moves above its content (see `MessageItem`'s own copy of that
-     block for the measurement). The composer is the last row of that same
-     timeline, so YOU moves above the field with the rest of them — leaving it
-     beside the textarea would keep the one indent the whole change exists to
-     remove, on the row where the phone's width matters most. */
+     row's mark moves above its content (see `MessageItem`'s own copy of
+     that block for the measurement and rationale). The composer is the
+     last row of that same timeline, so it collapses the same way — leaving
+     it beside the textarea would keep the one indent the whole change
+     exists to remove, on the row where the phone's width matters most.
+     The accent bar drops too, same "dirt on the screen" reasoning as
+     `MessageItem`'s own `.message-item.user .gutter` override: a 2px
+     thread with no row of content beside it to anchor against reads as a
+     stray mark, not a cue. */
   @media (max-width: 479px) {
     .composer-row {
       flex-direction: column;
@@ -4488,8 +4500,10 @@
     .composer-gutter {
       flex: 0 0 auto;
       width: auto;
+      min-height: 0;
       align-items: flex-start;
       padding-right: 0;
+      box-shadow: none;
     }
   }
 

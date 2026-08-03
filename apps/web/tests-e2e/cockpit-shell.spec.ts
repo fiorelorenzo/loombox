@@ -434,7 +434,7 @@ test.describe('cockpit shell', () => {
     expect(working?.x).toBe(quiet?.x);
   });
 
-  test('the role words in the transcript and in the composer form one unbroken column', async ({
+  test('the transcript gutter and the composer gutter form one unbroken column, with no caption-case role word in either (issue #575)', async ({
     page,
     loombox,
   }) => {
@@ -443,25 +443,134 @@ test.describe('cockpit shell', () => {
       kind: 'agent_message_chunk',
       turnId: 'turn-column',
       messageId: 'msg-column',
-      text: 'One turn, so the transcript has a role word to line up against.',
+      text: 'One turn, so the transcript has a role glyph to line up against.',
     });
 
-    const turn = page.getByTestId('message-item').first().locator('.role-label');
-    const composer = page.locator('.composer-role');
-    await expect(turn).toBeVisible();
-    await expect(composer).toBeVisible();
+    const turnGutter = page.getByTestId('message-item').first().locator('.gutter');
+    const composerGutter = page.locator('.composer-gutter');
+    await expect(turnGutter).toBeVisible();
+    await expect(composerGutter).toBeVisible();
 
-    // The composer's comment claims it "takes the same fixed role gutter every
-    // transcript item uses". It did not: the transcript's gutter is
-    // right-aligned (`CLAUDE` is too wide to centre), the composer's was
-    // `align-items: center`, so YOU sat on a different vertical line from every
-    // agent word above it. Right edges, because that is the edge the alignment
-    // is defined against and it holds for any provider name length.
-    const turnBox = await turn.boundingBox();
-    const composerBox = await composer.boundingBox();
+    // The old test compared the role WORDS' right edges, which lined up
+    // while the column defining them did not (the bug this test used to
+    // catch: `align-items: center` on the composer against `flex-end` on
+    // the transcript). Design spec v6 §3.4 replaced the word with a glyph
+    // (or nothing at all, for a user/composer row), so the column itself —
+    // not whatever happens to be painted inside it — is what has to align
+    // now: the gutter IS the alignment device.
+    const turnBox = await turnGutter.boundingBox();
+    const composerBox = await composerGutter.boundingBox();
     const turnRight = (turnBox?.x ?? 0) + (turnBox?.width ?? 0);
     const composerRight = (composerBox?.x ?? 0) + (composerBox?.width ?? 0);
     expect(Math.abs(turnRight - composerRight)).toBeLessThan(1);
+
+    // Attribution by glyph, not by a caption-case word: the agent turn
+    // carries a decorative provider glyph...
+    const glyph = page.getByTestId('message-item').first().locator('.role-glyph');
+    await expect(glyph).toBeVisible();
+    await expect(glyph).toHaveAttribute('aria-hidden', 'true');
+
+    // ...and the role still reaches assistive tech, just off-screen rather
+    // than painted: a visually-hidden label carries the real text, so
+    // sighted users never see "CLAUDE" or "YOU" spelled out anywhere.
+    const srLabel = page.getByTestId('message-item').first().locator('.sr-only');
+    await expect(srLabel).toHaveText('Claude');
+    // The standard clip-rect `.sr-only` technique keeps a 1x1px box in the
+    // layout on purpose (so it stays reachable/focusable-adjacent for
+    // assistive tech) rather than `display: none`, so Playwright's own
+    // `toBeVisible()` — which only checks for a non-empty box — still calls
+    // it visible. The real, meaningful check is that it paints nothing a
+    // sighted user can perceive: a box clipped down to a single pixel.
+    const srBox = await srLabel.boundingBox();
+    expect(srBox?.width ?? 0).toBeLessThanOrEqual(1);
+    expect(srBox?.height ?? 0).toBeLessThanOrEqual(1);
+
+    // The composer's own gutter stays `aria-hidden` (its accessible name
+    // lives on the textarea instead, same as before) and paints nothing.
+    await expect(composerGutter).toHaveAttribute('aria-hidden', 'true');
+    expect((await composerGutter.textContent())?.trim()).toBe('');
+  });
+
+  test("a screen reader still gets every turn's role even though the gutter no longer paints a caption-case word (issue #575)", async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'agent_message_chunk',
+      turnId: 'turn-a11y',
+      messageId: 'msg-a11y',
+      text: 'Role reaches assistive tech through text, not paint.',
+    });
+
+    // `page.accessibility.snapshot()` no longer exists in this Playwright
+    // version — `Locator.ariaSnapshot()` is its replacement, a YAML dump of
+    // the accessibility tree rooted at the element, real text nodes and
+    // all, so it still proves the role reaches assistive tech even though
+    // nothing about it is visible on screen.
+    const row = page.getByTestId('message-item').first();
+    const snapshot = await row.ariaSnapshot();
+    expect(snapshot).toContain('Claude');
+  });
+
+  test('consecutive turns from the same speaker do not repeat the attribution glyph, but each keeps its own surface (issue #575)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'agent_message_chunk',
+      turnId: 'turn-1',
+      messageId: 'msg-1',
+      text: 'First agent turn.',
+    });
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'agent_message_chunk',
+      turnId: 'turn-2',
+      messageId: 'msg-2',
+      text: 'Second agent turn, same speaker.',
+    });
+
+    const items = page.getByTestId('message-item');
+    await expect(items).toHaveCount(2);
+
+    // First of the run keeps the glyph; the immediate repeat drops it.
+    await expect(items.nth(0).locator('.role-glyph')).toBeVisible();
+    await expect(items.nth(1).locator('.role-glyph')).toHaveCount(0);
+
+    // The accessible label is never suppressed — every turn still
+    // announces its role even when the glyph doesn't repeat.
+    await expect(items.nth(1).locator('.sr-only')).toHaveText('Claude');
+
+    // Each turn keeps its own bounded surface regardless of grouping —
+    // suppressing the glyph groups the run visually, it never merges the
+    // two turns into one block.
+    await expect(items.nth(1)).toHaveClass(/agent/);
+
+    // A user turn afterward breaks the run and gets its own attribution
+    // back (the user role never draws a glyph in the first place — its
+    // accent bar and raised surface already carry it).
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'user_message_chunk',
+      turnId: 'turn-3',
+      messageId: 'msg-3',
+      text: 'A user turn.',
+    });
+    await expect(items).toHaveCount(3);
+    await expect(items.nth(2)).toHaveClass(/user/);
+    await expect(items.nth(2).locator('.role-glyph')).toHaveCount(0);
+    await expect(items.nth(2).locator('.sr-only')).toHaveText('You');
+
+    // And a fourth agent turn right after the user one gets its glyph back
+    // too — the run only resets, it never stays suppressed forever.
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'agent_message_chunk',
+      turnId: 'turn-4',
+      messageId: 'msg-4',
+      text: 'Third agent turn, after a user turn broke the run.',
+    });
+    await expect(items).toHaveCount(4);
+    await expect(items.nth(3).locator('.role-glyph')).toBeVisible();
   });
 
   test('the panel switch opens one panel at a time, and says which one is open', async ({
@@ -568,7 +677,7 @@ test.describe('cockpit shell', () => {
     await seedTurnWithToolCall(loombox);
     await page.setViewportSize({ width: 390, height: 780 });
 
-    const label = page.getByTestId('message-item').first().locator('.role-label');
+    const label = page.getByTestId('message-item').first().locator('.role-glyph');
     const prose = page.getByTestId('message-text').first();
     const toolCard = page.getByTestId('tool-card').first();
     // `.composer-field`, not the textarea inside it - see the desktop
@@ -604,7 +713,7 @@ test.describe('cockpit shell', () => {
     await seedTurnWithToolCall(loombox);
     await page.setViewportSize({ width: 768, height: 900 });
 
-    const label = page.getByTestId('message-item').first().locator('.role-label');
+    const label = page.getByTestId('message-item').first().locator('.role-glyph');
     const prose = page.getByTestId('message-text').first();
     await expect(label).toBeVisible();
     const labelBox = await label.boundingBox();
