@@ -322,7 +322,11 @@ importers:
         specifier: ^3.0.14
         version: 3.0.14(kysely@0.29.3)
 
-  packages/shared: {}
+  packages/shared:
+    dependencies:
+      '@loombox/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/supervisor:
     dependencies:

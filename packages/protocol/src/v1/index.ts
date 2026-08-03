@@ -345,6 +345,15 @@ export {
   targetVersionStatusV1,
 } from './target-lifecycle';
 
+export type { GitHubTarget, JiraTarget, TrackerMode } from './tracker';
+export {
+  githubTarget,
+  jiraTarget,
+  parseTrackerMode,
+  safeParseTrackerMode,
+  trackerMode,
+} from './tracker';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -483,6 +492,7 @@ import {
   targetUpdateResponse,
   targetVersionStatusV1,
 } from './target-lifecycle';
+import { githubTarget, jiraTarget, trackerMode } from './tracker';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -604,4 +614,7 @@ export const schemasV1 = {
   targetVersionStatusV1,
   targetUpdateRequest,
   targetUpdateResponse,
+  githubTarget,
+  jiraTarget,
+  trackerMode,
 } as const;
