@@ -7,27 +7,27 @@
    * component the working-tree diff viewer (§7.4) uses - rather than
    * re-rendering the diff itself.
    *
-   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"), converged onto the shared card language
-   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
-   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
-   * / `BashWidget` / `TodoWidget`) — `DiffViewer` keeps its own nested card
-   * treatment unchanged. Status is a `StatusDot` + short label, never the
-   * raw enum. The header toggles the diff body's expand/collapse,
-   * defaulting open (so a mid-stream/malformed diff still renders — and
-   * can still throw into `ToolCallRow`'s error boundary — exactly as
-   * before).
+   * One level of card chrome (design spec `2026-08-03-cockpit-v6-design.md`
+   * §3.4, issue #576): `DiffViewer` keeps its own raised, bordered card
+   * unchanged — a diff earns its surface — so `ToolCard` renders `surface=
+   * {false}` here rather than wrapping that in a second, redundant bordered
+   * frame. The header row (icon, title, status, disclosure) stays plain
+   * text directly above it. Status renders via the shared
+   * `ToolCallStatus` (a failed edit is louder than a completed one; see
+   * that component's own doc comment). The header toggles the diff body's
+   * expand/collapse, defaulting open (so a mid-stream/malformed diff still
+   * renders — and can still throw into `ToolCallRow`'s error boundary —
+   * exactly as before).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws the shared `tool-edit` glyph next to the title,
    * the same convention `BashWidget`/`TodoWidget` use.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
-  import { TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
   import DiffViewer from '../DiffViewer.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
-  import StatusDot from '../ui/StatusDot.svelte';
   import ToolCard from './ToolCard.svelte';
 
   interface Props {
@@ -39,13 +39,11 @@
   const diff = $derived(item.diff!);
 
   let expanded = $state(true);
-  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
-  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
 </script>
 
 <div class="edit-write-widget" data-testid="edit-write-widget">
   <ToolCallGutter icon="tool-edit" />
-  <ToolCard>
+  <ToolCard surface={false}>
     <button
       type="button"
       class="row-header"
@@ -54,12 +52,7 @@
     >
       <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
       <span class="title">{item.title ?? 'Edit'}</span>
-      {#if statusTone && statusLabel}
-        <span class="status">
-          <StatusDot tone={statusTone} label={statusLabel} size="sm" />
-          <span class="status-label" aria-hidden="true">{statusLabel}</span>
-        </span>
-      {/if}
+      <ToolCallStatus status={item.status} />
     </button>
     {#if expanded}
       <div class="body">
@@ -116,19 +109,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-    font-weight: 400;
-  }
-
-  .status-label {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
   }
 
   .body {

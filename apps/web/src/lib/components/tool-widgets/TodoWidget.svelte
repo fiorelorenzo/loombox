@@ -5,15 +5,17 @@
    * (`$lib/tool-widgets.ts`'s `isTodoInput`) since ACP carries no tool-name
    * field to match on directly.
    *
-   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"), converged onto the shared card language
-   * by design spec v5 §4: the outer frame is now `ToolCallGutter` plus a
-   * `ToolCard`, the same shape every tool-call widget uses (`GenericToolRow`
-   * / `BashWidget` / `EditWriteWidget`). Status is a `StatusDot` + short
-   * label, never the raw enum. The header toggles the checklist body's
-   * expand/collapse, defaulting open. The per-entry ☑/☐ marks are
-   * unaffected (out of this pass's scope, matching `PlanCard`'s identical,
-   * untouched marker convention).
+   * One level of card chrome (design spec `2026-08-03-cockpit-v6-design.md`
+   * §3.4, issue #576): unlike `BashWidget`/`EditWriteWidget`, the checklist
+   * body has no surface of its own to defer to, so `ToolCard` renders
+   * `surface={true}` here — this is the one bespoke widget that keeps the
+   * v5 bordered-card treatment, because dropping it would leave a
+   * multi-line checklist with no definition at all. Status renders via the
+   * shared `ToolCallStatus` (a failed run is louder than a completed one;
+   * see that component's own doc comment). The header toggles the
+   * checklist body's expand/collapse, defaulting open. The per-entry ☑/☐
+   * marks are unaffected (out of this pass's scope, matching `PlanCard`'s
+   * identical, untouched marker convention).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws a shared glyph next to the title, same
@@ -24,11 +26,11 @@
    * follow-up for whoever next touches the icon set.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
-  import { isTodoInput, TOOL_CALL_STATUS_LABELS, TOOL_CALL_STATUS_TONES } from '$lib/tool-widgets';
+  import { isTodoInput } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
-  import StatusDot from '../ui/StatusDot.svelte';
   import ToolCard from './ToolCard.svelte';
 
   interface Props {
@@ -41,13 +43,11 @@
   const copyText = $derived(todos.map((todo) => `[${todo.status}] ${todo.content}`).join('\n'));
 
   let expanded = $state(true);
-  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
-  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
 </script>
 
 <div class="todo-widget" data-testid="todo-widget">
   <ToolCallGutter icon="tool-generic" />
-  <ToolCard>
+  <ToolCard surface={true}>
     <div class="header-line">
       <button
         type="button"
@@ -57,12 +57,7 @@
       >
         <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
         <span class="title">Todo list</span>
-        {#if statusTone && statusLabel}
-          <span class="status">
-            <StatusDot tone={statusTone} label={statusLabel} size="sm" />
-            <span class="status-label" aria-hidden="true">{statusLabel}</span>
-          </span>
-        {/if}
+        <ToolCallStatus status={item.status} />
       </button>
       <div class="copy-row">
         <CopyButton text={copyText} label="Copy todo list" revealOnHover />
@@ -133,19 +128,6 @@
   .title {
     flex: 1;
     font-weight: 600;
-  }
-
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-    font-weight: 400;
-  }
-
-  .status-label {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
   }
 
   .copy-row {

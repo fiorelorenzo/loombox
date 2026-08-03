@@ -7,47 +7,65 @@
    * (`$lib/tool-widgets.ts`'s `resolveToolWidgetKind`), so this component
    * itself never needs to know about the bespoke tier.
    *
-   * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
-   * §3.4 "One tool-call anatomy"), converged onto the shared card language
-   * by design spec v5 §4: `[ToolCallGutter] ToolCard[ title … status ]`,
-   * the same shape every tool-call widget uses now (`BashWidget` /
-   * `EditWriteWidget` / `TodoWidget`) — no visible kind chip (the old
-   * uppercase `toolKind` badge is gone; the kind lives as the gutter icon
-   * plus an `sr-only` label, same discipline as `MessageItem`'s role), and
-   * status is a `StatusDot` + short human label (`$lib/tool-widgets.ts`'s
-   * `TOOL_CALL_STATUS_TONES`/`_LABELS`) rather than the raw enum as grey
-   * body text. The row header toggles an expand/collapse of its own body
-   * (defaulting open, so replayed history reads exactly as before).
+   * One line vs. a block (design spec `2026-08-03-cockpit-v6-design.md`
+   * §3.4, issue #576): a payload that is a single line — a lone path, a
+   * short command, one key/value pair — folds directly onto the header
+   * line instead of opening a second row underneath it, and `ToolCard`
+   * renders `surface={false}` so there is no card at all, just the row.
+   * `resolvePayload` below is the one place that decides "one line or a
+   * block", from the payload's own shape (does it contain a newline, does
+   * it carry more than one entry) — every render path funnels through it
+   * rather than each branch reinventing the boundary. A path payload that
+   * merely repeats what the title already says (`Read apps/web/foo.ts`
+   * whose `rawInput.file_path` is that exact same string) is dropped
+   * entirely rather than rendered a second time — the title already said
+   * it once. A payload that genuinely needs more than one line (multi-line
+   * command output, a multi-key `rawInput`) still gets the one surviving
+   * level of card chrome, via `ToolCard`'s own `surface={true}`.
+   *
+   * Collapsing the row always drops back to a single line regardless of
+   * which shape the payload is: the header (icon, title, status) is the
+   * one thing that's never optional.
+   *
+   * Status is a `StatusDot` + short label via the shared `ToolCallStatus`
+   * (a failed call is louder than a completed one; see that component's
+   * own doc comment) rather than the raw enum as grey body text.
    *
    * `rawInput`/`content` never render as a raw `JSON.stringify` blob
    * (defect C7 / acceptance #4): when the call has already produced
-   * `content`, that renders as preformatted text as before
-   * (`toolCallOutputText`); before it has (the common "still just an
-   * argument object" case, e.g. `read`/`search`), `rawInput` goes through
-   * `$lib/tool-widgets.ts`'s shared `classifyRawInput` — the same
-   * registry `PermissionCard` uses for its own rawInput fallback — which
-   * renders a command line, a lone path, or a formatted key/value list
-   * (keys in `--font-mono`, muted; values readable), never braces/quotes.
+   * `content`, that renders as text (`toolCallOutputText`); before it has
+   * (the common "still just an argument object" case, e.g. `read`/
+   * `search`), `rawInput` goes through `$lib/tool-widgets.ts`'s shared
+   * `classifyRawInput` — the same registry `PermissionCard` uses for its
+   * own rawInput fallback — which renders a command line, a lone path, or
+   * a formatted key/value list (keys in `--font-mono`, muted; values
+   * readable), never braces/quotes.
+   *
+   * Tool output is deliberately NOT routed through `$lib/markdown.ts`
+   * (issue #574): that pipeline renders prose, and stdout/grep-hit/file
+   * text is not prose — a log line starting `# ` or `- ` is not a heading
+   * or a list item, and parsing it as one would corrupt exactly the
+   * content this row exists to show verbatim. It stays plain, pre-
+   * formatted text, same as before.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
-   * #468): every tool call that lands here (tier-2, no bespoke widget) is by
-   * definition the "any other tool" case, so it always draws the shared
-   * `tool-generic` glyph via `ToolCallGutter` — decorative, the kind is
-   * carried by the `sr-only` label right beside it.
+   * #468): every tool call that lands here (tier-2, no bespoke widget) is
+   * by definition the "any other tool" case, so it always draws the
+   * shared `tool-generic` glyph via `ToolCallGutter` — decorative, the
+   * kind is carried by the `sr-only` label right beside it.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import {
     classifyRawInput,
     toolCallOutputText,
-    TOOL_CALL_STATUS_LABELS,
-    TOOL_CALL_STATUS_TONES,
+    type RawInputEntry,
     type RawInputRender,
   } from '$lib/tool-widgets';
   import CopyButton from './CopyButton.svelte';
   import Icon from './icons/Icon.svelte';
   import ToolCallGutter from './ToolCallGutter.svelte';
+  import ToolCallStatus from './ToolCallStatus.svelte';
   import ToolCard from './tool-widgets/ToolCard.svelte';
-  import StatusDot from './ui/StatusDot.svelte';
 
   interface Props {
     item: TranscriptToolCallItem;
@@ -57,12 +75,48 @@
 
   let expanded = $state(true);
 
+  const titleText = $derived(item.title ?? item.id);
   const hasContent = $derived(item.content !== undefined);
   const outputText = $derived(hasContent ? toolCallOutputText(item.content) : '');
   const rawInputPreview = $derived(hasContent ? undefined : classifyRawInput(item.rawInput));
 
-  const statusTone = $derived(item.status ? TOOL_CALL_STATUS_TONES[item.status] : undefined);
-  const statusLabel = $derived(item.status ? TOOL_CALL_STATUS_LABELS[item.status] : undefined);
+  type Payload =
+    | { kind: 'none' }
+    | { kind: 'text'; text: string; block: boolean }
+    | { kind: 'command'; command: string; block: boolean }
+    | { kind: 'path'; path: string; block: false }
+    | { kind: 'kv'; entries: RawInputEntry[]; block: boolean };
+
+  /** The one place that decides "one line or a block" (see the file doc comment). */
+  function resolvePayload(
+    hasOutput: boolean,
+    output: string,
+    preview: RawInputRender | undefined,
+    title: string,
+  ): Payload {
+    if (hasOutput) {
+      if (!output) return { kind: 'none' };
+      return { kind: 'text', text: output, block: output.includes('\n') };
+    }
+    if (!preview) return { kind: 'none' };
+    if (preview.kind === 'command') {
+      const { command } = preview;
+      const block = command.includes('\n');
+      if (!block && title.endsWith(command)) return { kind: 'none' };
+      return { kind: 'command', command, block };
+    }
+    if (preview.kind === 'path') {
+      const { path } = preview;
+      return title.endsWith(path) ? { kind: 'none' } : { kind: 'path', path, block: false };
+    }
+    if (preview.entries.length === 0) return { kind: 'none' };
+    return { kind: 'kv', entries: preview.entries, block: preview.entries.length > 1 };
+  }
+
+  const payload = $derived(resolvePayload(hasContent, outputText, rawInputPreview, titleText));
+  const isBlock = $derived(payload.kind !== 'none' && payload.block);
+  const showInline = $derived(expanded && payload.kind !== 'none' && !isBlock);
+  const showBlock = $derived(expanded && isBlock);
 
   function rawInputCopyText(preview: RawInputRender | undefined): string {
     if (!preview) return '';
@@ -84,7 +138,7 @@
   data-testid="generic-tool-row"
 >
   <ToolCallGutter icon="tool-generic" />
-  <ToolCard>
+  <ToolCard surface={showBlock}>
     <div class="header-line">
       <button
         type="button"
@@ -94,13 +148,28 @@
       >
         <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
         <span class="sr-only">{item.toolKind ?? 'other'}</span>
-        <span class="title">{item.title ?? item.id}</span>
-        {#if statusTone && statusLabel}
-          <span class="status">
-            <StatusDot tone={statusTone} label={statusLabel} size="sm" />
-            <span class="status-label" aria-hidden="true">{statusLabel}</span>
-          </span>
-        {/if}
+        <span class="title-line">
+          <span class="title">{item.title ?? item.id}</span>
+          {#if showInline}
+            <span class="inline-payload">
+              {#if payload.kind === 'text'}
+                <code>{payload.text}</code>
+              {:else if payload.kind === 'command'}
+                <code>$ {payload.command}</code>
+              {:else if payload.kind === 'path'}
+                <code>{payload.path}</code>
+              {:else if payload.kind === 'kv'}
+                {#each payload.entries as entry (entry.key)}
+                  <span class="inline-entry">
+                    <span class="inline-key">{entry.key}</span>
+                    <span class="inline-value">{entry.value}</span>
+                  </span>
+                {/each}
+              {/if}
+            </span>
+          {/if}
+        </span>
+        <ToolCallStatus status={item.status} />
       </button>
       <div class="copy-row">
         <CopyButton
@@ -110,29 +179,23 @@
         />
       </div>
     </div>
-    {#if expanded}
-      {#if hasContent && outputText}
-        <div class="body">
-          <pre class="output">{outputText}</pre>
-        </div>
-      {:else if !hasContent && rawInputPreview}
-        <div class="body">
-          {#if rawInputPreview.kind === 'command'}
-            <code class="command-line">$ {rawInputPreview.command}</code>
-          {:else if rawInputPreview.kind === 'path'}
-            <code class="path">{rawInputPreview.path}</code>
-          {:else}
-            <dl class="entries">
-              {#each rawInputPreview.entries as entry (entry.key)}
-                <div class="entry">
-                  <dt class="entry-key font-mono">{entry.key}</dt>
-                  <dd class="entry-value">{entry.value}</dd>
-                </div>
-              {/each}
-            </dl>
-          {/if}
-        </div>
-      {/if}
+    {#if showBlock}
+      <div class="body">
+        {#if payload.kind === 'text'}
+          <pre class="output">{payload.text}</pre>
+        {:else if payload.kind === 'command'}
+          <code class="command-line">$ {payload.command}</code>
+        {:else if payload.kind === 'kv'}
+          <dl class="entries">
+            {#each payload.entries as entry (entry.key)}
+              <div class="entry">
+                <dt class="entry-key font-mono">{entry.key}</dt>
+                <dd class="entry-value">{entry.value}</dd>
+              </div>
+            {/each}
+          </dl>
+        {/if}
+      </div>
     {/if}
   </ToolCard>
 </div>
@@ -187,24 +250,58 @@
     transform: rotate(-90deg);
   }
 
-  .title {
+  /* Holds the title and, when the payload is a single line, that payload
+     right beside it — the pair that must fit on one line together, so this
+     is the flex-growing element, not `.title` alone (issue #576). */
+  .title-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-xs);
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .title {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
+  .inline-payload {
+    display: flex;
+    gap: var(--space-sm);
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
-  .status-label {
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
+  .inline-payload code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .inline-entry {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2xs);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .inline-key {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+  }
+
+  .inline-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .copy-row {
@@ -224,23 +321,20 @@
     min-width: 0;
   }
 
+  /* No separate inset surface here (issue #576): `ToolCard`'s own border
+     is the block's one level of chrome now, so this is plain text laid
+     directly inside its padding rather than a second `--color-fill-subtle`
+     box. */
   .output {
     margin: 0;
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--color-fill-subtle);
-    border-radius: var(--radius-md);
     overflow-x: auto;
     white-space: pre-wrap;
     font-size: var(--text-small-size);
   }
 
-  .command-line,
-  .path {
+  .command-line {
     display: block;
     margin: 0;
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--color-fill-subtle);
-    border-radius: var(--radius-md);
     overflow-x: auto;
     white-space: pre;
   }
