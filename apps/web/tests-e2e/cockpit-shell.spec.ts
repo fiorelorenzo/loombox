@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import {
   announceSession,
@@ -230,10 +231,7 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('composer-input')).toBeVisible();
   });
 
-  test('the composer reads as the last entry in the timeline, not a chat box', async ({
-    page,
-    loombox,
-  }) => {
+  test('the composer reads as a field, at rest and focused', async ({ page, loombox }) => {
     await gotoCockpit(page, loombox);
     await page.getByTestId('session-row-item').first().click();
     const input = page.getByTestId('composer-input');
@@ -246,20 +244,65 @@ test.describe('cockpit shell', () => {
     expect(hintId).toBeTruthy();
     await expect(page.locator(`#${hintId}`)).toContainText('Enter');
 
-    // The two things that made this a chat widget: a rounded pill and a
-    // filled surface of its own. Both gone - the composer draws no box at all.
-    const row = page.locator('.composer-row');
-    const radius = await row.evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
-    expect(radius).toBe('0px');
+    // Issue #577 / design spec §3.5: the composer is a real field now - a
+    // border, `--color-surface-raised`, `--radius-md` and real padding, the
+    // same vocabulary `ui/TextArea` gives the inbox reply box and the New
+    // Session dialog fields. The chrome lives on `.composer-field`, not on
+    // `.composer-row` (that row stays bare so the role gutter above still
+    // lines up with the transcript's).
+    const field = page.locator('.composer-field');
+    const radiusToken = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--radius-md').trim(),
+    );
+    const atRest = await field.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        borderWidth: style.borderTopWidth,
+        borderRadius: style.borderTopLeftRadius,
+        background: style.backgroundColor,
+        padding: style.paddingTop,
+        outlineWidth: style.outlineWidth,
+      };
+    });
+    expect(atRest.borderWidth).not.toBe('0px');
+    expect(atRest.borderRadius).toBe(radiusToken);
+    expect(atRest.padding).not.toBe('0px');
+    // Transparent would mean this box is drawn over the page's own surface
+    // rather than sitting on its own raised one.
+    expect(atRest.background).not.toBe('rgba(0, 0, 0, 0)');
+    // No ring while nothing inside the field has focus.
+    expect(atRest.outlineWidth).toBe('0px');
 
-    // What separates the composer from the transcript is one hairline across
-    // the whole docked strip (plan, queued prompts, permissions, composer),
-    // drawn once on the footer rather than per element - otherwise each of
-    // those reads as a stray transcript item that fell to the bottom.
+    // What separates the composer from the transcript above it is still one
+    // hairline across the whole docked strip (plan, queued prompts,
+    // permissions, composer), drawn once on the footer rather than per
+    // element - otherwise each of those reads as a stray transcript item
+    // that fell to the bottom.
     const footerBorder = await page
       .locator('.canvas-footer')
       .evaluate((el) => getComputedStyle(el).borderTopWidth);
     expect(footerBorder).not.toBe('0px');
+
+    // C2 (issue #577): at-rest and focused screenshots used to be
+    // byte-identical (md5 match) because no `:focus-within` rule existed
+    // anywhere in the file. Prove the fix the same way the audit proved the
+    // bug: hash both states and show they now differ. `.focus()` reaches the
+    // textarea the way Tab would, with no pointer involved - keyboard focus
+    // being visible is the WCAG 2.4.7 contract this issue is about.
+    const restShot = await field.screenshot();
+    const restHash = createHash('md5').update(restShot).digest('hex');
+
+    const focusRingWidth = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-width').trim(),
+    );
+    await input.focus();
+    await expect(field).toHaveCSS('outline-width', focusRingWidth);
+    const focusedOutlineColor = await field.evaluate((el) => getComputedStyle(el).outlineColor);
+    expect(focusedOutlineColor).not.toBe('rgba(0, 0, 0, 0)');
+
+    const focusShot = await field.screenshot();
+    const focusHash = createHash('md5').update(focusShot).digest('hex');
+    expect(focusHash).not.toBe(restHash);
 
     // Same role column the transcript runs, so it does not restart at the
     // composer. Compared against the shared `--gutter` token rather than
