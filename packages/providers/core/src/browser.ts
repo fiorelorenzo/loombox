@@ -48,6 +48,7 @@ export type {
 } from './types';
 export {
   ancestorChainForToolCall,
+  CONTEXT_NEAR_LIMIT_THRESHOLD,
   createTranscriptState,
   reduceSessionEvent,
   reduceTranscript,

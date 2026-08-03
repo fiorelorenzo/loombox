@@ -98,9 +98,36 @@
    * `ariaChecked`/`tabindex`/`onkeydown` props for this rather than a
    * hand-rolled `<button>` here, so the segmented-control idiom stays one
    * shared primitive.
+   *
+   * Usage-meter correctness (SPEC §7.9, issue #248): this bar's meter IS
+   * §7.9's per-session usage meter — the composer never had a second one,
+   * so this issue fixes what already sits here rather than adding a new
+   * surface beside it. Three real bugs fixed underneath it, none visible
+   * from this file's own diff: (1) `packages/providers/core/src/client.ts`
+   * was reading a raw wire `usage_update` for field names
+   * (`tokensUsed`/`contextWindow`/`costUsd`) that don't exist on ACP's real
+   * `{used, size, cost}` shape, so the meter never actually populated
+   * against a real agent; (2) the reducer let a subagent's own (much
+   * smaller) numbers overwrite the parent's before this file's own
+   * `attributedToSubagent` guard hid them, which just traded "the meter
+   * shows the wrong number" for "the meter shows nothing" — genuinely fixed
+   * now means `usage.tokensUsed`/`contextWindow` are ALREADY parent-only by
+   * the time they reach this component, so the guard is gone, not
+   * relocated; (3) `cumulativeCostUsd` summed each event's cost as a delta,
+   * but ACP documents `cost.amount` as the session's running total already,
+   * so summing double-counted every event after the first. This file's own
+   * addition is the near-limit warning: `isNearLimit`, gated on the
+   * exported `CONTEXT_NEAR_LIMIT_THRESHOLD` (`transcript.ts`) so a future
+   * consumer (issue #250's inbox surfacing) shares the same number, plus a
+   * `.sr-only` span carrying it to assistive tech (the track itself stays
+   * `aria-hidden`, unreachable without hovering `title`).
    */
   import { tick } from 'svelte';
-  import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core/browser';
+  import {
+    CONTEXT_NEAR_LIMIT_THRESHOLD,
+    type AcpConfigOption,
+    type UsageRecord,
+  } from '@loombox/providers-core/browser';
   import { PROVIDER_LABELS } from '$lib/providers';
   import Button from './ui/Button.svelte';
   import Select from './ui/Select.svelte';
@@ -138,30 +165,45 @@
     providerId ? (PROVIDER_LABELS[providerId]?.name ?? providerId) : undefined,
   );
 
-  // §7.9/§16: the live percentage meter excludes usage attributable to a
-  // subagent tool call; the cumulative cost figure never does (folded in
-  // regardless by the reducer itself, `transcript.ts`'s `reduceUsage`).
+  // §7.9/§16: `usage.tokensUsed`/`usage.contextWindow` are ALREADY the
+  // parent-only, subagent-free numbers by the time they reach this
+  // component — `transcript.ts`'s `reduceUsage` freezes them during a
+  // subagent-attributed update rather than adopting the subagent's own
+  // (much smaller) window, specifically so no consumer here needs its own
+  // `attributedToSubagent` guard. An earlier version of this component DID
+  // gate on that flag directly, which meant a subagent update blanked the
+  // percentage instead of bouncing it to the wrong number — still a bounce,
+  // just to nothing instead of a lie. `usage.costUsd` (the raw per-event
+  // figure) is unused here on purpose; `cumulativeCostUsd` below is the one
+  // the meter shows, and it always includes subagent spend (SPEC.md §7.9).
   const contextPercent = $derived(
-    usage && !usage.attributedToSubagent && usage.tokensUsed !== undefined && usage.contextWindow
+    usage && usage.tokensUsed !== undefined && usage.contextWindow
       ? Math.min(100, Math.round((usage.tokensUsed / usage.contextWindow) * 100))
       : undefined,
   );
 
-  /** The context figures behind the meter, present only when the same §7.9 guard `contextPercent` applies holds — a used count with no window to measure it against is noise, not information. */
+  /** The context figures behind the meter, present only when `contextPercent` is — a used count with no window to measure it against is noise, not information. */
   const contextTokens = $derived(
     contextPercent !== undefined && usage?.tokensUsed !== undefined && usage.contextWindow
       ? { used: usage.tokensUsed, max: usage.contextWindow }
       : undefined,
   );
 
+  /** SPEC.md §7.9's near-context-limit warning — see `CONTEXT_NEAR_LIMIT_THRESHOLD`'s own doc comment (`transcript.ts`) for why 80, not a rounder-looking 90. */
+  const isNearLimit = $derived(
+    contextPercent !== undefined && contextPercent >= CONTEXT_NEAR_LIMIT_THRESHOLD,
+  );
+
   // Bullet 2 of the v3 Controls slice: a clear, hoverable explanation of
   // both meter figures — the percentage is turn-scoped and subagent-free,
   // the cost is the whole session and always includes subagent spend
   // (see the `contextPercent` comment above). It is also where the
-  // percentage is stated in words now that the track carries it visually.
+  // percentage is stated in words now that the track carries it visually,
+  // and where the near-limit warning reaches anyone hovering rather than
+  // reading the color.
   const meterTitle = $derived(
     contextTokens
-      ? `${contextPercent}% of the context window used this turn (${contextTokens.used.toLocaleString('en-US')} of ${contextTokens.max.toLocaleString('en-US')} tokens) · $${cumulativeCostUsd.toFixed(2)} spent this session`
+      ? `${contextPercent}% of the context window used this turn${isNearLimit ? ' — nearly full' : ''} (${contextTokens.used.toLocaleString('en-US')} of ${contextTokens.max.toLocaleString('en-US')} tokens) · $${cumulativeCostUsd.toFixed(2)} spent this session`
       : `$${cumulativeCostUsd.toFixed(2)} spent this session`,
   );
 
@@ -281,10 +323,12 @@
     {#if contextTokens}
       <!-- The track is the percentage; the numbers are the absolutes. Hidden
            from the accessibility tree because it re-states, in pixels, what
-           the figures beside it and the `title` already say in words. -->
+           the figures beside it and the `title` already say in words. The
+           near-limit warning itself still reaches assistive tech — see the
+           `.sr-only` span below, which doesn't depend on hover. -->
       <span
         class="track"
-        class:high={contextPercent !== undefined && contextPercent >= 80}
+        class:high={isNearLimit}
         class:full={contextPercent !== undefined && contextPercent >= 95}
         data-testid="context-track"
         data-fill={contextPercent}
@@ -298,6 +342,11 @@
         <span class="meter-max">{formatTokens(contextTokens.max)}</span>
       {/if}
       <span class="meter-sep" aria-hidden="true">·</span>
+      {#if isNearLimit}
+        <span class="sr-only" data-testid="context-warning"
+          >Context window nearly full, {contextPercent}% used</span
+        >
+      {/if}
     {/if}
     <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
   </div>
@@ -414,10 +463,32 @@
     transition: width var(--duration-base) var(--ease-beat);
   }
 
-  /* Amber approaching the wall, red at it: the two points where what you do
-     next changes (wrap up the turn / expect a compaction). */
+  /* Amber at CONTEXT_NEAR_LIMIT_THRESHOLD (80%, `transcript.ts`, issue
+     #248): the point where what you do next changes (wrap up the turn, or
+     intervene) — see that constant's own doc comment for why 80, grounded
+     against real auto-compaction thresholds rather than picked for looking
+     round. Red at 95%, a second, more urgent tier: by then even the most
+     conservative of those same real thresholds has likely already fired, so
+     this is "expect a compaction any moment," not a second warning level of
+     the same kind. */
   .track.high .track-fill {
     background: var(--color-warning);
+  }
+
+  .track.full .track-fill {
+    background: var(--color-danger);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .track.full .track-fill {

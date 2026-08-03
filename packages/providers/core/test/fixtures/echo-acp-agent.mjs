@@ -5,7 +5,9 @@
 // newline-delimited JSON on stdio). It is NOT a real agent: it replies to
 // `initialize` and `session/new`, and on `session/prompt` streams two
 // `agent_message_chunk` `session/update` notifications (same messageId) for
-// "Hello" then " world", replies with `stopReason: "end_turn"`, and then
+// "Hello" then " world", then one `usage_update` notification (real ACP
+// field names — `used`/`size`/`cost`, issue #248), replies with
+// `stopReason: "end_turn"`, and then
 // stays alive listening for more requests, exactly like a real long-lived
 // ACP agent process would.
 //
@@ -84,6 +86,23 @@ rl.on('line', (line) => {
           sessionUpdate: 'agent_message_chunk',
           messageId,
           content: { type: 'text', text: ' world' },
+        },
+      },
+    });
+    // Real ACP wire shape (issue #248): `used`/`size`/`cost.amount`, NOT
+    // `tokensUsed`/`contextWindow`/`costUsd` — see client.ts's
+    // `RawSessionUpdate`/`mapToTranscriptUpdate` for the field names this
+    // guards against silently regressing back to.
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'usage_update',
+          used: 1234,
+          size: 200000,
+          cost: { amount: 0.05, currency: 'USD' },
         },
       },
     });

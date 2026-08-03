@@ -51,21 +51,63 @@ export interface TranscriptToolCallItem {
 
 export type TranscriptItem = TranscriptMessageItem | TranscriptToolCallItem;
 
+/**
+ * SPEC.md §7.9's live percentage meter warns once context fill crosses this
+ * threshold. Not a round number picked for its own sake: real-world
+ * auto-compaction thresholds on ACP-speaking agents cluster between roughly
+ * 80% and 95% of the window (Claude Code's own default is reported anywhere
+ * from ~80% to ~95% depending on source/version, with an internal cap around
+ * 83% — see the PR description for the sources) — 80 sits at the LOW end of
+ * that range, so the warning fires before the EARLIEST point any of them
+ * might silently compact, giving the user the most lead time to act (wrap up
+ * the turn, or intervene) rather than being surprised by a summary later.
+ * Exported so a future consumer (e.g. issue #250's inbox surfacing) reuses
+ * this exact number instead of picking its own.
+ */
+export const CONTEXT_NEAR_LIMIT_THRESHOLD = 80;
+
 export interface UsageRecord {
   sessionId: string;
+  /** Tokens currently in context, per the last update this session's live percentage meter trusts — see `attributedToSubagent`. */
   tokensUsed: number | undefined;
   contextWindow: number | undefined;
+  /** The latest reported `cost.amount`, regardless of attribution — always folded into `TranscriptState.cumulativeCostUsd`, see `reduceUsage`. */
   costUsd: number | undefined;
   /**
-   * A client-side heuristic, NOT a protocol guarantee (SPEC.md §16:
-   * "usage_update is session-level (no per-tool attribution) — subagent-
-   * exclusion is a client-side heuristic, flag it"). True when this
+   * A CLIENT-SIDE HEURISTIC, not a protocol guarantee (SPEC.md §16: ACP's
+   * own `usage_update` is flat and session-level — `{used, size, cost}`,
+   * agentclientprotocol.com/protocol/v1/schema's `UsageUpdate` — with no
+   * field linking it to any tool call at all). True when the *most recent*
    * usage_update was reduced while a nested tool call (one with a
    * `parentToolCallId`) was still `pending`/`in_progress` in this session's
-   * transcript, on the reasoning that the usage being reported mid-flight is
-   * most likely the subagent's own. A later UI should exclude a `true`
-   * record from the live context-fill percentage meter, while still folding
-   * its cost into `TranscriptState.cumulativeCostUsd` (SPEC.md §7.9).
+   * transcript, on the reasoning that a subagent invocation shows up as
+   * exactly that shape (Claude Code's `_meta.claudeCode.parentToolUseId`,
+   * promoted by `enrich()`) and the usage reported while it's running is
+   * most likely the subagent's own, much smaller, context window rather
+   * than the parent's.
+   *
+   * What it keys on: ONLY tool-call in-flight state, correlated by TIMING —
+   * nothing on the wire event itself names a tool call. How it fails:
+   *  - Out-of-order delivery: if the subagent's own `tool_call` hasn't been
+   *    reduced yet when its `usage_update` arrives, this reads `false` and
+   *    the subagent's smaller numbers leak into the parent's percentage for
+   *    one update — the exact bug this heuristic exists to avoid, just not
+   *    perfectly closed.
+   *  - A genuine parent-turn usage_update that happens to arrive while an
+   *    unrelated nested tool call is still open reads `true` and gets
+   *    wrongly suppressed — the percentage lags behind real parent-context
+   *    growth until that unrelated nested call settles.
+   *  - It assumes ACP-visible nesting is the only source of "someone else
+   *    is spending in this session": a provider that runs a subagent
+   *    entirely inside one tool-call invocation, with no separate
+   *    ACP-visible child call, is invisible to it.
+   *
+   * When true, `tokensUsed`/`contextWindow` on THIS record are carried over
+   * UNCHANGED from the last `false` record (frozen) rather than the numbers
+   * this update reported — see `reduceUsage`. `costUsd` is NEVER frozen: it
+   * always reflects the newest report, folded into
+   * `TranscriptState.cumulativeCostUsd` regardless of this flag (SPEC.md
+   * §7.9: "still included in the cumulative cost figure").
    */
   attributedToSubagent: boolean;
 }
@@ -77,7 +119,7 @@ export interface TranscriptState {
   plan: AcpPlanEntry[];
   /** The latest `usage_update` seen for this session, if any. */
   usage: UsageRecord | undefined;
-  /** Running total of every `usage_update.costUsd` seen, regardless of subagent attribution (SPEC.md §7.9). */
+  /** The session's latest cumulative-cost figure, derived from every `usage_update.cost` seen (SPEC.md §7.9) — see `reduceUsage` for why this is a running max, not a sum, and why it is never gated on subagent attribution. */
   cumulativeCostUsd: number;
   /** This session's latest pushed status, if any `session_status` event has arrived yet (SPEC.md §7.13/§7.24; issue #126). */
   status: AcpSessionStatus | undefined;
@@ -191,8 +233,8 @@ function reducePlan(state: TranscriptState, update: AcpPlanUpdate): TranscriptSt
 /**
  * The subagent-attribution heuristic (SPEC.md §16/§7.9): true while any
  * tool call carrying a `parentToolCallId` is still `pending`/`in_progress`.
- * Documented as a heuristic, not a protocol guarantee, because ACP's
- * `usage_update` itself carries no tool-call linkage.
+ * Full detail — what it keys on and how it fails — lives on
+ * `UsageRecord.attributedToSubagent`, which this feeds.
  */
 function hasActiveNestedToolCall(items: readonly TranscriptItem[]): boolean {
   return items.some(
@@ -204,18 +246,41 @@ function hasActiveNestedToolCall(items: readonly TranscriptItem[]): boolean {
 }
 
 function reduceUsage(state: TranscriptState, update: AcpUsageUpdate): TranscriptState {
+  const attributedToSubagent = hasActiveNestedToolCall(state.items);
+  const previous = state.usage;
+
+  // §7.9/§16: a subagent-attributed update is excluded from the parent's
+  // context-fill *percentage* by FREEZING tokensUsed/contextWindow at the
+  // last non-subagent record, rather than adopting the subagent's own
+  // (much smaller) numbers and relying on a UI-side guard to hide them —
+  // that earlier shape just traded "the meter bounces to the wrong number"
+  // for "the meter bounces to blank," which is still a bounce. Freezing
+  // here, once, means every consumer of `state.usage` sees a stable figure
+  // with no guard of its own to get wrong.
   const usage: UsageRecord = {
     sessionId: update.sessionId,
-    tokensUsed: update.tokensUsed,
-    contextWindow: update.contextWindow,
+    tokensUsed: attributedToSubagent ? previous?.tokensUsed : update.tokensUsed,
+    contextWindow: attributedToSubagent ? previous?.contextWindow : update.contextWindow,
     costUsd: update.costUsd,
-    attributedToSubagent: hasActiveNestedToolCall(state.items),
+    attributedToSubagent,
   };
-  return {
-    ...state,
-    usage,
-    cumulativeCostUsd: state.cumulativeCostUsd + (update.costUsd ?? 0),
-  };
+
+  // ACP's `cost.amount` is documented as "Total cumulative cost for
+  // session" (agentclientprotocol.com/protocol/v1/schema's Cost type) — a
+  // running total the agent itself reports, not a per-update delta — so
+  // this takes the latest figure rather than summing one (summing would
+  // double-count every update after the first). Deliberately NOT gated on
+  // `attributedToSubagent`: a subagent tool call spends against the same
+  // session, and the agent's own cumulative total already reflects that
+  // spend (SPEC.md §7.9: "still included in the cumulative cost figure").
+  // `Math.max` only guards against an out-of-order delivery ever making the
+  // figure visibly shrink.
+  const cumulativeCostUsd =
+    update.costUsd === undefined
+      ? state.cumulativeCostUsd
+      : Math.max(state.cumulativeCostUsd, update.costUsd);
+
+  return { ...state, usage, cumulativeCostUsd };
 }
 
 /**

@@ -94,9 +94,20 @@ interface RawSessionUpdate {
   parentToolCallId?: string;
   locations?: unknown;
   entries?: AcpPlanEntry[];
-  tokensUsed?: number;
-  contextWindow?: number;
-  costUsd?: number;
+  // usage_update (issue #248): ACP's real wire shape is `{used, size, cost}`
+  // (agentclientprotocol.com/protocol/v1/schema's `UsageUpdate`/`Cost`
+  // types) — `used`/`size` are token counts, `cost` is `{amount, currency}`
+  // (ISO 4217) or `null`, and `amount` is documented as the session's
+  // TOTAL CUMULATIVE cost so far, not a per-update delta. These are NOT
+  // `tokensUsed`/`contextWindow`/`costUsd` (an earlier version of this
+  // interface invented those names without checking the schema, so the
+  // meter never actually populated against a real agent) — `used`/`size`/
+  // `cost` below are mapped into the internal `tokensUsed`/`contextWindow`/
+  // `costUsd` names by `mapToTranscriptUpdate`, which is the one place that
+  // translation happens.
+  used?: number;
+  size?: number;
+  cost?: { amount?: number; currency?: string } | null;
   options?: AcpConfigOption[];
 }
 
@@ -177,8 +188,8 @@ function isIncomingRequest(msg: JsonRpcInbound): msg is JsonRpcRequestIn {
   return 'method' in msg && 'id' in msg && msg.id !== undefined;
 }
 
-/** Maps one wire `session/update` payload into the v1 transcript reducer's input shape; `undefined` for a kind this reducer doesn't cover (e.g. `config_option_update`, handled separately) or a malformed payload. */
-function mapToTranscriptUpdate(
+/** Maps one wire `session/update` payload into the v1 transcript reducer's input shape; `undefined` for a kind this reducer doesn't cover (e.g. `config_option_update`, handled separately) or a malformed payload. Exported for direct unit testing of the wire-mapping logic (issue #248) without spinning up a fixture process for every edge case; not part of the package's public `index.ts`/`browser.ts` surface. */
+export function mapToTranscriptUpdate(
   kind: string,
   sessionId: string,
   update: RawSessionUpdate,
@@ -213,12 +224,18 @@ function mapToTranscriptUpdate(
     case 'plan_update':
       return { kind: 'plan_update', entries: update.entries ?? [] };
     case 'usage_update':
+      // `update.cost`'s `currency` is ISO 4217 and can legitimately be
+      // anything an agent bills in; this client has no currency-conversion
+      // logic anywhere, so a non-USD report is left `undefined` rather than
+      // silently mislabeled as dollars — the meter under-reports for that
+      // provider instead of lying (a known, documented gap, not a bug to
+      // paper over with a fake conversion rate).
       return {
         kind: 'usage_update',
         sessionId,
-        tokensUsed: update.tokensUsed,
-        contextWindow: update.contextWindow,
-        costUsd: update.costUsd,
+        tokensUsed: update.used,
+        contextWindow: update.size,
+        costUsd: update.cost?.currency === 'USD' ? update.cost.amount : undefined,
       };
     default:
       return undefined;
