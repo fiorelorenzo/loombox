@@ -213,6 +213,41 @@ describe('loadNodeConfig', () => {
       const env = { ...BASE_ENV, LOOMBOX_TARGETS: '{"id":"local"}' };
       expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/array/);
     });
+
+    it('leaves localMaxConcurrentSessions undefined when LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS is unset (SPEC §7.16, issue #252)', () => {
+      const config = loadNodeConfig({ env: BASE_ENV, argv: [] });
+      expect(config.localMaxConcurrentSessions).toBeUndefined();
+    });
+
+    it('parses LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS as a positive integer (SPEC §7.16, issue #252)', () => {
+      const config = loadNodeConfig({
+        env: { ...BASE_ENV, LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS: '4' },
+        argv: [],
+      });
+      expect(config.localMaxConcurrentSessions).toBe(4);
+    });
+
+    it('rejects a non-integer LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS', () => {
+      const env = { ...BASE_ENV, LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS: 'not-a-number' };
+      expect(() => loadNodeConfig({ env, argv: [] })).toThrow(
+        /localMaxConcurrentSessions.*positive integer/,
+      );
+    });
+
+    it('rejects a zero or negative LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS', () => {
+      expect(() =>
+        loadNodeConfig({
+          env: { ...BASE_ENV, LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS: '0' },
+          argv: [],
+        }),
+      ).toThrow(/positive integer/);
+      expect(() =>
+        loadNodeConfig({
+          env: { ...BASE_ENV, LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS: '-1' },
+          argv: [],
+        }),
+      ).toThrow(/positive integer/);
+    });
   });
 
   describe('from a config file', () => {
@@ -279,6 +314,49 @@ describe('loadNodeConfig', () => {
       const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
       expect(config.targets).toEqual(targets);
       expect(config.sshTargets).toEqual(sshTargets);
+    });
+
+    it('loads localMaxConcurrentSessions from the config file (SPEC §7.16, issue #252)', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        localMaxConcurrentSessions: 3,
+      });
+
+      const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
+      expect(config.localMaxConcurrentSessions).toBe(3);
+    });
+
+    it('rejects a non-positive-integer localMaxConcurrentSessions in the config file', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        localMaxConcurrentSessions: 0,
+      });
+
+      expect(() => loadNodeConfig({ env: {}, argv: ['--config', filePath] })).toThrow(
+        /positive integer/,
+      );
+    });
+
+    it('lets LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS override localMaxConcurrentSessions set in the config file', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        localMaxConcurrentSessions: 3,
+      });
+
+      const config = loadNodeConfig({
+        env: { LOOMBOX_NODE_CONFIG: filePath, LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS: '5' },
+        argv: [],
+      });
+      expect(config.localMaxConcurrentSessions).toBe(5);
     });
 
     it('lets an env var override the same field set in the config file', async () => {

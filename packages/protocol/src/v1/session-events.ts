@@ -61,25 +61,41 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
  * computes and is what `@loombox/node` forwards here unchanged, just now
  * reaching the wire.
  *
- * `'starting'` (issue #516) is the one member with no `AttentionStatus`
- * counterpart: it exists for the window between a session's worktree
- * landing on disk and its agent process actually finishing `AcpClient.
- * newSession()` — `@loombox/node` announces the session (`session_announce`
- * plus this status) the moment the worktree exists, before ever calling
- * `AgentSupervisor.start()`, because that spawn has no ceiling on how long
- * it can take (a cold `npm exec` registry install was observed sitting for
- * nine minutes) and the alternative — waiting for the agent before telling
- * anyone the session exists — is what let a real session's worktree get
- * created with nothing tracking it anywhere (SPEC §5.6/§7.22's "sessions
- * survive" is broken worse by a slow spawn than by a disconnect). This is
- * an enum *widening*: an older peer's zod validation on this field simply
- * rejects/drops a `session_status` envelope carrying `'starting'` (it never
- * reaches a value this package's own schema would have accepted before),
- * degrading to "no status update yet" rather than crashing — acceptable
- * because the very next transition (to `'working'`/`'awaiting_input'`/
- * `'error'`) is a value every peer, old or new, already understands.
+ * `'queued'` and `'starting'` (issues #252, #516) are the two members with
+ * no `AttentionStatus` counterpart, both synthesized by `@loombox/node`
+ * rather than passed through from the agent process:
+ *
+ * - `'starting'` exists for the window between a session's worktree
+ *   landing on disk and its agent process actually finishing `AcpClient.
+ *   newSession()` — `@loombox/node` announces the session (`session_announce`
+ *   plus this status) the moment the worktree exists, before ever calling
+ *   `AgentSupervisor.start()`, because that spawn has no ceiling on how long
+ *   it can take (a cold `npm exec` registry install was observed sitting for
+ *   nine minutes) and the alternative — waiting for the agent before telling
+ *   anyone the session exists — is what let a real session's worktree get
+ *   created with nothing tracking it anywhere (SPEC §5.6/§7.22's "sessions
+ *   survive" is broken worse by a slow spawn than by a disconnect).
+ * - `'queued'` (SPEC §7.16's per-target concurrency cap, issue #252) is
+ *   earlier still: a session whose target is already at its configured
+ *   concurrency cap sits here, worktree created and fully visible on the
+ *   board, until a running session on that target finishes/crashes/is
+ *   stopped and hands its slot over (FIFO). A session never skips this
+ *   state on its way to `'starting'` when it had to wait at all — a client
+ *   that cannot distinguish `'queued'` from `'starting'` would show a spinner
+ *   for a session that hasn't actually been asked to do anything yet, which
+ *   is the whole reason this is its own value rather than reusing
+ *   `'starting'` for both.
+ *
+ * Both are enum *widenings*: an older peer's zod validation on this field
+ * simply rejects/drops a `session_status` envelope carrying `'queued'` or
+ * `'starting'` (neither reaches a value that peer's own schema would have
+ * accepted before), degrading to "no status update yet" rather than
+ * crashing — acceptable because the very next transition (to
+ * `'working'`/`'awaiting_input'`/`'error'`) is a value every peer, old or
+ * new, already understands.
  */
 export const sessionStatusV1 = z.enum([
+  'queued',
   'starting',
   'working',
   'awaiting_input',

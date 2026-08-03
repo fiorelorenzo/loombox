@@ -78,6 +78,7 @@ import { NodeMcpSecretManager } from './mcp-secrets';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
+import { SessionConcurrencyGate } from './session-concurrency-gate';
 import {
   InvalidSessionTransitionError,
   SessionManager,
@@ -88,7 +89,13 @@ import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
 import { discoverSshTargets, type DiscoverSshTargetsOptions } from './ssh/host-candidates';
-import { DEFAULT_LOCAL_TARGET, type ExecutionTarget, type SshTargetConfig } from './target';
+import {
+  DEFAULT_LOCAL_TARGET,
+  DEFAULT_SSH_MAX_CONCURRENT_SESSIONS,
+  defaultLocalMaxConcurrentSessions,
+  type ExecutionTarget,
+  type SshTargetConfig,
+} from './target';
 import {
   probeProviderAvailability,
   type ProviderAvailabilityCandidate,
@@ -165,6 +172,19 @@ export interface NodeDaemonOptions {
    * clear error rather than silently falling back to anything.
    */
   sshTargets?: SshTargetConfig[];
+  /**
+   * This node's `local` target's concurrency cap (SPEC §7.16, issue #252):
+   * starting more than this many sessions on it queues the excess FIFO
+   * instead of launching them (see `SessionConcurrencyGate`). Defaults to
+   * {@link defaultLocalMaxConcurrentSessions} — this host's own CPU core
+   * count — when omitted; every `ssh:` target's own cap instead comes from
+   * its own `SshTargetConfig.maxConcurrentSessions` (or
+   * `DEFAULT_SSH_MAX_CONCURRENT_SESSIONS` when that's unset too), a
+   * deliberately different, lower default — see that field's doc comment
+   * for why a remote target's capacity can't be inferred the same way a
+   * local one's can.
+   */
+  localMaxConcurrentSessions?: number;
   /** Builds the `RemoteTransport` for a given `ssh:` target; defaults to a real `Ssh2Transport`. Tests inject a `LocalProcessTransport`/`FakeTransport` factory instead. */
   sshTransportFactory?: (config: SshTargetConfig) => RemoteTransport;
   /**
@@ -261,7 +281,7 @@ export interface NodeDaemonOptions {
    * The session's worktree is never torn down when this fires — see
    * {@link createSessionInternal}'s doc comment for why an `error` status
    * the user can see and archive is the honest outcome, not a silent
-   * rollback. Not (yet) applied to `createSshSessionInternal`'s
+   * rollback. Not (yet) applied to `launchReservedSshSession`'s
    * `startWithChild()` call — issue #516 flagged that path as sharing the
    * same unbounded-spawn shape, but bounding it needs its own decision
    * about what "give up" means for a remote, possibly-detached process,
@@ -673,6 +693,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
 
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
+  /** Per-target concurrency caps + overflow queue (SPEC §7.16, issue #252) — the one chokepoint every session's launch (`local` or `ssh:`) passes through; see `./session-concurrency-gate.ts`. */
+  private readonly concurrencyGate: SessionConcurrencyGate;
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
   private readonly relayLeaseClient: RelayLeaseClient;
@@ -706,7 +728,7 @@ export class NodeDaemon extends EventEmitter {
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
-   * (`local` sessions never route through `createSshSessionInternal`, so
+   * (`local` sessions never route through `scheduleSshSession`, so
    * there's nothing to share). Keyed by `` `${targetId}:${projectPath}` ``,
    * since the same path string can genuinely name different folders on
    * different remote hosts.
@@ -778,6 +800,21 @@ export class NodeDaemon extends EventEmitter {
     for (const config of options.sshTargets ?? []) {
       this.sshTargetConfigs.set(config.id, config);
     }
+    const concurrencyLimits: Record<string, number> = {};
+    for (const target of this.targets) {
+      if (target.kind === 'local') {
+        concurrencyLimits[target.id] =
+          options.localMaxConcurrentSessions ?? defaultLocalMaxConcurrentSessions();
+      } else {
+        concurrencyLimits[target.id] =
+          this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions ??
+          DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+      }
+    }
+    this.concurrencyGate = new SessionConcurrencyGate({
+      limits: concurrencyLimits,
+      defaultMax: DEFAULT_SSH_MAX_CONCURRENT_SESSIONS,
+    });
     this.sshTransportFactory =
       options.sshTransportFactory ??
       ((config) =>
@@ -879,18 +916,25 @@ export class NodeDaemon extends EventEmitter {
    * remote agent, which this node deliberately does *not* terminate: it
    * detaches this node's local bridge only, leaving the setsid/tmux-detached
    * remote process running (issue #80's "the driving node exiting entirely
-   * does not kill the remote agent process").
+   * does not kill the remote agent process"). Also withdraws every session
+   * still sitting in {@link concurrencyGate}'s overflow queue (SPEC §7.16,
+   * issue #252) — *before* stopping any bridge, deliberately: releasing a
+   * bridge's slot can hand it straight to the next queued entry
+   * (`SessionConcurrencyGate.release`), and an `ssh:` bridge's local exit
+   * can fire synchronously (`RemoteAgentChildProcess.detachLocal()`/`.kill()`
+   * are local-only, no real process to wait on) — so cancelling the queue
+   * first is the only ordering that can't let a stop-in-progress dequeue and
+   * launch a brand-new agent process after this node has already started
+   * tearing everything else down.
    */
   close(): void {
-    for (const [sessionId, bridge] of this.bridges) {
-      bridge.remoteChild?.detachLocal();
-      this.supervisor.stop(sessionId);
-      // SPEC §9's "release on stop/exit": this node is no longer driving
-      // the session (the remote agent process itself keeps running, per
-      // issue #80, above), so its lease is freed immediately rather than
-      // left to expire on its own TTL — letting a reattach (by this node
-      // again, or another) acquire right away instead of waiting it out.
-      this.stopLeaseHeartbeat(sessionId);
+    for (const target of this.targets) {
+      for (const sessionId of this.concurrencyGate.queuedSessionIds(target.id)) {
+        this.concurrencyGate.cancel(sessionId);
+      }
+    }
+    for (const sessionId of [...this.bridges.keys()]) {
+      this.stopBridgeIfActive(sessionId);
     }
     this.bridges.clear();
     this.targetHealthSampler.stop();
@@ -911,7 +955,10 @@ export class NodeDaemon extends EventEmitter {
    * agent via `AgentSupervisor`), wires the agent's transcript updates to
    * the relay, and announces it — the node-initiated path (as opposed to a
    * client's `session_create` routed in over the relay, handled by
-   * {@link handleInbound}).
+   * {@link handleInbound}). Subject to this target's concurrency cap (SPEC
+   * §7.16, issue #252): this may resolve with the returned `Session`
+   * sitting in the wire's `'queued'` status rather than a live agent yet —
+   * see {@link createSessionInternal}.
    */
   async createSession(options: CreateNodeSessionOptions): Promise<Session> {
     return this.createSessionInternal({
@@ -968,20 +1015,21 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Creates a `local` (or routes to {@link createSshSessionInternal} for an
-   * `ssh:`) session. For `local`: cuts the git worktree via `SessionManager`
-   * — the only step with no failure mode worth hiding — then announces the
-   * session (issue #516: `session_announce` plus a `'starting'`
-   * `session_status`) *before* ever calling `AgentSupervisor.start()`, so
-   * the board shows the session coming up the instant its worktree exists
-   * rather than staying empty for however long that spawn takes. The spawn
-   * itself is bounded by `sessionStartTimeoutMs` (default 120s — see that
-   * option's doc comment for why): on timeout this reports `'error'` and
-   * rethrows, but deliberately never tears the worktree back down — by the
-   * time `'starting'` went out the session is already on the board, so an
-   * `error` row the user can see and archive is the honest outcome, not a
-   * silent disappearance that leaves an unexplained worktree behind it
-   * (exactly the failure mode issue #516 was filed over).
+   * Creates a `local` (or routes to {@link scheduleSshSession} for an
+   * `ssh:`) session, gated by this target's per-target concurrency cap
+   * (SPEC §7.16, issue #252) via {@link concurrencyGate} — the one
+   * chokepoint every session's launch passes through, `local` and `ssh:`
+   * alike, rather than each target kind reimplementing its own accounting.
+   * For `local`: cuts the git worktree via `SessionManager` and announces
+   * the session (issue #516's `session_announce`) *before* the cap is even
+   * checked, so the board shows the session — `'queued'` or `'starting'`,
+   * whichever applies — the instant its worktree exists, extending the
+   * exact honesty #516 already established for the worktree-vs-spawn gap
+   * one state further back. Under the cap, this proceeds straight through
+   * {@link launchLocalSession} to the spawn; over it, it returns
+   * immediately with the session in its `'queued'` state, and the actual
+   * launch happens later, fire-and-forget, once {@link concurrencyGate}
+   * hands it a slot.
    */
   private async createSessionInternal(opts: {
     sessionId?: string;
@@ -996,19 +1044,22 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no target with id "${opts.targetId}"`);
     }
 
-    // Resolved before any worktree/lease/child is touched (issues #187/#189's
-    // "fails clearly on an ungranted/missing secret... before any session
-    // opens"): a session that would fail on a missing MCP secret grant fails
-    // right here, not after this node has already created a worktree or
-    // acquired an ssh: lease for it.
+    // Resolved before any worktree/lease/child is touched, and before this
+    // session can even be queued (issues #187/#189's "fails clearly on an
+    // ungranted/missing secret... before any session opens"): a session
+    // that would fail on a missing MCP secret grant fails right here, not
+    // after this node created a worktree, acquired an ssh: lease, or made
+    // some other queued session wait behind a request that was always
+    // going to fail.
     const mcpServers = await this.resolveMcpServers(opts.projectPath);
+    const sessionId = opts.sessionId ?? randomUUID();
 
     if (target.kind === 'ssh') {
-      return this.createSshSessionInternal(target.id, opts, mcpServers);
+      return this.scheduleSshSession({ ...opts, sessionId }, mcpServers);
     }
 
     const session = await this.sessionManager.createSession({
-      id: opts.sessionId,
+      id: sessionId,
       projectPath: opts.projectPath,
       provider: opts.provider,
       nodeId: this.nodeId,
@@ -1019,8 +1070,51 @@ export class NodeDaemon extends EventEmitter {
       // false` opts into running directly in `projectPath`.
       workInPlace: opts.worktree === false,
     });
-
     await this.announce(session, opts.targetId, opts.title);
+
+    if (this.concurrencyGate.tryAcquire(target.id)) {
+      return this.launchLocalSession(session, opts, mcpServers);
+    }
+
+    // Over the cap (SPEC §7.16, issue #252): queue rather than launch.
+    // `launchLocalSession` runs later, fire-and-forget, once a slot frees —
+    // its errors are logged rather than thrown, since by then nothing is
+    // left awaiting this call (mirrors `handleSessionCreate`'s own
+    // fire-and-forget `.catch`).
+    await this.sendSessionStatus(session.id, 'queued');
+    this.concurrencyGate.enqueue(target.id, session.id, () => {
+      this.launchLocalSession(session, opts, mcpServers).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: queued session ${session.id} failed to start after dequeuing: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    });
+    return session;
+  }
+
+  /**
+   * The `local` launch itself, split out of {@link createSessionInternal} so
+   * it can run either immediately (its target wasn't at its concurrency
+   * cap) or later (dequeued by {@link concurrencyGate} once a running
+   * session's slot frees — SPEC §7.16, issue #252). The caller must already
+   * hold this session's concurrency slot ({@link SessionConcurrencyGate.tryAcquire}
+   * having returned `true`, or an `onDequeue` callback) before calling
+   * this. On a spawn failure this releases that slot itself (handing it
+   * straight to the next queued session on this target, if any) before
+   * rethrowing — a slot must never outlive the launch attempt that
+   * reserved it, or it leaks (SPEC §7.16's "the leak that would make the
+   * feature worse than nothing"). On success the slot instead lives on for
+   * as long as the session runs, released only once its agent exits — a
+   * crash, a kill, or an explicit stop (see {@link wireAgentSession}'s
+   * `'exit'` handler and {@link stopBridgeIfActive}).
+   */
+  private async launchLocalSession(
+    session: Session,
+    opts: { provider: string; targetId: string; title: string },
+    mcpServers: AcpMcpServerConfig[],
+  ): Promise<Session> {
     await this.sendSessionStatus(session.id, 'starting');
 
     let agentSession: AgentSession;
@@ -1031,6 +1125,7 @@ export class NodeDaemon extends EventEmitter {
         mcpServers,
       });
     } catch (error) {
+      this.concurrencyGate.release(opts.targetId);
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`NodeDaemon: session ${session.id} failed to start: ${message}`);
       await this.sendSessionStatus(session.id, 'error').catch((sendError: unknown) => {
@@ -1121,36 +1216,42 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * The `ssh:` target path (issue #80): acquires this session's ownership
-   * lease (#82), deploys-and-launches the provider's agent detached on the
-   * remote host via the pooled `RemoteProcessRunner` for this target — with
-   * a tmux/screen fallback when the native mechanism isn't available (#81)
-   * — bridges it into an `AcpChildProcess` (`RemoteAgentChildProcess`), and
-   * hands that to `AgentSupervisor.startWithChild()`. From here on this
-   * session is driven through `AgentSession`/`AgentSupervisor` exactly like
-   * a `local` one: {@link finishSessionCreation} is the same shared tail
-   * both paths use to wire transcript forwarding and announce to the relay.
+   * The `ssh:` counterpart to {@link createSessionInternal}'s local branch
+   * (SPEC §7.16, issue #252): reserves this session's same-folder slot and
+   * cross-node lease FIRST, synchronously with the caller, exactly like
+   * before this option existed — a lease conflict or same-folder refusal
+   * must still fail immediately with no trace on the board (SPEC §9; issue
+   * #82's own tests depend on this: a denied session never
+   * `session_announce`s at all). Only once that reservation actually
+   * succeeds does this start the lease heartbeat, announce the session, and
+   * check {@link concurrencyGate} — under the cap,
+   * {@link launchReservedSshSession} runs immediately; over it, this
+   * returns right away with the session in its `'queued'` state, and the
+   * actual deploy-and-launch happens later, fire-and-forget, once a slot
+   * frees.
    */
-  private async createSshSessionInternal(
-    targetId: string,
+  private async scheduleSshSession(
     opts: {
       sessionId?: string;
       projectPath: string;
       provider: string;
+      targetId: string;
       title: string;
       worktree?: boolean;
     },
     mcpServers: AcpMcpServerConfig[],
   ): Promise<Session> {
+    const targetId = opts.targetId;
     const sessionId = opts.sessionId ?? randomUUID();
 
     // Same-folder safety (issue #68, SPEC §7.2): an ssh: session defaults to
-    // running in-place (see the `worktree`-defaulting comment below) — only
-    // an explicit `worktree: true` opts out of the restriction. Reserved
-    // before the lease/deploy/spawn machinery below ever runs, so a refusal
-    // here is cheap and leaves nothing to unwind; released in the `catch`
-    // if anything after this point throws, and again once the agent process
-    // itself exits (see `wireAgentSession`'s `'exit'` handler).
+    // running in-place (see `launchReservedSshSession`'s `worktree`-
+    // defaulting comment) — only an explicit `worktree: true` opts out of
+    // the restriction. Reserved before the lease machinery below ever runs,
+    // so a refusal here is cheap and leaves nothing to unwind; released in
+    // the `catch` if anything after this point throws, and again once the
+    // agent process itself exits (see `wireAgentSession`'s `'exit'`
+    // handler).
     const inPlace = !opts.worktree;
     const sameFolderKey = `${targetId}:${opts.projectPath}`;
     if (inPlace) {
@@ -1170,6 +1271,102 @@ export class NodeDaemon extends EventEmitter {
       // below releases the same-folder reservation, so nothing leaks.
       await this.acquireRelayLeaseOrRollback(sessionId, targetId);
 
+      if (!this.supervisor.getProvider(opts.provider)) {
+        throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
+      }
+    } catch (error) {
+      // Nothing after the reservation above ever ran to completion — undo
+      // it so a subsequent attempt on this same folder isn't stuck refused
+      // by a session that never actually came to exist.
+      if (inPlace) {
+        this.sshSameFolderGuard.release(sameFolderKey, sessionId);
+      }
+      throw error;
+    }
+
+    // The lease is granted from here on — start renewing it immediately
+    // (SPEC §9's "renewable lease"), even while this session might still be
+    // sitting in the concurrency queue below: nothing else renews it during
+    // that wait, and a queue can genuinely take a while to drain.
+    this.startLeaseHeartbeat(sessionId);
+
+    const provisional: Session = {
+      id: sessionId,
+      projectPath: opts.projectPath,
+      worktreePath: opts.projectPath,
+      target: 'ssh',
+      provider: opts.provider,
+      branch: '',
+      createdAt: Date.now(),
+      state: 'running',
+      nodeId: this.nodeId,
+      targetId,
+    };
+    await this.announce(provisional, targetId, opts.title);
+
+    if (this.concurrencyGate.tryAcquire(targetId)) {
+      return this.launchReservedSshSession({ ...opts, sessionId }, mcpServers);
+    }
+
+    // Over the cap (SPEC §7.16, issue #252): queue rather than launch.
+    // `launchReservedSshSession` runs later, fire-and-forget, once a slot
+    // frees — its errors are logged rather than thrown, since by then
+    // nothing is left awaiting this call (mirrors `launchLocalSession`'s
+    // own queued path).
+    await this.sendSessionStatus(sessionId, 'queued');
+    this.concurrencyGate.enqueue(targetId, sessionId, () => {
+      this.launchReservedSshSession({ ...opts, sessionId }, mcpServers).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: queued ssh: session ${sessionId} failed to start after dequeuing: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    });
+    return provisional;
+  }
+
+  /**
+   * The `ssh:` deploy-and-launch itself (issue #80), split out of
+   * {@link scheduleSshSession} so it can run either immediately (the target
+   * wasn't at its concurrency cap) or later (dequeued by
+   * {@link concurrencyGate} once a running session's slot frees — SPEC
+   * §7.16, issue #252). The caller must already hold this session's lease
+   * (via `scheduleSshSession`'s own reservation) and concurrency slot
+   * before calling this. Deploys-and-launches the provider's agent detached
+   * on the remote host via the pooled `RemoteProcessRunner` for this target
+   * — with a tmux/screen fallback when the native mechanism isn't available
+   * (#81) — bridges it into an `AcpChildProcess` (`RemoteAgentChildProcess`),
+   * and hands that to `AgentSupervisor.startWithChild()`. From here on this
+   * session is driven through `AgentSession`/`AgentSupervisor` exactly like
+   * a `local` one: {@link finishSessionCreation} is the same shared tail
+   * both paths use to wire transcript forwarding and announce to the relay.
+   *
+   * On failure, releases this session's concurrency slot (handing it to the
+   * next queued session on this target, if any), its lease heartbeat, and
+   * its same-folder reservation — matching what the pre-#252 single-phase
+   * version of this method used to unwind in its own `catch` — before
+   * rethrowing (for an immediate launch) or logging (for a dequeued one,
+   * via {@link scheduleSshSession}'s own `.catch`). Its actual cross-node
+   * lease is deliberately left alone on failure, unchanged from before this
+   * split: it simply expires on its own TTL, exactly as it always has.
+   */
+  private async launchReservedSshSession(
+    opts: {
+      sessionId: string;
+      projectPath: string;
+      provider: string;
+      targetId: string;
+      title: string;
+      worktree?: boolean;
+    },
+    mcpServers: AcpMcpServerConfig[],
+  ): Promise<Session> {
+    const { sessionId, targetId } = opts;
+    const inPlace = !opts.worktree;
+    const sameFolderKey = `${targetId}:${opts.projectPath}`;
+
+    try {
       const provider = this.supervisor.getProvider(opts.provider);
       if (!provider) {
         throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
@@ -1229,7 +1426,6 @@ export class NodeDaemon extends EventEmitter {
         targetId,
       };
 
-      this.startLeaseHeartbeat(sessionId);
       return await this.finishSessionCreation(
         session,
         agentSession,
@@ -1237,9 +1433,8 @@ export class NodeDaemon extends EventEmitter {
         remoteChild,
       );
     } catch (error) {
-      // Nothing after the reservation above ever ran to completion — undo
-      // it so a subsequent attempt on this same folder isn't stuck refused
-      // by a session that never actually came to exist.
+      this.concurrencyGate.release(targetId);
+      this.stopLeaseHeartbeat(sessionId);
       if (inPlace) {
         this.sshSameFolderGuard.release(sameFolderKey, sessionId);
       }
@@ -1490,6 +1685,14 @@ export class NodeDaemon extends EventEmitter {
       console.warn(
         `NodeDaemon: session ${bridge.session.id} agent exited (code ${code ?? 'unknown'})`,
       );
+      // SPEC §7.16, issue #252: this is the ONE place a session's
+      // concurrency slot is released after a successful launch — a crash,
+      // a kill, `stopBridgeIfActive`'s `supervisor.stop()`, and `close()`'s
+      // own teardown all end up here, since every one of them ultimately
+      // terminates the underlying child process, which is what fires this
+      // event. Hands the freed slot straight to the next queued session on
+      // this target, if any (FIFO) — see `SessionConcurrencyGate.release`.
+      this.concurrencyGate.release(bridge.targetId);
       // Same-folder safety (issue #68): an in-place ssh: session (`branch
       // === ''`, this bridge's own `remoteChild` marker) frees its folder
       // reservation once the agent process genuinely stops, so a new
@@ -1503,6 +1706,15 @@ export class NodeDaemon extends EventEmitter {
           bridge.session.id,
         );
       }
+      // Forgotten only now, after every listener above (including the
+      // 'attention' one registered earlier in this method, which forwards
+      // this same terminal transition's 'exited' `session_status` to the
+      // relay) has already run against it — `stopBridgeIfActive` used to
+      // delete this synchronously and unconditionally, which silenced that
+      // forward for an explicitly-stopped (as opposed to crashed) session:
+      // `forwardSessionEvent` no-ops the moment `this.bridges.get()` comes
+      // back empty. This is the one place a bridge ever leaves the map.
+      this.bridges.delete(bridge.session.id);
     });
   }
 
@@ -1961,14 +2173,18 @@ export class NodeDaemon extends EventEmitter {
    * A client asked (via the relay) to archive one of this node's sessions
    * — SPEC §7.2's board archive affordance, issue #512 (the counterpart
    * to #507's worktree wiring that had no way to ever clean up after
-   * itself). Ends the session first, tolerating one that already ended
-   * (archiving a finished session is the common case), then always
-   * forgets the record and, when asked, tears down its isolated worktree
-   * and branch too — see {@link SessionManager.removeSession}'s own doc
-   * comment for exactly what `removeWorktree` does and doesn't touch.
-   * Always replies, exactly like `handleTargetFsListRequest`'s "never a
-   * silent hang" contract — including for a sessionId this node does not
-   * hold, which answers `ok`.
+   * itself). Withdraws it from the concurrency queue if it was still
+   * waiting there, and stops its live agent process if it was still
+   * running (SPEC §7.16, issue #252 — releasing its concurrency slot is
+   * exactly why archiving can no longer skip that step; see
+   * {@link stopBridgeIfActive}), then ends the session, tolerating one
+   * that already ended (archiving a finished session is the common case),
+   * then always forgets the record and, when asked, tears down its
+   * isolated worktree and branch too — see
+   * {@link SessionManager.removeSession}'s own doc comment for exactly
+   * what `removeWorktree` does and doesn't touch. Always replies, exactly
+   * like `handleTargetFsListRequest`'s "never a silent hang" contract —
+   * including for a sessionId this node does not hold, which answers `ok`.
    *
    * That case is not hypothetical and not a race: `SessionManager` keeps its
    * records in memory only, so every node restart forgets every session
@@ -1988,6 +2204,17 @@ export class NodeDaemon extends EventEmitter {
    * separately; refusing here would only add an unremovable row on top of it.
    */
   private handleSessionArchiveRequest(message: SessionArchiveRequest): void {
+    // SPEC §7.16, issue #252: a no-op unless this session is still waiting
+    // in the overflow queue — cancel it unconditionally, before checking
+    // anything else below, so it can never dequeue and launch after being
+    // "archived".
+    this.concurrencyGate.cancel(message.sessionId);
+    // Also a no-op unless this session is still actually running (`local`
+    // or `ssh:` alike) — stops its agent process and, via the `'exit'`
+    // event this triggers, releases its concurrency slot (see
+    // `wireAgentSession`) before this node forgets about it below.
+    this.stopBridgeIfActive(message.sessionId);
+
     if (!this.sessionManager.getSession(message.sessionId)) {
       console.warn(
         `NodeDaemon: session_archive_request for a session this node no longer tracks ("${message.sessionId}"); reporting it archived so the row can be cleared`,
@@ -2014,6 +2241,39 @@ export class NodeDaemon extends EventEmitter {
       if (!(error instanceof InvalidSessionTransitionError)) throw error;
     }
     await this.sessionManager.removeSession(sessionId, { removeWorktree });
+  }
+
+  /**
+   * Stops `sessionId`'s live agent process, if it has one — a no-op for a
+   * session that never started (still queued, SPEC §7.16/issue #252),
+   * already stopped, or genuinely unknown. Mirrors `close()`'s own
+   * per-bridge teardown exactly (an `ssh:` session's remote agent process
+   * is deliberately left running — only this node's local bridge detaches,
+   * per issue #80) — the one shared helper both use, so a session's
+   * termination path is identical whether it's triggered by a full node
+   * shutdown or a single archive request. Does not itself remove the
+   * bridge from {@link bridges} or touch {@link concurrencyGate} — both
+   * happen downstream, in {@link wireAgentSession}'s `'exit'` listener,
+   * once `supervisor.stop()`'s resulting child-process exit actually fires
+   * (asynchronously): forgetting the bridge here, synchronously, used to
+   * make `forwardSessionEvent` silently drop that same exit's `'exited'`
+   * `session_status` (it no-ops the moment `this.bridges.get()` comes back
+   * empty), so this method leaves the bridge in place for `wireAgentSession`
+   * to actually process the transition before forgetting it.
+   */
+  private stopBridgeIfActive(sessionId: string): void {
+    const bridge = this.bridges.get(sessionId);
+    if (!bridge) return;
+    bridge.remoteChild?.detachLocal();
+    // `AgentSupervisor.stop()` is keyed by `AgentSession.id` — the ACP-level
+    // session id the agent's own `session/new` response assigned, NOT this
+    // bridge's loombox-level `sessionId` (a separate, node-generated id;
+    // same distinction `wireAgentSession`'s config-option listener already
+    // draws). Passing `sessionId` here found nothing in the supervisor's own
+    // map, so `.close()` was never called and the child process never
+    // actually died until this node's whole process exited.
+    this.supervisor.stop(bridge.agentSession.id);
+    this.stopLeaseHeartbeat(sessionId);
   }
 
   private sendSessionArchiveResponse(

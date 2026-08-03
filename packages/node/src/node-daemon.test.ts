@@ -3314,3 +3314,401 @@ describe('NodeDaemon session archive (SPEC §7.2, issue #512)', () => {
     expect(list.sessions.some((s) => s.session.id === session.id)).toBe(false);
   });
 });
+
+describe('NodeDaemon per-target concurrency caps (SPEC §7.16, issue #252)', () => {
+  /**
+   * Subscribes `testPhone` to `sessionId`'s live session_status stream,
+   * exactly once: `resync_request` backfills anything already sent before
+   * this call (e.g. an early 'queued'/'starting' status), and
+   * `session_resume` subscribes this connection for everything sent AFTER
+   * this point. Every assertion below relies on calling this exactly once
+   * per session — `resync_request` replays a session's *entire* history
+   * from `sinceSeq`, so calling it twice duplicates every earlier status
+   * in `testPhone.messages`, and `waitForDecryptedKinds` doesn't dedupe.
+   */
+  function subscribeSession(testPhone: TestPhone, sessionId: string): void {
+    testPhone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      sinceSeq: 0,
+    });
+    testPhone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+  }
+
+  it('queues a session started over the cap instead of launching it, while a session under the cap starts immediately', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-concurrency-queue';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-concurrency-queue',
+      deviceId: 'device-node-concurrency-queue',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      localMaxConcurrentSessions: 1,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session1 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session2 = await node.createSession({ projectPath, provider: 'test-echo' });
+    expect(session2.id).not.toBe(session1.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-concurrency-queue',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+    subscribeSession(phone, session1.id);
+    const session1Statuses = await waitForDecryptedKinds(
+      phone,
+      session1.id,
+      key1,
+      ['session_status'],
+      2,
+    );
+    expect(session1Statuses.map((e) => e.status)).toEqual(['starting', 'awaiting_input']);
+
+    // Over the cap: queued, not launched — its own status vocabulary says
+    // so, distinct from 'starting' (issue #252's "tell a queued session
+    // from a starting one").
+    const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+    subscribeSession(phone, session2.id);
+    const session2Statuses = await waitForDecryptedKinds(
+      phone,
+      session2.id,
+      key2,
+      ['session_status'],
+      1,
+    );
+    expect(session2Statuses.map((e) => e.status)).toEqual(['queued']);
+
+    // Genuinely not running yet: no bridge exists for it, so there is
+    // nothing this node could possibly prompt.
+    await expect(node.promptSession(session2.id, 'hi')).rejects.toThrow(/no session/i);
+  });
+
+  it('drains two queued sessions in FIFO order as the running session is stopped, one release at a time', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-concurrency-fifo';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-concurrency-fifo',
+      deviceId: 'device-node-concurrency-fifo',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      localMaxConcurrentSessions: 1,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session1 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session2 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session3 = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-concurrency-fifo',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+    const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+    const key3 = await derivePhoneSessionKey(amk, accountId, session3.id);
+    subscribeSession(phone, session1.id);
+    subscribeSession(phone, session2.id);
+    subscribeSession(phone, session3.id);
+
+    // Both genuinely queued, in creation order, before anything releases.
+    expect(
+      (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1)).map(
+        (e) => e.status,
+      ),
+    ).toEqual(['queued']);
+    expect(
+      (await waitForDecryptedKinds(phone, session3.id, key3, ['session_status'], 1)).map(
+        (e) => e.status,
+      ),
+    ).toEqual(['queued']);
+
+    // Stop session1 (SPEC §7.16's "queued sessions start... as running
+    // ones finish or are stopped"): session2, the OLDER of the two
+    // waiters, must be the one to dequeue — never session3. Waited for
+    // via session1's OWN 'exited' status, not merely the archive
+    // response (which can arrive before the underlying child process has
+    // actually finished exiting) — the same synchronous exit-then-release
+    // guarantee the crash test relies on (`wireAgentSession`'s 'exit'
+    // listener).
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-fifo-stop-1',
+      sessionId: session1.id,
+      removeWorktree: true,
+    });
+    const session1Statuses = await waitForDecryptedKinds(
+      phone,
+      session1.id,
+      key1,
+      ['session_status'],
+      3,
+    );
+    expect(session1Statuses[2]!.status).toBe('exited');
+
+    const session2Statuses = await waitForDecryptedKinds(
+      phone,
+      session2.id,
+      key2,
+      ['session_status'],
+      // Waits for 'awaiting_input' too, not just 'starting': only once
+      // that lands is session2's bridge actually registered
+      // (`finishSessionCreation`), so stopping it below has something to
+      // find — stopping too early, mid-spawn, would be a silent no-op.
+      3,
+    );
+    expect(session2Statuses[0]!.status).toBe('queued');
+    expect(session2Statuses[1]!.status).toBe('starting');
+    expect(session2Statuses[2]!.status).toBe('awaiting_input');
+
+    // session3 must still be exactly queued — nothing should have
+    // touched it yet.
+    expect(
+      (await waitForDecryptedKinds(phone, session3.id, key3, ['session_status'], 1)).map(
+        (e) => e.status,
+      ),
+    ).toEqual(['queued']);
+
+    // Stop session2 too: NOW session3 gets its turn — waited for the
+    // same deterministic way.
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-fifo-stop-2',
+      sessionId: session2.id,
+      removeWorktree: true,
+    });
+    const session2FinalStatuses = await waitForDecryptedKinds(
+      phone,
+      session2.id,
+      key2,
+      ['session_status'],
+      4,
+    );
+    expect(session2FinalStatuses[3]!.status).toBe('exited');
+
+    const session3Statuses = await waitForDecryptedKinds(
+      phone,
+      session3.id,
+      key3,
+      ['session_status'],
+      2,
+    );
+    expect(session3Statuses[0]!.status).toBe('queued');
+    expect(session3Statuses[1]!.status).toBe('starting');
+  }, 20_000);
+
+  it('a crashed session releases its slot immediately, so the next session starts without ever queueing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-concurrency-crash';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-concurrency-crash',
+      deviceId: 'device-node-concurrency-crash',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      localMaxConcurrentSessions: 1,
+      supervisor: new AgentSupervisor({ providers: [crashProvider(), echoProvider()] }),
+    });
+
+    const session1 = await node.createSession({ projectPath, provider: 'test-crash' });
+    const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-concurrency-crash',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    // Subscribed BEFORE the crash lands (~20ms after the session comes
+    // up), so the live 'exited' push actually reaches this phone — a
+    // one-shot `resync_request` alone cannot see an event that hasn't
+    // happened yet.
+    subscribeSession(phone, session1.id);
+
+    // By the time 'exited' is observable on the wire,
+    // `wireAgentSession`'s 'exit' listener has already released the slot:
+    // both fire synchronously from the same underlying child-process
+    // 'exit' event (`AgentSession.handleTerminal`).
+    const session1Statuses = await waitForDecryptedKinds(
+      phone,
+      session1.id,
+      key1,
+      ['session_status'],
+      3,
+    );
+    expect(session1Statuses.map((e) => e.status)).toEqual(['starting', 'awaiting_input', 'exited']);
+
+    // The slot session1 held is free again — a fresh session must start
+    // immediately, never sit queued behind a session that is actually gone
+    // (SPEC §7.16: "this is the leak that would make the feature worse
+    // than nothing").
+    const session2 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+    subscribeSession(phone, session2.id);
+    const session2Statuses = await waitForDecryptedKinds(
+      phone,
+      session2.id,
+      key2,
+      ['session_status'],
+      2,
+    );
+    expect(session2Statuses.map((e) => e.status)).toEqual(['starting', 'awaiting_input']);
+  });
+
+  it('cancelling a queued session removes it from the queue and it never launches, even after the running session stops', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-concurrency-cancel';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-concurrency-cancel',
+      deviceId: 'device-node-concurrency-cancel',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      localMaxConcurrentSessions: 1,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session1 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session2 = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-concurrency-cancel',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+    const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+    subscribeSession(phone, session1.id);
+    subscribeSession(phone, session2.id);
+    expect(
+      (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1)).map(
+        (e) => e.status,
+      ),
+    ).toEqual(['queued']);
+
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-cancel-queued',
+      sessionId: session2.id,
+      removeWorktree: true,
+    });
+    const cancelResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'session_archive_response' &&
+        (m as SessionArchiveResponse).requestId === 'req-cancel-queued',
+    )) as SessionArchiveResponse;
+    expect(cancelResponse.result).toEqual({ outcome: 'ok' });
+
+    // Now free session1's slot — if the cancellation above had failed to
+    // withdraw session2 from the queue, THIS is exactly the moment it
+    // would wrongly launch. Waited for via session1's OWN 'exited' status
+    // (the same synchronous exit-then-release guarantee the crash test
+    // relies on), not merely the archive response, so the check below
+    // isn't racing the underlying child process actually finishing exit.
+    phone.send({
+      type: 'session_archive_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-cancel-stop-1',
+      sessionId: session1.id,
+      removeWorktree: true,
+    });
+    const session1Statuses = await waitForDecryptedKinds(
+      phone,
+      session1.id,
+      key1,
+      ['session_status'],
+      3,
+    );
+    expect(session1Statuses[2]!.status).toBe('exited');
+
+    // Still genuinely not running: no bridge was ever created for the
+    // cancelled session2, so there is nothing this node could prompt.
+    await expect(node.promptSession(session2.id, 'hi')).rejects.toThrow(/no session/i);
+
+    // The slot really is free again — a fresh session starts immediately,
+    // never queued behind the cancelled session2.
+    const session3 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key3 = await derivePhoneSessionKey(amk, accountId, session3.id);
+    subscribeSession(phone, session3.id);
+    const session3Statuses = await waitForDecryptedKinds(
+      phone,
+      session3.id,
+      key3,
+      ['session_status'],
+      1,
+    );
+    expect(session3Statuses[0]!.status).toBe('starting');
+  });
+
+  it('the default local cap is sane, not a tiny magic number: several sessions start immediately with no cap configured', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-concurrency-default';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-concurrency-default',
+      deviceId: 'device-node-concurrency-default',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // No `localMaxConcurrentSessions` override — exercises
+      // `defaultLocalMaxConcurrentSessions()` (this host's own CPU core
+      // count, see target.ts), the same default `main.ts`'s real
+      // `createNode()` call gets.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session1 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session2 = await node.createSession({ projectPath, provider: 'test-echo' });
+    const session3 = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-concurrency-default',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    for (const session of [session1, session2, session3]) {
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+      subscribeSession(phone, session.id);
+      const statuses = await waitForDecryptedKinds(phone, session.id, key, ['session_status'], 1);
+      // None of them ever queued — a sane default comfortably covers 3
+      // concurrent sessions on any real development machine.
+      expect(statuses[0]!.status).toBe('starting');
+    }
+  });
+});

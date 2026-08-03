@@ -10,8 +10,9 @@ import {
 } from './session-events';
 
 describe('sessionStatusEventV1', () => {
-  it('accepts every valid session status value, including "starting" (issue #516)', () => {
+  it('accepts every valid session status value, including "queued" (issue #252) and "starting" (issue #516)', () => {
     for (const status of [
+      'queued',
       'starting',
       'working',
       'awaiting_input',

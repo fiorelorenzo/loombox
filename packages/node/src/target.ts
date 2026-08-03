@@ -1,3 +1,5 @@
+import { cpus } from 'node:os';
+
 import type { TargetDescriptor } from '@loombox/protocol';
 
 /**
@@ -126,4 +128,51 @@ export interface SshTargetConfig {
   passphrase?: string;
   password?: string;
   agent?: string | false;
+  /**
+   * This target's per-target concurrency cap (SPEC §7.16, issue #252):
+   * starting more sessions than this on it queues the excess FIFO instead
+   * of launching them — see `NodeDaemon`'s `SessionConcurrencyGate`.
+   * Defaults to {@link DEFAULT_SSH_MAX_CONCURRENT_SESSIONS} when omitted.
+   * Unlike `local` (whose default is derived from this node's own,
+   * directly-knowable core count — see {@link defaultLocalMaxConcurrentSessions}),
+   * an `ssh:` target's real capacity is unknown until an operator either
+   * sets this explicitly or turns on resource sampling (issues #253/#269)
+   * and reads it off `TargetHealth`, so the conservative fixed default
+   * assumes nothing about the box.
+   */
+  maxConcurrentSessions?: number;
+}
+
+/**
+ * The conservative per-target session cap an `ssh:` target gets when its
+ * own `SshTargetConfig.maxConcurrentSessions` is left unset (SPEC §7.16,
+ * issue #252). Deliberately small and target-agnostic: this node has no
+ * free, always-available read on a *remote* host's core count the way
+ * `os.cpus()` gives it for its own (see {@link defaultLocalMaxConcurrentSessions}),
+ * and assuming an unknown box can take real load is exactly the "melt the
+ * host" failure SPEC §7.16 exists to prevent — 2 is enough to prove
+ * queueing/draining actually overlaps sessions without betting on
+ * hardware nobody has looked at yet. An operator who knows the target's
+ * real capacity (or has resource sampling turned on) raises it explicitly.
+ */
+export const DEFAULT_SSH_MAX_CONCURRENT_SESSIONS = 2;
+
+/**
+ * The per-target session cap the `local` target gets when
+ * `NodeDaemonOptions.localMaxConcurrentSessions` is left unset (SPEC §7.16,
+ * issue #252): this host's own CPU core count, the one hardware ceiling
+ * this process can cheaply and directly introspect for itself (`os.cpus()`,
+ * already the exact source `resource-sampler.ts`'s CPU reading uses).
+ * Individual sessions mostly wait on the LLM (I/O-bound), but their tool
+ * calls — a build, a test run, a `git` operation — are genuinely CPU-bound
+ * and do run concurrently across sessions on the same box, so pinning the
+ * default to core count is a starting point that scales with the actual
+ * machine (a 4-core laptop and a 96-core devbox each get a default sized
+ * to their own hardware, never the same magic number), not a claim that
+ * it's optimal for every workload — `localMaxConcurrentSessions` overrides
+ * it once an operator knows their own.
+ */
+export function defaultLocalMaxConcurrentSessions(): number {
+  const count = cpus().length;
+  return count > 0 ? count : 4;
 }

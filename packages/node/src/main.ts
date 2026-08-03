@@ -229,6 +229,7 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     amk,
     targets: config.targets,
     sshTargets: config.sshTargets,
+    localMaxConcurrentSessions: config.localMaxConcurrentSessions,
     // What each target can actually run (SPEC §5.5). Sourced from
     // `@loombox/supervisor`'s own default provider set, NOT a list maintained
     // here: the supervisor is what later spawns the agent, so deriving the
