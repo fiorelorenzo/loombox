@@ -17,19 +17,35 @@ throwaway Playwright spec against the real e2e fixtures and is not kept in the r
 
 ## 0. Decisions
 
-1. **The transcript renders Markdown.** Today it does not, at all. This is the largest
-   defect found and it was not on anyone's list.
-2. **The composer becomes a real input.** v5 §0.4 decided it "stops looking like a chat box"
-   and the implementation took that to mean no border, no background, no padding and no
-   focus ring. v6 reverses the implementation, not the intent: it stays a docked field at
-   the end of the timeline, but it is unmistakably a field you type into.
-3. **Roles stop being a word in a gutter.** "YOU" / "CLAUDE" / "TOOL" in muted caption caps
-   is the v5 answer to "you cannot tell who is speaking". It is quiet enough to miss and
-   Lorenzo dislikes it. v6 replaces it with a visual language, not a label.
-4. **The terminal is a bottom dock.** Horizontal, full canvas width, resizable, open at the
-   same time as the transcript and the right sidebar, never covering either.
-5. **Files / Config / (later) Git become a right sidebar** with sub-tabs, symmetric with the
-   left sidebar: persistent, collapsible, resizable, pushes the canvas, never scrims it.
+Settled with Lorenzo on 2026-08-03. Where an option was chosen over a safer one, the option
+not taken is named, so nobody relitigates it from scratch six weeks from now.
+
+1. **The transcript renders Markdown, fully, in one pass.** Today it does not, at all. This is
+   the largest defect found and it was not on anyone's list. Tables and syntax highlighting
+   are in scope from the start rather than deferred: the subset-first option was on the table
+   and was declined. That makes the streaming path the risk to engineer for, not to discover
+   (§3.4).
+2. **The composer becomes a real input:** a bordered field on `--color-surface-raised` with
+   `--radius-md` and real padding, the same vocabulary the inbox reply box and the New Session
+   dialog fields already use. Not focus-ring-only, not a large-radius chat pill. v5 §0.4
+   decided it "stops looking like a chat box" and the implementation took that to mean no
+   border, no background, no padding and no focus ring. v6 reverses the implementation, not
+   the intent: it stays a docked field at the end of the timeline, and it is unmistakably a
+   field you type into.
+3. **Roles are attributed by glyph and surface, not by a word.** "YOU" / "CLAUDE" / "TOOL" in
+   muted caption caps is the v5 answer to "you cannot tell who is speaking", and it is quiet
+   enough to miss. The agent gets a provider glyph in the gutter and a surface of its own; the
+   user keeps the accent bar it already has. Declined: a colour-only rail (fails for
+   colour-blind readers), a circular avatar (drags the transcript toward chat), spacing alone.
+4. **The terminal is a bottom dock:** horizontal, full canvas width, resizable, open at the
+   same time as the transcript and the right sidebar, never covering either. Toggleable and
+   closed by default, height persisted per user. Declined: always-present VS Code style, and
+   auto-opening when a terminal happens to be alive, because the layout must not move on its
+   own.
+5. **Files / Config / (later) Git become a right sidebar** with sub-tabs in its own header,
+   symmetric with the left sidebar: persistent, collapsible, resizable, pushes the canvas,
+   never scrims it. Declined: vertically stacked always-visible sections (at 24rem each ends
+   up too small to use), and a second separate right sidebar.
 6. **Overlay scrims are for modals only.** A workbench panel never dims the app.
 
 ## 1. What is actually wrong today
@@ -148,8 +164,11 @@ three may be open together and none of them is a sheet. That is the whole rule.
 ### 3.4 Transcript
 
 - Markdown rendering (fences with a code surface, lists, emphasis, inline code, links,
-  tables) that composes with `TextPacer`'s character-count streaming reveal rather than
-  re-parsing per tick.
+  tables, syntax highlighting) that composes with `TextPacer`'s character-count streaming
+  reveal rather than re-parsing or re-highlighting per tick. A fence is highlighted once it
+  closes and is plain monospace before that, which is both the cheap path and the one that
+  does not flicker through half-tokenised states. The highlighter's grammar set is restricted
+  and its bundle cost measured: this is a mobile-first client.
 - Role attribution by surface and glyph, not by a caption word: the agent gets a provider
   glyph and its own quiet surface, the user keeps a distinct surface, tools keep their card.
   The fixed gutter column stays as the alignment device it already is.
