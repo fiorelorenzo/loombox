@@ -40,19 +40,20 @@ const MARK_PATHS = `
 // The default accent (#376) — the one color these static, pre-JS assets
 // bake in, since none of them can read the runtime accent-theming system.
 const AZURE = '#3b9df7';
-// `tokens.css`'s dark `--color-bg` — the tile color behind the mark
-// wherever a raster asset needs an opaque background (Android maskable
-// icons *require* one to survive OS masking; the apple-touch-icon uses the
-// same tile by the same reasoning: iOS composites a transparent PNG's
-// empty pixels as solid black rather than leaving them see-through, so an
-// explicit dark tile reads intentional instead of like a rendering bug).
-const TILE_BG = '#0b0d10';
-// `tokens.css`'s `--color-accent-contrast` — the AA-correct ink for content
-// drawn on top of the azure accent itself (as opposed to azure-on-dark
-// everywhere else in this file). The desktop dock icon (issue #459) draws
-// the mark ON an azure tile rather than beside one, so it needs this
-// contrast color instead of AZURE/TILE_BG.
-const ACCENT_CONTRAST = '#0a0a0a';
+// The single white tile every asset that needs an opaque background sits
+// on: the desktop dock icon's squircle (`squircleTileSvg`) and, since
+// issue #565, the apple-touch-icon and maskable Android icon too
+// (`tiledMarkSvg`) — one tile color across every platform instead of a
+// per-target accident. Two things forced an opaque tile in the first
+// place, independent of its color: iOS composites a transparent PNG's
+// empty pixels as solid black rather than leaving them see-through, and
+// the maskable-icon spec (web.dev/articles/maskable-icon) requires an
+// opaque image so the OS mask has something to crop. Neither spec ties
+// that requirement to a particular color, and the maskable safe zone is
+// about keeping real content inside the central 80% circle, not about
+// tile contrast, so white doesn't conflict with either — it's a real
+// choice, not an oversight.
+const TILE_BG = '#ffffff';
 
 /** The bare mark, transparent background, at its native 64x64 viewBox. */
 function markSvg(strokeColor) {
@@ -78,14 +79,17 @@ function tiledMarkSvg(canvas, markFraction) {
 }
 
 /**
- * The mark centered on a padded azure rounded-square ("squircle") tile —
- * the desktop dock icon's shape (issue #459). Unlike `tiledMarkSvg`, the
- * tile itself is inset from the full canvas (macOS Dock icons all carry
- * this margin so they read as the same visual size next to every other
- * app), and it's radiused rather than square, using the same corner-radius
- * proportion as the mark's own outer frame (`rx="14"` on a 64-wide rect,
- * i.e. ~22% of the tile). The mark is drawn in `ACCENT_CONTRAST`, not
- * `AZURE`, since it now sits ON the accent color instead of beside it.
+ * The mark centered on a padded white rounded-square ("squircle") tile —
+ * the desktop dock icon's shape (issue #459). Inverted for issue #565:
+ * the tile is white and the mark is stroked in `AZURE`, the same as every
+ * other azure-on-light asset this script produces, instead of an azure
+ * tile with the mark punched out in a near-black contrast ink. Same
+ * geometry as before the inversion — only the two fills swapped. Unlike
+ * `tiledMarkSvg`, the tile itself is inset from the full canvas (macOS
+ * Dock icons all carry this margin so they read as the same visual size
+ * next to every other app), and it's radiused rather than square, using
+ * the same corner-radius proportion as the mark's own outer frame
+ * (`rx="14"` on a 64-wide rect, i.e. ~22% of the tile).
  */
 function squircleTileSvg(canvas, { tileFraction = 0.82, markFraction = 0.6 } = {}) {
   const tileSize = canvas * tileFraction;
@@ -95,8 +99,8 @@ function squircleTileSvg(canvas, { tileFraction = 0.82, markFraction = 0.6 } = {
   const markOffset = (canvas - markCanvasSize) / 2;
   const scale = markCanvasSize / 64;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas}" height="${canvas}" viewBox="0 0 ${canvas} ${canvas}">
-  <rect x="${tileOffset}" y="${tileOffset}" width="${tileSize}" height="${tileSize}" rx="${cornerRadius}" fill="${AZURE}" />
-  <g transform="translate(${markOffset} ${markOffset}) scale(${scale})" fill="none" stroke="${ACCENT_CONTRAST}" stroke-width="3.4" stroke-linecap="round">${MARK_PATHS}</g>
+  <rect x="${tileOffset}" y="${tileOffset}" width="${tileSize}" height="${tileSize}" rx="${cornerRadius}" fill="${TILE_BG}" />
+  <g transform="translate(${markOffset} ${markOffset}) scale(${scale})" fill="none" stroke="${AZURE}" stroke-width="3.4" stroke-linecap="round">${MARK_PATHS}</g>
 </svg>`;
 }
 
@@ -125,16 +129,16 @@ for (const [filename, size] of [
   rasterize(markSvg(AZURE), size, filename);
 }
 
-// 3. apple-touch-icon: opaque dark tile, mark filling most of it (iOS
+// 3. apple-touch-icon: opaque white tile, mark filling most of it (iOS
 //    rounds the corners itself — no Android-style safe zone needed).
 rasterize(tiledMarkSvg(180, 0.82), 180, 'apple-touch-icon-180.png');
 
-// 4. Maskable 512: opaque dark tile, mark scaled well inside the ~80%
+// 4. Maskable 512: opaque white tile, mark scaled well inside the ~80%
 //    safe-zone circle every Android masking shape (circle/squircle/
 //    rounded-square) preserves.
 rasterize(tiledMarkSvg(512, 0.625), 512, 'maskable-512.png');
 
-// 5. Desktop dock icon (issue #459): the mark on a padded azure squircle
+// 5. Desktop dock icon (issue #459): the mark on a padded white squircle
 //    tile, at the 1024x1024 electron-builder/`app.dock.setIcon` expects.
 rasterize(squircleTileSvg(1024), 1024, 'icon.png', desktopAssetsDir);
 
