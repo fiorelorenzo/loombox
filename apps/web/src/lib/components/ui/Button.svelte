@@ -39,6 +39,18 @@
    * action, per ARIA's guidance not to set `aria-pressed` on a control that
    * isn't a toggle. `title` is the matching hover tooltip, for the widths
    * where such a control hides its own visible word.
+   *
+   * `role`/`ariaChecked`/`tabindex`/`onkeydown` exist for the one other
+   * shape a shared button needs to take on: a member of a `role="radiogroup"`
+   * (issue #549, `ConfigBar`'s mode control). A toggle button
+   * (`aria-pressed`) and a radio button (`aria-checked`) are different ARIA
+   * roles for different semantics — a toggle can be independently on/off and
+   * even all-off, a radio is one of a mutually exclusive set that always has
+   * exactly one selected member — so they are separate props rather than
+   * one prop wearing two hats: a caller sets `pressed` for the former,
+   * `role="radio"` + `ariaChecked` + a roving `tabindex` for the latter,
+   * never both on the same button. All four are plain pass-through with no
+   * default behaviour, so every existing call site is untouched.
    */
   import type { Snippet } from 'svelte';
   import WovenLoader from '../WovenLoader.svelte';
@@ -59,6 +71,14 @@
     ariaLabel?: string;
     /** Omit for a plain action; set for a real toggle (drives `aria-pressed` and the pressed treatment). */
     pressed?: boolean;
+    /** Overrides the native implicit role (`"button"`) — e.g. `"radio"` for a member of a `role="radiogroup"`. Omit for a plain button. */
+    role?: string;
+    /** Sets `aria-checked` — pair with `role="radio"`; never with `pressed`/`aria-pressed` on the same button. */
+    ariaChecked?: boolean;
+    /** Overrides the native tab order — e.g. a radiogroup's roving tabindex (`0` for the checked/focusable member, `-1` for the rest). Omit for the browser's default tab order. */
+    tabindex?: number;
+    /** Native keydown handler — e.g. a radiogroup's arrow-key navigation. */
+    onkeydown?: (event: KeyboardEvent) => void;
     /** Native hover tooltip — pair it with `ariaLabel` on a control whose visible label is hidden at some widths. */
     title?: string;
     /** Additional class name(s) merged onto the root `<button>`. */
@@ -85,6 +105,10 @@
     onclick,
     ariaLabel,
     pressed,
+    role,
+    ariaChecked,
+    tabindex,
+    onkeydown,
     title,
     class: className = '',
     dataTestId = 'ui-button',
@@ -102,9 +126,13 @@
   disabled={isDisabled}
   aria-busy={loading || undefined}
   aria-label={ariaLabel}
+  {role}
   aria-pressed={pressed}
+  aria-checked={ariaChecked}
   {title}
   {onclick}
+  {onkeydown}
+  {tabindex}
   data-testid={dataTestId}
   data-variant={variant}
   data-size={size}
