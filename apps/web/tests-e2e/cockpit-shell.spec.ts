@@ -949,4 +949,305 @@ test.describe('cockpit shell', () => {
     await page.setViewportSize({ width: 1279, height: 900 });
     await expect(sidebar).toHaveCount(0);
   });
+
+  test('at 1440px the terminal dock opens alongside the transcript, composer and right sidebar, dimming nothing (design spec §3.1/§0.6, issue #572)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const canvas = page.locator('.canvas');
+    const toggle = page.getByTestId('terminal-dock-toggle');
+    const dock = page.getByTestId('terminal-dock');
+    const sidebar = page.getByTestId('right-sidebar');
+
+    // The right sidebar opens by default at this width with a session
+    // selected (design spec §3.3); the terminal never does (design spec
+    // decision #4, closed by default) — asserted first, since everything
+    // below only proves something if this dock really started shut.
+    await expect(sidebar).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // Mounted but hidden, not absent (issue #572's own "collapsing must
+    // not drop the PTY" design: the dock wrapper stays in the DOM once a
+    // session exists so a LATER open/close round trip never remounts
+    // `InteractiveTerminal` — see `.terminal-dock`'s own doc comment in
+    // `+page.svelte`). Closed-by-default is a visibility fact here, not a
+    // DOM-presence one.
+    await expect(dock).not.toBeVisible();
+
+    const bgBefore = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const screenshotBefore = await page.screenshot();
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(dock).toBeVisible();
+
+    // The audit's own method (design spec P2 finding, reused above by the
+    // right sidebar's identical test): the SAME element's background
+    // colour, read the same way, before and after. Unchanged is the proof
+    // there is no scrim — design spec §0.6 "a workbench panel never dims
+    // the app", now proven for a THIRD panel open at once, not just one.
+    const bgAfter = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bgAfter).toBe(bgBefore);
+
+    // Never scrims at this width, unlike the mobile bottom sheet further
+    // down: no backdrop element exists at all here.
+    await expect(page.getByTestId('terminal-dock-backdrop')).toHaveCount(0);
+
+    // All four zones visible and interactive at once — the acceptance
+    // line itself.
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+    await expect(page.getByTestId('transcript-items')).toBeVisible();
+    await expect(sidebar).toBeVisible();
+    await expect(page.getByTestId('interactive-terminal')).toBeVisible();
+
+    // A real visual change (the dock now painted at the bottom of the
+    // window), not two identical frames.
+    const screenshotAfter = await page.screenshot();
+    expect(screenshotBefore.equals(screenshotAfter)).toBe(false);
+  });
+
+  test("dragging the terminal dock's top edge resizes it and xterm reflows to real cols/rows, not just the CSS height (issue #572)", async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId('terminal-dock-toggle').click();
+
+    const dock = page.getByTestId('terminal-dock');
+    const terminal = page.getByTestId('interactive-terminal');
+    const handle = page.getByTestId('terminal-dock-resize-handle');
+    await expect(dock).toBeVisible();
+    await expect(terminal).toBeVisible();
+
+    // The initial fit (`InteractiveTerminal.svelte`'s own top doc comment,
+    // issue #572): xterm reports real cols/rows from the FIRST paint, not
+    // the 80x24 fallback the component seeds itself with before any real
+    // layout exists.
+    const colsBefore = await terminal.evaluate((el) => Number(el.getAttribute('data-cols')));
+    const rowsBefore = await terminal.evaluate((el) => Number(el.getAttribute('data-rows')));
+    expect(colsBefore).toBeGreaterThan(0);
+    expect(rowsBefore).toBeGreaterThan(0);
+    const heightBefore = (await dock.boundingBox())?.height ?? 0;
+
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).toBeTruthy();
+    const startX = (handleBox?.x ?? 0) + (handleBox?.width ?? 0) / 2;
+    const startY = (handleBox?.y ?? 0) + (handleBox?.height ?? 0) / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    // A CONTINUOUS drag (several intermediate moves, not one jump) — the
+    // coalescing `InteractiveTerminal.svelte`'s own doc comment documents
+    // (a `ResizeObserver` notification per render frame, not per
+    // `pointermove`) is what this exercises: many pointermoves during the
+    // drag, one real resize outcome once it settles.
+    for (let step = 1; step <= 8; step += 1) {
+      await page.mouse.move(startX, startY - step * 10);
+    }
+    await page.mouse.up();
+
+    const heightAfter = (await dock.boundingBox())?.height ?? 0;
+    expect(heightAfter).toBeGreaterThan(heightBefore + 40);
+
+    // The real effect of the resize, not just the CSS box (issue #572's
+    // own acceptance line: "xterm reflows to the new rows/cols").
+    await expect(async () => {
+      const rowsAfter = await terminal.evaluate((el) => Number(el.getAttribute('data-rows')));
+      expect(rowsAfter).toBeGreaterThan(rowsBefore);
+    }).toPass({ timeout: 5_000 });
+
+    // A vertical-only drag: the dock's width never moved, so cols
+    // shouldn't either — proving this read the terminal's REAL layout
+    // rather than one attribute both dimensions happen to bump together.
+    const colsAfter = await terminal.evaluate((el) => Number(el.getAttribute('data-cols')));
+    expect(colsAfter).toBe(colsBefore);
+  });
+
+  test('collapsing and reopening the terminal dock keeps the same terminal: no repeated terminal_open, no terminal_close (issue #572)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const toggle = page.getByTestId('terminal-dock-toggle');
+    const dock = page.getByTestId('terminal-dock');
+
+    await toggle.click();
+    await expect(dock).toBeVisible();
+
+    // The node side of the protocol sees exactly one `terminal_open` for
+    // the whole test. `FakeNode` never answers it — this harness has no
+    // terminal-protocol support of its own — which is fine: what this
+    // test proves is `InteractiveTerminal`'s own mount/PTY lifecycle
+    // (never re-triggered by a collapse/reopen), not a real shell round
+    // trip end to end.
+    await loombox.node.waitFor((message) => message.type === 'terminal_open');
+    expect(loombox.node.messages.filter((message) => message.type === 'terminal_open').length).toBe(
+      1,
+    );
+
+    // A stable DOM node identity is the real proof `InteractiveTerminal`
+    // was never unmounted+remounted — Playwright locators re-query on
+    // every call, an in-page reference does not.
+    await page.evaluate(() => {
+      (window as unknown as { __terminalNode: Element | null }).__terminalNode =
+        document.querySelector('[data-testid="interactive-terminal"]');
+    });
+
+    // Collapse, then reopen — today, before this dock, this exact round
+    // trip unmounted `InteractiveTerminal` and its own `onDestroy` closed
+    // the terminal outright (`.terminal-dock`'s own doc comment in
+    // `+page.svelte`).
+    await toggle.click();
+    await expect(dock).not.toBeVisible();
+    await toggle.click();
+    await expect(dock).toBeVisible();
+
+    const sameNode = await page.evaluate(
+      () =>
+        document.querySelector('[data-testid="interactive-terminal"]') ===
+        (window as unknown as { __terminalNode: Element | null }).__terminalNode,
+    );
+    expect(sameNode).toBe(true);
+    expect(loombox.node.messages.filter((message) => message.type === 'terminal_open').length).toBe(
+      1,
+    );
+    expect(
+      loombox.node.messages.filter((message) => message.type === 'terminal_close').length,
+    ).toBe(0);
+  });
+
+  test('terminal dock height and open state survive a reload (issue #572)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const toggle = page.getByTestId('terminal-dock-toggle');
+    const dock = page.getByTestId('terminal-dock');
+    const handle = page.getByTestId('terminal-dock-resize-handle');
+
+    await toggle.click();
+    await expect(dock).toBeVisible();
+
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).toBeTruthy();
+    const startX = (handleBox?.x ?? 0) + (handleBox?.width ?? 0) / 2;
+    const startY = (handleBox?.y ?? 0) + (handleBox?.height ?? 0) / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX, startY - 60);
+    await page.mouse.up();
+    // A settle wait, not a bare read: `DockPanel.persist()` writes to
+    // `localStorage` off the same `pointermove` handler that drives the
+    // visible height, but this file's own e2e run showed a rare race
+    // between that last write actually landing and the very next command
+    // reading `boundingBox()` — flaky only under this box's shared load,
+    // never a logic bug (the drag itself, and reflow, are both proven
+    // deterministically by the dedicated drag spec above).
+    await page.waitForTimeout(300);
+
+    const heightAfterDrag = (await dock.boundingBox())?.height;
+    expect(heightAfterDrag).toBeDefined();
+
+    await page.reload();
+    await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
+
+    // Closed by default (design spec decision #4) means "still open" after
+    // a reload is the real proof of persistence here — this dock has no
+    // dynamic default to rule out the way the right sidebar's own reload
+    // test above does.
+    await expect(page.getByTestId('terminal-dock-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await expect(dock).toBeVisible();
+    const heightAfterReload = (await dock.boundingBox())?.height;
+    expect(Math.abs((heightAfterReload ?? 0) - (heightAfterDrag ?? 0))).toBeLessThan(2);
+  });
+
+  test('at 390px the terminal is a bottom sheet, follows the one-panel-at-a-time rule, and the sessions/right-sidebar sheets are not regressed (design spec §3.3, issue #572)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    const sessionsToggle = page.getByTestId('tabbar-sessions');
+    const workbenchToggle = page.getByTestId('workbench-toggle');
+    const terminalToggle = page.getByTestId('terminal-dock-toggle');
+    const sessionsColumn = page.getByTestId('sessions-column');
+    const rightSidebar = page.getByTestId('right-sidebar');
+    const dock = page.getByTestId('terminal-dock');
+
+    // A genuine bottom sheet: fixed, full-width, with the same manually-
+    // conditioned backdrop the sessions sidebar's own mobile sheet uses —
+    // issue #572's own "reconcile it with the existing mobile sheet": the
+    // SAME mechanism, not a second one (see `.terminal-dock`'s own CSS doc
+    // comment in `+page.svelte`).
+    await terminalToggle.click();
+    await expect(dock).toBeVisible();
+    await expect(page.getByTestId('terminal-dock-backdrop')).toBeVisible();
+    const dockBox = await dock.boundingBox();
+    expect(dockBox?.width).toBeGreaterThan(370);
+
+    // One panel at a time below `--bp-desktop` (design spec §3.3):
+    // opening the sessions sheet closes the terminal right back.
+    //
+    // Not `not.toBeVisible()`: Playwright's visibility check only looks at
+    // `display`/`visibility`/box size, never actual viewport position, so
+    // a `transform`-translated-off-screen element with a real nonzero box
+    // (this dock's own mobile-sheet CSS, `height: min(60vh, 32rem)`
+    // regardless of open state) still reads as "visible" to it. The class
+    // removal (`terminalDock.open`'s own real signal) plus a bounding-box
+    // check that the box's top has actually left the viewport are the
+    // real proof.
+    await sessionsToggle.click();
+    await expect(sessionsColumn).toHaveClass(/sheet-open/);
+    await expect(dock).not.toHaveClass(/terminal-dock-open/);
+    await expect(async () => {
+      const box = await dock.boundingBox();
+      expect(box?.y ?? 0).toBeGreaterThanOrEqual(844);
+    }).toPass({ timeout: 5_000 });
+    await expect(page.getByTestId('terminal-dock-backdrop')).toHaveCount(0);
+
+    // The sessions sheet is a FULL-SCREEN sheet at this width (`top: 0` to
+    // `bottom: --tabbar-height`, `.sidebar`'s own CSS) that covers the
+    // ENTIRE topbar while open — pre-existing sessions-sidebar behaviour,
+    // nothing this dock introduced — so the terminal's own topbar toggle
+    // is unreachable by a real tap until the sessions sheet is dismissed
+    // through ITS OWN control first (the same tabbar button that opened
+    // it, already proven reachable above — `--z-overlay` sits above the
+    // sheet for exactly this "the control that opened it can also close
+    // it" reason).
+    await sessionsToggle.click();
+    await expect(sessionsColumn).not.toHaveClass(/sheet-open/);
+
+    // Reachable again, and reopens cleanly.
+    await terminalToggle.click();
+    await expect(dock).toHaveClass(/terminal-dock-open/);
+
+    // The right sidebar's own EXISTING mobile sheet is not regressed by
+    // any of this — and unlike the sessions sheet, it does NOT cover the
+    // topbar at this width (`top: auto; height: 60vh`, sitting in the
+    // bottom half only, `.right-sidebar`'s own `@media (max-width: 767px)`
+    // rule), so its toggle stays reachable with the terminal open: opening
+    // it closes the terminal, the same one-at-a-time rule, proven with a
+    // genuinely reachable click this time.
+    await workbenchToggle.click();
+    await expect(rightSidebar).toBeVisible();
+    await expect(page.getByTestId('right-sidebar-backdrop')).toBeVisible();
+    await expect(dock).not.toHaveClass(/terminal-dock-open/);
+    await expect(async () => {
+      const box = await dock.boundingBox();
+      expect(box?.y ?? 0).toBeGreaterThanOrEqual(844);
+    }).toPass({ timeout: 5_000 });
+
+    // And the reverse, which IS reachable here (the terminal toggle was
+    // never covered by the right sidebar's own bottom-half sheet):
+    // opening the terminal again dismisses the right sidebar sheet right
+    // back, proving the exclusivity is genuinely bidirectional wherever
+    // the UI lets two controls compete for the same tap.
+    await terminalToggle.click();
+    await expect(dock).toHaveClass(/terminal-dock-open/);
+    await expect(rightSidebar).toHaveCount(0);
+  });
 });

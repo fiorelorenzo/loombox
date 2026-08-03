@@ -45,6 +45,11 @@ const { FakeTerminal, instances } = vi.hoisted(() => {
       this.resizeListeners.push(listener);
     }
 
+    /** Test-only no-op: the real `@xterm/xterm` `Terminal.loadAddon` just calls `addon.activate(this)`; `InteractiveTerminal.svelte` loads the REAL `@xterm/addon-fit` (unmocked, see that file's own top doc comment) against this fake, so this only needs to exist, not do anything. */
+    loadAddon(addon: { activate(terminal: unknown): void }): void {
+      addon.activate(this);
+    }
+
     dispose(): void {
       this.disposed = true;
     }
@@ -236,7 +241,7 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
     ]);
   });
 
-  it('resize -> resize frame: xterm.js onResize fires resizeTerminal with the new cols/rows', () => {
+  it('resize -> resize frame: xterm.js onResize fires resizeTerminal with the new cols/rows', async () => {
     const client = fakeClient();
     render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
 
@@ -254,6 +259,16 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
     expect(client.resizeCalls).toEqual([
       { sessionId: 'sess-1', terminalId: openedTerminalId, cols: 120, rows: 40 },
     ]);
+
+    // The real effect of a resize, not just the frame sent for it (issue
+    // #572's own acceptance line: "xterm reflows to the new rows/cols" —
+    // this is what a caller/e2e spec can assert against without reaching
+    // into the component's internals).
+    const root = screen.getByTestId('interactive-terminal');
+    await waitFor(() => {
+      expect(root.getAttribute('data-cols')).toBe('120');
+      expect(root.getAttribute('data-rows')).toBe('40');
+    });
   });
 
   it('closes the terminal and disposes xterm.js on unmount', () => {

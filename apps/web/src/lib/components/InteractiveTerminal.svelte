@@ -73,9 +73,24 @@
    * (e.g. "no shell available") under the load-bearing `terminal-status`
    * testid this file's other tests pin down; the new timeout state below
    * has no such legacy constraint, so it uses `ErrorNotice` directly.
+   *
+   * Bottom dock + real resize (issue #572): the terminal used to live in a
+   * fixed-width vertical Drawer tab; it is a wide, short, drag-resizable
+   * bottom dock now, and xterm.js's own layout does not react to a
+   * container resize on its own. `onMount` below loads `@xterm/addon-fit`
+   * and calls `fitAddon.fit()` (which calls `terminal.resize()`, which is
+   * what actually fires `onResize` above) both right after `terminal.open`
+   * and on every `ResizeObserver` notification for `container` — covering
+   * the initial mount, a continuous height drag, AND becoming visible
+   * again after the dock collapsed it to nothing (`display: none`) and
+   * reopened, all through the one mechanism. `liveCols`/`liveRows` mirror
+   * whatever `onResize` last reported as `data-cols`/`data-rows` on the
+   * root element — a plain, real-browser-and-test-both observable proof
+   * that a resize actually reflowed the terminal, not just its CSS box.
    */
   import { onDestroy, onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
   import type { TerminalClient } from '$lib/terminal';
   import type { TerminalClientState } from '$lib/relay-client';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
@@ -99,6 +114,11 @@
   let focused = $state(false);
 
   let terminal: Terminal | undefined;
+  let fitAddon: FitAddon | undefined;
+  let resizeObserver: ResizeObserver | undefined;
+  /** Mirrors of `terminal.cols`/`terminal.rows` as of the last `onResize` (see this file's own top doc comment) — rendered as `data-cols`/`data-rows` below so a resize (drag, initial fit, becoming visible again) is assertable by its REAL effect on the terminal, not just a CSS height change. Seeded from the constructed `terminal`'s own `cols`/`rows` in `onMount` below, not read directly from the `cols`/`rows` props here — reading a prop straight into a `$state` initializer only captures it once anyway (Svelte's own `state_referenced_locally` warning), so this reads the value from the one place that already needs to exist at that point regardless. */
+  let liveCols = $state(0);
+  let liveRows = $state(0);
   let terminalId: string | undefined;
   let unsubscribeOutput: (() => void) | undefined;
   let unsubscribeState: (() => void) | undefined;
@@ -183,6 +203,8 @@
         selectionBackground: readToken('--color-accent-subtle', 'rgba(59, 157, 247, 0.35)'),
       },
     });
+    liveCols = terminal.cols;
+    liveRows = terminal.rows;
     if (container) terminal.open(container);
 
     // Reads the CURRENT `terminalId` at send time rather than closing over
@@ -194,8 +216,29 @@
     });
 
     terminal.onResize(({ cols: newCols, rows: newRows }) => {
+      liveCols = newCols;
+      liveRows = newRows;
       if (terminalId) client.resizeTerminal(sessionId, terminalId, newCols, newRows);
     });
+
+    // See this file's own top doc comment ("Bottom dock + real resize",
+    // issue #572) for why a `ResizeObserver`, not a `pointermove`
+    // listener, is the coalescing mechanism: it fires at most once per
+    // render frame no matter how many synchronous height writes happened
+    // since the last one, so a continuous drag calls `fit()` (and the
+    // real `resizeTerminal` it triggers) once per frame, not once per
+    // pointermove. Guarded for `jsdom` (no `ResizeObserver`); the real
+    // `@xterm/addon-fit` package runs unmocked against this file's own
+    // `FakeTerminal` regardless — `proposeDimensions()` bails out on the
+    // missing `terminal.element` a real `Terminal.open()` would have set,
+    // so `fit()` is a safe no-op here and a real resize in a real browser.
+    fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    fitAddon.fit();
+    if (container && typeof ResizeObserver === 'function') {
+      resizeObserver = new ResizeObserver(() => fitAddon?.fit());
+      resizeObserver.observe(container);
+    }
 
     openNewTerminal();
   });
@@ -227,6 +270,7 @@
     unsubscribeOutput?.();
     unsubscribeState?.();
     clearOpenTimeout();
+    resizeObserver?.disconnect();
     if (terminalId) client.closeTerminal(sessionId, terminalId);
     terminal?.dispose();
   });
@@ -237,6 +281,8 @@
   class:focused
   data-testid="interactive-terminal"
   data-status={status}
+  data-cols={liveCols}
+  data-rows={liveRows}
 >
   <div class="terminal-titlebar">
     <Icon name="tool-bash" class="terminal-titlebar-icon" />
