@@ -1,5 +1,13 @@
 # @loombox/providers-ohmypi
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [d09e12b]
+- Updated dependencies [fc2c12e]
+  - @loombox/providers-core@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
