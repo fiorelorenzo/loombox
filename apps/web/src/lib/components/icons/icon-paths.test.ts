@@ -33,6 +33,11 @@ const EXPECTED_NAMES = [
   'pin',
   'close',
   'sidebar-panel',
+  'provider-claude',
+  'provider-codex',
+  'provider-gemini',
+  'provider-ohmypi',
+  'provider-generic',
 ] as const;
 
 describe('icon-paths (#502 redesign v3 icon set)', () => {

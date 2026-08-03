@@ -10,8 +10,14 @@
  * surfaces can never disagree about the same id again.
  *
  * `name` is the full product name, for a picker (`NewSessionDialog`'s Agent
- * `Select`/context-line fact); `role` is the short word a transcript
- * gutter has room for (`MessageItem`).
+ * `Select`/context-line fact). `role` is no longer painted as a visible
+ * word in the transcript (design spec `2026-08-03-cockpit-v6-design.md`
+ * §3.4, issue #575: attribution moved to a glyph plus a quiet surface) —
+ * it now backs the accessible name a screen reader gets instead, via
+ * `MessageItem`'s visually-hidden label, so it stays a short, real word
+ * rather than the raw id. `glyph` is that gutter mark's icon name, drawn
+ * from `icon-paths.ts`'s `provider-*` set and always `aria-hidden` (the
+ * `role` string is what carries the name to assistive tech, not the icon).
  *
  * Ids mirror `RESERVED_PROVIDER_IDS` (`@loombox/providers-core`), the v1
  * roadmap's full provider set: `generic` is the untranslated fallback
@@ -19,13 +25,15 @@
  * `NewSessionDialog`'s own `providers` prop doc comment), and `gemini`
  * stays reserved — it has no spawn recipe yet. An id outside this map, or
  * none at all, is each caller's own problem to default; every current
- * caller falls back to "Agent" or the raw id rather than indexing this
- * table unguarded.
+ * caller falls back to "Agent"/`provider-generic` or the raw id rather
+ * than indexing this table unguarded.
  */
-export const PROVIDER_LABELS: Record<string, { name: string; role: string }> = {
-  claude: { name: 'Claude Code', role: 'Claude' },
-  codex: { name: 'Codex', role: 'Codex' },
-  gemini: { name: 'Gemini', role: 'Gemini' },
-  ohmypi: { name: 'Oh My Pi', role: 'Oh My Pi' },
-  generic: { name: 'Agent', role: 'Agent' },
+import type { IconName } from './components/icons/icon-paths';
+
+export const PROVIDER_LABELS: Record<string, { name: string; role: string; glyph: IconName }> = {
+  claude: { name: 'Claude Code', role: 'Claude', glyph: 'provider-claude' },
+  codex: { name: 'Codex', role: 'Codex', glyph: 'provider-codex' },
+  gemini: { name: 'Gemini', role: 'Gemini', glyph: 'provider-gemini' },
+  ohmypi: { name: 'Oh My Pi', role: 'Oh My Pi', glyph: 'provider-ohmypi' },
+  generic: { name: 'Agent', role: 'Agent', glyph: 'provider-generic' },
 };

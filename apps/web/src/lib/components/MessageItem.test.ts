@@ -22,8 +22,8 @@ function messageItem(extra: Partial<TranscriptMessageItem> = {}): TranscriptMess
 describe('MessageItem', () => {
   it('renders an agent message with its text visible', () => {
     render(MessageItem, { props: { item: messageItem() } });
-    // No providerId passed: falls back to the generic "Agent" label rather
-    // than the raw role word (design spec v5 §4).
+    // No providerId passed: falls back to the generic "Agent" accessible
+    // label rather than the raw role word (design spec v6 §3.4).
     expect(screen.getByText('Agent')).toBeTruthy();
     expect(screen.getByText('Hello there')).toBeTruthy();
   });
@@ -42,8 +42,8 @@ describe('MessageItem', () => {
     render(MessageItem, {
       props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
     });
-    // A thought is still the agent speaking (§4's gutter word doesn't gain
-    // a third value) — "Thought for" already carries the aside itself.
+    // A thought is still the agent speaking (the accessible label doesn't
+    // gain a third value) — "Thought for" already carries the aside itself.
     expect(screen.getByText('Agent')).toBeTruthy();
     expect(screen.queryByText('secret reasoning')).toBeNull();
 
@@ -217,39 +217,53 @@ describe('MessageItem: one timeline metaphor (redesign v3 §3.4)', () => {
     expect(userClasses.sort()).toEqual(agentClasses.sort());
   });
 
-  it('never renders the raw USER/AGENT/THOUGHT role word in the visible content flow — the gutter carries a friendly label instead', () => {
+  it('never renders the raw USER/AGENT/THOUGHT role word in the visible content flow — attribution lives in the gutter instead', () => {
     render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
     const content = document.querySelector('.content');
     expect(content?.textContent ?? '').not.toMatch(/\b(USER|AGENT|THOUGHT)\b/i);
   });
 });
 
-describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
-  it('tells a user turn from an agent turn by a real, visible, accessible role-label word in the gutter', () => {
-    render(MessageItem, { props: { item: messageItem() } });
-    const agentLabel = screen.getByText('Agent');
-    expect(agentLabel.getAttribute('aria-hidden')).not.toBe('true');
-    cleanup();
+describe('MessageItem: attribution by surface and glyph (design spec v6 §3.4, issue #575)', () => {
+  it("draws an agent turn's provider glyph decoratively in the gutter, with the role reaching assistive tech through a separate visually-hidden label", () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem(), providerId: 'claude' },
+    });
+    const glyph = container.querySelector('[data-icon-name="provider-claude"]');
+    expect(glyph).toBeTruthy();
+    expect(glyph?.getAttribute('aria-hidden')).toBe('true');
 
-    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
-    const userLabel = screen.getByText('You');
-    expect(userLabel.getAttribute('aria-hidden')).not.toBe('true');
-    // Different, real words — not the same node re-styled by colour alone.
-    expect(userLabel.textContent).not.toBe(agentLabel.textContent);
+    // The word itself is unchanged from v5 — "Claude", not the raw id — it
+    // just no longer paints. `.sr-only` is real text, never `aria-hidden`.
+    const label = screen.getByText('Claude');
+    expect(label.className).toContain('sr-only');
+    expect(label.getAttribute('aria-hidden')).not.toBe('true');
   });
 
-  it('puts no decorative mark in that gutter beside the word', () => {
-    // Every turn used to carry a 4px dot above the label: `--color-text-muted`
-    // for an agent, accent for the user. Right-aligned, it landed over the
-    // label's last letter and read as dirt on the screen; muted, it said
-    // nothing an agent turn did not already say. The accent moved onto the word
-    // itself, so the cue survives and the speck does not.
-    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+  it('falls back to the plain provider-generic glyph for an unrecognized or omitted provider id, same as the "Agent" label fallback', () => {
+    const { container } = render(MessageItem, { props: { item: messageItem() } });
+    expect(container.querySelector('[data-icon-name="provider-generic"]')).toBeTruthy();
+    expect(screen.getByText('Agent').className).toContain('sr-only');
+  });
 
-    const gutter = document.querySelector('.gutter');
-    expect(gutter).toBeTruthy();
-    expect(gutter?.children).toHaveLength(1);
-    expect(gutter?.querySelector('[aria-hidden="true"]')).toBeNull();
+  it('gives a user turn no glyph at all — the accent bar and raised surface already say "you"', () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem({ kind: 'user_message_chunk' }) },
+    });
+    expect(container.querySelector('[data-icon-name^="provider-"]')).toBeNull();
+    const label = screen.getByText('You');
+    expect(label.className).toContain('sr-only');
+  });
+
+  it("suppresses only the visible glyph when showAttribution is false — the accessible label and this turn's own surface stay", () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem(), providerId: 'claude', showAttribution: false },
+    });
+    expect(container.querySelector('[data-icon-name^="provider-"]')).toBeNull();
+    // Still announced — a screen reader gets every turn's role regardless
+    // of whether consecutive turns repeat the glyph visually.
+    expect(screen.getByText('Claude').className).toContain('sr-only');
+    expect(screen.getByTestId('message-item').className).toMatch(/\bagent\b/);
   });
 
   it("labels an agent turn with the session's own provider name, not a generic word, when one is known", () => {
@@ -258,10 +272,13 @@ describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
     expect(screen.queryByText('Agent')).toBeNull();
   });
 
-  it("puts the user's own turn on a raised surface, on top of (never instead of) the label", () => {
+  it("puts the user's own turn on a raised surface and an agent turn on its own quieter one — never the same class, never no surface", () => {
     render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
     expect(screen.getByTestId('message-item').className).toMatch(/\buser\b/);
-    expect(screen.getByText('You')).toBeTruthy();
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem() } });
+    expect(screen.getByTestId('message-item').className).toMatch(/\bagent\b/);
   });
 });
 

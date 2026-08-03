@@ -1,22 +1,20 @@
 <script lang="ts">
   /**
    * Shared gutter column for every tool-call row (`GenericToolRow` plus
-   * every `tool-widgets/*` bespoke widget): the tool-kind glyph plus a
-   * visible "Tool" role caption, so the same column that tells a
-   * `MessageItem` row "You" from the provider's name also tells a tool
-   * call apart from either (design spec v5 §4: "every turn states its
-   * role" — `You` / the provider's name / `Tool`, never colour alone).
-   * One component rather than four copies of the same markup+CSS, which
-   * is what `GenericToolRow`/`BashWidget`/`EditWriteWidget`/`TodoWidget`
-   * each hand-rolled before this pass.
-   *
-   * The specific kind (bash/edit/search/…) still reaches screen readers
-   * through each caller's own visible title text (and `GenericToolRow`'s
-   * extra `sr-only` kind label) — this column only ever says the one word
-   * "Tool", mirroring `MessageItem`'s own gutter only ever saying "You" or
-   * the provider's name. Kept `aria-hidden` as a whole, same as the
-   * (decorative) icon it replaces: a screen reader gets the row's role
-   * from the visible content already, not a duplicate announcement here.
+   * every `tool-widgets/*` bespoke widget): just the tool-kind glyph now
+   * (design spec `2026-08-03-cockpit-v6-design.md` §3.4, issue #575, point
+   * 3: "tool rows keep their card and the TOOL word goes — the tool icon
+   * already says it"). v5 §4 used to pair this glyph with a visible "Tool"
+   * caption to match `MessageItem`'s own gutter word; that word is gone
+   * from both now, replaced there by a glyph plus a `.sr-only` label. This
+   * gutter never carried the accessible name in the first place — the
+   * whole column has always been `aria-hidden` (see below) — so dropping
+   * the word loses no accessible information; the specific kind
+   * (bash/edit/search/…) still reaches screen readers through each
+   * caller's own visible title text and `GenericToolRow`'s own `sr-only`
+   * kind label. One component rather than four copies of the same
+   * markup+CSS, which is what `GenericToolRow`/`BashWidget`/
+   * `EditWriteWidget`/`TodoWidget` each hand-rolled before this pass.
    */
   import Icon from './icons/Icon.svelte';
   import type { IconName } from './icons/icon-paths';
@@ -31,7 +29,6 @@
 
 <div class="tool-gutter" aria-hidden="true">
   <Icon name={icon} class="type-icon" />
-  <span class="role-label">Tool</span>
 </div>
 
 <style>
@@ -55,25 +52,13 @@
     color: var(--color-text-secondary);
   }
 
-  /* Same `--text-caption-size` uppercase treatment as MessageItem's own
-     role label (design spec v5 §4) — one word, "Tool", every time. */
-  .role-label {
-    font-size: var(--text-caption-size);
-    line-height: var(--text-caption-line);
-    letter-spacing: var(--text-caption-tracking);
-    font-weight: var(--text-caption-weight);
-    text-transform: uppercase;
-    color: var(--color-text-muted);
-  }
-
-  /* Below `--bp-mobile` the role column collapses and this caption moves
-     above the tool card (see `MessageItem`'s own copy of this block for the
-     measurement). Stacked, the glyph and the word read better side by side
-     than in a two-line stack of their own, so the column becomes a row. The
-     four widget rows that place this component (`GenericToolRow`,
-     `BashWidget`, `EditWriteWidget`, `TodoWidget`) each switch to a column at
-     the same breakpoint — a flex child cannot turn its own parent, and they
-     must all move together or the timeline's one rule becomes several. */
+  /* Below `--bp-mobile` every other row sharing this column collapses too
+     (see `MessageItem`'s own copy of this block for the measurement) — a
+     flex child cannot turn its own parent, and they must all move together
+     or the timeline's one rule becomes several that nearly line up. This
+     component only ever holds the icon now, so the row/column switch below
+     is purely for parity with those siblings' own layout, not because the
+     icon alone needs to reflow. */
   @media (max-width: 479px) {
     .tool-gutter {
       flex: 0 0 auto;

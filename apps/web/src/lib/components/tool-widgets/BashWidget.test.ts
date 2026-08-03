@@ -41,10 +41,11 @@ describe('BashWidget', () => {
   });
 });
 
-describe('BashWidget: shared tool-card treatment (design spec v5 §4)', () => {
-  it('states its role as the visible word "Tool" in the gutter, and renders its content through the shared flat ToolCard', () => {
+describe('BashWidget: shared tool-card treatment (issue #575, superseding v5 §4)', () => {
+  it('states its role via the gutter icon alone now — no visible "Tool" word — and renders its content through the shared flat ToolCard', () => {
     const { container } = render(BashWidget, { props: { item: bashItem() } });
-    expect(screen.getByText('Tool')).toBeTruthy();
+    expect(screen.queryByText('Tool')).toBeNull();
+    expect(container.querySelector('[data-icon-name="tool-bash"]')).toBeTruthy();
     expect(container.querySelector('.tool-card')).toBeTruthy();
   });
 });
