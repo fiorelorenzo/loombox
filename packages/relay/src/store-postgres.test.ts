@@ -534,6 +534,53 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     // Revoking an already-gone id is a no-op, not an error.
     expect(await store.deviceTokens.revoke('tok_list_a1', 'acct_a')).toBe(false);
   });
+
+  it('connected accounts (SPEC §7.26, #221): upsert then listForAccount, isolated per account, re-announce overwrites rather than accumulating', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+    const accountA = {
+      id: 'github:github.com:1234567',
+      provider: 'github',
+      host: 'github.com',
+      providerAccountId: '1234567',
+      label: 'octocat',
+      credentialSource: 'device_flow' as const,
+      scopes: ['repo', 'read:user'],
+      capabilities: ['repo'],
+      connectedAt: now,
+      updatedAt: now,
+      secretRef: 'connected-account-token:github:github.com:1234567',
+    };
+    const accountB = {
+      id: 'jira:myteam.atlassian.net:5b10ac8d82e05b22cc7d4ef5',
+      provider: 'jira',
+      host: 'myteam.atlassian.net',
+      providerAccountId: '5b10ac8d82e05b22cc7d4ef5',
+      label: 'Jane Doe',
+      credentialSource: 'api_token' as const,
+      scopes: null,
+      capabilities: ['comments'],
+      connectedAt: now,
+      updatedAt: now,
+      secretRef: 'connected-account-token:jira:myteam.atlassian.net:5b10ac8d82e05b22cc7d4ef5',
+    };
+
+    await store.connectedAccounts.upsert('acct_a', accountA);
+    await store.connectedAccounts.upsert('acct_b', accountB);
+
+    expect(await store.connectedAccounts.listForAccount('acct_a')).toEqual([accountA]);
+    expect(await store.connectedAccounts.listForAccount('acct_b')).toEqual([accountB]);
+    // Never leaks any field but the ones ConnectedAccount actually has —
+    // in particular, no token-shaped value anywhere in the stored row.
+    expect(JSON.stringify(await store.connectedAccounts.listForAccount('acct_a'))).not.toContain(
+      'token"',
+    );
+
+    // Re-announcing the same account.id under the same owner overwrites in place.
+    const relabeled = { ...accountA, label: 'octocat (renamed)', updatedAt: now + 1 };
+    await store.connectedAccounts.upsert('acct_a', relabeled);
+    expect(await store.connectedAccounts.listForAccount('acct_a')).toEqual([relabeled]);
+  });
 });
 
 describe('Postgres store matches the in-memory store contract shape', () => {
@@ -571,6 +618,34 @@ describe('Postgres store matches the in-memory store contract shape', () => {
       expect(await store.deviceTokens.revoke('parity_tok_1', 'someone_else')).toBe(false);
       expect(await store.deviceTokens.revoke('parity_tok_1', 'acct_parity')).toBe(true);
       expect(await store.deviceTokens.listForAccount('acct_parity')).toHaveLength(0);
+    }
+  });
+
+  it('connected accounts (SPEC §7.26, #221): both implementations upsert/list identically, account-scoped', async () => {
+    const pgStore = await freshPgMemStore();
+    const memStore = createInMemoryRelayStore();
+
+    for (const store of [pgStore, memStore]) {
+      const now = Date.now();
+      const account = {
+        id: 'github:github.com:9',
+        provider: 'github',
+        host: 'github.com',
+        providerAccountId: '9',
+        label: 'parity account',
+        credentialSource: 'device_flow' as const,
+        scopes: ['repo'],
+        capabilities: ['repo'],
+        connectedAt: now,
+        updatedAt: now,
+        secretRef: 'connected-account-token:github:github.com:9',
+      };
+
+      await store.connectedAccounts.upsert('acct_parity', account);
+
+      const listed = await store.connectedAccounts.listForAccount('acct_parity');
+      expect(listed).toEqual([account]);
+      expect(await store.connectedAccounts.listForAccount('someone_else')).toHaveLength(0);
     }
   });
 });

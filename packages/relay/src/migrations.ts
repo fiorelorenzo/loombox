@@ -278,4 +278,36 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE device_tokens DROP COLUMN IF EXISTS id;
     `,
   },
+  {
+    // SPEC §7.26, issue #221: the connected-account metadata row — no
+    // secret ever lands in this table (`secret_ref` names a node-local OS
+    // keyring entry, never a token), same "account-scoped, plaintext,
+    // no-secret" exception already established for `devices`/`sessions`/
+    // `device_tokens` above. `scopes`/`capabilities` are JSON-encoded TEXT
+    // (see `store-postgres.ts`'s `createPostgresConnectedAccountStore` doc
+    // comment for why not a JSONB/child-table). Composite primary key,
+    // exactly like `leases`/`push_subscriptions`: `id` (the derived
+    // `provider:host:providerAccountId`) is only unique per owning
+    // `account_id`, not globally.
+    id: '0011_connected_accounts',
+    up: `
+      CREATE TABLE connected_accounts (
+        account_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        host TEXT NOT NULL,
+        provider_account_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        avatar_url TEXT,
+        credential_source TEXT NOT NULL,
+        scopes TEXT,
+        capabilities TEXT NOT NULL,
+        connected_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        secret_ref TEXT NOT NULL,
+        PRIMARY KEY (account_id, id)
+      );
+    `,
+    down: `DROP TABLE IF EXISTS connected_accounts;`,
+  },
 ];

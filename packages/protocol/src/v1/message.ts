@@ -47,6 +47,11 @@ import {
   targetUpdateResponse,
 } from './target-lifecycle';
 import { sessionArchiveRequest, sessionArchiveResponse } from './session-lifecycle';
+import {
+  connectedAccountAnnounce,
+  connectedAccountList,
+  connectedAccountListRequest,
+} from './connected-accounts';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -110,6 +115,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   decommissionTargetResponse,
   targetUpdateRequest,
   targetUpdateResponse,
+  connectedAccountAnnounce,
+  connectedAccountListRequest,
+  connectedAccountList,
   ping,
   pong,
 ]);

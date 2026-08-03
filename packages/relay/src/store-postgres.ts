@@ -1,4 +1,4 @@
-import type { EncryptedEnvelope, SessionMetaPublic } from '@loombox/protocol';
+import type { ConnectedAccount, EncryptedEnvelope, SessionMetaPublic } from '@loombox/protocol';
 
 import type { PgLike } from './pg-client';
 import {
@@ -8,6 +8,8 @@ import {
   type AmkRotationStore,
   type BlobRetentionMeta,
   type BlobStore,
+  type ConnectedAccountRecord,
+  type ConnectedAccountStore,
   type DeviceAuthRequestRecord,
   type DeviceAuthStore,
   type DeviceRecord,
@@ -59,6 +61,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     leases: createPostgresLeaseStore(pg),
     deviceAuth: createPostgresDeviceAuthStore(pg),
     deviceTokens: createPostgresDeviceTokenStore(pg),
+    connectedAccounts: createPostgresConnectedAccountStore(pg),
   };
 }
 
@@ -896,6 +899,97 @@ function createPostgresDeviceTokenStore(pg: PgLike): DeviceTokenStore {
         [id, accountId],
       );
       return rows.length > 0;
+    },
+  };
+}
+
+interface ConnectedAccountRow {
+  account_id: string;
+  id: string;
+  provider: string;
+  host: string;
+  provider_account_id: string;
+  label: string;
+  avatar_url: string | null;
+  credential_source: string;
+  scopes: string | null;
+  capabilities: string;
+  connected_at: string | number;
+  updated_at: string | number;
+  secret_ref: string;
+}
+
+function rowToConnectedAccount(row: ConnectedAccountRow): ConnectedAccountRecord {
+  return {
+    accountId: row.account_id,
+    id: row.id,
+    provider: row.provider,
+    host: row.host,
+    providerAccountId: row.provider_account_id,
+    label: row.label,
+    avatarUrl: row.avatar_url ?? undefined,
+    credentialSource: row.credential_source as ConnectedAccount['credentialSource'],
+    scopes: row.scopes === null ? null : (JSON.parse(row.scopes) as string[]),
+    capabilities: JSON.parse(row.capabilities) as string[],
+    connectedAt: Number(row.connected_at),
+    updatedAt: Number(row.updated_at),
+    secretRef: row.secret_ref,
+  };
+}
+
+/**
+ * Postgres-backed `ConnectedAccountStore` (SPEC §7.26, issue #221). `scopes`/
+ * `capabilities` are stored as JSON-encoded TEXT (there is no existing
+ * JSONB column anywhere in this schema to match, and neither array ever
+ * needs a SQL-side predicate) rather than a normalized child table — both
+ * are read/written whole, never queried element-wise.
+ */
+function createPostgresConnectedAccountStore(pg: PgLike): ConnectedAccountStore {
+  return {
+    async upsert(accountId, account) {
+      await pg.query(
+        `INSERT INTO connected_accounts
+           (account_id, id, provider, host, provider_account_id, label, avatar_url,
+            credential_source, scopes, capabilities, connected_at, updated_at, secret_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (account_id, id) DO UPDATE SET
+           provider = EXCLUDED.provider,
+           host = EXCLUDED.host,
+           provider_account_id = EXCLUDED.provider_account_id,
+           label = EXCLUDED.label,
+           avatar_url = EXCLUDED.avatar_url,
+           credential_source = EXCLUDED.credential_source,
+           scopes = EXCLUDED.scopes,
+           capabilities = EXCLUDED.capabilities,
+           connected_at = EXCLUDED.connected_at,
+           updated_at = EXCLUDED.updated_at,
+           secret_ref = EXCLUDED.secret_ref`,
+        [
+          accountId,
+          account.id,
+          account.provider,
+          account.host,
+          account.providerAccountId,
+          account.label,
+          account.avatarUrl ?? null,
+          account.credentialSource,
+          account.scopes === null ? null : JSON.stringify(account.scopes),
+          JSON.stringify(account.capabilities),
+          account.connectedAt,
+          account.updatedAt,
+          account.secretRef,
+        ],
+      );
+    },
+    async listForAccount(accountId) {
+      const { rows } = await pg.query<ConnectedAccountRow>(
+        `SELECT * FROM connected_accounts WHERE account_id = $1 ORDER BY connected_at DESC`,
+        [accountId],
+      );
+      return rows.map((row) => {
+        const { accountId: _owner, ...account } = rowToConnectedAccount(row);
+        return account;
+      });
     },
   };
 }
