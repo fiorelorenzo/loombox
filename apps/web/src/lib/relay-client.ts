@@ -2703,6 +2703,15 @@ export class RelayClient {
   private discardStalePermissionForToolCall(sessionId: string, event: AcpSessionWireEvent): void {
     if (event.kind !== 'tool_call' && event.kind !== 'tool_call_update') return;
     if (!event.status || event.status === 'pending') return;
+    // The wire cast (`openJson<AcpSessionWireEvent>` below) never validates
+    // this against `AcpToolCallUpdate`'s declared `id: string`, so a
+    // malformed update can carry `id: undefined` at runtime (issue #548).
+    // Without this guard, `undefined === undefined` would match ANY stale
+    // permission request whose own `toolCall.id` is equally malformed
+    // (the paired `permission_request` payload goes through the same
+    // unvalidated cast in `handlePermissionRequest`), cancelling the wrong
+    // card and publishing a false "resolved on another device" notice.
+    if (event.id === undefined) return;
 
     const queue = get(this.permissionQueueStoreFor(sessionId));
     const stale = listPermissionRequests(queue, sessionId).find(

@@ -136,7 +136,18 @@ function reduceMessageChunk(
 }
 
 function reduceToolCall(state: TranscriptState, update: AcpToolCallUpdate): TranscriptState {
-  const index = state.items.findIndex((item) => item.type === 'tool_call' && item.id === update.id);
+  // `update.id` is typed `string`, but the wire cast that produces an
+  // `AcpSessionWireEvent` (`apps/web/src/lib/relay-client.ts`'s
+  // `openJson<AcpSessionWireEvent>`) never validates it, so a malformed
+  // `tool_call`/`tool_call_update` can carry `id: undefined` at runtime
+  // (issue #548). `-1` here (never look up an existing row) keeps that
+  // case from matching an EARLIER malformed item that also has `id:
+  // undefined` — `undefined === undefined` would otherwise silently merge
+  // two unrelated tool calls into one row.
+  const index =
+    update.id === undefined
+      ? -1
+      : state.items.findIndex((item) => item.type === 'tool_call' && item.id === update.id);
 
   const items = state.items.slice();
   if (index === -1) {
