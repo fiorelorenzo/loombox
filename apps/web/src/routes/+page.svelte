@@ -2947,7 +2947,7 @@
                             />
                             <Button
                               type="submit"
-                              variant="secondary"
+                              variant="primary"
                               disabled={sendDisabled}
                               ariaLabel="Send prompt">Send</Button
                             >
@@ -4429,11 +4429,13 @@
     gap: var(--space-2xs);
   }
 
-  /* No pill, no filled surface: the border and the rounded box were the two
-     things that made this read as a chat widget rather than the tail of the
-     transcript. The hairline that separates the docked strip from the
-     transcript lives on `.canvas-footer`, one level up, so it is drawn once
-     for the whole strip rather than again here. */
+  /* v6 reverses the "no chrome" reading of v5 §0.4, not the intent (design
+     spec §3.5; issue #577): a docked field still ends the timeline aligned to
+     the same gutter, but it is now unmistakably an input rather than plain
+     text run against the page background. Border, surface, radius and
+     padding live on `.composer-field` below, not here. The hairline that
+     separates the docked strip from the transcript stays on `.canvas-footer`,
+     one level up, drawn once for the whole strip rather than again here. */
   .composer-row {
     display: flex;
     align-items: flex-start;
@@ -4498,12 +4500,41 @@
     }
   }
 
+  /* `ui/TextArea` is the shared vocabulary this reuses (border, `--radius-md`,
+     `--color-surface-raised`, focus-ring token) but not the component
+     itself: the composer needs a raw `bind:this` element ref for imperative
+     auto-grow (`handleComposerInput` below writes `style.height` directly),
+     custom Enter-to-send/Shift+Enter-newline keydown handling, and a footer
+     controls row (attach, pickers, Send) sharing this same bordered box —
+     none of which `ui/TextArea` exposes a seam for. Hand-rolled on the same
+     tokens rather than forking the primitive's API for one call site. */
   .composer-field {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    transition: border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .composer-field:hover {
+    border-color: var(--color-border-strong);
+  }
+
+  /* The same focus-ring token every other input primitive uses (`ui/TextArea`,
+     `ui/Input`), on the field's own border box rather than the textarea:
+     `:focus-within` so the ring stays lit while the textarea, the attach
+     button or a picker inside this same strip holds focus, not just while
+     the caret sits in the text itself. This is C2/§3.5 (issue #577): at-rest
+     and focused used to be byte-identical, nothing here ever drew a ring. */
+  .composer-field:focus-within {
+    border-color: var(--color-border-strong);
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .composer-field textarea {
@@ -4522,9 +4553,11 @@
     color: var(--color-text-muted);
   }
 
-  /* The focus ring lives on the strip, not the textarea: an outline drawn
-     around a borderless full-measure textarea reads as a box appearing out of
-     nowhere. */
+  /* The textarea itself stays borderless and transparent on purpose: its
+     surface is the `.composer-field` box above, and a second nested border
+     here would double the chrome. Native focus outline suppressed for the
+     same reason — the ring lives on `.composer-field:focus-within` above,
+     not on this element. */
   .composer-field textarea:focus,
   .composer-field textarea:focus-visible {
     outline: none;
