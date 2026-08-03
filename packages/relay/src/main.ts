@@ -149,6 +149,11 @@ export async function start(): Promise<StartedRelayHandle> {
     rateLimit: { max: rateLimitMax, timeWindow: rateLimitWindowMs },
     maxAccountStorageBytes,
     fanOutBackend,
+    // #270, SPEC §7.21: `/health` probes the same Postgres `pool` the
+    // store above is built on (no extra connection) — undefined when
+    // `DATABASE_URL` is unset (in-memory store), which `/health` reports
+    // healthy trivially, same as `store`/`auth` falling back above.
+    healthCheck: { db: pool },
     push,
     // #387: where a node's device-authorization `verification_uri` points
     // the operator's browser — the PWA's own origin, distinct from this
