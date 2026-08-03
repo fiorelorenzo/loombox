@@ -85,8 +85,7 @@
   import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
   import InboxPage from '$lib/components/pages/InboxPage.svelte';
-  import NodesPage from '$lib/components/pages/NodesPage.svelte';
-  import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
+  import SettingsPage, { type SettingsSection } from '$lib/components/pages/SettingsPage.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -205,8 +204,23 @@
    * sets that destination and deliberately LEAVES `selectedSessionId`
    * alone, so returning to the transcript is one click and the header
    * breadcrumb (§3.6) is never lost.
+   *
+   * Amended by issue #568: `'nodes'` is gone. Nodes & targets is no longer
+   * a destination of its own — it is a section inside `'settings'` now
+   * (`settingsSection` below), reached one click deeper than before. IA v4
+   * §3.1 is amended accordingly (`docs/superpowers/specs/2026-07-25-ia-v4-design.md`).
    */
-  let mainView = $state<'session' | 'inbox' | 'nodes' | 'settings'>('session');
+  let mainView = $state<'session' | 'inbox' | 'settings'>('session');
+
+  /**
+   * Which section of the Settings page is showing (issue #568): Settings
+   * outgrew a flat `<h2>` stack once Nodes moved in alongside Appearance/
+   * Notifications/Push, so `SettingsPage` gets real section navigation and
+   * this is the state that drives it. `'appearance'` is the default landing
+   * section; `openTargetStatus` below sets this to `'nodes'` so the ⋯
+   * "Target status" deep link still lands on the right section.
+   */
+  let settingsSection = $state<SettingsSection>('appearance');
 
   /**
    * The Drawer state (redesign brief `docs/design/redesign.md` §1/§7, issue
@@ -1076,11 +1090,21 @@
     }
   }
 
-  /** The Nodes destination's entry point (SPEC §7.21; issue #269; design spec v4 §3.1/§3.3): `focus` optionally scopes the highlight to one session's target (wired from the session row's own `⋯` menu below). Polling itself is already running (`startTargetStatusPolling`, connection-scoped); this just switches the main area and requests an immediate refresh so the view isn't stale from the moment it's shown. */
+  /** The Nodes-and-targets deep link (SPEC §7.21; issue #269; design spec v4 §3.1/§3.3, amended by issue #568): `focus` optionally scopes the highlight to one session's target (wired from the session row's own `⋯` menu below). Lands on the Settings page with its Nodes section selected — Nodes stopped being its own `mainView` destination once issue #568 folded it into Settings. Polling itself is already running (`startTargetStatusPolling`, connection-scoped); this just switches the main area and requests an immediate refresh so the view isn't stale from the moment it's shown. */
   function openTargetStatus(focus?: TargetStatusFocusTarget): void {
     targetStatusFocus = focus;
-    mainView = 'nodes';
+    mainView = 'settings';
+    settingsSection = 'nodes';
     void refreshTargetStatus();
+  }
+
+  /** `SettingsPage`'s sub-nav/segmented-control callback (issue #568): a manual switch into Nodes behaves like the old bare "Nodes" destination click — it drops any single-target focus a previous deep link left behind and refreshes, rather than silently keeping a stale highlight. */
+  function selectSettingsSection(section: SettingsSection): void {
+    settingsSection = section;
+    if (section === 'nodes') {
+      targetStatusFocus = undefined;
+      void refreshTargetStatus();
+    }
   }
 
   /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
@@ -1124,7 +1148,7 @@
     addProjectOpen = false;
     // Design spec v4 §3.3: back to the transcript/empty-state view, same
     // reasoning as every other per-connection UI reset below: none of
-    // Inbox/Nodes/Settings has anything live to show once disconnected.
+    // Inbox/Settings has anything live to show once disconnected.
     mainView = 'session';
     closeSidebarMenus();
     // Closes whatever Drawer tab was open (files/terminal/config); none of
@@ -1134,6 +1158,7 @@
     targetStatusEntries = [];
     targetStatusError = undefined;
     targetStatusFocus = undefined;
+    settingsSection = 'appearance';
   }
 
   function ensureAuthStore(): AuthStore {
@@ -1307,6 +1332,11 @@
       id: 'open-inbox',
       label: 'Open attention inbox',
       run: () => (mainView = 'inbox'),
+    });
+    actions.push({
+      id: 'open-nodes',
+      label: 'Open nodes and targets',
+      run: () => openTargetStatus(),
     });
     return actions;
   });
@@ -2246,11 +2276,17 @@
           </IconButton>
         </div>
 
-        <!-- Primary destinations (design spec v4 §3.1): heavier than v3's
-             muted secondary nav they replace, and moved to the TOP: they
-             now indicate what the main area is showing, not a panel to
-             toggle. Selecting one leaves `selectedSessionId` untouched
-             (§3.3), so returning to the transcript is one click. -->
+        <!-- Primary destinations (design spec v4 §3.1, amended by issue
+             #568): heavier than v3's muted secondary nav they replace, and
+             moved to the TOP: they now indicate what the main area is
+             showing, not a panel to toggle. Selecting one leaves
+             `selectedSessionId` untouched (§3.3), so returning to the
+             transcript is one click. Nodes & targets is no longer one of
+             these rows — issue #568 folded it into Settings, reachable from
+             the account menu below, so Inbox is the sole row left; the
+             health dot that used to live here moved onto the account
+             trigger and the Settings menu entry instead (see
+             `hasUnhealthyTarget` below). -->
         <nav
           class="sidebar-destinations"
           aria-label="Primary destinations"
@@ -2269,24 +2305,6 @@
               <span class="destination-badge" data-testid="inbox-count"
                 >{attentionInboxItems.length}</span
               >
-            {/if}
-          </button>
-          <button
-            type="button"
-            class="destination-row"
-            class:active={mainView === 'nodes'}
-            onclick={() => openTargetStatus()}
-            data-testid="destination-nodes"
-          >
-            <span class="destination-icon"><Icon name="targets" size="100%" /></span>
-            <span class="destination-label">Nodes</span>
-            {#if hasUnhealthyTarget}
-              <span
-                class="destination-badge destination-badge-dot"
-                data-testid="targets-health-badge"
-                aria-hidden="true"
-              ></span>
-              <span class="sr-only">Some targets need attention</span>
             {/if}
           </button>
         </nav>
@@ -2508,12 +2526,21 @@
               <button
                 type="button"
                 role="menuitem"
+                class="settings-menu-item"
                 onclick={() => {
                   closeSidebarMenus();
                   mainView = 'settings';
                 }}
               >
-                Appearance &amp; settings
+                <span>Settings</span>
+                {#if hasUnhealthyTarget}
+                  <span
+                    class="menu-item-alert-dot"
+                    data-testid="settings-menu-health-badge"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="sr-only">Some targets need attention</span>
+                {/if}
               </button>
               <!-- Not `danger`: signing out ends a session on this device and
                    nothing else. The red belonged to the surfaces that destroy
@@ -2542,7 +2569,19 @@
             }}
             data-testid="account-menu-toggle"
           >
-            <span class="account-avatar" aria-hidden="true">{accountInitial}</span>
+            <span class="account-avatar" aria-hidden="true">
+              {accountInitial}
+              {#if hasUnhealthyTarget}
+                <span
+                  class="account-avatar-alert"
+                  data-testid="account-health-badge"
+                  aria-hidden="true"
+                ></span>
+              {/if}
+            </span>
+            {#if hasUnhealthyTarget}
+              <span class="sr-only">Some targets need attention</span>
+            {/if}
             <span class="account-name">{accountShortLabel}</span>
             <Icon name="more" class="account-chevron" />
           </button>
@@ -2735,16 +2774,6 @@
                   onOpenSession={openSessionFromInbox}
                   onReply={replyFromInbox}
                 />
-              {:else if mainView === 'nodes'}
-                <NodesPage
-                  targets={targetStatusEntries}
-                  loading={targetStatusLoading}
-                  error={targetStatusError}
-                  focusTarget={targetStatusFocus}
-                  onRefresh={refreshTargetStatus}
-                  onAddTarget={openAddTargetWizard}
-                  onConnectNode={openAddTargetWizard}
-                />
               {:else if mainView === 'settings' && authSession}
                 <SettingsPage
                   {notificationPreferencesStorage}
@@ -2753,6 +2782,15 @@
                   {deviceId}
                   relayBaseUrl={relayHttpBaseUrl(relayUrl)}
                   authToken={authSession.token}
+                  targets={targetStatusEntries}
+                  loading={targetStatusLoading}
+                  error={targetStatusError}
+                  focusTarget={targetStatusFocus}
+                  onRefresh={refreshTargetStatus}
+                  onAddTarget={openAddTargetWizard}
+                  onConnectNode={openAddTargetWizard}
+                  section={settingsSection}
+                  onSectionChange={selectSettingsSection}
                 />
               {/if}
             </div>
@@ -3089,19 +3127,6 @@
         {#if attentionInboxItems.length > 0}
           <span class="tabbar-badge">{attentionInboxItems.length}</span>
         {/if}
-      </button>
-      <button
-        type="button"
-        class="tabbar-item"
-        class:active={mainView === 'nodes'}
-        onclick={() => {
-          openTargetStatus();
-          sessionsSheetOpen = false;
-        }}
-        data-testid="tabbar-targets"
-      >
-        <Icon name="targets" class="tabbar-icon" />
-        <span>Nodes</span>
       </button>
       <button
         type="button"
@@ -3491,14 +3516,6 @@
     font-feature-settings: var(--font-feature-tabular);
   }
 
-  .destination-badge-dot {
-    min-width: 0.45rem;
-    width: 0.45rem;
-    height: 0.45rem;
-    padding: 0;
-    background: var(--color-warning);
-  }
-
   .sidebar-divider {
     height: 1px;
     margin: var(--space-xs) var(--space-md);
@@ -3618,6 +3635,26 @@
 
   .popover-menu button.danger {
     color: var(--color-danger);
+  }
+
+  /* The Settings menu item's own alert dot (issue #568's account-menu-
+     trigger route for `hasUnhealthyTarget`, replacing the sidebar row's
+     dot the old Nodes destination carried). Every other `.popover-menu`
+     button is a plain text label, so this class alone gets the flex
+     treatment needed to push the dot to the trailing edge. */
+  .settings-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  .menu-item-alert-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: var(--radius-full);
+    background: var(--color-warning);
+    flex-shrink: 0;
   }
 
   /* ------------------------------------------------------------------ */
@@ -4100,6 +4137,7 @@
   }
 
   .account-avatar {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -4111,6 +4149,23 @@
     color: var(--color-accent);
     font-size: var(--text-small-size);
     font-weight: 600;
+  }
+
+  /* The account trigger's own health signal (issue #568): an unhealthy
+     target used to light a dot on the sidebar's Nodes row; now that Nodes
+     is two levels deep inside Settings, this is the "still discoverable
+     without opening Settings" surface the issue asks for, mirroring the
+     old sidebar Nodes row's dot (size/color; issue #568 removed that row
+     along with its own `.destination-badge-dot` class). */
+  .account-avatar-alert {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
+    background: var(--color-warning);
+    border: 1.5px solid var(--color-surface);
   }
 
   .account-name {
@@ -4126,7 +4181,7 @@
   .sidebar.collapsed .destination-label,
   .sidebar.collapsed .account-name,
   .sidebar.collapsed :global(.account-chevron),
-  .sidebar.collapsed .destination-badge:not(.destination-badge-dot) {
+  .sidebar.collapsed .destination-badge {
     display: none;
   }
 

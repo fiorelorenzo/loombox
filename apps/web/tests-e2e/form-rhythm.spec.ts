@@ -82,7 +82,9 @@ test.describe('form rhythm (Field stacking contract)', () => {
 
     await page.goto('/');
     await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
-    await page.getByTestId('destination-nodes').click();
+    await page.getByTestId('account-menu-toggle').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByTestId('settings-nav-nodes').click();
     await page.getByTestId('nodes-page-add-target').click();
     await expect(page.getByTestId('add-target-host')).toBeVisible({ timeout: 30_000 });
 
