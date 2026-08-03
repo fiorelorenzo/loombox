@@ -242,7 +242,7 @@
 
   .settings-nav-item.active {
     background: var(--color-fill);
-    color: var(--color-text);
+    color: var(--color-text-primary);
     font-weight: 600;
   }
 
