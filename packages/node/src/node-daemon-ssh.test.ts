@@ -179,6 +179,7 @@ interface DecryptedSessionEvent {
   text?: string;
   turnId?: string;
   stopReason?: string;
+  status?: string;
 }
 
 /**
@@ -1065,5 +1066,158 @@ describe('NodeDaemon (ssh: targets, issues #80/#81/#82)', () => {
     }>(session.id, response.envelope, key);
     expect(payload.outcome).toBe('ok');
     expect(payload.entries).toEqual([{ name: 'guide.md', kind: 'file', size: 7 }]);
+  });
+});
+
+describe('NodeDaemon ssh: target concurrency cap (SPEC §7.16, issue #252)', () => {
+  it("defaults to a cap of 2 concurrent sessions when SshTargetConfig.maxConcurrentSessions is unset, distinct from local's own (much higher, hardware-scaled) default", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-concurrency-default';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-concurrency-default',
+      deviceId: 'device-node-ssh-concurrency-default',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [SSH_TARGET_CONFIG], // no maxConcurrentSessions override
+      sshTransportFactory: () => remoteSessions!.createTransport(),
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    // Distinct project folders per session — same-folder safety (issue #68)
+    // would otherwise refuse a second in-place session on the same folder
+    // before the concurrency cap ever gets a chance to queue anything.
+    const folder1 = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-concurrency-1-'));
+    const folder2 = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-concurrency-2-'));
+    const folder3 = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-concurrency-3-'));
+    try {
+      const session1 = await node.createSession({
+        projectPath: folder1,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+      const session2 = await node.createSession({
+        projectPath: folder2,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+      const session3 = await node.createSession({
+        projectPath: folder3,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-ssh-concurrency-default',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+      const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+      const key3 = await derivePhoneSessionKey(amk, accountId, session3.id);
+      for (const sessionId of [session1.id, session2.id, session3.id]) {
+        phone.send({
+          type: 'resync_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          sinceSeq: 0,
+        });
+      }
+
+      // The first two are within the default cap of 2 and start
+      // immediately — `ssh:` sessions have no 'starting' status (unlike
+      // `local`'s issue #516 worktree-vs-spawn gap, there is no
+      // long-lived local step to announce ahead of the spawn here), so
+      // their first observable status is straight to 'awaiting_input'.
+      expect(
+        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 1))[0]!.status,
+      ).toBe('awaiting_input');
+      expect(
+        (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1))[0]!.status,
+      ).toBe('awaiting_input');
+      // The third is over the cap: queued, not launched.
+      expect(
+        (await waitForDecryptedKinds(phone, session3.id, key3, ['session_status'], 1))[0]!.status,
+      ).toBe('queued');
+    } finally {
+      await rm(folder1, { recursive: true, force: true });
+      await rm(folder2, { recursive: true, force: true });
+      await rm(folder3, { recursive: true, force: true });
+    }
+  });
+
+  it("SshTargetConfig.maxConcurrentSessions overrides the default, independently of local's own cap", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-ssh-concurrency-override';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-ssh-concurrency-override',
+      deviceId: 'device-node-ssh-concurrency-override',
+      devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+      authToken: accountId,
+      accountId,
+      amk,
+      targets: [SSH_TARGET],
+      sshTargets: [{ ...SSH_TARGET_CONFIG, maxConcurrentSessions: 1 }],
+      sshTransportFactory: () => remoteSessions!.createTransport(),
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const folder1 = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-concurrency-override-1-'));
+    const folder2 = await mkdtemp(path.join(tmpdir(), 'loombox-ssh-concurrency-override-2-'));
+    try {
+      const session1 = await node.createSession({
+        projectPath: folder1,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+      const session2 = await node.createSession({
+        projectPath: folder2,
+        provider: 'test-echo',
+        targetId: 'devbox',
+      });
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-ssh-concurrency-override',
+        devicePublicKey: toBase64(crypto.getRandomValues(new Uint8Array(32))),
+        authToken: accountId,
+      });
+      await phone.ready;
+
+      const key1 = await derivePhoneSessionKey(amk, accountId, session1.id);
+      const key2 = await derivePhoneSessionKey(amk, accountId, session2.id);
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session1.id,
+        sinceSeq: 0,
+      });
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session2.id,
+        sinceSeq: 0,
+      });
+
+      expect(
+        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 1))[0]!.status,
+      ).toBe('awaiting_input');
+      // Over the overridden cap of 1 (well under the default of 2): queued.
+      expect(
+        (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1))[0]!.status,
+      ).toBe('queued');
+    } finally {
+      await rm(folder1, { recursive: true, force: true });
+      await rm(folder2, { recursive: true, force: true });
+    }
   });
 });

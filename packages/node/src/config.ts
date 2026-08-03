@@ -126,6 +126,16 @@ export interface NodeCliConfig {
   targets?: TargetDescriptor[];
   /** Connection recipes for this node's `ssh:` targets, file-only (see {@link loadNodeConfig}). */
   sshTargets?: SshTargetConfig[];
+  /**
+   * This node's `local` target's concurrency cap (SPEC §7.16, issue #252;
+   * `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS`/the config file's
+   * `localMaxConcurrentSessions`) — see
+   * `NodeDaemonOptions.localMaxConcurrentSessions`'s doc comment for what it
+   * defaults to when unset. Each `ssh:` target's own cap instead comes from
+   * its `sshTargets` entry's `maxConcurrentSessions`, since it needs a
+   * separate value per target, not one node-wide number.
+   */
+  localMaxConcurrentSessions?: number;
   /** Overrides where this node's persisted identity keypair (`identity.ts`'s `NodeIdentityStore`) and other on-disk state lives; `undefined` uses that store's own default (`~/.loombox/node`). */
   stateDir?: string;
 }
@@ -147,6 +157,8 @@ interface NodeConfigFile {
   recoveryCode?: string;
   targets?: TargetDescriptor[];
   sshTargets?: SshTargetConfig[];
+  /** See {@link NodeCliConfig.localMaxConcurrentSessions}. */
+  localMaxConcurrentSessions?: number;
   stateDir?: string;
 }
 
@@ -218,6 +230,37 @@ function parseTargetsEnv(json: string): TargetDescriptor[] {
   return parsed as TargetDescriptor[];
 }
 
+/**
+ * Parses `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS`/the config file's
+ * `localMaxConcurrentSessions` (SPEC §7.16, issue #252) — the env var wins
+ * over the file, matching every other field's precedence in this function.
+ * `undefined` (both unset) lets `NodeDaemon` fall back to
+ * `defaultLocalMaxConcurrentSessions()` (`./target.ts`); a file value is
+ * already a `number` (JSON), so it only needs range-checking, while the env
+ * var is text and needs parsing too.
+ */
+function parseLocalMaxConcurrentSessions(
+  envValue: string | undefined,
+  fileValue: number | undefined,
+): number | undefined {
+  if (envValue === undefined) {
+    if (fileValue === undefined) return undefined;
+    if (!Number.isInteger(fileValue) || fileValue < 1) {
+      throw new ConfigError(
+        `localMaxConcurrentSessions must be a positive integer; got ${fileValue}`,
+      );
+    }
+    return fileValue;
+  }
+  const parsed = Number(envValue);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new ConfigError(
+      `localMaxConcurrentSessions (LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS) must be a positive integer; got "${envValue}"`,
+    );
+  }
+  return parsed;
+}
+
 export interface LoadNodeConfigOptions {
   /** Defaults to `process.env`; tests inject a plain object instead. */
   env?: NodeJS.ProcessEnv;
@@ -261,6 +304,8 @@ export interface LoadNodeConfigOptions {
  *   wins outright, then `LOOMBOX_WRAPPED_AMK_FILE`, then
  *   `LOOMBOX_RECOVERY_CODE` — see {@link NodeCliConfig.amk}'s doc comment.
  * - `LOOMBOX_TARGETS` (optional; a JSON array of `TargetDescriptor`)
+ * - `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS` (optional; a positive integer —
+ *   see {@link NodeCliConfig.localMaxConcurrentSessions})
  * - `LOOMBOX_NODE_STATE_DIR` (optional; overrides where node state — the
  *   persisted identity keypair — lives on disk)
  * - `LOOMBOX_NODE_CONFIG` (optional; path to a JSON config file, same as
@@ -320,6 +365,10 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
   // wrappedAmkFilePath is set — see NodeCliConfig.amk's doc comment.
   const wrappedAmkFilePath = amk ? undefined : wrappedAmkFilePathRaw;
   const targets = env.LOOMBOX_TARGETS ? parseTargetsEnv(env.LOOMBOX_TARGETS) : file.targets;
+  const localMaxConcurrentSessions = parseLocalMaxConcurrentSessions(
+    env.LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS,
+    file.localMaxConcurrentSessions,
+  );
   const stateDir = env.LOOMBOX_NODE_STATE_DIR ?? file.stateDir;
 
   return {
@@ -336,6 +385,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     recoveryCode: amk || wrappedAmkFilePath ? undefined : recoveryCode,
     targets,
     sshTargets: file.sshTargets,
+    localMaxConcurrentSessions,
     stateDir,
   };
 }
