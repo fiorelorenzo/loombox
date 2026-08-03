@@ -740,8 +740,8 @@
       synthesizing <code>role="button"</code>/<code>tabindex</code>/keydown (never a literal
       <code>&lt;button&gt;</code>, since its trailing slot holds a real one — a real
       <code>&lt;button&gt;</code>
-      cannot contain another interactive control). The trailing icon button's own click never
-      bubbles into the row's own <code>onclick</code>.
+      cannot contain another interactive control). The trailing icon button's own click never bubbles
+      into the row's own <code>onclick</code>.
     </p>
 
     <h3>Dialog — thread-lift entrance/exit, Esc/backdrop-click/focus-trap</h3>
