@@ -55,6 +55,16 @@ export interface FanOutBackend {
    * sessions nobody local cares about anymore.
    */
   subscribe(sessionId: string, handler: (payload: FanOutPayload) => void): () => void;
+  /**
+   * Round-trip reachability probe for `/health` (#270, SPEC §7.21) —
+   * `undefined` on {@link createInProcessFanOutBackend}: there is no Redis
+   * connection to probe, and an unconfigured Redis is optional, not down.
+   * {@link createRedisFanOutBackend} implements it as a `PING` against the
+   * existing publisher connection (no new connection just to health-check).
+   * Rejects if Redis doesn't answer; the caller is responsible for its own
+   * timeout — this makes no promise about how long it can take.
+   */
+  ping?(): Promise<void>;
   /** Releases underlying connections (Redis clients). A no-op on the in-process backend. */
   close(): Promise<void>;
 }
@@ -104,6 +114,8 @@ export interface RedisPubSubClient {
   unsubscribe(...channels: string[]): unknown;
   on(event: 'message', listener: (channel: string, message: string) => void): unknown;
   quit(): Promise<unknown>;
+  /** Round-trip liveness probe (`PING`) — used by `/health`'s readiness check (#270, SPEC §7.21) to confirm this relay's Redis connection is actually reachable, not just configured. */
+  ping(): Promise<unknown>;
 }
 
 /** Builds a real `ioredis` client — the default {@link createRedisFanOutBackend} factory; tests inject an `ioredis-mock` factory instead. */
@@ -174,6 +186,12 @@ export function createRedisFanOutBackend(
           void subscriber.unsubscribe(channelName(sessionId));
         }
       };
+    },
+    async ping() {
+      // Reuses the publisher connection — a `/health` probe has no
+      // business opening a third Redis connection alongside the
+      // publisher/subscriber pair this backend already holds.
+      await publisher.ping();
     },
     async close() {
       await Promise.all([publisher.quit(), subscriber.quit()]);

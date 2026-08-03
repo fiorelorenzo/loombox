@@ -102,6 +102,25 @@ TLS cert on first request; verify:
 curl -fsS https://relay.loombox.dev/health   # -> {"status":"ok"}
 ```
 
+## Monitoring (#270, SPEC §7.21)
+
+`/health` is a readiness probe, not just a liveness one: it round-trips
+`SELECT 1` against Postgres and `PING` against Redis (when `REDIS_URL` is
+set) before answering, each against its own short timeout so a hung
+dependency 503s instead of hanging the request. 200 means both are
+reachable (Redis is skipped, not required, when it isn't configured — a
+single-instance deploy has no Redis at all); a 503 body names which
+dependency failed, e.g. `{"status":"unhealthy","failed":["postgres"]}`.
+Unauthenticated and exempt from the per-IP rate limit, since an external
+checker carries no session and polls far more often than any real device
+reconnects.
+
+**Point an external uptime service at `https://relay.loombox.dev/health`.**
+The relay can't alert on its own outage, so alerting can't depend on it —
+wire a third-party check (UptimeRobot, Better Uptime, a Caddy/Prometheus
+blackbox probe, ...) to page you on a non-200 response instead of waiting
+for a user to notice.
+
 ## Redis fan-out (#97, multi-instance only)
 
 A single relay instance (the default deploy above) never needs this: it

@@ -35,6 +35,7 @@ import { registerDeviceAuthRoutes } from './device-auth-routes';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { registerNodeTokenRoutes } from './node-token-routes';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
+import type { PgLike } from './pg-client';
 import { createWebPushSender, type PushPayload, type PushSender } from './push';
 import {
   createInMemoryRelayStore,
@@ -189,6 +190,25 @@ export interface CreateRelayOptions {
    */
   fanOutBackend?: FanOutBackend;
   /**
+   * Dependency handles `/health`'s readiness probe (#270, SPEC §7.21)
+   * round-trips against before answering — deliberately separate from
+   * `store`/`fanOutBackend` above (both already abstracted behind
+   * hermetic-testable interfaces with no "am I actually reachable"
+   * primitive of their own) rather than widening either just for this.
+   * `main.ts` passes the same `pg.Pool` it hands `createPostgresRelayStore`
+   * (structurally a {@link PgLike}, no extra connection opened). Omitted
+   * `db` (dev/hermetic in-memory store, no `DATABASE_URL`) is reported
+   * healthy trivially — there is nothing configured to be down. Redis has
+   * no separate entry here: it's optional (#97) and already reachable
+   * through `fanOutBackend.ping` when Redis-backed, absent on the
+   * in-process default.
+   */
+  healthCheck?: {
+    db?: PgLike;
+    /** Per-probe timeout (Postgres and Redis each get their own race against this). Defaults to {@link DEFAULT_HEALTH_PROBE_TIMEOUT_MS}; tests lower it to keep hung-dependency assertions fast. */
+    timeoutMs?: number;
+  };
+  /**
    * Self-owned Web Push (SPEC §7.11/§16, RFC 8291/8292; issues #161/#163).
    * Undefined disables the feature entirely (`/push/*` routes 404, and a
    * `permission_request` never triggers a push) — the shape every existing
@@ -303,6 +323,37 @@ export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 export const DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS = 60_000;
 /** Sane default for {@link CreateRelayOptions.targetUpdateRequestTtlMs} — 5 minutes, generous because the underlying update re-runs supervisor provisioning (fetch + verify + stage an artifact over `ssh:`, #87); this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal update latency. */
 export const DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS = 5 * 60_000;
+/** Sane default for {@link CreateRelayOptions.healthCheck}'s `timeoutMs` (#270) — generous relative to a healthy `SELECT 1`/`PING` (single-digit milliseconds on the same host/LAN as prodbox's Postgres/Redis), short enough that a hung dependency still answers well within any external uptime checker's own timeout (these commonly run 5-30s). */
+export const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Races `probe` against `timeoutMs` so a hung Postgres/Redis connection
+ * can't hang `/health` itself (#270) — the timeout side always wins a
+ * probe that never settles. Any rejection (the probe's own error, or the
+ * timeout) collapses to `false`: `/health` reports failure by dependency
+ * *name* only (see the route below), never the underlying error's
+ * message/stack, so an unauthenticated caller can't learn a connection
+ * string, credential, or version from a failing probe.
+ */
+async function probeWithTimeout(
+  probe: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      probe(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('health probe timed out')), timeoutMs);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Builds the Fastify instance for the v1 relay: an in-memory, blind-router
@@ -354,6 +405,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const defaultLeaseTtlMs = opts.leaseTtlMs?.default ?? DEFAULT_LEASE_TTL_MS;
   const maxLeaseTtlMs = opts.leaseTtlMs?.max ?? DEFAULT_MAX_LEASE_TTL_MS;
   const fanOutBackend = opts.fanOutBackend ?? createInProcessFanOutBackend();
+  const healthCheckDb = opts.healthCheck?.db;
+  const healthProbeTimeoutMs = opts.healthCheck?.timeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
   const pushSender = opts.push ? (opts.push.sender ?? createWebPushSender()) : undefined;
   const provisionRequestTtlMs = opts.provisionRequestTtlMs ?? DEFAULT_PROVISION_REQUEST_TTL_MS;
   const targetFsListRequestTtlMs =
@@ -1763,12 +1816,44 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
   }
 
-  // Liveness endpoint for external uptime monitoring (#100). Deliberately a
-  // plain 200 that does not touch Postgres: it answers "the relay process is
-  // up and serving HTTP", which is what a probe like Caddy/UptimeRobot wants.
-  // A DB-dependent readiness check would flap the whole site down on a brief
-  // Postgres blip, so that stays out of the liveness path.
-  app.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok' }));
+  // Readiness endpoint for external uptime monitoring (#270, SPEC §7.21):
+  // alerting can't depend on the relay itself being up to notice its own
+  // outage. This used to be a plain liveness stub (#100) that returned 200
+  // unconditionally — it could tell "the HTTP server answers" but not "the
+  // relay actually works", so a dead Postgres or Redis behind a healthy
+  // process never tripped the uptime checker at all. `SELECT 1`/`PING` are
+  // the cheapest real round trip each dependency offers; each gets its own
+  // `probeWithTimeout` race so a hung dependency 503s instead of hanging
+  // this request. `rateLimit: false` stays deliberate, unchanged from
+  // #100: an external uptime checker carries no session/auth and polls far
+  // more often than any real device would ever legitimately reconnect, so
+  // exempting it (rather than tuning the shared per-IP limit around it) is
+  // what keeps it from being rate-limited by its own monitoring traffic.
+  // Postgres absent (`opts.healthCheck.db` unset — dev/hermetic in-memory
+  // store, no `DATABASE_URL`) or Redis absent (`REDIS_URL` unset,
+  // in-process fan-out has no `ping`) is not a failure: neither is part of
+  // this deployment, so there is nothing configured to be down (#97's same
+  // "optional" contract Redis already has elsewhere).
+  app.get('/health', { config: { rateLimit: false } }, async (_request, reply) => {
+    const [postgresHealthy, redisHealthy] = await Promise.all([
+      healthCheckDb
+        ? probeWithTimeout(() => healthCheckDb.query('SELECT 1'), healthProbeTimeoutMs)
+        : Promise.resolve(true),
+      fanOutBackend.ping
+        ? probeWithTimeout(() => fanOutBackend.ping!(), healthProbeTimeoutMs)
+        : Promise.resolve(true),
+    ]);
+    if (postgresHealthy && redisHealthy) return { status: 'ok' };
+
+    // Names which dependency failed, nothing more — no error
+    // message/stack, connection string, or version, so an unauthenticated
+    // caller learns only what an uptime dashboard needs to page on.
+    const failed: string[] = [];
+    if (!postgresHealthy) failed.push('postgres');
+    if (!redisHealthy) failed.push('redis');
+    reply.code(503);
+    return { status: 'unhealthy', failed };
+  });
 
   /** Resolves the `Authorization: Bearer <token>` header the same way the WS handshake resolves its `authToken` (#121) — `undefined` if absent/invalid. Used by the `/push/*` REST routes below, which have no WS connection of their own to piggyback auth on. */
   async function accountIdFromBearer(
