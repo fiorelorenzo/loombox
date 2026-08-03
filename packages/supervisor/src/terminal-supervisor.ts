@@ -61,8 +61,16 @@ export type PtySpawnFn = (options: TerminalSpawnOptions) => PtyLike;
  * boundary so every caller above this module deals in bytes uniformly,
  * matching the wire's `terminalDataPayloadV1` (base64 bytes) and the
  * existing display-only `TerminalOutput` component's `Uint8Array[]` shape.
+ *
+ * Exported (not just used as {@link TerminalSupervisor}'s own default) so a
+ * test can compose it into its own `PtySpawnFn` — e.g. forcing `bash
+ * --noprofile --norc` so a real PTY test's shell starts in milliseconds
+ * instead of sourcing the developer's actual `~/.bashrc` (issue #503: on a
+ * devbox with heavyweight interactive-shell tooling in it, that can itself
+ * take several seconds, which a fixed-timeout integration test should never
+ * be coupled to) — without reimplementing this function.
  */
-function defaultPtySpawn(options: TerminalSpawnOptions): PtyLike {
+export function defaultPtySpawn(options: TerminalSpawnOptions): PtyLike {
   const pty: IPty = spawnPty(options.file, options.args ?? [], {
     name: 'xterm-256color',
     cols: options.cols,
