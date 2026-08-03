@@ -27,7 +27,10 @@ import {
 
 import { attachmentResourceId, type BlobSource } from './attachments';
 import { createNode, type NodeDaemon, type ResolvedAttachment } from './node-daemon';
-import { LocalProcessTransport } from './ssh/local-process-transport';
+import {
+  openRemoteSessionsSandbox,
+  type RemoteSessionsSandbox,
+} from './ssh/remote-sessions-test-sandbox';
 
 const execFileAsync = promisify(execFile);
 
@@ -196,6 +199,7 @@ class TestPhone {
 let relay: StartedRelay;
 let projectPath: string;
 let nodeStateDir: string;
+let remoteSessions: RemoteSessionsSandbox | undefined;
 let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 
@@ -206,6 +210,7 @@ beforeEach(async () => {
   relay = await startRelay();
   projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-attachments-e2e-test-'));
   nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-attachments-e2e-state-'));
+  remoteSessions = openRemoteSessionsSandbox();
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
@@ -226,6 +231,8 @@ afterEach(async () => {
   phone?.close();
   node = undefined;
   phone = undefined;
+  await remoteSessions?.close();
+  remoteSessions = undefined;
   await rm(projectPath, { recursive: true, force: true });
   await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
@@ -344,7 +351,7 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
       blobSource,
       targets: [SSH_TARGET],
       sshTargets: [SSH_TARGET_CONFIG],
-      sshTransportFactory: () => new LocalProcessTransport(),
+      sshTransportFactory: () => remoteSessions!.createTransport(),
       remoteChildPollIntervalMs: 30,
       supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
     });
