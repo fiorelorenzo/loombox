@@ -216,6 +216,9 @@ importers:
       '@loombox/providers-core':
         specifier: workspace:*
         version: link:../providers/core
+      '@loombox/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@loombox/supervisor':
         specifier: workspace:*
         version: link:../supervisor
