@@ -35,12 +35,17 @@ export default tseslint.config(
     },
   },
   // Svelte: eslint-plugin-svelte's flat/recommended already wires
-  // svelte-eslint-parser onto **/*.svelte; we additionally point it at the
-  // TS parser so `<script lang="ts">` blocks get type-aware-adjacent
-  // (syntactic) linting consistent with the rest of the monorepo.
+  // svelte-eslint-parser onto **/*.svelte AND **/*.svelte.{js,ts} (the
+  // rune-module extension for shared reactive state outside a component,
+  // e.g. `dock-panel.svelte.ts` — issue #570); we additionally point it at
+  // the TS parser for both so `<script lang="ts">` blocks and a `.svelte.ts`
+  // module's own top-level TS get type-aware-adjacent (syntactic) linting
+  // consistent with the rest of the monorepo. Without this, svelte-eslint-
+  // parser falls back to parsing a `.svelte.ts` file's script content with
+  // no TS support at all and fails on plain TS syntax (e.g. `export type`).
   ...svelte.configs['flat/recommended'],
   {
-    files: ['**/*.svelte'],
+    files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,

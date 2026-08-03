@@ -34,6 +34,7 @@
     type DeviceIdStorage,
   } from '$lib/device-id-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
+  import { DockPanel, type DockPanelPersistence } from '$lib/dock-panel.svelte';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
@@ -352,12 +353,31 @@
   );
 
   /**
-   * The Sessions column's own drag-resize + collapse-to-selvage (redesign
-   * brief `docs/design/redesign.md` §1, issue #438): width and collapsed
-   * state both persist to `localStorage` (mirrors `drawerPinned` above),
-   * restored in `onMount` below. `sessionsWidthPx` always holds the user's
-   * last dragged-to width even while collapsed, so expanding again restores
-   * it rather than snapping back to the default.
+   * The left sidebar's own dock (design spec `docs/superpowers/specs/
+   * 2026-08-03-cockpit-v6-design.md` §3.2, issue #570): drag-resize +
+   * collapse-to-selvage + persistence, now the shared `DockPanel` behaviour
+   * (`$lib/dock-panel.svelte.ts`) rather than hand-written here (as it was
+   * from redesign brief §1 / issue #438 through #570). The right sidebar
+   * (#571) and the terminal dock (#572) will be two more `DockPanel`
+   * instances, not a second copy of this logic.
+   *
+   * The storage keys below predate `DockPanel` and stay EXACTLY as they
+   * were — `loombox:sessions-width`/`loombox:sessions-collapsed`, the same
+   * two independent values, the same '1'/'0' encoding — so an existing
+   * user's sidebar restores unchanged; only where the read/write happens
+   * moved. `sessionsDock.size` always holds the user's last dragged-to
+   * width even while collapsed, so expanding again restores it rather than
+   * snapping back to the default.
+   *
+   * What stayed a call-site concern rather than moving into `DockPanel`
+   * (design spec §3.2's own call to make): the collapse toggle's placement
+   * inside `.sidebar-brand`, the handle's absolute position against the
+   * sidebar's own right edge (both markup/CSS, which the three docks don't
+   * share at all), and the mobile sheet override below
+   * (`sessionsSheetViewport` / `sessionsRailCollapsed` /
+   * `sessionsColumnWidthPx`) — a breakpoint-driven reinterpretation of
+   * "collapsed" specific to this one column, not a concept the right
+   * sidebar or the terminal dock are known to need yet.
    */
   const SESSIONS_WIDTH_STORAGE_KEY = 'loombox:sessions-width';
   const SESSIONS_COLLAPSED_STORAGE_KEY = 'loombox:sessions-collapsed';
@@ -368,67 +388,53 @@
   /** 3.5rem — the icon-only "selvage rail" width (redesign brief §1), matching the left `.rail`'s own 3.5rem. */
   const SESSIONS_SELVAGE_WIDTH_PX = 56;
 
-  let sessionsWidthPx = $state(DEFAULT_SESSIONS_WIDTH_PX);
-  let sessionsCollapsed = $state(false);
+  /** The exact pre-`DockPanel` two-key `localStorage` shape documented above, adapted to `DockPanelPersistence` — a bespoke adapter (not the generic single-JSON-key shape a from-scratch dock would use) purely so an existing user's sidebar is not silently reset by this refactor. */
+  function createSessionsDockPersistence(): DockPanelPersistence {
+    return {
+      load() {
+        const result: { open?: boolean; size?: number } = {};
+        const widthRaw = localStorage.getItem(SESSIONS_WIDTH_STORAGE_KEY);
+        if (widthRaw) {
+          const parsed = Number(widthRaw);
+          if (Number.isFinite(parsed)) result.size = parsed;
+        }
+        const collapsedRaw = localStorage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY);
+        if (collapsedRaw) result.open = collapsedRaw !== '1';
+        return Object.keys(result).length > 0 ? result : undefined;
+      },
+      save(state) {
+        localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(state.size));
+        localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, state.open ? '0' : '1');
+      },
+    };
+  }
+
+  const sessionsDock = new DockPanel({
+    edge: 'left',
+    open: true,
+    size: DEFAULT_SESSIONS_WIDTH_PX,
+    min: MIN_SESSIONS_WIDTH_PX,
+    max: MAX_SESSIONS_WIDTH_PX,
+    collapsedSize: SESSIONS_SELVAGE_WIDTH_PX,
+    persistence: createSessionsDockPersistence(),
+    // See `preferencesRestored`'s own doc comment further down: read live,
+    // so a write racing the host's own restore sequence can never clobber a
+    // not-yet-read persisted value with this instance's compile-time
+    // default.
+    restored: () => preferencesRestored,
+  });
+
   /** Which project groups are currently collapsed (design spec v4 §3.2), PERSISTED (unlike v3's transient `collapsedGroupKeys` this replaces): "a project you never use should stay shut across reloads." Keyed by {@link projectKey}, not a project's `id`: an `id` is re-minted if a project is removed and later re-adopted (§4.2's `adoptFromSessions`), while the `(nodeId, targetId, path)` triple stays stable across that cycle. Restored in `onMount`, persisted by the `$effect` below alongside the sessions column's own width/collapsed prefs. A `SvelteSet` (not a plain `Set` wrapped in `$state`) so `.add`/`.delete` are reactive in place, mirroring `planCollapsedBySession`'s own `SvelteMap`. */
   const PROJECT_GROUPS_COLLAPSED_STORAGE_KEY = 'loombox:project-groups-collapsed';
   const collapsedProjectKeys = new SvelteSet<string>();
-  /** True only while a drag is in flight — suppresses the width `transition` so the column tracks the pointer instead of visibly lagging behind it. */
-  let sessionsResizing = $state(false);
-  /** True at/below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px), where Sessions renders as the full-height sheet (redesign brief §1) rather than an inline column — the icon-only selvage rail is a wide-viewport concept only, so it's parked (not cleared) here rather than in `sessionsCollapsed` itself, which stays the user's actual persisted preference for whenever the viewport widens again. */
+  /** True at/below `--bp-tablet`/`TABLET_VIEWPORT_BREAKPOINT_PX` (768px), where Sessions renders as the full-height sheet (redesign brief §1) rather than an inline column — the icon-only selvage rail is a wide-viewport concept only, so it's parked (not cleared) here rather than in `sessionsDock`'s own `open`, which stays the user's actual persisted preference for whenever the viewport widens again. */
   let sessionsSheetViewport = $state(false);
 
-  /** The effective collapsed-to-selvage state once the sheet-viewport override above is applied — what the template actually renders on. */
-  const sessionsRailCollapsed = $derived(sessionsCollapsed && !sessionsSheetViewport);
+  /** The effective collapsed-to-selvage state once the sheet-viewport override above is applied — what the template actually renders on. The mobile sheet override is this column's own concern, not `DockPanel`'s (see `sessionsDock`'s doc comment above), so it reads `sessionsDock.open` rather than living inside the shared behaviour itself. */
+  const sessionsRailCollapsed = $derived(!sessionsDock.open && !sessionsSheetViewport);
   const sessionsColumnWidthPx = $derived(
-    sessionsRailCollapsed ? SESSIONS_SELVAGE_WIDTH_PX : sessionsWidthPx,
+    sessionsRailCollapsed ? sessionsDock.collapsedSize : sessionsDock.size,
   );
-
-  function clampSessionsWidth(px: number): number {
-    return Math.min(MAX_SESSIONS_WIDTH_PX, Math.max(MIN_SESSIONS_WIDTH_PX, px));
-  }
-
-  /** Toggles the Sessions column between its normal width and the icon-only selvage rail — the column's own edge control and the global `Mod+B` shortcut both call this. */
-  function toggleSessionsCollapsed(): void {
-    sessionsCollapsed = !sessionsCollapsed;
-  }
-
-  /** Starts a drag-resize of the Sessions column from its own edge handle. Uses Pointer Events with `setPointerCapture` directly on the handle, so the temporary move/up listeners live and die with the drag itself — no `window`-level listener to remember to remove. */
-  function startSessionsResize(event: PointerEvent): void {
-    if (sessionsRailCollapsed || event.button !== 0) return;
-    event.preventDefault();
-    const handle = event.currentTarget as HTMLElement;
-    handle.setPointerCapture(event.pointerId);
-    sessionsResizing = true;
-    const startX = event.clientX;
-    const startWidth = sessionsWidthPx;
-
-    function onMove(moveEvent: PointerEvent): void {
-      sessionsWidthPx = clampSessionsWidth(startWidth + (moveEvent.clientX - startX));
-    }
-
-    function onUp(upEvent: PointerEvent): void {
-      handle.releasePointerCapture(upEvent.pointerId);
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onUp);
-      sessionsResizing = false;
-    }
-
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onUp);
-  }
-
-  /** Keyboard-accessible resize (arrow keys, when the handle itself has focus) — the same drag affordance, without a pointer. */
-  function handleSessionsResizeKeydown(event: KeyboardEvent): void {
-    const STEP_PX = 16;
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      sessionsWidthPx = clampSessionsWidth(sessionsWidthPx - STEP_PX);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      sessionsWidthPx = clampSessionsWidth(sessionsWidthPx + STEP_PX);
-    }
-  }
 
   // The node/target status view (SPEC §7.21; issue #269): this page owns
   // fetching/loading/error/polling, `TargetStatusView` itself is purely
@@ -599,15 +605,18 @@
     sessionStatuses.clear();
   }
 
-  // Persistence for the four client-side UI preferences below (relay URL,
-  // Drawer pin, Sessions width/collapsed) is gated on this flag because in
-  // Svelte 5 `onMount` is itself just another user effect, scheduled in
-  // DECLARATION order alongside `$effect` — these effects are declared
-  // above `onMount`, so on a fresh load they used to run FIRST and write
-  // each preference's compile-time default over the persisted value before
-  // `onMount` ever got to read it back (a self-hoster's relay URL, a pinned
-  // Drawer, and a resized/collapsed Sessions column were all silently lost
-  // on every reload). `onMount` flips this once it has restored, after
+  // Persistence for the client-side UI preferences below (relay URL,
+  // Drawer pin, project-groups-collapsed — `sessionsDock` above persists
+  // its own open/size pair through this exact same flag, via the
+  // `restored` callback passed to its constructor) is gated on this flag
+  // because in Svelte 5 `onMount` is itself just another user effect,
+  // scheduled in DECLARATION order alongside `$effect` — these effects are
+  // declared above `onMount`, so on a fresh load they used to run FIRST and
+  // write each preference's compile-time default over the persisted value
+  // before `onMount` ever got to read it back (a self-hoster's relay URL, a
+  // pinned Drawer, and a resized/collapsed Sessions column were all
+  // silently lost on every reload). `onMount` flips this once it has
+  // restored everything, including calling `sessionsDock.restore()`, after
   // which every later change persists exactly as before.
   let preferencesRestored = false;
 
@@ -629,19 +638,6 @@
     localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, value ? '1' : '0');
   });
 
-  // Persists the Sessions column's own drag-resized width + collapsed-to-
-  // selvage preference (redesign brief §1, issue #438) — see `onMount`'s
-  // restore of the same two keys below.
-  $effect(() => {
-    const value = sessionsWidthPx;
-    if (!preferencesRestored) return;
-    localStorage.setItem(SESSIONS_WIDTH_STORAGE_KEY, String(value));
-  });
-  $effect(() => {
-    const value = sessionsCollapsed;
-    if (!preferencesRestored) return;
-    localStorage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, value ? '1' : '0');
-  });
   // Design spec v4 §3.2: persists whichever project groups are currently
   // collapsed. Reads `collapsedProjectKeys` by spreading it, so this
   // effect re-runs on every `.add`/`.delete` (`SvelteSet` mutation is
@@ -1807,7 +1803,7 @@
     }
     if (isModShortcut(event, 'b') && !isTypingTarget(event.target)) {
       event.preventDefault();
-      toggleSessionsCollapsed();
+      sessionsDock.toggle();
     }
   }
 
@@ -1901,21 +1897,17 @@
     const persistedDrawerPinned = localStorage.getItem(DRAWER_PINNED_STORAGE_KEY);
     if (persistedDrawerPinned) drawerPinned = persistedDrawerPinned === '1';
 
-    // Redesign brief §1, issue #438: restores the Sessions column's own
-    // drag-resized width + collapsed-to-selvage preference.
-    const persistedSessionsWidth = localStorage.getItem(SESSIONS_WIDTH_STORAGE_KEY);
-    if (persistedSessionsWidth) {
-      const parsedSessionsWidth = Number(persistedSessionsWidth);
-      if (Number.isFinite(parsedSessionsWidth)) {
-        sessionsWidthPx = clampSessionsWidth(parsedSessionsWidth);
-      }
-    }
-    const persistedSessionsCollapsed = localStorage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY);
-    if (persistedSessionsCollapsed) sessionsCollapsed = persistedSessionsCollapsed === '1';
+    // Redesign brief §1, issue #438; issue #570 extracted this into
+    // `DockPanel` itself, but the restore-before-persisting ORDER stays the
+    // exact same shape: called here, before `preferencesRestored` flips
+    // below, so `sessionsDock`'s own gate (reading that same flag) never
+    // writes back the value it just read.
+    sessionsDock.restore();
 
-    // Every preference above is now the persisted one, so the four
-    // persistence effects declared near the top of this component may
-    // start writing (see `preferencesRestored`'s own doc comment).
+    // Every preference above is now the persisted one, so the persistence
+    // effects declared near the top of this component (and `sessionsDock`'s
+    // own internal persistence, gated the same way) may start writing (see
+    // `preferencesRestored`'s own doc comment).
     preferencesRestored = true;
 
     const store = ensureAuthStore();
@@ -2224,7 +2216,7 @@
         class="sidebar"
         class:sheet-open={sessionsSheetOpen}
         class:collapsed={sessionsRailCollapsed}
-        class:resizing={sessionsResizing}
+        class:resizing={sessionsDock.dragging}
         style={sessionsSheetViewport ? undefined : `width: ${sessionsColumnWidthPx}px`}
         data-testid="sessions-column"
       >
@@ -2243,9 +2235,9 @@
             {/if}
           </div>
           <IconButton
-            label={sessionsCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            pressed={sessionsCollapsed}
-            onclick={toggleSessionsCollapsed}
+            label={sessionsDock.open ? 'Collapse sidebar' : 'Expand sidebar'}
+            pressed={!sessionsDock.open}
+            onclick={() => sessionsDock.toggle()}
             class="sidebar-collapse-toggle"
             dataTestId="sidebar-collapse-toggle"
           >
@@ -2566,14 +2558,14 @@
           <div
             class="sidebar-resize-handle"
             role="separator"
-            aria-orientation="vertical"
+            aria-orientation={sessionsDock.ariaOrientation}
             aria-label="Resize sidebar"
-            aria-valuenow={sessionsWidthPx}
-            aria-valuemin={MIN_SESSIONS_WIDTH_PX}
-            aria-valuemax={MAX_SESSIONS_WIDTH_PX}
+            aria-valuenow={sessionsDock.size}
+            aria-valuemin={sessionsDock.min}
+            aria-valuemax={sessionsDock.max}
             tabindex="0"
-            onpointerdown={startSessionsResize}
-            onkeydown={handleSessionsResizeKeydown}
+            onpointerdown={sessionsDock.startDrag}
+            onkeydown={sessionsDock.handleKeydown}
             data-testid="sessions-resize-handle"
           ></div>
         {/if}
