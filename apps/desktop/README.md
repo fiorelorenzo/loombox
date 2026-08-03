@@ -183,3 +183,5 @@ parameter (e.g. `login-item.ts`'s `LoginItemApp`, `ipc/handlers.ts`'s `IpcMainLi
 instead of importing `electron` directly, so it's unit-testable on a machine with no
 Electron runtime at all — which is exactly the constraint this scaffold was built
 under. `pnpm --filter @loombox/desktop test` never launches Electron.
+
+<!-- ci-filter-test: temporary marker for issue #611 evidence, apps/desktop/** path-filter live test, reverted in a follow-up commit -->
