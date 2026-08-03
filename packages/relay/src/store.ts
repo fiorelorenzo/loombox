@@ -1,4 +1,5 @@
 import type {
+  ConnectedAccount,
   EncryptedEnvelope,
   SessionMetaPublic,
   TargetDescriptor,
@@ -440,6 +441,26 @@ export interface DeviceTokenStore {
   revoke(id: string, accountId: string): Awaitable<boolean>;
 }
 
+/**
+ * One `ConnectedAccount` synced under a loombox operator account (SPEC
+ * §7.26, issue #221). Adds `accountId` — the owning loombox account — which
+ * is deliberately NOT part of the wire `ConnectedAccount` type itself
+ * (§7.26's own field list has no such id): scoping instead rides on the
+ * already-authenticated WS connection's `accountId`, exactly like
+ * `TargetStore.announce`'s `accountId` parameter, never a value trusted out
+ * of the message payload.
+ */
+export interface ConnectedAccountRecord extends ConnectedAccount {
+  accountId: string;
+}
+
+export interface ConnectedAccountStore {
+  /** Upserts by `(accountId, account.id)` — a node re-announcing the same connected account (e.g. a refreshed label/avatar after re-auth) overwrites, never accumulates duplicates. */
+  upsert(accountId: string, account: ConnectedAccount): Awaitable<void>;
+  /** Every connected account synced under this loombox account, across every node that has announced one — never another account's rows. Never includes a `nodePresence` field (issue #228 computes it lazily, never synced) because `ConnectedAccount` itself has none. */
+  listForAccount(accountId: string): Awaitable<readonly ConnectedAccount[]>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -453,6 +474,7 @@ export interface RelayStore {
   leases: LeaseStore;
   deviceAuth: DeviceAuthStore;
   deviceTokens: DeviceTokenStore;
+  connectedAccounts: ConnectedAccountStore;
 }
 
 export interface RelayStoreOptions {
@@ -576,6 +598,11 @@ interface SyncDeviceTokenStore extends DeviceTokenStore {
   revoke(id: string, accountId: string): boolean;
 }
 
+interface SyncConnectedAccountStore extends ConnectedAccountStore {
+  upsert(accountId: string, account: ConnectedAccount): void;
+  listForAccount(accountId: string): readonly ConnectedAccount[];
+}
+
 /** The concrete return type of {@link createInMemoryRelayStore} — see {@link SyncDeviceStore}'s doc comment. */
 export interface SyncRelayStore extends RelayStore {
   devices: SyncDeviceStore;
@@ -590,6 +617,7 @@ export interface SyncRelayStore extends RelayStore {
   leases: SyncLeaseStore;
   deviceAuth: SyncDeviceAuthStore;
   deviceTokens: SyncDeviceTokenStore;
+  connectedAccounts: SyncConnectedAccountStore;
 }
 
 /**
@@ -1063,6 +1091,25 @@ function createDeviceTokenStore(): SyncDeviceTokenStore {
   };
 }
 
+/** In-memory `ConnectedAccountStore` (SPEC §7.26, issue #221). Keyed by `accountId\0account.id` so two different loombox accounts can never collide on the same external-account id (an edge case since v1 is solo-operator, but the key shape costs nothing to get right). */
+function createConnectedAccountStore(): SyncConnectedAccountStore {
+  const byKey = new Map<string, ConnectedAccountRecord>();
+  return {
+    upsert(accountId, account) {
+      byKey.set(`${accountId}\0${account.id}`, { ...account, accountId });
+    },
+    listForAccount(accountId) {
+      const result: ConnectedAccount[] = [];
+      for (const record of byKey.values()) {
+        if (record.accountId !== accountId) continue;
+        const { accountId: _owner, ...account } = record;
+        result.push(account);
+      }
+      return result;
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -1079,5 +1126,6 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     leases: createLeaseStore(),
     deviceAuth: createDeviceAuthStore(),
     deviceTokens: createDeviceTokenStore(),
+    connectedAccounts: createConnectedAccountStore(),
   };
 }

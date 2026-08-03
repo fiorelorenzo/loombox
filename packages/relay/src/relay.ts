@@ -9,6 +9,7 @@ import {
   safeParseWireMessageV1,
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
+  type ConnectedAccountList,
   type InitializeResult,
   type Pong,
   type LeaseReleaseResult,
@@ -1139,6 +1140,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         registry.nodeConnectionsByNodeId.set(message.session.nodeId, connection);
         return;
       }
+      case 'connected_account_announce': {
+        // SPEC §7.26, issue #221: node-only, exactly like `target_announce`/
+        // `session_announce` above — `store.connectedAccounts.upsert` scopes
+        // by this already-authenticated connection's own `accountId`, never
+        // a value trusted out of the message (the wire `ConnectedAccount`
+        // type has no such field to trust in the first place).
+        await store.connectedAccounts.upsert(connection.accountId, message.account);
+        return;
+      }
       case 'session_update': {
         const record = await store.sessions.get(message.sessionId);
         if (!record) {
@@ -1430,6 +1440,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           type: 'session_list',
           protocolVersion: PROTOCOL_V1,
           sessions,
+        };
+        sendDirect(connection, response);
+        return;
+      }
+      case 'connected_account_list_request': {
+        // SPEC §7.26, issue #221: account-scoped, exactly like
+        // `session_list_request` above — never another account's rows, and
+        // never a token (the store only ever holds `ConnectedAccount`s,
+        // which have no token field to leak in the first place).
+        const accounts = await store.connectedAccounts.listForAccount(connection.accountId);
+        const response: ConnectedAccountList = {
+          type: 'connected_account_list',
+          protocolVersion: PROTOCOL_V1,
+          accounts: [...accounts],
         };
         sendDirect(connection, response);
         return;

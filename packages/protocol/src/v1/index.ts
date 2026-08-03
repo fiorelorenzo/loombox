@@ -353,6 +353,24 @@ export {
   safeParseTrackerMode,
   trackerMode,
 } from './tracker';
+export type {
+  ConnectedAccount,
+  ConnectedAccountAnnounce,
+  ConnectedAccountCredentialSource,
+  ConnectedAccountIdParts,
+  ConnectedAccountList,
+  ConnectedAccountListRequest,
+} from './connected-accounts';
+export {
+  composeConnectedAccountId,
+  connectedAccount,
+  connectedAccountAnnounce,
+  connectedAccountCredentialSource,
+  connectedAccountList,
+  connectedAccountListRequest,
+  connectedAccountSecretRef,
+  parseConnectedAccountId,
+} from './connected-accounts';
 
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
@@ -493,6 +511,13 @@ import {
   targetVersionStatusV1,
 } from './target-lifecycle';
 import { githubTarget, jiraTarget, trackerMode } from './tracker';
+import {
+  connectedAccount,
+  connectedAccountAnnounce,
+  connectedAccountCredentialSource,
+  connectedAccountList,
+  connectedAccountListRequest,
+} from './connected-accounts';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -617,4 +642,9 @@ export const schemasV1 = {
   githubTarget,
   jiraTarget,
   trackerMode,
+  connectedAccountCredentialSource,
+  connectedAccount,
+  connectedAccountAnnounce,
+  connectedAccountListRequest,
+  connectedAccountList,
 } as const;
