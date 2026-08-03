@@ -213,7 +213,29 @@ describe('ConfigBar: context/cost meter', () => {
     expect(screen.getByTestId('context-track').className).toContain('full');
   });
 
-  it('excludes usage attributable to a subagent tool call from the context figures', () => {
+  it('the near-limit warning fires at exactly the threshold, and not one percentage point before (issue #248 acceptance boundary)', () => {
+    const { rerender } = render(ConfigBar, {
+      props: { options: [], usage: usageAt(158_000), cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    expect(screen.getByTestId('context-track').dataset.fill).toBe('79');
+    expect(screen.queryByTestId('context-warning')).toBeNull();
+
+    rerender({ options: [], usage: usageAt(160_000), cumulativeCostUsd: 0, onChange: vi.fn() });
+    expect(screen.getByTestId('context-track').dataset.fill).toBe('80');
+    expect(screen.getByTestId('context-warning')).toBeTruthy();
+    expect(screen.getByTestId('context-warning').textContent).toContain('80%');
+  });
+
+  it("renders the context figures regardless of attributedToSubagent — excluding a subagent update from the percentage is the reducer's job now, not this component's (issue #248)", () => {
+    // By the time `usage` reaches this component, `tokensUsed`/
+    // `contextWindow` are ALREADY the parent-only numbers regardless of
+    // `attributedToSubagent` — `transcript.ts`'s `reduceUsage` freezes them
+    // at the reducer, see that file's own test for the freeze logic. This
+    // component intentionally does NOT re-check the flag: an earlier
+    // version gated the percentage on it here too, which meant a subagent
+    // update blanked the meter instead of bouncing it to the wrong number —
+    // still a bounce. This is a regression guard against reintroducing that
+    // guard.
     render(ConfigBar, {
       props: {
         options: [],
@@ -222,9 +244,10 @@ describe('ConfigBar: context/cost meter', () => {
         onChange: vi.fn(),
       },
     });
-    expect(screen.queryByTestId('context-track')).toBeNull();
-    expect(screen.queryByText('200k')).toBeNull();
-    // The cumulative cost figure still includes it (SPEC.md §7.9).
+    expect(screen.getByTestId('context-track').dataset.fill).toBe('25');
+    expect(screen.getByText('50k')).toBeTruthy();
+    expect(screen.getByText('200k')).toBeTruthy();
+    // The cumulative cost figure includes it too (SPEC.md §7.9).
     expect(screen.getByText('$1.23')).toBeTruthy();
   });
 

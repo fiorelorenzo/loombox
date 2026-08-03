@@ -295,8 +295,90 @@ describe('reduceTranscript: usage_update', () => {
     state = reduceTranscript(state, usageAfter);
     expect(state.usage?.attributedToSubagent).toBe(false);
 
-    // Subagent cost still folds into the cumulative figure regardless of attribution (SPEC.md §7.9).
-    expect(state.cumulativeCostUsd).toBeCloseTo(0.03);
+    // Subagent cost still folds into the cumulative figure regardless of
+    // attribution (SPEC.md §7.9). 0.02, not 0.01+0.02=0.03: ACP's `cost` is
+    // a running SESSION TOTAL the agent reports (agentclientprotocol.com's
+    // `Cost.amount`: "Total cumulative cost for session"), not a delta to
+    // sum — see `reduceUsage`'s comment.
+    expect(state.cumulativeCostUsd).toBeCloseTo(0.02);
+  });
+
+  it('a subagent usage_update does not move the parent context-fill percentage — sequence: parent, subagent (smaller window), parent again — while its cost is still folded in (issue #248 acceptance)', () => {
+    let state = createTranscriptState();
+
+    // 1. A real parent-turn update: 25% of a 200k window.
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 50_000,
+      contextWindow: 200_000,
+      costUsd: 0.1,
+    });
+    const percentAfterParent1 = Math.round(
+      (state.usage!.tokensUsed! / state.usage!.contextWindow!) * 100,
+    );
+    expect(percentAfterParent1).toBe(25);
+    expect(state.cumulativeCostUsd).toBeCloseTo(0.1);
+
+    // 2. A subagent tool call starts.
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: 'child1',
+      parentToolCallId: 'parent1',
+      status: 'in_progress',
+    });
+
+    // 3. The subagent's OWN usage_update: its context window is tiny (8k)
+    // next to the parent's 200k — folding this in directly is exactly the
+    // bounce this issue exists to prevent. Its cost IS still real session
+    // spend, so the cumulative figure grows.
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 3_000,
+      contextWindow: 8_000,
+      costUsd: 0.115,
+    });
+    expect(state.usage?.attributedToSubagent).toBe(true);
+    // Not "no percentage" (blank) and not the subagent's own 37.5% — the
+    // exact SAME numbers as step 1, frozen. This is the assertion that
+    // catches "bounces to blank" as well as "bounces to the wrong number":
+    // a looser check (e.g. `toBeUndefined()`, or just "isn't 37.5") would
+    // pass even if the meter went blank instead of holding steady.
+    expect(state.usage?.tokensUsed).toBe(50_000);
+    expect(state.usage?.contextWindow).toBe(200_000);
+    const percentDuringSubagent = Math.round(
+      (state.usage!.tokensUsed! / state.usage!.contextWindow!) * 100,
+    );
+    expect(percentDuringSubagent).toBe(percentAfterParent1);
+    // The subagent's own spend is real session cost even though its context
+    // size is excluded from the percentage (SPEC.md §7.9).
+    expect(state.cumulativeCostUsd).toBeCloseTo(0.115);
+
+    // 4. The subagent tool call finishes.
+    state = reduceTranscript(state, {
+      kind: 'tool_call_update',
+      id: 'child1',
+      status: 'completed',
+    });
+
+    // 5. A later real parent-turn update: genuine growth to 31%.
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 62_000,
+      contextWindow: 200_000,
+      costUsd: 0.13,
+    });
+    expect(state.usage?.attributedToSubagent).toBe(false);
+    const percentAfterParent2 = Math.round(
+      (state.usage!.tokensUsed! / state.usage!.contextWindow!) * 100,
+    );
+    expect(percentAfterParent2).toBe(31);
+
+    // Monotonic across the whole sequence: 25 -> 25 (frozen, not bounced) -> 31.
+    expect([percentAfterParent1, percentDuringSubagent, percentAfterParent2]).toEqual([25, 25, 31]);
+    expect(state.cumulativeCostUsd).toBeCloseTo(0.13);
   });
 });
 

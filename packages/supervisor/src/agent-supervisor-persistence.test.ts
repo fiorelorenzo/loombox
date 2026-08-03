@@ -95,12 +95,25 @@ describe('AgentSupervisor — on-disk resumable transcript (issue #77)', () => {
     const store = new TranscriptStore({ stateDir });
     const log = store.readLog(session.id);
 
-    // Two agent_message_chunk transcript_update entries and one turn_end,
+    // Two agent_message_chunk transcript_update entries, one usage_update
+    // transcript_update entry (issue #248: the fixture ACP agent now sends
+    // one, and — same as any other transcript-reducer update kind — it is
+    // persisted, not filtered out; "every session/update-derived transcript
+    // entry" in this test's own name is not qualified to "except metering
+    // ones", and a re-attaching client needs it on disk to show a correct
+    // usage meter without waiting on a new live event, per SPEC §7.24's
+    // "the same reducer runs identically for a live stream and for replayed
+    // history"), and one turn_end,
     // interleaved with attention transitions (awaiting_input -> working ->
     // ... -> awaiting_input), everything versioned and in one strictly
     // increasing seq order — the "ordered event sequence" issue #77 asks for.
     const transcriptEntries = log.filter((entry) => entry.type === 'transcript_update');
-    expect(transcriptEntries).toHaveLength(2);
+    expect(transcriptEntries).toHaveLength(3);
+    expect(transcriptEntries.map((entry) => entry.update.kind)).toEqual([
+      'agent_message_chunk',
+      'agent_message_chunk',
+      'usage_update',
+    ]);
     expect(log.every((entry) => entry.v === 1)).toBe(true);
     expect(log.map((entry) => entry.seq)).toEqual(log.map((_, index) => index + 1));
     expect(log.at(-1)).toMatchObject({
@@ -147,7 +160,10 @@ describe('AgentSupervisor — attach/resume across disconnects (issue #78)', () 
     const independentStore = new TranscriptStore({ stateDir });
     const persistedBeforeReattach = independentStore.readTranscriptUpdates(session.id);
     expect(persistedBeforeReattach).toEqual(session.getTranscriptUpdates());
-    expect(persistedBeforeReattach).toHaveLength(2);
+    // 3, not 2: two agent_message_chunk entries plus one usage_update entry
+    // per turn (issue #248 — see the sibling test's own comment on why
+    // usage_update is persisted, not filtered).
+    expect(persistedBeforeReattach).toHaveLength(3);
 
     // Re-attach: the supervisor never respawns, the same live session picks
     // back up, and a second turn continues appending to the same log.
@@ -158,8 +174,8 @@ describe('AgentSupervisor — attach/resume across disconnects (issue #78)', () 
     await reattached?.prompt('second turn');
 
     const persistedAfterReattach = independentStore.readTranscriptUpdates(session.id);
-    expect(persistedAfterReattach).toHaveLength(4);
-    expect(session.getTranscriptUpdates()).toHaveLength(4);
+    expect(persistedAfterReattach).toHaveLength(6);
+    expect(session.getTranscriptUpdates()).toHaveLength(6);
   });
 
   it('a NEW supervisor instance pointed at the same state dir reloads a persisted session as replay-only, with its full transcript and attention state, and refuses to prompt it', async () => {
