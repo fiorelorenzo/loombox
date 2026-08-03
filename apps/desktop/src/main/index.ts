@@ -8,6 +8,7 @@ import { LocalNodeBridge } from './local-node/bridge';
 import { getLaunchAtLogin } from './login-item';
 import { createMainWindow } from './window';
 import { createTray } from './tray';
+import { pickTrayIconPath } from './tray-icon';
 
 /**
  * Electron main-process entry point (issue #403). Cannot run on this
@@ -16,7 +17,8 @@ import { createTray } from './tray';
  * real on his Mac via `pnpm --filter @loombox/desktop dev`.
  */
 
-const TRAY_ICON_PATH = path.join(__dirname, '../../assets/tray-iconTemplate.png');
+const TRAY_ICON_TEMPLATE_PATH = path.join(__dirname, '../../assets/tray-iconTemplate.png');
+const TRAY_ICON_COLORED_PATH = path.join(__dirname, '../../assets/tray-icon-azure.png');
 const APP_ICON_PATH = path.join(__dirname, '../../assets/icon.png');
 
 let isQuitting = false;
@@ -46,7 +48,10 @@ void app.whenReady().then(() => {
   });
 
   createTray({
-    iconPath: TRAY_ICON_PATH,
+    iconPath: pickTrayIconPath(process.platform, {
+      template: TRAY_ICON_TEMPLATE_PATH,
+      colored: TRAY_ICON_COLORED_PATH,
+    }),
     window,
     onQuit: () => app.quit(),
   });

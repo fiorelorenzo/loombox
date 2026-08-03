@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
-    "package:mac": "electron-builder --mac"
+    "package:mac": "electron-builder --mac",
+    "package:win": "electron-builder --win",
+    "package:linux": "electron-builder --linux"
   },
   "dependencies": {
     "@loombox/node": "workspace:*",

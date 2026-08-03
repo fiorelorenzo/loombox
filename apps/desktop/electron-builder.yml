@@ -1,9 +1,22 @@
-# electron-builder config (issue #403). Mac-only — this app has no
-# Windows/Linux target, and this config is only ever meant to be *run* on
-# Lorenzo's Mac (see README.md: this devbox is headless and cannot build,
-# sign, or notarize a .app at all).
+# electron-builder config (issue #403, Windows/Linux targets added by
+# #566). macOS signing/notarization need Lorenzo's Apple Developer
+# certificate and only ever run on his Mac; Linux builds right here on
+# this headless devbox (no display needed to *produce* an AppImage/deb,
+# only to run one — see README.md); Windows needs CI or a Windows box
+# (the CI matrix job is #567). See README.md's "Building for macOS,
+# Linux, and Windows" for the full breakdown.
 appId: com.loombox.desktop
 productName: loombox
+# electron-builder's own automatic pre-package `@electron/rebuild` step
+# ignores pnpm-workspace.yaml's `allowBuilds` and tries to rebuild every
+# native module it finds a `binding.gyp` for, including `cpu-features`
+# (an optional ssh2 accelerator this repo deliberately never builds — see
+# `pnpm-workspace.yaml`'s comment) — this devbox's node-gyp/gyp toolchain
+# can't build it (`buildcheck.gypi not found`) and doesn't need to.
+# `node-pty`'s real rebuild against Electron's ABI (the actual
+# functional need, see README.md's "native-module rebuild caveat") is
+# still a manual, not-yet-wired step done separately, not by this flag.
+npmRebuild: false
 directories:
   output: release
 # This package ships raw TypeScript run through `tsx` at runtime (see
@@ -40,3 +53,14 @@ mac:
   gatekeeperAssess: false
 dmg:
   sign: false
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+    - target: portable
+linux:
+  icon: assets/icons
+  category: Development
+  target:
+    - target: AppImage
+    - target: deb
