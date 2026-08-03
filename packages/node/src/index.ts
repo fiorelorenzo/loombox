@@ -41,6 +41,17 @@ export { McpConfigError, McpConfigStore } from './mcp-config-store';
 export type { NodeMcpSecretManagerOptions } from './mcp-secrets';
 export { NodeMcpSecretManager } from './mcp-secrets';
 
+// v2: node-side persistence for loombox's native tracker data model
+// (`@loombox/shared`'s `TrackerRecord`/`TrackerTypeDefinition`; SPEC
+// §7.10 "Native mode"; issue #210).
+export type {
+  CreateTrackerRecordInput,
+  ListTrackerRecordsFilter,
+  NativeTrackerStoreOptions,
+  UpdateTrackerRecordInput,
+} from './native-tracker-store';
+export { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
+
 // v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63).
 export type { LoadNodeConfigOptions, NodeCliConfig } from './config';
 export { ConfigError, loadNodeConfig } from './config';
