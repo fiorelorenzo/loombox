@@ -94,7 +94,8 @@
     TargetUpdateResponse,
   } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
-  import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
+  import Badge from './ui/Badge.svelte';
+  import { type StatusTone } from './ui/StatusDot.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Button from './ui/Button.svelte';
@@ -408,15 +409,18 @@
               data-testid={`target-row-toggle-${key}`}
             >
               <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
-              <span class="agent-health-badge" data-testid="agent-health-badge" data-state={state}
-                ><StatusDot
-                  tone={HEALTH_TONES[state]}
-                  label={HEALTH_LABELS[state]}
-                  size="sm"
-                />{#if icon}<Icon name={icon} />{/if}{HEALTH_LABELS[state]}</span
+              <Badge
+                tone={HEALTH_TONES[state]}
+                size="md"
+                dot
+                dotLabel={HEALTH_LABELS[state]}
+                class="agent-health-badge"
+                dataTestId="agent-health-badge"
               >
+                {#if icon}<Icon name={icon} />{/if}{HEALTH_LABELS[state]}
+              </Badge>
               <span class="target-label">{target.label}</span>
-              <span class="kind-badge" data-kind={target.kind}>{target.kind}</span>
+              <Badge size="sm" class="kind-badge">{target.kind}</Badge>
               {#if identity}
                 <span class="target-identity font-mono" data-testid={`target-identity-${key}`}
                   >{identity}</span
@@ -711,14 +715,16 @@
     transform: rotate(-90deg);
   }
 
-  .kind-badge {
+  /* `Badge` owns the pill's chrome (radius, padding, tone colors) now —
+     this is only the uppercase/tracking treatment `kind-badge` still wants
+     on top of it. `:global()` because `Badge` renders its own root in its
+     own component scope (same pattern as `TargetPicker`'s own copy of this
+     rule — the two `kind-badge`s are the literal duplicate issue #579
+     names, unified onto one primitive but still each carrying this one
+     content-transform locally). */
+  :global(.kind-badge) {
     text-transform: uppercase;
     letter-spacing: 0.02em;
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    padding: var(--space-3xs) var(--space-xs);
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
   }
 
   .target-label {
@@ -738,37 +744,10 @@
     margin: 0;
   }
 
-  /* Health/status badge (redesign brief §6, issue #436): a `StatusDot`
-     alongside its own text, both legibly larger than the previous
-     0.7rem — color-by-state stays on the badge itself, so the dot
-     reinforces rather than replaces the accessible text label. */
-  .agent-health-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-full);
-    background: var(--color-fill);
-    transition: background-color var(--duration-fast) var(--ease-beat);
-  }
-
-  .agent-health-badge[data-state='healthy'] {
-    color: var(--color-success);
-    background: var(--color-success-subtle);
-  }
-
-  .agent-health-badge[data-state='overloaded'] {
-    color: var(--color-warning);
-    background: var(--color-warning-subtle);
-  }
-
-  .agent-health-badge[data-state='unreachable'],
-  .agent-health-badge[data-state='node-offline'] {
-    color: var(--color-danger);
-    background: var(--color-danger-subtle);
-  }
+  /* Health/status badge (redesign brief §6, issue #436; composes `Badge`
+     as of issue #579): `Badge`'s own tone ladder now supplies the
+     success/warning/danger coloring `HEALTH_TONES` already drove — no
+     separate `[data-state]` color table needed on top of it. */
 
   /* Load/mem/disk plus the relative age, pushed to the row's trailing edge
      (v5 design spec §3's "column of targets stays scannable") — tabular

@@ -60,6 +60,7 @@
     type WebSocketConstructor,
   } from '$lib/relay-client';
   import Button from './ui/Button.svelte';
+  import Card from './ui/Card.svelte';
   import RecoveryCodeCard from './RecoveryCodeCard.svelte';
   import RecoveryCodeEntryForm from './RecoveryCodeEntryForm.svelte';
 
@@ -162,24 +163,36 @@
           account's key before it can read anything.
         </p>
         <div class="choice-row">
-          <button
-            type="button"
-            class="choice-card"
-            onclick={chooseFirstDevice}
-            data-testid="onboarding-choose-first-device"
-          >
-            <strong>This is my first device</strong>
-            <span>Generate a new account key and a Recovery Code to add more devices later.</span>
-          </button>
-          <button
-            type="button"
-            class="choice-card"
-            onclick={chooseNewDevice}
-            data-testid="onboarding-choose-new-device"
-          >
-            <strong>I already have loombox on another device</strong>
-            <span>Enter the Recovery Code you saved there to unlock this account here.</span>
-          </button>
+          <Card elevation="raised" padding="none" class="choice-card">
+            <Button
+              variant="ghost"
+              fullWidth
+              class="choice-card-trigger"
+              onclick={chooseFirstDevice}
+              dataTestId="onboarding-choose-first-device"
+            >
+              <span class="choice-card-copy">
+                <strong>This is my first device</strong>
+                <span
+                  >Generate a new account key and a Recovery Code to add more devices later.</span
+                >
+              </span>
+            </Button>
+          </Card>
+          <Card elevation="raised" padding="none" class="choice-card">
+            <Button
+              variant="ghost"
+              fullWidth
+              class="choice-card-trigger"
+              onclick={chooseNewDevice}
+              dataTestId="onboarding-choose-new-device"
+            >
+              <span class="choice-card-copy">
+                <strong>I already have loombox on another device</strong>
+                <span>Enter the Recovery Code you saved there to unlock this account here.</span>
+              </span>
+            </Button>
+          </Card>
         </div>
       {:else if mode === 'first-device'}
         <h2>Save your Recovery Code</h2>
@@ -276,44 +289,49 @@
     gap: var(--space-sm);
   }
 
-  /* raised tier (redesign brief §3), hand-rolled rather than composing
-     `Card`: this test queries a fixed `data-testid`, which `Card` can't
-     take on (see the file doc comment). */
-  .choice-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    text-align: left;
-    padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-sm);
-    color: inherit;
-    cursor: pointer;
+  /* `Card` supplies the raised-tier border/background/radius/shadow now
+     (issue #579); the actual click target is the ghost `Button` filling it
+     edge to edge. `overflow: hidden` keeps that button's own hover fill
+     from spilling past the card's rounded corners. `:hover`/`:focus-within`
+     rather than a synthetic `:has()` — `:hover` already bubbles up from a
+     hovered descendant, and `:focus-within` is exactly that for keyboard
+     focus, so the card tints without either side needing to know about
+     the other. `:global()` because `Card`/`Button` render their own root
+     in their own component scope. */
+  :global(.choice-card) {
+    padding: 0;
+    overflow: hidden;
     transition:
       border-color var(--duration-fast) var(--ease-beat),
-      background-color var(--duration-fast) var(--ease-beat),
-      transform var(--duration-instant) var(--ease-beat);
+      background-color var(--duration-fast) var(--ease-beat);
   }
 
-  .choice-card:hover,
-  .choice-card:focus-visible {
+  :global(.choice-card:hover),
+  :global(.choice-card:focus-within) {
     border-color: var(--color-accent);
     background: var(--color-accent-subtle);
   }
 
-  /* tension-press (redesign brief §2): no bounce/overshoot. */
-  .choice-card:active {
-    transform: scale(0.99);
+  /* tension-press (redesign brief §2) and the focus-visible ring both come
+     from `Button`'s own base styling for free. */
+  :global(.choice-card-trigger) {
+    justify-content: flex-start;
+    padding: var(--space-md);
+    text-align: left;
+    border-radius: 0;
   }
 
-  .choice-card:focus-visible {
-    outline: var(--focus-ring-width) solid var(--color-focus-ring);
-    outline-offset: var(--focus-ring-offset);
+  :global(.choice-card-trigger:not(:disabled):hover) {
+    text-decoration: none;
   }
 
-  .choice-card span {
+  .choice-card-copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .choice-card-copy span {
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
   }

@@ -18,10 +18,16 @@
    * Deck migration (redesign v2 design spec, issue #473): the visible card
    * composes the real `Card` primitive (`elevation="floating"`, since this
    * is the one thing the whole onboarding screen exists to make the user
-   * look at) nested inside a plain, unstyled wrapper that keeps this
-   * component's own `recovery-code-card` test id — `Card` hardcodes its own
-   * `data-testid`, so it can't carry a caller-chosen one directly (see that
-   * component's doc comment). The copy affordance now reuses the shared
+   * look at). It used to sit inside a plain, unstyled wrapper div whose only
+   * jobs were carrying a `recovery-code-card` test id (`Card` hardcodes its
+   * own `data-testid`, so it couldn't carry a caller-chosen one directly)
+   * and scoping the layout `:global()` override below to this component's
+   * own instances. The wrapper is gone (issue #579): grepping this
+   * component's own test file and every Playwright spec turned up no query
+   * for `recovery-code-card` at all, so nothing depended on it, and the
+   * `:global()` selector reaches `Card`'s real root directly without an
+   * ancestor to scope it.
+   * The copy affordance reuses the shared
    * `CopyButton` (rather than a second hand-rolled copy control) — its
    * accessible name is what the test queries via `getByRole` now, since
    * `CopyButton` doesn't take a `data-testid` override (unlike `Button`/
@@ -64,57 +70,53 @@
   }
 </script>
 
-<div class="recovery-code-card-shell" data-testid="recovery-code-card">
-  <Card elevation="floating" padding="lg" class="recovery-code-card">
-    <p class="warning" role="alert">
-      Save this Recovery Code somewhere safe. It is the <strong>only</strong> way to recover your account
-      or add another device — loombox never stores it, and there is no other way to get it back.
-    </p>
+<Card elevation="floating" padding="lg" class="recovery-code-card">
+  <p class="warning" role="alert">
+    Save this Recovery Code somewhere safe. It is the <strong>only</strong> way to recover your account
+    or add another device — loombox never stores it, and there is no other way to get it back.
+  </p>
 
-    <div class="code-row">
-      <code class="code font-mono" data-testid="recovery-code-value">{code}</code>
-      <CopyButton text={code} label="Copy Recovery Code" {copyFn} />
-    </div>
+  <div class="code-row">
+    <code class="code font-mono" data-testid="recovery-code-value">{code}</code>
+    <CopyButton text={code} label="Copy Recovery Code" {copyFn} />
+  </div>
 
-    <label class="confirm-row">
-      <input
-        type="checkbox"
-        bind:checked={confirmed}
-        data-testid="recovery-code-confirm-checkbox"
-      />
-      I've saved my Recovery Code somewhere safe.
-    </label>
+  <label class="confirm-row">
+    <input type="checkbox" bind:checked={confirmed} data-testid="recovery-code-confirm-checkbox" />
+    I've saved my Recovery Code somewhere safe.
+  </label>
 
-    {#if error}
-      <ErrorNotice message={error} />
+  {#if error}
+    <ErrorNotice message={error} />
+  {/if}
+
+  <div class="continue-row">
+    <Button
+      type="button"
+      variant="primary"
+      loading={busy}
+      disabled={!confirmed}
+      onclick={handleContinue}
+      dataTestId="recovery-code-continue"
+    >
+      {busy ? 'Securing your account…' : 'Continue'}
+    </Button>
+    {#if busy}
+      <span class="in-flight-track" aria-hidden="true">
+        <span class="thread-draw-fill-loop in-flight-bar"></span>
+      </span>
     {/if}
-
-    <div class="continue-row">
-      <Button
-        type="button"
-        variant="primary"
-        loading={busy}
-        disabled={!confirmed}
-        onclick={handleContinue}
-        dataTestId="recovery-code-continue"
-      >
-        {busy ? 'Securing your account…' : 'Continue'}
-      </Button>
-      {#if busy}
-        <span class="in-flight-track" aria-hidden="true">
-          <span class="thread-draw-fill-loop in-flight-bar"></span>
-        </span>
-      {/if}
-    </div>
-  </Card>
-</div>
+  </div>
+</Card>
 
 <style>
-  /* Card renders its own outer element in its own component scope (see
-     that file's `Card`-vs-`className` doc comment); `:global()` under this
-     local ancestor class is the narrowly-scoped way to reach it, mirroring
-     `EmptyState`'s own doc comment for the identical situation. */
-  .recovery-code-card-shell :global(.recovery-code-card) {
+  /* `Card` renders its own outer element in its own component scope (see
+     that file's `Card`-vs-`className` doc comment), so a plain selector
+     never matches it — `:global()` reaches it directly now that the
+     wrapper div that used to exist only to scope this (and to carry a
+     `data-testid` nothing actually queried — see the file doc comment) is
+     gone. */
+  :global(.recovery-code-card) {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);

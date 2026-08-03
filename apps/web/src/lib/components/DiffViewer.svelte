@@ -1,13 +1,18 @@
 <script lang="ts">
   /**
    * The ACP v1 Diff viewer (SPEC.md §7.24 "Diffs", issue #141): client-side
-   * line diffing (`$lib/diff.ts`) with language-aware coloring, reused
-   * as-is by both a tool-call diff (here) and the working-tree diff viewer
-   * (§7.4, a later epic — this component takes no tool-call-specific props,
-   * only `{path, oldText, newText}`, so it's already that shared component).
+   * line diffing (`$lib/diff.ts`), reused as-is by both a tool-call diff
+   * (here) and the working-tree diff viewer (§7.4, a later epic — this
+   * component takes no tool-call-specific props, only
+   * `{path, oldText, newText}`, so it's already that shared component).
    * `oldText === null` (binary/symlink change, or a brand-new file) still
    * renders a real diff card - never a blank one - falling back to a
    * structural-only summary when there's no line text to diff at all.
+   * (Language-aware syntax coloring is future work — v6 design spec §3.4;
+   * this view's own `data-lang={languageForPath(path)}` was never wired to
+   * any styling and is dropped as of issue #579's `Card` migration below,
+   * rather than carried along as dead code — `languageForPath` itself
+   * stays in `$lib/diff.ts`, tested there, for whenever that work lands.)
    *
    * Warp Deck restyle (docs/design/redesign.md, issue #432): the card
    * itself adopts the elevation ladder's "raised" tier; the header keeps
@@ -22,7 +27,8 @@
    * the card scrolls its own long lines horizontally (`.diff-lines`'s
    * `overflow-x: auto`) rather than overflowing the page on a narrow one.
    */
-  import { computeLineDiff, languageForPath, type DiffLine } from '$lib/diff';
+  import { computeLineDiff, type DiffLine } from '$lib/diff';
+  import Card from './ui/Card.svelte';
   import CopyButton from './CopyButton.svelte';
 
   interface Props {
@@ -35,7 +41,6 @@
 
   const { path, oldText, newText }: Props = $props();
 
-  const lang = $derived(languageForPath(path));
   // Structural-only fallback: neither side carries any patch text at all —
   // ACP's shape for a binary/symlink change (SPEC.md §7.24). A genuinely
   // emptied text file (oldText non-null, newText === '') is still a real
@@ -47,7 +52,7 @@
   const copyText = $derived(hasText ? newText : `${path} (binary/symlink change)`);
 </script>
 
-<div class="diff-viewer" data-lang={lang}>
+<Card elevation="raised" padding="none" class="diff-viewer">
   <div class="diff-header">
     <span class="diff-path">{path}</span>
     {#if hasText}
@@ -77,18 +82,18 @@
       Binary or symlink change — no line-level diff available for {path}.
     </p>
   {/if}
-</div>
+</Card>
 
 <style>
-  /* raised tier (elevation ladder §3). Capped at --measure-wide (redesign
-     v3 §3.4) and always allowed to shrink below its content's intrinsic
-     width inside a flex/grid ancestor, so a long monospace line scrolls
-     within `.diff-lines` instead of pushing the card past the viewport. */
-  .diff-viewer {
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
+  /* `Card` (`elevation="raised"`) supplies the background/border/radius/
+     shadow now (issue #579) — this is only the sizing this surface still
+     needs on top of it. Capped at --measure-wide (redesign v3 §3.4) and
+     always allowed to shrink below its content's intrinsic width inside a
+     flex/grid ancestor, so a long monospace line scrolls within
+     `.diff-lines` instead of pushing the card past the viewport.
+     `:global()` because `Card` renders its own root in its own component
+     scope. */
+  :global(.diff-viewer) {
     overflow: hidden;
     font-size: var(--text-code-size);
     width: 100%;
@@ -172,8 +177,8 @@
   /* Copy affordance reveals on card hover/focus-within (redesign v3 §3.4
      "Copy affordances"); see CopyButton.svelte's `revealOnHover` doc
      comment for why this lives here rather than in the shared button. */
-  .diff-viewer:hover :global(.copy-button-reveal),
-  .diff-viewer:focus-within :global(.copy-button-reveal) {
+  :global(.diff-viewer:hover .copy-button-reveal),
+  :global(.diff-viewer:focus-within .copy-button-reveal) {
     opacity: 1;
   }
 </style>
