@@ -118,4 +118,25 @@ describe('Button (issue #428 Warp Deck shared UI primitives)', () => {
     });
     expect(screen.getByTestId('ui-button').getAttribute('title')).toBe('Files');
   });
+
+  it('can take on a radiogroup member role (issue #549): role, aria-checked, tabindex and keydown all pass through', async () => {
+    const onkeydown = vi.fn();
+    render(Button, {
+      props: {
+        children: textSnippet('Plan'),
+        role: 'radio',
+        ariaChecked: true,
+        tabindex: 0,
+        onkeydown,
+      },
+    });
+    const button = screen.getByTestId('ui-button');
+    expect(button.getAttribute('role')).toBe('radio');
+    expect(button.getAttribute('aria-checked')).toBe('true');
+    // Never both: a radio's state lives in aria-checked, not aria-pressed.
+    expect(button.hasAttribute('aria-pressed')).toBe(false);
+    expect(button.tabIndex).toBe(0);
+    await fireEvent.keyDown(button, { key: 'ArrowRight' });
+    expect(onkeydown).toHaveBeenCalledTimes(1);
+  });
 });

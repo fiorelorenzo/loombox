@@ -36,9 +36,9 @@
    * selected tint is applied via a plain class merged into its `class`
    * prop, styled here with `:global()` the same way `AttachmentBar`'s
    * `.pick-button` override reaches into a child component's own root
-   * element. `getByRole('button', { name })` in the tests still resolves
-   * the same way: `Button` renders its `children` snippet verbatim inside
-   * the native `<button>`.
+   * element (the accessible role/name resolve the same way regardless:
+   * `Button` renders its `children` snippet verbatim inside the native
+   * `<button>`).
    *
    * Deck v3 restyle (redesign v3 design spec §3.5, issue #502): every
    * category picker now renders through the shared `ui/Select` primitive
@@ -80,7 +80,26 @@
    *    the denominator: the track IS the ratio, and the `title` still spells
    *    every figure out. The old strip hid all of it behind the "···", so the
    *    first thing to disappear on a phone was the number a user watches.
+   *
+   * Segmented-control a11y (issue #549): the mode control's selection lived
+   * only in a background tint — `role="group"` around two plain buttons —
+   * so a screen reader heard "Auto, button. Plan, button." with no way to
+   * tell which one was current. Decided as `role="radiogroup"` with
+   * `role="radio"`/`aria-checked` per segment and a roving `tabindex`
+   * (arrow keys move focus AND the selection, one tab stop for the whole
+   * group), not the topbar panel switch's `aria-pressed`: `mode` is
+   * mutually exclusive and ALWAYS has exactly one value, which is exactly
+   * what a radio group means and `aria-pressed` (independently on/off,
+   * legitimately all-off) does not. The panel switch is a genuinely
+   * different control — `toggleDrawer` in `+page.svelte` closes the open
+   * panel on a second click of the same segment, so "none selected" is a
+   * real state there — so it keeps `aria-pressed` rather than picking up
+   * this pattern too. `Button` gained plain pass-through `role`/
+   * `ariaChecked`/`tabindex`/`onkeydown` props for this rather than a
+   * hand-rolled `<button>` here, so the segmented-control idiom stays one
+   * shared primitive.
    */
+  import { tick } from 'svelte';
   import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core/browser';
   import { PROVIDER_LABELS } from '$lib/providers';
   import Button from './ui/Button.svelte';
@@ -108,6 +127,9 @@
 
   const modeOption = $derived(options.find((option) => option.category === 'mode'));
   const otherOptions = $derived(options.filter((option) => option.category !== 'mode'));
+
+  /** The radiogroup root, for moving focus onto the newly-selected segment when an arrow key changes it (see `handleModeKeydown`). */
+  let modeGroupEl = $state<HTMLDivElement | undefined>(undefined);
 
   // Falls back to the raw id rather than dropping the fact: an unrecognized
   // provider still tells a user more than a blank does (same reasoning as
@@ -156,6 +178,52 @@
     if (count >= 1_000) return `${Math.round(count / 1_000)}k`;
     return `${count}`;
   }
+
+  /**
+   * WAI-ARIA APG "radio group" arrow-key navigation: Left/Up selects the
+   * previous segment, Right/Down the next, wrapping at the ends. A native
+   * radio group moves focus and the selection together on arrow keys (not
+   * just focus, the way a listbox/tablist does), so this calls `onChange`
+   * immediately rather than waiting for Enter/Space.
+   *
+   * `modeOption.current` itself only moves once the caller's round trip
+   * replaces `options` (this component keeps no internal selection state,
+   * see the header comment) — the same one-way data flow a mouse click
+   * already waits on. Focus does not wait for that: it moves to the
+   * chosen segment straight away, by index, the same way a click's own
+   * target is already focused by the browser before `onChange` returns.
+   */
+  function handleModeKeydown(event: KeyboardEvent): void {
+    if (!modeOption) return;
+    const { choices, current } = modeOption;
+    if (choices.length === 0) return;
+
+    let delta: number;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        delta = 1;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        delta = -1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+
+    const currentIndex = choices.findIndex((choice) => choice.id === current);
+    const nextIndex = (Math.max(currentIndex, 0) + delta + choices.length) % choices.length;
+    const nextChoice = choices[nextIndex];
+    if (!nextChoice) return;
+
+    onChange('mode', nextChoice.id);
+    tick().then(() => {
+      const radios = modeGroupEl?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+      radios?.[nextIndex]?.focus();
+    });
+  }
 </script>
 
 <div class="config-bar" data-testid="config-bar">
@@ -184,13 +252,23 @@
     {/each}
 
     {#if modeOption}
-      <div class="control mode" role="group" aria-label="Mode" data-testid="config-option-mode">
+      <div
+        class="control mode"
+        role="radiogroup"
+        aria-label="Mode"
+        data-testid="config-option-mode"
+        bind:this={modeGroupEl}
+      >
         {#each modeOption.choices as choice (choice.id)}
           <Button
             variant="ghost"
             size="sm"
             class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
+            role="radio"
+            ariaChecked={modeOption.current === choice.id}
+            tabindex={modeOption.current === choice.id ? 0 : -1}
             onclick={() => onChange('mode', choice.id)}
+            onkeydown={handleModeKeydown}
           >
             {choice.name}
           </Button>

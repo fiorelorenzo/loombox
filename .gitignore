@@ -26,4 +26,5 @@ deploy/relay/backups/
 # temporary UI-audit artifacts (redesign v3)
 apps/web/.audit/
 apps/web/test-results/
+apps/web/playwright-report/
 apps/web/tests-e2e/zz-audit-screens.spec.ts

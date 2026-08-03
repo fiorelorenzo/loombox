@@ -39,8 +39,8 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     expect(screen.getByTestId('config-option-model')).toBeTruthy();
     expect(screen.getByTestId('config-option-thought_level')).toBeTruthy();
     expect(screen.getByTestId('config-option-mode')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Plan' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Default' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Plan' })).toBeTruthy();
   });
 
   it('renders an unrecognized/future category generically rather than dropping it', () => {
@@ -67,8 +67,79 @@ describe('ConfigBar: rendering the negotiated option set', () => {
   it('a user change calls onChange for the mode segmented control', async () => {
     const onChange = vi.fn();
     render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Plan' }));
+    await fireEvent.click(screen.getByRole('radio', { name: 'Plan' }));
     expect(onChange).toHaveBeenCalledWith('mode', 'plan');
+  });
+
+  it('marks the current mode in the accessibility tree, not only with a class (issue #549)', () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    const group = screen.getByRole('radiogroup', { name: 'Mode' });
+    const defaultRadio = within(group).getByRole('radio', { name: 'Default', checked: true });
+    const planRadio = within(group).getByRole('radio', { name: 'Plan', checked: false });
+    // The visual tint is still there too — the a11y state and the tint are
+    // driven off the same `modeOption.current === choice.id` check, not
+    // asserted through the class alone (which is what let this ship unmarked).
+    expect(defaultRadio.classList.contains('selected')).toBe(true);
+    expect(planRadio.classList.contains('selected')).toBe(false);
+  });
+
+  it('roving tabindex: only the checked segment is a tab stop, and it moves with the selection', async () => {
+    const { rerender } = render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    expect(screen.getByRole('radio', { name: 'Default' }).tabIndex).toBe(0);
+    expect(screen.getByRole('radio', { name: 'Plan' }).tabIndex).toBe(-1);
+
+    // Simulates the round trip that follows a pick: the caller replaces
+    // `options` wholesale (this component keeps no selection state of its
+    // own — see ConfigBar.svelte's header comment).
+    const planSelected: AcpConfigOption[] = options.map((option) =>
+      option.category === 'mode' ? { ...option, current: 'plan' } : option,
+    );
+    await rerender({
+      options: planSelected,
+      usage: undefined,
+      cumulativeCostUsd: 0,
+      onChange: vi.fn(),
+    });
+
+    expect(screen.getByRole('radio', { name: 'Default' }).tabIndex).toBe(-1);
+    expect(screen.getByRole('radio', { name: 'Plan' }).tabIndex).toBe(0);
+  });
+
+  it('arrow keys move the mode selection and move focus onto the newly-selected segment', async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange },
+    });
+    const defaultRadio = screen.getByRole('radio', { name: 'Default' });
+
+    defaultRadio.focus();
+    await fireEvent.keyDown(defaultRadio, { key: 'ArrowRight' });
+    expect(onChange).toHaveBeenCalledWith('mode', 'plan');
+    await vi.waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Plan' })),
+    );
+
+    // Simulates the round trip landing (same one-way data flow the
+    // roving-tabindex test above exercises): only once `options` itself
+    // reflects the pick does `current` move — arrow-key focus does not
+    // wait on it, but a second arrow press reasons from wherever
+    // `modeOption.current` actually is.
+    onChange.mockClear();
+    const planSelected: AcpConfigOption[] = options.map((option) =>
+      option.category === 'mode' ? { ...option, current: 'plan' } : option,
+    );
+    await rerender({ options: planSelected, usage: undefined, cumulativeCostUsd: 0, onChange });
+    const planRadio = screen.getByRole('radio', { name: 'Plan' });
+    planRadio.focus();
+    await fireEvent.keyDown(planRadio, { key: 'ArrowLeft' });
+    expect(onChange).toHaveBeenCalledWith('mode', 'default');
+    await vi.waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Default' })),
+    );
   });
 
   it('re-renders the full control set (not a single patched control) when the options prop is wholesale replaced', async () => {

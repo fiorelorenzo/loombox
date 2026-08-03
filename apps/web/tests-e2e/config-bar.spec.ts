@@ -82,8 +82,11 @@ test.describe('Model/mode/reasoning-effort bar (issue #149, read side)', () => {
       optionId: 'haiku',
     });
 
-    // Mode renders as a segmented control (buttons), not a `Select`.
-    await page.getByTestId('config-option-mode').getByRole('button', { name: 'Plan' }).click();
+    // Mode renders as a radiogroup (issue #549: role="radio"/aria-checked,
+    // not a plain button, so the current mode is in the a11y tree).
+    const modeGroup = page.getByTestId('config-option-mode');
+    await expect(modeGroup.getByRole('radio', { name: 'Default', checked: true })).toBeVisible();
+    await modeGroup.getByRole('radio', { name: 'Plan', checked: false }).click();
     const modeChange = (await loombox.node.waitFor(
       (message) => message.type === 'config_option' && message.category === 'mode',
     )) as ConfigOption;
