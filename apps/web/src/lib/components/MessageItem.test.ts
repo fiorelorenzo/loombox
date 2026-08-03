@@ -264,3 +264,94 @@ describe('MessageItem: every turn states its role (design spec v5 §4)', () => {
     expect(screen.getByText('You')).toBeTruthy();
   });
 });
+
+describe('MessageItem: Markdown rendering (issue #574)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('renders a fenced ts block as a code block with no visible backticks, highlighted', () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem({ text: '```ts\nconst x: number = 1;\n```' }) },
+    });
+    expect(screen.getByTestId('message-text').textContent).not.toContain('```');
+    expect(container.querySelector('pre code.language-ts')).toBeTruthy();
+    expect(container.querySelector('.hljs-keyword')).toBeTruthy();
+  });
+
+  it('renders a nested markdown list with real <ul>/<li> markers and indentation, not literal dashes', () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem({ text: '- a\n  - nested a1\n  - nested a2\n- b' }) },
+    });
+    expect(screen.getByTestId('message-text').textContent).not.toContain('- a');
+    const lists = container.querySelectorAll('ul');
+    expect(lists.length).toBe(2); // one outer, one nested
+    expect(container.querySelectorAll('li').length).toBe(4);
+    const outer = lists[0];
+    expect(outer.querySelector('ul')).toBeTruthy(); // nested list is inside the outer li
+  });
+
+  it('wraps a wide table in a horizontally scrollable container instead of stretching the row', () => {
+    const { container } = render(MessageItem, {
+      props: { item: messageItem({ text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |' }) },
+    });
+    const wrap = container.querySelector('.md-table-scroll');
+    expect(wrap).toBeTruthy();
+    expect(wrap?.querySelector('table')).toBeTruthy();
+    expect(wrap?.querySelectorAll('th').length).toBe(3);
+  });
+
+  it('renders a still-open fence as a plain, unhighlighted monospace box at several intermediate reveal states, then highlights it once closed with no flicker between two layouts', async () => {
+    vi.useFakeTimers();
+    const opening = 'Explain:\n\n```ts\nconst x: number = 1;\nconsole.lo';
+    const item = messageItem({ text: opening });
+    const { getByTestId, queryByTestId, rerender } = render(MessageItem, {
+      props: { item, turnActive: true },
+    });
+
+    // Several intermediate reveal states while the fence is still open: it
+    // always renders as the plain monospace box, never with token spans,
+    // and never disappears.
+    for (const advanceMs of [32, 64, 32 * 20]) {
+      await vi.advanceTimersByTimeAsync(advanceMs);
+      const openFence = queryByTestId('md-open-fence');
+      if (openFence) {
+        expect(openFence.querySelector('.hljs-keyword')).toBeNull();
+        expect(openFence.tagName).toBe('PRE');
+      }
+    }
+    await vi.advanceTimersByTimeAsync(32 * 200); // fully caught up to the (still-open) target
+    const openFence = getByTestId('md-open-fence');
+    expect(openFence.textContent).toContain('const x: number = 1;');
+    expect(openFence.querySelector('.hljs-keyword')).toBeNull();
+
+    // The fence closes and the turn ends (the real turn_ended signal): the
+    // open box is gone, replaced by the highlighted, rendered fence — one
+    // transition, not a toggle back and forth.
+    const full = opening + 'g(x);\n```\n\nDone.';
+    await rerender({ item: { ...item, text: full }, turnActive: false });
+    expect(queryByTestId('md-open-fence')).toBeNull();
+    expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeTruthy();
+    expect(getByTestId('message-text').textContent).not.toContain('```');
+  });
+
+  it('sanitises a <script> and an <img onerror=...> in agent text — neither becomes a live element, and nothing executes', () => {
+    const { container } = render(MessageItem, {
+      props: {
+        item: messageItem({
+          text: 'before <script>alert(1)</script> and <img src=x onerror=alert(1)> after',
+        }),
+      },
+    });
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.innerHTML).not.toContain('onerror');
+  });
+
+  it('renders thought bodies through the same Markdown pipeline as messages', async () => {
+    render(MessageItem, {
+      props: { item: messageItem({ kind: 'agent_thought_chunk', text: '- one\n- two' }) },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Show thought' }));
+    const body = screen.getByTestId('thought-body');
+    expect(body.querySelectorAll('li').length).toBe(2);
+  });
+});

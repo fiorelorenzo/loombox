@@ -66,6 +66,7 @@
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
   import { itemCopyText } from '$lib/copy';
+  import { renderMarkdownToHtml, splitStreamingMarkdown } from '$lib/markdown';
   import { PROVIDER_LABELS } from '$lib/providers';
   import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
@@ -97,6 +98,30 @@
     onReveal: (length) => (revealedLength = length),
   });
   const displayText = $derived(item.text.slice(0, revealedLength));
+
+  // Markdown (issue #574, design spec §3.4): re-parsing the whole message
+  // through remark/rehype on every 32ms reveal tick does not hold up on a
+  // long turn, so `splitStreamingMarkdown` (`$lib/markdown`) finds the last
+  // position in `displayText` that is safe to fully parse — every block
+  // opened so far has also closed — and only that "stable" prefix goes
+  // through the real Markdown pipeline; a still-forming block after it
+  // (`tailText`) renders as plain text, and a still-open fenced code block
+  // (`openFence`) renders as a plain monospace box, never syntax-highlighted
+  // until its closing fence actually arrives. `lastStableSource`/
+  // `lastStableHtml` are plain (non-reactive) locals, not `$state`: most
+  // ticks only grow `tailText`, so this cache is what keeps the expensive
+  // parse+sanitize+highlight call from re-running on every one of them —
+  // it only reruns when the stable boundary itself actually advances.
+  let lastStableSource = '';
+  let lastStableHtml = '';
+  const rendered = $derived.by(() => {
+    const split = splitStreamingMarkdown(displayText, !turnActive);
+    if (split.stable !== lastStableSource) {
+      lastStableHtml = renderMarkdownToHtml(split.stable);
+      lastStableSource = split.stable;
+    }
+    return { html: lastStableHtml, tailText: split.tailText, openFence: split.openFence };
+  });
 
   $effect(() => {
     pacer.setTarget(item.text.length);
@@ -162,6 +187,17 @@
     <span class="role-label">{roleLabel}</span>
   </div>
   <div class="content">
+    <!-- rendered.html is our own $lib/markdown pipeline's sanitised output
+       (rehype-sanitize + a fixed rehype-highlight/target-blank plugin
+       chain — see that module's doc comment), never raw agent text. -->
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    {#snippet markdownBody()}{#if rendered.html}{@html rendered.html}{/if}{#if rendered.tailText}<p
+          class="md-tail"
+        >
+          {rendered.tailText}
+        </p>{/if}{#if rendered.openFence}<pre
+          class="md-open-fence"
+          data-testid="md-open-fence"><code>{rendered.openFence.code}</code></pre>{/if}{/snippet}
     {#if role === 'thought'}
       {#if thinking}
         <WovenLoader size="sm" variant="working" label="Agent thinking" />
@@ -173,10 +209,14 @@
           Show thought
         </button>
       {:else}
-        <p class="text thought-body" data-testid="thought-body">{displayText}</p>
+        <div class="text thought-body md-body" data-testid="thought-body">
+          {@render markdownBody()}
+        </div>
       {/if}
     {:else}
-      <p class="text" data-testid="message-text">{displayText}</p>
+      <div class="text md-body" data-testid="message-text">
+        {@render markdownBody()}
+      </div>
     {/if}
     <div class="copy-row">
       <CopyButton text={itemCopyText(item)} label={`Copy ${role} message`} revealOnHover />
@@ -287,6 +327,167 @@
   .text {
     flex: 1;
     min-width: 0;
+    margin: 0;
+  }
+
+  /* Markdown (issue #574, design spec §3.4): Deck tokens throughout, never a
+     library stylesheet, and no second code-block visual language beside the
+     one tool-call widgets already use — `pre`/inline `code` here share the
+     exact `--color-fill-subtle`/`--radius-md`/`--space-xs`+`--space-sm`
+     recipe as `GenericToolRow`'s `.output` and `BashWidget`'s
+     `TerminalOutput`, so a closed, highlighted fence and the still-open
+     plain-monospace one it grew from (`.md-open-fence`, rendered directly
+     rather than through `{@html}` — see the script's `rendered` derivation)
+     never change shape, only colour, the instant highlighting turns on. */
+  :global(.md-body > :first-child) {
+    margin-top: 0;
+  }
+
+  :global(.md-body > :last-child) {
+    margin-bottom: 0;
+  }
+
+  :global(.md-body p) {
+    margin: var(--space-sm) 0;
+  }
+
+  :global(.md-body h1),
+  :global(.md-body h2),
+  :global(.md-body h3),
+  :global(.md-body h4),
+  :global(.md-body h5),
+  :global(.md-body h6) {
+    font-family: var(--font-ui);
+    margin: var(--space-md) 0 var(--space-2xs);
+    font-weight: var(--text-title-weight);
+    line-height: var(--text-title-line);
+  }
+
+  :global(.md-body h1) {
+    font-size: var(--text-title-size);
+  }
+
+  :global(.md-body h2),
+  :global(.md-body h3) {
+    font-size: var(--text-body-size);
+  }
+
+  :global(.md-body h4),
+  :global(.md-body h5),
+  :global(.md-body h6) {
+    font-size: var(--text-small-size);
+  }
+
+  /* Real markers and indentation (issue #574 acceptance), nested lists
+     included — `padding-inline-start` is what actually draws the marker
+     column; the browser default list-style already gives `ul`/`ol` their
+     bullets/numbers, this only spaces them onto the Deck scale. */
+  :global(.md-body ul),
+  :global(.md-body ol) {
+    margin: var(--space-sm) 0;
+    padding-inline-start: var(--space-lg);
+  }
+
+  :global(.md-body li) {
+    margin: var(--space-3xs) 0;
+  }
+
+  :global(.md-body li > ul),
+  :global(.md-body li > ol) {
+    margin: var(--space-3xs) 0;
+  }
+
+  :global(.md-body blockquote) {
+    margin: var(--space-sm) 0;
+    padding-inline-start: var(--space-sm);
+    border-inline-start: 2px solid var(--color-border);
+    color: var(--color-text-secondary);
+  }
+
+  /* Visibly links (underlined, accent) and open externally — `$lib/markdown`'s
+     `externalLinks` rehype plugin is what actually sets target/rel; this is
+     only the visual half. */
+  :global(.md-body a) {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  :global(.md-body strong) {
+    font-weight: 650;
+  }
+
+  :global(.md-body em) {
+    font-style: italic;
+  }
+
+  /* Inline code — the code surface's quiet inline cousin: a tight pill
+     instead of the full `pre` block treatment, distinguishable from prose
+     without competing with a real fenced block. `:not(pre) > code` is what
+     excludes a fence's own `code` (styled below) from also picking this up. */
+  :global(.md-body :not(pre) > code) {
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-sm);
+    padding: 0.1em 0.35em;
+    font-size: var(--text-code-size);
+  }
+
+  /* The one code surface, shared verbatim with the tool-call widgets'
+     `.output`/`TerminalOutput` (`overflow-x: auto`, never `white-space:
+     pre-wrap` — a long line scrolls the box horizontally rather than
+     wrapping and growing the transcript vertically, same as those). */
+  :global(.md-body pre),
+  .md-open-fence {
+    margin: var(--space-sm) 0;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    font-size: var(--text-code-size);
+    line-height: var(--text-code-line);
+  }
+
+  :global(.md-body pre code),
+  .md-open-fence code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+
+  /* Tables scroll horizontally inside the transcript measure instead of
+     stretching the row (issue #574 acceptance) — `$lib/markdown`'s
+     `wrapTables` rehype plugin adds this wrapper around every table. */
+  :global(.md-table-scroll) {
+    margin: var(--space-sm) 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  :global(.md-table-scroll table) {
+    border-collapse: collapse;
+    font-size: var(--text-small-size);
+  }
+
+  :global(.md-table-scroll th),
+  :global(.md-table-scroll td) {
+    border: 1px solid var(--color-border-subtle);
+    padding: var(--space-3xs) var(--space-sm);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  :global(.md-table-scroll th) {
+    background: var(--color-fill-subtle);
+    font-weight: 600;
+  }
+
+  /* The still-streaming remainder after the last safe Markdown boundary
+     (`$lib/markdown`'s `splitStreamingMarkdown`) — plain text, `pre-wrap` so
+     a raw newline the eventual list/paragraph will use still reads as a
+     line break rather than collapsing, exactly like `.text`'s old blanket
+     behaviour, just scoped to only the part that isn't real Markdown yet. */
+  .md-tail {
     margin: 0;
     white-space: pre-wrap;
   }
