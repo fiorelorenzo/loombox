@@ -116,27 +116,41 @@ test.describe('cockpit shell', () => {
 
     // v2 dimmed the entire app behind a 40% scrim to show two menu items.
     // An anchored popover paints no backdrop at all.
-    await expect(page.getByTestId('drawer-backdrop')).toHaveCount(0);
+    await expect(page.getByTestId('right-sidebar-backdrop')).toHaveCount(0);
 
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('account-menu')).toHaveCount(0);
   });
 
-  test('the Drawer closes on Escape and on a backdrop click', async ({ page, loombox }) => {
+  test('below --bp-desktop the right sidebar is a sheet: it scrims, closes on Escape and on a backdrop click, and leaves the transcript untouched (design spec §3.3, issue #571)', async ({
+    page,
+    loombox,
+  }) => {
     await gotoCockpit(page, loombox);
-    // The drawer is the open session's workbench now, so it is opened from a
-    // session-scoped control rather than from a global navigation item.
-    await page.getByTestId('file-tree-toggle').click();
-    await expect(page.getByTestId('drawer')).toBeVisible();
+    // The right sidebar is docked (no scrim at all) at this suite's default
+    // 1280x720 viewport — issue #571's whole point. The overlay/backdrop
+    // behaviour this test guards only exists below `--bp-desktop` (1024px),
+    // so it moved here from the old "panel switch opens one panel at a
+    // time" test, which used to guard it at the (now-docked) default width.
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+
+    await page.getByTestId('workbench-toggle').click();
+    await expect(page.getByTestId('right-sidebar')).toBeVisible();
+    await expect(page.getByTestId('right-sidebar-backdrop')).toBeVisible();
+    // The sheet sits over the canvas, not in place of it — the transcript
+    // underneath stays mounted and interactive the whole time.
+    await expect(page.getByTestId('composer-input')).toBeVisible();
 
     await page.keyboard.press('Escape');
-    await expect(page.getByTestId('drawer')).toHaveCount(0);
+    await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
+    await expect(page.getByTestId('composer-input')).toBeVisible();
 
-    await page.getByTestId('file-tree-toggle').click();
-    await expect(page.getByTestId('drawer')).toBeVisible();
+    await page.getByTestId('workbench-toggle').click();
+    await expect(page.getByTestId('right-sidebar')).toBeVisible();
     // Click the backdrop away from the panel (which stops propagation).
-    await page.getByTestId('drawer-backdrop').click({ position: { x: 40, y: 300 } });
-    await expect(page.getByTestId('drawer')).toHaveCount(0);
+    await page.getByTestId('right-sidebar-backdrop').click({ position: { x: 40, y: 300 } });
+    await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
   });
 
   test('a session row exposes its actions on hover instead of a permanent second button', async ({
@@ -163,7 +177,7 @@ test.describe('cockpit shell', () => {
       /settings/i,
     );
     await expect(page.getByTestId('settings-section-nodes')).toBeVisible();
-    await expect(page.getByTestId('drawer')).toHaveCount(0);
+    await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
   });
 
   test('exactly one h1 per view, and it names the view rather than the app', async ({
@@ -201,26 +215,34 @@ test.describe('cockpit shell', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Nodes and targets' })).toBeVisible();
   });
 
-  test('the workbench carries only the open session panels, not the global destinations', async ({
+  test('the right sidebar carries only the open session panels, not the global destinations, and offers no third-Terminal tab', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
-    const panels = page.getByRole('group', { name: 'Panels' });
-    await expect(panels.getByRole('button')).toHaveCount(3);
-    await page.getByTestId('file-tree-toggle').click();
-    await expect(page.getByTestId('drawer')).toBeVisible();
+    // One topbar control for the sidebar itself now (design spec §3.3,
+    // issue #571), not the old three-button "Panels" group — and it is
+    // already open, since a session is selected at this suite's default
+    // wide viewport.
+    await expect(page.getByTestId('workbench-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('right-sidebar')).toBeVisible();
 
     // v3 shipped six tabs, three of which repeated the sidebar's own
     // navigation. Inbox, Nodes and Settings are pages now and must not be
-    // reachable as a panel as well. The Drawer's own tab strip — the second
-    // copy of this switch — is gone too, so the panel it has open is stated
-    // rather than offered again.
+    // reachable as a panel as well; Terminal left this panel entirely for
+    // its own dock (#572) and must not be reachable here either.
     await expect(page.getByTestId('inbox-toggle')).toHaveCount(0);
     await expect(page.getByTestId('targets-toggle')).toHaveCount(0);
     await expect(page.getByTestId('settings-toggle')).toHaveCount(0);
-    await expect(page.getByRole('tab')).toHaveCount(0);
-    await expect(page.getByTestId('drawer-title')).toHaveText('Files');
+    await expect(page.getByTestId('terminal-toggle')).toHaveCount(0);
+
+    // The sub-tabs are a real `radiogroup` (exactly Files and Config),
+    // not the old duplicate `aria-pressed` strip this panel's own header
+    // comment used to warn against re-adding.
+    const tabs = page.getByRole('radiogroup', { name: 'Workbench panel' });
+    await expect(tabs.getByRole('radio')).toHaveCount(2);
+    await expect(page.getByTestId('file-tree-toggle')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('file-tree-panel-wrapper')).toBeVisible();
   });
 
   test('a destination switches the main area and keeps the session selected', async ({
@@ -235,9 +257,9 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('inbox-page').getByRole('heading', { level: 1 })).toHaveText(
       /inbox/i,
     );
-    // The transcript is replaced, not overlaid: no drawer, no scrim.
+    // The transcript is replaced, not overlaid: no right sidebar, no scrim.
     await expect(page.getByTestId('composer-input')).toHaveCount(0);
-    await expect(page.getByTestId('drawer')).toHaveCount(0);
+    await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
 
     // Returning is one click, because the session stayed selected.
     await page.getByTestId('session-row-item').first().click();
@@ -594,44 +616,52 @@ test.describe('cockpit shell', () => {
     await expect(items.nth(3).locator('.role-glyph')).toBeVisible();
   });
 
-  test('the panel switch opens one panel at a time, and says which one is open', async ({
+  test('switching Files to Config keeps the right sidebar open at the same width and does not remount the other panel (design spec §3.3, issue #571)', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
+    const toggle = page.getByTestId('workbench-toggle');
     const files = page.getByTestId('file-tree-toggle');
-    const terminal = page.getByTestId('terminal-toggle');
     const config = page.getByTestId('project-config-toggle');
+    const sidebar = page.getByTestId('right-sidebar');
 
-    // Three peers of everything else in that corner became one group of three
-    // toggles. The state used to live only in a background tint, which is to
-    // say nowhere at all for a screen reader; `aria-pressed` is the assertion
-    // that matters and the reason these route through `Button`'s new `pressed`
-    // rather than a class.
-    await expect(files).toHaveAttribute('aria-pressed', 'false');
-    await files.click();
-    await expect(files).toHaveAttribute('aria-pressed', 'true');
+    // Open by default (design spec §3.3): a session is selected at this
+    // suite's default 1280x720 (>=`--bp-wide`) viewport.
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(files).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByTestId('file-tree-panel-wrapper')).toBeVisible();
-    await expect(terminal).toHaveAttribute('aria-pressed', 'false');
-    await expect(config).toHaveAttribute('aria-pressed', 'false');
 
-    // Deliberately asserted: at this width the Drawer is an overlay with a
-    // click-to-dismiss backdrop, and that backdrop used to cover the topbar.
-    // The switch below could not be clicked at all — `elementFromPoint` at
-    // these buttons returned the backdrop, so the click closed the panel
-    // instead of switching it. If the Drawer ever stops being an overlay here,
-    // this guard has stopped guarding that and should be moved, not deleted.
-    await expect(page.getByTestId('drawer-backdrop')).toBeVisible();
-    // One drawer: opening another panel closes the first, it never ends up
-    // with two segments claiming to be open.
-    await terminal.click();
-    await expect(terminal).toHaveAttribute('aria-pressed', 'true');
-    await expect(files).toHaveAttribute('aria-pressed', 'false');
+    const widthBefore = (await sidebar.boundingBox())?.width;
 
-    // And the open one closes on a second click, which is what makes these
-    // toggles rather than a radio group.
-    await terminal.click();
-    await expect(terminal).toHaveAttribute('aria-pressed', 'false');
+    // The sub-tabs are a `radiogroup`, not the old three-way `aria-pressed`
+    // toggle strip: switching Files -> Config changes WHICH is checked, it
+    // does not close and reopen the panel the way the old toggle group did.
+    await config.click();
+    await expect(config).toHaveAttribute('aria-checked', 'true');
+    await expect(files).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('project-config-panel-wrapper')).toBeVisible();
+
+    // Not remounted: still in the DOM, merely hidden — `toHaveCount(1)`
+    // proves it never left, `not.toBeVisible()` proves the native `hidden`
+    // attribute (not a `{#if}`) is what's covering it.
+    const filesPanel = page.getByTestId('file-tree-panel-wrapper');
+    await expect(filesPanel).toHaveCount(1);
+    await expect(filesPanel).not.toBeVisible();
+
+    const widthAfter = (await sidebar.boundingBox())?.width;
+    expect(widthAfter).toBe(widthBefore);
+
+    // The topbar's one control closes the whole panel, independent of
+    // which sub-tab was active — this is a docked column here (this
+    // suite's default viewport is >=`--bp-desktop`), so there is no
+    // backdrop to click through; see the narrow-viewport sheet test above
+    // for that guard, which is where it moved from.
+    await toggle.click();
+    await expect(sidebar).toHaveCount(0);
+    await toggle.click();
+    await expect(sidebar).toBeVisible();
   });
 
   test('the topbar controls show their words where there is room and keep their names where there is not', async ({
@@ -639,11 +669,11 @@ test.describe('cockpit shell', () => {
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
-    const filesWord = page.getByTestId('file-tree-toggle').locator('.panel-word');
+    const workbenchWord = page.getByTestId('workbench-toggle').locator('.panel-word');
     const paletteWord = page.getByTestId('command-palette-toggle').locator('.panel-word');
 
     await page.setViewportSize({ width: 1440, height: 900 });
-    await expect(filesWord).toBeVisible();
+    await expect(workbenchWord).toBeVisible();
     await expect(paletteWord).toBeVisible();
 
     // Below `--bp-wide` the words go, and this is the half that matters: the
@@ -651,9 +681,9 @@ test.describe('cockpit shell', () => {
     // had to hover for. The accessible name is a prop on the button, not the
     // hidden span, so it survives the pixels going.
     await page.setViewportSize({ width: 1024, height: 900 });
-    await expect(filesWord).toBeHidden();
+    await expect(workbenchWord).toBeHidden();
     await expect(paletteWord).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Files' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Workbench' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Jump to/ })).toBeVisible();
   });
 
@@ -745,5 +775,178 @@ test.describe('cockpit shell', () => {
     // leak upward.
     expect((labelBox?.x ?? 0) + (labelBox?.width ?? 0)).toBeLessThan(proseBox?.x ?? 0);
     expect(Math.abs((labelBox?.y ?? 0) - (proseBox?.y ?? 0))).toBeLessThan(4);
+  });
+
+  test('at 1440px opening the right sidebar reflows the canvas and dims nothing (design spec §3.1/§0.6, issue #571)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const canvas = page.locator('.canvas');
+    const toggle = page.getByTestId('workbench-toggle');
+    const sidebar = page.getByTestId('right-sidebar');
+
+    // Open by default at this width with a session selected (design spec
+    // §3.3) — close it first so "opening" below is a real before/after.
+    await expect(sidebar).toBeVisible();
+    await toggle.click();
+    await expect(sidebar).toHaveCount(0);
+
+    const bgBefore = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const canvasBoxBefore = await canvas.boundingBox();
+    const screenshotBefore = await page.screenshot();
+
+    await toggle.click();
+    await expect(sidebar).toBeVisible();
+
+    // The audit's own method (design spec P2 finding: measured `(199,206,217)
+    // -> (123,129,138)` on the old Drawer, identical to a modal's scrim) —
+    // the SAME element's background colour, read the same way, before and
+    // after. Unchanged is the proof there is no scrim at this width.
+    const bgAfter = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bgAfter).toBe(bgBefore);
+
+    // Reflowed (pushed narrower), not covered: the canvas's own box shrinks
+    // by roughly the sidebar's width, rather than the sidebar painting on
+    // top of an unchanged canvas box.
+    const canvasBoxAfter = await canvas.boundingBox();
+    const sidebarWidth = (await sidebar.boundingBox())?.width ?? 0;
+    const widthDelta = (canvasBoxBefore?.width ?? 0) - (canvasBoxAfter?.width ?? 0);
+    expect(widthDelta).toBeGreaterThan(sidebarWidth - 10);
+    expect(widthDelta).toBeLessThan(sidebarWidth + 10);
+
+    // Nothing clipped: the composer stays fully visible and interactive
+    // underneath, and a real screenshot pair shows an actual visual change
+    // (the reflow), not two identical frames.
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+    const screenshotAfter = await page.screenshot();
+    expect(screenshotBefore.equals(screenshotAfter)).toBe(false);
+  });
+
+  test('right sidebar width and open state survive a reload and a viewport crossing of --bp-wide (design spec §3.3, issue #571)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const sidebar = page.getByTestId('right-sidebar');
+    const handle = page.getByTestId('right-sidebar-resize-handle');
+    await expect(sidebar).toBeVisible();
+
+    // Drag the handle to a real, distinguishable width — a size-only
+    // interaction, which must NOT by itself flip whether `open` is a real
+    // user preference (see `RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY`'s
+    // own doc comment for the exact bug this guards).
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).toBeTruthy();
+    const startX = (handleBox?.x ?? 0) + (handleBox?.width ?? 0) / 2;
+    const startY = (handleBox?.y ?? 0) + (handleBox?.height ?? 0) / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX - 60, startY);
+    await page.mouse.up();
+
+    const widthAfterDrag = (await sidebar.boundingBox())?.width;
+    expect(widthAfterDrag).toBeDefined();
+
+    await page.reload();
+    await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
+    // Still open after reload: the drag alone never touched
+    // `workbenchToggle`, so this proves the size-only interaction did not
+    // accidentally freeze the panel shut either.
+    await expect(sidebar).toBeVisible();
+    const widthAfterReload = (await sidebar.boundingBox())?.width;
+    expect(Math.abs((widthAfterReload ?? 0) - (widthAfterDrag ?? 0))).toBeLessThan(2);
+
+    // Explicitly open it (a real user choice) before crossing `--bp-wide`
+    // down into the sheet range and back, so the sticky width is being
+    // tested against a genuine preference, not just the dynamic default.
+    await page.getByTestId('workbench-toggle').click();
+    await expect(sidebar).toHaveCount(0);
+    await page.getByTestId('workbench-toggle').click();
+    await expect(sidebar).toBeVisible();
+
+    // `.last()`: crossing into sheet mode and back mounts a new
+    // `<aside data-testid="right-sidebar">` while the previous one is still
+    // playing its `out:rightSidebarSlide` transition (marked `inert`
+    // meanwhile) — both briefly coexist, and the freshly-mounted one is
+    // the one this assertion means.
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(sidebar.last()).toBeVisible();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(sidebar.last()).toBeVisible();
+    // Polled rather than a single-shot `boundingBox()` read: the freshly
+    // mounted docked `<aside>` (see `.last()`'s own comment above) needs a
+    // layout pass to actually reflect its inline `width` style, and a bare
+    // read landed on this box has caught it mid-reflow before now.
+    await expect
+      .poll(async () => (await sidebar.last().boundingBox())?.width)
+      .toBeGreaterThan((widthAfterDrag ?? 0) - 2);
+    const widthAfterCrossing = (await sidebar.last().boundingBox())?.width;
+    expect(Math.abs((widthAfterCrossing ?? 0) - (widthAfterDrag ?? 0))).toBeLessThan(2);
+  });
+
+  test('at 1279/1280/1281px the right sidebar is a docked, backdrop-free column with no dead pin control (issue #573)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const sidebar = page.getByTestId('right-sidebar');
+    const toggle = page.getByTestId('workbench-toggle');
+
+    // #573's own reproduction: the pin control used to be visible and
+    // inert at exactly 1280px, because `viewport.ts`'s `(max-width:
+    // 1280px)` and `+page.svelte`'s `(min-width: 1280px)` were both true
+    // there. There is no pin control offered at all anymore — the sidebar's
+    // docked-vs-sheet boundary (`--bp-desktop`, 1024px) doesn't even share
+    // this number — so it stays a docked, backdrop-free column at all
+    // three widths the bug lived at.
+    //
+    // Establishes a REAL (sticky) preference before touching the viewport
+    // at all, regardless of whatever the dynamic default currently shows —
+    // that default is `matchMedia`-driven and settles asynchronously after
+    // `setViewportSize`, so re-deriving "is it open" from a synchronous
+    // `.count()` inside the loop below raced it. `toggleRightSidebar` sets
+    // the sticky flag on EITHER direction, so closing it first (only if the
+    // dynamic default already opened it) then reopening reaches the same
+    // "open and sticky" state as a browser that started closed and got one
+    // click, either way with a real click in the log rather than an
+    // inferred one. The boundary's OWN open-by-default behaviour is
+    // covered on its own, isolated terms by the next test.
+    if ((await sidebar.count()) > 0) {
+      await toggle.click();
+      await expect(sidebar).toHaveCount(0);
+    }
+    await toggle.click();
+    await expect(sidebar).toBeVisible();
+
+    for (const width of [1279, 1280, 1281]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(sidebar).toBeVisible();
+      await expect(page.getByTestId('drawer-pin-toggle')).toHaveCount(0);
+      await expect(page.getByTestId('right-sidebar-backdrop')).toHaveCount(0);
+    }
+  });
+
+  test('open-by-default flips cleanly at exactly --bp-wide (1280px), with no dead zone on either side (issue #573)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    const sidebar = page.getByTestId('right-sidebar');
+
+    // A genuinely fresh preference throughout (no click anywhere in this
+    // test) — `rightSidebarOpen` tracks the viewport/session pair live, so
+    // this is the exact `matchMedia` boundary `viewport.ts`'s `exclusive`
+    // option now owns, isolated from the docked/pin test above.
+    await page.setViewportSize({ width: 1279, height: 900 });
+    await expect(sidebar).toHaveCount(0);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(sidebar).toBeVisible();
+    await page.setViewportSize({ width: 1281, height: 900 });
+    await expect(sidebar).toBeVisible();
+    await page.setViewportSize({ width: 1279, height: 900 });
+    await expect(sidebar).toHaveCount(0);
   });
 });

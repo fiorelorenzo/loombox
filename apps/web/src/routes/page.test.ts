@@ -355,40 +355,57 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(within(rows[1]).getByText('Fix the crypto base64')).toBeTruthy();
   });
 
-  it('a destination click switches the main area instead of opening the drawer (spec §3.3)', async () => {
+  it('a destination click hides the right sidebar instead of leaving it open over the wrong view (spec §3.3, issue #571)', async () => {
     mountCockpit({ sessions: [makeSession()] });
-    await screen.findByTestId('destination-inbox');
-    expect(screen.queryByTestId('drawer')).toBeNull();
+    // Session-scoped (design spec §3.3): open by default at this suite's
+    // stubbed-wide viewport once a session is selected, same as
+    // `file-tree-toggle` below being reachable with no prior click.
+    await screen.findByTestId('right-sidebar');
 
     await fireEvent.click(screen.getByTestId('destination-inbox'));
 
     expect(await screen.findByTestId('inbox-page')).toBeTruthy();
     expect(screen.getByTestId('destination-inbox').className).toContain('active');
-    expect(screen.queryByTestId('drawer')).toBeNull();
+    // The sidebar is scoped to the session workbench, not a global overlay:
+    // switching to a `mainView` destination hides it, it does not follow.
+    expect(screen.queryByTestId('right-sidebar')).toBeNull();
   });
 
-  it('the workbench exposes only Files/Terminal/Config now that Inbox/Nodes/Settings are pages (spec §3.5)', async () => {
+  it('the right sidebar offers Files/Config as sub-tabs now that Terminal has its own dock and Inbox/Nodes/Settings are pages (issue #571)', async () => {
     mountCockpit({ sessions: [makeSession()] });
-    await screen.findByTestId('file-tree-toggle');
+    // Open by default (design spec §3.3): a session is selected and this
+    // suite's `stubMatchMedia(false)` reads as the wide viewport.
+    await screen.findByTestId('right-sidebar');
 
-    // The topbar's panel switch is the one place these three are offered
-    // (2026-07-31): the Drawer's own tab strip was the same group a second
-    // time and is gone, so this reads the switch rather than the strip.
-    const panels = screen.getByRole('group', { name: 'Panels' });
-    expect(panels.querySelectorAll('button')).toHaveLength(3);
+    // One topbar toggle for the sidebar itself now, not a three-button
+    // switch (2026-08-03: two controls for one choice was the defect) —
+    // the Files/Config choice moved onto sub-tabs inside the panel's own
+    // header instead.
+    const toggle = screen.getByTestId('workbench-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('file-tree-toggle')).toBeTruthy();
-    expect(screen.getByTestId('terminal-toggle')).toBeTruthy();
     expect(screen.getByTestId('project-config-toggle')).toBeTruthy();
+    expect(screen.queryByTestId('terminal-toggle')).toBeNull();
     expect(screen.queryByTestId('inbox-toggle')).toBeNull();
     expect(screen.queryByTestId('targets-toggle')).toBeNull();
     expect(screen.queryByTestId('settings-toggle')).toBeNull();
 
-    // And nothing anywhere still claims to be a tab: the strip was the only
-    // `role="tab"` in this shell.
-    await fireEvent.click(screen.getByTestId('file-tree-toggle'));
-    expect(await screen.findByTestId('drawer')).toBeTruthy();
-    expect(screen.queryAllByRole('tab')).toHaveLength(0);
-    expect(screen.getByTestId('drawer-title').textContent).toContain('Files');
+    // The sub-tabs are a real `radiogroup`, not a second `aria-pressed`
+    // toggle group: exactly one of Files/Config is always selected.
+    expect(screen.getByRole('radiogroup', { name: 'Workbench panel' })).toBeTruthy();
+    expect(screen.getByTestId('file-tree-toggle').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('file-tree-panel-wrapper')).toBeTruthy();
+
+    // Switching tabs keeps the sidebar open and does not remount the other
+    // panel — both stay in the DOM, the inactive one is merely `hidden`.
+    await fireEvent.click(screen.getByTestId('project-config-toggle'));
+    expect(screen.getByTestId('project-config-toggle').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('right-sidebar')).toBeTruthy();
+    expect(screen.getByTestId('file-tree-panel-wrapper').hidden).toBe(true);
+
+    // The topbar toggle closes the whole panel, independent of which tab is active.
+    await fireEvent.click(toggle);
+    expect(screen.queryByTestId('right-sidebar')).toBeNull();
   });
 
   it('the page title renders exactly once for each destination, never duplicated in the topbar (coherence v5 §2)', async () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
@@ -34,12 +34,17 @@
     type DeviceIdStorage,
   } from '$lib/device-id-store';
   import { hasBlockingAttachments, type ComposerAttachment } from '$lib/attachments';
-  import { DockPanel, type DockPanelPersistence } from '$lib/dock-panel.svelte';
+  import {
+    DockPanel,
+    type DockPanelPersistence,
+    type DockPanelState,
+  } from '$lib/dock-panel.svelte';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import { showsAttribution } from '$lib/transcript-attribution';
   import {
+    DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
     TABLET_VIEWPORT_BREAKPOINT_PX,
     WIDE_VIEWPORT_BREAKPOINT_PX,
@@ -78,7 +83,6 @@
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
-  import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
   import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
@@ -198,8 +202,8 @@
    * gap design spec v4 §1.1 names: v3 drew Inbox/Nodes/Settings twice, once
    * as sidebar rows that toggled a Drawer tab of the same name. Two
    * navigations pointed at the same three destinations. They are `mainView`
-   * destinations now, not Drawer tabs; the Drawer keeps only what is scoped
-   * to the open session (files/terminal/config, `DrawerTab` below).
+   * destinations now, not workbench tabs; the right sidebar keeps only what
+   * is scoped to the open session (Files/Config, `WORKBENCH_TABS` below).
    * Selecting a session always sets `'session'`; selecting a destination
    * sets that destination and deliberately LEAVES `selectedSessionId`
    * alone, so returning to the transcript is one click and the header
@@ -223,54 +227,30 @@
   let settingsSection = $state<SettingsSection>('appearance');
 
   /**
-   * The Drawer state (redesign brief `docs/design/redesign.md` §1/§7, issue
-   * #427; narrowed by design spec v4 §3.5, issue #507). Used to cover six
-   * panels; Inbox/Nodes & targets/Settings are `mainView` destinations now
-   * (see above), leaving only the session's own workbench: Files,
-   * Terminal, Config, plus `'settings'`, kept solely for the
-   * pre-authentication sign-in screen's own minimal Appearance-only
-   * affordance below, which reuses this exact same state rather than a
-   * parallel boolean (that affordance predates the cockpit and is out of
-   * this issue's scope). Every remaining panel component (`FileTreePanel`,
-   * `InteractiveTerminal`, `ProjectConfigPanel`, `AppearanceSettings`) keeps
-   * its own props/logic/tests unchanged; only the container deciding
-   * whether it renders changed.
+   * The right sidebar's own sub-tabs (design spec §3.1/§3.3, issue #571):
+   * Files and Config now, with a later Git tab (§2's Emdash reference) one
+   * more entry here plus one more content branch below, not a refactor.
+   * Was `DRAWER_PANELS`, which also carried Terminal and lived in the
+   * topbar; the terminal leaves this panel entirely (its own bottom dock,
+   * #572 — the tab is gone, not just moved), and the topbar keeps exactly
+   * one control now (the toggle below), with the panel choice moving into
+   * this array's own header strip (Lorenzo's read, 2026-08-03: two
+   * controls for one choice is the defect v4 already fixed once for this
+   * exact topbar). `testId` values are UNCHANGED from `DRAWER_PANELS` on
+   * purpose — `project-config-panel.spec.ts` and half of
+   * `cockpit-shell.spec.ts` already click them there; they still work
+   * clicking the same ids at this panel's new home.
    */
-  type DrawerTab = 'files' | 'terminal' | 'config' | 'settings';
-  let activeDrawer = $state<DrawerTab | null>(null);
-
-  /**
-   * The three workbench panels, as data. Was the Drawer's own tab strip (v3
-   * design spec §3.6), which v4 §3.5 had already gutted from six tabs to
-   * these three by moving `inbox`/`targets`/`settings` out to `mainView`
-   * destinations. The strip itself is gone now (Lorenzo's ask, 2026-07-31):
-   * the topbar's panel switch and that strip were two controls for one
-   * choice, both labelled "Panels", 40px apart once the Drawer stopped
-   * covering the topbar — so the switch that is always on screen won, and
-   * the Drawer's header states which panel it is showing instead of offering
-   * the same three buttons again.
-   *
-   * All three are session-scoped: the switch drops out of the topbar when no
-   * session is selected, exactly as the strip did.
-   */
-  const DRAWER_PANELS: {
-    id: DrawerTab;
-    /** The word on the switch wherever the topbar has room for it. */
+  type WorkbenchTab = 'files' | 'config';
+  const WORKBENCH_TABS: {
+    id: WorkbenchTab;
     label: string;
     /** The accessible name, which must contain `label` (WCAG 2.5.3) and may say more than the pixels do. */
     name: string;
     icon: IconName;
-    /** Preserved per-panel selectors, from back when each of these was its own hand-written button. */
     testId: string;
   }[] = [
     { id: 'files', label: 'Files', name: 'Files', icon: 'file', testId: 'file-tree-toggle' },
-    {
-      id: 'terminal',
-      label: 'Terminal',
-      name: 'Terminal',
-      icon: 'terminal',
-      testId: 'terminal-toggle',
-    },
     {
       id: 'config',
       label: 'Config',
@@ -279,14 +259,111 @@
       testId: 'project-config-toggle',
     },
   ];
-  const activeDrawerLabel = $derived(
-    DRAWER_PANELS.find((panel) => panel.id === activeDrawer)?.label ?? 'Panel',
-  );
-  /** The Drawer's persistent-column mode at `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` and above (redesign brief §1's "toggle, persisted per-user"); below that width this is ignored and the Drawer is always an overlay/bottom-sheet — see this file's style block. Restored from `localStorage` in `onMount` below. */
-  let drawerPinned = $state(false);
-  const DRAWER_PINNED_STORAGE_KEY = 'loombox:drawer-pinned';
-  /** True at/below `--bp-wide`/`WIDE_VIEWPORT_BREAKPOINT_PX` (1280px), where `drawerPinned` is ignored and the Drawer is always an overlay/bottom-sheet (see `WIDE_VIEWPORT_BREAKPOINT_PX`'s own doc comment) — a live `matchMedia` read, subscribed in `onMount` below, mirroring `sessionsSheetViewport`'s identical pattern for the Sessions column's own breakpoint. Drives `drawerIsOverlay` below, which is what decides whether the Drawer renders through the shared `Overlay` primitive (issue #462's backdrop-click/Escape close). */
-  let drawerNarrowViewport = $state(false);
+  /** Which of `WORKBENCH_TABS` the right sidebar's content area shows. Not persisted (unlike the sidebar's own open/size below): a fresh reload settling back on Files is the same "no surprise" default the old topbar switch gave, and nothing in the issue's acceptance asks for more. */
+  let activeWorkbenchTab = $state<WorkbenchTab>('files');
+  /** The radiogroup root, for moving focus onto the newly-selected segment when an arrow key changes it — mirrors `ConfigBar.svelte`'s identical `modeGroupEl`/`handleModeKeydown` pair for its own mutually-exclusive, always-one-selected mode switch (issue #549's own precedent for this exact idiom over the `aria-pressed` toggle group the old topbar switch used). */
+  let workbenchTabsEl = $state<HTMLDivElement | undefined>(undefined);
+
+  /** Arrow-key roving focus for `WORKBENCH_TABS`' `role="radiogroup"` (see `workbenchTabsEl`'s doc comment) — moves the selection AND the focus together, same as `ConfigBar`'s `handleModeKeydown`. */
+  function handleWorkbenchTabKeydown(event: KeyboardEvent): void {
+    let delta: number;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        delta = 1;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        delta = -1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+
+    const currentIndex = WORKBENCH_TABS.findIndex((tab) => tab.id === activeWorkbenchTab);
+    const nextIndex =
+      (Math.max(currentIndex, 0) + delta + WORKBENCH_TABS.length) % WORKBENCH_TABS.length;
+    const nextTab = WORKBENCH_TABS[nextIndex];
+    if (!nextTab) return;
+
+    activeWorkbenchTab = nextTab.id;
+    tick().then(() => {
+      const radios = workbenchTabsEl?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+      radios?.[nextIndex]?.focus();
+    });
+  }
+
+  /**
+   * The right sidebar's own dock (design spec §3.2/§3.3, issue #571): the
+   * shared `DockPanel` behaviour, the same one `sessionsDock` below runs on
+   * (issue #570) — collapse, drag-resize and persistence come from there,
+   * not a second hand-written copy. `collapsedSize: 0` (unlike the left
+   * sidebar's 56px selvage rail): closing this one removes it from the
+   * layout entirely rather than leaving an icon-only rail, since nothing in
+   * the design spec asks for a right-edge rail.
+   *
+   * `open`'s constructor default (`false`) is deliberately a placeholder —
+   * see `rightSidebarOpen`'s own doc comment below for the real "open by
+   * default at `--bp-wide` with a session selected, persisted per user
+   * after that" rule this dock alone can't express, since it doesn't know
+   * about the viewport or the selected session.
+   */
+  const RIGHT_SIDEBAR_STORAGE_KEY = 'loombox:right-sidebar';
+  /**
+   * Whether `rightSidebarHasUserPreference` itself should restore `true`.
+   * Deliberately NOT inferred from "does `RIGHT_SIDEBAR_STORAGE_KEY` have a
+   * defined `open`" — `DockPanel.persist()` always writes `{ open, size }`
+   * together, so dragging the resize handle while the panel is open ONLY
+   * on its dynamic default (this dock's own `#open` still sitting at its
+   * `false` placeholder — see `rightSidebarDock`'s own doc comment) would
+   * otherwise persist that placeholder `false` as if it were a real closed
+   * choice, and a later reload would wrongly freeze the panel shut. A
+   * dedicated key, written only by `toggleRightSidebar`/`closeRightSidebar`
+   * actually running, has no such ambiguity.
+   */
+  const RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY = 'loombox:right-sidebar-user-preference';
+  const DEFAULT_RIGHT_SIDEBAR_WIDTH_PX = 384;
+  const MIN_RIGHT_SIDEBAR_WIDTH_PX = 280;
+  const MAX_RIGHT_SIDEBAR_WIDTH_PX = 480;
+
+  function createRightSidebarDockPersistence(): DockPanelPersistence {
+    return {
+      load() {
+        const raw = localStorage.getItem(RIGHT_SIDEBAR_STORAGE_KEY);
+        if (!raw) return undefined;
+        try {
+          return JSON.parse(raw) as Partial<DockPanelState>;
+        } catch {
+          return undefined;
+        }
+      },
+      save(state) {
+        localStorage.setItem(RIGHT_SIDEBAR_STORAGE_KEY, JSON.stringify(state));
+      },
+    };
+  }
+
+  const rightSidebarPersistence = createRightSidebarDockPersistence();
+  const rightSidebarDock = new DockPanel({
+    edge: 'right',
+    open: false,
+    size: DEFAULT_RIGHT_SIDEBAR_WIDTH_PX,
+    min: MIN_RIGHT_SIDEBAR_WIDTH_PX,
+    max: MAX_RIGHT_SIDEBAR_WIDTH_PX,
+    collapsedSize: 0,
+    persistence: rightSidebarPersistence,
+    restored: () => preferencesRestored,
+  });
+  /** True once a real choice exists for `rightSidebarDock.open` — either restored from `RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY` in `onMount`, or the user has clicked `workbenchToggle`/dismissed the sheet at least once THIS session (`toggleRightSidebar`/`closeRightSidebar`, both of which set this alongside the dock's own `open`). See `rightSidebarOpen`'s own doc comment for why this gate exists at all, and `RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY`'s for why it is its own key rather than inferred from the dock's persisted blob. */
+  let rightSidebarHasUserPreference = $state(false);
+
+  /** True below `DESKTOP_VIEWPORT_BREAKPOINT_PX` (1024px, design spec §3.3), where the right sidebar is a dismissible sheet (a side sheet at 768-1023px, a bottom sheet below 768px — see `rightSidebarSlide`) rather than a docked, canvas-pushing column. `exclusive: true` matches this file's own `@media (max-width: 1023px)` breakpoint exactly rather than also matching at 1024px itself (issue #573's fix, generalized to the pairing this panel introduces). */
+  let rightSidebarSheetViewport = $state(false);
+  /** True below `WIDE_VIEWPORT_BREAKPOINT_PX` (1280px, design spec §3.3) — feeds `rightSidebarOpen`'s dynamic default below. `exclusive: true` is issue #573 itself: without it, this and a `min-width: 1280px` CSS rule at the identical number are both true at exactly 1280px, which is exactly where the old pin control sat dead. There is no such sibling rule left in this file's CSS (the pin is gone), but the fix belongs in the boundary check itself, not in "nothing else happens to collide with it today". */
+  let rightSidebarNarrowViewport = $state(false);
+  const rightSidebarWideViewport = $derived(!rightSidebarNarrowViewport);
+
   /** The mobile/tablet sidebar sheet (redesign v3 design spec §3.1): below `--bp-tablet` the sidebar is a dismissible full-height sheet reached from the bottom tab bar; a no-op at wider viewports where it is always an inline column. */
   let sessionsSheetOpen = $state(false);
   /**
@@ -344,28 +421,51 @@
     closeSidebarMenus();
   }
 
-  /** Sets (or closes, via `null`) the Drawer's one open tab. */
-  function setActiveDrawer(tab: DrawerTab | null): void {
-    activeDrawer = tab;
+  /**
+   * Opens or closes the right sidebar (design spec §3.3, issue #571): the
+   * topbar's one control for it (`workbenchToggle`, below). Reads/writes
+   * `rightSidebarOpen`'s CURRENT effective value rather than
+   * `rightSidebarDock.open` directly, so the very first click — while this
+   * dock is still running on its dynamic default — toggles from whatever
+   * is actually on screen, not from the dock's own placeholder `false`.
+   */
+  function toggleRightSidebar(): void {
+    const wasOpen = rightSidebarOpen;
+    rightSidebarHasUserPreference = true;
+    rightSidebarDock.open = !wasOpen;
   }
 
-  /** Toggles a Drawer tab: closes it if already open, otherwise opens it (and implicitly replaces whatever other tab was open — only one at a time). */
-  function toggleDrawer(tab: DrawerTab): void {
-    activeDrawer = activeDrawer === tab ? null : tab;
+  /** Closes the right sidebar unconditionally — the sheet-mode `Overlay`'s `onClose` (backdrop click, Escape), which should never re-open it the way `toggleRightSidebar` would if called at the wrong moment. */
+  function closeRightSidebar(): void {
+    rightSidebarHasUserPreference = true;
+    rightSidebarDock.open = false;
   }
 
   /**
-   * Whether the Drawer is currently rendering as an overlay (true) rather
-   * than a persistent pinned column (false) — the shared `Overlay` primitive
-   * (issue #462) only wraps the Drawer in the former case, since a pinned
-   * column is part of the layout, not a dismissible overlay (no backdrop, no
-   * Escape-to-close). Mirrors `drawerPinned`'s own doc comment: pinning only
-   * takes effect at/above `--bp-wide`, so a narrow viewport is always an
-   * overlay regardless of the pin preference.
+   * Slides the right sidebar in/out — the mount/unmount transition on its
+   * `<aside>`, mirroring the OLD Drawer's identical `drawerSlide` (redesign
+   * brief §1/§7). Docked mode (`!rightSidebarSheetViewport`) has no motion
+   * at all, same reasoning: it is part of the layout, not a dismissible
+   * overlay. Slides along whichever axis the sheet itself uses at the
+   * current width — vertical (bottom sheet) below `--bp-tablet`, horizontal
+   * (side sheet) from there up to `--bp-desktop` — reusing
+   * `sessionsSheetViewport` (the Sessions column's own subscription to that
+   * exact breakpoint) rather than a second one.
    */
-  const drawerIsOverlay = $derived(
-    activeDrawer !== null && (!drawerPinned || drawerNarrowViewport),
-  );
+  function rightSidebarSlide(_node: Element): TransitionConfig {
+    if (!rightSidebarSheetViewport) return { duration: 0, css: () => '' };
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const duration = reduced ? 0 : 220; // tokens.css --duration-base
+    const axis = sessionsSheetViewport ? 'Y' : 'X';
+    return {
+      duration,
+      easing: cubicOut,
+      css: (t: number) => `transform: translate${axis}(${100 * (1 - t)}%); opacity: ${t};`,
+    };
+  }
 
   /**
    * The left sidebar's own dock (design spec `docs/superpowers/specs/
@@ -513,21 +613,25 @@
   // The read-only file-tree panel (SPEC §7.4; issue #171) and the @file
   // reference picker it backs (SPEC §7.25; issue #160). `fileTree` mirrors
   // `RelayClient.fileTreeFor(selectedSessionId)`'s live snapshot; the panel
-  // itself is now the Drawer's "files" tab (`activeDrawer`), independent of
-  // the picker, which opens on typing '@' in the composer.
+  // itself is now the right sidebar's "Files" tab (`activeWorkbenchTab`,
+  // issue #571), independent of the picker, which opens on typing '@' in
+  // the composer.
   let fileTree = $state<Map<string, FileTreeDirectoryState>>(new Map());
-  // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174) is
-  // now the Drawer's "terminal" tab (`activeDrawer`). Each time it's opened
-  // it mounts a fresh `InteractiveTerminal`, which opens its own new
-  // terminal on mount and closes it on unmount (its own doc comment) — so
-  // closing the Drawer and reopening the terminal tab opens a new terminal
-  // each time, rather than this page tracking one itself (issue #173's
-  // "multiple terminals" is the node/client's job below this component, not
-  // this page's).
+  // The interactive PTY terminal panel (SPEC §7.5; issues #172/#173/#174)
+  // used to be a Drawer tab; issue #571 takes it out of this panel
+  // entirely (it becomes its own bottom dock, issue #572) — mounting it is
+  // no longer reachable from this component at all until that lands. Each
+  // time it WAS opened it mounted a fresh `InteractiveTerminal`, which
+  // opens its own new terminal on mount and closes it on unmount (its own
+  // doc comment); #572 will need to decide whether the dock keeps it
+  // mounted-but-hidden instead, so a collapse/reopen doesn't drop the PTY
+  // (issue #173's "multiple terminals" stays the node/client's job below
+  // this component either way, not this page's).
   //
-  // The project config surface (SPEC §7.7; issue #366) is now the Drawer's
-  // "config" tab (`activeDrawer`); mounts the MCP-server quick-add panel
-  // (#188) and the plugin/extension panel (#191). See `ProjectConfigPanel.svelte`.
+  // The project config surface (SPEC §7.7; issue #366) is now the right
+  // sidebar's "Config" tab (`activeWorkbenchTab`); mounts the MCP-server
+  // quick-add panel (#188) and the plugin/extension panel (#191). See
+  // `ProjectConfigPanel.svelte`.
   let filePickerOpen = $state(false);
   // The index in `draft` where the triggering '@' sits, so a picked file
   // reference replaces exactly the '@partial-query' text the user typed,
@@ -537,11 +641,11 @@
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
-  // `RelayClient.attentionInbox`'s doc comment. Now the Drawer's "inbox"
-  // tab (`activeDrawer`).
+  // `RelayClient.attentionInbox`'s doc comment. A `mainView` destination
+  // (`InboxPage`) now, not a Drawer tab.
   let attentionInboxItems = $state<AttentionInboxItem[]>([]);
   // Per-project mute + quiet-hours settings panel (SPEC §7.11, issue #166),
-  // now a section of the Drawer's "settings" tab (`activeDrawer`), alongside
+  // now a section of `SettingsPage` (`mainView === 'settings'`), alongside
   // Appearance below. `notificationPreferencesStorage` is only ever
   // constructed client-side (onMount below, same reason `amkStorage` is) —
   // `localStorage` doesn't exist during `routes/page.test.ts`'s SSR render.
@@ -645,12 +749,14 @@
     localStorage.setItem(RELAY_URL_STORAGE_KEY, value);
   });
 
-  // Persists the Drawer's pinned-column preference (redesign brief §1)
-  // the same way — see `onMount`'s restore of the same key below.
+  // Persists the right sidebar's own has-a-real-preference bit (issue
+  // #571) — see `RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY`'s doc comment
+  // for why this is a dedicated key rather than inferred from
+  // `rightSidebarDock`'s own persisted `{ open, size }` blob.
   $effect(() => {
-    const value = drawerPinned;
+    const value = rightSidebarHasUserPreference;
     if (!preferencesRestored) return;
-    localStorage.setItem(DRAWER_PINNED_STORAGE_KEY, value ? '1' : '0');
+    localStorage.setItem(RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY, value ? '1' : '0');
   });
 
   // Design spec v4 §3.2: persists whichever project groups are currently
@@ -674,6 +780,26 @@
   // "project" notion `NotificationPreferences`'s `projectPaths` below uses).
   const selectedProjectPath = $derived(
     sessions.find((session) => session.id === selectedSessionId)?.projectPath,
+  );
+  /**
+   * The right sidebar's effective open state (design spec §3.3, issue
+   * #571's "Open by default at >=1280px when a session is selected,
+   * persisted per user after that"). Two regimes:
+   *
+   * - No real preference yet (`!rightSidebarHasUserPreference`, the state
+   *   fresh from a browser that has never toggled this dock nor had
+   *   anything persisted for it): tracks the viewport/session pair live,
+   *   so widening past `--bp-wide` with a session open snaps it open and
+   *   narrowing back closes it again, with no explicit click either way.
+   * - A real preference exists (restored from `localStorage`, or set by
+   *   `toggleRightSidebar` this session): reads `rightSidebarDock.open`
+   *   alone, exactly like the left sidebar — sticky across every viewport
+   *   change and every session switch from here on.
+   */
+  const rightSidebarOpen = $derived(
+    rightSidebarHasUserPreference
+      ? rightSidebarDock.open
+      : rightSidebarWideViewport && selectedSessionId !== undefined,
   );
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
@@ -1151,9 +1277,9 @@
     // Inbox/Settings has anything live to show once disconnected.
     mainView = 'session';
     closeSidebarMenus();
-    // Closes whatever Drawer tab was open (files/terminal/config); none of
-    // them have anything to show once disconnected.
-    setActiveDrawer(null);
+    // Nothing left to show on either workbench tab once disconnected —
+    // resets to the default the same way a fresh session-scoped panel would.
+    activeWorkbenchTab = 'files';
     stopTargetStatusPolling();
     targetStatusEntries = [];
     targetStatusError = undefined;
@@ -1776,41 +1902,6 @@
     el.scrollTop = el.scrollHeight;
   });
 
-  /**
-   * The Drawer's own enter/exit motion (redesign brief §1: "drawer/sheet
-   * slide", `tokens.css`'s `--duration-base`/`--ease-shuttle`) — needed now
-   * that the overlay-mode Drawer mounts/unmounts through the shared
-   * `Overlay` primitive (issue #462) rather than staying permanently mounted
-   * and CSS-transform-toggled, mirroring `Dialog.svelte`'s own `panelLift`
-   * (a JS-driven transition is the only way to animate an element's
-   * disappearance from a `{#if}` block). Slides along the same axis the
-   * Drawer's own CSS breakpoint uses — vertical (`translateY`, bottom sheet)
-   * below `--bp-tablet`, horizontal (`translateX`, right-edge column)
-   * otherwise — reusing `sessionsSheetViewport` (the Sessions column's own
-   * subscription to that exact breakpoint) rather than a second one.
-   * `cubicOut` approximates `--ease-shuttle`'s fast-out-settles for this
-   * JS-driven transition, same convention/caveat as `Dialog.svelte`'s
-   * `panelLift` doc comment. Reduced motion is read live via `matchMedia` at
-   * the moment the transition starts (jsdom never evaluates the media query,
-   * so this is a no-op — and never invoked at all — under SSR/vitest).
-   */
-  function drawerSlide(_node: Element): TransitionConfig {
-    // Pinned-column mode has no motion at all (it's part of the layout, not
-    // a dismissible overlay) — only the overlay-mode mount/unmount animates.
-    if (!drawerIsOverlay) return { duration: 0, css: () => '' };
-    const reduced =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const duration = reduced ? 0 : 220; // tokens.css --duration-base
-    const axis = sessionsSheetViewport ? 'Y' : 'X';
-    return {
-      duration,
-      easing: cubicOut,
-      css: (t: number) => `transform: translate${axis}(${100 * (1 - t)}%); opacity: ${t};`,
-    };
-  }
-
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
@@ -1848,10 +1939,9 @@
     client.resolvePermission(sessionId, requestId, option);
   }
 
-  /** The attention inbox's "Open" action (issue #168) — jumps to the item's originating session and closes the inbox panel. */
+  /** The attention inbox's "Open" action (issue #168) — jumps to the item's originating session. The right sidebar's own open state is independent of this navigation now (design spec §3.3, issue #571): unlike the old overlay Drawer, it does not force-close on a session switch, exactly like the left sidebar doesn't. */
   function openSessionFromInbox(sessionId: string): void {
     selectSession(sessionId);
-    setActiveDrawer(null);
   }
 
   /** The attention inbox's inline reply action (issue #168) — the exact same `RelayClient.sendPrompt` call the session's own composer form makes, so a reply sent from the inbox is not a second, divergent send path; it works for any listed session, not only the currently selected one. */
@@ -1910,11 +2000,17 @@
       TABLET_VIEWPORT_BREAKPOINT_PX,
     ).subscribe((value) => (sessionsSheetViewport = value));
 
-    // The Drawer's own pin-eligibility breakpoint (redesign brief §1, issue
-    // #462) — see `drawerNarrowViewport`'s own doc comment.
-    const unsubscribeDrawerNarrowViewport = isNarrowViewport(WIDE_VIEWPORT_BREAKPOINT_PX).subscribe(
-      (value) => (drawerNarrowViewport = value),
-    );
+    // The right sidebar's push-vs-sheet breakpoint (design spec §3.3,
+    // issue #571) — see `rightSidebarSheetViewport`'s own doc comment.
+    const unsubscribeRightSidebarSheetViewport = isNarrowViewport(DESKTOP_VIEWPORT_BREAKPOINT_PX, {
+      exclusive: true,
+    }).subscribe((value) => (rightSidebarSheetViewport = value));
+
+    // The right sidebar's open-by-default breakpoint (design spec §3.3,
+    // issue #571) — see `rightSidebarNarrowViewport`'s own doc comment.
+    const unsubscribeRightSidebarNarrowViewport = isNarrowViewport(WIDE_VIEWPORT_BREAKPOINT_PX, {
+      exclusive: true,
+    }).subscribe((value) => (rightSidebarNarrowViewport = value));
 
     // Restores an operator-customized relay URL before constructing
     // `authStore` against it, so a self-hoster who edits this field, then
@@ -1924,9 +2020,19 @@
     const persistedRelayUrl = localStorage.getItem(RELAY_URL_STORAGE_KEY);
     if (persistedRelayUrl) relayUrl = persistedRelayUrl;
 
-    // Redesign brief §1: restores the Drawer's pinned-column preference.
-    const persistedDrawerPinned = localStorage.getItem(DRAWER_PINNED_STORAGE_KEY);
-    if (persistedDrawerPinned) drawerPinned = persistedDrawerPinned === '1';
+    // Issue #571: restores the right sidebar's own persisted state —
+    // `rightSidebarDock.restore()` for `{ open, size }` (its own `open`
+    // stays a placeholder whenever `rightSidebarHasUserPreference` is
+    // false, since nothing ever writes to it through that path — see
+    // `rightSidebarOpen`'s doc comment), and this dedicated key for
+    // whether a real choice exists at all (see
+    // `RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY`'s own doc comment for
+    // why this can't just be inferred from the dock's own blob).
+    const persistedRightSidebarUserPreference = localStorage.getItem(
+      RIGHT_SIDEBAR_USER_PREFERENCE_STORAGE_KEY,
+    );
+    rightSidebarHasUserPreference = persistedRightSidebarUserPreference === '1';
+    rightSidebarDock.restore();
 
     // Redesign brief §1, issue #438; issue #570 extracted this into
     // `DockPanel` itself, but the restore-before-persisting ORDER stays the
@@ -1973,7 +2079,8 @@
       unsubscribeAuthSession();
       unsubscribeNarrow();
       unsubscribeSessionsSheetViewport();
-      unsubscribeDrawerNarrowViewport();
+      unsubscribeRightSidebarSheetViewport();
+      unsubscribeRightSidebarNarrowViewport();
       disconnect();
     };
   });
@@ -2670,33 +2777,27 @@
             {/if}
 
             {#if selectedSessionId && mainView === 'session'}
-              <!-- One drawer, three panels — so one bordered segmented group,
-                   not three peers of everything else in this corner (VS Code's
-                   panel tabs). Five identical grey glyphs sat here: nothing
-                   said the first three were the same drawer, nothing said
-                   which was open, and no word for any of them existed
-                   anywhere on screen — only a `title` a pointer had to hover
-                   for, which a touch device never gets at all. The word rides
-                   beside each glyph wherever the topbar has the room (below
-                   that, the group is still one object with one selected
-                   segment, which is most of what was missing). -->
-              <div class="panel-switch" role="group" aria-label="Panels">
-                {#each DRAWER_PANELS as panel (panel.id)}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="panel-choice"
-                    pressed={activeDrawer === panel.id}
-                    ariaLabel={panel.name}
-                    title={panel.name}
-                    onclick={() => toggleDrawer(panel.id)}
-                    dataTestId={panel.testId}
-                  >
-                    <Icon name={panel.icon} />
-                    <span class="panel-word">{panel.label}</span>
-                  </Button>
-                {/each}
-              </div>
+              <!-- One toggle for the right sidebar itself (design spec §3.3,
+                   issue #571): the Files/Terminal/Config three-button group
+                   that used to live here is gone. Two controls for one
+                   choice was the defect (Lorenzo's read, 2026-08-03): this
+                   button opens/closes the panel, and the Files/Config
+                   choice moved onto sub-tabs inside the panel's own header
+                   (`WORKBENCH_TABS`), which is the only place that choice
+                   is offered now. -->
+              <Button
+                variant="ghost"
+                size="sm"
+                class="workbench-toggle"
+                pressed={rightSidebarOpen}
+                ariaLabel="Workbench"
+                title="Workbench"
+                onclick={toggleRightSidebar}
+                dataTestId="workbench-toggle"
+              >
+                <Icon name="sidebar-panel" />
+                <span class="panel-word">Workbench</span>
+              </Button>
               <!-- A session action, not a fourth panel: it keeps the bare
                    glyph on purpose, so the contrast with the group beside it
                    is what says "this one does something rather than opening
@@ -3003,96 +3104,137 @@
         </section>
       </div>
 
-      <!-- The Drawer (redesign brief §1/§7; issue #462), narrowed by design
-           spec v4 §3.5 to just the session's own workbench (Files/
-           Terminal/Config). Inbox/Nodes/Settings are `mainView`
-           destinations now (§3.3), not Drawer tabs. Overlay by default
-           (<1280px, or unpinned) through the shared `Overlay` primitive;
-           pinnable as a persistent third column at >=1280px
-           (`--bp-wide`). -->
-      {#snippet drawerPanel()}
+      <!-- The right sidebar (design spec §3.1/§3.2/§3.3, issue #571): built
+           on the shared `DockPanel` behaviour (issue #570), same as the left
+           sidebar — collapse, drag-resize, persistence, no second
+           hand-written copy. Docked (pushes the canvas, no scrim at all —
+           design spec §0.6 "a workbench panel never dims the app") at/above
+           `--bp-desktop`; a dismissible sheet below that (a side sheet at
+           768-1023px, a bottom sheet under 768px — `rightSidebarSlide`'s own
+           doc comment). Files and Config are sub-tabs inside its own header
+           now (`WORKBENCH_TABS`), not a second copy of the topbar's old
+           three-button switch; the terminal left this panel entirely for its
+           own bottom dock (#572). -->
+      {#snippet rightSidebarPanel()}
         <!-- The click handler is only a guard against `Overlay`'s own
-             backdrop-click-to-close bubbling past this panel when in
-             overlay mode (mirrors `Dialog.svelte`'s identical
-             stop-propagation guard on its own panel). -->
+             backdrop-click-to-close bubbling past this panel in sheet mode
+             (mirrors `Dialog.svelte`'s identical stop-propagation guard on
+             its own panel). -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <aside
-          class="drawer"
-          class:drawer-pinned={!drawerIsOverlay}
-          data-testid="drawer"
+          class="right-sidebar"
+          class:resizing={rightSidebarDock.dragging}
+          data-testid="right-sidebar"
           onclick={(event) => event.stopPropagation()}
-          in:drawerSlide
-          out:drawerSlide
+          in:rightSidebarSlide
+          out:rightSidebarSlide
+          style={rightSidebarSheetViewport ? undefined : `width: ${rightSidebarDock.size}px`}
         >
-          <div class="drawer-header">
-            <!-- States which panel this is; it does not offer the choice
-                 again. The three buttons that used to live here were the
-                 topbar's panel switch a second time, both groups labelled
-                 "Panels" — and while this Drawer was an overlay pinned to
-                 `top: 0` they physically overlapped it (measured: the overlay
-                 covered all 167px of the topbar's control cluster, and a click
-                 aimed at the palette landed on this header's pin button
-                 instead). One switch, one place, whether this panel is open,
-                 closed, overlaid or pinned. -->
-            <h2 class="drawer-title" data-testid="drawer-title">{activeDrawerLabel}</h2>
-            <div class="drawer-header-actions">
-              <IconButton
-                label={drawerPinned ? 'Unpin panel' : 'Pin panel'}
-                pressed={drawerPinned}
-                onclick={() => (drawerPinned = !drawerPinned)}
-                class="drawer-pin-toggle"
-                dataTestId="drawer-pin-toggle"
+          <!-- Sub-tabs, not a duplicate of the topbar's own toggle: this
+               panel states/switches WHICH workbench panel it shows, the
+               topbar switch states/switches WHETHER it shows at all — two
+               different choices, so two controls is correct here, unlike the
+               old three-button switch that duplicated the SAME choice
+               ("Panels") in both places. `role="radiogroup"`/`role="radio"`
+               (not `aria-pressed`): exactly one of these is always selected,
+               the same mutually-exclusive semantics `ConfigBar`'s mode
+               switch already uses (issue #549's precedent). -->
+          <div
+            class="right-sidebar-tabs"
+            role="radiogroup"
+            aria-label="Workbench panel"
+            bind:this={workbenchTabsEl}
+          >
+            {#each WORKBENCH_TABS as tab (tab.id)}
+              <Button
+                variant="ghost"
+                size="sm"
+                class={`right-sidebar-tab ${activeWorkbenchTab === tab.id ? 'selected' : ''}`.trim()}
+                role="radio"
+                ariaChecked={activeWorkbenchTab === tab.id}
+                tabindex={activeWorkbenchTab === tab.id ? 0 : -1}
+                ariaLabel={tab.name}
+                onclick={() => (activeWorkbenchTab = tab.id)}
+                onkeydown={handleWorkbenchTabKeydown}
+                dataTestId={tab.testId}
               >
-                <Icon name="pin" />
-              </IconButton>
-              <IconButton
-                label="Close panel"
-                onclick={() => setActiveDrawer(null)}
-                dataTestId="drawer-close"
-              >
-                <Icon name="close" />
-              </IconButton>
-            </div>
+                <Icon name={tab.icon} />
+                {tab.label}
+              </Button>
+            {/each}
           </div>
 
-          <div class="drawer-content">
-            {#if activeDrawer === 'files' && selectedSessionId}
-              <div class="drawer-panel-inner" data-testid="file-tree-panel-wrapper">
+          <!-- Both panels stay mounted (the native `hidden` attribute, not `{#if}`-unmounted)
+               once a session/project exists for them — switching tabs must
+               not remount the other one (issue #571's own acceptance line).
+               `FileTreePanel`'s expanded-folder state and any future
+               `ProjectConfigPanel` scroll position both survive a round trip
+               through the OTHER tab this way. -->
+          <div class="right-sidebar-content">
+            {#if selectedSessionId}
+              <div
+                class="right-sidebar-panel-inner"
+                hidden={activeWorkbenchTab !== 'files'}
+                data-testid="file-tree-panel-wrapper"
+              >
                 <FileTreePanel
                   tree={fileTree}
                   onExpand={expandDirectory}
                   onSelectFile={insertFileReference}
                 />
               </div>
-            {:else if activeDrawer === 'terminal' && selectedSessionId && client}
+            {/if}
+            {#if selectedProjectPath}
               <div
-                class="drawer-panel-inner drawer-panel-terminal"
-                data-testid="terminal-panel-wrapper"
+                class="right-sidebar-panel-inner"
+                hidden={activeWorkbenchTab !== 'config'}
+                data-testid="project-config-panel-wrapper"
               >
-                <InteractiveTerminal sessionId={selectedSessionId} {client} />
-              </div>
-            {:else if activeDrawer === 'config' && selectedProjectPath}
-              <div class="drawer-panel-inner" data-testid="project-config-panel-wrapper">
                 <ProjectConfigPanel projectPath={selectedProjectPath} />
               </div>
             {/if}
           </div>
+
+          {#if !rightSidebarSheetViewport}
+            <!-- The WAI-ARIA APG "Window Splitter" pattern, same exception
+                 to the noninteractive-role rule `sessions-resize-handle`
+                 already takes. Drag-resize is a docked-mode-only affordance
+                 (design spec §3.3's responsive table never resizes a sheet),
+                 hence the gate. -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              class="right-sidebar-resize-handle"
+              role="separator"
+              aria-orientation={rightSidebarDock.ariaOrientation}
+              aria-label="Resize right sidebar"
+              aria-valuenow={rightSidebarDock.size}
+              aria-valuemin={rightSidebarDock.min}
+              aria-valuemax={rightSidebarDock.max}
+              tabindex="0"
+              onpointerdown={rightSidebarDock.startDrag}
+              onkeydown={rightSidebarDock.handleKeydown}
+              data-testid="right-sidebar-resize-handle"
+            ></div>
+          {/if}
         </aside>
       {/snippet}
 
-      {#if drawerIsOverlay}
-        <Overlay
-          open={activeDrawer !== null}
-          onClose={() => setActiveDrawer(null)}
-          zIndex="--z-overlay"
-          class="drawer-backdrop"
-          testid="drawer-backdrop"
-        >
-          {@render drawerPanel()}
-        </Overlay>
-      {:else if activeDrawer !== null}
-        {@render drawerPanel()}
+      {#if rightSidebarOpen && selectedSessionId && mainView === 'session'}
+        {#if rightSidebarSheetViewport}
+          <Overlay
+            open={true}
+            onClose={closeRightSidebar}
+            zIndex="--z-overlay"
+            class="right-sidebar-backdrop"
+            testid="right-sidebar-backdrop"
+          >
+            {@render rightSidebarPanel()}
+          </Overlay>
+        {:else}
+          {@render rightSidebarPanel()}
+        {/if}
       {/if}
     </div>
 
@@ -4280,54 +4422,15 @@
     flex-shrink: 0;
   }
 
-  /* The three-way panel switch: one bordered object with a selected segment,
-     the same segmented idiom `ConfigBar`'s mode control already uses (the
-     border/radius/overflow on the group, the hairline between the segments,
-     `Button`'s `ghost` for each). Reached into with `:global`, same as that
-     bar: only the tint this control needs on top of `Button`'s own
-     hover/focus/press behaviour is declared here. */
-  .panel-switch {
-    display: flex;
-    align-items: stretch;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    margin-right: var(--space-2xs);
-  }
-
-  .panel-switch :global(.panel-choice) {
-    border: none;
-    border-radius: 0;
-    color: var(--color-text-secondary);
-    padding-inline: var(--space-xs);
-  }
-
-  .panel-switch :global(.panel-choice + .panel-choice) {
-    border-left: 1px solid var(--color-border);
-  }
-
-  /* `ghost` underlines its label on hover, which is right for a text button
-     and wrong for a segment of chrome — killed for every segment, including
-     the open one (which keeps its own tint below and would otherwise pick the
-     underline back up the moment a pointer crossed it). */
-  .panel-switch :global(.panel-choice:hover) {
+  /* `ghost` underlines its label on hover, which reads as a text link and
+     not what a lone toggle button of chrome should look like — killed the
+     same way `.palette-trigger` (below) already kills it for its own
+     equivalent lone ghost button. `Button`'s own `aria-pressed` treatment
+     (accent-subtle fill + accent border) already carries the open state,
+     so nothing else is declared here. */
+  :global(.workbench-toggle:hover) {
     text-decoration: none;
   }
-
-  .panel-switch :global(.panel-choice:not([aria-pressed='true']):hover) {
-    background: var(--color-fill-subtle);
-    color: var(--color-text-primary);
-  }
-
-  /* The open panel. `Button`'s pressed treatment already tints the segment
-     accent-subtle; the accent text colour is what this adds, and the accent
-     BORDER that treatment also carries is moot here because the group owns
-     the only border (`border: none` above wins on specificity) — otherwise
-     the selected segment would double the group's own hairline. */
-  .panel-switch :global(.panel-choice[aria-pressed='true']) {
-    color: var(--color-accent);
-  }
-
   :global(.palette-trigger:hover) {
     text-decoration: none;
   }
@@ -4665,97 +4768,109 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* Drawer                                                              */
+  /* Right sidebar                                                      */
   /* ------------------------------------------------------------------ */
 
-  /* The same rule as `.drawer` below, for the same reason and one layer up:
-     `Overlay`'s backdrop is full-viewport, so in overlay mode it covered the
-     topbar too — and being the click-to-dismiss surface, it INTERCEPTED the
-     switch. Measured: `elementFromPoint` at the palette button's centre
-     returned this backdrop, so a click meant for "open Terminal instead"
-     spent itself closing the panel. Dimming the canvas is the point of the
-     backdrop; dimming the control strip above it never was. Set through
+  /* Sheet mode's backdrop only (design spec §3.3, issue #571) — `Overlay`
+     never mounts at all in docked mode (no scrim, design spec §0.6 "a
+     workbench panel never dims the app"), so this hook only ever matters
+     below `--bp-desktop`. Same reasoning the old Drawer's identical rule
+     carried: a full-viewport backdrop would cover the topbar's own toggle,
+     the one control that opens/closes this panel, which would then close
+     it on the very click meant to reach the control past it. Set through
      `Overlay`'s own `--overlay-top` hook rather than a `:global` override,
      which its scoped rule outranks (see that component's comment). */
-  :global(.drawer-backdrop) {
+  :global(.right-sidebar-backdrop) {
     --overlay-top: var(--topbar-height);
   }
 
-  /* Starts BELOW the topbar, not at `top: 0`. As an overlay it used to cover
-     the whole right end of the topbar — measured at 1280px: the panel it
-     opened covered all 167px of the control cluster that opens it, and
-     `elementFromPoint` at the palette button's centre returned this panel's
-     own pin button. The panel a control opens must not swallow the control.
-     Below `--bp-tablet` this becomes a bottom sheet and overrides `top`
-     again (see that media query). */
-  .drawer {
-    position: fixed;
-    top: var(--topbar-height);
-    right: 0;
-    bottom: 0;
-    width: min(26rem, 90vw);
+  /* Docked default (design spec §3.3, issue #571): a flex sibling of
+     `.workspace` inside `.shell`, not a `position: fixed` overlay — no
+     scrim, and `flex-shrink: 0` plus the JS-set inline `width` (see the
+     markup) is what pushes the canvas rather than covering it. This is the
+     OPPOSITE default from the old Drawer, which was `position: fixed` and
+     only became this on the rare pinned+wide combination. Below
+     `--bp-desktop` (1024px) this flips to a dismissible sheet instead — a
+     side sheet at 768-1023px, a bottom sheet under 768px (the two `@media`
+     overrides further down). */
+  .right-sidebar {
+    position: relative;
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
     background: var(--color-surface);
-    border-left: 1px solid var(--color-border-strong);
-    box-shadow: var(--shadow-lg);
-    z-index: var(--z-overlay);
+    border-left: 1px solid var(--color-border);
+    transition: width var(--duration-base) var(--ease-shuttle);
   }
 
-  .drawer-header {
+  .right-sidebar.resizing {
+    transition: none;
+  }
+
+  /* One bordered object with a selected segment — the same segmented idiom
+     `ConfigBar`'s own mode `radiogroup` uses (border/radius/overflow on the
+     group, `Button`'s `ghost` for each choice, reached into with `:global`
+     for the same reason that one is). Lives in the panel's own header now,
+     not the topbar: it switches WHICH workbench panel shows, a different
+     choice from the topbar toggle's WHETHER it shows at all. */
+  .right-sidebar-tabs {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    padding: var(--space-2xs) var(--space-sm);
-    border-bottom: 1px solid var(--color-border);
+    align-items: stretch;
     flex-shrink: 0;
-  }
-
-  /* The panel's own name (see the markup): what the duplicate tab strip that
-     used to sit here was hiding behind three buttons. Chrome-sized, like the
-     topbar's own title — the heading rule's `display`/margins have to be
-     reset for the same reason that one does. */
-  .drawer-title {
-    margin: 0;
-    min-width: 0;
+    margin: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-small-size);
-    line-height: var(--text-body-line);
-    font-weight: 500;
-    letter-spacing: var(--text-caption-tracking);
-    text-transform: uppercase;
+  }
+
+  :global(.right-sidebar-tab) {
+    flex: 1;
     color: var(--color-text-secondary);
+    border-radius: 0;
   }
 
-  .drawer-header-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3xs);
-    flex-shrink: 0;
+  :global(.right-sidebar-tab:hover) {
+    text-decoration: none;
+    background: var(--color-fill-subtle);
   }
 
-  /* Pinning only has an effect at `--bp-wide` and above. */
-  .drawer-header-actions :global(.drawer-pin-toggle) {
-    display: none;
+  :global(.right-sidebar-tab.selected) {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
   }
 
-  .drawer-content {
+  .right-sidebar-content {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     padding: var(--space-md);
   }
 
-  .drawer-panel-inner {
+  .right-sidebar-panel-inner {
     height: 100%;
   }
 
-  .drawer-panel-terminal {
-    display: flex;
-    min-height: 20rem;
+  /* The WAI-ARIA APG "Window Splitter" pattern, same as `.sidebar-resize-handle`
+     — a docked-mode-only affordance (the markup gates its own mount on
+     `!rightSidebarSheetViewport`), so no `@media` hides it here the way the
+     left sidebar's own handle needs. Sits on the LEFT edge (the sidebar's
+     own, since dragging left grows a right-anchored panel), the mirror image
+     of `.sidebar-resize-handle`'s `right: -3px`. */
+  .right-sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    left: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: var(--z-raised);
+  }
+
+  .right-sidebar-resize-handle:hover,
+  .right-sidebar-resize-handle:focus-visible {
+    background: var(--color-accent-subtle);
+    outline: none;
   }
 
   /* ------------------------------------------------------------------ */
@@ -4861,6 +4976,23 @@
     .sidebar-brand :global(.sidebar-collapse-toggle) {
       display: none;
     }
+
+    /* Design spec §3.3, issue #571: below `--bp-desktop` the right sidebar
+       is a dismissible side sheet instead of a docked column — the exact
+       geometry the old Drawer defaulted to everywhere, narrowed now to just
+       this range. Drag-resize is docked-only (the markup itself never
+       mounts `.right-sidebar-resize-handle` here), so no companion
+       `display: none` is needed the way `.sidebar-resize-handle` above
+       needs one. */
+    .right-sidebar {
+      position: fixed;
+      top: var(--topbar-height);
+      right: 0;
+      bottom: 0;
+      width: min(26rem, 90vw);
+      box-shadow: var(--shadow-lg);
+      z-index: var(--z-overlay);
+    }
   }
 
   /* Below `--bp-tablet` (768px) the Drawer becomes a bottom sheet. */
@@ -4877,7 +5009,7 @@
       padding: var(--space-md);
     }
 
-    .drawer {
+    .right-sidebar {
       top: auto;
       left: 0;
       right: 0;
@@ -4889,32 +5021,15 @@
     }
   }
 
-  /* At `--bp-wide` (1280px) and above the Drawer can be pinned as a
-     persistent third column instead of an overlay, and the topbar's own
-     controls say their names. That second threshold is measured, not
-     guessed: at 1280px the whole right-hand cluster with every word visible
-     is 344px of a 992px topbar, so the session title and its breadcrumb
-     still get two thirds of the row. Below it the sidebar is a sheet and the
-     words would be competing with the title for a much narrower row, so the
-     cluster falls back to its 153px icon-only form. */
+  /* At `--bp-wide` (1280px) and above the topbar's own controls say their
+     names. That threshold is measured, not guessed: at 1280px the whole
+     right-hand cluster with every word visible is 344px of a 992px topbar,
+     so the session title and its breadcrumb still get two thirds of the
+     row. Below it the words would be competing with the title for a much
+     narrower row, so the cluster falls back to its icon-only form. */
   @media (min-width: 1280px) {
-    .drawer-header-actions :global(.drawer-pin-toggle) {
-      display: inline-flex;
-    }
-
     .panel-word {
       display: inline;
     }
-  }
-
-  /* The pinned static-column state itself (issue #462): applied by JS
-     (`drawerIsOverlay`'s own doc comment) rather than gated behind the
-     `--bp-wide` media query above. */
-  .drawer-pinned {
-    position: static;
-    width: 24rem;
-    flex-shrink: 0;
-    box-shadow: none;
-    border-left: 1px solid var(--color-border);
   }
 </style>
