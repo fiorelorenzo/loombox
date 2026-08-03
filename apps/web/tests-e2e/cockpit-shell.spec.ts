@@ -251,6 +251,9 @@ test.describe('cockpit shell', () => {
     // `.composer-row` (that row stays bare so the role gutter above still
     // lines up with the transcript's).
     const field = page.locator('.composer-field');
+    const remPx = await page.evaluate(
+      () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
+    );
     const radiusToken = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue('--radius-md').trim(),
     );
@@ -261,17 +264,23 @@ test.describe('cockpit shell', () => {
         borderRadius: style.borderTopLeftRadius,
         background: style.backgroundColor,
         padding: style.paddingTop,
-        outlineWidth: style.outlineWidth,
+        outlineStyle: style.outlineStyle,
       };
     });
     expect(atRest.borderWidth).not.toBe('0px');
-    expect(atRest.borderRadius).toBe(radiusToken);
+    // The token is a `rem` string, the computed style is resolved `px` at
+    // whatever the root font-size actually is here - convert rather than
+    // assume 16px/rem, the same way the gutter check below does.
+    expect(parseFloat(atRest.borderRadius)).toBeCloseTo(parseFloat(radiusToken) * remPx, 1);
     expect(atRest.padding).not.toBe('0px');
     // Transparent would mean this box is drawn over the page's own surface
     // rather than sitting on its own raised one.
     expect(atRest.background).not.toBe('rgba(0, 0, 0, 0)');
-    // No ring while nothing inside the field has focus.
-    expect(atRest.outlineWidth).toBe('0px');
+    // `outline-width`'s computed value is browser-default `medium` (Chrome:
+    // 3px) whether or not anything paints - only `outline-style` says
+    // whether a ring is actually drawn. No ring while nothing inside the
+    // field has focus.
+    expect(atRest.outlineStyle).toBe('none');
 
     // What separates the composer from the transcript above it is still one
     // hairline across the whole docked strip (plan, queued prompts,
@@ -296,6 +305,7 @@ test.describe('cockpit shell', () => {
       getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-width').trim(),
     );
     await input.focus();
+    await expect(field).toHaveCSS('outline-style', 'solid');
     await expect(field).toHaveCSS('outline-width', focusRingWidth);
     const focusedOutlineColor = await field.evaluate((el) => getComputedStyle(el).outlineColor);
     expect(focusedOutlineColor).not.toBe('rgba(0, 0, 0, 0)');
@@ -314,9 +324,6 @@ test.describe('cockpit shell', () => {
       token: getComputedStyle(document.documentElement).getPropertyValue('--gutter').trim(),
     }));
     expect(token).not.toBe('');
-    const remPx = await page.evaluate(
-      () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
-    );
     expect(parseFloat(gutterWidth)).toBeCloseTo(parseFloat(token) * remPx, 1);
   });
 
@@ -530,19 +537,25 @@ test.describe('cockpit shell', () => {
 
     const prose = page.getByTestId('message-text').first();
     const toolCard = page.getByTestId('tool-card').first();
-    const textarea = page.getByTestId('composer-input');
+    const field = page.locator('.composer-field');
     await expect(prose).toBeVisible();
     await expect(toolCard).toBeVisible();
 
     const proseBox = await prose.boundingBox();
     const toolBox = await toolCard.boundingBox();
-    const fieldBox = await textarea.boundingBox();
+    const fieldBox = await field.boundingBox();
 
     // The test above measures the role WORDS' right edges, which lined up
     // while the column they define did not: `.composer-row` carried a
     // `gap: var(--space-sm)` on top of the same 4.75rem gutter, so the field
     // began 7.6px right of the prose (measured 493.8 against 486.2 at 1440px).
     // A word is not the column; the text is.
+    //
+    // Measured against `.composer-field` itself (issue #577), not the
+    // textarea inside it: the field is a bordered, padded box now, so its
+    // own typed TEXT sits inset from the field's edge the same way any real
+    // input's does - the FIELD's left edge is the column, same as it was
+    // when field and textarea were the same box.
     expect(Math.abs((proseBox?.x ?? 0) - (toolBox?.x ?? 0))).toBeLessThan(1);
     expect(Math.abs((proseBox?.x ?? 0) - (fieldBox?.x ?? 0))).toBeLessThan(1);
   });
@@ -558,13 +571,16 @@ test.describe('cockpit shell', () => {
     const label = page.getByTestId('message-item').first().locator('.role-label');
     const prose = page.getByTestId('message-text').first();
     const toolCard = page.getByTestId('tool-card').first();
-    const textarea = page.getByTestId('composer-input');
+    // `.composer-field`, not the textarea inside it - see the desktop
+    // version of this check (issue #577): the field's own edge is the
+    // column now that it is a bordered, padded box.
+    const field = page.locator('.composer-field');
     await expect(label).toBeVisible();
 
     const labelBox = await label.boundingBox();
     const proseBox = await prose.boundingBox();
     const toolBox = await toolCard.boundingBox();
-    const fieldBox = await textarea.boundingBox();
+    const fieldBox = await field.boundingBox();
 
     // Above the turn, not beside it: 84px of a 390px phone went to a
     // six-letter word, which left the prose a 244px measure.
