@@ -2826,7 +2826,8 @@
                   {:else}
                     <ToolCallRow
                       {item}
-                      awaitingPermission={permissionHead?.toolCall.id === item.id}
+                      awaitingPermission={permissionHead !== undefined &&
+                        permissionHead.toolCall.id === item.id}
                     />
                   {/if}
                 </li>

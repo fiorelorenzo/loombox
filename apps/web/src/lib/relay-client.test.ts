@@ -1505,6 +1505,94 @@ describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () 
       clientB.close();
     }
   });
+
+  it('a malformed tool_call_update with no id never discards an unrelated pending permission request (issue #548)', async () => {
+    // `session_update`'s envelope is opaque to the relay and opened with
+    // `openJson<AcpSessionWireEvent>` — no Zod pass validates it against
+    // `AcpToolCallUpdate`'s declared `id: string` — so a node/provider
+    // variant that omits `id` delivers `undefined` at runtime, exactly
+    // like the `permission_request` envelope this same test malforms the
+    // same way. Before the fix, `event.id === undefined` matched this
+    // queue's one pending request (whose own `toolCall.id` is `undefined`
+    // for the identical reason) and cancelled it even though nothing was
+    // ever resolved anywhere.
+    const amk = generateAmk();
+    const accountId = 'acct-stale-no-id';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-stale-no-id',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_stale_no_id', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-stale-no-id',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const queue = client.permissionQueueFor(session.id);
+    const staleNotice = client.staleNoticeFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const option = { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const };
+    const requestEnvelope = await nodeSeal(
+      session.id,
+      {
+        toolCall: { kind: 'tool_call', id: undefined, title: 'Mystery permission' },
+        options: [option],
+      },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-no-id',
+      envelope: requestEnvelope,
+    });
+    await waitForStore(queue, (value) => value.byId.size > 0);
+
+    // Same-shaped as the `permission_request` above: `session_update`'s
+    // envelope is exactly as unvalidated on this path, so a real
+    // malformed `tool_call_update` can carry `id: undefined` here too —
+    // this is the event under test.
+    const malformedUpdateEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'tool_call_update', id: undefined, status: 'completed' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: malformedUpdateEnvelope,
+    });
+
+    // `applyUpdate` reduces this event into the transcript synchronously,
+    // immediately before `discardStalePermissionForToolCall` runs on the
+    // very same event (no `await` between them, `relay-client.ts`'s
+    // `handleSessionUpdate`) — waiting for the transcript to reflect it
+    // is therefore an exact, non-racy signal that the stale-discard check
+    // for THIS event has already run, with no arbitrary real-time wait.
+    await waitForStore(client.transcriptFor(session.id), (value) =>
+      value.items.some((item) => item.type === 'tool_call' && item.status === 'completed'),
+    );
+
+    expect(get(queue).byId.size).toBe(1);
+    expect(get(queue).byId.get('req-no-id')).toBeDefined();
+    expect(get(staleNotice)).toBeUndefined();
+  });
 });
 
 describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', () => {

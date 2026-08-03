@@ -180,6 +180,37 @@ describe('reduceTranscript: tool_call / tool_call_update', () => {
 
     expect(state.items).toHaveLength(1);
   });
+
+  it('never merges two malformed tool calls that both carry a missing id (issue #548)', () => {
+    // `AcpToolCallUpdate.id` is typed `string`, but nothing on the client
+    // validates the decrypted wire payload against that type (see
+    // `relay-client.ts`'s `openJson<AcpSessionWireEvent>`), so a real
+    // malformed event can carry `id: undefined` at runtime — `as unknown
+    // as string` here stands in for that cast, exactly like production
+    // traffic would deliver it.
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: undefined as unknown as string,
+      title: 'First mystery call',
+      status: 'completed',
+    });
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: undefined as unknown as string,
+      title: 'Second mystery call',
+      status: 'pending',
+    });
+
+    // Two distinct rows, not one row whose title/status the second event
+    // silently overwrote.
+    expect(state.items).toHaveLength(2);
+    const [first, second] = state.items as TranscriptToolCallItem[];
+    expect(first.title).toBe('First mystery call');
+    expect(first.status).toBe('completed');
+    expect(second.title).toBe('Second mystery call');
+    expect(second.status).toBe('pending');
+  });
 });
 
 describe('reduceTranscript: plan_update', () => {

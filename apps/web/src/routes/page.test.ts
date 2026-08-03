@@ -2,8 +2,17 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPermissionQueueState } from '@loombox/providers-core/browser';
-import type { AcpSessionStatus, PermissionQueueState } from '@loombox/providers-core/browser';
+import {
+  createPermissionQueueState,
+  createTranscriptState,
+  enqueuePermissionRequest,
+  reduceTranscript,
+} from '@loombox/providers-core/browser';
+import type {
+  AcpSessionStatus,
+  PermissionQueueState,
+  TranscriptState,
+} from '@loombox/providers-core/browser';
 import { APP_NAME } from '$lib/constants';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
 import type {
@@ -115,6 +124,10 @@ interface FakeClientScenario {
   sessions?: ClientSessionMeta[];
   targets?: TargetListEntry[];
   sessionStatuses?: Record<string, AcpSessionStatus>;
+  /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
+  transcripts?: Record<string, TranscriptState>;
+  /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
+  permissionQueues?: Record<string, PermissionQueueState>;
 }
 
 /**
@@ -154,8 +167,12 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     setConfigOption: vi.fn(),
     statusFor: (id: string) =>
       makeStore<AcpSessionStatus | undefined>(scenario.sessionStatuses?.[id]),
-    transcriptFor: () => makeStore(undefined),
-    permissionQueueFor: () => makeStore<PermissionQueueState>(createPermissionQueueState()),
+    transcriptFor: (id: string) =>
+      makeStore<TranscriptState | undefined>(scenario.transcripts?.[id]),
+    permissionQueueFor: (id: string) =>
+      makeStore<PermissionQueueState>(
+        scenario.permissionQueues?.[id] ?? createPermissionQueueState(),
+      ),
     configOptionsFor: () => makeStore([]),
     attachmentsFor: () => makeStore([]),
     queuedPromptsFor: () => makeStore([]),
@@ -621,5 +638,63 @@ describe('sign-in gate', () => {
     });
     expect(screen.getByTestId('sign-in-github').getAttribute('aria-busy')).toBeNull();
     expect((screen.getByTestId('sign-in-github') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// The transcript's "awaiting permission" outline (issue #548): a tool
+// call whose `id` is `undefined` (a malformed `tool_call`/`tool_call_
+// update` — the wire cast in `relay-client.ts` never validates the
+// decrypted payload against `AcpToolCallUpdate`'s declared `id: string`)
+// must never wear the amber outline just because `permissionHead?.
+// toolCall.id === item.id` degenerates to `undefined === undefined`.
+// Rendered through the real `+page.svelte` transcript loop, not the
+// `ToolCallRow` prop directly, since the bug lives in the comparison
+// that COMPUTES the prop, not in `ToolCallRow` itself (already covered
+// by `ToolCallRow.test.ts`'s "permission awaiting indicator" suite).
+// ---------------------------------------------------------------------
+
+describe('transcript: awaiting-permission outline (issue #548)', () => {
+  it('a tool_call item with no id and nothing pending never gets the awaiting-permission outline', async () => {
+    const transcript = reduceTranscript(createTranscriptState(), {
+      kind: 'tool_call',
+      id: undefined as unknown as string,
+      title: 'Mystery tool call',
+      status: 'completed',
+    });
+
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: transcript },
+      permissionQueues: { sess_1: createPermissionQueueState() },
+    });
+
+    const row = await screen.findByTestId('tool-call-row');
+    expect(row.className).not.toContain('awaiting-permission');
+  });
+
+  it('a tool call that IS the FIFO permission head still gets the outline (sanity: the guard is not overly conservative)', async () => {
+    const transcript = reduceTranscript(createTranscriptState(), {
+      kind: 'tool_call',
+      id: 'tc1',
+      title: 'Edit src/foo.ts',
+      status: 'pending',
+    });
+    const options = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' as const }];
+    const queue = enqueuePermissionRequest(createPermissionQueueState(), {
+      requestId: 'req-1',
+      sessionId: 'sess_1',
+      toolCall: { kind: 'tool_call', id: 'tc1', title: 'Edit src/foo.ts' },
+      options,
+    }).state;
+
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: transcript },
+      permissionQueues: { sess_1: queue },
+    });
+
+    const row = await screen.findByTestId('tool-call-row');
+    expect(row.className).toContain('awaiting-permission');
   });
 });
