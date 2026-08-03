@@ -155,11 +155,14 @@ test.describe('cockpit shell', () => {
     await page.getByTestId('session-target-status-link').click();
 
     // v4: target status is a destination in the main area, not a drawer tab.
-    // Coherence v5 §2: the topbar's own title span is gone, so the page
-    // title lives only in `PageLayout`'s real `<h1>` now.
-    await expect(page.getByTestId('nodes-page').getByRole('heading', { level: 1 })).toHaveText(
-      /nodes/i,
+    // Issue #568: Nodes moved from its own destination into a Settings
+    // section, so the deep link now lands on Settings with that section
+    // selected, not its own page — the target-status view itself keeps its
+    // own `<h2>`, `PageLayout`'s `<h1>` reads "Settings".
+    await expect(page.getByTestId('settings-page').getByRole('heading', { level: 1 })).toHaveText(
+      /settings/i,
     );
+    await expect(page.getByTestId('settings-section-nodes')).toBeVisible();
     await expect(page.getByTestId('drawer')).toHaveCount(0);
   });
 
@@ -178,14 +181,24 @@ test.describe('cockpit shell', () => {
     // `fixtures.ts` announces this one session under exactly this title.
     await expect(h1).toHaveText('E2E session');
 
-    for (const [destination, expected] of [
-      ['destination-inbox', /inbox/i],
-      ['destination-nodes', /nodes/i],
-    ] as const) {
+    for (const [destination, expected] of [['destination-inbox', /inbox/i]] as const) {
       await page.getByTestId(destination).click();
       await expect(h1).toHaveCount(1);
       await expect(h1).toHaveText(expected);
     }
+
+    // Nodes moved into Settings (issue #568): no destination row left to
+    // click, so this reaches it through the account menu instead, and the
+    // Nodes section gets an `<h2>`, not a second `<h1>`.
+    await page.getByTestId('account-menu-toggle').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await expect(h1).toHaveCount(1);
+    await expect(h1).toHaveText(/settings/i);
+
+    await page.getByTestId('settings-nav-nodes').click();
+    await expect(h1).toHaveCount(1);
+    await expect(h1).toHaveText(/settings/i);
+    await expect(page.getByRole('heading', { level: 2, name: 'Nodes and targets' })).toBeVisible();
   });
 
   test('the workbench carries only the open session panels, not the global destinations', async ({
@@ -327,7 +340,7 @@ test.describe('cockpit shell', () => {
     expect(parseFloat(gutterWidth)).toBeCloseTo(parseFloat(token) * remPx, 1);
   });
 
-  test('Settings is reachable from the account menu, not the sidebar or the mobile tabbar', async ({
+  test('Settings is reachable from the account menu, not the sidebar or the mobile tabbar; Nodes has no destination row or tabbar item of its own (issue #568)', async ({
     page,
     loombox,
   }) => {
@@ -336,12 +349,15 @@ test.describe('cockpit shell', () => {
     // Coherence v5 §2: removed from both places the redesign closed —
     // the sidebar's primary destinations and the mobile tabbar (hidden by
     // a `@media` query, not conditionally rendered, so its absence here is
-    // unconditional too).
+    // unconditional too). Issue #568 folded Nodes into Settings, so it
+    // loses both spots too.
     await expect(page.getByTestId('destination-settings')).toHaveCount(0);
     await expect(page.getByTestId('tabbar-settings')).toHaveCount(0);
+    await expect(page.getByTestId('destination-nodes')).toHaveCount(0);
+    await expect(page.getByTestId('tabbar-targets')).toHaveCount(0);
 
     await page.getByTestId('account-menu-toggle').click();
-    await page.getByRole('menuitem', { name: /appearance.*settings/i }).click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
   });
 
@@ -364,14 +380,19 @@ test.describe('cockpit shell', () => {
     await expect(group.getByTestId('project-new-session-row')).toBeVisible();
   });
 
-  test('"Add a target" lives on the Nodes page, not in the sidebar', async ({ page, loombox }) => {
+  test('"Add a target" lives on the Nodes section of Settings, not in the sidebar (issue #568)', async ({
+    page,
+    loombox,
+  }) => {
     await gotoCockpit(page, loombox);
     // It used to sit beside "New session" in a 288px column where both
     // wrapped onto two lines, then behind that button's split menu. It is a
     // once-per-machine setup step, so it belongs with the other ones.
     await expect(page.getByTestId('add-target-button')).toHaveCount(0);
 
-    await page.getByTestId('destination-nodes').click();
+    await page.getByTestId('account-menu-toggle').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByTestId('settings-nav-nodes').click();
     await page.getByTestId('nodes-page-add-target').click();
     await expect(page.getByRole('heading', { name: 'Add target' })).toBeVisible();
   });

@@ -325,12 +325,12 @@ function mountCockpit(scenario: FakeClientScenario = {}) {
 }
 
 describe('cockpit shell (design spec v4, issue #507)', () => {
-  it('renders the primary destinations before the PROJECTS section (spec §3.1)', async () => {
+  it('renders Inbox as the sole primary destination before the PROJECTS section — Nodes moved into Settings (issue #568)', async () => {
     mountCockpit();
 
     const destinations = await screen.findByTestId('sidebar-destinations');
     expect(screen.getByTestId('destination-inbox')).toBeTruthy();
-    expect(screen.getByTestId('destination-nodes')).toBeTruthy();
+    expect(screen.queryByTestId('destination-nodes')).toBeNull();
 
     const projectsHeading = screen.getByText('Projects');
     const order = destinations.compareDocumentPosition(projectsHeading);
@@ -399,17 +399,22 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(await screen.findAllByRole('heading', { name: 'Inbox', level: 1 })).toHaveLength(1);
     expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
 
-    await fireEvent.click(screen.getByTestId('destination-nodes'));
-    expect(await screen.findAllByRole('heading', { name: 'Nodes', level: 1 })).toHaveLength(1);
-    expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
-
     await fireEvent.click(screen.getByTestId('account-menu-toggle'));
-    await fireEvent.click(screen.getByRole('menuitem', { name: /appearance.*settings/i }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(await screen.findAllByRole('heading', { name: 'Settings', level: 1 })).toHaveLength(1);
     expect(screen.queryByTestId('cockpit-page-title')).toBeNull();
+
+    // Nodes is a section inside Settings now (issue #568), not its own
+    // `mainView` destination — it gets an `<h2>`, and Settings' own `<h1>`
+    // must not be duplicated by it.
+    await fireEvent.click(screen.getByTestId('settings-nav-nodes'));
+    expect(
+      await screen.findAllByRole('heading', { name: 'Nodes and targets', level: 2 }),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { name: 'Settings', level: 1 })).toHaveLength(1);
   });
 
-  it('Settings is reachable only from the account menu, not the sidebar or the mobile tabbar (coherence v5 §2)', async () => {
+  it('Nodes has no sidebar row or mobile tabbar item; Settings (reading "Settings", not "Appearance & settings") is reachable only from the account menu (issue #568, coherence v5 §2)', async () => {
     mountCockpit({ sessions: [makeSession()] });
     await screen.findByTestId('destination-inbox');
 
@@ -417,12 +422,100 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     // render (it's hidden by a `@media` query below `--bp-desktop`, not an
     // `{#if}`), so its absence here is unconditional too, same as the
     // sidebar's.
+    expect(screen.queryByTestId('destination-nodes')).toBeNull();
+    expect(screen.queryByTestId('tabbar-targets')).toBeNull();
     expect(screen.queryByTestId('destination-settings')).toBeNull();
     expect(screen.queryByTestId('tabbar-settings')).toBeNull();
 
     await fireEvent.click(screen.getByTestId('account-menu-toggle'));
-    await fireEvent.click(screen.getByRole('menuitem', { name: /appearance.*settings/i }));
+    const settingsEntry = screen.getByRole('menuitem', { name: 'Settings' });
+    expect(settingsEntry.textContent?.trim()).toBe('Settings');
+    await fireEvent.click(settingsEntry);
     expect(await screen.findByTestId('settings-page')).toBeTruthy();
+  });
+
+  it('the ⋯ "Target status" action lands on Settings with the Nodes section selected and the target highlighted (issue #568)', async () => {
+    mountCockpit({
+      sessions: [makeSession()],
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          providers: ['claude'],
+          reachable: true,
+        },
+      ],
+    });
+
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+    await fireEvent.click(screen.getByTestId('session-target-status-link'));
+
+    expect(await screen.findByTestId('settings-page')).toBeTruthy();
+    expect(await screen.findByTestId('settings-section-nodes')).toBeTruthy();
+    const row = await screen.findByTestId('target-status-row-node_1:local');
+    expect(row.className).toContain('focused');
+  });
+
+  it('an unhealthy target is still discoverable without opening Settings: a dot on the account-menu trigger and its Settings entry (issue #568)', async () => {
+    mountCockpit({
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          providers: ['claude'],
+          reachable: false,
+        },
+      ],
+    });
+
+    expect(await screen.findByTestId('account-health-badge')).toBeTruthy();
+
+    await fireEvent.click(screen.getByTestId('account-menu-toggle'));
+    expect(screen.getByTestId('settings-menu-health-badge')).toBeTruthy();
+  });
+
+  it('the account-menu health dot clears once the target recovers, and is one dot, never one per poll (issue #568)', async () => {
+    const target = {
+      nodeId: 'node_1',
+      targetId: 'local',
+      label: 'This machine',
+      kind: 'local' as const,
+      providers: ['claude'],
+      reachable: false,
+    };
+    const { client } = mountCockpit({ targets: [target] });
+    expect(await screen.findByTestId('account-health-badge')).toBeTruthy();
+    // Never more than one — the dot is a boolean-gated conditional render,
+    // not a list an item gets pushed onto per poll.
+    expect(screen.queryAllByTestId('account-health-badge')).toHaveLength(1);
+
+    // The same `listTargets()` poll `startTargetStatusPolling` already
+    // drives now reports the target healthy — a boolean derived off the
+    // latest snapshot, so recovery clears the one dot rather than leaving a
+    // stale alert (or, the failure mode this guards, ever accumulating a
+    // second one).
+    vi.mocked(client.listTargets).mockResolvedValue([{ ...target, reachable: true }]);
+    await fireEvent.click(screen.getByTestId('account-menu-toggle'));
+    await fireEvent.click(screen.getByRole('menuitem', { name: /^settings/i }));
+    await fireEvent.click(screen.getByTestId('settings-nav-nodes'));
+
+    await vi.waitFor(() => expect(screen.queryByTestId('account-health-badge')).toBeNull());
+    expect(screen.queryAllByTestId('account-health-badge')).toHaveLength(0);
+  });
+
+  it('the command palette can open Nodes and targets directly (issue #568)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('destination-inbox');
+
+    await fireEvent.click(screen.getByTestId('tabbar-command'));
+    await fireEvent.click(await screen.findByRole('option', { name: /open nodes and targets/i }));
+
+    expect(await screen.findByTestId('settings-page')).toBeTruthy();
+    expect(await screen.findByTestId('settings-section-nodes')).toBeTruthy();
   });
 
   it('the sidebar toggle announces which state it is in, since the glyph itself no longer changes', async () => {

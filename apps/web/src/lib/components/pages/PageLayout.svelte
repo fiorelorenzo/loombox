@@ -1,13 +1,16 @@
 <script lang="ts">
   /**
-   * The shared chrome for the three full-page destinations: Inbox, Nodes,
-   * Settings (design spec v4 §3.3, issue #507). Before this issue those
-   * three were Drawer tabs sharing the Drawer's own title bar/Close button;
-   * now each is a real page in the main area, so this is the one place
-   * that anatomy (a real heading, an optional actions cluster beside it,
-   * content capped at the transcript's own `--measure-wide` and centred)
-   * lives, rather than being copy-pasted into `InboxPage`/`NodesPage`/
-   * `SettingsPage` three times.
+   * The shared chrome for the full-page destinations Inbox and Settings
+   * (design spec v4 §3.3, issue #507). Before that issue these were Drawer
+   * tabs sharing the Drawer's own title bar/Close button; now each is a real
+   * page in the main area, so this is the one place that anatomy (a real
+   * heading, an optional actions cluster beside it, content capped at the
+   * transcript's own `--measure-wide` and centred) lives, rather than being
+   * copy-pasted into `InboxPage`/`SettingsPage` twice. `SettingsPage` also
+   * reuses this for its own nested Nodes section header rather than the
+   * `actions` slot below — issue #568 folded the former standalone
+   * `NodesPage` (and its own `actions` cluster of Add target/Connect a
+   * node) into Settings, one level deeper than a `PageLayout` root.
    *
    * Deliberately has NO close affordance: v4 §3.3 is explicit that "you
    * leave a page by going somewhere else, which is what the sidebar is
@@ -21,7 +24,7 @@
     title: string;
     /** A stable per-page selector root, distinct from the wrapped panel's own `data-testid` (e.g. `TargetStatusView`'s `"target-status-view"`), so a page's own test can target its root without colliding with the panel's. */
     testid: string;
-    /** Optional actions cluster beside the title (e.g. `NodesPage`'s Add target/Connect a node setup actions, design spec v4 §3.1). */
+    /** Optional actions cluster beside the title (e.g. the old `NodesPage`'s Add target/Connect a node setup actions, design spec v4 §3.1 — now `SettingsPage`'s own nested Nodes section header instead, see this file's doc comment). */
     actions?: Snippet;
     children: Snippet;
   }
