@@ -11,8 +11,17 @@
 // icons) — both are rasterized from the exact same `MARK_PATHS` constant,
 // so nobody should add a second, hand-drawn desktop asset pipeline later.
 //
+// Since issue #566 it also emits the Windows/Linux desktop targets:
+// `assets/icon.ico` (rasterized PNG sizes packed into one .ico via
+// `png-to-ico`, since @resvg/resvg-js only renders PNG), the Linux icon
+// set `assets/icons/<N>x<N>.png` electron-builder's linux target reads,
+// and the non-template `assets/tray-icon-azure{,@2x}.png` pair `tray.ts`
+// picks on anything that isn't darwin (a template image needs OS tinting
+// that only macOS provides).
+//
 // Run with: pnpm --filter @loombox/web exec node scripts/gen-brand-assets.mjs
 import { Resvg } from '@resvg/resvg-js';
+import pngToIco from 'png-to-ico';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -21,8 +30,10 @@ const webDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const staticDir = path.join(webDir, 'static');
 const iconsDir = path.join(staticDir, 'icons');
 const desktopAssetsDir = path.join(webDir, '..', 'desktop', 'assets');
+const linuxIconsDir = path.join(desktopAssetsDir, 'icons');
 mkdirSync(iconsDir, { recursive: true });
 mkdirSync(desktopAssetsDir, { recursive: true });
+mkdirSync(linuxIconsDir, { recursive: true });
 
 // The exact locked geometry from issue #194 — do not redraw. Mirrors
 // `$lib/components/BrandMark.svelte`'s inline SVG, which uses
@@ -104,9 +115,13 @@ function squircleTileSvg(canvas, { tileFraction = 0.82, markFraction = 0.6 } = {
 </svg>`;
 }
 
-function rasterize(svg, size, filename, dir = iconsDir) {
+function rasterizeToBuffer(svg, size) {
   const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: size } });
-  const png = resvg.render().asPng();
+  return resvg.render().asPng();
+}
+
+function rasterize(svg, size, filename, dir = iconsDir) {
+  const png = rasterizeToBuffer(svg, size);
   writeFileSync(path.join(dir, filename), png);
   console.log(
     `wrote ${path.relative(webDir, path.join(dir, filename))} (${size}x${size}, ${png.length} bytes)`,
@@ -155,4 +170,40 @@ for (const [filename, size] of [
   ['tray-iconTemplate@2x.png', 44],
 ]) {
   rasterize(markSvg('#000000'), size, filename, desktopAssetsDir);
+}
+
+// 7. Windows installer/taskbar icon (issue #566). @resvg/resvg-js only
+//    renders PNG (see `rasterizeToBuffer` above), so the `.ico` container
+//    itself is assembled by `png-to-ico`, a small pure-JS packer (MIT,
+//    zero native deps — see `pnpm license:check`) rather than hand-writing
+//    the ICO header format. Same squircle tile as the macOS dock icon, at
+//    the sizes Windows actually asks a shell icon for.
+const WIN_ICON_SIZES = [16, 24, 32, 48, 64, 128, 256];
+const icoBuffer = await pngToIco(
+  WIN_ICON_SIZES.map((size) => rasterizeToBuffer(squircleTileSvg(size), size)),
+);
+writeFileSync(path.join(desktopAssetsDir, 'icon.ico'), icoBuffer);
+console.log(
+  `wrote apps/desktop/assets/icon.ico (${WIN_ICON_SIZES.join('/')}, ${icoBuffer.length} bytes)`,
+);
+
+// 8. Linux icon set (issue #566). electron-builder's linux target reads a
+//    directory of pre-rasterized PNGs named by pixel size (`NxN.png`)
+//    rather than a single file — same squircle tile again.
+for (const size of [16, 32, 48, 128, 256, 512, 1024]) {
+  rasterize(squircleTileSvg(size), size, `${size}x${size}.png`, linuxIconsDir);
+}
+
+// 9. Colored tray icon for Windows/Linux (issue #566): the same plain
+//    transparent mark as the macOS template pair above, stroked in azure
+//    instead of black, at the same 22/44 sizes. Windows and a dark Linux
+//    panel apply no automatic tinting the way macOS does for a `Template`
+//    image, so an untinted template render would sit on the taskbar as a
+//    solid black blob — `createTray`'s platform pick (`main/tray.ts`)
+//    uses this one on anything that isn't darwin.
+for (const [filename, size] of [
+  ['tray-icon-azure.png', 22],
+  ['tray-icon-azure@2x.png', 44],
+]) {
+  rasterize(markSvg(AZURE), size, filename, desktopAssetsDir);
 }

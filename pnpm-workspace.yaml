@@ -23,11 +23,13 @@ allowBuilds:
   # script must run (verified: builds cleanly on this devbox's Node 22 + the
   # GitHub Actions Linux runner's build toolchain).
   node-pty: true
-  # Windows-only NSIS-installer builder, a transitive dep of electron-builder
-  # (`apps/desktop`, issue #403); apps/desktop only ever targets mac (dmg/zip
-  # — see `apps/desktop/electron-builder.yml`), so its build script is never
-  # functionally needed here — skipped, same conservative policy as ssh2/
-  # cpu-features above.
+  # Squirrel.Windows installer builder, a transitive dep of the legacy
+  # `electron-builder-squirrel-windows` optional peer of electron-builder
+  # (`apps/desktop`). Issue #566 added a real `win:` target, but it targets
+  # `nsis`/`portable`, not `squirrel` — electron-builder's NSIS packer uses
+  # its own bundled tooling, not this package — so `electron-winstaller`'s
+  # build script stays functionally unneeded, same conservative policy as
+  # ssh2/cpu-features above.
   electron-winstaller: false
 minimumReleaseAgeExclude:
   - svelte-check@4.7.3

@@ -1,7 +1,7 @@
 import { Menu, Tray, type BrowserWindow } from 'electron';
 
 export interface CreateTrayOptions {
-  /** Path to the tray icon; Electron auto-picks up a `@2x` sibling for HiDPI by naming convention. Defaults to `../../assets/tray-iconTemplate.png` (a placeholder woven-motif mark — see `README.md`'s "swap the placeholder art" note). The `Template` suffix opts into macOS's automatic light/dark menu-bar tinting. */
+  /** Path to the tray icon; Electron auto-picks up a `@2x` sibling for HiDPI by naming convention. The call site (`./index.ts`) resolves this via `./tray-icon.ts`'s `pickTrayIconPath` before calling `createTray`, so this is always already the platform-appropriate render: the macOS `Template` image or the colored (azure) one (issue #566). */
   iconPath: string;
   window: BrowserWindow;
   onQuit: () => void;
