@@ -14,11 +14,13 @@ import type {
 } from '@loombox/providers-core';
 import {
   AgentSupervisor,
+  defaultPtySpawn,
   TerminalSupervisor,
   type AgentSession,
   type AgentSupervisorStartOptions,
   type AttentionState,
   type AttentionStatus,
+  type PtyLike,
   type TerminalSession,
 } from '@loombox/supervisor';
 import {
@@ -75,6 +77,9 @@ import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachme
 import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
+import { PermissionPolicyStore } from './permission-policy-store';
+import { PolicyEnforcedExecutionTarget } from './policy-enforced-execution-target';
+import { PolicyEnforcedPty } from './policy-enforced-pty';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
@@ -337,6 +342,16 @@ export interface NodeDaemonOptions {
    * tests; defaults to a fresh `NodeMcpSecretManager({ stateDir })`.
    */
   mcpSecretManager?: NodeMcpSecretManager;
+  /**
+   * This node's per-project permission policy store (SPEC §7.17; issue
+   * #256): allow/deny command and network-destination glob rules, checked
+   * at `getExecutionTarget()` (when called with a `projectPath`) and at
+   * every interactive terminal this node opens — see
+   * `./permission-policy.ts`'s doc comment for the enforcement model.
+   * Injectable for tests; defaults to a fresh
+   * `PermissionPolicyStore({ stateDir })`.
+   */
+  permissionPolicyStore?: PermissionPolicyStore;
   /**
    * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
    * redesign v2 §3.2; issue #475) when this node handles an
@@ -725,6 +740,8 @@ export class NodeDaemon extends EventEmitter {
   /** SPEC §7.7/§7.17; issues #187/#189 — see `NodeDaemonOptions.mcpConfigStore`/`mcpSecretManager`'s doc comments. */
   private readonly mcpConfigStore: McpConfigStore;
   private readonly mcpSecretManager: NodeMcpSecretManager;
+  /** SPEC §7.17; issue #256 — see `NodeDaemonOptions.permissionPolicyStore`'s doc comment. */
+  private readonly permissionPolicyStore: PermissionPolicyStore;
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
@@ -844,6 +861,8 @@ export class NodeDaemon extends EventEmitter {
       options.mcpConfigStore ?? new McpConfigStore({ stateDir: options.stateDir });
     this.mcpSecretManager =
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
+    this.permissionPolicyStore =
+      options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
     this.sshTargetStore =
@@ -1571,13 +1590,38 @@ export class NodeDaemon extends EventEmitter {
    * this reuses the same pooled transport session creation already relies on
    * (see {@link getSshTransport}) rather than opening a second connection.
    * Throws if `targetId` doesn't name one of this node's declared targets.
+   *
+   * `projectPath` (SPEC §7.17; issue #256), when given, wraps the
+   * returned target in a fresh `PolicyEnforcedExecutionTarget` bound to
+   * that project's saved permission policy — cheap (reads the already-
+   * cached underlying local/`ssh:` target, never opens a second
+   * connection or re-instantiates it) and never itself cached, since the
+   * same underlying target is shared across every project that happens to
+   * use it. Omit it for a target-level, not-tied-to-any-one-project call
+   * (this method's own three current callers all do — see
+   * `policy-enforced-execution-target.ts`'s doc comment for exactly why
+   * none of them are project-scoped today).
    */
-  async getExecutionTarget(targetId: string): Promise<ExecutionTarget> {
+  async getExecutionTarget(targetId: string, projectPath?: string): Promise<ExecutionTarget> {
     const target = this.targets.find((candidate) => candidate.id === targetId);
     if (!target) {
       throw new Error(`NodeDaemon: no target with id "${targetId}"`);
     }
-    if (target.kind === 'local') {
+
+    const inner = await this.getRawExecutionTarget(targetId, target.kind);
+    if (!projectPath) return inner;
+    return new PolicyEnforcedExecutionTarget({
+      inner,
+      projectPath,
+      policy: this.permissionPolicyStore.get(projectPath),
+    });
+  }
+
+  private async getRawExecutionTarget(
+    targetId: string,
+    targetKind: 'local' | 'ssh',
+  ): Promise<ExecutionTarget> {
+    if (targetKind === 'local') {
       return this.localExecutionTarget;
     }
 
@@ -2958,6 +3002,13 @@ export class NodeDaemon extends EventEmitter {
    * every caller. Both start in `bridge.session.worktreePath` — the session's
    * project root/worktree — so a second terminal opened for the same session
    * shares that same directory automatically (issue #173).
+   *
+   * Both are also wrapped in a `PolicyEnforcedPty` (SPEC §7.17; issue
+   * #256) bound to `bridge.session.projectPath`'s saved permission policy
+   * before being adopted — every terminal this node opens, local or
+   * `ssh:`, is gated identically. See `policy-enforced-pty.ts`'s own doc
+   * comment for exactly how a denied line is stopped and what is (and is
+   * not) covered.
    */
   private async openTerminalForBridge(
     bridge: SessionBridge,
@@ -2969,15 +3020,20 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no target with id "${bridge.targetId}"`);
     }
 
+    const policy = this.permissionPolicyStore.get(bridge.session.projectPath);
+    const gate = (pty: PtyLike): PtyLike =>
+      new PolicyEnforcedPty({ inner: pty, projectPath: bridge.session.projectPath, policy });
+
     let session: TerminalSession;
     if (target.kind === 'local') {
-      session = this.terminalSupervisor.open({
+      const pty = defaultPtySpawn({
         terminalId,
         file: process.env.SHELL ?? '/bin/bash',
         cwd: bridge.session.worktreePath,
         cols: payload.cols,
         rows: payload.rows,
       });
+      session = this.terminalSupervisor.openWithPty(terminalId, gate(pty));
     } else {
       const transport = await this.getSshTransport(bridge.targetId);
       if (!supportsShellChannel(transport)) {
@@ -2995,7 +3051,7 @@ export class NodeDaemon extends EventEmitter {
       // the same channel primitive an interactive `ssh host` uses, which has
       // this same limitation).
       channel.write(`cd ${shQuote(bridge.session.worktreePath)} && clear\n`);
-      session = this.terminalSupervisor.openWithPty(terminalId, shellChannelToPty(channel));
+      session = this.terminalSupervisor.openWithPty(terminalId, gate(shellChannelToPty(channel)));
     }
 
     this.wireTerminalSession(bridge.session.id, session);
