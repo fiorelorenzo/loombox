@@ -1,5 +1,217 @@
 # @loombox/web
 
+## 0.3.0
+
+### Minor Changes
+
+- ebcf227: Terminal dock: the terminal's own card and duplicated "Terminal" titlebar are gone (issue #669, design spec §4 D1-2/D2-2). One thin bar remains at the top of the dock, carrying live connection status, the session's real working directory, the shell running the active PTY, and a new-tab control that opens genuinely additional terminals for the same session, each kept alive when you switch away from it. `cwd`/`shell` are real values reported by the node (`terminal_opened`'s payload gained these two fields) — never guessed client-side.
+
+  The dock itself moved to `--color-rail` and dropped its hairline border against the canvas, so the seam is a colour step instead of a line; the resize handle stays discoverable on hover and still works from the keyboard.
+
+- 537b32a: Tracker page owns setup: the empty state asks, and the mode picker moves into its header
+
+  Two settled decisions from the 2026-08-04 review (spec
+  `2026-08-04-cockpit-v7-decisions.md` §6, F1-1/F2-2, issue #672).
+
+  **F1-1**: the Tracker page's empty state stops being blank. A project with
+  no tracker mode chosen yet meets the real setup step right there — native
+  (loombox's own local tracker) or live against a connected GitHub/Jira
+  account — instead of a panel with nothing in it. Connecting a GitHub or
+  Jira account is reachable from the same spot when none is connected yet
+  ("Connect GitHub"/"Connect Jira" alongside the existing "use native
+  instead"), scoped to the session's own node.
+
+  **F2-2**: the tracker-mode picker moves out of Config and into the
+  Tracker page header. Once a mode is saved, the header carries a compact
+  badge + "Change tracker mode" control — one surface answers both "what is
+  this" and "change what this is". Config's Tracker section is deleted
+  outright, not mirrored (F2-1 was reviewed and not picked): leaving both
+  would reintroduce the exact two-places-for-one-fact problem this decision
+  exists to remove.
+
+  **A known, documented gap**: `NodeDaemon.readTrackerSnapshotForBridge`
+  (issue #631) reads the local native tracker unconditionally and does not
+  yet consult the saved mode, so a project switched to `live` still shows
+  local records underneath. This issue does not wait on that node-side fix;
+  the Tracker page names it directly (`#631`) whenever a `live` mode is
+  saved, rather than silently showing data that doesn't match the choice.
+
+### Patch Changes
+
+- 7606627: Group the tracker kanban board into three fixed workflow-category columns instead of one column per raw status
+
+  The board rendered one column per distinct `workflowStatus` value, sorted
+  alphabetically — "Done" sorted ahead of "In progress"/"Todo", reading the
+  workflow backwards, and a status with zero records never rendered a
+  column at all, so the board changed shape as work moved and nothing
+  could be dragged into an empty state (issue #651, superseded in scope by
+  v7 decision F4-2, `2026-08-04-cockpit-v7-decisions.md` §6).
+
+  The board now always renders exactly three columns, in workflow order —
+  To Do / In Progress / Done — derived from the tracker rather than
+  hand-written per component: `@loombox/protocol` gets
+  `resolveWorkflowCategory`/`groupByWorkflowCategory`, which collapse
+  loombox's own local status vocabulary into the same
+  `new`/`indeterminate`/`done` ids Jira's `statusCategory` already uses
+  verbatim. `TrackerBoard.svelte`/`TrackerCard.svelte` group and move
+  records by category id, never a raw status string, and an empty category
+  still renders its column and still accepts a drop. Three fixed `18rem`
+  columns fit any real laptop width with no horizontal scroller — the
+  six-raw-status board this replaces could overflow one (1778px of content
+  measured in a 1080px container).
+
+  `@loombox/node`'s Jira and GitHub `TrackerBackend`s gain the matching
+  `workflowCategory` field on every `TrackerItemLive` they return
+  (`deriveJiraWorkflowCategory` reads Jira's own `status.statusCategory.key`
+  verbatim; `deriveGithubWorkflowCategory` maps GitHub's `open`/`closed`
+  state, since GitHub has no third state of its own). Neither is reachable
+  by the board yet — `NodeDaemon.readTrackerSnapshotForBridge` always reads
+  the native store regardless of `TrackerMode` (issue #631) — so only the
+  local/native half of this is proven live end to end; the Jira/GitHub
+  category derivation is unit-tested against realistic API payload
+  fixtures pending #631.
+
+- 77689ba: Turn delimitation v7 (design spec `2026-08-04-cockpit-v7-decisions.md` §2, issue #667: B1-2 amended + B2-4).
+
+  **B1-2 amended** — a user turn keeps its `--color-surface-raised` fill; an agent turn now has no fill at all and runs straight into the page background (the pre-v6 behaviour, restored on purpose); neither carries a gutter accent bar anymore — the bar the option was drawn with is gone, per Lorenzo's amendment. Exactly one signal per role, and for the agent that signal is absence.
+
+  **B2-4** — the decorative provider glyph that used to sit in the transcript's role gutter is gone. The `.sr-only` accessible role label stays on every turn (a screen reader still announces "You"/the provider name regardless), which is the whole reason this is a design choice and not an accessibility regression. `showAttribution` and the consecutive-run grouping it drove (`$lib/transcript-attribution.ts`) are removed with it — there is nothing left in the gutter for that logic to suppress.
+
+  The shared `--gutter` token (`tokens.css`) narrows from `4.75rem` to `2.5rem`: it no longer needs to fit a word or an icon, only the alignment job every sibling row (`ToolCallGutter`, `PlanCard`, `QueuedPromptBar`, the composer) still reads from `var(--gutter)`.
+
+  `MessageItem.svelte`'s "one timeline metaphor" doc comment is rewritten for this pass; thought turns are unaffected (out of scope) and keep their existing quiet `--color-surface` surface. No change to the per-row hover-revealed copy button (B3).
+
+- bbacaf9: Composer: drop both separators and lift the field, bigger attach glyph, Stop replaces Send with progress on the gutter
+
+  Three settled decisions from the 2026-08-04 review (v7 §1, issue #666), shipped
+  together because they share one strip of markup.
+
+  - **A1-3**: both of the composer's separators are gone — `.canvas-footer`'s
+    `border-top` hairline and the flat rule that used to sit directly above the
+    field's own border. The field keeps its border, moves to
+    `--color-surface-raised`, and gains a soft `--shadow-md`, so it reads as
+    floating above the page. This is deliberately the ONLY raised surface in an
+    otherwise flat app — the composer is the one always-docked control surface,
+    and it is allowed to be the one lifted one. Don't harmonise it back flat,
+    and don't spread the shadow to another surface.
+  - **A2-1**: the attach glyph goes from 16px to 20px (still on `IconButton`'s
+    existing hover fill). The placeholder stops teaching `@` ("Send a follow-up
+    prompt…" now, was "…(type @ to reference a file)"); the `@` instruction
+    moves into the hidden hint line already wired via `aria-describedby` —
+    verified end to end against Chromium's own accessibility tree (CDP
+    `Accessibility.getFullAXTree`), not just the DOM's `id` match.
+  - **A3-2**: one button in one slot. While a turn runs, Send is replaced by
+    Stop (gone, not disabled-and-present) — both render at the same `Button`
+    size now, so the slot's footprint never changes at the swap. The pulsing
+    `StatusDot` that used to sit on the Stop button is gone too: progress now
+    belongs to the turn, not the control — a live "Working…" line renders in
+    `.canvas-footer` on the transcript's own `--gutter` column (reusing
+    `.composer-gutter`, not a second copy of the token) whenever a turn is
+    active and the transcript has no live signal of its own for it yet (i.e.
+    not already covered by a streaming thought's own inline loader), and
+    clears the moment the turn ends.
+
+  The composer's gutter also drops the inset accent bar it used to carry for
+  "your turn" (v7 §2's amended B1-2/B2-4, issue #667) — role is surface-only
+  now, matching every transcript row.
+
+- ac9c65f: Move transcript export out of the session header into the session row's `⋯` menu, and stop drawing it as a copy icon
+
+  The session header carried a bare copy-glyph icon button next to the
+  Workbench and Terminal toggles, with no label to say what it did — it
+  turned out to be transcript export. The header now carries exactly the
+  two toggles that actually open a panel, both labelled, one consistent row
+  (design spec `2026-08-04-cockpit-v7-decisions.md` §4, D3-3, issue #670).
+
+  Export moved into the session row's `⋯` menu (sidebar), next to Copy
+  project path and Archive session…, as a plain "Export transcript" menu
+  item — no copy glyph anywhere on this action now, matching the real verb.
+  It is offered only from the currently open session's own row, since that
+  is the only transcript this page holds decoded client-side; the copy
+  behaviour itself (`exportTranscriptText` + `copyToClipboard`) is
+  unchanged, only its trigger moved.
+
+  Accepted cost, stated so it doesn't get relitigated: exporting the
+  transcript is now a hop back to the sidebar from inside it.
+
+- e262dba: Attention Inbox: a card per session with the agent's message in full, a dim-then-clear undo window, and j/k/digit keyboard triage
+
+  Each inbox row now shows the agent's actual last message in full
+  (`AttentionInboxItem.agentMessage`, plumbed by #662), rendered through the
+  same sanitised Markdown pipeline the transcript itself uses — no more
+  one-line derived "need" label with nothing else to go on (design spec
+  `2026-08-04-cockpit-v7-decisions.md` §5, E1-3, issue #671).
+
+  Answering a permission or a reply no longer removes the row on the next
+  store tick. It dims, shows the outcome, and offers Undo for a couple of
+  seconds before the real `resolvePermission`/`sendPrompt` call actually
+  fires (E2-1) — Undo cancels that deferred call outright, so it is a true
+  restore, not a race against an already-sent resolution.
+
+  `j`/`k` move a list-wide keyboard cursor across rows; a digit key answers
+  whichever row the cursor is on (the same binding `PermissionCard`'s own
+  `#148` keydown handler already provides when it holds literal focus
+  directly); Enter drops into a focused `awaiting_input` row's reply box.
+  Per the spec's own conflict resolution: the permission option buttons no
+  longer print a `1`/`2`/`3` digit of their own (E1-3's amendment) — the
+  key bindings still work, and the inbox's own hint bar is now the only
+  place a digit shortcut is advertised.
+
+- bcf35fe: The Attention Inbox row is a real card again (background, border, hover tint) instead of bare text, and its Open trigger's title reads above the subtitle, left-aligned, instead of both centred. The onboarding "Set up this device" choice cards are left-aligned too. Both were the same bug: a CSS override handed to `Button`/`Row`/`IconButton` always lost to the primitive's own specificity and was silently discarded. `Button` gains an `align` prop (`'center'` default, `'start'` for a left-aligned, stacked label) and `Row` gains a `surface` prop (the card background/border/hover treatment) so a caller states the layout it needs instead of fighting the primitive's CSS.
+- 7a66d82: Tool calls in the transcript now rest as a single line (command plus outcome), with output behind a disclosure instead of always expanded — a passing multi-line call costs the same row as a one-liner until you click to expand it. A failed call is the one exception: it always renders in full, uncapped, with its disclosure locked open so it can't be collapsed by accident. Consecutive tool calls now render as a tight, compact list instead of each carrying full turn spacing.
+- 55187f8: Show a tool call's actual output instead of its wire envelope. `content`
+  arrives from ACP as an array of `ToolCallContent`, and anything that was not
+  already a plain string was rendered with `JSON.stringify` — so a failed
+  command printed `[{"type":"content","content":{"type":"text",...}}]` where its
+  error should have been (issue #689).
+- 46a3f76: Local tracker: built-in Task/Bug/Epic, a `bug:` title prefix, and a real "Manage types" surface (v7 decision F3-1, issue #673)
+
+  Task/Bug/Epic already shipped as built-in types on the node side
+  (`NativeTrackerStore.listTypes()` always includes them), but the client
+  put "New type" right next to "New record" in the Tracker page's own
+  header — equally prominent, so a fresh project's first Tracker visit
+  still looked like it needed data modeling before you could record
+  anything.
+
+  Typing `bug:`/`task:`/`epic:` (or any custom type's own id), case-
+  insensitively, at the start of the title in `TrackerRecordDialog` now
+  picks that type and strips the prefix from the stored title — matched
+  against every currently known type, longest id wins so a more specific
+  custom type never gets shadowed by a shorter built-in one. Only applies
+  in create mode; editing an existing record never re-derives its type
+  from the title.
+
+  "New type" moves behind a new "Manage types" action, which is also the
+  actual fix for the write-only complaint: the old dialog only ever
+  rendered a blank create form, with no surface anywhere that showed a
+  type back once you'd defined it. `TrackerManageTypesDialog` is a single
+  dialog (mirroring `AddTargetWizard`'s own single-panel, multi-step
+  convention — never two stacked overlays) that lists every known type and
+  swaps to the same define-type form for "New type"; the list renders
+  whatever `types` the caller's live snapshot holds, so a defined type
+  shows up there again on reopen and survives a reload — proven with a
+  component test that unmounts and remounts against a fake backend
+  external to the Svelte tree, not local component state. The node-side
+  persistence and the wire round trip were already covered
+  (`native-tracker-store.test.ts`'s "persists across a simulated restart",
+  `relay-client.test.ts`'s `defineTrackerType` suite) — the actual gap was
+  purely the missing UI surface.
+
+  Existing records and the built-in type ids/labels/roles are untouched,
+  so nothing remaps across this change.
+
+  Not addressed here: `NodeDaemon.readTrackerSnapshotForBridge` reads the
+  native store regardless of `TrackerMode` (issue #631), so a project
+  switched to GitHub/Jira still sees local tracker data with no error. #673
+  is scoped to the local tracker itself and ships with that gap
+  undisturbed — a picker for GitHub/Jira project is a separate concern
+  (v7 decision F1-1/F2-2).
+
+- Updated dependencies [7606627]
+- Updated dependencies [ebcf227]
+  - @loombox/protocol@0.4.0
+  - @loombox/crypto@0.0.4
+
 ## 0.2.0
 
 ### Minor Changes
