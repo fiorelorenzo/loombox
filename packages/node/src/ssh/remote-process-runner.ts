@@ -133,7 +133,38 @@ export function buildStopScript(runDir: string, mode: DetachMode): string {
   const p = paths(runDir);
   const runId = runDirRunId(runDir);
   if (mode === 'setsid') {
-    return `kill "$(cat ${shQuote(p.pid)})" 2>/dev/null || true`;
+    // `setsid` makes the launched process a session leader, so its pid is
+    // also its process-group id: signalling `-$pid` (the leading dash)
+    // reaches the whole tree it forked, not just the leader (issue #642 —
+    // a bare `kill "$pid"` only killed the launcher and orphaned every
+    // child it spawned; the tmux/screen branches below tear the whole
+    // session down and never had this problem). TERM first so a
+    // well-behaved child gets to clean up, then a bounded poll (2s: 20
+    // iterations of a 0.1s sleep) escalates to KILL for anything that
+    // ignored it. `buildIsRunningScript` reads the same pid file with
+    // `kill -0 "$pid"` on the leader alone, which stays correct here: this
+    // script only resolves once the group is confirmed dead or
+    // force-killed, so by the time `stop()`'s `exec()` returns there is no
+    // window where the group is "mid-TERM" for a caller to observe.
+    // Individual `kill`s are allowed to fail on their own (`2>/dev/null` —
+    // the pid can legitimately be gone by the time we reach it) but the
+    // trailing `true` is scoped to the whole script, not blanket-swallowing
+    // silently the way the old one-liner's `|| true` did on every kill
+    // call; `stop()` never inspects this exit code anyway (its own doc
+    // comment: "never throws"), so nothing downstream depends on it.
+    return [
+      `pid="$(cat ${shQuote(p.pid)} 2>/dev/null)"`,
+      'if [ -n "$pid" ]; then',
+      '  kill -TERM -"$pid" 2>/dev/null',
+      '  n=0',
+      '  while [ "$n" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do',
+      '    sleep 0.1',
+      '    n=$((n + 1))',
+      '  done',
+      '  kill -0 "$pid" 2>/dev/null && kill -KILL -"$pid" 2>/dev/null',
+      'fi',
+      'true',
+    ].join('\n');
   }
   if (mode === 'tmux') {
     return `tmux kill-session -t ${shQuote(sessionNameFor(runId))} 2>/dev/null || true`;

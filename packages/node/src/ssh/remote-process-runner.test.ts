@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LocalProcessTransport } from './local-process-transport';
 import { FakeTransport } from './fake-transport';
 import { shQuote } from './remote-transport';
+import {
+  openRemoteSessionsSandbox,
+  type RemoteSessionsSandbox,
+} from './remote-sessions-test-sandbox';
 import {
   chooseDetachMode,
   RemoteProcessRunner,
@@ -196,6 +200,103 @@ describe('RemoteProcessRunner (against LocalProcessTransport — a real local pr
 
   it('rejects an unsafe runId rather than interpolating it into a shell command', async () => {
     await expect(runner.launch('../evil; rm -rf /', 'true', 'setsid')).rejects.toThrow(/runId/);
+  });
+});
+
+describe('RemoteProcessRunner.stop (setsid signals the whole process group — issue #642)', () => {
+  let sandbox: RemoteSessionsSandbox;
+
+  beforeEach(() => {
+    sandbox = openRemoteSessionsSandbox();
+  });
+
+  afterEach(async () => {
+    await sandbox.close();
+  });
+
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it('stopping a setsid session kills a child it forked, not just the launcher', async () => {
+    const transport = sandbox.createTransport();
+    await transport.connect();
+    const runner = new RemoteProcessRunner(transport);
+
+    const runId = randomUUID();
+    const childPidFile = path.join(tmpdir(), `loombox-stopgroup-child-${runId}.pid`);
+    // The launched "agent" forks a real child of its own (a plain `sleep`,
+    // left in the same setsid process group since it never calls setsid
+    // itself) and blocks on it — exactly the shape a real ACP agent
+    // spawning a subprocess has. Recording the child's own pid lets the
+    // test assert on *it* specifically: asserting only that the launcher
+    // is dead is what the pre-fix code already passed and is not a test of
+    // this fix.
+    const command = `sh -c 'sleep 60 & echo $! > ${childPidFile}; wait'`;
+    const handle = await runner.launch(runId, command, 'setsid');
+
+    // Polling a real OS pid file / process on a real clock — there is no
+    // event to await instead, and fake timers can't fake actual process
+    // state, so this is the documented real-timer exception.
+    let childPid = 0;
+    const readDeadline = Date.now() + 2000;
+    while (Date.now() < readDeadline && !childPid) {
+      try {
+        childPid = Number.parseInt((await readFile(childPidFile, 'utf8')).trim(), 10);
+      } catch {
+        // Not written yet.
+      }
+      if (!childPid) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 25);
+        await promise;
+      }
+    }
+    expect(childPid).toBeGreaterThan(0);
+    expect(isAlive(childPid)).toBe(true);
+
+    await runner.stop(handle);
+
+    // Same real-timer exception as above: confirming an actual OS process
+    // has exited, and buildStopScript's own bounded wait means the group
+    // should already be dead by the time exec() resolves — poll briefly
+    // anyway rather than lean on that timing.
+    const deadline = Date.now() + 3000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      alive = isAlive(childPid);
+      if (!alive) break;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 25);
+      await promise;
+    }
+    expect(alive).toBe(false);
+    expect(await runner.isRunning(handle)).toBe(false);
+
+    await rm(childPidFile, { force: true });
+    await transport.close();
+  });
+
+  it('isRunning still reports the setsid pid file correctly across the new stop script', async () => {
+    const transport = sandbox.createTransport();
+    await transport.connect();
+    const runner = new RemoteProcessRunner(transport);
+
+    const runId = randomUUID();
+    const command = `${shQuote(process.execPath)} -e ${shQuote('process.stdin.resume()')}`;
+    const handle = await runner.launch(runId, command, 'setsid');
+
+    expect(await runner.isRunning(handle)).toBe(true);
+
+    await runner.stop(handle);
+    expect(await runner.isRunning(handle)).toBe(false);
+
+    await transport.close();
   });
 });
 
