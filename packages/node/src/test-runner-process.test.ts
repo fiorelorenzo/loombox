@@ -38,6 +38,28 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Waits for `pid` to actually be gone, rather than asserting it the instant
+ * `cancel()` resolves.
+ *
+ * `cancel()` resolves when the shell LEADER has exited. Delivering the group
+ * signal to a forked grandchild and having the kernel reap it is a separate,
+ * asynchronous step, so a bare `expect(processAlive(pid)).toBe(false)` right
+ * after `cancel()` is a race that a loaded 2-core CI runner loses (observed
+ * twice on #669's PR while passing 10/10 locally, on both that branch and
+ * main). `kill -0` also succeeds against a zombie, so the window is wider
+ * than "the signal landed".
+ *
+ * This still proves the acceptance criterion: the grandchild dies because it
+ * was killed, and 2s is far short of its own `sleep 30`, so a process that
+ * merely outlived the shell still fails here.
+ */
+async function expectProcessGone(pid: number, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (processAlive(pid) && Date.now() < deadline) await sleep(20);
+  expect(processAlive(pid)).toBe(false);
+}
+
 /** Real wall-clock wait, used only where this suite genuinely needs one: proving output arrives WHILE a real OS process is still running (a live-stream vs. buffered-until-exit distinction that only exists in real time, no fake-timer substitute), and polling real cross-process state (a pidfile a spawned shell writes, a remote log this module tails) that nothing in this process can `await` directly. */
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -120,7 +142,7 @@ describe('startLocalRun', () => {
 
     // The single most important assertion in this file: the forked child
     // (not merely the `sh` leader) is actually gone.
-    expect(processAlive(childPid)).toBe(false);
+    await expectProcessGone(childPid);
   });
 
   it('cancelling an already-exited run is a harmless no-op', async () => {
