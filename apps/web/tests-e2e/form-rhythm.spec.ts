@@ -139,4 +139,31 @@ test.describe('form rhythm (Field stacking contract)', () => {
 
     assertFieldsGroup(await measure(page, '[data-testid="tracker-config-panel"]'));
   });
+
+  test('the Jira connect dialog (SPEC §7.26, issue #230) groups its three fields too', async ({
+    page,
+    loombox,
+  }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
+    loombox.node.send({
+      type: 'target_announce',
+      protocolVersion: 1,
+      nodeId: 'e2e-node-daemon',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    } as never);
+
+    await page.goto('/');
+    await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
+    await page.getByTestId('account-menu-toggle').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByTestId('settings-nav-accounts').click();
+    await page.getByTestId('accounts-connect-jira').click();
+    await expect(page.getByTestId('jira-connect-site-url')).toBeVisible({ timeout: 30_000 });
+
+    // Scoped to the dialog's own container, per this file's own `measure()`
+    // doc comment — the accounts section behind it has its own sibling
+    // `ui-field`s (the pin picker's Check host field) that an unscoped scan
+    // would conflate with the dialog's three.
+    assertFieldsGroup(await measure(page, '[data-testid="dialog"]'));
+  });
 });
