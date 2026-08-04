@@ -167,4 +167,98 @@ test.describe('composer strip', () => {
     const rowBox = await row.boundingBox();
     expect(rowBox?.height ?? 0).toBeLessThan((sendBox?.height ?? 0) * 2);
   });
+
+  test('the placeholder just names the box; the @ instruction lives in the hint, and the hint actually reaches the accessibility tree (A2-1, issue #666)', async ({
+    page,
+    loombox,
+  }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
+    await page.goto('/');
+    const textarea = page.getByTestId('composer-input');
+    await expect(textarea).toBeVisible({ timeout: 60_000 });
+
+    await expect(textarea).toHaveAttribute('placeholder', 'Send a follow-up prompt…');
+    const placeholder = await textarea.getAttribute('placeholder');
+    expect(placeholder).not.toContain('@');
+
+    const hint = page.locator('#composer-hint');
+    await expect(hint).toContainText('@');
+    await expect(hint).toContainText('to reference a file');
+
+    // Not just "the text is somewhere in the DOM" — the accessibility tree
+    // is what a screen reader actually consumes. `aria-describedby` is
+    // supposed to fold the hint's text into the textbox's own accessible
+    // *description*, a distinct field from its name; read that field
+    // straight out of Chromium's real accessibility tree via CDP (the
+    // modern replacement for the removed `page.accessibility` API) rather
+    // than assuming the wiring works because the id matches.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Accessibility.enable');
+    const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+    const textboxNode = nodes.find(
+      (node) => node.role?.value === 'textbox' && node.name?.value === 'Follow-up prompt',
+    );
+    expect(textboxNode).toBeTruthy();
+    const description = String(textboxNode?.description?.value ?? '');
+    expect(description).toContain('@');
+    expect(description).toContain('to reference a file');
+
+    // The attach control's own glyph, at its new 20px size (up from 16px).
+    const attachIcon = page.getByRole('button', { name: 'Attach image' }).locator('svg');
+    const box = await attachIcon.boundingBox();
+    expect(Math.round(box?.width ?? 0)).toBe(20);
+    expect(Math.round(box?.height ?? 0)).toBe(20);
+  });
+
+  test('Stop replaces Send in the same slot while a turn runs, with a live line on the turn gutter that clears when the turn ends (A3-2, issue #666)', async ({
+    page,
+    loombox,
+  }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
+    await page.goto('/');
+    await expect(page.getByTestId('composer-input')).toBeVisible({ timeout: 60_000 });
+
+    const send = page.getByRole('button', { name: 'Send prompt' });
+    const stop = page.getByTestId('turn-stop-control');
+    const progress = page.getByTestId('turn-progress-line');
+
+    // At rest: Send is there, Stop and the progress line are not.
+    await expect(send).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    await expect(progress).toHaveCount(0);
+
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'turn_started',
+      turnId: 'turn-swap',
+    });
+
+    // Gone, not disabled-and-present: Send leaves the DOM entirely, Stop
+    // takes its exact slot, and the turn's own live line appears — before
+    // any thought/message content has arrived for this turn at all, the
+    // one gap nothing else in the transcript covers.
+    await expect(send).toHaveCount(0);
+    await expect(stop).toBeVisible();
+    await expect(progress).toBeVisible();
+
+    // Gone means gone: zero matches, not merely invisible — asserted above
+    // via `toHaveCount(0)`, not repeated here as a `boundingBox()` probe
+    // (which waits out its full actionability timeout against a locator
+    // that will never resolve, and stalls the test for no extra signal).
+    const attachBox = await page.getByRole('button', { name: 'Attach image' }).boundingBox();
+
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'turn_ended',
+      turnId: 'turn-swap',
+      stopReason: 'end_turn',
+    });
+
+    // Settles back: Stop and the progress line both clear, Send returns to
+    // the exact same slot, nothing else on the strip moved.
+    await expect(stop).toHaveCount(0);
+    await expect(progress).toHaveCount(0);
+    await expect(send).toBeVisible();
+    const attachBoxAfter = await page.getByRole('button', { name: 'Attach image' }).boundingBox();
+    expect(attachBoxAfter?.x).toBeCloseTo(attachBox?.x ?? 0, 0);
+    expect(attachBoxAfter?.y).toBeCloseTo(attachBox?.y ?? 0, 0);
+  });
 });
