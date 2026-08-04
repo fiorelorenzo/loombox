@@ -22,6 +22,7 @@
     type AttentionInboxItem,
     type BootstrapAmkResult,
     type ClientSessionMeta,
+    type ConnectedAccount,
     type ConnectionStatus,
     type FileTreeDirectoryState,
     type TargetListEntry,
@@ -579,6 +580,8 @@
 
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
+  /** `RelayClient.connectedAccounts`'s latest snapshot (SPEC §7.26, issue #221) — fed straight through to `ProjectConfigPanel`'s tracker section (issue #220), same "own no fetching, just mirror the store" split every other prop here already follows. */
+  let connectedAccounts = $state<ConnectedAccount[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
   /**
    * The client-side project registry (design spec v4 §4.2; SPEC §6's
@@ -1023,6 +1026,7 @@
   let client = $state<RelayClient | undefined>(undefined);
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
+  let unsubscribeConnectedAccounts: (() => void) | undefined;
   let unsubscribeSessionDecryptFailures: (() => void) | undefined;
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
@@ -1181,6 +1185,12 @@
         if (value[0]) selectSession(value[0].id);
         else selectedSessionId = undefined;
       }
+    });
+    // SPEC §7.26, issue #221: fed by `connected_account_list`, requested once
+    // on `connect()`'s own handshake — this only mirrors the store, same
+    // split as every other subscription in this block.
+    unsubscribeConnectedAccounts = client.connectedAccounts.subscribe((value) => {
+      connectedAccounts = value;
     });
     // Issue #384's mismatched-AMK state: today's silent decrypt-drop gets a
     // real, distinguishable count instead of just an ever-empty `sessions`.
@@ -1373,6 +1383,7 @@
   function disconnect(): void {
     unsubscribeStatus?.();
     unsubscribeSessions?.();
+    unsubscribeConnectedAccounts?.();
     unsubscribeSessionDecryptFailures?.();
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
@@ -3350,7 +3361,7 @@
                 hidden={activeWorkbenchTab !== 'config'}
                 data-testid="project-config-panel-wrapper"
               >
-                <ProjectConfigPanel projectPath={selectedProjectPath} />
+                <ProjectConfigPanel projectPath={selectedProjectPath} {connectedAccounts} />
               </div>
             {/if}
           </div>

@@ -1,21 +1,32 @@
 <script lang="ts">
   /**
    * A selected project's config surface (SPEC.md §7.7; issue #366): the
-   * reachable home for the MCP-server quick-add/config panel (#188) and the
-   * plugin/extension panel (#191). Both panels shipped fully built and
-   * unit-tested in #364 but were deliberately left unmounted from
+   * reachable home for the MCP-server quick-add/config panel (#188), the
+   * plugin/extension panel (#191), and the per-project tracker mode picker
+   * (SPEC §7.10; issue #220). All three panels shipped fully built and
+   * unit-tested separately but were deliberately left unmounted from
    * `+page.svelte` to avoid a parallel-edit clash on that shared file — this
    * component is that mount point, wired in by the caller behind a toggle
    * the same way the file-tree and terminal panels are (see
    * `+page.svelte`'s `fileTreeOpen`/`terminalOpen`).
    *
+   * Tracker sits first, ahead of MCP servers/plugins: it is the one config
+   * choice SPEC §7.10 calls "every project chooses, once" — everything a
+   * tracker view later reads depends on it having a real answer, so it's
+   * the first thing a user seeing this panel for a never-configured
+   * project is asked to resolve, not a third peer buried after two
+   * unrelated integrations.
+   *
    * Purely a layout wrapper: it owns no config state itself and forwards
-   * `projectPath` straight through to both panels, which stay entirely
-   * independent of each other (their own storage keys, their own stores —
-   * see `PluginConfigPanel.svelte`'s "isolated from the MCP-server config
-   * panel" test). `mcpStorage`/`pluginStorage` are only ever overridden in
-   * tests; in the app both default to each panel's own real
-   * `localStorage`-backed store, scoped by `projectPath`.
+   * `projectPath` straight through to all three panels, which stay
+   * entirely independent of each other (their own storage keys, their own
+   * stores — see `PluginConfigPanel.svelte`'s "isolated from the MCP-server
+   * config panel" test). `mcpStorage`/`pluginStorage`/`trackerStorage` are
+   * only ever overridden in tests; in the app all three default to each
+   * panel's own real `localStorage`-backed store, scoped by `projectPath`.
+   * `connectedAccounts` is `RelayClient.connectedAccounts`'s live snapshot,
+   * forwarded straight to `TrackerConfigPanel` (this wrapper fetches
+   * nothing of its own, same as every other prop here).
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §1/§4,
    * issue #435): only the section headers and column rhythm change here —
@@ -27,28 +38,52 @@
    *
    * Deck migration (redesign v2 design spec §2, issue #471): this wrapper
    * owns no button, glyph, or empty/error state of its own (it only lays
-   * out its two children), so there's nothing here to route through
+   * out its three children), so there's nothing here to route through
    * `Button`/`IconButton`/`Icon`/`EmptyState`/`ErrorNotice` — that migration
-   * lives entirely in `McpServerConfigPanel`/`PluginConfigPanel` below it.
+   * lives entirely in `TrackerConfigPanel`/`McpServerConfigPanel`/
+   * `PluginConfigPanel` below it.
    * It already reads every color/spacing/radius value through a token, so
    * this file is otherwise unchanged.
    */
+  import type { ConnectedAccount, TrackerMode } from '@loombox/protocol';
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
+  import type { TrackerModeStorage } from '$lib/tracker-mode-store';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
+  import TrackerConfigPanel from './TrackerConfigPanel.svelte';
 
   interface Props {
     projectPath: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
+    trackerStorage?: TrackerModeStorage;
+    connectedAccounts?: readonly ConnectedAccount[];
     onSecretRequired?: (serverName: string, secretName: string) => void;
+    onTrackerModeChange?: (mode: TrackerMode) => void;
   }
 
-  const { projectPath, mcpStorage, pluginStorage, onSecretRequired }: Props = $props();
+  const {
+    projectPath,
+    mcpStorage,
+    pluginStorage,
+    trackerStorage,
+    connectedAccounts,
+    onSecretRequired,
+    onTrackerModeChange,
+  }: Props = $props();
 </script>
 
 <div class="project-config" data-testid="project-config-panel">
+  <section class="project-config-section">
+    <h3>Tracker</h3>
+    <TrackerConfigPanel
+      {projectPath}
+      storage={trackerStorage}
+      {connectedAccounts}
+      onChange={onTrackerModeChange}
+    />
+  </section>
   <section class="project-config-section">
     <h3>MCP servers</h3>
     <McpServerConfigPanel {projectPath} storage={mcpStorage} {onSecretRequired} />

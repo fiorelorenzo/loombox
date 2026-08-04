@@ -17,6 +17,7 @@ import {
   PROTOCOL_V1,
   type BlobDownloadResponse,
   type ConfigOption,
+  type ConnectedAccount,
   type EncryptedEnvelope,
   type PermissionResponse,
   type PromptInjectV1,
@@ -1278,6 +1279,95 @@ describe('RelayClient', () => {
     expect(get(queued)).toEqual([
       expect.objectContaining({ id: promptId, sessionId: 'sess_never_connected', text: 'hello?' }),
     ]);
+  });
+});
+
+describe('RelayClient: connectedAccounts (SPEC §7.26, issue #221 wiring; consumed by issue #220)', () => {
+  it('starts empty and surfaces an account announced by a node before the client connects, exactly like the sessions snapshot', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-connected-accounts';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-ca-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const account: ConnectedAccount = {
+      id: 'github:github.com:123',
+      provider: 'github',
+      host: 'github.com',
+      providerAccountId: '123',
+      label: 'octocat',
+      credentialSource: 'device_flow',
+      scopes: ['repo'],
+      capabilities: ['repo', 'issues'],
+      connectedAt: 1,
+      updatedAt: 1,
+      secretRef: 'connected-account-token:github:github.com:123',
+    };
+    node.send({ type: 'connected_account_announce', protocolVersion: PROTOCOL_V1, account });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-ca-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const accounts = await waitForStore(client.connectedAccounts, (value) => value.length > 0);
+    expect(accounts).toEqual([account]);
+    // Routing metadata only — never a token-shaped field anywhere in what
+    // this client surfaces (mirrors the relay's own "no token" test).
+    expect(JSON.stringify(accounts)).not.toContain('"token"');
+  });
+
+  it('two devices under the same account both see the same connected account list (SPEC §7.26 "a picker renders from any device")', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-connected-accounts-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-ca-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const account: ConnectedAccount = {
+      id: 'jira:myteam.atlassian.net:acc_1',
+      provider: 'jira',
+      host: 'myteam.atlassian.net',
+      providerAccountId: 'acc_1',
+      label: 'lorenzo@example.com',
+      credentialSource: 'api_token',
+      scopes: null,
+      capabilities: ['issues'],
+      connectedAt: 1,
+      updatedAt: 1,
+      secretRef: 'connected-account-token:jira:myteam.atlassian.net:acc_1',
+    };
+    node.send({ type: 'connected_account_announce', protocolVersion: PROTOCOL_V1, account });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-ca-2a' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.connectedAccounts, (value) => value.length > 0);
+
+    const secondClient = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-ca-2b',
+    });
+    secondClient.connect();
+    try {
+      await waitForStore(secondClient.status, (status) => status === 'open');
+      const secondAccounts = await waitForStore(
+        secondClient.connectedAccounts,
+        (value) => value.length > 0,
+      );
+      expect(secondAccounts).toEqual([account]);
+    } finally {
+      secondClient.close();
+    }
   });
 });
 
