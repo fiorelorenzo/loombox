@@ -14,10 +14,20 @@
    * frame. The header row (icon, title, status, disclosure) stays plain
    * text directly above it. Status renders via the shared
    * `ToolCallStatus` (a failed edit is louder than a completed one; see
-   * that component's own doc comment). The header toggles the diff body's
-   * expand/collapse, defaulting open (so a mid-stream/malformed diff still
-   * renders — and can still throw into `ToolCallRow`'s error boundary —
-   * exactly as before).
+   * that component's own doc comment).
+   *
+   * Resting state and its one override (v7 decisions §3, issue #668):
+   * C1-1 — a completed call rests collapsed to this header's single line
+   * (title plus outcome); the diff body waits behind the disclosure. C2-1
+   * — a failed call always renders its diff in full, disclosure locked
+   * open (no button, just static text) so it cannot be collapsed by
+   * accident — this overrides C1-1's resting default rather than
+   * competing with it. A still-running call keeps the old always-open
+   * behaviour. The body div is `hidden`, never `{#if}`-removed, so
+   * `DiffViewer` still mounts and computes its line diff the instant this
+   * widget renders regardless of collapsed state — a mid-stream/malformed
+   * diff still throws into `ToolCallRow`'s error boundary exactly as
+   * before, `hidden` only strips it from layout/paint (issue #139).
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws the shared `tool-edit` glyph next to the title,
@@ -38,27 +48,46 @@
   // resolveToolWidgetKind only routes here when `diff` is present.
   const diff = $derived(item.diff!);
 
-  let expanded = $state(true);
+  // See the file doc comment's "Resting state and its one override" note.
+  // Only the mount-time status matters here (a live status change never
+  // auto-collapses/-expands an already-rendered row): `locked` picks up
+  // `failed` reactively regardless.
+  // svelte-ignore state_referenced_locally
+  let expandedState = $state(item.status !== 'completed');
+  const locked = $derived(item.status === 'failed');
+  const expanded = $derived(locked || expandedState);
+  function toggleExpanded() {
+    if (locked) return;
+    expandedState = !expandedState;
+  }
 </script>
 
 <div class="edit-write-widget" data-testid="edit-write-widget">
   <ToolCallGutter icon="tool-edit" />
+  {#snippet headerContent()}
+    <span class="title">{item.title ?? 'Edit'}</span>
+    <ToolCallStatus status={item.status} />
+  {/snippet}
   <ToolCard surface={false}>
-    <button
-      type="button"
-      class="row-header"
-      onclick={() => (expanded = !expanded)}
-      aria-expanded={expanded}
-    >
-      <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
-      <span class="title">{item.title ?? 'Edit'}</span>
-      <ToolCallStatus status={item.status} />
-    </button>
-    {#if expanded}
-      <div class="body">
-        <DiffViewer path={diff.path} oldText={diff.oldText} newText={diff.newText} />
+    {#if locked}
+      <div class="row-header row-header-static" data-testid="row-header">
+        {@render headerContent()}
       </div>
+    {:else}
+      <button
+        type="button"
+        class="row-header"
+        onclick={toggleExpanded}
+        aria-expanded={expanded}
+        data-testid="row-header"
+      >
+        <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+        {@render headerContent()}
+      </button>
     {/if}
+    <div class="body" hidden={!expanded}>
+      <DiffViewer path={diff.path} oldText={diff.oldText} newText={diff.newText} />
+    </div>
   </ToolCard>
 </div>
 
@@ -101,6 +130,13 @@
 
   .row-header[aria-expanded='false'] :global(.disclosure-icon) {
     transform: rotate(-90deg);
+  }
+
+  /* C2-1 (issue #668): the locked/failed header renders as plain text,
+     not a button — there is nothing to disclose, so no click affordance
+     (and no misleading focus outline) should suggest otherwise. */
+  .row-header-static {
+    cursor: default;
   }
 
   .title {

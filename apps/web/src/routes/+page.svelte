@@ -3197,7 +3197,10 @@
               data-testid="transcript-items"
             >
               {#each transcript?.items ?? [] as item, itemIndex (item.id)}
-                <li>
+                <li
+                  class:tool-call-compact={item.type === 'tool_call' &&
+                    transcript?.items?.[itemIndex - 1]?.type === 'tool_call'}
+                >
                   {#if item.type === 'message'}
                     <MessageItem
                       {item}
@@ -4893,6 +4896,17 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+
+  /* C3-2 (v7 decisions §3, issue #668): consecutive tool calls read as one
+     compact list, not N separately-spaced turns — this `<li>` sits
+     directly under another tool-call `<li>` (see the loop's own
+     `class:tool-call-compact`), so it pulls up against `.items`' own
+     `--space-sm` flex gap, leaving a tight `--space-3xs` list rhythm
+     instead. The first call in a run (or a lone one) keeps the full gap,
+     same as any other turn boundary. */
+  .items li.tool-call-compact {
+    margin-top: calc(var(--space-3xs) - var(--space-sm));
   }
 
   /* The "there is more below" affordance #508 asked for. Sits between the

@@ -24,20 +24,48 @@ function bashItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptToolCa
 }
 
 describe('BashWidget', () => {
-  it('renders the command and output through TerminalOutput', () => {
-    render(BashWidget, { props: { item: bashItem() } });
+  it('renders the command and output through TerminalOutput while still running', () => {
+    render(BashWidget, { props: { item: bashItem({ status: 'in_progress' }) } });
     expect(screen.getByTestId('terminal-command').textContent).toBe('pnpm test');
     expect(screen.getByTestId('terminal-body').textContent).toBe('ok 12 passed');
   });
 
-  it('is expandable/collapsible, defaulting open', async () => {
+  it('stays expanded by default while a call is still running', () => {
+    render(BashWidget, { props: { item: bashItem({ status: 'in_progress' }) } });
+    expect(screen.getByTestId('terminal-output')).toBeTruthy();
+  });
+});
+
+describe('BashWidget: resting state and its one override (v7 decisions §3, issue #668)', () => {
+  it('C1-1 — a completed call rests collapsed to one line: the command and outcome on the header, output behind the disclosure', () => {
     render(BashWidget, { props: { item: bashItem() } });
+    expect(screen.getByText('$ pnpm test')).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Completed' })).toBeTruthy();
+    expect(screen.queryByTestId('terminal-output')).toBeNull();
+  });
+
+  it('expands on click, and collapses again on a second click', async () => {
+    render(BashWidget, { props: { item: bashItem() } });
+    const toggle = screen.getByRole('button', { expanded: false });
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByTestId('terminal-output')).toBeTruthy();
 
-    const toggle = screen.getByRole('button', { expanded: true });
     await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('terminal-output')).toBeNull();
+  });
+
+  it('C2-1 — a failed call always renders in full, uncapped, with no disclosure control to collapse it', () => {
+    render(BashWidget, { props: { item: bashItem({ status: 'failed' }) } });
+    expect(screen.getByTestId('terminal-output')).toBeTruthy();
+    expect(screen.getByTestId('terminal-body').textContent).toBe('ok 12 passed');
+    // Locked open: the header renders as a plain, non-interactive div —
+    // no disclosure button at all, so there is nothing to click by
+    // accident that would hide the failure's output.
+    const header = screen.getByTestId('row-header');
+    expect(header.tagName).toBe('DIV');
+    expect(header.getAttribute('aria-expanded')).toBeNull();
   });
 });
 

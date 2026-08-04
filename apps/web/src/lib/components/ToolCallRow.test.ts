@@ -41,7 +41,7 @@ describe('ToolCallRow: bespoke tier-1 dispatch', () => {
       props: { item: toolCallItem({ toolKind: 'execute', rawInput: { command: 'pnpm test' } }) },
     });
     expect(screen.getByTestId('bash-widget')).toBeTruthy();
-    expect(screen.getByText('pnpm test')).toBeTruthy();
+    expect(screen.getByText('pnpm test', { exact: false })).toBeTruthy();
     expect(screen.queryByTestId('generic-tool-row')).toBeNull();
   });
 
@@ -50,6 +50,7 @@ describe('ToolCallRow: bespoke tier-1 dispatch', () => {
       props: {
         item: toolCallItem({
           toolKind: 'other',
+          status: 'in_progress',
           rawInput: { todos: [{ content: 'ship it', status: 'in_progress' }] },
         }),
       },
