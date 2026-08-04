@@ -24,6 +24,28 @@ const TASK_TYPE: TrackerTypeDefinitionV1 = {
   roles: { title: 'title', workflowStatus: 'status', priority: 'priority', assignee: 'assignee' },
 };
 
+const BUG_TYPE: TrackerTypeDefinitionV1 = {
+  id: 'bug',
+  label: 'Bug',
+  builtin: true,
+  roles: { title: 'title', workflowStatus: 'status', priority: 'priority', assignee: 'assignee' },
+};
+
+const EPIC_TYPE: TrackerTypeDefinitionV1 = {
+  id: 'epic',
+  label: 'Epic',
+  builtin: true,
+  roles: { title: 'title', workflowStatus: 'status', priority: 'priority', assignee: 'assignee' },
+};
+
+/** Shares the `bug` prefix with `BUG_TYPE` — exercises the longest-match tie-break in `detectTypePrefix` (a title starting with "bug-report:" must not get shadowed into `bug`). */
+const BUG_REPORT_TYPE: TrackerTypeDefinitionV1 = {
+  id: 'bug-report',
+  label: 'Bug Report',
+  builtin: false,
+  roles: { title: 'title', workflowStatus: 'status' },
+};
+
 /** A project-defined custom type that maps only two of the four roles — every role points at a deliberately different `fields` key than `TASK_TYPE`, so a passing assertion can't be an accident of reused key names. */
 const CUSTOM_PARTIAL_TYPE: TrackerTypeDefinitionV1 = {
   id: 'feature-request',
@@ -220,5 +242,122 @@ describe('TrackerRecordDialog (SPEC §7.10; issue #212) — role-driven create/e
     expect(client.updateTrackerRecord).toHaveBeenCalledWith('rec-1', {
       fields: { summary: 'Dark mode', stage: 'done', extra: 'kept' },
     });
+  });
+});
+
+describe('TrackerRecordDialog — "<type-id>:" title prefix picks the type (v7 decision F3-1; issue #673)', () => {
+  it('typing "bug: " at the start of the title switches the Type field to Bug and strips the prefix from the stored title', async () => {
+    const client = fakeClient();
+    render(TrackerRecordDialog, {
+      props: {
+        open: true,
+        client,
+        types: [TASK_TYPE, BUG_TYPE, EPIC_TYPE],
+        record: undefined,
+        onClose: vi.fn(),
+        onSaved: vi.fn(),
+      },
+    });
+
+    // Starts on Task, the first type in the list.
+    expect(screen.getByTestId('tracker-record-type-trigger').textContent).toMatch(/Task/);
+
+    await fireEvent.input(screen.getByTestId('tracker-record-title'), {
+      target: { value: 'bug: the terminal drops blank rows' },
+    });
+
+    expect(screen.getByTestId('tracker-record-type-trigger').textContent).toMatch(/Bug/);
+    expect((screen.getByTestId('tracker-record-title') as HTMLInputElement).value).toBe(
+      'the terminal drops blank rows',
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(client.createTrackerRecord).toHaveBeenCalledWith({
+      primaryType: 'bug',
+      fields: {
+        title: 'the terminal drops blank rows',
+        status: '',
+        priority: '',
+        assignee: '',
+      },
+    });
+  });
+
+  it('matches case-insensitively', async () => {
+    render(TrackerRecordDialog, {
+      props: {
+        open: true,
+        client: fakeClient(),
+        types: [TASK_TYPE, EPIC_TYPE],
+        record: undefined,
+        onClose: vi.fn(),
+        onSaved: vi.fn(),
+      },
+    });
+
+    await fireEvent.input(screen.getByTestId('tracker-record-title'), {
+      target: { value: 'EPIC: consolidate the onboarding flow' },
+    });
+
+    expect(screen.getByTestId('tracker-record-type-trigger').textContent).toMatch(/Epic/);
+    expect((screen.getByTestId('tracker-record-title') as HTMLInputElement).value).toBe(
+      'consolidate the onboarding flow',
+    );
+  });
+
+  it('the longest matching type id wins, so "bug-report:" picks Bug Report rather than being shadowed by the shorter "bug" id', async () => {
+    render(TrackerRecordDialog, {
+      props: {
+        open: true,
+        client: fakeClient(),
+        types: [BUG_TYPE, BUG_REPORT_TYPE],
+        record: undefined,
+        onClose: vi.fn(),
+        onSaved: vi.fn(),
+      },
+    });
+
+    await fireEvent.input(screen.getByTestId('tracker-record-title'), {
+      target: { value: 'bug-report: crash on save' },
+    });
+
+    expect(screen.getByTestId('tracker-record-type-trigger').textContent).toMatch(/Bug Report/);
+    expect((screen.getByTestId('tracker-record-title') as HTMLInputElement).value).toBe(
+      'crash on save',
+    );
+  });
+
+  it('never re-derives the type from the title in edit mode — an existing record keeps its type and the raw text, colon and all', async () => {
+    const record: TrackerRecordV1 = {
+      id: 'rec-1',
+      primaryType: 'task',
+      typeTags: [],
+      issueNumber: 3,
+      archived: false,
+      createdAt: 1,
+      updatedAt: 1,
+      fields: { title: 'Ship dark mode', status: 'todo', priority: '', assignee: '' },
+      system: makeSystem(),
+    };
+    render(TrackerRecordDialog, {
+      props: {
+        open: true,
+        client: fakeClient(),
+        types: [TASK_TYPE, BUG_TYPE],
+        record,
+        onClose: vi.fn(),
+        onSaved: vi.fn(),
+      },
+    });
+
+    await fireEvent.input(screen.getByTestId('tracker-record-title'), {
+      target: { value: 'bug: actually a bug' },
+    });
+
+    expect(screen.getByTestId('tracker-record-type-trigger').textContent).toMatch(/Task/);
+    expect((screen.getByTestId('tracker-record-title') as HTMLInputElement).value).toBe(
+      'bug: actually a bug',
+    );
   });
 });

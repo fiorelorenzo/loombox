@@ -44,12 +44,12 @@
   import TrackerBoard from '../TrackerBoard.svelte';
   import TrackerListView from '../TrackerListView.svelte';
   import TrackerRecordDialog, { type TrackerRecordClient } from '../TrackerRecordDialog.svelte';
-  import TrackerDefineTypeDialog, {
+  import TrackerManageTypesDialog, {
     type TrackerTypeClient,
-  } from '../TrackerDefineTypeDialog.svelte';
+  } from '../TrackerManageTypesDialog.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerDefineTypeDialog` expect. */
+  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. */
   export interface TrackerPageClient {
     trackerSnapshotFor: (sessionId: string) => Readable<TrackerSnapshotState>;
     reloadTrackerSnapshot: (sessionId: string) => void;
@@ -174,7 +174,7 @@
 
   const registry = $derived(buildTrackerTypeRegistryV1(snapshot.types));
 
-  /** Adapts {@link client} into the session-free shape `TrackerRecordDialog`/`TrackerDefineTypeDialog` expect (both mirror `AddProjectDialog`'s established "a dialog calls its own narrow client directly" convention) — binds `sessionId` once here rather than threading it through every dialog prop. */
+  /** Adapts {@link client} into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect (both mirror `AddProjectDialog`'s established "a dialog calls its own narrow client directly" convention) — binds `sessionId` once here rather than threading it through every dialog prop. */
   const dialogClient = $derived<TrackerRecordClient & TrackerTypeClient>({
     createTrackerRecord: (input) => client.createTrackerRecord(sessionId, input),
     updateTrackerRecord: (id, patch) => client.updateTrackerRecord(sessionId, id, patch),
@@ -183,7 +183,7 @@
 
   let recordDialogOpen = $state(false);
   let editingRecord = $state<TrackerRecordV1 | undefined>(undefined);
-  let defineTypeDialogOpen = $state(false);
+  let manageTypesDialogOpen = $state(false);
 
   function openCreateDialog(): void {
     editingRecord = undefined;
@@ -213,8 +213,8 @@
 </script>
 
 {#snippet actions()}
-  <Button variant="secondary" size="sm" onclick={() => (defineTypeDialogOpen = true)}>
-    New type
+  <Button variant="secondary" size="sm" onclick={() => (manageTypesDialogOpen = true)}>
+    Manage types
   </Button>
   <Button variant="primary" size="sm" onclick={openCreateDialog}>New record</Button>
 {/snippet}
@@ -287,11 +287,11 @@
   onSaved={() => {}}
 />
 
-<TrackerDefineTypeDialog
-  open={defineTypeDialogOpen}
+<TrackerManageTypesDialog
+  open={manageTypesDialogOpen}
   client={dialogClient}
-  existingTypeIds={snapshot.types.map((type) => type.id)}
-  onClose={() => (defineTypeDialogOpen = false)}
+  types={snapshot.types}
+  onClose={() => (manageTypesDialogOpen = false)}
   onDefined={() => {}}
 />
 
