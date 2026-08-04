@@ -52,6 +52,35 @@ export type {
 } from './native-tracker-store';
 export { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
 
+// v2: MCP tool contract for the native tracker (SPEC §7.10, §7.7; issue
+// #211) — tracker_list/tracker_get/tracker_create/tracker_update/
+// tracker_link_session, built from a NativeTrackerStore plus a session's
+// already-resolved (projectPath, authorId, sessionId). No node-side MCP
+// host consumes this yet — see tracker-mcp-tools.ts's doc comment.
+export type {
+  TrackerCreateToolInput,
+  TrackerGetToolInput,
+  TrackerGetToolOutput,
+  TrackerListToolInput,
+  TrackerListToolOutput,
+  TrackerLinkSessionToolInput,
+  TrackerMcpTool,
+  TrackerMcpToolContext,
+  TrackerMcpToolName,
+  TrackerRecordToolOutput,
+  TrackerUpdateToolInput,
+} from './tracker-mcp-tools';
+export {
+  createTrackerMcpTools,
+  trackerCreateInputSchema,
+  trackerGetInputSchema,
+  trackerLinkSessionInputSchema,
+  trackerListInputSchema,
+  trackerUpdateInputSchema,
+  TRACKER_MCP_TOOL_NAMES,
+  TrackerMcpToolError,
+} from './tracker-mcp-tools';
+
 // v1: config loading (env + optional file) (SPEC §5.1, §10; issue #63).
 export type { LoadNodeConfigOptions, NodeCliConfig } from './config';
 export { ConfigError, loadNodeConfig } from './config';
