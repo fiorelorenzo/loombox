@@ -132,7 +132,7 @@
   }
 
   .tracker-card-title {
-    font-weight: var(--text-body-weight-emphasis, 600);
+    font-weight: var(--text-title-weight);
     color: var(--color-text-primary);
   }
 
