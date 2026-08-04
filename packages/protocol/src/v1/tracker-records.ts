@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { encryptedEnvelope } from './envelope';
 import { PROTOCOL_V1 } from './handshake';
+import { trackerBackendResolutionErrorV1 } from './tracker';
 
 /**
  * The native tracker's wire contract (SPEC §7.10 "Native mode"; issue #212,
@@ -317,6 +318,8 @@ export type TrackerSnapshotResultV1 = z.infer<typeof trackerSnapshotResultV1>;
 export const trackerSnapshotErrorV1 = z.object({
   outcome: z.literal('error'),
   message: z.string().min(1),
+  /** SPEC §7.10, issue #631: set only when this error came from `resolveTrackerBackend` failing to compose a live-mode backend — never for a native-mode store failure (corrupt file, unknown id, ...), which has no `TrackerMode` resolution to describe and stays `message`-only. See `trackerBackendResolutionErrorV1`'s own doc comment for why this is a structured union, not a second message string. */
+  reason: trackerBackendResolutionErrorV1.optional(),
 });
 export type TrackerSnapshotErrorV1 = z.infer<typeof trackerSnapshotErrorV1>;
 
@@ -442,6 +445,8 @@ export type TrackerWriteResultV1 = z.infer<typeof trackerWriteResultV1>;
 export const trackerWriteErrorV1 = z.object({
   outcome: z.literal('error'),
   message: z.string().min(1),
+  /** Mirrors `trackerSnapshotErrorV1.reason` exactly — see that field's own doc comment. */
+  reason: trackerBackendResolutionErrorV1.optional(),
 });
 export type TrackerWriteErrorV1 = z.infer<typeof trackerWriteErrorV1>;
 

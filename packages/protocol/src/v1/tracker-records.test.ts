@@ -212,6 +212,24 @@ describe('trackerSnapshotResponsePayloadV1', () => {
     expect(result.success).toBe(true);
   });
 
+  it('parses the error outcome carrying a structured resolution reason (SPEC §7.10, issue #631) — the Tracker page switches on `reason.kind`, never string-matches `message`', () => {
+    const result = safeParseTrackerSnapshotResponsePayloadV1({
+      outcome: 'error',
+      message: "This project's tracker credential isn't available.",
+      reason: { kind: 'credentialUnavailable', connectionId: 'github:github.com:1' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a reason with an unknown kind — the union stays exhaustive on the wire too', () => {
+    const result = safeParseTrackerSnapshotResponsePayloadV1({
+      outcome: 'error',
+      message: 'node unreachable',
+      reason: { kind: 'somethingElse' },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects an outcome outside the two known variants', () => {
     expect(safeParseTrackerSnapshotResponsePayloadV1({ outcome: 'pending' }).success).toBe(false);
   });
@@ -278,6 +296,15 @@ describe('trackerWriteResponsePayloadV1', () => {
     expect(
       safeParseTrackerWriteResponsePayloadV1({ outcome: 'error', message: 'unknown type' }).success,
     ).toBe(true);
+  });
+
+  it('parses the error outcome carrying a structured resolution reason, mirroring trackerSnapshotErrorV1 exactly', () => {
+    const result = safeParseTrackerWriteResponsePayloadV1({
+      outcome: 'error',
+      message: 'No connected account is pinned for "github".',
+      reason: { kind: 'accountPinRequired', capability: 'github' },
+    });
+    expect(result.success).toBe(true);
   });
 });
 

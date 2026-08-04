@@ -43,7 +43,9 @@ import {
   type AccountPinUnsetRequest,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
+  type ConnectedAccount,
   type ConnectedAccountDisconnectRequest,
+  type ConnectedAccountList,
   type DecommissionResultV1,
   type DecommissionTargetRequest,
   type FileEventPayloadV1,
@@ -107,6 +109,7 @@ import {
   type WireMessageV1,
   type WrappedAmkEnvelope,
 } from '@loombox/protocol';
+import type { TrackerBackend, TrackerBinding } from '@loombox/shared';
 
 import {
   AccountHostMismatchError,
@@ -165,6 +168,17 @@ import { TestRunnerConfigStore } from './test-runner-config-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
 import { TrackerModeStore } from './tracker-mode-store';
+import {
+  resolveTrackerBackend,
+  type TrackerBackendIntent,
+  type TrackerBackendResolutionError,
+} from './tracker-backend-composition';
+import {
+  liveItemToTrackerRecord,
+  liveTrackerTypeDefinition,
+  trackerResolutionErrorPayload,
+  type LiveTrackerProvider,
+} from './tracker-live-bridge';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -181,6 +195,26 @@ import { SshTargetStore } from './ssh/verify-and-persist';
 import type { ReconnectingTransportOptions } from './ssh/reconnecting-transport';
 
 type CryptoKey = webcrypto.CryptoKey;
+
+/**
+ * {@link NodeDaemon.resolveTrackerDispatch}'s result — the one seam both
+ * `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge`
+ * (SPEC §7.10; issue #631) branch on, so a project's mode/account/pin
+ * state can never be read differently by the two bridge paths. `'live'`
+ * carries everything `tracker-live-bridge.ts`'s conversions need
+ * (`provider`/`connectionId`, alongside the composed `backend`/`binding`
+ * `@loombox/shared`'s `TrackerBackend` itself takes).
+ */
+type TrackerBridgeDispatch =
+  | { readonly kind: 'native' }
+  | {
+      readonly kind: 'live';
+      readonly backend: TrackerBackend;
+      readonly binding: TrackerBinding;
+      readonly provider: LiveTrackerProvider;
+      readonly connectionId: string;
+    }
+  | { readonly kind: 'error'; readonly error: TrackerBackendResolutionError };
 
 export interface NodeDaemonOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
@@ -482,6 +516,8 @@ export interface NodeDaemonOptions {
   accountPinStore?: AccountPinStore;
   /** SPEC §7.10, issue #631 — this node's per-project `TrackerMode` (see `tracker-mode-store.ts`'s doc comment for why this exists at all: it replaces the browser-`localStorage`-only version that made the node structurally unable to honour a project's `live` choice). Defaults to `new TrackerModeStore({stateDir: options.stateDir})`, same convention as `accountPinStore` above. */
   trackerModeStore?: TrackerModeStore;
+  /** Injectable for tests; defaults to each composed `GithubTrackerBackend`/`JiraTrackerBackend`'s own default (the global `fetch`) — see `resolveTrackerBackend`'s own `fetchImpl` doc comment. Issue #631's acceptance: a live-mode bridge test must stub this, never hit a real GitHub/Jira API. */
+  trackerBackendFetchImpl?: typeof fetch;
 }
 
 export interface CreateNodeSessionOptions {
@@ -953,8 +989,12 @@ export class NodeDaemon extends EventEmitter {
   private readonly jiraConnectService: JiraConnectService;
   /** SPEC §7.26, issue #227/#230's per-project, per-capability account pin map. */
   private readonly accountPinStore: AccountPinStore;
-  /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshotForBridge` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Next reader: the bridge dispatch this store exists for (issue #631's own gap — `readTrackerSnapshotForBridge` still reads the native store unconditionally; wiring that read to this store's mode is a follow-up, not this change). */
+  /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshotForBridge` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Consumed by {@link resolveTrackerDispatch}, the shared seam both `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge` dispatch through. */
   private readonly trackerModeStore: TrackerModeStore;
+  /** SPEC §7.26, issue #631: this node's own view of the connected-account registry, which lives relay-side (`connected_accounts` table, migration `0011_connected_accounts`) — a node has no local copy of its own, exactly like a client. Requested on every fresh relay connection ({@link sendConnectedAccountListRequest}, mirroring {@link sendAmkEpochFetchRequest}) and replaced wholesale on every `connected_account_list` reply ({@link handleConnectedAccountList}) — the wire message carries no `requestId` to correlate (`@loombox/protocol`'s `connectedAccountList` doc comment), so this also transparently picks up a future relay-initiated push, not just this node's own request. Empty until that first reply lands, which is a safe default: `resolveTrackerBackend` sees no accounts and fails closed (`accountNotConnected`), never a stale or fabricated match. `readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge` (via {@link resolveTrackerDispatch}) are the first consumers. */
+  private connectedAccounts: readonly ConnectedAccount[] = [];
+  /** `NodeDaemonOptions.trackerBackendFetchImpl`'s stored value — see that field's own doc comment. */
+  private readonly trackerBackendFetchImpl: typeof fetch | undefined;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1067,6 +1107,7 @@ export class NodeDaemon extends EventEmitter {
       options.accountPinStore ?? new AccountPinStore({ stateDir: options.stateDir });
     this.trackerModeStore =
       options.trackerModeStore ?? new TrackerModeStore({ stateDir: options.stateDir });
+    this.trackerBackendFetchImpl = options.trackerBackendFetchImpl;
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -1087,6 +1128,7 @@ export class NodeDaemon extends EventEmitter {
     this.relay.on('open', () => {
       this._connected = true;
       this.sendAmkEpochFetchRequest();
+      this.sendConnectedAccountListRequest();
       void this.reannounceAll().then(() => {
         this.emit('connected');
       });
@@ -2220,6 +2262,14 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /** SPEC §7.26, issue #631: on every fresh connection (mirrors {@link sendAmkEpochFetchRequest}'s identical "ask on every 'open', including a reconnect" shape), asks the relay for this account's connected-account registry — the same request a client sends on its own `attemptOpen()` (`apps/web/src/lib/relay-client.ts`'s own `connected_account_list_request` doc comment). {@link handleConnectedAccountList} replaces {@link connectedAccounts} wholesale with the reply. */
+  private sendConnectedAccountListRequest(): void {
+    this.relay.send({
+      type: 'connected_account_list_request',
+      protocolVersion: PROTOCOL_V1,
+    });
+  }
+
   /**
    * A pending rewrapped-AMK-epoch envelope arrived (or didn't). Ignored if
    * there's nothing pending, or if it's for an epoch this node has already
@@ -2231,6 +2281,11 @@ export class NodeDaemon extends EventEmitter {
   private handleAmkEpochFetchResponse(pending: AmkEpochPendingEnvelope | undefined): void {
     if (!pending || pending.epoch <= this.amkEpoch) return;
     this.emit('amk-epoch-pending', pending);
+  }
+
+  /** SPEC §7.26, issue #631: `connected_account_list` carries the full account-scoped snapshot (never a delta, and never correlated to a specific request — see `@loombox/protocol`'s `connectedAccountList` doc comment), so this replaces {@link connectedAccounts} wholesale — same "always the full list" contract `apps/web`'s `RelayClient.handleConnectedAccountList` follows client-side. */
+  private handleConnectedAccountList(message: ConnectedAccountList): void {
+    this.connectedAccounts = [...message.accounts];
   }
 
   /**
@@ -2381,6 +2436,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
+        return;
+      case 'connected_account_list':
+        this.handleConnectedAccountList(message);
         return;
       case 'provision_target_request':
         // Issue #408's zero-touch add-target wizard: this node itself never
@@ -2883,23 +2941,116 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Reads `bridge`'s bound project's active records (or, with
-   * `includeArchived`, every record) plus its full type set — never
-   * throws: a corrupt on-disk store becomes an `outcome: 'error'` payload
-   * rather than an unhandled rejection, so {@link handleTrackerSnapshotRequest}
-   * always has a response to seal and send back.
+   * The one seam `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge`
+   * both dispatch through (SPEC §7.10; issue #631) — `projectPath`'s
+   * `TrackerMode` is read here exactly once per call
+   * (`this.trackerModeStore.get`, "never chosen" defaulting to
+   * `{kind:'native'}`, same as `handleTrackerModeGetRequest`'s own
+   * contract), and a `live` mode is resolved through
+   * `resolveTrackerBackend` here exactly once per call, against this
+   * daemon's own `connectedAccounts`/`accountPinStore`/
+   * `githubConnectService`/`jiraConnectService`. There is structurally
+   * nowhere for the two bridge paths to see a different mode, a
+   * different account list, or a different pin than each other — the
+   * only place they're allowed to differ is `intent`, which changes
+   * which #227 resolver `resolveTrackerBackend` applies
+   * (`resolveAccountForRead` may default to an unambiguous candidate;
+   * `resolveAccountForWrite` never does — SPEC §7.26's "falling back to
+   * a different account for a write action is a correctness/security
+   * bug"), never which mode/account/pin state it applies it to.
+   */
+  private async resolveTrackerDispatch(
+    projectPath: string,
+    intent: TrackerBackendIntent,
+  ): Promise<TrackerBridgeDispatch> {
+    const mode = this.trackerModeStore.get(projectPath) ?? { kind: 'native' as const };
+    if (mode.kind !== 'live') return { kind: 'native' };
+
+    const resolution = await resolveTrackerBackend({
+      mode,
+      projectPath,
+      intent,
+      accounts: this.connectedAccounts,
+      pins: this.accountPinStore.get(projectPath),
+      githubConnectService: this.githubConnectService,
+      jiraConnectService: this.jiraConnectService,
+      fetchImpl: this.trackerBackendFetchImpl,
+    });
+    if (!resolution.ok) return { kind: 'error', error: resolution.error };
+
+    return {
+      kind: 'live',
+      backend: resolution.backend,
+      binding: { connectionId: mode.connectionId, target: mode.target },
+      provider: mode.provider,
+      connectionId: mode.connectionId,
+    };
+  }
+
+  /**
+   * Reads `bridge`'s bound project's tracker (SPEC §7.10; issue #631):
+   * dispatches on the project's `TrackerMode` through
+   * {@link resolveTrackerDispatch}, shared with
+   * {@link applyTrackerWriteForBridge} so the two can't diverge.
+   * `'native'` ({@link readNativeTrackerSnapshot}) behaves exactly as
+   * before this issue. `'live'` ({@link readLiveTrackerSnapshot}) calls
+   * the resolved `TrackerBackend.list` and maps its `TrackerItemLive[]`
+   * through `tracker-live-bridge.ts` into the same
+   * `TrackerRecordV1[]`/`TrackerTypeDefinitionV1[]` shape, so the
+   * Tracker page's kanban/list views need no live-specific rendering
+   * path. `'error'` (an unresolvable mode) never falls back to the
+   * native store — SPEC §7.10's explicit connectivity-error state — and
+   * carries both a human `message` and the structured `reason`
+   * `TrackerPage.svelte` switches on. {@link handleTrackerSnapshotRequest}
+   * always has a response to seal and send back either way.
    */
   private async readTrackerSnapshotForBridge(
     bridge: SessionBridge,
     payload: TrackerSnapshotRequestPayloadV1,
   ): Promise<TrackerSnapshotResponsePayloadV1> {
+    const projectPath = bridge.session.projectPath;
+    const dispatch = await this.resolveTrackerDispatch(projectPath, 'read');
+    if (dispatch.kind === 'error') return trackerResolutionErrorPayload(dispatch.error);
+    if (dispatch.kind === 'native') return this.readNativeTrackerSnapshot(projectPath, payload);
+    return this.readLiveTrackerSnapshot(dispatch);
+  }
+
+  /** Never throws: a corrupt on-disk store becomes an `outcome: 'error'` payload rather than an unhandled rejection. */
+  private readNativeTrackerSnapshot(
+    projectPath: string,
+    payload: TrackerSnapshotRequestPayloadV1,
+  ): TrackerSnapshotResponsePayloadV1 {
     try {
-      const projectPath = bridge.session.projectPath;
       const records = this.nativeTrackerStore.list(projectPath, {
         includeArchived: payload.includeArchived,
       });
       const types = this.nativeTrackerStore.listTypes(projectPath);
       return { outcome: 'ok', records, types };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  /**
+   * The live half of {@link readTrackerSnapshotForBridge}. Only the
+   * first page of `dispatch.backend.list` is fetched — `tracker_snapshot_request`
+   * carries no cursor field for a caller to page through, a real,
+   * documented limitation of this bridge rather than dropped pagination.
+   * Never throws: a backend/network failure (as opposed to a resolution
+   * failure, already handled by `resolveTrackerDispatch`'s own `'error'`
+   * dispatch) becomes an `outcome: 'error'` payload the same way a
+   * corrupt native store does.
+   */
+  private async readLiveTrackerSnapshot(
+    dispatch: Extract<TrackerBridgeDispatch, { kind: 'live' }>,
+  ): Promise<TrackerSnapshotResponsePayloadV1> {
+    try {
+      const page = await dispatch.backend.list(dispatch.binding, {});
+      const records = page.items.map((item) =>
+        liveItemToTrackerRecord(item, dispatch.provider, dispatch.connectionId),
+      );
+      return { outcome: 'ok', records, types: [liveTrackerTypeDefinition(dispatch.provider)] };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return { outcome: 'error', message: detail };
@@ -2956,20 +3107,36 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * Applies one create/update/defineType op against `bridge`'s bound
-   * project. `authorId` on a `create` is always this node's own bound
-   * `accountId` — never taken from the client payload (there is no such
-   * field on the wire schema), the human-UI counterpart of
-   * `tracker_create`'s MCP-tool "stamped from context, never from tool
-   * input" contract. Never throws: an unknown type or a missing record id
-   * (`NativeTrackerStoreError`) becomes an `outcome: 'error'` payload
-   * rather than an unhandled rejection, so {@link handleTrackerWriteRequest}
-   * always has a response to seal and send back.
+   * project (SPEC §7.10; issue #631) — dispatches on `TrackerMode`
+   * through {@link resolveTrackerDispatch}, called with `intent:'write'`
+   * (never `'read'`) so an unpinned live account never defaults
+   * silently — see that method's own doc comment. `'error'` never falls
+   * back to the native store, same as {@link readTrackerSnapshotForBridge}.
    */
   private async applyTrackerWriteForBridge(
     bridge: SessionBridge,
     payload: TrackerWriteRequestPayloadV1,
   ): Promise<TrackerWriteResponsePayloadV1> {
     const projectPath = bridge.session.projectPath;
+    const dispatch = await this.resolveTrackerDispatch(projectPath, 'write');
+    if (dispatch.kind === 'error') return trackerResolutionErrorPayload(dispatch.error);
+    if (dispatch.kind === 'native') return this.applyNativeTrackerWrite(projectPath, payload);
+    return this.applyLiveTrackerWrite(dispatch, payload);
+  }
+
+  /**
+   * `authorId` on a `create` is always this node's own bound `accountId`
+   * — never taken from the client payload (there is no such field on
+   * the wire schema), the human-UI counterpart of `tracker_create`'s
+   * MCP-tool "stamped from context, never from tool input" contract.
+   * Never throws: an unknown type or a missing record id
+   * (`NativeTrackerStoreError`) becomes an `outcome: 'error'` payload
+   * rather than an unhandled rejection.
+   */
+  private applyNativeTrackerWrite(
+    projectPath: string,
+    payload: TrackerWriteRequestPayloadV1,
+  ): TrackerWriteResponsePayloadV1 {
     try {
       switch (payload.op) {
         case 'create': {
@@ -3005,6 +3172,53 @@ export class NodeDaemon extends EventEmitter {
         error instanceof NativeTrackerStoreError || error instanceof Error
           ? error.message
           : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  /**
+   * The live half of {@link applyTrackerWriteForBridge}. `create`/`update`
+   * forward `fields` straight to the resolved `TrackerBackend` — a live
+   * record has no native `primaryType`/`typeTags`/`archived` concept to
+   * apply, see `tracker-live-bridge.ts`'s own doc comment for what a
+   * live-mode record actually carries. `defineType` has no live-mode
+   * analog (a live project's types come from the provider, never a user
+   * definition) and fails immediately, without attempting a backend
+   * call. Never throws: a backend/network failure becomes an
+   * `outcome: 'error'` payload, same as {@link readLiveTrackerSnapshot}.
+   */
+  private async applyLiveTrackerWrite(
+    dispatch: Extract<TrackerBridgeDispatch, { kind: 'live' }>,
+    payload: TrackerWriteRequestPayloadV1,
+  ): Promise<TrackerWriteResponsePayloadV1> {
+    try {
+      switch (payload.op) {
+        case 'create': {
+          const item = await dispatch.backend.create(dispatch.binding, payload.fields);
+          return {
+            outcome: 'ok',
+            record: liveItemToTrackerRecord(item, dispatch.provider, dispatch.connectionId),
+          };
+        }
+        case 'update': {
+          const item = await dispatch.backend.update(
+            dispatch.binding,
+            payload.id,
+            payload.fields ?? {},
+          );
+          return {
+            outcome: 'ok',
+            record: liveItemToTrackerRecord(item, dispatch.provider, dispatch.connectionId),
+          };
+        }
+        case 'defineType':
+          return {
+            outcome: 'error',
+            message: 'Custom tracker types are only supported for native-mode projects.',
+          };
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       return { outcome: 'error', message: detail };
     }
   }

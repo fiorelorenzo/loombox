@@ -104,6 +104,7 @@ import {
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
   type TrackerMode,
+  type TrackerBackendResolutionErrorV1,
   type TrackerRecordV1,
   type TrackerRoleV1,
   type TrackerSnapshotRequestPayloadV1,
@@ -344,6 +345,8 @@ export interface TrackerSnapshotState {
   records: TrackerRecordV1[];
   types: TrackerTypeDefinitionV1[];
   error?: string;
+  /** Set only when `error` came from a `resolveTrackerBackend` resolution failure (SPEC §7.10, issue #631) — never for a native-mode store failure, a decrypt/timeout failure, or a stale connection, none of which has a `TrackerMode` resolution to describe. `TrackerPage.svelte` switches on `errorReason.kind` for the cases it renders specially, falling back to the plain `error` message otherwise. */
+  errorReason?: TrackerBackendResolutionErrorV1;
 }
 
 /**
@@ -4034,7 +4037,7 @@ export class RelayClient {
             types: payload.types,
           });
         } else {
-          this.setTrackerSnapshotError(message.sessionId, payload.message);
+          this.setTrackerSnapshotError(message.sessionId, payload.message, payload.reason);
         }
       })
       .catch((error: unknown) => {
@@ -4580,11 +4583,17 @@ export class RelayClient {
     return store;
   }
 
-  private setTrackerSnapshotError(sessionId: string, message: string): void {
+  /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same session might have left behind. */
+  private setTrackerSnapshotError(
+    sessionId: string,
+    message: string,
+    reason?: TrackerBackendResolutionErrorV1,
+  ): void {
     this.trackerSnapshotStoreFor(sessionId).update((state) => ({
       ...state,
       status: 'error',
       error: message,
+      errorReason: reason,
     }));
   }
 
