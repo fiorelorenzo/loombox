@@ -62,16 +62,62 @@
    * the shared `Row` (`as="li"`, no `onclick` of its own — only the nested
    * Open `Button` is clickable) instead of hand-rolling its own leading/
    * content/trailing flex layout. Leading is the `StatusDot`, trailing is
-   * the status label, and content is everything else (Open, the need
-   * line, and the inline `PermissionCard`/reply form) — `Row`'s content
-   * region is a column, not a single line, exactly because this row's own
-   * content already wasn't one. `data-kind`/`data-testid` reach `Row`'s
-   * root through its own `data-*` passthrough, so the existing
+   * the status label, and content is everything else (Open, the message,
+   * and the inline `PermissionCard`/reply form) — `Row`'s content region
+   * is a column, not a single line, exactly because this row's own content
+   * already wasn't one. `data-kind`/`data-testid` reach `Row`'s root
+   * through its own `data-*` passthrough, so the existing
    * `attention-inbox-item` selector and `dataset.kind` reads are
-   * unchanged.
+   * unchanged. `surface` (issue #665) draws the card background/border
+   * directly on `Row`'s own root — the `:global(.item)` rule below only
+   * ever adds padding/animation on top of it, never fights it for a
+   * property `Row` already owns (issue #665's guard test,
+   * `primitive-override-scope.test.ts`).
+   *
+   * v7 card-per-session inbox (E1-3/E2-1/E3-1, issue #671, spec §5):
+   *
+   * - **E1-3, amended.** The row's old one-line derived "need" label
+   *   (`needLabel`, still used as a fallback below) is replaced by the
+   *   agent's actual last message, rendered in full through the same
+   *   sanitised `$lib/markdown` pipeline the transcript itself uses
+   *   (`AttentionInboxItem.agentMessage`, plumbed by #662) — nothing is
+   *   summarised or hidden behind a click. The amendment strips the
+   *   digit badge `PermissionCard`'s option buttons used to print; see
+   *   that component's own doc comment.
+   * - **E2-1.** Answering (a permission option, or a reply send) no
+   *   longer calls `onResolve`/`onReply` synchronously. It schedules the
+   *   real call `ANSWER_LINGER_MS` out (`scheduleAnswer`), and the row
+   *   swaps its live control for a dimmed outcome + Undo. Undo
+   *   (`undoAnswer`) cancels the pending timer *before* the real call
+   *   ever fires, so it is a true no-op restore, not a race against an
+   *   already-sent resolution — the upstream item is still sitting in
+   *   `items` untouched the whole time, since nothing has told
+   *   `RelayClient` anything yet.
+   * - **E3-1.** `j`/`k` move `focusedIndex`, a list-wide cursor
+   *   (independent of literal DOM focus — this is a Gmail-style
+   *   keyboard cursor, not a roving-tabindex one, so it works whether or
+   *   not the mouse has ever touched the page) rendered via `Row`'s own
+   *   `active` prop. A digit key resolves the focused row's permission
+   *   options by position, same binding `PermissionCard`'s own `#148`
+   *   keydown handler already provides when it holds real focus
+   *   directly — `event.defaultPrevented` is checked first specifically
+   *   to not double-fire when both paths would otherwise answer the same
+   *   keystroke. Enter focuses the reply `<input>` of an `awaiting_input`
+   *   focused row. The conflict between E1-3's amendment and E3-1's
+   *   reliance on digits is resolved in the spec: the bindings stay, the
+   *   on-button badge goes, and the hint bar below the list is now the
+   *   only place a digit shortcut is advertised — load-bearing, not
+   *   decoration.
    */
-  import type { AcpPermissionOption } from '@loombox/providers-core/browser';
+  import type {
+    AcpPermissionOption,
+    PendingPermissionRequest,
+  } from '@loombox/providers-core/browser';
+  import { SvelteMap } from 'svelte/reactivity';
   import type { AttentionInboxItem } from '../relay-client';
+  import { isTypingTarget } from '$lib/keyboard';
+  import { renderMarkdownToHtml } from '$lib/markdown';
+  import { triggerHapticFeedback } from '$lib/haptics';
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';
   import EmptyState from './ui/EmptyState.svelte';
@@ -88,10 +134,33 @@
 
   const { items, onResolve, onOpenSession, onReply }: Props = $props();
 
+  /** How long an answered row lingers, dimmed, before its real callback fires (E2-1: "clears after a couple of seconds"). */
+  const ANSWER_LINGER_MS = 2200;
+
   // Keyed by sessionId — one reply composer per awaiting_input item, and
   // there is at most one such item per session (`attentionInbox()`'s own
   // per-session doc comment).
   let replyDrafts = $state<Record<string, string>>({});
+
+  // `$state` (not a plain object) so `bind:this` below tracks each row's
+  // input element reactively — `openFocusedReply` (E3-1: "Enter drops into
+  // the reply box") then moves real focus into whichever row's input the
+  // list cursor currently points at.
+  let replyInputEls = $state<Record<string, HTMLInputElement>>({});
+
+  interface PendingAnswer {
+    /** What the row shows in place of its live control while dimmed. */
+    outcome: string;
+    /** The real `onResolve`/`onReply` call, deferred until the linger window elapses (or dropped entirely on Undo). */
+    commit: () => void;
+    timerId: ReturnType<typeof setTimeout>;
+  }
+
+  /** Answered-but-not-yet-committed rows (E2-1), keyed by `itemKey`. `SvelteMap` (`svelte/reactivity`), not a plain `$state(new Map())` — a bare `Map`'s `.set`/`.delete` bypass `$state`'s proxy traps (they mutate the built-in's internal slots, not a property `Proxy` can intercept), so only the reactive wrapper class actually re-renders on mutation. */
+  const pendingAnswers = new SvelteMap<string, PendingAnswer>();
+
+  /** The list-wide keyboard cursor (E3-1). Not tied to literal DOM focus — see the file doc comment. */
+  let focusedIndex = $state(0);
 
   function itemKey(item: AttentionInboxItem): string {
     return item.kind === 'permission' && item.permission
@@ -116,6 +185,22 @@
       case 'review_request':
         return 'Review requested';
     }
+  }
+
+  /**
+   * The row's own message body (E1-3, amended): the agent's real last
+   * message in full for a `permission`/`awaiting_input` item that has one
+   * (`AttentionInboxItem.agentMessage`, issue #662) — never a summary, never
+   * truncated. Falls back to the old derived `needLabel` when there is no
+   * agent message yet (a permission request on a session's very first
+   * turn) or for a kind that never carries one (`session_outcome`/
+   * `ci_failure`/`review_request` keep their own short label).
+   */
+  function messageSource(item: AttentionInboxItem): string {
+    if ((item.kind === 'permission' || item.kind === 'awaiting_input') && item.agentMessage) {
+      return item.agentMessage;
+    }
+    return needLabel(item);
   }
 
   /**
@@ -151,22 +236,154 @@
     }
   }
 
-  function submitReply(sessionId: string): void {
-    const text = (replyDrafts[sessionId] ?? '').trim();
+  function isPendingAnswer(item: AttentionInboxItem): boolean {
+    return pendingAnswers.has(itemKey(item));
+  }
+
+  function outcomeFor(item: AttentionInboxItem): string {
+    return pendingAnswers.get(itemKey(item))?.outcome ?? '';
+  }
+
+  function truncateForOutcome(text: string, max = 80): string {
+    return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
+  }
+
+  /** Schedules `commit` to run after the linger window — see the file doc comment's E2-1 paragraph for why the real call is deferred rather than fired-then-undone. */
+  function scheduleAnswer(item: AttentionInboxItem, outcome: string, commit: () => void): void {
+    const key = itemKey(item);
+    const existing = pendingAnswers.get(key);
+    if (existing) clearTimeout(existing.timerId);
+    const timerId = setTimeout(() => {
+      pendingAnswers.delete(key);
+      commit();
+    }, ANSWER_LINGER_MS);
+    pendingAnswers.set(key, { outcome, commit, timerId });
+  }
+
+  /** Undo (E2-1): cancels the pending timer before `commit` ever runs, so nothing was ever actually resolved/sent — a true restore, not a cancelled countdown on top of an already-fired action. */
+  function undoAnswer(item: AttentionInboxItem): void {
+    const key = itemKey(item);
+    const pending = pendingAnswers.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timerId);
+    pendingAnswers.delete(key);
+  }
+
+  // Safety net, not the primary cleanup path (that's `scheduleAnswer`'s own
+  // timer callback): if an item leaves `items` for a reason other than our
+  // own deferred commit — resolved from another device, the session's
+  // status moved on its own — drop the now-stale pending entry rather than
+  // firing a commit for an item nobody can act on any more.
+  $effect(() => {
+    const liveKeys = new Set(items.map(itemKey));
+    for (const [key, pending] of pendingAnswers) {
+      if (!liveKeys.has(key)) {
+        clearTimeout(pending.timerId);
+        pendingAnswers.delete(key);
+      }
+    }
+  });
+
+  // Keeps the cursor in range as the list shrinks/grows (an item resolving
+  // elsewhere, or a new one arriving) — mirrors `CommandPalette`'s own
+  // `activeIndex` re-clamp.
+  $effect(() => {
+    if (focusedIndex >= items.length) focusedIndex = Math.max(0, items.length - 1);
+  });
+
+  function beginPermissionAnswer(
+    item: AttentionInboxItem,
+    request: PendingPermissionRequest,
+    option: AcpPermissionOption,
+  ): void {
+    scheduleAnswer(item, `Answered: ${option.name}`, () =>
+      onResolve(item.sessionId, request.requestId, option),
+    );
+  }
+
+  function submitReply(item: AttentionInboxItem): void {
+    const text = (replyDrafts[item.sessionId] ?? '').trim();
     if (text === '') return;
-    onReply(sessionId, text);
-    replyDrafts[sessionId] = '';
+    scheduleAnswer(item, `Replied: “${truncateForOutcome(text)}”`, () =>
+      onReply(item.sessionId, text),
+    );
+    replyDrafts[item.sessionId] = '';
+  }
+
+  function moveFocus(delta: number): void {
+    if (items.length === 0) return;
+    focusedIndex = (focusedIndex + delta + items.length) % items.length;
+  }
+
+  /** Digit answer for the cursor-focused row (E3-1) — the same binding `PermissionCard`'s own `#148` handler exposes when it holds literal focus directly; see `handleWindowKeydown`'s `defaultPrevented` guard for why the two never double-fire. */
+  function answerFocused(digit: number): void {
+    const item = items[focusedIndex];
+    if (!item || item.kind !== 'permission' || !item.permission || isPendingAnswer(item)) return;
+    const option = item.permission.options[digit - 1];
+    if (!option) return;
+    triggerHapticFeedback();
+    beginPermissionAnswer(item, item.permission, option);
+  }
+
+  function openFocusedReply(): void {
+    const item = items[focusedIndex];
+    if (!item || item.kind !== 'awaiting_input' || isPendingAnswer(item)) return;
+    replyInputEls[itemKey(item)]?.focus();
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    // Already handled — e.g. a directly-focused `PermissionCard`'s own
+    // digit/Esc handler ran first during the bubble phase and called
+    // `preventDefault()`. Acting again here would double-answer the same
+    // keystroke.
+    if (event.defaultPrevented) return;
+    if (isTypingTarget(event.target)) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (items.length === 0) return;
+    if (event.key === 'j') {
+      event.preventDefault();
+      moveFocus(1);
+      return;
+    }
+    if (event.key === 'k') {
+      event.preventDefault();
+      moveFocus(-1);
+      return;
+    }
+    if (event.key === 'Enter') {
+      openFocusedReply();
+      return;
+    }
+    const digit = Number(event.key);
+    if (Number.isInteger(digit) && digit >= 1 && digit <= 9) {
+      answerFocused(digit);
+    }
   }
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div class="attention-inbox" data-testid="attention-inbox">
   {#if items.length === 0}
     <EmptyState message="Nothing needs your attention." />
   {:else}
+    <div class="hints" data-testid="attention-inbox-hints">
+      <span>j/k move</span>
+      <span>1–9 answer</span>
+      <span>Enter reply</span>
+    </div>
     <ul>
-      {#each items as item (itemKey(item))}
+      {#each items as item, index (itemKey(item))}
         {@const status = itemStatus(item)}
-        <Row as="li" class="item" surface data-kind={item.kind} dataTestId="attention-inbox-item">
+        {@const answered = isPendingAnswer(item)}
+        <Row
+          as="li"
+          class="item"
+          surface
+          active={index === focusedIndex}
+          data-kind={item.kind}
+          dataTestId="attention-inbox-item"
+        >
           {#snippet leading()}
             <StatusDot tone={status.tone} label={status.label} />
           {/snippet}
@@ -174,50 +391,69 @@
             <span class="status-label" data-testid="attention-inbox-kind-badge">{status.label}</span
             >
           {/snippet}
-          <Button
-            variant="ghost"
-            class="open"
-            align="start"
-            onclick={() => onOpenSession(item.sessionId)}
-            dataTestId="attention-inbox-open"
-          >
-            <strong>{item.sessionTitle}</strong>
-            <small>{item.projectPath} · {item.nodeId}</small>
-          </Button>
-          <p class="need" data-testid="attention-inbox-need">{needLabel(item)}</p>
-          {#if item.kind === 'permission' && item.permission}
-            {@const request = item.permission}
-            <PermissionCard
-              {request}
-              actionable={true}
-              onResolve={(option) => onResolve(item.sessionId, request.requestId, option)}
-            />
-          {:else if item.kind === 'awaiting_input'}
-            <form
-              class="reply"
-              data-testid="attention-inbox-reply"
-              onsubmit={(event) => {
-                event.preventDefault();
-                submitReply(item.sessionId);
-              }}
+          <div class="item-body" class:answered>
+            <Button
+              variant="ghost"
+              class="open"
+              align="start"
+              onclick={() => onOpenSession(item.sessionId)}
+              dataTestId="attention-inbox-open"
             >
-              <input
-                type="text"
-                value={replyDrafts[item.sessionId] ?? ''}
-                oninput={(event) =>
-                  (replyDrafts[item.sessionId] = (event.currentTarget as HTMLInputElement).value)}
-                placeholder="Send a follow-up without leaving the inbox…"
-                aria-label={`Reply to ${item.sessionTitle}`}
-                data-testid="attention-inbox-reply-input"
+              <strong>{item.sessionTitle}</strong>
+              <small>{item.projectPath} · {item.nodeId}</small>
+            </Button>
+            <!-- $lib/markdown's own sanitised output (rehype-sanitize), the same pipeline MessageItem renders the transcript through — never raw agent text. -->
+            <div class="message md-body" data-testid="attention-inbox-need">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              {@html renderMarkdownToHtml(messageSource(item))}
+            </div>
+            {#if answered}
+              <div class="answer-outcome" data-testid="attention-inbox-answer-outcome">
+                <span>{outcomeFor(item)}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => undoAnswer(item)}
+                  dataTestId="attention-inbox-answer-undo"
+                >
+                  Undo
+                </Button>
+              </div>
+            {:else if item.kind === 'permission' && item.permission}
+              {@const request = item.permission}
+              <PermissionCard
+                {request}
+                actionable={true}
+                onResolve={(option) => beginPermissionAnswer(item, request, option)}
               />
-              <Button
-                type="submit"
-                variant="secondary"
-                size="sm"
-                dataTestId="attention-inbox-reply-send">Send</Button
+            {:else if item.kind === 'awaiting_input'}
+              <form
+                class="reply"
+                data-testid="attention-inbox-reply"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  submitReply(item);
+                }}
               >
-            </form>
-          {/if}
+                <input
+                  type="text"
+                  value={replyDrafts[item.sessionId] ?? ''}
+                  oninput={(event) =>
+                    (replyDrafts[item.sessionId] = (event.currentTarget as HTMLInputElement).value)}
+                  placeholder="Send a follow-up without leaving the inbox…"
+                  aria-label={`Reply to ${item.sessionTitle}`}
+                  data-testid="attention-inbox-reply-input"
+                  bind:this={replyInputEls[itemKey(item)]}
+                />
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  size="sm"
+                  dataTestId="attention-inbox-reply-send">Send</Button
+                >
+              </form>
+            {/if}
+          </div>
         </Row>
       {/each}
     </ul>
@@ -229,6 +465,17 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+
+  /* Load-bearing, not decoration (E3-1/spec §0's conflict resolution): once
+     `PermissionCard`'s option buttons stopped printing a digit of their
+     own, this is the only place the `1`–`9` binding is advertised at all. */
+  .hints {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
   }
 
   ul {
@@ -295,6 +542,21 @@
     color: var(--color-text-secondary);
   }
 
+  .item-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    min-width: 0;
+    transition: opacity var(--duration-base) var(--ease-beat);
+  }
+
+  /* E2-1: dims to show the outcome instead of vanishing outright — the
+     title/message stay legible (context for the Undo decision), only the
+     control area below swaps for the outcome + Undo. */
+  .item-body.answered {
+    opacity: 0.55;
+  }
+
   /* `:global` — the `open` class lands on `Button`'s own root `<button>`,
      which carries `Button`'s own scope hash, not this component's, so a
      plain (non-`:global`) selector would never match (same rationale
@@ -312,7 +574,20 @@
     color: var(--color-text-secondary);
   }
 
-  .need {
+  /* The agent's real last message (E1-3, amended) — `.md-body`'s own
+     paragraph/list/code/link rules are declared `:global` in
+     `MessageItem.svelte` and therefore already apply here verbatim; this
+     is only the size this container itself needs (unset elsewhere on
+     `.md-body`, which is only ever a class name, never a container with
+     its own base rule). */
+  .message {
+    font-size: var(--text-small-size);
+  }
+
+  .answer-outcome {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
   }

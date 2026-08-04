@@ -16,7 +16,12 @@
    * queued, does not resolve). Both only fire while this card itself is
    * focused (the `keydown` listener lives on the card's own root), and only
    * when `actionable` (SPEC.md §7.24's nested-visibility rule: only the
-   * current FIFO head is actionable).
+   * current FIFO head is actionable). The option buttons print no digit of
+   * their own (v7 decision E1-3's amendment, issue #671): the binding
+   * stays live, but its only advertisement is the inbox's own hint bar
+   * (`AttentionInbox.svelte`) — this standalone card (also used by
+   * `PermissionQueueBar`, which has no such hint bar) simply has no visible
+   * shortcut label any more, the same trade the amendment accepted.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { PendingPermissionRequest } from '@loombox/providers-core/browser';
@@ -193,7 +198,6 @@
           disabled={!actionable}
           onclick={() => resolveOption(option)}
         >
-          <span class="shortcut">{request.options.indexOf(option) + 1}</span>
           {option.name}
         </Button>
       {/each}
@@ -222,7 +226,6 @@
             disabled={!actionable}
             onclick={() => resolveOption(option)}
           >
-            <span class="shortcut">{request.options.indexOf(option) + 1}</span>
             {option.name}
           </Button>
         {/each}
@@ -392,24 +395,6 @@
     gap: var(--space-2xs);
     max-height: 10rem;
     overflow-y: auto;
-  }
-
-  /* Keycap-style shortcut chip: a small raised tile (not just a bordered
-     digit) echoing a physical key, sitting inside each option Button's own
-     label. */
-  .shortcut {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.1rem;
-    margin-right: var(--space-2xs);
-    opacity: 0.85;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    border: 1px solid currentColor;
-    border-radius: var(--radius-sm);
-    padding: 0 var(--space-2xs);
-    box-shadow: 0 1px 0 currentColor;
   }
 
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a
