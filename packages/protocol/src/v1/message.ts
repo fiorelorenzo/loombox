@@ -81,6 +81,7 @@ import {
   trackerWriteRequest,
   trackerWriteResponse,
 } from './tracker-records';
+import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -170,6 +171,11 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   trackerSnapshotResponse,
   trackerWriteRequest,
   trackerWriteResponse,
+  runStart,
+  runStarted,
+  runOutput,
+  runExit,
+  runCancel,
   ping,
   pong,
 ]);

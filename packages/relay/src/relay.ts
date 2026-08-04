@@ -1356,6 +1356,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'run_started':
+      case 'run_output':
+      case 'run_exit':
+        // The owning node's reply to a client's run_start, streamed run
+        // output, and a run's terminal state (SPEC §7.15; issue #244) —
+        // fanned out exactly like terminal_opened/terminal_output/
+        // terminal_closed above; the relay never opens any of these
+        // envelopes, so it never sees which of test/lint/build ran, a
+        // byte of its output, or its pass/fail/could-not-start outcome
+        // (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'lease_request':
         // SPEC §9; issues #82/#104: a session is owned by a node, never a
         // client — only a node connection ever sends this.
@@ -1920,6 +1932,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // ever sees sessionId/requestId plus (for _set) an opaque
         // `EncryptedEnvelope`; no command string ever reaches the relay in
         // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'run_start':
+      case 'run_cancel':
+        // A client starting/cancelling a configured test/lint/build run
+        // (SPEC §7.15; issue #244) — routed to the owning node exactly
+        // like terminal_open/terminal_close above. The relay only ever
+        // sees sessionId/targetId/runId (and, for run_start, requestId)
+        // plus an opaque `EncryptedEnvelope`; which command kind ran never
+        // reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {

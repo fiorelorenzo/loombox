@@ -54,6 +54,11 @@ import {
   type TerminalOpened,
   type TerminalOutput,
   type TerminalResize,
+  type RunCancel,
+  type RunExit,
+  type RunOutput,
+  type RunStart,
+  type RunStarted,
   type TestRunnerConfigDetect,
   type TestRunnerConfigDetected,
   type TestRunnerConfigGet,
@@ -2493,6 +2498,181 @@ describe('relay v1', () => {
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
       );
+    });
+  });
+
+  describe('run_start/run_cancel and run_started/run_output/run_exit (SPEC §7.15; issue #244) — routed and fanned out exactly like terminal_open/terminal_output, always blind', () => {
+    /** Same shared setup the terminal/test_runner_config describe blocks above use. */
+    async function bootstrapAnnouncedSession(
+      sessionId: string,
+    ): Promise<{ url: string; node: WebSocket; client: WebSocket }> {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: sessionId, accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId,
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      return { url, node, client };
+    }
+
+    it('routes a client run_start to the owning node, byte-for-byte, never inspecting the envelope (which kind ran stays opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_run_start');
+
+      const request: RunStart = {
+        type: 'run_start',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_run_start',
+        targetId: 'target_1',
+        runId: 'run_1',
+        requestId: 'req_run_start_1',
+        envelope: fakeEnvelope('test'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as RunStart;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        [
+          'envelope',
+          'protocolVersion',
+          'requestId',
+          'runId',
+          'sessionId',
+          'targetId',
+          'type',
+        ].sort(),
+      );
+    });
+
+    it('fans run_started out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_run_started');
+
+      const response: RunStarted = {
+        type: 'run_started',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_run_started',
+        runId: 'run_1',
+        requestId: 'req_run_start_1',
+        envelope: fakeEnvelope('ok'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as RunStarted;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'runId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it("fans run_output out to the session's subscribed client, byte-for-byte, never inspecting the envelope (the run's actual output stays opaque)", async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_run_output');
+
+      const response: RunOutput = {
+        type: 'run_output',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_run_output',
+        runId: 'run_1',
+        envelope: fakeEnvelope('FAIL src/secret.test.ts'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as RunOutput;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'runId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans run_exit out to the subscribed client, byte-for-byte, never inspecting the envelope (pass/fail/exit code stay opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_run_exit');
+
+      const response: RunExit = {
+        type: 'run_exit',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_run_exit',
+        runId: 'run_1',
+        envelope: fakeEnvelope('{"outcome":"fail","exitCode":1}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as RunExit;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'runId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client run_cancel to the owning node — no envelope, since cancelling carries no content', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_run_cancel');
+
+      const request: RunCancel = {
+        type: 'run_cancel',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_run_cancel',
+        runId: 'run_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as RunCancel;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'runId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a run_start/run_cancel for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+
+      send(client, {
+        type: 'run_start',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        targetId: 'target_1',
+        runId: 'run_orphan',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('test'),
+      } satisfies RunStart);
+      send(client, {
+        type: 'run_cancel',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        runId: 'run_orphan',
+      } satisfies RunCancel);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
     });
   });
 

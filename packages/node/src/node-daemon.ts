@@ -73,6 +73,12 @@ import {
   type TargetResourceSample,
   type TargetUpdateRequest,
   type TargetVersionStatusV1,
+  type RunCancel,
+  type RunExitPayloadV1,
+  type RunOutputPayloadV1,
+  type RunStart,
+  type RunStartedResultPayloadV1,
+  type RunStartPayloadV1,
   type TerminalClose,
   type TerminalClosedPayloadV1,
   type TerminalClosedReasonV1,
@@ -119,8 +125,12 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
+import { evaluateCommandLine, logPolicyViolation, type PolicyViolation } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
-import { PolicyEnforcedExecutionTarget } from './policy-enforced-execution-target';
+import {
+  PolicyEnforcedExecutionTarget,
+  resolveRealBasename,
+} from './policy-enforced-execution-target';
 import { PolicyEnforcedPty } from './policy-enforced-pty';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
@@ -150,6 +160,7 @@ import {
 import { TargetHealthSampler } from './target-health-sampler';
 import { TestRunnerConfigStore } from './test-runner-config-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
+import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -842,6 +853,13 @@ export class NodeDaemon extends EventEmitter {
   private readonly clientInitiatedTerminalCloses = new Set<string>();
   /** Chains every `terminal_output` send per terminal (mirrors `SessionBridge.sendQueue`) so concurrent `crypto.subtle.encrypt` calls can never resolve — and so get sent to the relay — out of the order their chunks actually arrived in. */
   private readonly terminalSendQueues = new Map<string, Promise<void>>();
+  /** Every currently in-flight test/lint/build run this node started (SPEC §7.15; issue #244), keyed by `runId` — `handleRunCancel` and `close()` are the two things that reach into this map; `executeRun` removes an entry the instant its `run_exit` is sent, whatever the outcome. */
+  private readonly activeRuns = new Map<
+    string,
+    { sessionId: string; cancel: () => Promise<void> }
+  >();
+  /** Chains every `run_output` send per run (mirrors `terminalSendQueues` above) so concurrent `crypto.subtle.encrypt` calls can never resolve — and so get sent to the relay — out of the order their chunks actually arrived in. */
+  private readonly runSendQueues = new Map<string, Promise<void>>();
   private readonly bridges = new Map<string, SessionBridge>();
   private _connected = false;
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
@@ -1125,6 +1143,18 @@ export class NodeDaemon extends EventEmitter {
     this.bridges.clear();
     this.targetHealthSampler.stop();
     this.terminalSupervisor.closeAll();
+    // Unlike a session's remote agent (issue #80's deliberate "this node
+    // exiting does not kill it" — a later reattach still works), a
+    // test/lint/build run has no reattach concept at all: best-effort
+    // cancel every one still in flight so closing this node never leaves a
+    // dangling `sleep`/test-runner process behind (issue #244's own "no
+    // leftover process" acceptance). Fire-and-forget — `close()` itself is
+    // synchronous — but for `local` the kill signal is sent synchronously
+    // inside `cancel()` regardless of whether this promise is awaited.
+    for (const active of this.activeRuns.values()) {
+      active.cancel().catch(() => {});
+    }
+    this.activeRuns.clear();
     this.remoteRunners.clear();
     this.sshExecutionTargets.clear();
     this.sshTransportPool.closeAll().catch(() => {});
@@ -2326,6 +2356,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'test_runner_config_detect':
         this.handleTestRunnerConfigDetect(message);
+        return;
+      case 'run_start':
+        this.handleRunStart(message);
+        return;
+      case 'run_cancel':
+        this.handleRunCancel(message);
         return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
@@ -3954,6 +3990,213 @@ export class NodeDaemon extends EventEmitter {
       sessionId,
       requestId,
       envelope,
+    });
+  }
+
+  /**
+   * A client asked this node to run a session's project's configured
+   * `kind` command and stream its output live (SPEC §7.15; issue #244).
+   * Always replies with `run_started` — `outcome: 'ok'` once this project
+   * has a saved command for `kind` (tracking begins under the `runId` the
+   * request itself named), or `outcome: 'error'` when nothing is
+   * configured for it — so the client never hangs waiting for a reply
+   * that never comes, per `@loombox/protocol`'s `runStartedResultPayloadV1`
+   * doc comment. A permission-policy denial or a real "command not found"
+   * both happen only *after* `outcome: 'ok'`, reported later via
+   * `run_exit` — see `executeRun`. Ignored if `sessionId` isn't one of
+   * this node's own bridges.
+   */
+  private handleRunStart(message: RunStart): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptRunStartPayload(message)
+      .then(async (payload) => {
+        const commands = this.testRunnerConfigStore.get(bridge.session.projectPath);
+        const command = commands[payload.kind];
+        if (!command) {
+          throw new Error(`no ${payload.kind} command configured for this project`);
+        }
+        await this.sendRunStarted(bridge.session.id, message.runId, message.requestId, {
+          outcome: 'ok',
+        });
+        // Fire-and-forget: the run's own lifecycle (streamed output, then
+        // exactly one pass/fail/could-not-start) is reported entirely
+        // through run_output/run_exit inside executeRun, never through
+        // this promise chain — which only ever answers "is there
+        // something to run at all".
+        this.executeRun(bridge, message.runId, command).catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: run ${message.runId} for session ${message.sessionId} failed unexpectedly: ${detail}`,
+          );
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle run_start for session ${message.sessionId} run ${message.runId}: ${detail}`,
+        );
+        this.sendRunStarted(bridge.session.id, message.runId, message.requestId, {
+          outcome: 'error',
+          message: detail,
+        }).catch(() => {
+          /* best-effort error reply; nothing further to do if even this fails */
+        });
+      });
+  }
+
+  private async decryptRunStartPayload(message: RunStart): Promise<RunStartPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<RunStartPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Actually runs `command` for `runId` on `bridge`'s target and streams
+   * the result (SPEC §7.15; issue #244) — called only once `handleRunStart`
+   * already knows a command exists; this is where the permission-policy
+   * check (`evaluateCommandLine`, the same entry point
+   * `PolicyEnforcedPty`/`PolicyEnforcedExecutionTarget` use) and the actual
+   * spawn (`./test-runner-process.ts`'s `startLocalRun`/`startSshRun`)
+   * happen. Registers the run in {@link activeRuns} so
+   * `handleRunCancel`/`close()` can reach it, and always removes it again
+   * the instant `run_exit` is sent, whatever the outcome.
+   */
+  private async executeRun(bridge: SessionBridge, runId: string, command: string): Promise<void> {
+    if (!isSafeRunId(runId)) {
+      await this.sendRunExit(bridge.session.id, runId, {
+        outcome: 'could_not_start',
+        exitCode: null,
+        reason: 'invalid run id',
+      });
+      return;
+    }
+
+    const target = this.targets.find((candidate) => candidate.id === bridge.targetId);
+    if (!target) {
+      await this.sendRunExit(bridge.session.id, runId, {
+        outcome: 'could_not_start',
+        exitCode: null,
+        reason: `no target with id "${bridge.targetId}"`,
+      });
+      return;
+    }
+
+    const policy = this.permissionPolicyStore.get(bridge.session.projectPath);
+    const decision = evaluateCommandLine(policy, command, {
+      resolveRealBasename: target.kind === 'local' ? resolveRealBasename : undefined,
+    });
+    if (!decision.allowed) {
+      const violation: PolicyViolation = {
+        projectPath: bridge.session.projectPath,
+        surface: 'exec',
+        dimension: decision.dimension,
+        rule: decision.rule,
+        matched: decision.matched,
+        command,
+        timestamp: new Date().toISOString(),
+      };
+      logPolicyViolation(violation);
+      await this.sendRunExit(bridge.session.id, runId, {
+        outcome: 'could_not_start',
+        exitCode: null,
+        reason: `policy denied: ${violation.dimension} deny rule "${violation.rule}" matched "${violation.matched}"`,
+      });
+      return;
+    }
+
+    const onOutput = (chunk: Uint8Array): void => {
+      this.queueRunOutput(bridge.session.id, runId, chunk);
+    };
+    const onExit = (result: RunExitResult): void => {
+      this.activeRuns.delete(runId);
+      this.sendRunExit(bridge.session.id, runId, result).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send run_exit for session ${bridge.session.id} run ${runId}: ${detail}`,
+        );
+      });
+    };
+
+    if (target.kind === 'local') {
+      const handle = startLocalRun({ command, onOutput, onExit });
+      this.activeRuns.set(runId, { sessionId: bridge.session.id, cancel: handle.cancel });
+    } else {
+      const transport = await this.getSshTransport(bridge.targetId);
+      const runner = await this.getRemoteRunner(bridge.targetId);
+      const handle = await startSshRun({ runner, transport, runId, command, onOutput, onExit });
+      this.activeRuns.set(runId, { sessionId: bridge.session.id, cancel: handle.cancel });
+    }
+  }
+
+  private async sendRunStarted(
+    sessionId: string,
+    runId: string,
+    requestId: string,
+    payload: RunStartedResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'run_started',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      runId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** Chains this run's `run_output` sends (mirrors `queueTerminalOutput`) so concurrent encrypts can never resolve, and so get sent to the relay, out of the order their chunks arrived in. */
+  private queueRunOutput(sessionId: string, runId: string, chunk: Uint8Array): void {
+    const queueKey = `${sessionId}:${runId}`;
+    const previous = this.runSendQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.sendRunOutput(sessionId, runId, chunk))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to encrypt/send run_output for session ${sessionId} run ${runId}: ${detail}`,
+        );
+      });
+    this.runSendQueues.set(queueKey, next);
+  }
+
+  private async sendRunOutput(sessionId: string, runId: string, chunk: Uint8Array): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: RunOutputPayloadV1 = { data: Buffer.from(chunk).toString('base64') };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'run_output',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      runId,
+      envelope,
+    });
+  }
+
+  private async sendRunExit(
+    sessionId: string,
+    runId: string,
+    payload: RunExitPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({ type: 'run_exit', protocolVersion: PROTOCOL_V1, sessionId, runId, envelope });
+  }
+
+  /** A client asked to cancel an in-flight run (SPEC §7.15; issue #244) — a silent no-op if `runId` is already exited or unknown, mirroring `handleTerminalClose`'s identical guard. Ignored if `sessionId` isn't one of this node's own bridges. The run's own `run_exit` (with `cancelled: true`) is sent from inside `executeRun`'s `onExit`, once the underlying process is confirmed gone — never from here directly. */
+  private handleRunCancel(message: RunCancel): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    const active = this.activeRuns.get(message.runId);
+    if (!active) return;
+    active.cancel().catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to cancel run ${message.runId} for session ${message.sessionId}: ${detail}`,
+      );
     });
   }
 

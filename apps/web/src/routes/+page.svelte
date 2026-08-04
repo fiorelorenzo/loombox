@@ -107,6 +107,7 @@
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
+  import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import ToolCallRow from '$lib/components/ToolCallRow.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
@@ -244,7 +245,7 @@
    * `cockpit-shell.spec.ts` already click them there; they still work
    * clicking the same ids at this panel's new home.
    */
-  type WorkbenchTab = 'files' | 'config';
+  type WorkbenchTab = 'files' | 'config' | 'runner';
   const WORKBENCH_TABS: {
     id: WorkbenchTab;
     label: string;
@@ -260,6 +261,13 @@
       name: 'Project config',
       icon: 'settings',
       testId: 'project-config-toggle',
+    },
+    {
+      id: 'runner',
+      label: 'Runner',
+      name: 'Test/lint/build runner',
+      icon: 'check',
+      testId: 'test-runner-toggle',
     },
   ];
   /** Which of `WORKBENCH_TABS` the right sidebar's content area shows. Not persisted (unlike the sidebar's own open/size below): a fresh reload settling back on Files is the same "no surprise" default the old topbar switch gave, and nothing in the issue's acceptance asks for more. */
@@ -3401,6 +3409,15 @@
                   {connectedAccounts}
                   relayClient={client}
                 />
+              </div>
+            {/if}
+            {#if selectedSessionId}
+              <div
+                class="right-sidebar-panel-inner"
+                hidden={activeWorkbenchTab !== 'runner'}
+                data-testid="test-runner-panel-wrapper"
+              >
+                <RunnerPanel sessionId={selectedSessionId} {client} />
               </div>
             {/if}
           </div>
