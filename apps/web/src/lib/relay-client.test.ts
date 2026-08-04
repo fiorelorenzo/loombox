@@ -5186,6 +5186,186 @@ describe('RelayClient: cross-project attention inbox (SPEC §7.13; issues #167/#
   });
 });
 
+describe('RelayClient: attention inbox agentMessage field (issue #662)', () => {
+  it("carries the agent's last transcript message for both a permission and an awaiting_input item, and recomputes it live when a new chunk arrives", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-message';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-message',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const sessionA = makeSessionMeta({ id: 'sess_inbox_msg_a', accountId });
+    const sessionB = makeSessionMeta({ id: 'sess_inbox_msg_b', accountId });
+    const keyA = await deriveNodeSessionKey(amk, accountId, sessionA.id);
+    const keyB = await deriveNodeSessionKey(amk, accountId, sessionB.id);
+    const privateA = await nodeSeal(
+      sessionA.id,
+      { title: 'Cleanup script', projectPath: '/proj-a' },
+      keyA,
+    );
+    const privateB = await nodeSeal(
+      sessionB.id,
+      { title: 'Draft the reply', projectPath: '/proj-b' },
+      keyB,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionA,
+      privateEnvelope: privateA,
+    });
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session: sessionB,
+      privateEnvelope: privateB,
+    });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-inbox-message',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 2);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 2);
+
+    // Session A: the agent asks before requesting permission — the exact
+    // "answer without being able to read the question" gap issue #662
+    // closes. A trailing thought chunk on the SAME turn must not win over
+    // the real message (`lastAgentMessageText` only looks at
+    // `'agent_message_chunk'` items).
+    const questionEnvelope = await nodeSeal(
+      sessionA.id,
+      {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-a1',
+        messageId: 'msg-a1',
+        text: 'May I delete build/?',
+      },
+      keyA,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      seq: 1,
+      envelope: questionEnvelope,
+    });
+    const thoughtEnvelope = await nodeSeal(
+      sessionA.id,
+      {
+        kind: 'agent_thought_chunk',
+        turnId: 'turn-a1',
+        messageId: 'thought-a1',
+        text: 'weighing the risk',
+      },
+      keyA,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      seq: 2,
+      envelope: thoughtEnvelope,
+    });
+
+    const options = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' as const },
+    ];
+    const permissionEnvelope = await nodeSeal(
+      sessionA.id,
+      { toolCall: { kind: 'tool_call', id: 'tc-a1', title: 'rm -rf build/' }, options },
+      keyA,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionA.id,
+      requestId: 'req-inbox-message-a',
+      envelope: permissionEnvelope,
+    });
+
+    // Session B: the agent's last message, then it goes idle waiting for
+    // the user's reply.
+    const firstReplyEnvelope = await nodeSeal(
+      sessionB.id,
+      {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-b1',
+        messageId: 'msg-b1',
+        text: 'Draft ready, ship it?',
+      },
+      keyB,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      seq: 1,
+      envelope: firstReplyEnvelope,
+    });
+    const statusEnvelope = await nodeSeal(
+      sessionB.id,
+      { kind: 'session_status', status: 'awaiting_input', updatedAt: new Date().toISOString() },
+      keyB,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      seq: 2,
+      envelope: statusEnvelope,
+    });
+
+    const items = await waitForStore(inbox, (value) => value.length === 2);
+    const permissionItem = items.find((item) => item.kind === 'permission');
+    const awaitingItem = items.find((item) => item.kind === 'awaiting_input');
+    expect(permissionItem?.agentMessage).toBe('May I delete build/?');
+    expect(awaitingItem?.agentMessage).toBe('Draft ready, ship it?');
+
+    // The transcript keeps streaming after the item already exists: the
+    // inbox is a pure recompute from live stores, so a later chunk on the
+    // same session must replace, not append to, `agentMessage`.
+    const secondReplyEnvelope = await nodeSeal(
+      sessionB.id,
+      {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-b2',
+        messageId: 'msg-b2',
+        text: 'Actually, hold off on shipping.',
+      },
+      keyB,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: sessionB.id,
+      seq: 3,
+      envelope: secondReplyEnvelope,
+    });
+
+    const updated = await waitForStore(inbox, (value) =>
+      value.some(
+        (item) =>
+          item.kind === 'awaiting_input' && item.agentMessage === 'Actually, hold off on shipping.',
+      ),
+    );
+    expect(updated.find((item) => item.kind === 'permission')?.agentMessage).toBe(
+      'May I delete build/?',
+    );
+  });
+});
+
 describe('RelayClient: attention inbox session-outcome class (SPEC §7.13; issue #167)', () => {
   it('surfaces a session_outcome item live when a session settles to exited or error, replacing it in place, and clears it when the session resumes working', async () => {
     const amk = generateAmk();
