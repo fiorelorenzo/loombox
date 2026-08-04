@@ -55,11 +55,69 @@ export function bashCommand(item: TranscriptToolCallItem): string {
   return item.title ?? '(command unknown)';
 }
 
-/** Best-effort extraction of a tool call's textual output/content, for a raw-content render. */
+/**
+ * A tool call's textual output, extracted from the real ACP wire shape.
+ *
+ * `content` is an ARRAY of `ToolCallContent` entries, not a string. The
+ * client passes it through verbatim (`providers-core/src/client.ts:297`,
+ * `:657`) and only ever reaches into it for the diff case
+ * (`extractDiff`, `:248`, added by the #623 wire audit) — so every text
+ * case landed here and fell through to `JSON.stringify`, printing the
+ * envelope instead of the output. A failed `pnpm typecheck` rendered as
+ * `[{"type":"content","content":{"type":"text","text":"..."}}]`, which is
+ * exactly the case the v7 C2-1 decision exists to make readable.
+ *
+ * Nothing caught it because no fixture ever sends a tool call WITH
+ * content: `echo-acp-agent.mjs` only emits message chunks, and every e2e
+ * tool call omits the field. See issue #689.
+ *
+ * Handled entries, per the ACP schema:
+ * - `{ type: 'content', content: { type: 'text', text } }` — the common one.
+ * - `{ type: 'content', content: { type: 'resource', resource: { text } } }`.
+ * - a bare `{ type: 'text', text }`, which some agents emit unwrapped.
+ * - `{ type: 'terminal', terminalId }` — no inline text to show; skipped.
+ *
+ * A genuinely unrecognised shape still falls back to `JSON.stringify`
+ * rather than silently rendering nothing: showing an ugly blob beats
+ * dropping a failure's only explanation.
+ */
 export function toolCallOutputText(content: unknown): string {
-  if (content === undefined) return '';
+  if (content === undefined || content === null) return '';
   if (typeof content === 'string') return content;
-  return JSON.stringify(content, null, 2);
+
+  const entries = Array.isArray(content) ? content : [content];
+  const parts: string[] = [];
+  let sawUnknown = false;
+
+  for (const entry of entries) {
+    const text = entryText(entry);
+    if (text === undefined) sawUnknown = true;
+    else if (text !== '') parts.push(text);
+  }
+
+  if (parts.length > 0) return parts.join('\n');
+  return sawUnknown ? JSON.stringify(content, null, 2) : '';
+}
+
+/** One `ToolCallContent` entry's text: `''` when it carries none by design (a terminal reference), `undefined` when the shape is unrecognised. */
+function entryText(entry: unknown): string | undefined {
+  if (typeof entry === 'string') return entry;
+  if (typeof entry !== 'object' || entry === null) return undefined;
+
+  const outer = entry as { type?: unknown; text?: unknown; content?: unknown };
+  if (outer.type === 'text' && typeof outer.text === 'string') return outer.text;
+  if (outer.type === 'terminal') return '';
+  if (outer.type === 'diff') return '';
+  if (outer.type !== 'content' && outer.content === undefined) return undefined;
+
+  const inner = outer.content as { type?: unknown; text?: unknown; resource?: unknown } | undefined;
+  if (typeof inner === 'string') return inner;
+  if (typeof inner !== 'object' || inner === null) return undefined;
+  if (inner.type === 'text' && typeof inner.text === 'string') return inner.text;
+
+  const resource = inner.resource as { text?: unknown } | undefined;
+  if (typeof resource?.text === 'string') return resource.text;
+  return undefined;
 }
 
 /** One key/value row of a formatted `rawInput` fallback (see {@link classifyRawInput}). */

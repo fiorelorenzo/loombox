@@ -91,6 +91,54 @@ describe('toolCallOutputText', () => {
     expect(toolCallOutputText({ exitCode: 0 })).toBe('{\n  "exitCode": 0\n}');
   });
 
+  // Issue #689: `content` on the ACP wire is an ARRAY of `ToolCallContent`,
+  // and every one of these used to render as a `JSON.stringify` envelope.
+  it('extracts text from the ACP content array, the real wire shape', () => {
+    expect(
+      toolCallOutputText([
+        { type: 'content', content: { type: 'text', text: 'src/a.ts(4,9): error TS2304' } },
+      ]),
+    ).toBe('src/a.ts(4,9): error TS2304');
+  });
+
+  it('joins several content entries in order', () => {
+    expect(
+      toolCallOutputText([
+        { type: 'content', content: { type: 'text', text: 'first' } },
+        { type: 'content', content: { type: 'text', text: 'second' } },
+      ]),
+    ).toBe('first\nsecond');
+  });
+
+  it('reads a resource entry through to its own text', () => {
+    expect(
+      toolCallOutputText([
+        { type: 'content', content: { type: 'resource', resource: { text: 'file body' } } },
+      ]),
+    ).toBe('file body');
+  });
+
+  it('accepts a bare text block, which some agents emit unwrapped', () => {
+    expect(toolCallOutputText([{ type: 'text', text: 'bare' }])).toBe('bare');
+  });
+
+  it('renders nothing for a terminal reference, which carries no inline text', () => {
+    expect(toolCallOutputText([{ type: 'terminal', terminalId: 't1' }])).toBe('');
+  });
+
+  it('keeps the text when a diff entry sits beside it, rather than dropping both', () => {
+    expect(
+      toolCallOutputText([
+        { type: 'diff', path: '/a.ts', oldText: 'a', newText: 'b' },
+        { type: 'content', content: { type: 'text', text: 'applied' } },
+      ]),
+    ).toBe('applied');
+  });
+
+  it('still stringifies a genuinely unrecognised shape, rather than swallowing it', () => {
+    expect(toolCallOutputText([{ type: 'something-new', payload: 1 }])).toContain('something-new');
+  });
+
   it('returns "" for undefined content', () => {
     expect(toolCallOutputText(undefined)).toBe('');
   });
