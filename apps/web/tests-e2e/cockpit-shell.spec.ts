@@ -1038,6 +1038,74 @@ test.describe('cockpit shell', () => {
     expect(screenshotBefore.equals(screenshotAfter)).toBe(false);
   });
 
+  test('the terminal dock is one frame, not two: the word "Terminal" appears once, no hairline, a distinct surface from the canvas, and the resize edge still works from the keyboard (design spec §4 D1-2/D2-2, issue #669)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const canvas = page.locator('.canvas');
+    const toggle = page.getByTestId('terminal-dock-toggle');
+    const dock = page.getByTestId('terminal-dock');
+    const handle = page.getByTestId('terminal-dock-resize-handle');
+
+    await toggle.click();
+    await expect(dock).toBeVisible();
+
+    // One frame, not two (D1-2's own acceptance line): the terminal used
+    // to draw its own titlebar saying "Terminal" inside a dock that
+    // already says it via this toggle. Scoped to the dock + toggle region
+    // (not the whole page — "Terminal" legitimately appears elsewhere,
+    // e.g. a `tool-bash` call's label) so this only proves the ONE place
+    // this issue is about. Joined with a space, not bare concatenation —
+    // otherwise the toggle's own trailing "Terminal" glues onto the
+    // dock's leading text with no word boundary between them, hiding a
+    // real second occurrence from `\bTerminal\b` just as easily as it
+    // would hide a real ABSENCE of one.
+    const dockRegionText = `${await toggle.innerText()} ${await dock.innerText()}`;
+    const terminalOccurrences = dockRegionText.match(/\bTerminal\b/g) ?? [];
+    expect(terminalOccurrences).toHaveLength(1);
+
+    // The one thin bar replacing the old card+titlebar — carries status,
+    // not a redundant "Terminal" label of its own.
+    await expect(page.getByTestId('terminal-bar')).toBeVisible();
+    await expect(page.getByTestId('terminal-bar-status')).toBeVisible();
+
+    // D2-2: no hairline between the canvas and the dock, and the dock
+    // reads as a genuinely different surface (`--color-rail`, one shade
+    // off the canvas's own `--color-bg`), not just a missing border on an
+    // otherwise-identical background.
+    const dockStyle = await dock.evaluate((el) => {
+      const computed = getComputedStyle(el);
+      return { borderTopWidth: computed.borderTopWidth, background: computed.backgroundColor };
+    });
+    expect(dockStyle.borderTopWidth).toBe('0px');
+    const canvasBackground = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(dockStyle.background).not.toBe(canvasBackground);
+
+    // With no hairline, the resize handle is the only proof this edge is
+    // resizable — it must still be genuinely discoverable on hover (a
+    // real, visible style change, not just an invisible bigger hit area)
+    // and still actually resize the dock, both with a mouse (covered by
+    // the drag test above) and from the keyboard.
+    const backgroundBeforeHover = await handle.evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+    await handle.hover();
+    await expect(async () => {
+      const backgroundOnHover = await handle.evaluate((el) => getComputedStyle(el).backgroundColor);
+      expect(backgroundOnHover).not.toBe(backgroundBeforeHover);
+    }).toPass({ timeout: 2_000 });
+
+    const heightBefore = (await dock.boundingBox())?.height ?? 0;
+    await handle.focus();
+    await page.keyboard.press('ArrowUp');
+    await expect(async () => {
+      const heightAfter = (await dock.boundingBox())?.height ?? 0;
+      expect(heightAfter).toBeGreaterThan(heightBefore);
+    }).toPass({ timeout: 2_000 });
+  });
+
   test("dragging the terminal dock's top edge resizes it and xterm reflows to real cols/rows, not just the CSS height (issue #572)", async ({
     page,
     loombox,

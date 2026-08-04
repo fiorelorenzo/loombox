@@ -5298,6 +5298,12 @@
      `InteractiveTerminal` on a collapse (issue #572's own acceptance
      line: "collapsing and reopening... does not lose scrollback or kill
      the PTY"). */
+  /* D2-2 (design spec §4, issue #669): sits on `--color-rail` — one shade
+     off the canvas's own `--color-bg` — so the seam against the canvas is
+     a colour step, not a hairline (see `.terminal-dock.terminal-dock-open`
+     below for the border removal this pairs with). `--color-rail` is the
+     same token the sessions sidebar already uses for the identical "shell
+     surface, distinct from the canvas" role. */
   .terminal-dock {
     position: relative;
     flex-shrink: 0;
@@ -5311,19 +5317,27 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--color-surface);
+    background: var(--color-rail);
     transition: height var(--duration-base) var(--ease-shuttle);
   }
 
-  /* `padding`/`border-top` live here, not on `.terminal-dock` itself: with
-     `box-sizing: border-box` (`typography.css`), a border+padding a `height:
-     0` box can't shrink INTO still forces a rendered floor of
-     `border + padding` (a content box can't go negative) — a few visible
-     pixels of "closed" chrome that both broke `height: 0` as a real "gone"
-     signal and was exactly what the drag-resize/mobile-sheet e2e specs
-     caught as "collapsing does nothing" (issue #572). Scoping them to
-     `.terminal-dock-open` makes the CLOSED box genuinely `0×width`, no
-     chrome left over.
+  /* `padding` lives here, not on `.terminal-dock` itself: with
+     `box-sizing: border-box` (`typography.css`), padding a `height: 0`
+     box can't shrink INTO still forces a rendered floor of that padding
+     (a content box can't go negative) — a few visible pixels of "closed"
+     chrome that broke `height: 0` as a real "gone" signal, exactly what
+     the drag-resize/mobile-sheet e2e specs caught as "collapsing does
+     nothing" (issue #572). Scoping it to `.terminal-dock-open` makes the
+     CLOSED box genuinely `0×width`, no chrome left over.
+
+     No `border-top` here (D2-2, issue #669): the hairline between the
+     canvas and this dock is gone on purpose — `.terminal-dock`'s own
+     `--color-rail` background above is the seam now, a colour step
+     against the canvas's `--color-bg` rather than a line. With no line,
+     `.terminal-dock-resize-handle` below is the ONLY proof this edge is
+     resizable, which is why that rule keeps its hover/focus-visible
+     highlight — removing the border must never mean the handle goes
+     invisible too.
 
      The class is `terminal-dock-open`, not the shorter `open` a first
      draft used: `AttentionInbox.svelte` already owns a GLOBAL (unscoped)
@@ -5339,7 +5353,6 @@
      file's OTHER dock classes (`sheet-open`, `resizing`) already are. */
   .terminal-dock.terminal-dock-open {
     padding: var(--space-2xs);
-    border-top: 1px solid var(--color-border);
   }
 
   .terminal-dock.resizing {
@@ -5529,6 +5542,12 @@
       bottom: var(--tabbar-height);
       z-index: var(--z-sticky);
       height: min(60vh, 32rem) !important;
+      /* A dismissible overlay sheet is the `floating` elevation tier
+         (same tier `Dialog`/`Card`'s own `elevation="floating"` use) —
+         `box-shadow`, not the D2-2 `--color-rail` colour-step alone,
+         separates it from the page behind it here, since this variant
+         sits ABOVE page content rather than beside it inline. */
+      box-shadow: var(--shadow-lg);
       /* `100%` alone (the pattern `.sidebar`'s own `translateX(-100%)`
          uses) only clears an edge that sits FLUSH with the viewport — this
          box's resting `bottom` is already inset by `--tabbar-height`
@@ -5539,15 +5558,6 @@
          `+ var(--tabbar-height)` clears that gap too. */
       transform: translateY(calc(100% + var(--tabbar-height)));
       transition: transform var(--duration-base) var(--ease-shuttle);
-    }
-
-    /* `.terminal-dock-open`, not the bare `.terminal-dock` above:
-       `border-top-color` alone loses to `.terminal-dock.terminal-dock-open`'s
-       own full `border-top` shorthand (higher specificity) otherwise, and
-       this dock's border only exists at all once that class applies it
-       (see that rule's own doc comment). */
-    .terminal-dock.terminal-dock-open {
-      border-top-color: var(--color-border-strong);
     }
 
     .terminal-dock.sheet-open {

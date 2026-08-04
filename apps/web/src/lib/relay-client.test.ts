@@ -4454,9 +4454,20 @@ describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#
       sessionId: session.id,
       terminalId,
       requestId: openRequest.requestId,
-      envelope: await nodeSeal(session.id, { outcome: 'ok' }, key),
+      envelope: await nodeSeal(
+        session.id,
+        { outcome: 'ok', cwd: '/home/dev/project', shell: '/bin/zsh' },
+        key,
+      ),
     });
     await waitForStore(terminals, (value) => value.get(terminalId)?.status === 'open');
+    // Issue #669: the terminal dock's chrome reads these off the store —
+    // real values carried straight from the node's own reply, never guessed
+    // client-side.
+    expect(get(terminals).get(terminalId)).toMatchObject({
+      cwd: '/home/dev/project',
+      shell: '/bin/zsh',
+    });
 
     // Output: node -> client, decrypted and fanned out to onTerminalOutput.
     const received: Uint8Array[] = [];

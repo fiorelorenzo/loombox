@@ -18,12 +18,24 @@
    * Motion/focus mirror `Button`'s exactly: `tension-press` on `:active`,
    * a `--duration-fast` hover shift, `:focus-visible` always resolves to
    * `--color-focus-ring` (never accent).
+   *
+   * `size` (issue #669's terminal tab strip, mirroring `Button`'s own
+   * `size` precedent): `'md'` is the default 32px hit target described
+   * above; `'sm'` is a compact 24px variant for a control that has to sit
+   * inside an already-tight row (a per-tab close control in a terminal
+   * dock's thin bar) without a caller fighting this root rule's own
+   * `width`/`height` via a `:global()` override, which a colliding
+   * property declared there would silently lose to this file's own
+   * higher-specificity scoped rule (issue #665's
+   * `primitive-override-scope.test.ts` guards exactly this).
    */
   import type { Snippet } from 'svelte';
 
   interface Props {
     /** Accessible name — required, since the button's only visible content is an icon. */
     label: string;
+    /** Omit for the default 32px hit target; `'sm'` is a compact 24px variant (see this file's own doc comment, issue #669). */
+    size?: 'sm' | 'md';
     type?: 'button' | 'submit';
     disabled?: boolean;
     /** Omit for a plain action button; set for a real toggle (drives `aria-pressed`). */
@@ -47,6 +59,7 @@
 
   const {
     label,
+    size = 'md',
     type = 'button',
     disabled = false,
     pressed,
@@ -60,7 +73,7 @@
 
 <button
   {type}
-  class={`ui-icon-button ${className}`.trim()}
+  class={`ui-icon-button ui-icon-button-${size} ${className}`.trim()}
   class:ui-icon-button-pressed={pressed === true}
   {disabled}
   aria-label={label}
@@ -82,8 +95,6 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 2rem;
-    height: 2rem;
     padding: 0;
     border-radius: var(--radius-md);
     border: 1px solid transparent;
@@ -96,12 +107,30 @@
       transform var(--duration-instant) var(--ease-beat);
   }
 
+  .ui-icon-button-md {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  /* Compact variant (issue #669): a per-tab close control in a terminal
+     dock's thin bar, where the default 32px hit target would dominate a
+     row that's already tight on both axes. */
+  .ui-icon-button-sm {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
   .ui-icon-button-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 1.125rem;
     height: 1.125rem;
+  }
+
+  .ui-icon-button-sm .ui-icon-button-icon {
+    width: 0.8rem;
+    height: 0.8rem;
   }
 
   .ui-icon-button:not(:disabled):hover {
@@ -147,11 +176,19 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same 44px
-     coarse-pointer convention `CopyButton`/`PermissionCard` already use. */
+     coarse-pointer convention `CopyButton`/`PermissionCard` already use.
+     `sm` gets its own, smaller-but-still-touchable floor (issue #669): a
+     terminal tab strip's close controls sit close together, and 44px each
+     would make them overlap; 36px keeps them tappable without colliding. */
   @media (pointer: coarse) {
-    .ui-icon-button {
+    .ui-icon-button-md {
       width: 2.75rem;
       height: 2.75rem;
+    }
+
+    .ui-icon-button-sm {
+      width: 2.25rem;
+      height: 2.25rem;
     }
   }
 </style>
