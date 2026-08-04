@@ -9,17 +9,20 @@ import {
   JiraTrackerAccessError,
   JiraTrackerBackend,
   JiraTrackerRequestError,
+  JiraTrackerTransitionValidationError,
   type JiraTrackerBackendOptions,
 } from './jira-tracker-backend';
 
 /**
- * `JiraTrackerBackend` (SPEC §7.10, issue #214) against a stubbed
+ * `JiraTrackerBackend` (SPEC §7.10, issues #214/#216) against a stubbed
  * `fetchImpl` only — never the real Jira API, same convention as
- * `./github-tracker-backend.test.ts` (#213). Covers the required methods,
- * the `resolveCredential`-only credential boundary, `capabilities`, and
- * the four real API details issue #214 calls out by name: `search/jql`
- * (not the deprecated `search`), ADF comment/description bodies, both
- * REST bases, and the create/update follow-up `get`.
+ * `./github-tracker-backend.test.ts` (#213/#215). Covers the required
+ * methods, the `resolveCredential`-only credential boundary,
+ * `capabilities`, the four real API details issue #214 calls out by name
+ * (`search/jql` not the deprecated `search`, ADF comment/description
+ * bodies, both REST bases, the create/update follow-up `get`), and #216's
+ * discovered-workflow transitions (`listTransitions`/`transition`,
+ * required-fields signalling, and the typed `400` validation error).
  */
 
 const AUTH_HEADER = 'Bearer atlassian-oauth-token';
@@ -91,12 +94,12 @@ function backend(
   });
 }
 
-describe('JiraTrackerBackend.capabilities (issue #214 slice 1)', () => {
-  it('reports comments/labels true, transitions/boards/sprints/milestones/customFields false', () => {
+describe('JiraTrackerBackend.capabilities (issues #214/#216)', () => {
+  it('reports comments/labels/transitions true, boards/sprints/milestones/customFields false', () => {
     const svc = backend(vi.fn());
     expect(svc.capabilities).toEqual({
       comments: true,
-      transitions: false,
+      transitions: true,
       boards: false,
       sprints: false,
       labels: true,
@@ -499,5 +502,131 @@ describe('JiraTrackerBackend two REST bases (issue #214 acceptance)', () => {
     const item = await svc.get(binding(), 'LB-213');
 
     expect(item.url).toBe(`${SITE_BASE}/browse/LB-213`);
+  });
+});
+
+describe('JiraTrackerBackend.listTransitions/transition (issue #216 acceptance)', () => {
+  it("listTransitions() GETs .../issue/{key}/transitions and maps id/name/requiresFields from Jira's own discovered workflow", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe(`${SITE_BASE}/rest/api/3/issue/LB-213/transitions`);
+      expect(init?.method).toBeUndefined();
+      return jsonResponse(200, {
+        transitions: [
+          { id: '11', name: 'To Do', fields: {} },
+          {
+            id: '21',
+            name: 'Done',
+            fields: { resolution: { required: true, name: 'Resolution' } },
+          },
+        ],
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    const transitions = await svc.listTransitions(binding(), 'LB-213');
+
+    expect(transitions).toEqual([
+      { id: '11', name: 'To Do', requiresFields: false },
+      { id: '21', name: 'Done', requiresFields: true },
+    ]);
+  });
+
+  it('listTransitions() rejects a binding whose target is not a JiraTarget', async () => {
+    const svc = backend(vi.fn());
+    const githubShapedBinding = {
+      connectionId: 'conn_1',
+      target: { owner: 'fiorelorenzo', repo: 'loombox' },
+    } as unknown as TrackerBinding;
+
+    await expect(svc.listTransitions(githubShapedBinding, 'LB-213')).rejects.toBeInstanceOf(
+      JiraTrackerAccessError,
+    );
+  });
+
+  it('transition() POSTs the discovered transition id to .../transitions', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe(`${SITE_BASE}/rest/api/3/issue/LB-213/transitions`);
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ transition: { id: '21' } });
+      return emptyResponse(204);
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(svc.transition(binding(), 'LB-213', '21')).resolves.toBeUndefined();
+  });
+
+  it('transition() forwards options.fields verbatim and converts options.comment to the same ADF shape addComment uses', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe(`${SITE_BASE}/rest/api/3/issue/LB-213/transitions`);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).toEqual({
+        transition: { id: '21' },
+        fields: { resolution: { name: 'Done' } },
+        update: {
+          comment: [
+            {
+              add: {
+                body: {
+                  type: 'doc',
+                  version: 1,
+                  content: [
+                    { type: 'paragraph', content: [{ type: 'text', text: 'closing out' }] },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      });
+      return emptyResponse(204);
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.transition(binding(), 'LB-213', '21', {
+        fields: { resolution: { name: 'Done' } },
+        comment: 'closing out',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("transition() surfaces Jira's own 400 required-field validation as a typed error, never a silent success", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(400, {
+        errorMessages: [],
+        errors: { resolution: 'Resolution is required' },
+      }),
+    );
+    const svc = backend(fetchImpl);
+
+    const error = await svc
+      .transition(binding(), 'LB-213', '21')
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(JiraTrackerTransitionValidationError);
+    expect((error as JiraTrackerTransitionValidationError).errors).toEqual({
+      resolution: 'Resolution is required',
+    });
+  });
+
+  it('listTransitions()/transition() route through both REST bases like every other call', async () => {
+    const oauthFetch = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toBe(`${OAUTH_BASE}/rest/api/3/issue/LB-213/transitions`);
+      return jsonResponse(200, { transitions: [{ id: '11', name: 'To Do' }] });
+    });
+    const oauthSvc = backend(oauthFetch, {
+      resolveCredential: async () => ({ baseUrl: OAUTH_BASE, authHeader: 'Bearer oauth' }),
+    });
+    await oauthSvc.listTransitions(binding(), 'LB-213');
+    expect(oauthFetch).toHaveBeenCalledTimes(1);
+
+    const siteFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe(`${SITE_BASE}/rest/api/3/issue/LB-213/transitions`);
+      expect(init?.method).toBe('POST');
+      return emptyResponse(204);
+    });
+    const siteSvc = backend(siteFetch);
+    await siteSvc.transition(binding(), 'LB-213', '11');
+    expect(siteFetch).toHaveBeenCalledTimes(1);
   });
 });

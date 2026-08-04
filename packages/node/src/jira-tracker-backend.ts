@@ -1,20 +1,21 @@
 /* ---------------------------------------------------------------------
- * The Jira `TrackerBackend` — live tracker slice 1 (SPEC §7.10 "Jira, full
- * feature set... two separate REST bases... Use `POST /rest/api/3/search/
- * jql`... comments and transition fields... are Atlassian Document Format
- * (ADF)... For OAuth 3LO connections, every call... is routed through
- * `https://api.atlassian.com/ex/jira/{cloudId}/rest/...`... for API-token
- * connections, calls go straight to the site"; issue #214). Implements
- * `@loombox/shared`'s `TrackerBackend` extension point (#209) for
- * `list`/`get`/`create`/`update`/`addComment`/`listBindings` against a
- * bound Jira Cloud project. Non-goals, deferred to later slices/issues:
- * workflow transitions (`listTransitions`/`transition`, #216) and
- * boards/sprints (`listBoards`/`listSprints`/`moveToSprint`, #217) — none
- * of those optional methods are implemented here, and `capabilities`
- * reports all three as `false`.
+ * The Jira `TrackerBackend` — live tracker slices 1 + 2 (SPEC §7.10 "Jira,
+ * full feature set... two separate REST bases... Use `POST /rest/api/3/
+ * search/jql`... comments and transition fields... are Atlassian Document
+ * Format (ADF)... discover transitions via `GET .../issue/{key}/
+ * transitions` before posting one... For OAuth 3LO connections, every
+ * call... is routed through `https://api.atlassian.com/ex/jira/{cloudId}/
+ * rest/...`... for API-token connections, calls go straight to the site";
+ * issues #214/#216). Implements `@loombox/shared`'s `TrackerBackend`
+ * extension point (#209) for `list`/`get`/`create`/`update`/`addComment`/
+ * `listBindings` (slice 1, #214) plus `listTransitions`/`transition`
+ * (slice 2, #216) against a bound Jira Cloud project. Non-goal, deferred
+ * to a later slice: boards/sprints (`listBoards`/`listSprints`/
+ * `moveToSprint`, #217) — none of those optional methods is implemented
+ * here, and `capabilities` still reports both as `false`.
  *
- * **Clean room.** Designed from SPEC §7.10 and issue #214 only, plus the
- * live public Jira Cloud REST v3 docs
+ * **Clean room.** Designed from SPEC §7.10 and issues #214/#216 only,
+ * plus the live public Jira Cloud REST v3 docs
  * (`developer.atlassian.com/cloud/jira/platform/rest/v3/...`) and
  * Atlassian's own OAuth docs
  * (`developer.atlassian.com/cloud/oauth/getting-started/making-calls-to-api/`)
@@ -44,7 +45,7 @@
  * lives in `@loombox/node`, which is not in `apps/web`'s dependency graph.
  *
  * **Real-world Jira behaviour handled here, each with its own test**
- * (issue #214's acceptance):
+ * (issue #214's acceptance, plus #216's below):
  * - Search uses `POST /rest/api/3/search/jql` — the modern
  *   token-paginated (`nextPageToken`/`isLast`, no `total`) replacement for
  *   the deprecated `GET`/`POST /rest/api/3/search` — never the deprecated
@@ -60,11 +61,12 @@
  * - Two REST bases: this backend only ever composes URLs from
  *   `credential.baseUrl` — it is host-agnostic by construction, so both
  *   `https://api.atlassian.com/ex/jira/{cloudId}` (OAuth 3LO) and a plain
- *   site host (API token) work identically. OAuth 3LO Jira connect (#226)
- *   does not exist yet (per #225), so the OAuth-base test constructs a
- *   `JiraCredential` with that host shape directly rather than going
- *   through a real connect flow — proving this backend's own routing is
- *   correct independent of #226 landing.
+ *   site host (API token) work identically for every call, including
+ *   slice 2's `listTransitions`/`transition`. OAuth 3LO Jira connect
+ *   (#226) does not exist yet (per #225), so the OAuth-base tests
+ *   construct a `JiraCredential` with that host shape directly rather than
+ *   going through a real connect flow — proving this backend's own
+ *   routing is correct independent of #226 landing.
  * - `POST /rest/api/3/issue` (create) returns only `{id, key, self}`, and
  *   `PUT /rest/api/3/issue/{key}` (update) returns `204 No Content` —
  *   neither returns the full issue. Both `create` and `update` follow up
@@ -73,6 +75,23 @@
  * - A `404` is reported as `JiraTrackerAccessError`, never "gone" — Jira,
  *   like GitHub, does not distinguish "does not exist" from "you cannot
  *   see it".
+ * - Jira's workflow is per-project/per-issue-type, unlike GitHub's fixed
+ *   open/closed pair (#215): `listTransitions` always discovers the
+ *   *actually available* moves from `GET .../issue/{key}/transitions`
+ *   rather than assuming any hardcoded set, and `transition` posts the
+ *   chosen `id` back via `POST .../issue/{key}/transitions`. A transition
+ *   that requires fields Jira's own workflow screen would otherwise
+ *   collect (most commonly `resolution` on a "Done"-category move) is a
+ *   real, common case, not an edge case: `listTransitions` reports it via
+ *   `TrackerTransition.requiresFields` (read straight off Jira's own
+ *   per-transition `fields` map, `required: true`), and `transition`
+ *   accepts an optional fourth `options.fields`/`options.comment`
+ *   parameter (the latter ADF-converted like every other comment body
+ *   here) to satisfy it. If a caller posts a transition anyway without
+ *   the fields Jira's workflow demands, Jira's own `400` validation
+ *   response is surfaced as a typed `JiraTrackerTransitionValidationError`
+ *   (carrying the per-field messages Jira returned) — never silently
+ *   dropped, and never reported as success.
  * --------------------------------------------------------------------- */
 
 import type {
@@ -82,6 +101,7 @@ import type {
   TrackerItemLive,
   TrackerListFilter,
   TrackerListPage,
+  TrackerTransition,
 } from '@loombox/shared';
 import type { JiraTarget } from '@loombox/protocol';
 
@@ -116,6 +136,26 @@ export class JiraTrackerRequestError extends Error {
     super(`jira tracker: HTTP ${status} from ${url}`);
     this.name = 'JiraTrackerRequestError';
     this.status = status;
+  }
+}
+
+/** Raised when `POST .../issue/{key}/transitions` fails Jira's own workflow-screen field validation (HTTP `400` with an `errors` map) — most commonly a required `resolution` on a "Done"-category move that wasn't supplied via `transition`'s `options.fields`. Distinguished from the generic `JiraTrackerRequestError` so a caller can react to it specifically (e.g. re-prompt for the missing fields) rather than treating it as an outage; `errors`/`errorMessages` carry Jira's own per-field/general messages verbatim. Never silently swallowed — a transition that needed fields it didn't get always surfaces this, never a bare success. */
+export class JiraTrackerTransitionValidationError extends Error {
+  readonly errors: Readonly<Record<string, string>>;
+  readonly errorMessages: readonly string[];
+  constructor(transitionId: string, errors: Record<string, string>, errorMessages: string[]) {
+    const details = [
+      ...errorMessages,
+      ...Object.entries(errors).map(([field, msg]) => `${field}: ${msg}`),
+    ];
+    super(
+      `jira tracker: transition '${transitionId}' rejected by Jira's workflow validation` +
+        (details.length > 0 ? ` — ${details.join('; ')}` : '') +
+        ' (call listTransitions() to discover which fields this move needs, then pass options.fields/options.comment)',
+    );
+    this.name = 'JiraTrackerTransitionValidationError';
+    this.errors = errors;
+    this.errorMessages = errorMessages;
   }
 }
 
@@ -291,11 +331,49 @@ function issueApiUrl(baseUrl: string, externalId: string): string {
   return `${baseUrl}/rest/api/3/issue/${encodeURIComponent(externalId)}`;
 }
 
+function transitionsApiUrl(baseUrl: string, externalId: string): string {
+  return `${issueApiUrl(baseUrl, externalId)}/transitions`;
+}
+
+/** The one field this backend reads off each transition Jira's discovery endpoint returns — `fields`, when present, is Jira's own workflow-screen field map (`{fieldKey: {required, ...}}`); everything else `GET .../transitions` returns (`to`, `hasScreen`, `isGlobal`, ...) is UI chrome this backend has no use for. */
+interface JiraTransitionPayload {
+  id: string;
+  name: string;
+  fields?: Record<string, { required?: boolean }>;
+}
+
+/** True when Jira's own per-transition `fields` map marks at least one field `required: true` — the signal `listTransitions` surfaces as `TrackerTransition.requiresFields` so a caller knows to pass `transition`'s `options.fields` (e.g. `{resolution: {name: 'Done'}}`) before posting, rather than discovering it only after a `400`. */
+function transitionRequiresFields(fields: JiraTransitionPayload['fields']): boolean {
+  if (!fields) return false;
+  return Object.values(fields).some((field) => field?.required === true);
+}
+
+/** Optional extras `transition` forwards on top of the chosen `transitionId` (issue #216). Neither is validated here — Jira's own `400` response is what surfaces a still-missing required field, as `JiraTrackerTransitionValidationError`. */
+export interface JiraTransitionOptions {
+  /** Extra Jira `fields` to submit with the transition, forwarded exactly as given — e.g. `{resolution: {name: 'Done'}}`. Unlike `description` in `pickIssueWriteFields`, no ADF conversion happens here: a transition's required fields (resolution, custom fields, ...) are never a plain-text/ADF shape the way `description`/comment bodies are. */
+  readonly fields?: Record<string, unknown>;
+  /** A plain-text comment to attach as part of the transition, converted to ADF the same way `addComment`'s `body` is (`textToAdf`) and sent as Jira's own `update.comment: [{add: {body}}]` shape — the transition-time equivalent of a separate `addComment` call. */
+  readonly comment?: string;
+}
+
+function buildTransitionRequestBody(
+  transitionId: string,
+  options: JiraTransitionOptions | undefined,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { transition: { id: transitionId } };
+  if (options?.fields) body.fields = options.fields;
+  if (options?.comment !== undefined) {
+    body.update = { comment: [{ add: { body: textToAdf(options.comment) } }] };
+  }
+  return body;
+}
+
 async function jiraRequest(
   fetchImpl: typeof fetch,
   credential: JiraCredential,
   url: string,
   init: RequestInit = {},
+  skipStatuses: readonly number[] = [],
 ): Promise<Response> {
   const response = await fetchImpl(url, {
     ...init,
@@ -305,6 +383,11 @@ async function jiraRequest(
       ...(init.headers as Record<string, string> | undefined),
     },
   });
+
+  // A caller that needs to inspect a specific non-2xx status itself (e.g.
+  // `transition`'s own `400` field-validation body) opts out of the
+  // generic handling below for just that status, via `skipStatuses`.
+  if (skipStatuses.includes(response.status)) return response;
 
   // Jira, like GitHub, returns 404 rather than 403 when the authenticated
   // credential has no access to a project/issue — it never confirms the
@@ -328,23 +411,24 @@ export interface JiraTrackerBackendOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** The Jira `TrackerBackend` (SPEC §7.10, issue #214). One instance is reusable across every bound project — `resolveCredential` is re-invoked per call rather than cached on the instance, same rationale as `GithubTrackerBackend`. */
+/** The Jira `TrackerBackend` (SPEC §7.10, issues #214/#216). One instance is reusable across every bound project — `resolveCredential` is re-invoked per call rather than cached on the instance, same rationale as `GithubTrackerBackend`. */
 export class JiraTrackerBackend implements TrackerBackend {
   readonly id = 'jira' as const;
 
   /**
-   * Slice 1 (issue #214): issues + comments only. `transitions`/`boards`/
-   * `sprints` land in #216/#217. `milestones` stays `false`: Jira's
-   * nearest analogue, `fixVersions`, isn't read or written by this slice.
-   * `customFields` stays `false` too — `TrackerItemLive.fields` only ever
-   * carries the fixed set `toTrackerItem` maps, and `pickIssueWriteFields`
-   * only ever forwards `ISSUE_WRITE_FIELDS`, so an arbitrary
-   * `customfield_XXXXX` key is neither read nor writable yet, unlike
-   * GitHub where `customFields: false` is permanent (no analogue at all).
+   * Slices 1+2 (issues #214/#216): issues, comments, and discovered
+   * workflow transitions. `boards`/`sprints` land in #217. `milestones`
+   * stays `false`: Jira's nearest analogue, `fixVersions`, isn't read or
+   * written by this slice. `customFields` stays `false` too —
+   * `TrackerItemLive.fields` only ever carries the fixed set
+   * `toTrackerItem` maps, and `pickIssueWriteFields` only ever forwards
+   * `ISSUE_WRITE_FIELDS`, so an arbitrary `customfield_XXXXX` key is
+   * neither read nor writable yet, unlike GitHub where `customFields:
+   * false` is permanent (no analogue at all).
    */
   readonly capabilities: TrackerBackendCapabilities = {
     comments: true,
-    transitions: false,
+    transitions: true,
     boards: false,
     sprints: false,
     labels: true,
@@ -518,5 +602,80 @@ export class JiraTrackerBackend implements TrackerBackend {
         body: JSON.stringify({ body: textToAdf(body) }),
       },
     );
+  }
+
+  /**
+   * The moves actually available from this issue's *current* status
+   * (SPEC §7.10, issue #216) — discovered via `GET .../issue/{key}/
+   * transitions`, Jira's own reflection of its per-project/per-issue-type
+   * workflow, never a hardcoded set (contrast GitHub's fixed two-state
+   * pair, `./github-tracker-backend.ts`). `requiresFields` surfaces
+   * whether Jira's own workflow screen would otherwise collect required
+   * fields for this move (most commonly `resolution`) — this backend
+   * skips no such transition and drops no such requirement; a caller
+   * that ignores the flag simply gets `transition`'s own
+   * `JiraTrackerTransitionValidationError` when it posts.
+   */
+  async listTransitions(binding: TrackerBinding, externalId: string): Promise<TrackerTransition[]> {
+    requireJiraTarget(binding.target);
+    const credential = await this.credential(binding.connectionId);
+    const response = await jiraRequest(
+      this.fetchImpl,
+      credential,
+      transitionsApiUrl(credential.baseUrl, externalId),
+    );
+    const body = (await response.json()) as { transitions: JiraTransitionPayload[] };
+    return body.transitions.map((raw) => ({
+      id: raw.id,
+      name: raw.name,
+      requiresFields: transitionRequiresFields(raw.fields),
+    }));
+  }
+
+  /**
+   * Posts the discovered `transitionId` back via `POST .../issue/{key}/
+   * transitions` (SPEC §7.10, issue #216). Accepts one optional fourth
+   * argument beyond `TrackerBackend.transition`'s own three-parameter
+   * shape — structurally still satisfies that interface (a trailing
+   * optional parameter is compatible with callers that only ever pass
+   * three arguments) while letting a Jira-aware caller supply what a
+   * field-requiring move needs: `options.fields` forwarded verbatim
+   * (e.g. `{resolution: {name: 'Done'}}`), `options.comment` converted to
+   * ADF and sent as `update.comment` the same shape `addComment` uses. If
+   * Jira's own workflow validation still rejects the request (a required
+   * field genuinely missing), that surfaces as
+   * `JiraTrackerTransitionValidationError` carrying Jira's per-field
+   * messages — never silently dropped, and never reported as a success.
+   */
+  async transition(
+    binding: TrackerBinding,
+    externalId: string,
+    transitionId: string,
+    options?: JiraTransitionOptions,
+  ): Promise<void> {
+    requireJiraTarget(binding.target);
+    const credential = await this.credential(binding.connectionId);
+    const response = await jiraRequest(
+      this.fetchImpl,
+      credential,
+      transitionsApiUrl(credential.baseUrl, externalId),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(buildTransitionRequestBody(transitionId, options)),
+      },
+      [400],
+    );
+    if (response.status === 400) {
+      const body = (await response.json()) as {
+        errors?: Record<string, string>;
+        errorMessages?: string[];
+      };
+      throw new JiraTrackerTransitionValidationError(
+        transitionId,
+        body.errors ?? {},
+        body.errorMessages ?? [],
+      );
+    }
   }
 }

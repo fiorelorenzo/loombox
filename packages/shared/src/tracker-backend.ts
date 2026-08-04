@@ -62,10 +62,11 @@ export interface TrackerListPage {
   readonly nextCursor?: string;
 }
 
-/** One workflow transition `TrackerBackend.listTransitions` discovers and `TrackerBackend.transition` can then apply by `id` (GitHub: a fixed two-state set; Jira: the item's own discovered workflow, SPEC §7.10). */
+/** One workflow transition `TrackerBackend.listTransitions` discovers and `TrackerBackend.transition` can then apply by `id` (GitHub: a fixed two-state set; Jira: the item's own discovered workflow, SPEC §7.10). `requiresFields` is optional and provider-specific — Jira sets it from its own per-transition workflow-screen field map (a "Done"-category move commonly requiring `resolution`); GitHub's fixed set never sets it, since GitHub has no such per-transition field requirement to discover. */
 export interface TrackerTransition {
   readonly id: string;
   readonly name: string;
+  readonly requiresFields?: boolean;
 }
 
 /** One board `TrackerBackend.listBoards` exposes (Jira agile board or a GitHub Projects v2 board). */
