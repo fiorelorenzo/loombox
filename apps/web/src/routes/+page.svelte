@@ -3361,7 +3361,12 @@
                 hidden={activeWorkbenchTab !== 'config'}
                 data-testid="project-config-panel-wrapper"
               >
-                <ProjectConfigPanel projectPath={selectedProjectPath} {connectedAccounts} />
+                <ProjectConfigPanel
+                  projectPath={selectedProjectPath}
+                  sessionId={selectedSessionId}
+                  {connectedAccounts}
+                  relayClient={client}
+                />
               </div>
             {/if}
           </div>

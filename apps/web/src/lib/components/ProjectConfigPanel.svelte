@@ -2,9 +2,10 @@
   /**
    * A selected project's config surface (SPEC.md §7.7; issue #366): the
    * reachable home for the MCP-server quick-add/config panel (#188), the
-   * plugin/extension panel (#191), and the per-project tracker mode picker
-   * (SPEC §7.10; issue #220). All three panels shipped fully built and
-   * unit-tested separately but were deliberately left unmounted from
+   * plugin/extension panel (#191), the per-project tracker mode picker
+   * (SPEC §7.10; issue #220), and the per-project test/lint/build command
+   * config (SPEC §7.15; issue #245). All four panels shipped fully built
+   * and unit-tested separately but were deliberately left unmounted from
    * `+page.svelte` to avoid a parallel-edit clash on that shared file — this
    * component is that mount point, wired in by the caller behind a toggle
    * the same way the file-tree and terminal panels are (see
@@ -18,7 +19,7 @@
    * unrelated integrations.
    *
    * Purely a layout wrapper: it owns no config state itself and forwards
-   * `projectPath` straight through to all three panels, which stay
+   * `projectPath` straight through to every child panel, which stay
    * entirely independent of each other (their own storage keys, their own
    * stores — see `PluginConfigPanel.svelte`'s "isolated from the MCP-server
    * config panel" test). `mcpStorage`/`pluginStorage`/`trackerStorage` are
@@ -26,7 +27,13 @@
    * panel's own real `localStorage`-backed store, scoped by `projectPath`.
    * `connectedAccounts` is `RelayClient.connectedAccounts`'s live snapshot,
    * forwarded straight to `TrackerConfigPanel` (this wrapper fetches
-   * nothing of its own, same as every other prop here).
+   * nothing of its own, same as every other prop here). `sessionId`/
+   * `relayClient` are `TestRunnerConfigPanel`'s own: unlike its three
+   * siblings, test/lint/build config genuinely lives on the owning node
+   * (`TestRunnerConfigStore`, `@loombox/node`), not `localStorage`, so
+   * that one panel needs a live session + the real `RelayClient` rather
+   * than a storage adapter — see `TestRunnerConfigPanel.svelte`'s own doc
+   * comment.
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §1/§4,
    * issue #435): only the section headers and column rhythm change here —
@@ -38,10 +45,10 @@
    *
    * Deck migration (redesign v2 design spec §2, issue #471): this wrapper
    * owns no button, glyph, or empty/error state of its own (it only lays
-   * out its three children), so there's nothing here to route through
+   * out its children), so there's nothing here to route through
    * `Button`/`IconButton`/`Icon`/`EmptyState`/`ErrorNotice` — that migration
    * lives entirely in `TrackerConfigPanel`/`McpServerConfigPanel`/
-   * `PluginConfigPanel` below it.
+   * `PluginConfigPanel`/`TestRunnerConfigPanel` below it.
    * It already reads every color/spacing/radius value through a token, so
    * this file is otherwise unchanged.
    */
@@ -51,24 +58,31 @@
   import type { TrackerModeStorage } from '$lib/tracker-mode-store';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
+  import TestRunnerConfigPanel, {
+    type TestRunnerConfigClient,
+  } from './TestRunnerConfigPanel.svelte';
   import TrackerConfigPanel from './TrackerConfigPanel.svelte';
 
   interface Props {
     projectPath: string;
+    sessionId?: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
     trackerStorage?: TrackerModeStorage;
     connectedAccounts?: readonly ConnectedAccount[];
+    relayClient?: TestRunnerConfigClient;
     onSecretRequired?: (serverName: string, secretName: string) => void;
     onTrackerModeChange?: (mode: TrackerMode) => void;
   }
 
   const {
     projectPath,
+    sessionId,
     mcpStorage,
     pluginStorage,
     trackerStorage,
     connectedAccounts,
+    relayClient,
     onSecretRequired,
     onTrackerModeChange,
   }: Props = $props();
@@ -91,6 +105,10 @@
   <section class="project-config-section">
     <h3>Plugins &amp; extensions</h3>
     <PluginConfigPanel {projectPath} storage={pluginStorage} />
+  </section>
+  <section class="project-config-section">
+    <h3>Test, lint &amp; build</h3>
+    <TestRunnerConfigPanel {projectPath} {sessionId} client={relayClient} />
   </section>
 </div>
 

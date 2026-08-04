@@ -372,6 +372,32 @@ export {
   parseConnectedAccountId,
 } from './connected-accounts';
 
+export type {
+  TestRunnerCommandsV1,
+  TestRunnerConfigDetect,
+  TestRunnerConfigDetectedPayloadV1,
+  TestRunnerConfigDetected,
+  TestRunnerConfigGet,
+  TestRunnerConfigResultPayloadV1,
+  TestRunnerConfigResult,
+  TestRunnerConfigSetPayloadV1,
+  TestRunnerConfigSet,
+} from './test-runner-config';
+export {
+  parseTestRunnerConfigDetectedPayloadV1,
+  parseTestRunnerConfigResultPayloadV1,
+  parseTestRunnerConfigSetPayloadV1,
+  safeParseTestRunnerConfigDetectedPayloadV1,
+  safeParseTestRunnerConfigResultPayloadV1,
+  safeParseTestRunnerConfigSetPayloadV1,
+  testRunnerCommandsV1,
+  testRunnerConfigDetect,
+  testRunnerConfigDetected,
+  testRunnerConfigGet,
+  testRunnerConfigResult,
+  testRunnerConfigSet,
+} from './test-runner-config';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -518,6 +544,14 @@ import {
   connectedAccountList,
   connectedAccountListRequest,
 } from './connected-accounts';
+import {
+  testRunnerCommandsV1,
+  testRunnerConfigDetect,
+  testRunnerConfigDetected,
+  testRunnerConfigGet,
+  testRunnerConfigResult,
+  testRunnerConfigSet,
+} from './test-runner-config';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -647,4 +681,10 @@ export const schemasV1 = {
   connectedAccountAnnounce,
   connectedAccountListRequest,
   connectedAccountList,
+  testRunnerCommandsV1,
+  testRunnerConfigGet,
+  testRunnerConfigSet,
+  testRunnerConfigResult,
+  testRunnerConfigDetect,
+  testRunnerConfigDetected,
 } as const;

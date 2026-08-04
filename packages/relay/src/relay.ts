@@ -1262,6 +1262,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // or even the negotiated cols/rows (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'test_runner_config_result':
+      case 'test_runner_config_detected':
+        // The owning node's reply to a client's test_runner_config_get/
+        // _set/_detect (SPEC §7.15; issue #245) — fanned out exactly like
+        // fs_list_response above; the relay never opens either envelope,
+        // so it never sees a configured or suggested command string
+        // (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'lease_request':
         // SPEC §9; issues #82/#104: a session is owned by a node, never a
         // client — only a node connection ever sends this.
@@ -1706,6 +1715,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // sessionId/terminalId (and, for terminal_open, targetId/requestId)
         // plus an opaque `EncryptedEnvelope`; not one byte of typed input or
         // the negotiated cols/rows ever reaches the relay in the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'test_runner_config_get':
+      case 'test_runner_config_set':
+      case 'test_runner_config_detect':
+        // A client reading/saving/auto-detecting a session's project's
+        // test/lint/build commands (SPEC §7.15; issue #245) — routed to
+        // the owning node exactly like terminal_open above. The relay only
+        // ever sees sessionId/requestId plus (for _set) an opaque
+        // `EncryptedEnvelope`; no command string ever reaches the relay in
+        // the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {
