@@ -19,20 +19,27 @@
    * this button later by accident).
    *
    * Warp Deck restyle (docs/design/redesign.md §4/§6, issue #439): sits in
-   * the composer's own action row, next to Send, so "stop the thing that's
-   * running" reads as paired with "send the next thing" rather than a
-   * detached transcript-toolbar button. Pairs with a `StatusDot` `pulse` —
-   * the brief's `thread-draw` technique (§2) — so the control itself reads
-   * as "there's a live, interruptible turn running," not just a static
-   * button.
+   * the composer's own action row, in the same slot Send occupies while no
+   * turn is running — never beside it (see `+page.svelte`'s composer
+   * markup), so "stop the thing that's running" reads as the one live
+   * action available, not a second competing button.
    *
-   * Deck migration (issue #469): now actually routes through the shared
-   * `Button` primitive (`danger`/`sm`, same visual language this file used
-   * to hand-roll) via its `dataTestId` override, which is what keeps this
-   * control's own `data-testid="turn-stop-control"` — load-bearing on the
-   * existing test — intact across the swap.
+   * A3-2 (issue #666, v7 §1, 2026-08-04 decisions): used to pair a pulsing
+   * `StatusDot` on the button itself — "there's a live, interruptible turn
+   * running" welded onto the control. That pairing is gone: progress now
+   * belongs to the turn, rendered as its own live line in the transcript
+   * (`+page.svelte`'s `turnProgressVisible`/`.turn-progress`), not to this
+   * button. This is now `size="md"`, not the old `sm` — it used to sit
+   * next to a disabled-but-present `md` Send button and read fine smaller;
+   * now it single-handedly occupies Send's exact slot, and matching size
+   * is what keeps that swap from visibly resizing the slot.
+   *
+   * Deck migration (issue #469): routes through the shared `Button`
+   * primitive (`danger`, same visual language this file used to hand-roll)
+   * via its `dataTestId` override, which is what keeps this control's own
+   * `data-testid="turn-stop-control"` — load-bearing on the existing test —
+   * intact across the swap.
    */
-  import StatusDot from './ui/StatusDot.svelte';
   import Button from './ui/Button.svelte';
 
   interface Props {
@@ -47,12 +54,10 @@
 {#if turnActive}
   <Button
     variant="danger"
-    size="sm"
     onclick={onStop}
     ariaLabel="Stop the running turn"
     dataTestId="turn-stop-control"
   >
-    <StatusDot tone="danger" pulse size="sm" label="Turn running" />
     Stop
   </Button>
 {/if}

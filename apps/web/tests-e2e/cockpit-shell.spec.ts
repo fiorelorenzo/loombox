@@ -286,12 +286,13 @@ test.describe('cockpit shell', () => {
     expect(hintId).toBeTruthy();
     await expect(page.locator(`#${hintId}`)).toContainText('Enter');
 
-    // Issue #577 / design spec §3.5: the composer is a real field now - a
-    // border, `--color-surface-raised`, `--radius-md` and real padding, the
-    // same vocabulary `ui/TextArea` gives the inbox reply box and the New
-    // Session dialog fields. The chrome lives on `.composer-field`, not on
-    // `.composer-row` (that row stays bare so the role gutter above still
-    // lines up with the transcript's).
+    // Issue #577 / design spec §3.5, then A1-3 (issue #666, v7 §1): the
+    // composer is a real field - a border, `--color-surface-raised`,
+    // `--radius-md`, real padding, and (A1-3) a soft shadow so it reads as
+    // the one deliberately raised surface in an otherwise flat app. The
+    // chrome lives on `.composer-field`, not on `.composer-row` (that row
+    // stays bare so the role gutter above still lines up with the
+    // transcript's).
     const field = page.locator('.composer-field');
     const remPx = await page.evaluate(
       () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
@@ -324,15 +325,17 @@ test.describe('cockpit shell', () => {
     // field has focus.
     expect(atRest.outlineStyle).toBe('none');
 
-    // What separates the composer from the transcript above it is still one
-    // hairline across the whole docked strip (plan, queued prompts,
-    // permissions, composer), drawn once on the footer rather than per
-    // element - otherwise each of those reads as a stray transcript item
-    // that fell to the bottom.
+    // A1-3 (issue #666, v7 §1): the hairline that used to sit above the
+    // whole docked strip (plan, queued prompts, permissions, composer) is
+    // gone - `.canvas-footer` draws no border of its own anymore. The
+    // field's own border + shadow (asserted above) is the strip's only
+    // boundary now, and it belongs to the field alone.
     const footerBorder = await page
       .locator('.canvas-footer')
       .evaluate((el) => getComputedStyle(el).borderTopWidth);
-    expect(footerBorder).not.toBe('0px');
+    expect(footerBorder).toBe('0px');
+    const fieldShadow = await field.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(fieldShadow).not.toBe('none');
 
     // C2 (issue #577): at-rest and focused screenshots used to be
     // byte-identical (md5 match) because no `:focus-within` rule existed

@@ -948,6 +948,39 @@
   // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
   const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
 
+  /**
+   * A3-2 (issue #666): whether the selected session has a turn running right
+   * now. Named for readability at each call site rather than repeating the
+   * `transcript?.turnActive ?? false` fallback three times over — drives
+   * the composer's single-slot Send/Stop swap (Stop *replaces* Send, never
+   * sits disabled beside it) and the transcript-footer's live progress
+   * line below.
+   */
+  const turnIsActive = $derived(transcript?.turnActive ?? false);
+
+  /**
+   * A3-2: "the working state is a live line in the transcript itself, on
+   * the gutter the turn already owns. Progress belongs to the turn, not to
+   * a button." Renders in `.canvas-footer`, directly under the transcript
+   * (see the template) — not inside a control. Suppressed for the one case
+   * where the transcript already carries its own live signal for this
+   * exact turn: a thought still streaming shows its own `WovenLoader`
+   * inline (`MessageItem`'s "Agent thinking"; `isThoughtStillThinking`),
+   * and stacking a second "working" line directly under it would read as
+   * two loaders arguing about the same fact. Every other active-turn
+   * moment — before any item has arrived yet, mid tool-call, or while an
+   * answer is still streaming — has no live cue of its own, so this line
+   * covers it.
+   */
+  const turnProgressVisible = $derived.by(() => {
+    if (!transcript || !turnIsActive) return false;
+    const last = transcript.items.at(-1);
+    if (last?.type === 'message' && last.kind === 'agent_thought_chunk') {
+      return !isThoughtStillThinking(transcript, last.turnId);
+    }
+    return true;
+  });
+
   /** See `configControlsExpanded`'s own doc comment above — the effective visibility the template renders the model/mode pickers on. */
   const configControlsVisible = $derived(!narrowViewport || configControlsExpanded);
 
@@ -3192,6 +3225,23 @@
             {/if}
 
             <div class="canvas-footer">
+              <!-- A3-2 (issue #666): the turn's own live line, not a
+                   spinner welded to the Stop button — see `turnProgressVisible`'s
+                   own doc comment (script section) for exactly when this
+                   shows. Reuses `.composer-gutter`, the same column every
+                   row in this strip aligns to, so it reads as the
+                   transcript's own next line rather than a toast bolted
+                   onto the footer. -->
+              {#if turnProgressVisible}
+                <div class="turn-progress" data-testid="turn-progress-line">
+                  <div class="composer-gutter" aria-hidden="true"></div>
+                  <div class="turn-progress-content">
+                    <WovenLoader size="sm" variant="working" label="Turn in progress" />
+                    Working…
+                  </div>
+                </div>
+              {/if}
+
               {#if transcript && transcript.plan.length > 0}
                 <PlanCard
                   entries={transcript.plan}
@@ -3223,11 +3273,13 @@
                      transcript item uses, so the column runs unbroken from
                      the first turn into the thing you are about to say — it
                      no longer paints a caption-case "YOU" to do that (no
-                     transcript row does anymore, see `MessageItem`): the
-                     gutter's own accent bar mirrors exactly what a `user`
-                     transcript row draws on its `.gutter`, and the field's
-                     own bordered `--color-surface-raised` box (below) is
-                     that same row's raised surface. The whole strip stays
+                     transcript row does anymore, see `MessageItem`): v7 §2's
+                     amended B1-2/B2-4 (2026-08-04 decisions) drop every
+                     gutter role mark entirely, sighted or not — surface is
+                     the only signal left, same as a real `user` transcript
+                     row, and the field's own bordered, raised
+                     `--color-surface-raised` box with a soft shadow (below,
+                     A1-3) is that surface. The whole strip stays
                      `aria-hidden` — the textarea's own `aria-label` is this
                      row's real accessible name, there never was one on the
                      word this replaces.
@@ -3256,7 +3308,7 @@
                           bind:value={draft}
                           oninput={handleComposerInput}
                           onkeydown={handleComposerKeydown}
-                          placeholder="Send a follow-up prompt… (type @ to reference a file)"
+                          placeholder="Send a follow-up prompt…"
                           aria-label="Follow-up prompt"
                           aria-describedby="composer-hint"
                           rows="1"
@@ -3268,11 +3320,12 @@
                              in the DOM because `aria-describedby` above points
                              at it. -->
                         <p class="composer-hint sr-only" id="composer-hint">
-                          <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+                          <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
+                          line · <kbd>@</kbd> to reference a file
                         </p>
                         <div class="composer-controls" data-testid="composer-controls">
                           <IconButton label="Attach image" onclick={pickFiles}>
-                            <Icon name="attach" />
+                            <Icon name="attach" size="20px" />
                           </IconButton>
                           {#if narrowViewport}
                             <IconButton
@@ -3294,16 +3347,23 @@
                             compact={!configControlsVisible}
                           />
                           <div class="composer-actions">
-                            <TurnStopControl
-                              turnActive={transcript?.turnActive ?? false}
-                              onStop={stopSession}
-                            />
-                            <Button
-                              type="submit"
-                              variant="primary"
-                              disabled={sendDisabled}
-                              ariaLabel="Send prompt">Send</Button
-                            >
+                            <!-- A3-2 (issue #666): one button in one slot —
+                                 while a turn runs the button IS Stop, Send is
+                                 gone (not disabled-and-present). Both render
+                                 at `size="md"` (Stop no longer takes the
+                                 smaller `sm` it used to sit at next to a
+                                 disabled Send) so the slot itself never
+                                 changes footprint at the swap. -->
+                            {#if turnIsActive}
+                              <TurnStopControl turnActive={turnIsActive} onStop={stopSession} />
+                            {:else}
+                              <Button
+                                type="submit"
+                                variant="primary"
+                                disabled={sendDisabled}
+                                ariaLabel="Send prompt">Send</Button
+                              >
+                            {/if}
                           </div>
                         </div>
                       </div>
@@ -4861,11 +4921,13 @@
   }
 
   /* Everything below the transcript - the live plan, queued prompts, the
-     permission bar, the toolbar and the composer - is one docked strip, and
-     says so with a single hairline across the top. Without it each of those
-     read as a stray transcript item that had fallen to the bottom of the
-     canvas, which is exactly how the plan looked: a floating card with a gap
-     above it and nothing tying it to anything. */
+     permission bar, the toolbar and the composer - is one docked strip.
+     A1-3 (issue #666, v7 §1) removes the hairline that used to draw this
+     strip's top edge: the composer field is the only surface in this app
+     deliberately allowed to look raised (its own border + soft shadow —
+     see `.composer-field` below), and a flat rule sitting directly above
+     that shadow read as two competing separators once the shadow existed.
+     `padding-top` alone now carries the grouping the hairline used to. */
   .canvas-footer {
     width: 100%;
     max-width: var(--measure);
@@ -4875,7 +4937,6 @@
     gap: var(--space-sm);
     flex-shrink: 0;
     padding-top: var(--space-sm);
-    border-top: 1px solid var(--color-border);
   }
 
   .composer {
@@ -4888,9 +4949,11 @@
      spec §3.5; issue #577): a docked field still ends the timeline aligned to
      the same gutter, but it is now unmistakably an input rather than plain
      text run against the page background. Border, surface, radius and
-     padding live on `.composer-field` below, not here. The hairline that
-     separates the docked strip from the transcript stays on `.canvas-footer`,
-     one level up, drawn once for the whole strip rather than again here. */
+     padding live on `.composer-field` below, not here — A1-3 (issue #666)
+     removed the last hairline this strip ever drew (`.canvas-footer`'s old
+     `border-top`, above), so the field's own border + shadow is now the
+     ONLY boundary anywhere in the strip, drawn once, by the one surface
+     that's allowed to look raised. */
   .composer-row {
     display: flex;
     align-items: flex-start;
@@ -4913,13 +4976,15 @@
      now, not a role word's bounding box (neither one exists to measure
      anymore).
 
-     Design spec v6 §3.4 (issue #575): mirrors what a `user` transcript row
-     draws on ITS `.gutter` — no visible word, just the same inset accent
-     bar `.message-item.user .gutter` carries, so "your turn" reads the
-     same way here as it does above. `min-height` matches `MessageItem`'s
-     own copy of this rule: with no text content left, the box would
-     otherwise collapse to nothing and the accent bar would be an
-     unreadable sliver instead of a deliberate short mark. */
+     v7 §2's amended B1-2/B2-4 (2026-08-04 decisions, issue #667) drop every
+     gutter role mark app-wide, including the inset accent bar this rule
+     used to carry for "your turn" — role is told by surface alone now (the
+     field's own raised `--color-surface-raised` box already says "you" the
+     same way a real `user` transcript row's tinted fill does), so this
+     gutter is inert chrome: pure alignment space, nothing painted in it.
+     `min-height` stays anyway, matching `MessageItem`'s own copy of this
+     rule, so an empty gutter never collapses the row's height out from
+     under the textarea beside it. */
   .composer-gutter {
     flex: 0 0 var(--gutter);
     width: var(--gutter);
@@ -4930,21 +4995,18 @@
     padding-top: var(--space-3xs);
     padding-right: var(--space-sm);
     min-height: var(--text-body-line);
-    box-shadow: inset 2px 0 0 0 var(--color-accent);
   }
 
   /* Below `--bp-mobile` the transcript's role column collapses and every
      row's mark moves above its content (see `MessageItem`'s own copy of
-     that block for the measurement and rationale). The composer is the
-     last row of that same timeline, so it collapses the same way — leaving
-     it beside the textarea would keep the one indent the whole change
-     exists to remove, on the row where the phone's width matters most.
-     The accent bar drops too, same "dirt on the screen" reasoning as
-     `MessageItem`'s own `.message-item.user .gutter` override: a 2px
-     thread with no row of content beside it to anchor against reads as a
-     stray mark, not a cue. */
+     that block for the measurement and rationale). The composer — and the
+     turn-progress line below it, A3-2 — are the last rows of that same
+     timeline, so both collapse the same way: leaving either one beside its
+     content would keep the one indent the whole change exists to remove,
+     on the row where the phone's width matters most. */
   @media (max-width: 479px) {
-    .composer-row {
+    .composer-row,
+    .turn-progress {
       flex-direction: column;
       align-items: stretch;
       gap: var(--space-3xs);
@@ -4956,7 +5018,6 @@
       min-height: 0;
       align-items: flex-start;
       padding-right: 0;
-      box-shadow: none;
     }
   }
 
@@ -4967,7 +5028,18 @@
      custom Enter-to-send/Shift+Enter-newline keydown handling, and a footer
      controls row (attach, pickers, Send) sharing this same bordered box —
      none of which `ui/TextArea` exposes a seam for. Hand-rolled on the same
-     tokens rather than forking the primitive's API for one call site. */
+     tokens rather than forking the primitive's API for one call site.
+
+     A1-3 (issue #666, v7 §1): the field is the one surface in the whole app
+     deliberately allowed to look raised. Every hairline that used to sit
+     above it in this strip is gone (`.canvas-footer`'s old `border-top`) —
+     the border below plus a new `--shadow-md` are now the field's own,
+     ONLY boundary, in both themes. `--shadow-md` on purpose, not
+     `--shadow-lg`: soft enough to read as "floating a little," not
+     modal-weight elevation. Composer stays the only caller of this exact
+     pairing — don't spread it to another surface just because it's
+     available; the rest of the app staying flat is what makes this one
+     lifted control read as deliberate. */
   .composer-field {
     flex: 1;
     min-width: 0;
@@ -4978,6 +5050,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-surface-raised);
+    box-shadow: var(--shadow-md);
     transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
@@ -5046,6 +5119,26 @@
 
   .composer-hint {
     margin: 0;
+  }
+
+  /* A3-2 (issue #666): the turn's own live line — see `turnProgressVisible`'s
+     doc comment (script section) and the markup comment above `.canvas-footer`
+     for what this replaces and when it shows. `.composer-gutter` (reused,
+     not duplicated) keeps it on the exact same alignment column as every
+     other row in this strip; `align-items: center` here (not the gutter
+     row's own `flex-start`) because a one-line status reads as one baseline,
+     not text sharing a column with a taller sibling. */
+  .turn-progress {
+    display: flex;
+    align-items: center;
+  }
+
+  .turn-progress-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
   .empty {
