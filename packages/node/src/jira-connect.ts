@@ -12,12 +12,15 @@
  * own keyring entry.
  *
  * The API token itself never appears in the `ConnectedAccount` this
- * returns. It lives in the node's OS keyring (`keyring.ts`'s
- * `NodeKeyring`, the same abstraction and file-fallback #222 uses)
- * alongside the `email` that authenticated it — Basic auth needs both on
- * every request, and `email` is deliberately NOT a `ConnectedAccount`
- * field (SPEC §7.26: mutable/SSO-reassignable), so it has to travel with
- * the token as one secret blob rather than living on the synced row.
+ * returns. It lives in the node's OS keyring
+ * (`./connected-account-keyring.ts`'s shared binding — the same one
+ * `./github-connect.ts` and this package's node-presence check,
+ * `./account-presence.ts`, both reuse rather than each inventing their
+ * own) alongside the `email` that authenticated it — Basic auth needs
+ * both on every request, and `email` is deliberately NOT a
+ * `ConnectedAccount` field (SPEC §7.26: mutable/SSO-reassignable), so it
+ * has to travel with the token as one secret blob rather than living on
+ * the synced row.
  *
  * `getCredential` is the seam #214's `JiraTrackerBackend` consumes
  * (agreed over IRC while both issues were in flight): given a
@@ -28,9 +31,6 @@
  * holds.
  * --------------------------------------------------------------------- */
 
-import path from 'node:path';
-
-import { deriveSharedSecretBits, importAesGcmKey } from '@loombox/crypto';
 import {
   composeConnectedAccountId,
   connectedAccount,
@@ -38,14 +38,13 @@ import {
   type ConnectedAccount,
 } from '@loombox/protocol';
 
-import { NodeIdentityStore } from './identity';
+import {
+  CONNECTED_ACCOUNT_KEYRING_SERVICE,
+  createConnectedAccountKeyring,
+  type ConnectedAccountKeyringOptions,
+} from './connected-account-keyring';
 import { resolveJiraIdentity } from './jira-identity';
-import { FileKeyringBackend, NodeKeyring, type KeyringBackend } from './keyring';
-import { defaultNodeStateDir } from './ssh/verify-and-persist';
-
-const SECRETS_FILE_NAME = 'jira-connect-secrets.local.json';
-/** Every connected Jira account's secret shares this one `NodeKeyring` service, same convention as `github-connect.ts`'s `SECRET_KEYRING_SERVICE` — `account` is the per-account `secretRef` computed by `@loombox/protocol`'s `connectedAccountSecretRef`. */
-const SECRET_KEYRING_SERVICE = 'loombox-connected-account';
+import type { NodeKeyring } from './keyring';
 
 /**
  * SPEC §7.26's own example vocabulary for `ConnectedAccount.capabilities`
@@ -113,24 +112,17 @@ export interface JiraCredential {
   readonly authHeader: string;
 }
 
-export interface JiraConnectServiceOptions {
-  /** Injectable for tests (`os.mkdtemp()`); defaults to `defaultNodeStateDir()`, shared with every other node store. */
-  stateDir?: string;
+export interface JiraConnectServiceOptions extends ConnectedAccountKeyringOptions {
   /**
-   * Injectable for tests: overrides how the OS-native keyring backend is
-   * probed for this service's secret storage. Defaults to `keyring.ts`'s
-   * `createOsKeyringBackend`. Pass `async () => undefined` to force the
-   * 0600-file fallback deterministically (see `keyring.test.ts`).
+   * Called after a secret write (`connect`) or delete
+   * (`deleteCredential`) changes what this node's keyring holds for
+   * `secretRef` — the hook `./account-presence.ts`'s `NodeAccountPresence`
+   * (issue #228) binds to invalidate its cached presence answer for that
+   * account, so a connect or disconnect on this node is never followed by
+   * a stale "present"/"absent" read. Optional; omitted by tests and by
+   * any caller that doesn't hold a presence cache.
    */
-  osKeyringBackendFactory?: () => Promise<KeyringBackend | undefined>;
-  /**
-   * Where the file-fallback's AES-GCM encryption key comes from: a
-   * self-ECDH derivation over this node's own identity keypair, exactly
-   * like `github-connect.ts`'s `GithubConnectService`. Defaults to a
-   * fresh `NodeIdentityStore({ stateDir })`; injectable so a caller that
-   * already holds one doesn't force a second independent load.
-   */
-  identityStore?: NodeIdentityStore;
+  onCredentialChanged?: (secretRef: string) => void;
 }
 
 export interface ConnectJiraAccountOptions {
@@ -152,24 +144,11 @@ export interface ConnectJiraAccountOptions {
  */
 export class JiraConnectService {
   private readonly keyring: NodeKeyring;
+  private readonly onCredentialChanged: ((secretRef: string) => void) | undefined;
 
   constructor(options: JiraConnectServiceOptions = {}) {
-    const stateDir = options.stateDir ?? defaultNodeStateDir();
-    const identityStore = options.identityStore ?? new NodeIdentityStore({ stateDir });
-    this.keyring = new NodeKeyring({
-      osBackendFactory: options.osKeyringBackendFactory,
-      fileBackend: new FileKeyringBackend({
-        filePath: path.join(stateDir, SECRETS_FILE_NAME),
-        encryptionKey: async () => {
-          const identity = await identityStore.loadOrCreate();
-          const bits = await deriveSharedSecretBits(
-            identity.keyPair.privateKey,
-            identity.keyPair.publicKey,
-          );
-          return importAesGcmKey(bits);
-        },
-      }),
-    });
+    this.keyring = createConnectedAccountKeyring(options);
+    this.onCredentialChanged = options.onCredentialChanged;
   }
 
   /**
@@ -196,7 +175,8 @@ export class JiraConnectService {
     // else — neither is ever assigned to any field of the
     // ConnectedAccount built below.
     const secret: JiraApiTokenSecret = { email: options.email, apiToken: options.apiToken };
-    await this.keyring.set(SECRET_KEYRING_SERVICE, secretRef, JSON.stringify(secret));
+    await this.keyring.set(CONNECTED_ACCOUNT_KEYRING_SERVICE, secretRef, JSON.stringify(secret));
+    this.onCredentialChanged?.(secretRef);
 
     const now = Date.now();
 
@@ -238,7 +218,7 @@ export class JiraConnectService {
       );
     }
 
-    const raw = await this.keyring.get(SECRET_KEYRING_SERVICE, account.secretRef);
+    const raw = await this.keyring.get(CONNECTED_ACCOUNT_KEYRING_SERVICE, account.secretRef);
     if (raw === undefined) return undefined;
     const secret = JSON.parse(raw) as JiraApiTokenSecret;
 
@@ -250,6 +230,7 @@ export class JiraConnectService {
 
   /** Deletes a connected account's stored secret — the local half of disconnecting it (the metadata row itself is the caller's/relay's concern, not this service's). */
   async deleteCredential(account: Pick<ConnectedAccount, 'secretRef'>): Promise<void> {
-    await this.keyring.delete(SECRET_KEYRING_SERVICE, account.secretRef);
+    await this.keyring.delete(CONNECTED_ACCOUNT_KEYRING_SERVICE, account.secretRef);
+    this.onCredentialChanged?.(account.secretRef);
   }
 }

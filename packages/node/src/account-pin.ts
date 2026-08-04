@@ -30,12 +30,18 @@
  *    Two distinctly named functions, rather than one function plus a
  *    boolean, so a caller cannot forget which rule its action needs.
  *
- * This module is deliberately I/O-free and does not itself decide *where*
- * `AccountPinMap` values are persisted (see `account-pin-store.ts`) or
- * which node holds a resolved account's secret (issue #228's node-presence
- * check, out of scope here) — it only decides, given a pin map and the
- * known connected accounts, which single account (if any) a read or write
- * action may use.
+ * This module's core resolvers ({@link resolveAccountForRead},
+ * {@link resolveAccountForWrite}) are deliberately I/O-free and do not
+ * decide *where* `AccountPinMap` values are persisted (see
+ * `account-pin-store.ts`) — they only decide, given a pin map and the
+ * known connected accounts, which single account (if any) a read or
+ * write action may use. {@link resolveAccountForWriteOnThisNode} below is
+ * the one exception, deliberately layered on top rather than mixed in:
+ * it adds issue #228's node-presence check — whether *this* node's
+ * keyring actually holds the resolved account's secret right now — as a
+ * distinct outcome ({@link AccountNotPresentOnNodeError}) from every
+ * hard-fail case above, without making the pure resolvers themselves do
+ * I/O.
  * --------------------------------------------------------------------- */
 
 import { parseConnectedAccountId, type ConnectedAccount } from '@loombox/protocol';
@@ -97,7 +103,7 @@ export class AccountHostMismatchError extends AccountResolutionError {
   }
 }
 
-/** `capability`'s pin names a `ConnectedAccount.id` that isn't among the known connected accounts — a dangling pin (e.g. the account was disconnected). Distinct from issue #228's node-presence check: this is "does the account exist at all", never "does this node hold its secret locally". */
+/** `capability`'s pin names a `ConnectedAccount.id` that isn't among the known connected accounts — a dangling pin (e.g. the account was disconnected). Distinct from {@link AccountNotPresentOnNodeError} (issue #228): this is "does the account exist at all", never "does this node hold its secret locally". */
 export class AccountPinDanglingError extends AccountResolutionError {
   constructor(
     public readonly capability: string,
@@ -199,4 +205,78 @@ export function resolveAccountForWrite(params: AccountResolutionParams): Connect
     throw new AccountPinRequiredError(capability);
   }
   return resolvePinnedAccount(capability, pin, accounts, target);
+}
+
+/**
+ * The resolved account exists and passes every check
+ * {@link resolveAccountForWrite}/{@link resolveAccountForRead} themselves
+ * perform, but this node's own keyring does not currently hold its
+ * credential (SPEC §7.26's "Node-locality", issue #228) — it was
+ * connected on a different node. Distinct from
+ * {@link AccountPinDanglingError} (the account doesn't exist at all) and
+ * from {@link AccountPinRequiredError}/{@link AmbiguousAccountError} (no
+ * account could even be resolved): here resolution succeeded and the
+ * account is simply not usable from here right now.
+ */
+export class AccountNotPresentOnNodeError extends AccountResolutionError {
+  constructor(
+    public readonly capability: string,
+    public readonly accountId: string,
+  ) {
+    super(
+      `account not present on this node: "${capability}" resolved to "${accountId}", but this node's keyring does not currently hold its credential — connect it on this node too (SPEC §7.26)`,
+    );
+    this.name = 'AccountNotPresentOnNodeError';
+  }
+}
+
+/**
+ * The narrow shape {@link resolveAccountForWriteOnThisNode} (and any
+ * other caller checking issue #228's node-presence) needs — `{
+ * isPresent }` rather than importing `./account-presence.ts`'s concrete
+ * `NodeAccountPresence` class here, so this otherwise I/O-free module
+ * still performs no I/O of its own and doesn't even need to know how
+ * presence is computed or cached; it only calls whatever this parameter
+ * provides. `NodeAccountPresence` satisfies this structurally, with no
+ * explicit `implements` needed.
+ */
+export interface NodePresenceCheck {
+  isPresent(account: Pick<ConnectedAccount, 'secretRef'>): Promise<boolean>;
+}
+
+/**
+ * Throws {@link AccountNotPresentOnNodeError} unless `presence` confirms
+ * this node's keyring holds `account`'s credential right now (issue
+ * #228). Composable with either resolver's output — call it after
+ * {@link resolveAccountForWrite} (a write with no locally-usable
+ * credential should never proceed) or after {@link resolveAccountForRead}
+ * returns a defined account (a caller that needs to warn before falling
+ * back to a read with no local secret).
+ */
+export async function ensureAccountPresentOnThisNode(
+  account: ConnectedAccount,
+  capability: string,
+  presence: NodePresenceCheck,
+): Promise<void> {
+  if (!(await presence.isPresent(account))) {
+    throw new AccountNotPresentOnNodeError(capability, account.id);
+  }
+}
+
+/**
+ * {@link resolveAccountForWrite} plus issue #228's node-presence check:
+ * resolves exactly as that function does — same hard-fail cases, same
+ * thrown error types, completely unchanged — and additionally throws
+ * {@link AccountNotPresentOnNodeError} when the resolved account's
+ * credential is not present on this node right now. The one function in
+ * this module that performs I/O (through `presence`); every other export
+ * here stays synchronous and I/O-free.
+ */
+export async function resolveAccountForWriteOnThisNode(
+  params: AccountResolutionParams,
+  presence: NodePresenceCheck,
+): Promise<ConnectedAccount> {
+  const account = resolveAccountForWrite(params);
+  await ensureAccountPresentOnThisNode(account, params.capability, presence);
+  return account;
 }
