@@ -79,17 +79,64 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
  * widened (additive to v0's narrower inline type) to cover every
  * `sessionUpdate` kind the v1 transcript reducer and config-option store
  * understand: message/thought chunks, `tool_call`/`tool_call_update`,
- * `plan_update`, `usage_update`, and `config_option_update`.
+ * `plan`, `usage_update`, and `config_option_update`.
+ *
+ * Field-by-field audit against the real ACP v1 schema
+ * (agentclientprotocol.com/protocol/v1/schema,
+ * agentclientprotocol.com/protocol/v1/tool-calls,
+ * agentclientprotocol.com/protocol/v1/agent-plan — issue #623, the same
+ * class of bug #248 found in `usage_update`):
+ *  - `sessionUpdate`/`messageId`/`content` (message chunks): correct.
+ *  - `toolCallId` (was `id`): ACP's `ToolCall`/`ToolCallUpdate` field is
+ *    `toolCallId`, not `id` — every real tool call was silently dropped
+ *    (`mapToTranscriptUpdate`'s `if (!update.id) return undefined` never
+ *    matched a real agent's payload).
+ *  - `kind` (was `toolKind`): ACP's field is `kind` — this is the bug
+ *    #623 reports. `toolKind` stays the name of this client's OWN
+ *    internal `AcpToolCallUpdate` field; `mapToTranscriptUpdate` does the
+ *    wire-to-internal translation, same convention `usage_update` below
+ *    already uses.
+ *  - `diff`: ACP has NO top-level `diff` field on `ToolCall`/
+ *    `ToolCallUpdate` — a diff is one `{type: 'diff', path, oldText,
+ *    newText}` entry inside the `content` array
+ *    (agentclientprotocol.com/protocol/v1/tool-calls#diffs). See
+ *    `extractDiff` below; this client derives `diff` from `content`
+ *    rather than reading a wire field that doesn't exist.
+ *  - `status`/`title`/`rawInput`/`locations`/`content`: correct.
+ *  - `rawOutput`: a real ACP field this client does not read — `content`
+ *    already carries the tool's display-ready results and nothing
+ *    consumes `rawOutput` today, so it's intentionally left off this
+ *    interface rather than plumbed through unused.
+ *  - `parentToolCallId`: NOT an ACP wire field at all — SPEC.md §5.5/
+ *    §7.24 documents it as a value a provider's `enrich()` hook promotes
+ *    from a vendor `_meta` field (e.g. Claude Code's
+ *    `_meta.claudeCode.parentToolUseId`); always `undefined` straight off
+ *    the wire until v2's promotion lands (issue #184). Not a bug.
+ *  - `entries` (plan): correct; ACP's `PlanEntry` `content`/`priority`/
+ *    `status` fields also match this client's own `AcpPlanEntry` verbatim.
+ *  - the `plan` vs `plan_update` notification **discriminant** itself was
+ *    wrong too — see `mapToTranscriptUpdate`'s switch. Untested until
+ *    #623: no fixture or hand-written payload ever sent a real plan
+ *    notification, so this silently dropped every plan report.
+ *  - `used`/`size`/`cost`: correct (fixed by #248/PR #622).
+ *  - `options` (`config_option_update`): ACP's real field is
+ *    `configOptions: SessionConfigOption[]`, and each option's shape
+ *    (`id`/`name`/`type: 'select'|'boolean'`/...) is unrelated to this
+ *    client's own `AcpConfigOption` (`category`/`current`/`choices`) — a
+ *    materially larger divergence than a field rename, and a separate
+ *    subsystem from the tool-call/plan transcript mapping this interface
+ *    otherwise feeds (see `handleNotification`'s own comment: it "never
+ *    touches the transcript reducer"). Left as-is: out of scope for
+ *    #623's audit, flagged here for a follow-up issue.
  */
 interface RawSessionUpdate {
   sessionUpdate?: string;
   messageId?: string;
   content?: unknown;
-  id?: string;
+  toolCallId?: string;
   title?: string;
-  toolKind?: AcpToolKind;
+  kind?: AcpToolKind;
   status?: AcpToolCallStatus;
-  diff?: AcpDiff;
   rawInput?: unknown;
   parentToolCallId?: string;
   locations?: unknown;
@@ -118,7 +165,7 @@ interface SessionUpdateParams {
 
 interface RequestPermissionParamsWire {
   sessionId?: string;
-  toolCall?: RawSessionUpdate & { id?: string };
+  toolCall?: RawSessionUpdate;
   options?: { optionId: string; name: string; kind: AcpPermissionOptionKind }[];
 }
 
@@ -188,6 +235,37 @@ function isIncomingRequest(msg: JsonRpcInbound): msg is JsonRpcRequestIn {
   return 'method' in msg && 'id' in msg && msg.id !== undefined;
 }
 
+/**
+ * ACP's real wire shape carries a tool call's diff (if any) as one
+ * `{type: 'diff', path, oldText, newText}` entry inside its `content`
+ * array — there is no top-level `diff` field on `ToolCall`/
+ * `ToolCallUpdate` (agentclientprotocol.com/protocol/v1/tool-calls#diffs;
+ * issue #623). Finds the first such entry and lifts it onto this client's
+ * own top-level `AcpToolCallUpdate.diff` convenience field; `content`
+ * itself is still passed through unchanged alongside it, so a consumer
+ * wanting the full content array (not just the diff) still gets it.
+ */
+function extractDiff(content: unknown): AcpDiff | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const entry of content) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const item = entry as {
+      type?: unknown;
+      path?: unknown;
+      oldText?: unknown;
+      newText?: unknown;
+    };
+    if (item.type !== 'diff') continue;
+    if (typeof item.path !== 'string' || typeof item.newText !== 'string') continue;
+    return {
+      path: item.path,
+      oldText: typeof item.oldText === 'string' ? item.oldText : null,
+      newText: item.newText,
+    };
+  }
+  return undefined;
+}
+
 /** Maps one wire `session/update` payload into the v1 transcript reducer's input shape; `undefined` for a kind this reducer doesn't cover (e.g. `config_option_update`, handled separately) or a malformed payload. Exported for direct unit testing of the wire-mapping logic (issue #248) without spinning up a fixture process for every edge case; not part of the package's public `index.ts`/`browser.ts` surface. */
 export function mapToTranscriptUpdate(
   kind: string,
@@ -206,22 +284,31 @@ export function mapToTranscriptUpdate(
     }
     case 'tool_call':
     case 'tool_call_update': {
-      if (!update.id) return undefined;
+      if (!update.toolCallId) return undefined;
       return {
         kind,
-        id: update.id,
+        id: update.toolCallId,
         turnId,
         title: update.title,
-        toolKind: update.toolKind,
+        toolKind: update.kind,
         status: update.status,
-        diff: update.diff,
+        diff: extractDiff(update.content),
         rawInput: update.rawInput,
         content: update.content,
         parentToolCallId: update.parentToolCallId,
         locations: update.locations,
       };
     }
-    case 'plan_update':
+    // ACP's real wire discriminant for a plan report is `'plan'`, not
+    // `'plan_update'` (agentclientprotocol.com/protocol/v1/agent-plan).
+    // This client's OWN `AcpPlanUpdate.kind` is `'plan_update'` (chosen to
+    // read as a verb alongside `tool_call_update`/`usage_update`), but the
+    // wire never sends that string — the case label here has to match
+    // ACP, not our internal name (issue #623: untested until now, since no
+    // fixture or hand-written payload ever sent a real plan notification,
+    // so every real agent's plan report was silently dropped by the
+    // `default` branch below).
+    case 'plan':
       return { kind: 'plan_update', entries: update.entries ?? [] };
     case 'usage_update':
       // `update.cost`'s `currency` is ISO 4217 and can legitimately be
@@ -552,7 +639,7 @@ export class AcpClient extends EventEmitter {
     if (msg.method !== 'session/request_permission') return;
 
     const params = msg.params as RequestPermissionParamsWire | undefined;
-    if (!params?.sessionId || !params.toolCall?.id) return;
+    if (!params?.sessionId || !params.toolCall?.toolCallId) return;
 
     const requestId = `perm:${msg.id}`;
     this.pendingPermissionRpcIds.set(requestId, msg.id);
@@ -561,11 +648,11 @@ export class AcpClient extends EventEmitter {
       sessionId: params.sessionId,
       toolCall: {
         kind: 'tool_call',
-        id: params.toolCall.id,
+        id: params.toolCall.toolCallId,
         title: params.toolCall.title,
-        toolKind: params.toolCall.toolKind,
+        toolKind: params.toolCall.kind,
         status: params.toolCall.status,
-        diff: params.toolCall.diff,
+        diff: extractDiff(params.toolCall.content),
         rawInput: params.toolCall.rawInput,
         content: params.toolCall.content,
         parentToolCallId: params.toolCall.parentToolCallId,

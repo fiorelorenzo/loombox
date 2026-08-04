@@ -113,13 +113,12 @@ rl.on('line', (line) => {
           sessionId,
           update: {
             sessionUpdate: 'tool_call',
-            id: 'tc1',
+            toolCallId: 'tc1',
             title: 'Edit',
-            toolKind: 'edit',
+            kind: 'edit',
             status: 'pending',
-            diff: { path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' },
             rawInput: { path: 'src/foo.ts' },
-            content: [],
+            content: [{ type: 'diff', path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' }],
             // Real Claude Code's vendor `_meta` shape (SPEC.md §7.24); v1's
             // enrich() is a documented no-op, so this must NOT surface as
             // `parentToolCallId` on the reduced item yet (that's v2, #184).
@@ -136,13 +135,12 @@ rl.on('line', (line) => {
         params: {
           sessionId,
           toolCall: {
-            id: 'tc1',
+            toolCallId: 'tc1',
             title: 'Edit',
-            toolKind: 'edit',
+            kind: 'edit',
             status: 'pending',
-            diff: { path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' },
             rawInput: { path: 'src/foo.ts' },
-            content: [],
+            content: [{ type: 'diff', path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' }],
             locations: [{ path: 'src/foo.ts' }],
           },
           options: [
@@ -166,7 +164,7 @@ rl.on('line', (line) => {
             sessionId,
             update: {
               sessionUpdate: 'tool_call_update',
-              id: 'tc1',
+              toolCallId: 'tc1',
               status: chosen === 'cancelled' ? 'failed' : 'completed',
             },
           },
@@ -196,9 +194,9 @@ rl.on('line', (line) => {
           sessionId,
           update: {
             sessionUpdate: 'tool_call',
-            id: 'tc-rl',
+            toolCallId: 'tc-rl',
             title: 'Read',
-            toolKind: 'read',
+            kind: 'read',
             status: 'completed',
             content: [
               {

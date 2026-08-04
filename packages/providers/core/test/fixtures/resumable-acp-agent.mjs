@@ -89,9 +89,9 @@ rl.on('line', (line) => {
         sessionId,
         update: {
           sessionUpdate: 'tool_call',
-          id: 'tc1',
+          toolCallId: 'tc1',
           title: 'Search',
-          toolKind: 'search',
+          kind: 'search',
           status: 'completed',
         },
       },

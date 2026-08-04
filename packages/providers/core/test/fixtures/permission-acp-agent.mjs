@@ -53,9 +53,9 @@ function requestPermission(sessionId, toolCallId, title) {
     params: {
       sessionId,
       toolCall: {
-        id: toolCallId,
+        toolCallId,
         title,
-        toolKind: 'edit',
+        kind: 'edit',
         status: 'pending',
         rawInput: { path: `${toolCallId}.ts` },
         content: [],
