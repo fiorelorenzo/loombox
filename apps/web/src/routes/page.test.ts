@@ -644,7 +644,8 @@ describe('cockpit shell: attention inbox wiring (issue #167)', () => {
     expect(screen.queryByTestId('tabbar-inbox-count')).toBeNull();
   });
 
-  it("approving a permission item from the inbox calls the same resolvePermission the session's own queue bar uses (issue #168)", async () => {
+  it("approving a permission item from the inbox calls the same resolvePermission the session's own queue bar uses, once the answer window elapses (E2-1, issue #671)", async () => {
+    vi.useFakeTimers();
     const { client } = mountCockpit({
       sessions: [makeSession()],
       attentionInboxItems: [makeInboxPermissionItem()],
@@ -655,11 +656,15 @@ describe('cockpit shell: attention inbox wiring (issue #167)', () => {
     const row = await screen.findByTestId('attention-inbox-item');
     await fireEvent.click(within(row).getByRole('button', { name: /Allow/ }));
 
+    expect(client.resolvePermission).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
+
     expect(client.resolvePermission).toHaveBeenCalledWith(
       'sess_1',
       'req-inbox-1',
       expect.objectContaining({ optionId: 'allow', kind: 'allow_once' }),
     );
+    vi.useRealTimers();
   });
 
   it('opening a session from an inbox item navigates to it and leaves the Inbox page, exactly like picking it from the sidebar (issue #168)', async () => {

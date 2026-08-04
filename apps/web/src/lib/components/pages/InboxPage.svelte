@@ -7,14 +7,16 @@
    * row sets `mainView = 'inbox'` and mounts this instead of opening the
    * Drawer.
    *
-   * `AttentionInbox` itself is untouched and not this issue's to change:
-   * it already carries no title or Close of its own (the old Drawer
-   * supplied both, this page's `PageLayout` now does) and already reuses
-   * the shared `EmptyState` for "nothing needs your attention" (its own
-   * doc comment, redesign brief §6). Props below are copied verbatim from
-   * `AttentionInbox`'s old Drawer mount site in `+page.svelte`, so the
-   * shell swaps the component name there and leaves every prop expression
-   * untouched.
+   * `AttentionInbox` supplied no title or Close of its own even before this
+   * page existed (the old Drawer supplied both, this page's `PageLayout`
+   * now does) and already reused the shared `EmptyState` for "nothing
+   * needs your attention" (its own doc comment, redesign brief §6). The
+   * v7 card-per-session rework (E1-3/E2-1/E3-1, issue #671) — the agent
+   * message in full, the dim-then-clear undo window, `j`/`k`/digit
+   * keyboard triage, and the hint bar that advertises it — lives entirely
+   * inside `AttentionInbox` itself; this wrapper's own props are
+   * unchanged, still copied verbatim from `AttentionInbox`'s old Drawer
+   * mount site in `+page.svelte`.
    */
   import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { AttentionInboxItem } from '$lib/relay-client';

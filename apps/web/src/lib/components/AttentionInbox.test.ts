@@ -123,13 +123,17 @@ describe('AttentionInbox: rendering (issue #167)', () => {
 });
 
 describe('AttentionInbox: inline actions (issue #168)', () => {
-  it('calls onResolve with the session id, request id, and chosen option when a permission item is approved', async () => {
+  it('calls onResolve with the session id, request id, and chosen option once the answer window elapses (E2-1, issue #671)', async () => {
+    vi.useFakeTimers();
     const onResolve = vi.fn();
     render(AttentionInbox, {
       props: { items: [permissionItem], onResolve, onOpenSession: vi.fn(), onReply: vi.fn() },
     });
     await fireEvent.click(screen.getByRole('button', { name: /Allow/ }));
+    expect(onResolve).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
     expect(onResolve).toHaveBeenCalledWith('sess-a', 'req-1', PERMISSION_OPTIONS[0]);
+    vi.useRealTimers();
   });
 
   it('calls onOpenSession with the item session id when its Open control is pressed', async () => {
@@ -153,7 +157,8 @@ describe('AttentionInbox: inline actions (issue #168)', () => {
     expect(screen.getAllByTestId('attention-inbox-reply')).toHaveLength(1);
   });
 
-  it('calls onReply with the session id and typed text when the reply composer is submitted, then clears the input', async () => {
+  it('calls onReply with the session id and typed text once the answer window elapses, and the draft stays cleared if undone', async () => {
+    vi.useFakeTimers();
     const onReply = vi.fn();
     render(AttentionInbox, {
       props: { items: [awaitingInputItem], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply },
@@ -161,8 +166,22 @@ describe('AttentionInbox: inline actions (issue #168)', () => {
     const input = screen.getByTestId('attention-inbox-reply-input');
     await fireEvent.input(input, { target: { value: 'go ahead and merge it' } });
     await fireEvent.click(screen.getByTestId('attention-inbox-reply-send'));
+
+    // The form (and its input) is swapped for the dimmed outcome while pending.
+    expect(screen.queryByTestId('attention-inbox-reply-input')).toBeNull();
+    expect(onReply).not.toHaveBeenCalled();
+
+    // Undo brings the form back with the draft cleared, not restored.
+    await fireEvent.click(screen.getByTestId('attention-inbox-answer-undo'));
+    expect((screen.getByTestId('attention-inbox-reply-input') as HTMLInputElement).value).toBe('');
+
+    await fireEvent.input(screen.getByTestId('attention-inbox-reply-input'), {
+      target: { value: 'go ahead and merge it' },
+    });
+    await fireEvent.click(screen.getByTestId('attention-inbox-reply-send'));
+    await vi.advanceTimersByTimeAsync(3000);
     expect(onReply).toHaveBeenCalledWith('sess-b', 'go ahead and merge it');
-    expect((input as HTMLInputElement).value).toBe('');
+    vi.useRealTimers();
   });
 
   it('does not call onReply when the composer is submitted empty', async () => {
@@ -258,5 +277,256 @@ describe('AttentionInbox: all four classes are visually distinguishable (issue #
       .getAllByTestId('attention-inbox-kind-badge')
       .map((badge) => badge.textContent);
     expect(new Set(badges).size).toBe(badges.length);
+  });
+});
+
+describe('AttentionInbox: agent message in full, no digit badge (E1-3 amended, issue #671)', () => {
+  it("renders the agent's real last message in full for a permission item, not the derived need label", () => {
+    const withMessage: AttentionInboxItem = {
+      ...permissionItem,
+      agentMessage: 'I need to run the test suite before touching anything else.',
+    };
+    render(AttentionInbox, {
+      props: { items: [withMessage], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply: vi.fn() },
+    });
+    const message = screen.getByTestId('attention-inbox-need');
+    expect(message.textContent).toContain(
+      'I need to run the test suite before touching anything else.',
+    );
+    expect(message.textContent).not.toContain('Needs approval');
+  });
+
+  it("renders the agent's real last message in full for an awaiting_input item", () => {
+    const withMessage: AttentionInboxItem = {
+      ...awaitingInputItem,
+      agentMessage: 'Done with the migration — want me to run it against staging next?',
+    };
+    render(AttentionInbox, {
+      props: { items: [withMessage], onResolve: vi.fn(), onOpenSession: vi.fn(), onReply: vi.fn() },
+    });
+    expect(screen.getByTestId('attention-inbox-need').textContent).toContain(
+      'Done with the migration — want me to run it against staging next?',
+    );
+  });
+
+  it('falls back to the derived label when the item has no agent message yet', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.getByTestId('attention-inbox-need').textContent).toBe(
+      'Needs approval: Run tests',
+    );
+  });
+
+  it('renders permission options with no leading digit badge', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const allow = screen.getByRole('button', { name: /Allow/ });
+    const deny = screen.getByRole('button', { name: /Deny/ });
+    expect(allow.textContent?.trim()).toBe('Allow');
+    expect(deny.textContent?.trim()).toBe('Deny');
+  });
+});
+
+describe('AttentionInbox: answering dims and offers undo, queue-wide (E2-1, issue #671)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('dims the row and shows the outcome immediately, without removing it, then commits and clears after the window', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn();
+    render(AttentionInbox, {
+      props: { items: [permissionItem], onResolve, onOpenSession: vi.fn(), onReply: vi.fn() },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: /Allow/ }));
+
+    expect(screen.getAllByTestId('attention-inbox-item')).toHaveLength(1);
+    expect(screen.queryByTestId('permission-card')).toBeNull();
+    expect(screen.getByTestId('attention-inbox-answer-outcome').textContent).toContain('Allow');
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onResolve).toHaveBeenCalledWith('sess-a', 'req-1', PERMISSION_OPTIONS[0]);
+  });
+
+  it('undo restores the row before the real callback ever fires, not merely cancelling the timer', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn();
+    render(AttentionInbox, {
+      props: { items: [permissionItem], onResolve, onOpenSession: vi.fn(), onReply: vi.fn() },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: /Allow/ }));
+    await fireEvent.click(screen.getByTestId('attention-inbox-answer-undo'));
+
+    // Restored: the live, actionable PermissionCard is back, not a frozen outcome.
+    expect(screen.getByTestId('permission-card')).toBeTruthy();
+    expect(screen.queryByTestId('attention-inbox-answer-outcome')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  it('the queue path: answering two items and undoing one only ever commits the one left standing, and a third untouched item never fires at all', async () => {
+    vi.useFakeTimers();
+    const secondPermission: AttentionInboxItem = {
+      ...permissionItem,
+      sessionId: 'sess-b2',
+      sessionTitle: 'Ship the release',
+      permission: {
+        ...permissionItem.permission!,
+        requestId: 'req-2',
+        sessionId: 'sess-b2',
+      },
+    };
+    const thirdPermission: AttentionInboxItem = {
+      ...permissionItem,
+      sessionId: 'sess-c3',
+      sessionTitle: 'Untouched session',
+      permission: {
+        ...permissionItem.permission!,
+        requestId: 'req-3',
+        sessionId: 'sess-c3',
+      },
+    };
+    const onResolve = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem, secondPermission, thirdPermission],
+        onResolve,
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    await fireEvent.click(within(rows[0]).getByRole('button', { name: /Allow/ }));
+    await fireEvent.click(within(rows[1]).getByRole('button', { name: /Allow/ }));
+    // Undo the second answer only — the first stays scheduled, the third was never touched.
+    await fireEvent.click(within(rows[1]).getByTestId('attention-inbox-answer-undo'));
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve).toHaveBeenCalledWith('sess-a', 'req-1', PERMISSION_OPTIONS[0]);
+    expect(onResolve).not.toHaveBeenCalledWith('sess-b2', 'req-2', expect.anything());
+    expect(onResolve).not.toHaveBeenCalledWith('sess-c3', 'req-3', expect.anything());
+    // The untouched third row is still fully interactive.
+    expect(within(rows[2]).getByTestId('permission-card')).toBeTruthy();
+  });
+});
+
+describe('AttentionInbox: keyboard-first triage (E3-1, issue #671)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('states the digit shortcut in the hint bar, its only advertisement now the badge is gone (spec §0 conflict resolution)', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const hints = screen.getByTestId('attention-inbox-hints').textContent ?? '';
+    expect(hints).toMatch(/1.*9|digit/i);
+    expect(hints.toLowerCase()).toContain('j');
+    expect(hints.toLowerCase()).toContain('k');
+  });
+
+  it('j/k move the list-wide focus cursor between rows', async () => {
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows[0].className).toMatch(/ui-row-active/);
+    expect(rows[1].className).not.toMatch(/ui-row-active/);
+
+    await fireEvent.keyDown(window, { key: 'j' });
+    expect(rows[0].className).not.toMatch(/ui-row-active/);
+    expect(rows[1].className).toMatch(/ui-row-active/);
+
+    await fireEvent.keyDown(window, { key: 'k' });
+    expect(rows[0].className).toMatch(/ui-row-active/);
+    expect(rows[1].className).not.toMatch(/ui-row-active/);
+  });
+
+  it('a digit key answers the focused row, not necessarily the first one', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, permissionItem],
+        onResolve,
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    await fireEvent.keyDown(window, { key: 'j' }); // move onto the permission row
+    await fireEvent.keyDown(window, { key: '2' }); // Deny is PERMISSION_OPTIONS[1]
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onResolve).toHaveBeenCalledWith('sess-a', 'req-1', PERMISSION_OPTIONS[1]);
+  });
+
+  it("Enter moves real focus into the focused row's reply box", async () => {
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem, awaitingInputItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    await fireEvent.keyDown(window, { key: 'j' }); // move onto the awaiting_input row
+    await fireEvent.keyDown(window, { key: 'Enter' });
+    expect(document.activeElement).toBe(screen.getByTestId('attention-inbox-reply-input'));
+  });
+
+  it('does not hijack j/k/digits while the user is typing in the reply box', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem, awaitingInputItem],
+        onResolve,
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const input = screen.getByTestId('attention-inbox-reply-input');
+    input.focus();
+    await fireEvent.keyDown(input, { key: '1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onResolve).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('attention-inbox-answer-outcome')).toBeNull();
+  });
+
+  it('mouse interaction still works exactly as before alongside keyboard nav', async () => {
+    const onOpenSession = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession,
+        onReply: vi.fn(),
+      },
+    });
+    await fireEvent.click(screen.getAllByTestId('attention-inbox-open')[1]);
+    expect(onOpenSession).toHaveBeenCalledWith('sess-a');
   });
 });
