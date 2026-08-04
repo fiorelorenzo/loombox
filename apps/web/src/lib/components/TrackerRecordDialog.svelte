@@ -98,6 +98,46 @@
     roleValues = { ...roleValues, [role]: value };
   }
 
+  /**
+   * Routes a role input's raw value to {@link setRoleValue}, except for
+   * `title` in create mode: v7 decision F3-1 (issue #673) — typing
+   * `<type-id>:` at the start of the title picks that type, and the
+   * prefix never survives into the stored title. Matched case-
+   * insensitively against every currently known type's own `id` (built-in
+   * or custom), longest match wins so a more specific id never gets
+   * shadowed by a shorter one that's also a prefix of it. Edit mode never
+   * re-derives the type from the title — an existing record's type is a
+   * deliberate, already-made choice, not something a stray colon should
+   * silently change.
+   */
+  function handleRoleInput(role: TrackerRoleV1, value: string): void {
+    if (role === 'title' && !record) {
+      const detected = detectTypePrefix(value);
+      if (detected) {
+        primaryType = detected.type.id;
+        setRoleValue('title', detected.rest);
+        return;
+      }
+    }
+    setRoleValue(role, value);
+  }
+
+  function detectTypePrefix(
+    value: string,
+  ): { type: TrackerTypeDefinitionV1; rest: string } | undefined {
+    const lower = value.toLowerCase();
+    let best: { type: TrackerTypeDefinitionV1; prefixLength: number } | undefined;
+    for (const candidate of types) {
+      const prefix = `${candidate.id.toLowerCase()}:`;
+      if (!lower.startsWith(prefix)) continue;
+      if (!best || prefix.length > best.prefixLength) {
+        best = { type: candidate, prefixLength: prefix.length };
+      }
+    }
+    if (!best) return undefined;
+    return { type: best.type, rest: value.slice(best.prefixLength).trimStart() };
+  }
+
   async function handleSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const type = selectedType;
@@ -146,7 +186,7 @@
             {id}
             {describedBy}
             value={roleValue(role)}
-            oninput={(event) => setRoleValue(role, event.currentTarget.value)}
+            oninput={(event) => handleRoleInput(role, event.currentTarget.value)}
             dataTestId={`tracker-record-${role}`}
           />
         {/snippet}
