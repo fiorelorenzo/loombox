@@ -9,6 +9,7 @@ const EXPECTED_NAMES = [
   'sessions',
   'inbox',
   'targets',
+  'tracker',
   'command',
   'settings',
   'collapse-chevron',

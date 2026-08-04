@@ -40,6 +40,7 @@ export const ICON_NAMES = [
   'sessions',
   'inbox',
   'targets',
+  'tracker',
   'command',
   'settings',
   'collapse-chevron',
@@ -252,4 +253,11 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // `FALLBACK_ICON_PATHS` but its own name so a missing/legacy provider id
   // still reads as "an agent", not as a broken icon reference.
   'provider-generic': ['M18 32 A14 14 0 1 0 46 32 A14 14 0 1 0 18 32'],
+
+  // A three-column frame — the kanban board's own shape at rail size
+  // (issue #212). Deliberately the literal board, not a checklist/ticket
+  // glyph: `file`/`folder` already own the document register, and this is
+  // the one icon in the set that means "a board of columns", not "a
+  // single item".
+  tracker: ['M12 12 H52 V52 H12 Z', 'M28 12 V52', 'M40 12 V52'],
 };

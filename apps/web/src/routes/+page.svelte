@@ -92,6 +92,7 @@
   import OnboardingGate from '$lib/components/OnboardingGate.svelte';
   import InboxPage from '$lib/components/pages/InboxPage.svelte';
   import SettingsPage, { type SettingsSection } from '$lib/components/pages/SettingsPage.svelte';
+  import TrackerPage from '$lib/components/pages/TrackerPage.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -216,7 +217,7 @@
    * (`settingsSection` below), reached one click deeper than before. IA v4
    * §3.1 is amended accordingly (`docs/superpowers/specs/2026-07-25-ia-v4-design.md`).
    */
-  let mainView = $state<'session' | 'inbox' | 'settings'>('session');
+  let mainView = $state<'session' | 'inbox' | 'settings' | 'tracker'>('session');
 
   /**
    * Which section of the Settings page is showing (issue #568): Settings
@@ -2563,6 +2564,35 @@
               >
             {/if}
           </button>
+          {#if selectedSessionId}
+            <!-- Project-scoped, unlike Inbox above (issue #212): the
+                 native tracker's kanban/list UI needs a bound session to
+                 route its wire requests through (`TrackerPage`'s own doc
+                 comment), so this row only appears once one is selected —
+                 the same gate the right sidebar's Config tab already uses
+                 for `selectedProjectPath`. Closes `sessionsSheetOpen`
+                 itself (mirrors the tabbar's own `tabbar-inbox` handler,
+                 not this same nav's `destination-inbox` sibling, which
+                 has no mobile-tabbar duplicate to lean on) — Tracker has
+                 no tabbar entry of its own, so this row IS the only
+                 mobile path to it, and it must close the sheet it lives
+                 inside on its way there or the backdrop it leaves open
+                 blocks the destination page underneath (caught by
+                 `tracker-mobile.spec.ts`). -->
+            <button
+              type="button"
+              class="destination-row"
+              class:active={mainView === 'tracker'}
+              onclick={() => {
+                mainView = 'tracker';
+                sessionsSheetOpen = false;
+              }}
+              data-testid="destination-tracker"
+            >
+              <span class="destination-icon"><Icon name="tracker" size="100%" /></span>
+              <span class="destination-label">Tracker</span>
+            </button>
+          {/if}
         </nav>
 
         <div class="sidebar-divider" role="separator" aria-orientation="horizontal"></div>
@@ -3063,6 +3093,8 @@
                   section={settingsSection}
                   onSectionChange={selectSettingsSection}
                 />
+              {:else if mainView === 'tracker' && selectedSessionId && client}
+                <TrackerPage {client} sessionId={selectedSessionId} />
               {/if}
             </div>
           {:else if !selectedSessionId}

@@ -2890,6 +2890,428 @@ describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
   });
 });
 
+describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
+  it('trackerSnapshotFor lazily loads a session\u2019s tracker snapshot, decrypting a real tracker_snapshot_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-snapshot';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_1', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const snapshot = client.trackerSnapshotFor(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'tracker_snapshot_request')) as {
+      type: 'tracker_snapshot_request';
+      sessionId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+
+    const taskRecord = {
+      id: 'rec-1',
+      primaryType: 'task',
+      typeTags: [],
+      issueNumber: 1,
+      archived: false,
+      createdAt: 1,
+      updatedAt: 1,
+      fields: { title: 'Ship it', status: 'todo' },
+      system: {
+        authorId: 'author-1',
+        linkedCommitSha: [],
+        linkedPullRequests: [],
+        linkedSessionIds: [],
+        activity: [],
+        comments: [],
+      },
+    };
+    const taskType = {
+      id: 'task',
+      label: 'Task',
+      builtin: true,
+      roles: {
+        title: 'title',
+        workflowStatus: 'status',
+        priority: 'priority',
+        assignee: 'assignee',
+      },
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', records: [taskRecord], types: [taskType] },
+      key,
+    );
+    node.send({
+      type: 'tracker_snapshot_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const loaded = await waitForStore(snapshot, (value) => value.status === 'loaded');
+    expect(loaded.records).toEqual([taskRecord]);
+    expect(loaded.types).toEqual([taskType]);
+  });
+
+  it('surfaces an error outcome as status "error" rather than hanging, and reloadTrackerSnapshot retries', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_2', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const snapshot = client.trackerSnapshotFor(session.id);
+    const request = (await node.waitFor((m) => m.type === 'tracker_snapshot_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'the node did not answer in time' },
+      key,
+    );
+    node.send({
+      type: 'tracker_snapshot_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+    const errored = await waitForStore(snapshot, (value) => value.status === 'error');
+    expect(errored.error).toBe('the node did not answer in time');
+
+    // Retry: reloadTrackerSnapshot sends a fresh request; a successful reply flips status back to loaded.
+    client.reloadTrackerSnapshot(session.id);
+    const retryRequest = (await node.waitFor((m) => {
+      if (m.type !== 'tracker_snapshot_request') return false;
+      return (m as { requestId: string }).requestId !== request.requestId;
+    })) as { requestId: string };
+    const okEnvelope = await nodeSeal(session.id, { outcome: 'ok', records: [], types: [] }, key);
+    node.send({
+      type: 'tracker_snapshot_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: retryRequest.requestId,
+      envelope: okEnvelope,
+    });
+    const reloaded = await waitForStore(snapshot, (value) => value.status === 'loaded');
+    expect(reloaded.records).toEqual([]);
+  });
+
+  it("a client ignores a tracker_snapshot_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_3', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const snapshot = client.trackerSnapshotFor(session.id);
+    await node.waitFor((m) => m.type === 'tracker_snapshot_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', records: [], types: [] },
+      key,
+    );
+    node.send({
+      type: 'tracker_snapshot_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(get(snapshot).status).toBe('loading');
+  });
+
+  it('createTrackerRecord sends a real tracker_write_request(op: create), resolves with the node\u2019s record, and merges it into the snapshot store', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-create';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_4', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const createPromise = client.createTrackerRecord(session.id, {
+      primaryType: 'task',
+      fields: { title: 'Ship it', status: 'todo' },
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
+      type: 'tracker_write_request';
+      sessionId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ op: string; primaryType: string }>(
+      session.id,
+      request.envelope,
+      key,
+    );
+    expect(requestPayload).toEqual({
+      op: 'create',
+      primaryType: 'task',
+      fields: { title: 'Ship it', status: 'todo' },
+    });
+
+    const record = {
+      id: 'rec-created',
+      primaryType: 'task',
+      typeTags: [],
+      issueNumber: 2,
+      archived: false,
+      createdAt: 1,
+      updatedAt: 1,
+      fields: { title: 'Ship it', status: 'todo' },
+      system: {
+        authorId: accountId,
+        linkedCommitSha: [],
+        linkedPullRequests: [],
+        linkedSessionIds: [],
+        activity: [],
+        comments: [],
+      },
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', record }, key);
+    node.send({
+      type: 'tracker_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const resolved = await createPromise;
+    expect(resolved).toEqual(record);
+    const snapshot = client.trackerSnapshotFor(session.id);
+    await waitForStore(snapshot, (value) => value.records.some((r) => r.id === 'rec-created'));
+  });
+
+  it('createTrackerRecord rejects (never silently drops) when the node replies with outcome: error', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-create-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_5', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-5' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const createPromise = client.createTrackerRecord(session.id, {
+      primaryType: 'ghost-type',
+      fields: {},
+    });
+    const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'unknown tracker type "ghost-type"' },
+      key,
+    );
+    node.send({
+      type: 'tracker_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(createPromise).rejects.toThrow('unknown tracker type "ghost-type"');
+  });
+
+  it('updateTrackerRecord sends a real tracker_write_request(op: update) — the kanban board\u2019s drag-to-move path', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-update';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-6',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_6', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-6' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const updatePromise = client.updateTrackerRecord(session.id, 'rec-1', {
+      fields: { title: 'Ship it', status: 'done' },
+    });
+    const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ op: string; id: string }>(
+      session.id,
+      request.envelope,
+      key,
+    );
+    expect(requestPayload).toEqual({
+      op: 'update',
+      id: 'rec-1',
+      fields: { title: 'Ship it', status: 'done' },
+    });
+
+    const record = {
+      id: 'rec-1',
+      primaryType: 'task',
+      typeTags: [],
+      issueNumber: 1,
+      archived: false,
+      createdAt: 1,
+      updatedAt: 2,
+      fields: { title: 'Ship it', status: 'done' },
+      system: {
+        authorId: 'author-1',
+        linkedCommitSha: [],
+        linkedPullRequests: [],
+        linkedSessionIds: [],
+        activity: [],
+        comments: [],
+      },
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', record }, key);
+    node.send({
+      type: 'tracker_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const resolved = await updatePromise;
+    expect(resolved.fields.status).toBe('done');
+  });
+
+  it('defineTrackerType sends a real tracker_write_request(op: defineType) and merges the returned type into the snapshot store', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-definetype';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-7',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_7', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-7' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const definePromise = client.defineTrackerType(session.id, {
+      id: 'feature-request',
+      label: 'Feature Request',
+      roles: { title: 'summary', workflowStatus: 'stage' },
+    });
+    const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
+      requestId: string;
+    };
+    const typeDefinition = {
+      id: 'feature-request',
+      label: 'Feature Request',
+      builtin: false,
+      roles: { title: 'summary', workflowStatus: 'stage' },
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', typeDefinition }, key);
+    node.send({
+      type: 'tracker_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const resolved = await definePromise;
+    expect(resolved).toEqual(typeDefinition);
+    const snapshot = client.trackerSnapshotFor(session.id);
+    await waitForStore(snapshot, (value) => value.types.some((t) => t.id === 'feature-request'));
+  });
+});
+
 describe('RelayClient: listTargets (issue #383)', () => {
   it("resolves with the account's targets, marked reachable while the announcing node stays connected", async () => {
     const amk = generateAmk();
