@@ -18,6 +18,7 @@ import { createLocalStorageAmkStorage } from '$lib/amk-store';
 import type {
   AttentionInboxItem,
   ClientSessionMeta,
+  ConnectedAccount,
   ConnectionStatus,
   TargetListEntry,
 } from '$lib/relay-client';
@@ -123,6 +124,7 @@ function createSignedOutAuthStore() {
 interface FakeClientScenario {
   sessions?: ClientSessionMeta[];
   targets?: TargetListEntry[];
+  connectedAccounts?: ConnectedAccount[];
   sessionStatuses?: Record<string, AcpSessionStatus>;
   /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
   transcripts?: Record<string, TranscriptState>;
@@ -144,6 +146,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
   return {
     status: statusStore,
     sessions: sessionsStore,
+    connectedAccounts: makeStore(scenario.connectedAccounts ?? []),
     sessionDecryptFailures: makeStore(0),
     attentionInbox: () => makeStore<AttentionInboxItem[]>([]),
     connect: vi.fn(() => statusStore.set('open')),

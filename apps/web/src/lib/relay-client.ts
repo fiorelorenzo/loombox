@@ -43,6 +43,8 @@ import {
   newDeviceBootstrapResponse,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
+  type ConnectedAccount,
+  type ConnectedAccountList,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
   type FsEntryV1,
@@ -89,7 +91,7 @@ import {
 } from './attachments';
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
 
-export type { TargetHealth, TargetListEntry } from '@loombox/protocol';
+export type { ConnectedAccount, TargetHealth, TargetListEntry } from '@loombox/protocol';
 export type {
   ProvisionProgress,
   ProvisionStepIdV1,
@@ -856,6 +858,8 @@ export class RelayClient {
    * this class throwing or guessing at *why* a decrypt failed.
    */
   readonly sessionDecryptFailures: Readable<number>;
+  /** Every `ConnectedAccount` synced under this account across every node that has announced one (SPEC §7.26, issue #221's `connected_account_list` snapshot) — fed exactly like {@link sessions}: requested once on `connect()`'s handshake, then kept fresh by whatever `connected_account_announce` fan-out the relay does after. Routing metadata only, never encrypted (no `privateEnvelope` on this pair), so unlike `sessions` there is no decrypt step between the wire and this store. */
+  readonly connectedAccounts: Readable<ConnectedAccount[]>;
 
   private readonly options: RelayClientOptions;
   private readonly amk: Uint8Array;
@@ -867,6 +871,7 @@ export class RelayClient {
   private readonly statusStore: Writable<ConnectionStatus>;
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly sessionDecryptFailuresStore: Writable<number> = writable(0);
+  private readonly connectedAccountsStore: Writable<ConnectedAccount[]> = writable([]);
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
@@ -1051,6 +1056,7 @@ export class RelayClient {
     this.status = this.statusStore;
     this.sessions = this.sessionsStore;
     this.sessionDecryptFailures = this.sessionDecryptFailuresStore;
+    this.connectedAccounts = this.connectedAccountsStore;
 
     // Reloads whatever this account's outbox already had persisted (issue
     // #130's "outbox survives a full page reload") — fire-and-forget since
@@ -1133,6 +1139,9 @@ export class RelayClient {
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
           this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+          // SPEC §7.26, issue #221: the same account-scoped snapshot request
+          // shape as `session_list_request` above, fed into {@link connectedAccounts}.
+          this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
           // Issue #155: a dropped connection mid-upload gets exactly one
           // automatic retry once the connection is back — harmless on the
           // very first connect too, since no attachment can be in a
@@ -2825,9 +2834,17 @@ export class RelayClient {
       case 'target_update_response':
         this.handleTargetUpdateResponse(message);
         return;
+      case 'connected_account_list':
+        this.handleConnectedAccountList(message);
+        return;
       default:
         return;
     }
+  }
+
+  /** SPEC §7.26, issue #221: `connected_account_list` carries the full account-scoped snapshot (never a delta), so this replaces {@link connectedAccounts} wholesale — same "always the full list" contract `handleSessionList` follows for `sessions`. Routing metadata only, no decrypt step (see this class's own doc comment). */
+  private handleConnectedAccountList(message: ConnectedAccountList): void {
+    this.connectedAccountsStore.set([...message.accounts]);
   }
 
   private handleSessionList(message: SessionListV1): void {

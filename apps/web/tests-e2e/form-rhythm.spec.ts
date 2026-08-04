@@ -119,4 +119,24 @@ test.describe('form rhythm (Field stacking contract)', () => {
 
     assertFieldsGroup(await measure(page, '[data-testid="dialog"]'));
   });
+
+  test('the tracker config panel (issue #220) groups its fields once live mode reveals more than one', async ({
+    page,
+    loombox,
+  }) => {
+    expect(loombox.session.sessionId).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
+    await page.getByTestId('project-config-toggle').click();
+    await expect(page.getByTestId('tracker-config-panel')).toBeVisible({ timeout: 30_000 });
+
+    // Native-only shows a single Field (nothing to compare a gap against
+    // yet); live mode reveals the provider + account + target fields this
+    // contract is actually about.
+    await page.getByTestId('tracker-mode-live').click();
+    await expect(page.getByTestId('tracker-provider')).toBeVisible();
+
+    assertFieldsGroup(await measure(page, '[data-testid="tracker-config-panel"]'));
+  });
 });
