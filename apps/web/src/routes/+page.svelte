@@ -2570,12 +2570,23 @@
                  route its wire requests through (`TrackerPage`'s own doc
                  comment), so this row only appears once one is selected —
                  the same gate the right sidebar's Config tab already uses
-                 for `selectedProjectPath`. -->
+                 for `selectedProjectPath`. Closes `sessionsSheetOpen`
+                 itself (mirrors the tabbar's own `tabbar-inbox` handler,
+                 not this same nav's `destination-inbox` sibling, which
+                 has no mobile-tabbar duplicate to lean on) — Tracker has
+                 no tabbar entry of its own, so this row IS the only
+                 mobile path to it, and it must close the sheet it lives
+                 inside on its way there or the backdrop it leaves open
+                 blocks the destination page underneath (caught by
+                 `tracker-mobile.spec.ts`). -->
             <button
               type="button"
               class="destination-row"
               class:active={mainView === 'tracker'}
-              onclick={() => (mainView = 'tracker')}
+              onclick={() => {
+                mainView = 'tracker';
+                sessionsSheetOpen = false;
+              }}
               data-testid="destination-tracker"
             >
               <span class="destination-icon"><Icon name="tracker" size="100%" /></span>
