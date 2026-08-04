@@ -65,7 +65,7 @@ describe('GenericToolRow', () => {
     expect(screen.queryByText('pattern')).toBeNull();
   });
 
-  it('is expandable/collapsible, defaulting open so replayed history still shows its body immediately', async () => {
+  it('stays expanded by default while a call is still running', async () => {
     render(GenericToolRow, { props: { item } });
     expect(screen.getByText('pattern')).toBeTruthy();
 
@@ -80,6 +80,43 @@ describe('GenericToolRow', () => {
     const icon = container.querySelector('[data-icon-name="tool-generic"]');
     expect(icon).toBeTruthy();
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('GenericToolRow: resting state and its one override (v7 decisions §3, issue #668)', () => {
+  const completedMultilineItem: TranscriptToolCallItem = {
+    ...item,
+    status: 'completed',
+    content: Array.from({ length: 13 }, (_, i) => `line ${i + 1}`).join('\n'),
+  };
+
+  it('C1-1 — a completed multi-line call rests collapsed to one header line, output behind the disclosure', () => {
+    const { container } = render(GenericToolRow, { props: { item: completedMultilineItem } });
+    expect(screen.getByText('Search for TODOs')).toBeTruthy();
+    expect(screen.queryByText('line 1', { exact: false })).toBeNull();
+    // No block chrome at rest — `ToolCard` stays in its plain, borderless mode.
+    expect(container.querySelector('.tool-card')?.getAttribute('data-surface')).toBe('false');
+  });
+
+  it('expands on click to show the full output and its card, and collapses again on a second click', async () => {
+    const { container } = render(GenericToolRow, { props: { item: completedMultilineItem } });
+    const toggle = screen.getByRole('button', { expanded: false });
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('line 1', { exact: false })).toBeTruthy();
+    expect(container.querySelector('.tool-card')?.getAttribute('data-surface')).toBe('true');
+
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('line 1', { exact: false })).toBeNull();
+  });
+
+  it('C2-1 — a failed call always renders in full, uncapped, with no disclosure control to collapse it', () => {
+    render(GenericToolRow, { props: { item: { ...completedMultilineItem, status: 'failed' } } });
+    expect(screen.getByText('line 1', { exact: false })).toBeTruthy();
+    const header = screen.getByTestId('row-header');
+    expect(header.tagName).toBe('DIV');
+    expect(header.getAttribute('aria-expanded')).toBeNull();
   });
 });
 

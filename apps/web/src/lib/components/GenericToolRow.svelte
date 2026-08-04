@@ -53,6 +53,18 @@
    * by definition the "any other tool" case, so it always draws the
    * shared `tool-generic` glyph via `ToolCallGutter` — decorative, the
    * kind is carried by the `sr-only` label right beside it.
+   *
+   * Resting state and its one override (v7 decisions §3, issue #668):
+   * C1-1 — a completed call rests collapsed to this header's single line
+   * (title/command plus `ToolCallStatus`'s outcome), the block body waits
+   * behind the disclosure chevron rather than opening by default. C2-1 —
+   * a failed call always renders its body in full, uncapped, and the
+   * disclosure is locked open (no button at all, just static text) so it
+   * cannot be collapsed by accident; this is a rule scoped to `failed`
+   * that overrides whichever resting default C1-1 picked, never a second
+   * competing default. A still-running call (`pending`/`in_progress`)
+   * keeps the old always-open behaviour, since there's live output worth
+   * watching.
    */
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import {
@@ -73,7 +85,18 @@
 
   const { item }: Props = $props();
 
-  let expanded = $state(true);
+  // See the file doc comment's "Resting state and its one override" note.
+  // Only the mount-time status matters here (a live status change never
+  // auto-collapses/-expands an already-rendered row): `locked` picks up
+  // `failed` reactively regardless.
+  // svelte-ignore state_referenced_locally
+  let expandedState = $state(item.status !== 'completed');
+  const locked = $derived(item.status === 'failed');
+  const expanded = $derived(locked || expandedState);
+  function toggleExpanded() {
+    if (locked) return;
+    expandedState = !expandedState;
+  }
 
   const titleText = $derived(item.title ?? item.id);
   const hasContent = $derived(item.content !== undefined);
@@ -140,13 +163,7 @@
   <ToolCallGutter icon="tool-generic" />
   <ToolCard surface={showBlock}>
     <div class="header-line">
-      <button
-        type="button"
-        class="row-header"
-        onclick={() => (expanded = !expanded)}
-        aria-expanded={expanded}
-      >
-        <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+      {#snippet headerContent()}
         <span class="sr-only">{item.toolKind ?? 'other'}</span>
         <span class="title-line">
           <span class="title">{item.title ?? item.id}</span>
@@ -170,7 +187,23 @@
           {/if}
         </span>
         <ToolCallStatus status={item.status} />
-      </button>
+      {/snippet}
+      {#if locked}
+        <div class="row-header row-header-static" data-testid="row-header">
+          {@render headerContent()}
+        </div>
+      {:else}
+        <button
+          type="button"
+          class="row-header"
+          onclick={toggleExpanded}
+          aria-expanded={expanded}
+          data-testid="row-header"
+        >
+          <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+          {@render headerContent()}
+        </button>
+      {/if}
       <div class="copy-row">
         <CopyButton
           text={copyText}
@@ -248,6 +281,13 @@
 
   .row-header[aria-expanded='false'] :global(.disclosure-icon) {
     transform: rotate(-90deg);
+  }
+
+  /* C2-1 (issue #668): the locked/failed header renders as plain text,
+     not a button — there is nothing to disclose, so no click affordance
+     (and no misleading focus outline) should suggest otherwise. */
+  .row-header-static {
+    cursor: default;
   }
 
   /* Holds the title and, when the payload is a single line, that payload

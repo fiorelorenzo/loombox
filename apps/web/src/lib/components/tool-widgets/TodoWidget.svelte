@@ -8,14 +8,25 @@
    * One level of card chrome (design spec `2026-08-03-cockpit-v6-design.md`
    * §3.4, issue #576): unlike `BashWidget`/`EditWriteWidget`, the checklist
    * body has no surface of its own to defer to, so `ToolCard` renders
-   * `surface={true}` here — this is the one bespoke widget that keeps the
-   * v5 bordered-card treatment, because dropping it would leave a
-   * multi-line checklist with no definition at all. Status renders via the
-   * shared `ToolCallStatus` (a failed run is louder than a completed one;
-   * see that component's own doc comment). The header toggles the
-   * checklist body's expand/collapse, defaulting open. The per-entry ☑/☐
-   * marks are unaffected (out of this pass's scope, matching `PlanCard`'s
-   * identical, untouched marker convention).
+   * `surface={true}` while expanded — this is the one bespoke widget that
+   * keeps the v5 bordered-card treatment for its body, because dropping it
+   * would leave a multi-line checklist with no definition at all. Status
+   * renders via the shared `ToolCallStatus` (a failed run is louder than a
+   * completed one; see that component's own doc comment). The per-entry
+   * ☑/☐ marks are unaffected (out of this pass's scope, matching
+   * `PlanCard`'s identical, untouched marker convention).
+   *
+   * Resting state and its one override (v7 decisions §3, issue #668):
+   * C1-1 — a completed call rests collapsed to this header's single line,
+   * title plus a `{done}/{total} done` progress summary standing in for
+   * "the outcome" (there's no single command/output pair for a todo
+   * write, but the completion count is exactly that kind of at-a-glance
+   * fact) — the checklist itself, and `ToolCard`'s border, wait behind
+   * the disclosure. C2-1 — a failed call always renders the checklist in
+   * full, disclosure locked open (no button, just static text) so it
+   * cannot be collapsed by accident — this overrides C1-1's resting
+   * default rather than competing with it. A still-running call keeps the
+   * old always-open behaviour.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the header draws a shared glyph next to the title, same
@@ -41,24 +52,49 @@
   // resolveToolWidgetKind only routes here when isTodoInput(item.rawInput) is true.
   const todos = $derived(isTodoInput(item.rawInput) ? item.rawInput.todos : []);
   const copyText = $derived(todos.map((todo) => `[${todo.status}] ${todo.content}`).join('\n'));
+  const doneCount = $derived(todos.filter((todo) => todo.status === 'completed').length);
 
-  let expanded = $state(true);
+  // See the file doc comment's "Resting state and its one override" note.
+  // Only the mount-time status matters here (a live status change never
+  // auto-collapses/-expands an already-rendered row): `locked` picks up
+  // `failed` reactively regardless.
+  // svelte-ignore state_referenced_locally
+  let expandedState = $state(item.status !== 'completed');
+  const locked = $derived(item.status === 'failed');
+  const expanded = $derived(locked || expandedState);
+  function toggleExpanded() {
+    if (locked) return;
+    expandedState = !expandedState;
+  }
 </script>
 
 <div class="todo-widget" data-testid="todo-widget">
   <ToolCallGutter icon="tool-generic" />
-  <ToolCard surface={true}>
+  <ToolCard surface={expanded}>
     <div class="header-line">
-      <button
-        type="button"
-        class="row-header"
-        onclick={() => (expanded = !expanded)}
-        aria-expanded={expanded}
-      >
-        <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+      {#snippet headerContent()}
         <span class="title">Todo list</span>
+        {#if !expanded}
+          <span class="inline-summary">{doneCount}/{todos.length} done</span>
+        {/if}
         <ToolCallStatus status={item.status} />
-      </button>
+      {/snippet}
+      {#if locked}
+        <div class="row-header row-header-static" data-testid="row-header">
+          {@render headerContent()}
+        </div>
+      {:else}
+        <button
+          type="button"
+          class="row-header"
+          onclick={toggleExpanded}
+          aria-expanded={expanded}
+          data-testid="row-header"
+        >
+          <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+          {@render headerContent()}
+        </button>
+      {/if}
       <div class="copy-row">
         <CopyButton text={copyText} label="Copy todo list" revealOnHover />
       </div>
@@ -126,8 +162,25 @@
   }
 
   .title {
-    flex: 1;
+    flex: 0 0 auto;
     font-weight: 600;
+  }
+
+  /* The at-rest "outcome" for a todo write (C1-1, issue #668): a plain
+     completion count standing in for the command/output pair other
+     widgets show — only visible while collapsed, the full checklist below
+     already carries this once expanded. */
+  .inline-summary {
+    flex: 1;
+    min-width: 0;
+    color: var(--color-text-muted);
+  }
+
+  /* C2-1 (issue #668): the locked/failed header renders as plain text,
+     not a button — there is nothing to disclose, so no click affordance
+     (and no misleading focus outline) should suggest otherwise. */
+  .row-header-static {
+    cursor: default;
   }
 
   .copy-row {
