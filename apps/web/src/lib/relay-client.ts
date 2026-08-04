@@ -45,7 +45,10 @@ import {
   parseTestRunnerConfigResultPayloadV1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
+  type AccountPinMapV1,
+  type AccountPinResolveOutcome,
   type ConnectedAccount,
+  type ConnectedAccountDisconnectResponse,
   type ConnectedAccountList,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
@@ -53,7 +56,10 @@ import {
   type FsListRequestPayloadV1,
   type FsListResponse,
   type FsListResponsePayloadV1,
+  type GithubConnectDeviceCode,
+  type GithubConnectOutcome,
   type Initialize,
+  type JiraConnectOutcome,
   type NewDeviceBootstrapRequest,
   type PermissionRequest,
   type Pong,
@@ -116,6 +122,16 @@ export type {
   DecommissionTargetResponse,
   TargetUpdateResponse,
   TargetVersionStatusV1,
+} from '@loombox/protocol';
+export type {
+  AccountPinErrorType,
+  AccountPinMapV1,
+  AccountPinResolveOutcome,
+  ConnectedAccountCredentialSource,
+  ConnectedAccountDisconnectResponse,
+  GithubConnectDeviceCode,
+  GithubConnectOutcome,
+  JiraConnectOutcome,
 } from '@loombox/protocol';
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -864,7 +880,7 @@ export class RelayClient {
    * this class throwing or guessing at *why* a decrypt failed.
    */
   readonly sessionDecryptFailures: Readable<number>;
-  /** Every `ConnectedAccount` synced under this account across every node that has announced one (SPEC §7.26, issue #221's `connected_account_list` snapshot) — fed exactly like {@link sessions}: requested once on `connect()`'s handshake, then kept fresh by whatever `connected_account_announce` fan-out the relay does after. Routing metadata only, never encrypted (no `privateEnvelope` on this pair), so unlike `sessions` there is no decrypt step between the wire and this store. */
+  /** SPEC §7.26's connected-accounts registry (issue #221; the connect/pin/disconnect write path is issue #230) — every `ConnectedAccount` synced under this account, across every node. Requested once alongside `session_list_request` on every fresh `attemptOpen()` (including a reconnect); a full-replace snapshot, never a delta — see {@link handleConnectedAccountList}. Call {@link refreshConnectedAccounts} to re-request it (e.g. right after a connect/disconnect this client itself drove). */
   readonly connectedAccounts: Readable<ConnectedAccount[]>;
 
   private readonly options: RelayClientOptions;
@@ -878,6 +894,38 @@ export class RelayClient {
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly sessionDecryptFailuresStore: Writable<number> = writable(0);
   private readonly connectedAccountsStore: Writable<ConnectedAccount[]> = writable([]);
+  /** requestId -> the pending `startGithubConnect` call it belongs to (SPEC §7.26, issue #230). `github_connect_device_code` streams once via `onDeviceCode` (kept in the map, not deleted — the terminal `github_connect_result` is what settles and removes it), mirroring `pendingProvisionRequests`' `onProgress`/final-result split. Plain fields only (no envelope), so like `pendingSshDiscoveryRequests` this resolves a Promise directly. */
+  private readonly pendingGithubConnectRequests = new Map<
+    string,
+    {
+      onDeviceCode?: (info: GithubConnectDeviceCode) => void;
+      resolve: (outcome: GithubConnectOutcome) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /** requestId -> the pending `connectJiraAccount` call it belongs to (SPEC §7.26, issue #230) — one round trip, no progress step. */
+  private readonly pendingJiraConnectRequests = new Map<
+    string,
+    { resolve: (outcome: JiraConnectOutcome) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending `disconnectAccount` call it belongs to (SPEC §7.26, issue #230). */
+  private readonly pendingDisconnectRequests = new Map<
+    string,
+    {
+      resolve: (response: ConnectedAccountDisconnectResponse) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /** requestId -> the pending `getAccountPins`/`setAccountPin`/`unsetAccountPin` call it belongs to (SPEC §7.26/#227, issue #230) — all three share `account_pin_response`'s shape, so one map covers all three, mirroring `packages/relay/src/relay.ts`'s own `pendingAccountRequests` consolidation for the node-facing side of this same surface. */
+  private readonly pendingAccountPinRequests = new Map<
+    string,
+    { resolve: (pins: AccountPinMapV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending `resolveAccountPin` call it belongs to (SPEC §7.26/#227, issue #230). */
+  private readonly pendingAccountPinResolveRequests = new Map<
+    string,
+    { resolve: (outcome: AccountPinResolveOutcome) => void; reject: (error: Error) => void }
+  >();
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
@@ -1161,8 +1209,9 @@ export class RelayClient {
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
           this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
-          // SPEC §7.26, issue #221: the same account-scoped snapshot request
-          // shape as `session_list_request` above, fed into {@link connectedAccounts}.
+          // SPEC §7.26 (issue #221): the account-scoped connected-account
+          // snapshot, requested alongside the session list above so a
+          // picker renders from the first paint of any fresh connection.
           this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
           // Issue #155: a dropped connection mid-upload gets exactly one
           // automatic retry once the connection is back — harmless on the
@@ -1485,6 +1534,346 @@ export class RelayClient {
         nodeId: options.nodeId,
         targetId: options.targetId,
         requestId,
+      });
+    });
+  }
+
+  /**
+   * Re-requests the account-scoped connected-account snapshot (SPEC §7.26,
+   * issue #221) — {@link connectedAccounts} is otherwise only refreshed on
+   * a fresh `attemptOpen()`/reconnect, so a caller that just drove a
+   * connect or disconnect through this same client (issue #230) calls this
+   * to see the result reflected in {@link connectedAccounts} without
+   * waiting for the next reconnect. A no-op (not an error) with no open
+   * connection — the eventual reconnect's own `attemptOpen()` request
+   * covers it.
+   */
+  refreshConnectedAccounts(): void {
+    if (!this.isSocketOpen()) return;
+    this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
+  }
+
+  /**
+   * Asks `nodeId` to start SPEC §7.26's GitHub device-flow connect (issue
+   * #222's flow, reachable here for #230's UI). Unlike every other method
+   * in this class, the request is fire-and-forget from the caller's own
+   * perspective (the returned `requestId`/`cancel` let the caller abort);
+   * `onDeviceCode` fires once, as soon as GitHub issues the code (never a
+   * secret — the whole point of the flow), and `result` settles with the
+   * flow's terminal outcome, mirroring `provisionTarget`'s own
+   * onProgress-then-final-result split. `result` only REJECTS for a
+   * genuinely unusable call (no open connection, or a timeout with no
+   * terminal result at all) — an outcome the operator can act on (a wrong
+   * code, an expired flow, a cancel) resolves with `outcome: 'failure'`,
+   * never a rejection. Defaults to 16 minutes, one past GitHub's own
+   * device-flow `expires_in` default (15 minutes), so a slow-but-real
+   * approval is never cut off client-side either.
+   */
+  startGithubConnect(
+    nodeId: string,
+    onDeviceCode: (info: GithubConnectDeviceCode) => void,
+    timeoutMs = 16 * 60_000,
+  ): { requestId: string; cancel: () => void; result: Promise<GithubConnectOutcome> } {
+    if (!this.isSocketOpen()) {
+      return {
+        requestId: '',
+        cancel: () => {},
+        result: Promise.reject(
+          new Error('RelayClient: cannot connect a GitHub account, no open connection'),
+        ),
+      };
+    }
+    const requestId = generateId('githubconnect');
+    const result = new Promise<GithubConnectOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGithubConnectRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for github_connect_result'));
+      }, timeoutMs);
+      this.pendingGithubConnectRequests.set(requestId, {
+        onDeviceCode,
+        resolve: (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'github_connect_start_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+      });
+    });
+    return {
+      requestId,
+      cancel: () => {
+        if (!this.isSocketOpen()) return;
+        this.send({
+          type: 'github_connect_cancel_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+        });
+      },
+      result,
+    };
+  }
+
+  /**
+   * Asks `nodeId` to run SPEC §7.26's Jira API-token connect path (issue
+   * #225's flow, reachable here for #230's UI) against
+   * `{siteUrl, email, apiToken}` the operator just typed. One round trip;
+   * resolves with `outcome: 'failure'` for a bad site/credentials (never a
+   * rejection — same "an operator-actionable outcome resolves, only a
+   * genuinely unusable call rejects" contract as {@link startGithubConnect}).
+   */
+  connectJiraAccount(
+    nodeId: string,
+    credentials: { siteUrl: string; email: string; apiToken: string },
+    timeoutMs = 20_000,
+  ): Promise<JiraConnectOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot connect a Jira account, no open connection'),
+      );
+    }
+    const requestId = generateId('jiraconnect');
+    return new Promise<JiraConnectOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingJiraConnectRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for jira_connect_response'));
+      }, timeoutMs);
+      this.pendingJiraConnectRequests.set(requestId, {
+        resolve: (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'jira_connect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        siteUrl: credentials.siteUrl,
+        email: credentials.email,
+        apiToken: credentials.apiToken,
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` (the node holding `accountId`'s local secret) to
+   * disconnect it (SPEC §7.26, issue #230) — deletes the local keyring
+   * entry; on `outcome: 'ok'` the relay also forgets the synced metadata
+   * row (`packages/relay/src/relay.ts`'s own
+   * `connected_account_disconnect_response` handler), so a caller should
+   * follow a successful disconnect with {@link refreshConnectedAccounts}
+   * to see it drop out of {@link connectedAccounts}. Does not itself scan
+   * for or warn about project pins referencing this account (issue #229's
+   * full scan-and-warn) — the caller (this issue's confirm dialog) is
+   * responsible for confirming with the operator first, using whatever pin
+   * state it already has loaded.
+   */
+  disconnectAccount(
+    nodeId: string,
+    accountId: string,
+    timeoutMs = 15_000,
+  ): Promise<ConnectedAccountDisconnectResponse> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot disconnect an account, no open connection'),
+      );
+    }
+    const requestId = generateId('acctdisc');
+    return new Promise<ConnectedAccountDisconnectResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingDisconnectRequests.delete(requestId);
+        reject(
+          new Error('RelayClient: timed out waiting for connected_account_disconnect_response'),
+        );
+      }, timeoutMs);
+      this.pendingDisconnectRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'connected_account_disconnect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        accountId,
+      });
+    });
+  }
+
+  /** Asks `nodeId` for `projectPath`'s full per-capability pin map (SPEC §7.26/#227, issue #230) — `AccountPinStore.get`'s wire counterpart. */
+  getAccountPins(
+    nodeId: string,
+    projectPath: string,
+    timeoutMs = 10_000,
+  ): Promise<AccountPinMapV1> {
+    return this.sendAccountPinRequest(
+      { type: 'account_pin_get_request', protocolVersion: PROTOCOL_V1, nodeId, projectPath },
+      timeoutMs,
+    );
+  }
+
+  /** Pins `capability` to `accountId` for `projectPath`, or (when `accountId` is `null`) records an explicit opt-out (SPEC §7.26/#227, issue #230) — `AccountPinStore.setPin`'s wire counterpart. Resolves with the resulting full pin map. */
+  setAccountPin(
+    nodeId: string,
+    projectPath: string,
+    capability: string,
+    accountId: string | null,
+    timeoutMs = 10_000,
+  ): Promise<AccountPinMapV1> {
+    return this.sendAccountPinRequest(
+      {
+        type: 'account_pin_set_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        projectPath,
+        capability,
+        accountId,
+      },
+      timeoutMs,
+    );
+  }
+
+  /** Reverts `capability` to unconfigured for `projectPath` (SPEC §7.26/#227, issue #230) — `AccountPinStore.unsetPin`'s wire counterpart, distinct from {@link setAccountPin}'s explicit-`null` opt-out. Resolves with the resulting full pin map. */
+  unsetAccountPin(
+    nodeId: string,
+    projectPath: string,
+    capability: string,
+    timeoutMs = 10_000,
+  ): Promise<AccountPinMapV1> {
+    return this.sendAccountPinRequest(
+      {
+        type: 'account_pin_unset_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        projectPath,
+        capability,
+      },
+      timeoutMs,
+    );
+  }
+
+  /** Shared plumbing for {@link getAccountPins}/{@link setAccountPin}/{@link unsetAccountPin} — all three reply with the same `account_pin_response` shape (SPEC §7.26/#227, issue #230). */
+  private sendAccountPinRequest(
+    message:
+      | { type: 'account_pin_get_request'; protocolVersion: 1; nodeId: string; projectPath: string }
+      | {
+          type: 'account_pin_set_request';
+          protocolVersion: 1;
+          nodeId: string;
+          projectPath: string;
+          capability: string;
+          accountId: string | null;
+        }
+      | {
+          type: 'account_pin_unset_request';
+          protocolVersion: 1;
+          nodeId: string;
+          projectPath: string;
+          capability: string;
+        },
+    timeoutMs: number,
+  ): Promise<AccountPinMapV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error(`RelayClient: cannot send ${message.type}, no open connection`),
+      );
+    }
+    const requestId = generateId('acctpin');
+    return new Promise<AccountPinMapV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAccountPinRequests.delete(requestId);
+        reject(
+          new Error(`RelayClient: timed out waiting for account_pin_response (${message.type})`),
+        );
+      }, timeoutMs);
+      this.pendingAccountPinRequests.set(requestId, {
+        resolve: (pins) => {
+          clearTimeout(timer);
+          resolve(pins);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ ...message, requestId });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to preview what `capability` currently resolves to for
+   * `projectPath` (SPEC §7.26/#227, issue #230's pin picker) — never
+   * performs the write-back action itself, just runs the same
+   * `resolveAccountForRead`/`resolveAccountForWrite` a real write-back
+   * would, so the picker can render `AccountPinRequiredError`/
+   * `AmbiguousAccountError`/`AccountHostMismatchError`/
+   * `AccountPinDanglingError`/`AccountPinMalformedError` as real states
+   * rather than guessing. `accounts` is normally the caller's own
+   * `get(client.connectedAccounts)` snapshot — see `@loombox/protocol`'s
+   * `account_pin_resolve_request` doc comment for why this node has no
+   * independent copy of that list to consult instead.
+   */
+  resolveAccountPin(
+    nodeId: string,
+    params: {
+      projectPath: string;
+      capability: string;
+      mode: 'read' | 'write';
+      target: { provider: string; host: string };
+      accounts: ConnectedAccount[];
+    },
+    timeoutMs = 10_000,
+  ): Promise<AccountPinResolveOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot resolve an account pin, no open connection'),
+      );
+    }
+    const requestId = generateId('acctpinresolve');
+    return new Promise<AccountPinResolveOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAccountPinResolveRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for account_pin_resolve_response'));
+      }, timeoutMs);
+      this.pendingAccountPinResolveRequests.set(requestId, {
+        resolve: (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'account_pin_resolve_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        projectPath: params.projectPath,
+        capability: params.capability,
+        mode: params.mode,
+        target: params.target,
+        accounts: params.accounts,
       });
     });
   }
@@ -3004,6 +3393,46 @@ export class RelayClient {
       case 'connected_account_list':
         this.handleConnectedAccountList(message);
         return;
+      case 'github_connect_device_code': {
+        const pending = this.pendingGithubConnectRequests.get(message.requestId);
+        pending?.onDeviceCode?.(message);
+        return;
+      }
+      case 'github_connect_result': {
+        const pending = this.pendingGithubConnectRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingGithubConnectRequests.delete(message.requestId);
+        pending.resolve(message.result);
+        return;
+      }
+      case 'jira_connect_response': {
+        const pending = this.pendingJiraConnectRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingJiraConnectRequests.delete(message.requestId);
+        pending.resolve(message.result);
+        return;
+      }
+      case 'connected_account_disconnect_response': {
+        const pending = this.pendingDisconnectRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingDisconnectRequests.delete(message.requestId);
+        pending.resolve(message);
+        return;
+      }
+      case 'account_pin_response': {
+        const pending = this.pendingAccountPinRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingAccountPinRequests.delete(message.requestId);
+        pending.resolve(message.pins);
+        return;
+      }
+      case 'account_pin_resolve_response': {
+        const pending = this.pendingAccountPinResolveRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingAccountPinResolveRequests.delete(message.requestId);
+        pending.resolve(message.result);
+        return;
+      }
       default:
         return;
     }
