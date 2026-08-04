@@ -95,6 +95,9 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type TrackerMode,
+  type TrackerModeGetRequest,
+  type TrackerModeSetRequest,
   type TrackerSnapshotRequest,
   type TrackerSnapshotRequestPayloadV1,
   type TrackerSnapshotResponsePayloadV1,
@@ -161,6 +164,7 @@ import { TargetHealthSampler } from './target-health-sampler';
 import { TestRunnerConfigStore } from './test-runner-config-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
+import { TrackerModeStore } from './tracker-mode-store';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -476,6 +480,8 @@ export interface NodeDaemonOptions {
   jiraConnectService?: JiraConnectService;
   /** SPEC §7.26, issue #227/#230 — this node's per-project, per-capability account pin map. Defaults to `new AccountPinStore({stateDir: options.stateDir})`, same convention as `mcpConfigStore`/`permissionPolicyStore` above. */
   accountPinStore?: AccountPinStore;
+  /** SPEC §7.10, issue #631 — this node's per-project `TrackerMode` (see `tracker-mode-store.ts`'s doc comment for why this exists at all: it replaces the browser-`localStorage`-only version that made the node structurally unable to honour a project's `live` choice). Defaults to `new TrackerModeStore({stateDir: options.stateDir})`, same convention as `accountPinStore` above. */
+  trackerModeStore?: TrackerModeStore;
 }
 
 export interface CreateNodeSessionOptions {
@@ -947,6 +953,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly jiraConnectService: JiraConnectService;
   /** SPEC §7.26, issue #227/#230's per-project, per-capability account pin map. */
   private readonly accountPinStore: AccountPinStore;
+  /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshotForBridge` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Next reader: the bridge dispatch this store exists for (issue #631's own gap — `readTrackerSnapshotForBridge` still reads the native store unconditionally; wiring that read to this store's mode is a follow-up, not this change). */
+  private readonly trackerModeStore: TrackerModeStore;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1057,6 +1065,8 @@ export class NodeDaemon extends EventEmitter {
       options.jiraConnectService ?? new JiraConnectService({ stateDir: options.stateDir });
     this.accountPinStore =
       options.accountPinStore ?? new AccountPinStore({ stateDir: options.stateDir });
+    this.trackerModeStore =
+      options.trackerModeStore ?? new TrackerModeStore({ stateDir: options.stateDir });
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -2324,6 +2334,12 @@ export class NodeDaemon extends EventEmitter {
       case 'tracker_write_request':
         this.handleTrackerWriteRequest(message);
         return;
+      case 'tracker_mode_get_request':
+        this.handleTrackerModeGetRequest(message);
+        return;
+      case 'tracker_mode_set_request':
+        this.handleTrackerModeSetRequest(message);
+        return;
       case 'target_fs_list_request':
         this.handleTargetFsListRequest(message);
         return;
@@ -3006,6 +3022,45 @@ export class NodeDaemon extends EventEmitter {
       sessionId,
       requestId,
       envelope,
+    });
+  }
+
+  /**
+   * `nodeId`'s answer to whether/how `projectPath` tracks work (SPEC
+   * §7.10; issue #631) — `TrackerModeStore.get`'s wire counterpart.
+   * `mode` in the reply is `undefined` for a project that has never had
+   * one chosen, distinct from an explicit `{kind:'native'}` (see
+   * `tracker.ts`'s `trackerModeResponse` doc comment — collapsing that
+   * distinction here would silently reintroduce the guess issue #209
+   * exists to prevent).
+   */
+  private handleTrackerModeGetRequest(message: TrackerModeGetRequest): void {
+    const mode = this.trackerModeStore.get(message.projectPath);
+    this.sendTrackerModeResponse(message.requestId, message.projectPath, mode);
+  }
+
+  /** `TrackerModeStore.set` (SPEC §7.10; issue #631) — saves `message.mode` for `message.projectPath`. There is deliberately no unset handler (mirrors `trackerModeSetRequest`'s own doc comment). Replies with the resulting mode re-read through the store, mirroring `handleAccountPinSetRequest`'s same re-read-after-write convention, so the client never needs a second round trip. */
+  private handleTrackerModeSetRequest(message: TrackerModeSetRequest): void {
+    this.trackerModeStore.set(message.projectPath, message.mode);
+    this.sendTrackerModeResponse(
+      message.requestId,
+      message.projectPath,
+      this.trackerModeStore.get(message.projectPath),
+    );
+  }
+
+  private sendTrackerModeResponse(
+    requestId: string,
+    projectPath: string,
+    mode: TrackerMode | undefined,
+  ): void {
+    this.relay.send({
+      type: 'tracker_mode_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      projectPath,
+      mode,
     });
   }
 

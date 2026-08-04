@@ -1504,10 +1504,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'github_connect_result':
       case 'jira_connect_response':
       case 'account_pin_response':
-      case 'account_pin_resolve_response': {
-        // #230: every other single-shot connect/pin reply — delivered to
-        // the requesting client and the routing entry retired, exactly
-        // like `target_update_response` above.
+      case 'account_pin_resolve_response':
+      case 'tracker_mode_response': {
+        // #230/#631: every other single-shot connect/pin/tracker-mode
+        // reply — delivered to the requesting client and the routing
+        // entry retired, exactly like `target_update_response` above.
         const pending = pendingAccountRequests.get(message.requestId);
         if (!pending || pending.clientConnection.accountId !== connection.accountId) {
           app.log.warn(
@@ -1851,8 +1852,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'account_pin_get_request':
       case 'account_pin_set_request':
       case 'account_pin_unset_request':
-      case 'account_pin_resolve_request': {
-        // #230: every SPEC §7.26 connect/disconnect/pin request shares one
+      case 'account_pin_resolve_request':
+      case 'tracker_mode_get_request':
+      case 'tracker_mode_set_request': {
+        // #230/#631: every SPEC §7.26 connect/disconnect/pin request, plus
+        // SPEC §7.10's tracker-mode get/set (issue #631), shares one
         // routing shape — direct-by-`nodeId`, scoped to the requester's
         // account, exactly like `target_update_request` above (none of
         // these has an existing target/session to resolve the owning node

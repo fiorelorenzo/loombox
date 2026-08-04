@@ -103,6 +103,7 @@ import {
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
+  type TrackerMode,
   type TrackerRecordV1,
   type TrackerRoleV1,
   type TrackerSnapshotRequestPayloadV1,
@@ -1030,6 +1031,11 @@ export class RelayClient {
     string,
     { resolve: (outcome: AccountPinResolveOutcome) => void; reject: (error: Error) => void }
   >();
+  /** requestId -> the pending `getTrackerMode`/`setTrackerMode` call it belongs to (SPEC §7.10, issue #631) — both share `tracker_mode_response`'s shape, mirroring `pendingAccountPinRequests`'s own consolidation immediately above (and `packages/relay/src/relay.ts`'s `pendingAccountRequests`, which routes this alongside the account-pin messages on purpose). */
+  private readonly pendingTrackerModeRequests = new Map<
+    string,
+    { resolve: (mode: TrackerMode | undefined) => void; reject: (error: Error) => void }
+  >();
   private readonly transcripts = new Map<string, Writable<TranscriptState>>();
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
@@ -1930,6 +1936,84 @@ export class RelayClient {
         resolve: (pins) => {
           clearTimeout(timer);
           resolve(pins);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ ...message, requestId });
+    });
+  }
+
+  /**
+   * Asks `nodeId` for `projectPath`'s saved `TrackerMode` (SPEC §7.10;
+   * issue #631) — `TrackerModeStore.get`'s wire counterpart. Resolves with
+   * `undefined` for a project that has never had one chosen (or whose
+   * stored value no longer validates on the node); never coerced into
+   * `{kind:'native'}` here either — see `tracker.ts`'s `trackerModeResponse`
+   * doc comment for why that distinction is load-bearing all the way
+   * through this client.
+   */
+  getTrackerMode(
+    nodeId: string,
+    projectPath: string,
+    timeoutMs = 10_000,
+  ): Promise<TrackerMode | undefined> {
+    return this.sendTrackerModeRequest(
+      { type: 'tracker_mode_get_request', protocolVersion: PROTOCOL_V1, nodeId, projectPath },
+      timeoutMs,
+    );
+  }
+
+  /** Saves `mode` for `projectPath` on `nodeId` (SPEC §7.10; issue #631) — `TrackerModeStore.set`'s wire counterpart. There is deliberately no unset (mirrors `trackerModeSetRequest`'s own doc comment). Resolves with the resulting mode so the caller never needs a second round trip. */
+  setTrackerMode(
+    nodeId: string,
+    projectPath: string,
+    mode: TrackerMode,
+    timeoutMs = 10_000,
+  ): Promise<TrackerMode | undefined> {
+    return this.sendTrackerModeRequest(
+      { type: 'tracker_mode_set_request', protocolVersion: PROTOCOL_V1, nodeId, projectPath, mode },
+      timeoutMs,
+    );
+  }
+
+  /** Shared plumbing for {@link getTrackerMode}/{@link setTrackerMode} — both reply with the same `tracker_mode_response` shape (SPEC §7.10, issue #631), mirroring {@link sendAccountPinRequest} immediately above. */
+  private sendTrackerModeRequest(
+    message:
+      | {
+          type: 'tracker_mode_get_request';
+          protocolVersion: 1;
+          nodeId: string;
+          projectPath: string;
+        }
+      | {
+          type: 'tracker_mode_set_request';
+          protocolVersion: 1;
+          nodeId: string;
+          projectPath: string;
+          mode: TrackerMode;
+        },
+    timeoutMs: number,
+  ): Promise<TrackerMode | undefined> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error(`RelayClient: cannot send ${message.type}, no open connection`),
+      );
+    }
+    const requestId = generateId('trackermode');
+    return new Promise<TrackerMode | undefined>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTrackerModeRequests.delete(requestId);
+        reject(
+          new Error(`RelayClient: timed out waiting for tracker_mode_response (${message.type})`),
+        );
+      }, timeoutMs);
+      this.pendingTrackerModeRequests.set(requestId, {
+        resolve: (mode) => {
+          clearTimeout(timer);
+          resolve(mode);
         },
         reject: (error) => {
           clearTimeout(timer);
@@ -3751,6 +3835,13 @@ export class RelayClient {
         if (!pending) return;
         this.pendingAccountPinResolveRequests.delete(message.requestId);
         pending.resolve(message.result);
+        return;
+      }
+      case 'tracker_mode_response': {
+        const pending = this.pendingTrackerModeRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingTrackerModeRequests.delete(message.requestId);
+        pending.resolve(message.mode);
         return;
       }
       default:
