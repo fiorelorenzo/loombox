@@ -345,13 +345,23 @@ export {
   targetVersionStatusV1,
 } from './target-lifecycle';
 
-export type { GitHubTarget, JiraTarget, TrackerMode } from './tracker';
+export type {
+  GitHubTarget,
+  JiraTarget,
+  TrackerMode,
+  TrackerModeGetRequest,
+  TrackerModeResponse,
+  TrackerModeSetRequest,
+} from './tracker';
 export {
   githubTarget,
   jiraTarget,
   parseTrackerMode,
   safeParseTrackerMode,
   trackerMode,
+  trackerModeGetRequest,
+  trackerModeResponse,
+  trackerModeSetRequest,
 } from './tracker';
 export type {
   ConnectedAccount,
@@ -672,7 +682,14 @@ import {
   targetUpdateResponse,
   targetVersionStatusV1,
 } from './target-lifecycle';
-import { githubTarget, jiraTarget, trackerMode } from './tracker';
+import {
+  githubTarget,
+  jiraTarget,
+  trackerMode,
+  trackerModeGetRequest,
+  trackerModeResponse,
+  trackerModeSetRequest,
+} from './tracker';
 import {
   connectedAccount,
   connectedAccountAnnounce,
@@ -902,6 +919,9 @@ export const schemasV1 = {
   trackerSnapshotResultV1,
   trackerSnapshotErrorV1,
   trackerSnapshotResponsePayloadV1,
+  trackerModeGetRequest,
+  trackerModeSetRequest,
+  trackerModeResponse,
   trackerSnapshotRequest,
   trackerSnapshotResponse,
   trackerWriteRequestPayloadV1,

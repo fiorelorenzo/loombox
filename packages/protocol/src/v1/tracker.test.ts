@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { PROTOCOL_V1 } from './handshake';
+import { wireMessageV1 } from './message';
 import {
   githubTarget,
   jiraTarget,
   parseTrackerMode,
   safeParseTrackerMode,
   trackerMode,
+  trackerModeResponse,
+  trackerModeSetRequest,
   type TrackerMode,
 } from './tracker';
 
@@ -139,5 +143,71 @@ describe('trackerMode', () => {
     expect(() => parseTrackerMode({ kind: 'nope' })).toThrow();
     expect(safeParseTrackerMode({ kind: 'nope' }).success).toBe(false);
     expect(safeParseTrackerMode({ kind: 'native' }).success).toBe(true);
+  });
+});
+
+describe('tracker mode sync messages (issue #631)', () => {
+  const base = {
+    protocolVersion: PROTOCOL_V1,
+    requestId: 'req-1',
+    nodeId: 'node-1',
+    projectPath: '/home/dev/Progetti/loombox',
+  } as const;
+
+  it('slots into wireMessageV1, which is what makes them reachable at all', () => {
+    for (const message of [
+      { type: 'tracker_mode_get_request', ...base },
+      { type: 'tracker_mode_set_request', ...base, mode: { kind: 'native' } },
+      { type: 'tracker_mode_response', ...base, mode: { kind: 'native' } },
+    ]) {
+      expect(() => wireMessageV1.parse(message)).not.toThrow();
+    }
+  });
+
+  it('carries a live mode with its connection and target intact', () => {
+    const mode: TrackerMode = {
+      kind: 'live',
+      provider: 'github',
+      connectionId: 'conn-1',
+      target: { owner: 'fiorelorenzo', repo: 'loombox' },
+    };
+    const parsed = trackerModeSetRequest.parse({ type: 'tracker_mode_set_request', ...base, mode });
+    expect(parsed.mode).toEqual(mode);
+  });
+
+  it('rejects a set with no mode — a save must say what it is saving', () => {
+    expect(() =>
+      trackerModeSetRequest.parse({ type: 'tracker_mode_set_request', ...base }),
+    ).toThrow();
+  });
+
+  it('rejects a mode whose target does not match its provider, on the wire too', () => {
+    expect(() =>
+      trackerModeSetRequest.parse({
+        type: 'tracker_mode_set_request',
+        ...base,
+        mode: {
+          kind: 'live',
+          provider: 'github',
+          connectionId: 'conn-1',
+          target: { cloudId: 'c', projectKey: 'K' },
+        },
+      }),
+    ).toThrow();
+  });
+
+  // The distinction issue #209 exists to protect: "never chosen" is not "native".
+  it('allows a response with no mode, meaning this project has never chosen one', () => {
+    const parsed = trackerModeResponse.parse({ type: 'tracker_mode_response', ...base });
+    expect(parsed.mode).toBeUndefined();
+  });
+
+  it('keeps an explicit native choice distinguishable from that absence', () => {
+    const parsed = trackerModeResponse.parse({
+      type: 'tracker_mode_response',
+      ...base,
+      mode: { kind: 'native' },
+    });
+    expect(parsed.mode).toEqual({ kind: 'native' });
   });
 });
