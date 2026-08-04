@@ -3090,6 +3090,8 @@
                   onRefresh={refreshTargetStatus}
                   onAddTarget={openAddTargetWizard}
                   onConnectNode={openAddTargetWizard}
+                  {client}
+                  {connectedAccounts}
                   section={settingsSection}
                   onSectionChange={selectSettingsSection}
                 />

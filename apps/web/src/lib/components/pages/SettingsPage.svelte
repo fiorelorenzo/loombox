@@ -29,8 +29,11 @@
     NotificationPreferences as NotificationPreferencesData,
     NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
-  import type { TargetListEntry } from '$lib/relay-client';
+  import type { ConnectedAccount, TargetListEntry } from '$lib/relay-client';
   import AppearanceSettings from '../AppearanceSettings.svelte';
+  import ConnectedAccountsSection, {
+    type ConnectedAccountsClient,
+  } from '../ConnectedAccountsSection.svelte';
   import NotificationPreferences from '../NotificationPreferences.svelte';
   import PushNotificationToggle from '../PushNotificationToggle.svelte';
   import TargetStatusView, { type FocusTarget } from '../TargetStatusView.svelte';
@@ -38,7 +41,7 @@
   import Card from '../ui/Card.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  export type SettingsSection = 'appearance' | 'notifications' | 'push' | 'nodes';
+  export type SettingsSection = 'appearance' | 'notifications' | 'push' | 'nodes' | 'accounts';
 
   interface Props {
     /** `undefined` until `+page.svelte`'s `onMount` constructs the real, localStorage-backed store (SSR has no `localStorage`); mirrors that mount site's own `{#if notificationPreferencesStorage}` guard. */
@@ -58,6 +61,10 @@
     /** Opens the zero-touch provision-and-pair wizard (`AddTargetWizard`); moved onto this section from the old `NodesPage`'s own page actions. */
     onAddTarget: () => void;
     onConnectNode: () => void;
+    /** SPEC §7.26's connected-accounts write path (issue #230) — `undefined` before `+page.svelte`'s `RelayClient` is constructed, mirroring `deviceId`'s own "gate the whole section on prerequisite readiness" pattern. */
+    client?: ConnectedAccountsClient;
+    /** `RelayClient.connectedAccounts`'s latest snapshot — always an array (empty before the first sync), never gates the section on its own. */
+    connectedAccounts?: ConnectedAccount[];
     /** Which section is showing; defaults to `'appearance'` so a caller that never sets it (every current test but the ones that care) still renders a complete page. */
     section?: SettingsSection;
     /** Fired when the sub-nav/segmented control picks a different section — `+page.svelte` owns `section` itself, this is how a click here reaches that state (see this component's own doc comment for why it isn't `$bindable`). */
@@ -78,6 +85,8 @@
     onRefresh,
     onAddTarget,
     onConnectNode,
+    client,
+    connectedAccounts = [],
     section = 'appearance',
     onSectionChange,
   }: Props = $props();
@@ -87,7 +96,7 @@
     label: string;
   }
 
-  /** Notifications/Push only ever show up once their own prerequisite is ready (mirrors the old Drawer tab guards verbatim), so the nav never offers a section with nothing behind it. Nodes has no such gate: it's always there, same as Appearance. */
+  /** Notifications/Push/Accounts only ever show up once their own prerequisite is ready (mirrors the old Drawer tab guards verbatim), so the nav never offers a section with nothing behind it. Nodes has no such gate: it's always there, same as Appearance. */
   const visibleSections = $derived(
     (
       [
@@ -97,6 +106,7 @@
           : undefined,
         deviceId ? { id: 'push', label: 'Push' } : undefined,
         { id: 'nodes', label: 'Nodes' },
+        client ? { id: 'accounts', label: 'Accounts' } : undefined,
       ] satisfies Array<SectionItem | undefined>
     ).filter((item): item is SectionItem => item !== undefined),
   );
@@ -194,6 +204,11 @@
             </div>
           </div>
           <TargetStatusView {targets} {loading} {error} {focusTarget} {onRefresh} />
+        </section>
+      {:else if activeSection === 'accounts' && client}
+        <section class="settings-section" data-testid="settings-section-accounts">
+          <h2>Connected accounts</h2>
+          <ConnectedAccountsSection {client} {connectedAccounts} {targets} {projectPaths} />
         </section>
       {/if}
     </div>

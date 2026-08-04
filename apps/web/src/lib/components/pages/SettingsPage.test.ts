@@ -203,4 +203,58 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
     expect(screen.getByRole('heading', { name: 'Appearance', level: 2 })).toBeTruthy();
     expect(screen.queryByText('Push notifications')).toBeNull();
   });
+
+  // -----------------------------------------------------------------
+  // Accounts section (SPEC §7.26, issue #230): gated on `client` like
+  // Push is gated on `deviceId` — no client means no in-app way to drive
+  // a connect/disconnect/pin operation, so the section stays hidden
+  // rather than rendering dead controls.
+  // -----------------------------------------------------------------
+
+  function fakeAccountsClient() {
+    return {
+      startGithubConnect: vi.fn(() => ({
+        requestId: 'r',
+        cancel: vi.fn(),
+        result: Promise.withResolvers<never>().promise,
+      })),
+      connectJiraAccount: vi.fn(),
+      disconnectAccount: vi.fn(),
+      getAccountPins: vi.fn(async () => ({})),
+      setAccountPin: vi.fn(),
+      unsetAccountPin: vi.fn(),
+      resolveAccountPin: vi.fn(),
+      refreshConnectedAccounts: vi.fn(),
+    };
+  }
+
+  it('offers no Accounts section at all, in either nav, without a client', () => {
+    render(SettingsPage, { props: baseProps() });
+    expect(screen.queryByTestId('settings-nav-accounts')).toBeNull();
+    expect(screen.queryByTestId('settings-tab-accounts')).toBeNull();
+  });
+
+  it('lists Accounts in both navs once a client is passed', () => {
+    render(SettingsPage, { props: { ...baseProps(), client: fakeAccountsClient() } });
+    expect(screen.getByTestId('settings-nav-accounts')).toBeTruthy();
+    expect(screen.getByTestId('settings-tab-accounts')).toBeTruthy();
+  });
+
+  it("renders the Accounts section as this page's own ConnectedAccountsSection once selected", () => {
+    render(SettingsPage, {
+      props: {
+        ...baseProps(),
+        client: fakeAccountsClient(),
+        section: 'accounts' as const,
+      },
+    });
+    expect(screen.getByRole('heading', { name: 'Connected accounts', level: 2 })).toBeTruthy();
+    expect(screen.getByTestId('connected-accounts-section')).toBeTruthy();
+  });
+
+  it('falls back to Appearance when accounts is requested but no client is passed', () => {
+    render(SettingsPage, { props: { ...baseProps(), section: 'accounts' as const } });
+    expect(screen.getByRole('heading', { name: 'Appearance', level: 2 })).toBeTruthy();
+    expect(screen.queryByTestId('connected-accounts-section')).toBeNull();
+  });
 });
