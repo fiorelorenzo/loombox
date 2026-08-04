@@ -46,6 +46,16 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
     page,
     loombox,
   }) => {
+    // Issue #672: the Tracker page's empty state now doubles as the tracker-mode
+    // setup step, so the board this test drives needs a saved mode first — seeds
+    // the same `loombox:tracker-mode:<projectPath>` key `TrackerConfigPanel` itself
+    // writes, for the fixture's default project path.
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        'loombox:tracker-mode:/workspace/e2e-project',
+        JSON.stringify({ kind: 'native' }),
+      );
+    });
     await page.goto('/');
     await expect(page.getByTestId('composer-input')).toBeVisible();
 
