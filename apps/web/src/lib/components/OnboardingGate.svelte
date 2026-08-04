@@ -168,6 +168,7 @@
               variant="ghost"
               fullWidth
               class="choice-card-trigger"
+              align="start"
               onclick={chooseFirstDevice}
               dataTestId="onboarding-choose-first-device"
             >
@@ -184,6 +185,7 @@
               variant="ghost"
               fullWidth
               class="choice-card-trigger"
+              align="start"
               onclick={chooseNewDevice}
               dataTestId="onboarding-choose-new-device"
             >
@@ -312,17 +314,14 @@
     background: var(--color-accent-subtle);
   }
 
-  /* tension-press (redesign brief §2) and the focus-visible ring both come
-     from `Button`'s own base styling for free. */
+  /* `Button`'s `align="start"` prop (issue #665, following `ToolCard`'s
+     #576 precedent) now supplies the left-aligned layout and drops the
+     hover-underline; this is only the padding this card-filling trigger
+     still wants on top of it. tension-press (redesign brief §2) and the
+     focus-visible ring both come from `Button`'s own base styling for
+     free. */
   :global(.choice-card-trigger) {
-    justify-content: flex-start;
     padding: var(--space-md);
-    text-align: left;
-    border-radius: 0;
-  }
-
-  :global(.choice-card-trigger:not(:disabled):hover) {
-    text-decoration: none;
   }
 
   .choice-card-copy {

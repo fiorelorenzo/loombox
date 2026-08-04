@@ -369,9 +369,11 @@
      scans for now, in place of v5's caption-case word. Always `aria-hidden`
      (via `Icon`'s own default) — the `.sr-only` label right beside it is
      what actually reaches assistive tech, same split `ToolCallGutter` and
-     `GenericToolRow` already use for their own kind glyph. */
+     `GenericToolRow` already use for their own kind glyph. `flex-shrink: 0`
+     used to sit here too, but `Icon`'s own `.icon { flex-shrink: 0; }`
+     scoped root rule already provides the identical value (issue #665's
+     guard-test scan) — redundant dead CSS, dropped rather than kept. */
   :global(.role-glyph) {
-    flex-shrink: 0;
     color: var(--color-text-secondary);
   }
 
@@ -656,10 +658,6 @@
   .expand:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
-  }
-
-  :global(.expand-icon) {
-    flex-shrink: 0;
   }
 
   .copy-row {

@@ -772,14 +772,20 @@
 
   /* `Button` ghost supplies focus-ring/disabled/press chrome now (issue
      #579); this only pares its own padding/centering back to a plain
-     inline link and restores the accent color + permanent underline this
-     control has always looked like. `:global()` because `Button` renders
-     its own root in its own component scope. */
+     inline link and restores the permanent underline this control has
+     always looked like. `color: var(--color-accent)` used to sit here too,
+     but `.ui-button { color: inherit; }`'s own scoped root rule always won
+     that fight (issue #665 — verified by compiling both and reading the
+     emitted CSS): a call site can't out-specificity a primitive's root
+     without a louder selector, which is the wrong fix, so it's dropped
+     rather than left as dead CSS; this link reads in the ghost variant's
+     default `--color-text-primary` now, same as it always has in practice.
+     `:global()` because `Button` renders its own root in its own
+     component scope. */
   :global(.link-button) {
     align-self: flex-start;
     margin-top: var(--space-2xs);
     padding: 0;
-    color: var(--color-accent);
     text-decoration: underline;
   }
 
