@@ -145,6 +145,117 @@ export function groupByWorkflowStatus(
 }
 
 /**
+ * The three workflow-category columns the kanban board renders (v7
+ * decision F4-2, `2026-08-04-cockpit-v7-decisions.md` §6; issue #651,
+ * superseding the plain "sort columns in workflow order" fix). Every
+ * tracker's own workflow, however many raw statuses it has, collapses
+ * into this fixed three-stage shape — chosen to match Jira's own
+ * `statusCategory` vocabulary verbatim (`new`/`indeterminate`/`done`),
+ * the one live tracker that already exposes a category as data rather
+ * than a label to guess from (`@loombox/node`'s `jira-tracker-backend.ts`
+ * reads it straight off `status.statusCategory.key`, no translation
+ * table). GitHub's two-state `open`/`closed` (plus `state_reason`) maps
+ * onto the same three ids in `github-tracker-backend.ts`.
+ */
+export const WORKFLOW_CATEGORIES_V1 = ['new', 'indeterminate', 'done'] as const;
+export type WorkflowCategoryV1 = (typeof WORKFLOW_CATEGORIES_V1)[number];
+
+/** Board column order + display label for each {@link WorkflowCategoryV1} — Jira's own category display names, since Jira is the one live tracker this literally mirrors. */
+export const WORKFLOW_CATEGORY_COLUMNS_V1: readonly {
+  readonly id: WorkflowCategoryV1;
+  readonly label: string;
+}[] = [
+  { id: 'new', label: 'To Do' },
+  { id: 'indeterminate', label: 'In Progress' },
+  { id: 'done', label: 'Done' },
+];
+
+/**
+ * loombox's own local status vocabulary, collapsed into the same three
+ * categories a live Jira/GitHub board reads straight off the tracker.
+ * Unlike those two, a native record has no external system to defer to
+ * — loombox itself IS the tracker here — so this map is the single
+ * place that ownership lives, never re-guessed per caller. Every
+ * canonical category id round-trips through its own entry (`new` ->
+ * `new`), so writing a category id back as the new status — exactly
+ * what a board drag/"Move to" does, see `groupByWorkflowCategory`'s own
+ * doc comment — always resolves back into the same column next render,
+ * for a built-in type or a project-defined one alike. A status this
+ * project has never seen before (a typo, or a custom type's own word
+ * for "not started yet") still resolves deterministically rather than
+ * vanishing: same `new` default an unset status already fell into.
+ */
+const LOCAL_STATUS_CATEGORIES_V1: Readonly<Record<string, WorkflowCategoryV1>> = {
+  new: 'new',
+  indeterminate: 'indeterminate',
+  done: 'done',
+  todo: 'new',
+  'to-do': 'new',
+  'to do': 'new',
+  backlog: 'new',
+  open: 'new',
+  unstarted: 'new',
+  'not started': 'new',
+  'in-progress': 'indeterminate',
+  in_progress: 'indeterminate',
+  'in progress': 'indeterminate',
+  doing: 'indeterminate',
+  started: 'indeterminate',
+  review: 'indeterminate',
+  'in review': 'indeterminate',
+  blocked: 'indeterminate',
+  wip: 'indeterminate',
+  closed: 'done',
+  complete: 'done',
+  completed: 'done',
+  resolved: 'done',
+  shipped: 'done',
+  cancelled: 'done',
+  canceled: 'done',
+};
+
+/**
+ * Resolves `record`'s workflow category through its own type's
+ * `workflowStatus` role, normalized (trimmed, lower-cased) and looked up
+ * in {@link LOCAL_STATUS_CATEGORIES_V1}. A record with no resolvable
+ * status value at all (an unmapped role, or an empty string) lands in
+ * `new` — the same fallback an unrecognized non-empty status gets, one
+ * rule rather than two.
+ */
+export function resolveWorkflowCategory(
+  record: TrackerRecordV1,
+  types: TrackerTypeRegistryV1,
+): WorkflowCategoryV1 {
+  const value = resolveRoleValue(record, types, 'workflowStatus');
+  if (typeof value !== 'string' || value.length === 0) return 'new';
+  return LOCAL_STATUS_CATEGORIES_V1[value.trim().toLowerCase()] ?? 'new';
+}
+
+/**
+ * Kanban grouping for the board's three fixed columns (issue #651).
+ * Always returns all three {@link WORKFLOW_CATEGORIES_V1} keys, in
+ * workflow order, even when a category has no records — an empty
+ * category still rendering its own column, and still accepting a drop,
+ * is this function's own contract, not something layered on top of it
+ * in the component, so nothing downstream can skip an empty bucket the
+ * way the old per-status `groupByWorkflowStatus` did (a status with zero
+ * records simply never appeared as a key). Preserves each bucket's
+ * input order.
+ */
+export function groupByWorkflowCategory(
+  records: readonly TrackerRecordV1[],
+  types: TrackerTypeRegistryV1,
+): Map<WorkflowCategoryV1, TrackerRecordV1[]> {
+  const groups = new Map<WorkflowCategoryV1, TrackerRecordV1[]>(
+    WORKFLOW_CATEGORIES_V1.map((category) => [category, []]),
+  );
+  for (const record of records) {
+    groups.get(resolveWorkflowCategory(record, types))?.push(record);
+  }
+  return groups;
+}
+
+/**
  * Sorts `records` by each one's `priority` role value, ranked by position
  * in `order` (index 0 sorts first). A record whose resolved priority
  * isn't in `order` (including one with no resolvable priority at all)

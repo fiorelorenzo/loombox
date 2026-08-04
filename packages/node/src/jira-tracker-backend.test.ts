@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TrackerBackend, TrackerBinding } from '@loombox/shared';
 
 import {
+  deriveJiraWorkflowCategory,
   JiraTrackerAccessError,
   JiraTrackerBackend,
   JiraTrackerRequestError,
@@ -69,7 +70,7 @@ function issuePayload(overrides: Record<string, unknown> = {}): Record<string, u
         version: 1,
         content: [{ type: 'paragraph', content: [{ type: 'text', text: 'body text' }] }],
       },
-      status: { name: 'To Do' },
+      status: { name: 'To Do', statusCategory: { key: 'new', name: 'To Do' } },
       issuetype: { name: 'Task' },
       assignee: null,
       reporter: null,
@@ -241,6 +242,7 @@ describe('JiraTrackerBackend.list — search/jql, not the deprecated search (iss
         url: `${SITE_BASE}/browse/LB-213`,
         fields: {
           status: 'To Do',
+          workflowCategory: 'new',
           issueType: 'Task',
           description: 'body text',
           assignee: null,
@@ -254,6 +256,49 @@ describe('JiraTrackerBackend.list — search/jql, not the deprecated search (iss
       },
     ]);
   });
+});
+
+describe('deriveJiraWorkflowCategory (issue #651, v7 decision F4-2)', () => {
+  it('widens a real statusCategory.key verbatim — no label-guessing table', () => {
+    expect(deriveJiraWorkflowCategory('new')).toBe('new');
+    expect(deriveJiraWorkflowCategory('indeterminate')).toBe('indeterminate');
+    expect(deriveJiraWorkflowCategory('done')).toBe('done');
+  });
+
+  it('defaults an unrecognized or missing key to "new" rather than throwing', () => {
+    expect(deriveJiraWorkflowCategory('some-future-jira-category')).toBe('new');
+    expect(deriveJiraWorkflowCategory(null)).toBe('new');
+    expect(deriveJiraWorkflowCategory(undefined)).toBe('new');
+  });
+});
+
+describe('JiraTrackerBackend.get — workflow category from a realistic issue payload (issue #651)', () => {
+  it.each([
+    ['To Do', 'new', 'new'],
+    ['In Progress', 'indeterminate', 'indeterminate'],
+    ['Done', 'done', 'done'],
+  ] as const)(
+    'status "%s" with statusCategory.key "%s" maps to workflowCategory "%s"',
+    async (statusName, categoryKey, expectedCategory) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(
+          200,
+          issuePayload({
+            fields: {
+              ...(issuePayload().fields as Record<string, unknown>),
+              status: { name: statusName, statusCategory: { key: categoryKey, name: statusName } },
+            },
+          }),
+        ),
+      );
+      const svc = backend(fetchImpl);
+
+      const item = await svc.get(binding(), 'LB-213');
+
+      expect(item.fields.status).toBe(statusName);
+      expect(item.fields.workflowCategory).toBe(expectedCategory);
+    },
+  );
 });
 
 describe('JiraTrackerBackend required methods against Jira REST v3', () => {

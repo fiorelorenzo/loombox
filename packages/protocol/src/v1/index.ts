@@ -439,6 +439,7 @@ export {
   jiraConnectRequest,
   jiraConnectResponse,
 } from './account-connect';
+export type { WorkflowCategoryV1 } from './tracker-records';
 export type {
   TrackerRoleV1,
   TrackerSnapshotErrorV1,
@@ -459,6 +460,10 @@ export type {
   TrackerWriteResultV1,
 } from './tracker-records';
 export {
+  groupByWorkflowCategory,
+  resolveWorkflowCategory,
+  WORKFLOW_CATEGORIES_V1,
+  WORKFLOW_CATEGORY_COLUMNS_V1,
   buildTrackerTypeRegistryV1,
   filterByAssignee,
   groupByWorkflowStatus,

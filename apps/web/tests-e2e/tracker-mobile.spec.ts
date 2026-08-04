@@ -94,11 +94,12 @@ test.describe('Native tracker kanban board at 390px (issue #212)', () => {
 
     await expect(page.getByTestId('tracker-board-mobile-nav')).toBeVisible();
 
-    // Columns sort alphabetically ('done' before 'todo') — the mobile nav
-    // starts on the first one, showing only that column's card.
-    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('done');
-    await expect(page.getByTestId('tracker-card-rec-done')).toBeVisible();
-    await expect(page.getByTestId('tracker-card-rec-todo')).not.toBeVisible();
+    // Three fixed workflow-category columns, in workflow order (issue
+    // #651 / v7 decision F4-2) — the mobile nav starts on 'new' ("To
+    // Do"), the category rec-todo's raw 'todo' status resolves to.
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('To Do');
+    await expect(page.getByTestId('tracker-card-rec-todo')).toBeVisible();
+    await expect(page.getByTestId('tracker-card-rec-done')).not.toBeVisible();
 
     // No horizontal scroll of narrow columns (issue #212's explicit
     // acceptance) — the board's own columns wrapper never exceeds the
@@ -108,22 +109,35 @@ test.describe('Native tracker kanban board at 390px (issue #212)', () => {
     expect(columnsBox!.x).toBeGreaterThanOrEqual(0);
     expect(columnsBox!.x + columnsBox!.width).toBeLessThanOrEqual(390);
 
-    const cardBox = await page.getByTestId('tracker-card-rec-done').boundingBox();
+    const cardBox = await page.getByTestId('tracker-card-rec-todo').boundingBox();
     expect(cardBox).not.toBeNull();
     expect(cardBox!.x).toBeGreaterThanOrEqual(0);
     expect(cardBox!.x + cardBox!.width).toBeLessThanOrEqual(390);
 
-    // Next switches the visible column — a real answer at this width, not
-    // a horizontal scroll: the previous column's card disappears entirely
-    // rather than merely scrolling off-screen.
+    // Next switches to 'indeterminate' ("In Progress") — no record has
+    // that category, and this is exactly the "an empty category still
+    // renders its own column" acceptance: the old alphabetical board
+    // could not do this, a status with zero records never appeared as a
+    // column at all.
     await page.getByRole('button', { name: 'Next column' }).click();
-    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('todo');
-    await expect(page.getByTestId('tracker-card-rec-todo')).toBeVisible();
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('In Progress');
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('0');
+    await expect(page.getByTestId('tracker-card-rec-todo')).not.toBeVisible();
     await expect(page.getByTestId('tracker-card-rec-done')).not.toBeVisible();
 
-    // Prev goes back.
-    await page.getByRole('button', { name: 'Previous column' }).click();
-    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('done');
+    // Next again reaches 'done' ("Done") — a real answer at this width,
+    // not a horizontal scroll: each previous column's card disappears
+    // entirely rather than merely scrolling off-screen.
+    await page.getByRole('button', { name: 'Next column' }).click();
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('Done');
     await expect(page.getByTestId('tracker-card-rec-done')).toBeVisible();
+    await expect(page.getByTestId('tracker-card-rec-todo')).not.toBeVisible();
+
+    // Prev goes back, through the empty middle column, to the start.
+    await page.getByRole('button', { name: 'Previous column' }).click();
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('In Progress');
+    await page.getByRole('button', { name: 'Previous column' }).click();
+    await expect(page.getByTestId('tracker-board-mobile-title')).toContainText('To Do');
+    await expect(page.getByTestId('tracker-card-rec-todo')).toBeVisible();
   });
 });

@@ -1,11 +1,25 @@
 <script lang="ts">
   /**
-   * The kanban board (SPEC §7.10; issue #212): columns are derived from
-   * every distinct `workflowStatus` role value currently present across
-   * `records`, via `@loombox/protocol`'s `groupByWorkflowStatus` — never a
-   * hardcoded status list, so a built-in Task/Bug/Epic and a
-   * project-defined custom type render into the same columns as long as
-   * they map a `workflowStatus` role (issue #212's "no per-type UI code").
+   * The kanban board (SPEC §7.10; issue #212, restructured by issue #651 /
+   * v7 decision F4-2). Columns are the three fixed workflow categories
+   * every board reads at a glance — never one column per raw status. A
+   * tracker's own workflow (Jira's `statusCategory`, GitHub's
+   * `open`/`closed` + `state_reason`, loombox's own local status
+   * vocabulary — see `@loombox/protocol`'s `resolveWorkflowCategory` doc
+   * comment) collapses into `groupByWorkflowCategory`, which always
+   * returns all three columns in workflow order, even when a category has
+   * no records — an empty category still renders and still accepts a
+   * drop, fixing the old per-status `groupByWorkflowStatus`'s twin defect
+   * (a status nobody used yet never appeared as a column at all, and
+   * alphabetical sort put "Done" ahead of "In progress"/"Todo").
+   *
+   * Fixing the column count at three, rather than deriving it from the
+   * data, is also what keeps this fitting a laptop width with no
+   * horizontal scroller: three `18rem` columns plus two `--space-md`
+   * gaps is 888px, comfortably under any real laptop viewport — where
+   * the old alphabetical board could grow to as many columns as a
+   * project's workflow had raw statuses (six, in the review that flagged
+   * this: 1778px of content in a 1080px container).
    *
    * Drag-and-drop is a desktop-mouse enhancement layered on top of, never
    * instead of, a fully keyboard/touch-operable path: native HTML5 DnD
@@ -13,7 +27,10 @@
    * without a separate polyfill (out of scope here), so `TrackerCard`'s own
    * "Move to" `Select` is the real accessibility contract — both paths call
    * the identical `onMove`, which goes through `RelayClient.updateTrackerRecord`
-   * (the real store), never local component state.
+   * (the real store), never local component state. Both paths write the
+   * literal category id (`new`/`indeterminate`/`done`) back as the
+   * record's new `workflowStatus` value; `resolveWorkflowCategory`'s own
+   * doc comment is why that always resolves back into the same column.
    *
    * Mobile (<=767px): a kanban board with several columns has no usable
    * answer as a horizontal scroll on a 390px viewport (issue #212's
@@ -28,8 +45,8 @@
    */
   import { SvelteSet } from 'svelte/reactivity';
   import {
-    groupByWorkflowStatus,
-    UNRESOLVED_WORKFLOW_STATUS,
+    groupByWorkflowCategory,
+    WORKFLOW_CATEGORY_COLUMNS_V1,
     type TrackerRecordV1,
     type TrackerTypeRegistryV1,
   } from '@loombox/protocol';
@@ -47,23 +64,17 @@
 
   const { records, types, onMove, onOpen }: Props = $props();
 
-  const groups = $derived(groupByWorkflowStatus(records, types));
-  /** Every distinct column, alphabetical, with the "no resolvable status" bucket always last — a stable, generic order that never depends on a project's own status vocabulary. */
-  const columns = $derived.by(() => {
-    const keys = [...groups.keys()].filter((key) => key !== UNRESOLVED_WORKFLOW_STATUS).sort();
-    if (groups.has(UNRESOLVED_WORKFLOW_STATUS)) keys.push(UNRESOLVED_WORKFLOW_STATUS);
-    return keys;
-  });
+  /** The three fixed columns, in workflow order — never derived from which statuses `records` happens to use. */
+  const columns = WORKFLOW_CATEGORY_COLUMNS_V1;
+  const groups = $derived(groupByWorkflowCategory(records, types));
   const moveOptions = $derived<SelectOption[]>(
-    columns.map((column) => ({ id: column, label: column })),
+    columns.map((column) => ({ id: column.id, label: column.label })),
   );
 
+  // `columns.length` is a fixed 3, so a bounds clamp on mount/update (the
+  // old data-derived-column-count version needed one) can't be reached —
+  // `disabled` on the Prev/Next buttons below is the only guard needed.
   let mobileColumnIndex = $state(0);
-  $effect(() => {
-    if (mobileColumnIndex > 0 && mobileColumnIndex >= columns.length) {
-      mobileColumnIndex = Math.max(0, columns.length - 1);
-    }
-  });
 
   const draggedIds = new SvelteSet<string>();
 
@@ -75,12 +86,12 @@
     };
   }
 
-  function handleDrop(column: string) {
+  function handleDrop(categoryId: string) {
     return (event: DragEvent) => {
       event.preventDefault();
       const id = event.dataTransfer?.getData('application/x-loombox-tracker-record');
       if (id) {
-        onMove(id, column);
+        onMove(id, categoryId);
         draggedIds.delete(id);
       }
     };
@@ -92,72 +103,66 @@
 </script>
 
 <div class="tracker-board" data-testid="tracker-board">
-  {#if columns.length === 0}
-    <p class="tracker-board-empty" data-testid="tracker-board-empty">
-      No records have a resolvable status yet.
-    </p>
-  {:else}
-    <div class="tracker-board-mobile-nav" data-testid="tracker-board-mobile-nav">
-      <Button
-        variant="ghost"
-        size="sm"
-        ariaLabel="Previous column"
-        disabled={mobileColumnIndex === 0}
-        onclick={() => (mobileColumnIndex = Math.max(0, mobileColumnIndex - 1))}
+  <div class="tracker-board-mobile-nav" data-testid="tracker-board-mobile-nav">
+    <Button
+      variant="ghost"
+      size="sm"
+      ariaLabel="Previous column"
+      disabled={mobileColumnIndex === 0}
+      onclick={() => (mobileColumnIndex = Math.max(0, mobileColumnIndex - 1))}
+    >
+      <Icon
+        name="chevron-down"
+        class="tracker-board-mobile-nav-icon tracker-board-mobile-nav-icon-prev"
+      />
+    </Button>
+    <span class="tracker-board-mobile-title" data-testid="tracker-board-mobile-title">
+      {columns[mobileColumnIndex]?.label}
+      <span class="tracker-board-column-count"
+        >{groups.get(columns[mobileColumnIndex]?.id ?? 'new')?.length ?? 0}</span
       >
-        <Icon
-          name="chevron-down"
-          class="tracker-board-mobile-nav-icon tracker-board-mobile-nav-icon-prev"
-        />
-      </Button>
-      <span class="tracker-board-mobile-title" data-testid="tracker-board-mobile-title">
-        {columns[mobileColumnIndex]}
-        <span class="tracker-board-column-count"
-          >{groups.get(columns[mobileColumnIndex] ?? '')?.length ?? 0}</span
-        >
-      </span>
-      <Button
-        variant="ghost"
-        size="sm"
-        ariaLabel="Next column"
-        disabled={mobileColumnIndex >= columns.length - 1}
-        onclick={() => (mobileColumnIndex = Math.min(columns.length - 1, mobileColumnIndex + 1))}
-      >
-        <Icon name="chevron-down" class="tracker-board-mobile-nav-icon" />
-      </Button>
-    </div>
+    </span>
+    <Button
+      variant="ghost"
+      size="sm"
+      ariaLabel="Next column"
+      disabled={mobileColumnIndex >= columns.length - 1}
+      onclick={() => (mobileColumnIndex = Math.min(columns.length - 1, mobileColumnIndex + 1))}
+    >
+      <Icon name="chevron-down" class="tracker-board-mobile-nav-icon" />
+    </Button>
+  </div>
 
-    <div class="tracker-board-columns" data-testid="tracker-board-columns">
-      {#each columns as column, index (column)}
-        <section
-          class="tracker-board-column"
-          class:tracker-board-column-mobile-hidden={index !== mobileColumnIndex}
-          aria-label={column}
-          ondragover={handleDragOver}
-          ondrop={handleDrop(column)}
-          data-testid={`tracker-board-column-${column}`}
-        >
-          <h3 class="tracker-board-column-title">
-            {column}
-            <span class="tracker-board-column-count">{groups.get(column)?.length ?? 0}</span>
-          </h3>
-          <div class="tracker-board-column-cards">
-            {#each groups.get(column) ?? [] as record (record.id)}
-              <TrackerCard
-                {record}
-                {types}
-                {moveOptions}
-                {onMove}
-                {onOpen}
-                draggable
-                ondragstart={handleDragStart(record.id)}
-              />
-            {/each}
-          </div>
-        </section>
-      {/each}
-    </div>
-  {/if}
+  <div class="tracker-board-columns" data-testid="tracker-board-columns">
+    {#each columns as column, index (column.id)}
+      <section
+        class="tracker-board-column"
+        class:tracker-board-column-mobile-hidden={index !== mobileColumnIndex}
+        aria-label={column.label}
+        ondragover={handleDragOver}
+        ondrop={handleDrop(column.id)}
+        data-testid={`tracker-board-column-${column.id}`}
+      >
+        <h3 class="tracker-board-column-title">
+          {column.label}
+          <span class="tracker-board-column-count">{groups.get(column.id)?.length ?? 0}</span>
+        </h3>
+        <div class="tracker-board-column-cards">
+          {#each groups.get(column.id) ?? [] as record (record.id)}
+            <TrackerCard
+              {record}
+              {types}
+              {moveOptions}
+              {onMove}
+              {onOpen}
+              draggable
+              ondragstart={handleDragStart(record.id)}
+            />
+          {/each}
+        </div>
+      </section>
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -168,15 +173,12 @@
     min-width: 0;
   }
 
-  .tracker-board-empty {
-    margin: 0;
-    color: var(--color-text-secondary);
-  }
-
-  /* Desktop/tablet default: every column side by side, the board itself
-     scrolling horizontally if there are more columns than fit — normal
-     kanban UX above the mobile breakpoint (issue #212's own scoping: the
-     390px constraint is specifically about NOT relying on this). */
+  /* Desktop/tablet default: every column side by side. `overflow-x: auto`
+     is defensive, not load-bearing — three fixed `18rem` columns plus two
+     `--space-md` gaps is 888px, which fits without scrolling at any real
+     laptop width (issue #651 / v7 decision F4-2's "no horizontal
+     scroller" acceptance); this only kicks in if a future column's own
+     content ever forced it wider. */
   .tracker-board-mobile-nav {
     display: none;
   }
