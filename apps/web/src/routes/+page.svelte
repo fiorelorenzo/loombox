@@ -78,7 +78,6 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
-  import CopyButton from '$lib/components/CopyButton.svelte';
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
@@ -2452,6 +2451,26 @@
               >
                 Copy project path
               </button>
+              <!-- D3-3 (design spec §4; issue #670): export used to be a
+                   bare copy-glyph in the header, which left the header
+                   with a control nobody could identify. It now sits beside
+                   the row's other two session actions, plain-labelled, no
+                   copy glyph — only actionable for the session that's
+                   actually open, since that's the only transcript this
+                   page holds decoded client-side. -->
+              {#if session.id === selectedSessionId && mainView === 'session'}
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="session-export-link"
+                  onclick={() => {
+                    closeSidebarMenus();
+                    void exportTranscript();
+                  }}
+                >
+                  Export transcript
+                </button>
+              {/if}
               <button
                 type="button"
                 role="menuitem"
@@ -3006,18 +3025,6 @@
                 <Icon name="terminal" />
                 <span class="panel-word">Terminal</span>
               </Button>
-              <!-- A session action, not a fourth panel: it keeps the bare
-                   glyph on purpose, so the contrast with the group beside it
-                   is what says "this one does something rather than opening
-                   something". `prominent` because the dim resting state this
-                   button was built for belongs to the copy icon that repeats
-                   on every transcript row - here it read as disabled. -->
-              <CopyButton
-                text={transcript ? exportTranscriptText(transcript) : ''}
-                label="Export transcript"
-                copyFn={exportTranscript}
-                prominent
-              />
             {/if}
             <Button
               variant="ghost"

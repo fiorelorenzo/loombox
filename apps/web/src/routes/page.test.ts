@@ -14,6 +14,7 @@ import type {
   TranscriptState,
 } from '@loombox/providers-core/browser';
 import { APP_NAME } from '$lib/constants';
+import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
 import type {
   AttentionInboxItem,
@@ -932,5 +933,78 @@ describe('transcript: awaiting-permission outline (issue #548)', () => {
 
     const row = await screen.findByTestId('tool-call-row');
     expect(row.className).toContain('awaiting-permission');
+  });
+});
+
+// ---------------------------------------------------------------------
+// D3-3 (design spec §4; issue #670): the bare copy-glyph "Export
+// transcript" control leaves the session header entirely and moves into
+// the session row's own `⋯` menu, alongside its other session actions,
+// drawn as a plain labelled menu item rather than a copy icon.
+// ---------------------------------------------------------------------
+
+describe('session export moved into the row menu (D3-3; issue #670)', () => {
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+  });
+
+  it('the header carries only the Workbench and Terminal toggles — no export control left behind', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('workbench-toggle');
+
+    expect(screen.getByTestId('terminal-dock-toggle')).toBeTruthy();
+    expect(screen.queryByLabelText('Export transcript')).toBeNull();
+  });
+
+  it('the open session\'s row menu offers "Export transcript" alongside Target status/Copy project path/Archive session…', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+
+    const exportLink = screen.getByTestId('session-export-link');
+    expect(exportLink.textContent).toContain('Export transcript');
+    // No copy glyph on this action anywhere (D3-3's fixed verb): unlike
+    // `CopyButton`, this menu item renders no `Icon` at all.
+    expect(exportLink.querySelector('svg')).toBeNull();
+  });
+
+  it("clicking it copies the open session's transcript text — the same exportTranscriptText/copyToClipboard pipeline the old header button used", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    const transcript = reduceTranscript(createTranscriptState(), {
+      kind: 'agent_message_chunk',
+      turnId: 't1',
+      messageId: 'm1',
+      text: 'Hello there',
+    });
+
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: transcript },
+    });
+
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+    await fireEvent.click(screen.getByTestId('session-export-link'));
+
+    await vi.waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(exportTranscriptText(transcript));
+    });
+  });
+
+  it('does not offer "Export transcript" from a session row that is not the one currently open', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+    // The first session auto-selects on load; open the SECOND row's menu.
+    await screen.findByTestId('cockpit-session-title');
+    const secondRow = screen.getByText('Second session').closest('li');
+    expect(secondRow).toBeTruthy();
+
+    await fireEvent.click(within(secondRow as HTMLElement).getByTestId('session-row-more'));
+
+    expect(screen.queryByTestId('session-export-link')).toBeNull();
   });
 });

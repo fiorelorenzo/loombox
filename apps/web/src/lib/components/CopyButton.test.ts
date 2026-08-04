@@ -34,8 +34,9 @@ describe('CopyButton', () => {
     render(CopyButton, { props: { text: 'x', label: 'Copy x', prominent: true } });
     const button = screen.getByRole('button', { name: 'Copy x' });
     // The 0.5 resting opacity earns its keep on a copy icon that repeats on
-    // every transcript row. On the topbar's lone "Export transcript" it read as
-    // disabled next to full-strength neighbours.
+    // every transcript row. On a lone standalone copy button (e.g.
+    // GithubConnectFlow's device code) it read as disabled next to
+    // full-strength neighbours.
     expect(button.className).toContain('copy-button-prominent');
     expect(button.className).not.toContain('copy-button-reveal');
   });
