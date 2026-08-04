@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildTrackerTypeRegistryV1,
   filterByAssignee,
+  groupByWorkflowCategory,
   groupByWorkflowStatus,
   resolveRoleValue,
+  resolveWorkflowCategory,
   safeParseTrackerSnapshotResponsePayloadV1,
   safeParseTrackerWriteRequestPayloadV1,
   safeParseTrackerWriteResponsePayloadV1,
@@ -15,6 +17,7 @@ import {
   trackerWriteRequest,
   trackerWriteResponse,
   UNRESOLVED_WORKFLOW_STATUS,
+  WORKFLOW_CATEGORIES_V1,
   type TrackerRecordV1,
   type TrackerTypeDefinitionV1,
 } from './tracker-records';
@@ -141,6 +144,52 @@ describe.each<{ name: string; type: TrackerTypeDefinitionV1 }>([
 
   it('filters by exact assignee match', () => {
     expect(filterByAssignee(records, types, 'ada').map((r) => r.id)).toEqual(['todo-1', 'none-1']);
+  });
+});
+
+describe.each<{ name: string; type: TrackerTypeDefinitionV1 }>([
+  { name: 'built-in Task', type: TASK_TYPE },
+  { name: 'custom Feature Request', type: CUSTOM_TYPE },
+])('workflow-category grouping (issue #651, v7 decision F4-2) — $name', ({ type }) => {
+  const types = buildTrackerTypeRegistryV1([type]);
+  const todo = makeRecord(type, 'todo-1', { status: 'todo' });
+  const inProgress = makeRecord(type, 'doing-1', { status: 'in-progress' });
+  const done = makeRecord(type, 'done-1', { status: 'done' });
+  const noStatus = makeRecord(type, 'none-1', { priority: 'high' });
+  const typo = makeRecord(type, 'typo-1', { status: 'yolo' });
+
+  it('resolves loombox\u2019s own status vocabulary to the matching category', () => {
+    expect(resolveWorkflowCategory(todo, types)).toBe('new');
+    expect(resolveWorkflowCategory(inProgress, types)).toBe('indeterminate');
+    expect(resolveWorkflowCategory(done, types)).toBe('done');
+  });
+
+  it('defaults an unresolved status and an unrecognized one to the same "new" bucket', () => {
+    expect(resolveWorkflowCategory(noStatus, types)).toBe('new');
+    expect(resolveWorkflowCategory(typo, types)).toBe('new');
+  });
+
+  it('round-trips a category id written back as the status \u2014 what a board move does', () => {
+    for (const category of WORKFLOW_CATEGORIES_V1) {
+      const moved = makeRecord(type, 'moved-1', { status: category });
+      expect(resolveWorkflowCategory(moved, types)).toBe(category);
+    }
+  });
+
+  it('groupByWorkflowCategory always returns all three columns, in workflow order, even with zero records', () => {
+    const groups = groupByWorkflowCategory([], types);
+    expect([...groups.keys()]).toEqual(['new', 'indeterminate', 'done']);
+    expect(groups.get('new')).toEqual([]);
+    expect(groups.get('indeterminate')).toEqual([]);
+    expect(groups.get('done')).toEqual([]);
+  });
+
+  it('buckets records into their resolved category, preserving input order within a bucket', () => {
+    const records = [todo, inProgress, done, noStatus, typo];
+    const groups = groupByWorkflowCategory(records, types);
+    expect(groups.get('new')).toEqual([todo, noStatus, typo]);
+    expect(groups.get('indeterminate')).toEqual([inProgress]);
+    expect(groups.get('done')).toEqual([done]);
   });
 });
 

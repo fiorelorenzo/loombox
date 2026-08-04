@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TrackerBackend, TrackerBinding } from '@loombox/shared';
 
 import {
+  deriveGithubWorkflowCategory,
   GithubTrackerAccessError,
   GithubTrackerBackend,
   GithubTrackerRateLimitError,
@@ -159,6 +160,7 @@ describe('GithubTrackerBackend required methods against GitHub REST', () => {
         fields: {
           state: 'open',
           stateReason: null,
+          workflowCategory: 'new',
           body: 'body text',
           labels: [],
           assignees: [],
@@ -239,6 +241,7 @@ describe('GithubTrackerBackend required methods against GitHub REST', () => {
     const item = await svc.update(binding(), '213', { state: 'closed', bogusField: true });
 
     expect(item.fields.state).toBe('closed');
+    expect(item.fields.workflowCategory).toBe('done');
   });
 
   it('addComment() POSTs {body} to the issue comments endpoint', async () => {
@@ -287,6 +290,40 @@ describe('GithubTrackerBackend required methods against GitHub REST', () => {
 
     await expect(svc.get(jiraShapedBinding, '1')).rejects.toBeInstanceOf(GithubTrackerAccessError);
   });
+});
+
+describe('deriveGithubWorkflowCategory (issue #651, v7 decision F4-2)', () => {
+  it('open maps to "new"', () => {
+    expect(deriveGithubWorkflowCategory('open', null)).toBe('new');
+  });
+
+  it('closed maps to "done" regardless of state_reason — GitHub has no third state to signal "in progress"', () => {
+    expect(deriveGithubWorkflowCategory('closed', 'completed')).toBe('done');
+    expect(deriveGithubWorkflowCategory('closed', 'not_planned')).toBe('done');
+    expect(deriveGithubWorkflowCategory('closed', null)).toBe('done');
+  });
+});
+
+describe('GithubTrackerBackend.get — workflow category from a realistic issue payload (issue #651)', () => {
+  it.each([
+    ['open', null, 'new'],
+    ['closed', 'completed', 'done'],
+    ['closed', 'not_planned', 'done'],
+  ] as const)(
+    'state "%s" with state_reason "%s" maps to workflowCategory "%s"',
+    async (state, stateReason, expectedCategory) => {
+      const fetchImpl = vi.fn(async () =>
+        githubResponse(200, issuePayload({ state, state_reason: stateReason })),
+      );
+      const svc = backend(fetchImpl);
+
+      const item = await svc.get(binding(), '213');
+
+      expect(item.fields.state).toBe(state);
+      expect(item.fields.stateReason).toBe(stateReason);
+      expect(item.fields.workflowCategory).toBe(expectedCategory);
+    },
+  );
 });
 
 describe('GithubTrackerBackend real-world GitHub behaviour (issue #213 acceptance)', () => {

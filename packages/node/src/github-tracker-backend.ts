@@ -82,7 +82,7 @@ import type {
   TrackerListPage,
   TrackerTransition,
 } from '@loombox/shared';
-import type { GitHubTarget } from '@loombox/protocol';
+import type { GitHubTarget, WorkflowCategoryV1 } from '@loombox/protocol';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -176,14 +176,36 @@ function isPullRequestPayload(raw: Record<string, unknown>): boolean {
   return raw.pull_request != null;
 }
 
+/**
+ * GitHub exposes no third state — `state`/`state_reason` is the entire
+ * surface (issue #651, v7 decision F4-2's own framing: "GitHub exposes
+ * open/closed plus state_reason"). `open` maps to `new`; `closed` maps
+ * to `done` regardless of `state_reason` — a "not planned" close is
+ * still a *resolved* issue, not an in-progress one, and GitHub has no
+ * signal at all for "started but not done" (that lives in a repo's own
+ * labels/Projects-v2 field, out of this backend's scope). A board fed
+ * only by GitHub items is therefore expected to show an empty
+ * `indeterminate` column — the "empty category still renders" case, not
+ * a bug in this mapping.
+ */
+export function deriveGithubWorkflowCategory(
+  state: string,
+  stateReason: string | null,
+): WorkflowCategoryV1 {
+  void stateReason; // carried for callers, not read here — see doc comment above.
+  return state === 'closed' ? 'done' : 'new';
+}
+
 function toTrackerItem(raw: GithubIssuePayload): TrackerItemLive {
+  const stateReason = raw.state_reason ?? null;
   return {
     externalId: String(raw.number),
     title: raw.title,
     url: raw.html_url,
     fields: {
       state: raw.state,
-      stateReason: raw.state_reason ?? null,
+      stateReason,
+      workflowCategory: deriveGithubWorkflowCategory(raw.state, stateReason),
       body: raw.body,
       labels: raw.labels,
       assignees: raw.assignees,

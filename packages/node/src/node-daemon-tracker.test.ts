@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
 import {
+  buildTrackerTypeRegistryV1,
   PROTOCOL_V1,
+  resolveWorkflowCategory,
   type EncryptedEnvelope,
   type TrackerSnapshotResponsePayloadV1,
   type TrackerWriteResponsePayloadV1,
@@ -450,5 +452,49 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
     expect(fullSnapshot.outcome).toBe('ok');
     if (fullSnapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(fullSnapshot.records).toHaveLength(1);
+  });
+
+  it('moving a card across a workflow-category boundary (issue #651, v7 decision F4-2) writes the literal category id back through the real store, and it resolves to the same category on a fresh snapshot', async () => {
+    const { sessionId, key } = await connectOverTheWire();
+    const created = trackerStore.create(projectPath, {
+      primaryType: 'task',
+      fields: { title: 'Ship it', status: 'todo' },
+      authorId: 'agent-session-1',
+    });
+
+    const initialSnapshot = await requestSnapshot(sessionId, key);
+    expect(initialSnapshot.outcome).toBe('ok');
+    if (initialSnapshot.outcome !== 'ok') throw new Error('unreachable');
+    const registry = buildTrackerTypeRegistryV1(initialSnapshot.types);
+    // 'todo' has no dedicated category column of its own any more — it
+    // resolves into the 'new' workflow category.
+    expect(resolveWorkflowCategory(created, registry)).toBe('new');
+
+    // What a board drag across the 'new' -> 'done' column boundary
+    // actually sends: the literal category id, not a synonym like
+    // 'complete' or 'closed' — see `TrackerCard.svelte`'s own "Move to"
+    // wiring and `resolveWorkflowCategory`'s doc comment on why that
+    // round-trips.
+    const response = await requestWrite(sessionId, key, {
+      op: 'update',
+      id: created.id,
+      fields: { title: 'Ship it', status: 'done' },
+    });
+    expect(response.outcome).toBe('ok');
+    if (response.outcome !== 'ok') throw new Error('unreachable');
+    const written = response.record!;
+    expect(written.fields.status).toBe('done');
+    expect(resolveWorkflowCategory(written, registry)).toBe('done');
+
+    // Not just the wire echo: the real on-disk store itself now holds
+    // the new status, and reading it back over a fresh snapshot request
+    // resolves to the same category — nothing about this round-trip
+    // depended on client-held state.
+    expect(trackerStore.get(projectPath, created.id)?.fields.status).toBe('done');
+    const finalSnapshot = await requestSnapshot(sessionId, key);
+    expect(finalSnapshot.outcome).toBe('ok');
+    if (finalSnapshot.outcome !== 'ok') throw new Error('unreachable');
+    const reread = finalSnapshot.records.find((record) => record.id === created.id)!;
+    expect(resolveWorkflowCategory(reread, registry)).toBe('done');
   });
 });

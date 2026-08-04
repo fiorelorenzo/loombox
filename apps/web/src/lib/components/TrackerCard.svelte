@@ -14,10 +14,15 @@
    * see that file's doc comment for why native DnD alone isn't enough).
    * Both paths call the exact same `onMove`, which goes through
    * `RelayClient.updateTrackerRecord` — the real store, never local
-   * component state.
+   * component state. Since issue #651 (v7 decision F4-2), the select's
+   * options are the three workflow categories, not raw statuses, and its
+   * current value is `resolveWorkflowCategory`'s own resolved category —
+   * never the record's raw `workflowStatus` field, which would not match
+   * any option and leave the control looking unset.
    */
   import {
     resolveRoleValue,
+    resolveWorkflowCategory,
     type TrackerRecordV1,
     type TrackerTypeRegistryV1,
   } from '@loombox/protocol';
@@ -54,7 +59,7 @@
   });
   const priority = $derived(resolveRoleValue(record, types, 'priority'));
   const assignee = $derived(resolveRoleValue(record, types, 'assignee'));
-  const workflowStatus = $derived(resolveRoleValue(record, types, 'workflowStatus'));
+  const category = $derived(resolveWorkflowCategory(record, types));
 
   /** A generic, value-level heuristic (never keyed by `primaryType`) — any type's priority vocabulary maps through the same substring rules. */
   function priorityTone(value: unknown): StatusTone {
@@ -101,7 +106,7 @@
     {#if moveOptions && moveOptions.length > 0 && onMove}
       <Select
         label={`Move "${title}" to`}
-        value={typeof workflowStatus === 'string' ? workflowStatus : ''}
+        value={category}
         options={moveOptions}
         size="sm"
         onChange={(next) => onMove(record.id, next)}

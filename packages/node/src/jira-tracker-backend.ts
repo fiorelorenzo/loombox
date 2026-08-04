@@ -103,7 +103,7 @@ import type {
   TrackerListPage,
   TrackerTransition,
 } from '@loombox/shared';
-import type { JiraTarget } from '@loombox/protocol';
+import type { JiraTarget, WorkflowCategoryV1 } from '@loombox/protocol';
 
 /** The one shape a resolved Jira credential needs (SPEC §7.10's `{token, cloudId}`, refined here — see this module's top comment — into the two things every REST call actually needs: an already-routed REST root and a ready-to-send auth header). */
 export interface JiraCredential {
@@ -252,7 +252,7 @@ interface JiraIssuePayload {
   fields: {
     summary: string;
     description: unknown;
-    status?: { name: string } | null;
+    status?: { name: string; statusCategory?: { key: string; name?: string } | null } | null;
     issuetype?: { name: string } | null;
     assignee?: unknown;
     reporter?: unknown;
@@ -262,6 +262,21 @@ interface JiraIssuePayload {
     updated?: string;
     resolutiondate?: string | null;
   };
+}
+
+/**
+ * Jira's `status.statusCategory.key` IS the workflow category (issue
+ * #651, v7 decision F4-2) — `new`/`indeterminate`/`done`, the exact
+ * three ids `@loombox/protocol`'s `WorkflowCategoryV1` uses, so this is
+ * a validated widen, never a label-matching guess the way a project's
+ * own arbitrary status *names* ("To Do", "In Progress", a custom Kanban
+ * scheme's own words) would require. Jira always populates
+ * `statusCategory` alongside `status` on a real issue; the fallback only
+ * matters for a malformed/partial payload, and defaults to the same
+ * `new` bucket an unset local status falls into.
+ */
+export function deriveJiraWorkflowCategory(key: string | null | undefined): WorkflowCategoryV1 {
+  return key === 'new' || key === 'indeterminate' || key === 'done' ? key : 'new';
 }
 
 /** `credential.baseUrl`'s own shape for an OAuth-3LO-routed connection (SPEC §7.10) — the cloudId is the one path segment after `/ex/jira/`. */
@@ -280,6 +295,7 @@ function toTrackerItem(raw: JiraIssuePayload, baseUrl: string): TrackerItemLive 
     url: issueBrowseUrl(baseUrl, raw.key, raw.self),
     fields: {
       status: raw.fields.status?.name ?? null,
+      workflowCategory: deriveJiraWorkflowCategory(raw.fields.status?.statusCategory?.key),
       issueType: raw.fields.issuetype?.name ?? null,
       description: adfToPlainText(raw.fields.description),
       assignee: raw.fields.assignee ?? null,

@@ -16,7 +16,11 @@ import { nodeOpen, nodeSeal } from './harness/relay-harness';
  * spec drives ONLY that select, by focus and keyboard events, never a
  * click or a drag, and proves the change reaches the real store (a real
  * `tracker_write_request` observed on the wire, not just a DOM mutation)
- * rather than local component state.
+ * rather than local component state. Since issue #651 (v7 decision
+ * F4-2) the board's columns are the three fixed workflow categories, not
+ * raw statuses, so this drives rec-1 across a category boundary
+ * ('todo' -> category 'new') into 'done', proving the write patches the
+ * literal category id back onto the record's status field.
  */
 
 function makeSystem(): TrackerRecordV1['system'] {
@@ -89,8 +93,9 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
       envelope: snapshotEnvelope,
     });
 
-    // Two columns exist: 'done' (alphabetically first) shows initially.
-    await expect(page.getByTestId('tracker-board-column-todo')).toBeVisible();
+    // Three fixed columns always exist, in workflow order — the record's
+    // raw 'todo' status resolves to the 'new' category.
+    await expect(page.getByTestId('tracker-board-column-new')).toBeVisible();
     const card = page.getByTestId('tracker-card-rec-1');
     await expect(card).toBeVisible();
 
@@ -98,13 +103,13 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
     await moveTrigger.focus();
     await expect(moveTrigger).toBeFocused();
 
-    await page.keyboard.press('Enter'); // opens the listbox
+    await page.keyboard.press('Enter'); // opens the listbox, active on the CURRENT category ('new')
     await expect(page.getByTestId('tracker-card-move-rec-1-listbox')).toBeVisible();
-    // The listbox opens active on the CURRENT value ('todo'); ArrowDown
-    // moves the highlight to the next option in the (alphabetical)
-    // list — 'todo' is the only entry after 'done', so this always lands
-    // on 'done' regardless of how many columns a future board has.
-    await page.keyboard.press('ArrowUp');
+    // Columns are fixed workflow order (['new', 'indeterminate', 'done']),
+    // never alphabetical — two ArrowDown presses from 'new' always lands
+    // on 'done', regardless of a project's own status vocabulary.
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter'); // commits
 
     const writeRequest = (await loombox.node.waitFor(
@@ -119,7 +124,8 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
     // seeded above — this request is the ONLY way the app could have
     // learned a new status, proving the keyboard path goes through
     // `RelayClient.updateTrackerRecord` (a real wire write against
-    // `NativeTrackerStore`), never a locally-mutated Svelte variable.
+    // `NativeTrackerStore`), never a locally-mutated Svelte variable. The
+    // literal category id ('done'), not a synonym, is what gets written.
     expect(payload.op).toBe('update');
     expect(payload.id).toBe('rec-1');
     expect(payload.fields.status).toBe('done');
