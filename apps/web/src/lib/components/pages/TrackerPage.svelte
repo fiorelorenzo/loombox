@@ -28,36 +28,38 @@
    * component owns its own `OPEN_TIMEOUT_MS`.
    *
    * F1-1/F2-2 (issue #672; spec §6) folded the per-project `TrackerMode`
-   * picker into this page, reading `tracker-mode-store.ts` (#209) directly
-   * (`trackerModeStorage`/`trackerMode` below) so this page can branch on
-   * it — `Config`'s old Tracker section is deleted outright, not mirrored
-   * (F2-1 was not picked), so this is now the ONLY place a project's
-   * tracker mode is shown or changed. No mode saved yet: the page's own
-   * empty state stops being blank and becomes `TrackerConfigPanel`'s own
-   * setup form, rendered inline (F1-1) — the exact surface issue #220
-   * already built, just relocated. A mode already saved: the header's
-   * `actions` cluster gets a compact "what is this / change what this is"
-   * control instead (F2-2), the same `TrackerConfigPanel` in its
-   * `presentation="header"` shape (a `Dialog`, not an inline form — a
-   * page-header bar has no room to grow one). `accountConnect` threads
-   * this page's own already-known `nodeId` (the session's own node, so
-   * unlike Settings' accounts section there is no node to pick) into that
-   * panel's "Connect GitHub"/"Connect Jira" empty-state CTA.
+   * picker into this page, reading `tracker-mode-store.ts` (#209, made
+   * node-backed by #631) so this page can branch on it — `Config`'s old
+   * Tracker section is deleted outright, not mirrored (F2-1 was not
+   * picked), so this is now the ONLY place a project's tracker mode is
+   * shown or changed. No mode saved yet: the page's own empty state stops
+   * being blank and becomes `TrackerConfigPanel`'s own setup form,
+   * rendered inline (F1-1) — the exact surface issue #220 already built,
+   * just relocated. A mode already saved: the header's `actions` cluster
+   * gets a compact "what is this / change what this is" control instead
+   * (F2-2), the same `TrackerConfigPanel` in its `presentation="header"`
+   * shape (a `Dialog`, not an inline form — a page-header bar has no room
+   * to grow one). `accountConnect` threads this page's own already-known
+   * `nodeId` (the session's own node, so unlike Settings' accounts
+   * section there is no node to pick) into that panel's "Connect
+   * GitHub"/"Connect Jira" empty-state CTA.
    *
-   * **The #631 gap, stated explicitly rather than shipped silently**:
+   * **#631 closed the transport gap, not the bridge-dispatch one.**
+   * `TrackerMode` used to live only in this browser's `localStorage` —
    * `NodeDaemon.readTrackerSnapshotForBridge`
-   * (`packages/node/src/node-daemon.ts:2876-2891`) reads the local native
-   * store unconditionally and never consults `TrackerMode` — a project
-   * switched to `live` still shows local records, with no error. This
-   * issue does not wait on #631 (a node-side fix, out of scope for a
-   * client surface issue) and ships the picker anyway: {@link
-   * trackerMode} is real, persisted, and drives the header/empty-state
-   * correctly, but the record data below it does not yet follow a `live`
-   * choice. Rather than let that "look like it works and not" silently
-   * (this file's own issue explicitly forbids that), `.tracker-live-gap-
-   * note` renders whenever `trackerMode.kind === 'live'` and a snapshot has
-   * actually loaded, naming #631 directly instead of pretending the synced
-   * board is real.
+   * (`packages/node/src/node-daemon.ts`) read the local native store
+   * unconditionally because the native store was the only thing the node
+   * had, so a project switched to `live` still showed local records, with
+   * no error. `trackerMode` below is now node-backed
+   * (`createRelayTrackerModeStorage`) and never flashes a stale "never
+   * chosen" while its own round trip is in flight (`trackerModeStatus`'s
+   * `'loading'` gate below) — but the record data under it still doesn't
+   * follow a `live` choice; wiring `readTrackerSnapshotForBridge` itself
+   * to consult this mode is a separate, node-side follow-up. Rather than
+   * let that "look like it works and not" silently (this file's own issue
+   * explicitly forbids that), `.tracker-live-gap-note` renders whenever
+   * `trackerMode.kind === 'live'` and a snapshot has actually loaded,
+   * naming #631 directly instead of pretending the synced board is real.
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import type { Readable } from 'svelte/store';
@@ -69,7 +71,11 @@
     type TrackerTypeDefinitionV1,
   } from '@loombox/protocol';
   import type { TrackerSnapshotState } from '$lib/relay-client';
-  import { createLocalStorageTrackerModeStorage } from '$lib/tracker-mode-store';
+  import {
+    createRelayTrackerModeStorage,
+    type RelayTrackerModeStorage,
+    type TrackerModeClient,
+  } from '$lib/tracker-mode-store';
   import { Icon, type IconName } from '../icons';
   import type { GithubConnectClient } from '../GithubConnectFlow.svelte';
   import type { JiraConnectClient } from '../JiraConnectForm.svelte';
@@ -87,8 +93,9 @@
   } from '../TrackerManageTypesDialog.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. Also extends `GithubConnectClient`/`JiraConnectClient` and carries `refreshConnectedAccounts` (issue #672): `RelayClient` already implements all three (issue #230/#221), and this page's own `accountConnect` prop to `TrackerConfigPanel` needs exactly that surface — see the file doc comment. */
-  export interface TrackerPageClient extends GithubConnectClient, JiraConnectClient {
+  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. Also extends `GithubConnectClient`/`JiraConnectClient`/`TrackerModeClient` (the last for issue #631's node-backed mode — `createRelayTrackerModeStorage`'s own narrow-client seam) and carries `refreshConnectedAccounts` (issue #672): `RelayClient` already implements all four (issue #230/#221/#631), and this page's own `accountConnect` prop to `TrackerConfigPanel` needs the connect ones — see the file doc comment. */
+  export interface TrackerPageClient
+    extends GithubConnectClient, JiraConnectClient, TrackerModeClient {
     trackerSnapshotFor: (sessionId: string) => Readable<TrackerSnapshotState>;
     reloadTrackerSnapshot: (sessionId: string) => void;
     createTrackerRecord: (
@@ -125,12 +132,70 @@
 
   const { client, sessionId, projectPath, nodeId, connectedAccounts = [] }: Props = $props();
 
-  /** This project's saved tracker mode (issue #672) — `undefined` means never chosen, which is what puts this page into its own setup state (F1-1) instead of the board/list. `trackerModeStorage` is `$derived` off `projectPath` (a different project has its own storage key entirely, same `TrackerModeStorage` shape `TrackerConfigPanel`'s own default construction uses). `trackerMode` is a writable `$derived` off it: reading `projectPath`/`trackerModeStorage` keeps it in sync with the prop the normal way, and {@link handleModeChange} reassigning it directly (Svelte 5's writable-derived override) is exactly what lets a just-saved mode take effect immediately, without a separate `$state`/`$effect` pair to keep in sync by hand. */
-  const trackerModeStorage = $derived(createLocalStorageTrackerModeStorage(projectPath));
-  let trackerMode = $derived<TrackerMode | undefined>(trackerModeStorage.get());
+  /**
+   * This project's saved tracker mode (issue #672, node-backed by #631).
+   * `trackerModeStatus` is the real three-way state this page MUST gate
+   * rendering on (see `tracker-mode-store.ts`'s own doc comment):
+   * `'loading'` renders neither the setup step nor the board below — a
+   * saved `live` mode must never flash the "choose a mode" setup step
+   * while the node round trip is still in flight, which reading
+   * `trackerMode === undefined` alone (this field's old, sync-
+   * `localStorage`-only meaning) would do here. `trackerMode`/
+   * `trackerModeError` are `$state`, not `$derived`, because they're fed
+   * by `RelayTrackerModeStorage`'s own async `subscribe` — {@link
+   * subscribeTrackerMode} rebuilds the storage and re-subscribes whenever
+   * `projectPath`/`nodeId` changes, mirroring {@link subscribe}'s
+   * identical re-subscribe contract for the tracker snapshot further
+   * below. {@link handleModeChange} still reassigns `trackerMode` directly
+   * the moment a save succeeds, so it takes effect immediately rather than
+   * waiting on the store's own round trip to catch up (the store settles
+   * to the same value moments later, a harmless no-op reassignment).
+   */
+  let trackerModeStorage = $state<RelayTrackerModeStorage | undefined>(undefined);
+  let trackerModeStatus = $state<'loading' | 'loaded' | 'error'>('loading');
+  let trackerMode = $state<TrackerMode | undefined>(undefined);
+  let trackerModeError = $state<string | undefined>(undefined);
+  let unsubscribeTrackerMode: (() => void) | undefined;
+
+  function subscribeTrackerMode(): void {
+    unsubscribeTrackerMode?.();
+    if (nodeId === undefined) {
+      // No node bound to this session (yet) — a real, named error state
+      // (SPEC §7.10 forbids guessing a mode with no node to ask), never a
+      // silent "never chosen" that would offer a setup form pointed at
+      // nowhere.
+      trackerModeStorage = undefined;
+      trackerModeStatus = 'error';
+      trackerModeError = 'No node is available for this session yet.';
+      trackerMode = undefined;
+      return;
+    }
+    const storage = createRelayTrackerModeStorage(client, nodeId, projectPath);
+    trackerModeStorage = storage;
+    unsubscribeTrackerMode = storage.subscribe((state) => {
+      trackerModeStatus = state.status;
+      trackerMode = state.mode;
+      trackerModeError = state.error;
+    });
+  }
+
+  onDestroy(() => unsubscribeTrackerMode?.());
+
+  // Re-subscribes if the caller ever points this page at a different
+  // project/node (mirrors `subscribe`'s own identical re-subscribe effect
+  // for the tracker snapshot below).
+  $effect(() => {
+    void projectPath;
+    void nodeId;
+    subscribeTrackerMode();
+  });
 
   function handleModeChange(mode: TrackerMode): void {
     trackerMode = mode;
+  }
+
+  function retryTrackerMode(): void {
+    trackerModeStorage?.reload();
   }
 
   const accountConnect = $derived<AccountConnectCapability>({
@@ -272,7 +337,7 @@
 </script>
 
 {#snippet actions()}
-  {#if trackerMode !== undefined}
+  {#if trackerModeStatus === 'loaded' && trackerMode !== undefined}
     <TrackerConfigPanel
       presentation="header"
       {projectPath}
@@ -289,7 +354,18 @@
 {/snippet}
 
 <PageLayout title="Tracker" testid="tracker-page" {actions}>
-  {#if trackerMode === undefined}
+  {#if trackerModeStatus === 'loading'}
+    <p class="tracker-page-loading" data-testid="tracker-mode-loading">
+      <WovenLoader size="sm" label="Loading tracker mode" />
+      Loading…
+    </p>
+  {:else if trackerModeStatus === 'error'}
+    <ErrorNotice
+      message={trackerModeError ?? "Could not reach this project's node to load its tracker mode."}
+      retryable
+      onRetry={retryTrackerMode}
+    />
+  {:else if trackerMode === undefined}
     <div class="tracker-setup" data-testid="tracker-setup">
       <p class="tracker-setup-intro">
         This project has no tracker set up yet. Connect a GitHub or Jira project, or use loombox's

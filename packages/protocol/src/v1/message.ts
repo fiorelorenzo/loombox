@@ -75,6 +75,7 @@ import {
   jiraConnectRequest,
   jiraConnectResponse,
 } from './account-connect';
+import { trackerModeGetRequest, trackerModeResponse, trackerModeSetRequest } from './tracker';
 import {
   trackerSnapshotRequest,
   trackerSnapshotResponse,
@@ -167,6 +168,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   accountPinResponse,
   accountPinResolveRequest,
   accountPinResolveResponse,
+  trackerModeGetRequest,
+  trackerModeSetRequest,
+  trackerModeResponse,
   trackerSnapshotRequest,
   trackerSnapshotResponse,
   trackerWriteRequest,

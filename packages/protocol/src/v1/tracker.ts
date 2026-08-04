@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PROTOCOL_V1 } from './handshake';
 
 /**
  * Per-project tracker configuration (SPEC §7.10; issue #209): every project
@@ -93,3 +94,66 @@ export function parseTrackerMode(data: unknown): TrackerMode {
 export function safeParseTrackerMode(data: unknown): z.SafeParseReturnType<unknown, TrackerMode> {
   return trackerMode.safeParse(data);
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Syncing the mode to the node (issue #631)
+ * ---------------------------------------------------------------------------
+ *
+ * `TrackerMode` used to live only in the browser's `localStorage`, which made
+ * the node structurally unable to honour it: `readTrackerSnapshotForBridge`
+ * read the native store unconditionally because the native store was the only
+ * thing it had, so a project switched to live GitHub or Jira saved the choice
+ * and still showed local records, silently. SPEC §7.10 says a project chooses
+ * "once" how it tracks work — once, not once per browser — and `connectionId`
+ * names a `ConnectedAccount` that only exists in the node's own keyring, so a
+ * device-local mode referenced an id that meant nothing where it was needed.
+ *
+ * These three messages mirror `account-connect.ts`'s
+ * `account_pin_get/set_request` + `account_pin_response` deliberately: the
+ * account pin is the same kind of fact (per-project, per-node, client-edited,
+ * stored under `stateDir`, keyed by absolute `projectPath`) and it already had
+ * the shape this needed. Same request/reply convention, and the same rule that
+ * the reply carries the resulting state so a set needs no second round trip.
+ */
+
+/** A client asks `nodeId` for `projectPath`'s saved mode. */
+export const trackerModeGetRequest = z.object({
+  type: z.literal('tracker_mode_get_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
+});
+export type TrackerModeGetRequest = z.infer<typeof trackerModeGetRequest>;
+
+/** Saves `projectPath`'s mode. There is deliberately no unset: `{kind:'native'}` is an explicit choice a user makes, and "never chosen" is only ever the initial state, never somewhere the UI returns to. */
+export const trackerModeSetRequest = z.object({
+  type: z.literal('tracker_mode_set_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
+  mode: trackerMode,
+});
+export type TrackerModeSetRequest = z.infer<typeof trackerModeSetRequest>;
+
+/**
+ * The reply to both requests: `projectPath`'s resulting mode.
+ *
+ * `mode` is OPTIONAL, and its absence is load-bearing rather than an empty
+ * default. It means "this project has never had a mode chosen", which is a
+ * distinct state from an explicit `{kind:'native'}` — the exact distinction
+ * `tracker-mode-store.ts`'s own doc comment calls its whole point, and the one
+ * the Tracker page's setup step branches on. Collapsing it to a native default
+ * here would silently reintroduce the guess issue #209 exists to prevent.
+ */
+export const trackerModeResponse = z.object({
+  type: z.literal('tracker_mode_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
+  mode: trackerMode.optional(),
+});
+export type TrackerModeResponse = z.infer<typeof trackerModeResponse>;

@@ -1,7 +1,12 @@
 import type { webcrypto } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { decryptEnvelope, deriveKeyTree, encryptEnvelope, importAesGcmKey } from '@loombox/crypto';
-import { PROTOCOL_V1, type EncryptedEnvelope, type WireMessageV1 } from '@loombox/protocol';
+import {
+  PROTOCOL_V1,
+  type EncryptedEnvelope,
+  type TrackerMode,
+  type WireMessageV1,
+} from '@loombox/protocol';
 import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '@loombox/relay';
 
 /**
@@ -86,6 +91,8 @@ export class FakeNode {
   readonly messages: WireMessageV1[] = [];
   private readonly socket: WebSocket;
   readonly ready: Promise<void>;
+  /** In-memory per-`projectPath` `TrackerMode` map (issue #631) — this `FakeNode`'s own stand-in for the real node's `TrackerModeStore`, answered automatically as `tracker_mode_get_request`/`tracker_mode_set_request` arrive so a spec never has to hand-roll the request/reply dance every other `tracker_snapshot_request`/`account_pin_get_request` spec in this suite already does manually (leaving those unaffected — only these two message types are auto-answered). Seed a project's starting mode with {@link seedTrackerMode} before the page can issue its first request (i.e. before `page.goto`), replacing the pre-#631 `page.addInitScript(() => localStorage.setItem('loombox:tracker-mode:…', …))` seeding those specs used against the old, node-unaware store. */
+  private readonly trackerModes = new Map<string, TrackerMode>();
 
   constructor(url: string, opts: { deviceId: string; devicePublicKey: string; authToken: string }) {
     this.socket = new WebSocket(url);
@@ -110,7 +117,9 @@ export class FakeNode {
           resolve();
           return;
         }
-        this.messages.push(parsed as WireMessageV1);
+        const message = parsed as WireMessageV1;
+        this.messages.push(message);
+        this.autoAnswerTrackerMode(message);
       });
       this.socket.addEventListener('error', () => {
         if (!settled) reject(new Error(`FakeNode: cannot reach ${url}`));
@@ -123,6 +132,35 @@ export class FakeNode {
 
   send(message: WireMessageV1): void {
     this.socket.send(JSON.stringify(message));
+  }
+
+  /** Pre-seeds `projectPath`'s starting `TrackerMode`, as if `TrackerModeStore.set` had already run on the real node — call before the page can issue its first `tracker_mode_get_request` for it (i.e. before `page.goto`). */
+  seedTrackerMode(projectPath: string, mode: TrackerMode): void {
+    this.trackerModes.set(projectPath, mode);
+  }
+
+  /** Answers `tracker_mode_get_request`/`tracker_mode_set_request` in real time against {@link trackerModes}, mirroring `NodeDaemon`'s own `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest` (issue #631) — every other message type is left to the spec's own `waitFor`/`send`, same as `tracker_snapshot_request`/`account_pin_get_request` already are throughout this suite. */
+  private autoAnswerTrackerMode(message: WireMessageV1): void {
+    if (message.type === 'tracker_mode_get_request') {
+      this.send({
+        type: 'tracker_mode_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: message.requestId,
+        nodeId: message.nodeId,
+        projectPath: message.projectPath,
+        mode: this.trackerModes.get(message.projectPath),
+      });
+    } else if (message.type === 'tracker_mode_set_request') {
+      this.trackerModes.set(message.projectPath, message.mode);
+      this.send({
+        type: 'tracker_mode_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: message.requestId,
+        nodeId: message.nodeId,
+        projectPath: message.projectPath,
+        mode: message.mode,
+      });
+    }
   }
 
   async waitFor(
