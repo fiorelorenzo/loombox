@@ -1,5 +1,40 @@
 # @loombox/relay
 
+## 0.2.0
+
+### Minor Changes
+
+- 5118b26: Add the `ConnectedAccount` data model and its relay metadata sync (SPEC §7.26)
+
+  `@loombox/protocol` gets `v1/connected-accounts.ts`: the provider-agnostic `ConnectedAccount` type, Zod-validated and registered in `schemasV1` field-for-field per spec (`id`, `provider`, `host`, `providerAccountId`, `label`, `avatarUrl`, `credentialSource`, `scopes`, `capabilities`, `connectedAt`, `updatedAt`, `secretRef`). `id` is derived, never free-form: `composeConnectedAccountId`/`parseConnectedAccountId` round-trip `provider:host:providerAccountId`, tolerant of a colon-bearing `host` (a GitHub Enterprise Server or Jira Data Center instance on a non-default port). `providerAccountId` rejects anything shaped like an email address for every provider, and additionally requires a numeric value for `github` (GitHub's own `GET /user` id). There is deliberately no `nodePresence` field: which node holds a given account's secret locally is computed lazily at the point of use (issue #228), never synced.
+
+  `@loombox/relay` wires the metadata row through its existing account-scoped sync path: a `ConnectedAccountStore` (in-memory and Postgres, new `connected_accounts` table), a node-only `connected_account_announce` message, and a client-only `connected_account_list_request`/`connected_account_list` pair, mirroring `target_announce`/`target_list_request` exactly. The synced row never carries a secret: `secretRef` only names a node-local OS-keyring entry (the same class of secret as SSH keys and MCP secrets), and the row is relay-readable plaintext by design, the same "account-scoped metadata" exception SPEC §8 already grants session existence and the device registry.
+
+  No connect flow ships here (GitHub device grant, `gh` CLI import, PAT paste, Jira token, Jira 3LO are issues #222-#226), no management UI (#230), no per-project pinning (#227), no node-presence computation (#228, referenced above).
+
+### Patch Changes
+
+- bca2cd0: `/health` now checks Postgres and Redis before answering
+
+  Previously `/health` was a plain liveness stub: `{"status":"ok"}` on every
+  request, regardless of whether the relay's Postgres or Redis was actually
+  reachable. It's now a real readiness probe (SPEC §7.21): a `SELECT 1`
+  against Postgres and a `PING` against Redis (only when `REDIS_URL` is
+  configured), each racing its own short timeout so a hung dependency 503s
+  instead of hanging the request. 200 means both configured dependencies are
+  reachable; a 503 body names which one failed, e.g.
+  `{"status":"unhealthy","failed":["postgres"]}`. Still unauthenticated and
+  exempt from the per-IP rate limit — an external uptime checker has no
+  session and polls on its own schedule.
+
+  See `docs/deploy-relay.md`'s new "Monitoring" section for pointing an
+  external uptime service at this endpoint.
+
+- Updated dependencies [5118b26]
+- Updated dependencies [a449b22]
+- Updated dependencies [c97a2cf]
+  - @loombox/protocol@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes

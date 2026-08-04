@@ -1,5 +1,59 @@
 # @loombox/desktop
 
+## 0.2.0
+
+### Minor Changes
+
+- 3a839c4: Add Windows and Linux electron-builder targets, with icons generated from the same mark
+
+  `apps/desktop/electron-builder.yml` gets a `win` block (NSIS installer plus a portable
+  build, `assets/icon.ico`) and a `linux` block (AppImage plus deb, `category:
+Development`, `assets/icons`), alongside the existing `mac` block. `package:win` and
+  `package:linux` join `package:mac` in `apps/desktop/package.json`.
+
+  Every new icon is generated, not drawn: `gen-brand-assets.mjs` now also emits
+  `assets/icon.ico` (rasterized PNG sizes packed into one `.ico` via `png-to-ico`, since
+  `@resvg/resvg-js` only renders PNG), the Linux icon set `assets/icons/<N>x<N>.png`
+  electron-builder's linux target reads, and a colored (azure) tray glyph pair
+  (`assets/tray-icon-azure{,@2x}.png`) alongside the existing macOS template pair. The
+  template PNGs themselves are untouched.
+
+  `createTray`'s call site (`src/main/index.ts`) now picks the platform-appropriate tray
+  icon via a new pure `pickTrayIconPath` (`src/main/tray-icon.ts`): the macOS `Template`
+  image on darwin, which the OS tints itself, and the colored render everywhere else,
+  since Windows and a dark Linux panel apply no tinting at all.
+
+  CI coverage for all three platforms is a follow-up (#567).
+
+### Patch Changes
+
+- 00ca502: Invert the dock icon and PWA home-screen icons to a white tile with the azure mark
+
+  `squircleTileSvg` (`apps/web/scripts/gen-brand-assets.mjs`) drew an azure tile
+  with the mark punched out in near-black `ACCENT_CONTRAST`. That read wrong in
+  the Dock: the mark disappeared into the fill instead of standing on it.
+
+  The tile is now white and the mark is stroked in the existing `AZURE` token
+  (`#3b9df7`), same geometry, padding and corner radius, just the two fills
+  swapped. `TILE_BG` moved from the old dark `#0b0d10` to `#ffffff` and is now
+  shared by `apple-touch-icon-180.png` and `maskable-512.png` too, so the app
+  icon is the same object on macOS, iOS and Android instead of a per-target
+  accident. The maskable-icon spec only requires an opaque background, not a
+  particular color, and its safe zone is about content placement, not
+  contrast, so nothing in the spec pushed back on white.
+
+  The menu-bar tray icons (`tray-iconTemplate.png`, `tray-iconTemplate@2x.png`)
+  are untouched: they stay alpha-only template images tinted by macOS, and a
+  colored tile there would render as an opaque blob.
+
+- Updated dependencies [c907512]
+- Updated dependencies [ac64679]
+- Updated dependencies [aad37f8]
+- Updated dependencies [804933f]
+- Updated dependencies [fa0dbd1]
+- Updated dependencies [a449b22]
+  - @loombox/node@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes

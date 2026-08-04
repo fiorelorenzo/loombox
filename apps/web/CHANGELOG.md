@@ -1,5 +1,420 @@
 # @loombox/web
 
+## 0.1.8
+
+### Patch Changes
+
+- d6fa86b: Add the Badge and Row UI primitives, give Button arbitrary data-_/aria-_ passthrough, and migrate the safe call sites off their hand-rolled duplicates
+
+  `Badge` replaces four slightly-different hand-rolled badges (MCP server config's secret badge, the target picker's kind/unreachable badges, and the target status view's kind/agent-health badges — the last of which now composes the real `StatusDot` instead of redrawing it). `Row` is the new shared leading/content/trailing list-row shape, adopted first by the attention inbox. `Button` now accepts arbitrary `data-*`/`aria-*` attributes without letting a caller override the props it already owns, which is what let the permission card's overflow toggle move onto it. Also migrated: the add-target wizard's back link, the onboarding choice cards (now `Card` + `Button`), the diff viewer's outer card, and the recovery code card's now-unnecessary wrapper div. Both new primitives are covered on `/style-reference`.
+
+- 9379bde: Give the composer a visible resting surface and a real focus ring
+
+  The composer textarea had no border, no background, no padding and no
+  radius (`+page.svelte:4509-4519`), and the one hairline in the whole footer
+  belonged to `.canvas-footer`, shared with the plan card, the queued-prompt
+  bar and the permission card. Against that, the composer read as plain text
+  run against the page background rather than an input.
+
+  Worse, it had no focus indicator at all. A comment at the old
+  `:4528-4531` claimed "the focus ring lives on the strip", but no
+  `:focus-within` rule targeting the composer existed anywhere in the file.
+  At-rest and focused screenshots were byte-identical (md5 match), on both
+  desktop and phone: clicking into the composer changed nothing on screen,
+  a WCAG 2.4.7 failure.
+
+  `.composer-field` (the textarea plus its controls row: attach, pickers,
+  the context/cost figures, Send) now carries a border, `--color-surface-raised`,
+  `--radius-md` and real padding, the same vocabulary `ui/TextArea` already
+  gives the inbox reply box and the New Session dialog fields. A
+  `:focus-within` rule on that same box uses the existing focus-ring token,
+  so the ring stays lit while the textarea, the attach button or a picker
+  inside the strip holds focus. Send moves from `variant="secondary"` to
+  `primary`, so the most-used action in the product is no longer the
+  quietest button on the screen.
+
+  The composer's own textarea stays borderless and transparent: its surface
+  is the field box around it now, and a second nested border would double
+  the chrome. Nothing about the docked-field layout changes, the composer
+  still ends the timeline aligned to the same role gutter every transcript
+  row uses.
+
+- 3a839c4: Add Windows and Linux electron-builder targets, with icons generated from the same mark
+
+  `apps/desktop/electron-builder.yml` gets a `win` block (NSIS installer plus a portable
+  build, `assets/icon.ico`) and a `linux` block (AppImage plus deb, `category:
+Development`, `assets/icons`), alongside the existing `mac` block. `package:win` and
+  `package:linux` join `package:mac` in `apps/desktop/package.json`.
+
+  Every new icon is generated, not drawn: `gen-brand-assets.mjs` now also emits
+  `assets/icon.ico` (rasterized PNG sizes packed into one `.ico` via `png-to-ico`, since
+  `@resvg/resvg-js` only renders PNG), the Linux icon set `assets/icons/<N>x<N>.png`
+  electron-builder's linux target reads, and a colored (azure) tray glyph pair
+  (`assets/tray-icon-azure{,@2x}.png`) alongside the existing macOS template pair. The
+  template PNGs themselves are untouched.
+
+  `createTray`'s call site (`src/main/index.ts`) now picks the platform-appropriate tray
+  icon via a new pure `pickTrayIconPath` (`src/main/tray-icon.ts`): the macOS `Template`
+  image on darwin, which the OS tints itself, and the colored render everywhere else,
+  since Windows and a dark Linux panel apply no tinting at all.
+
+  CI coverage for all three platforms is a follow-up (#567).
+
+- 8177b63: Give the mode segments a role a screen reader can read
+
+  `ConfigBar`'s mode control (Auto | Plan) was a `role="group"` wrapping two
+  plain `Button`s, with the current mode marked only by a background tint via a
+  `selected` class. A screen reader heard "Auto, button. Plan, button." with no
+  way to tell which one was current, the one fact the control exists to carry.
+
+  It is now a `role="radiogroup"` of `role="radio"` segments with `aria-checked`
+  and a roving `tabindex` (WAI-ARIA APG's radio group pattern): Tab enters the
+  group once, landing on the checked segment, and Left/Up and Right/Down move
+  both the focus and the selection, wrapping at the ends.
+
+  I picked radiogroup over the topbar panel switch's `aria-pressed` (`Button`'s
+  `pressed` prop from the earlier topbar fix) because the two controls mean
+  different things. Mode is mutually exclusive and always has exactly one value,
+  which is what a radio group is for. The panel switch is not: `toggleDrawer` in
+  `+page.svelte` closes the open panel on a second click of its own segment, so
+  "none selected" is a real, reachable state there, which is exactly what
+  `aria-pressed` (independently on/off, legitimately all-off) describes and a
+  radio group cannot. The panel switch keeps `aria-pressed`; I am not touching
+  it here, and I do not think it needs to change either, since it is not a
+  radio group by nature. `Button` gained plain pass-through `role`,
+  `ariaChecked`, `tabindex` and `onkeydown` props to carry this without a
+  hand-rolled `<button>` inside `ConfigBar`, so the segmented-control idiom
+  stays one shared primitive; every existing call site is unaffected.
+
+  `ConfigBar.test.ts` now asserts the selected mode through the accessibility
+  tree (`getByRole('radio', { checked })`), not the class name, which is what
+  let this ship unmarked.
+
+- a98b97c: Put the task title first in the New session dialog and make the starting prompt optional. The form now reads Title, Agent, Workspace, Starting prompt, and the title is the field the dialog focuses on open: what identifies a session on the board is the task, not the first thing you happened to say to the agent. The starting prompt drops its `required` mark, shrinks from six rows to three, and its help text now says it can be sent later from the composer instead. Pressing Create with everything blank creates a session titled after the project folder, with no prompt sent at all (previously the dialog sent an empty string). `RelayClient.createSession` already typed `prompt` as optional and only sent the follow-up when non-empty, and the node already fell back to the project folder's basename for an empty title, so this is a dialog-only change.
+- 7a5d6a0: Move Nodes into Settings, give Settings real section navigation
+
+  Nodes & targets was a sidebar destination competing with Inbox for
+  attention, even though it is setup, not somewhere you go while working:
+  you visit it to add a target, connect a node, or find out why one is
+  unhealthy. It now lives inside Settings as its own section, alongside
+  Appearance, Notifications and Push. `sidebar-destinations` carries Inbox
+  alone; the mobile tabbar drops its Nodes item too.
+
+  Settings outgrew a flat `<h2>` stack once a fourth, differently-shaped
+  section (infrastructure with its own actions and live polling, next to
+  three per-device preference panels) moved in, so `SettingsPage` gets real
+  section navigation: a left sub-nav at `--bp-tablet` and above, a
+  horizontally-scrolling segmented control below it.
+
+  Two things had to survive the move rather than get dropped silently:
+
+  - The health dot `hasUnhealthyTarget` used to light on the sidebar's Nodes
+    row moved onto the account-menu trigger and its "Settings" entry, so an
+    unhealthy target is still visible without opening Settings. It is a
+    boolean-driven dot, not an inbox item, so it can't accumulate one per
+    poll and clears the moment every target recovers.
+  - The ⋯ "Target status" deep link (`openTargetStatus`) still lands on the
+    right target, highlighted — it now switches to Settings with the Nodes
+    section selected instead of its own destination.
+
+  The account-menu entry reads "Settings" instead of "Appearance &
+  settings", and the command palette gains "Open nodes and targets" now
+  that Nodes is one click deeper than before.
+
+  `docs/superpowers/specs/2026-07-25-ia-v4-design.md` gets an amendment note
+  recording that Nodes is no longer a primary destination, since its §3.1
+  listed it as one.
+
+- a9dcef0: Give the Files and Terminal panels a bounded wait and a real failure state
+
+  Both panels sat on an indefinite spinner when a node stopped answering. The
+  Files panel's loading branch (`FileTreePanel.svelte`) had no failure path at
+  all, and the terminal (`InteractiveTerminal.svelte`) initialised
+  `status = 'opening'` and only ever left it once the PTY handshake completed. A
+  node that had died looked exactly like one that was briefly slow, forever.
+  The v6 audit hit both with a fake node that never answers: the panels just
+  said "Loading…" and "Connecting…" and stayed there.
+
+  Both now bound the wait to 10 seconds, matching every other request-shaped
+  `RelayClient` default. A directory or a terminal still waiting when its own
+  timer fires gets a retryable `ErrorNotice`, worded to match what the shell
+  already says elsewhere: "the node may be asleep, offline, or on an older
+  relay" is `DirectoryPicker`'s exact phrasing from issue #505, not a third
+  convention. For the terminal the wording is deliberately careful, since a
+  timeout there does not mean the PTY open failed, only that this client
+  stopped waiting: "this isn't necessarily a failure, we simply stopped
+  waiting". A late real answer, however long after the deadline, still lands
+  and clears the failure state, and a directory or terminal that resolves
+  just under the deadline never shows an error at all.
+
+  Retry re-requests rather than only dismissing the notice. The Files panel
+  calls `onExpand` again, the same lever `expandDirectory`'s own doc comment
+  already describes for retrying a directory that came back `'error'`. The
+  terminal asks the node to close whichever attempt just timed out and opens
+  a genuinely new one, since `RelayClient.openTerminal` treats every call as
+  an additional terminal with its own id; the keystroke/output/resize wiring
+  now reads the current terminal id at send time instead of one captured at
+  mount, so it follows a retry rather than staying pinned to the stale one.
+
+  Covered by fake-timer unit tests in `FileTreePanel.test.ts` and
+  `InteractiveTerminal.test.ts`: a silent node reaching the failure state
+  within the deadline, a slow-but-alive node answering just under it never
+  tripping the error, and retry actually re-requesting rather than just
+  clearing the flag.
+
+- 23f8d41: Right workbench sidebar: Files/Config sub-tabs, docked, no dead pin at 1280px
+
+  Two things, closed together because the second bug lived entirely inside the first fix.
+
+  **#573**: the workbench panel's pin control was visible and inert at exactly
+  1280px, because `viewport.ts:38`'s `isNarrowViewport(WIDE_VIEWPORT_BREAKPOINT_PX)`
+  built `(max-width: 1280px)` and `+page.svelte`'s own CSS built
+  `(min-width: 1280px)` for the same decision, both true at 1280 itself. Fixed
+  `isNarrowViewport` with an `exclusive` option that subtracts a fixed epsilon
+  (`EXCLUSIVE_BREAKPOINT_EPSILON_PX = 0.02`) from the breakpoint before building
+  the query, so the two sides of a boundary decision partition the pixel to
+  exactly one side. Covered directly in `viewport.test.ts` at 1279/1280/1281,
+  with a `matchMedia` stub that actually evaluates the query string rather than
+  returning one fixed value regardless of it.
+
+  **#571**: the Drawer's Files/Terminal/Config panel was `position: fixed` by
+  default (a modal-strength scrim on every open, `Overlay.svelte:135-141`, and
+  the same scrim strength as the New Session dialog), with the "pushes instead
+  of covers" behavior gated behind a pin control nobody could find, off by
+  default, and dead at the exact width above. Rebuilt on `$lib/dock-panel.svelte.ts`
+  (#570), the same shared behaviour the left sidebar runs on: collapse,
+  drag-resize, persistence, no second implementation. Docked (no scrim at all)
+  at/above `--bp-desktop` (1024px); a side sheet at 768-1023px; a bottom sheet
+  below 768px, unchanged from before. Open by default at/above `--bp-wide`
+  (1280px) once a session is selected, and sticky to whatever the user actually
+  chooses (open/close, or a drag-resize) from the first real interaction on.
+
+  Files and Config are sub-tabs inside the panel's own header now (a
+  `radiogroup`, the same mutually-exclusive-always-one-selected idiom
+  `ConfigBar`'s mode switch already uses), not a second copy of the topbar's
+  former three-button switch. The topbar keeps exactly one control for the
+  sidebar itself; the panel choice lives only in its own header. Both panels
+  stay mounted (the native `hidden` attribute) once a session/project exists,
+  so switching Files to Config never remounts the other one.
+
+  The terminal leaves this panel entirely. Its own bottom dock is issue #572,
+  not built here — closing this PR means the terminal is temporarily
+  unreachable from the app until #572 lands; `InteractiveTerminal.svelte` and
+  its `openTerminal`/PTY logic are untouched and unchanged, just unmounted from
+  this component.
+
+- 1d3056e: Give the terminal its own bottom dock, horizontal instead of a 340px-wide overlay column
+
+  The terminal used to be the third tab of the right-hand panel, so it got a
+  narrow vertical column for something inherently wide and short, and
+  opening it meant giving up Files/Config since only one panel tab could be
+  open at a time.
+
+  It is its own bottom dock now (design spec `2026-08-03-cockpit-v6-design.md`
+  §3.1-§3.3), built on the shared `DockPanel` behaviour (`edge: 'bottom'`)
+  issue #570 extracted: full canvas width, drag-resizable height (12rem
+  minimum), toggleable and closed by default, height and open state
+  persisted per user (`localStorage`, matching every other dock). It sits
+  below the left sidebar, transcript, composer and right sidebar, all of
+  which stay visible and interactive while it is open — it never scrims.
+
+  `InteractiveTerminal.svelte` now loads `@xterm/addon-fit` and calls
+  `fitAddon.fit()` on mount and on every `ResizeObserver` notification for
+  its container, so a continuous drag reflows the terminal to real cols/rows
+  (not just a CSS height change), coalesced to one `fit()` per render frame
+  regardless of how many `pointermove` events the drag fires. Collapsing the
+  dock no longer unmounts the terminal or kills its PTY: it stays mounted,
+  hidden by height/transform, so a collapse/reopen round trip keeps the same
+  terminal and its scrollback.
+
+  Below 1024px it becomes a bottom sheet with a backdrop, reusing the
+  sessions sidebar's own always-mounted/CSS-transform mechanism (not a
+  second one), and follows the same one-panel-at-a-time rule the left and
+  right sidebars already have below that width.
+
+- d09e12b: Stop a tool call with no `id` from wearing the "awaiting permission" outline
+
+  `+page.svelte` computed `awaitingPermission={permissionHead?.toolCall.id === item.id}`. With no permission in flight, `permissionHead` is `undefined` and the optional chain short-circuits to `undefined`; if the transcript item's own `id` is also `undefined`, the comparison is `undefined === undefined`, true, and the row painted the amber `outline: 2px solid var(--color-warning)` even though nothing was pending. `item.id` is reachable as `undefined` from real traffic: the transcript payload is opaque ciphertext to the protocol, and the client casts the decrypted JSON with `openJson<AcpSessionWireEvent>` rather than parsing it with Zod, so nothing rejects a `tool_call` that omits `id`. The comparison now short-circuits on `permissionHead !== undefined` first.
+
+  The same shape turned up twice more in a sweep of every optional-chain/possibly-undefined equality comparison across the web client and its shared protocol reducer. `RelayClient.discardStalePermissionForToolCall` compared `request.toolCall.id === event.id`; a malformed `tool_call_update` with no `id` could match a pending permission request whose own `toolCall.id` was equally malformed (the paired `permission_request` payload goes through the same unvalidated cast), cancelling it and publishing a false "resolved on another device" notice. `@loombox/providers-core`'s `reduceToolCall` looked up an existing transcript row by `item.id === update.id`; two unrelated malformed tool calls with no `id` would merge into a single row, the second silently overwriting the first's title/status. Both now refuse to match when the incoming `id` is `undefined`, so a malformed event always ends up in its own row/no-op rather than colliding with an earlier one.
+
+- e526691: Tool-call cards: one level of chrome instead of two
+
+  A tool call used to render as two nested boxes: a bordered card with a
+  header line, wrapping a second inset surface (`--color-fill-subtle`) for
+  the payload. For a call whose entire payload was a single fact already
+  named in its title (`Read apps/web/src/lib/terminal.ts` whose `rawInput`
+  was that same path again), that was a lot of chrome for one line of text,
+  and a run of several tool calls in a row read as a stack of boxes rather
+  than a conversation with work in it.
+
+  `tool-widgets/ToolCard.svelte` now takes a required `surface` prop instead
+  of always drawing a border: `surface={true}` keeps the v5 bordered-card
+  treatment for content with no surface of its own (`TodoWidget`'s checklist,
+  `GenericToolRow`'s own multi-line output or multi-entry `rawInput`);
+  `surface={false}` draws nothing but layout, for a single-line row or for a
+  widget whose body already carries its own surface (`BashWidget`'s
+  `TerminalOutput`, `EditWriteWidget`'s `DiffViewer`) — never both at once.
+  `GenericToolRow` decides "one line or a block" from the payload's own
+  shape (does it contain a newline, does it carry more than one key/value
+  pair) and folds a single-line payload directly onto the header line,
+  dropping it entirely when it only repeats what the title already said.
+
+  Status also moves: a new shared `ToolCallStatus` component drops the
+  "Completed" caption once a card has settled (the dot alone still carries
+  it to screen readers via its own `aria-label`) and makes "Failed" the one
+  state allowed to shout — bold, `--color-danger`, on its own chip — so a
+  failure in a run of otherwise-quiet completed calls is what actually draws
+  the eye.
+
+  The bespoke widgets (bash, edit/write, todo) keep their own visual
+  language unchanged; only the redundant outer frame goes.
+
+- c97a2cf: Add the `TrackerMode` config and the pluggable `TrackerBackend` extension point (SPEC §7.10)
+
+  `@loombox/protocol` gets `v1/tracker.ts`: Zod-validated `githubTarget`/`jiraTarget` and the `trackerMode` discriminated union (`{kind:'native'}` or `{kind:'live', provider, connectionId, target}`), exported and registered in `schemasV1` alongside every other v1 schema. The exported `TrackerMode` type keeps SPEC's literal `target: GitHubTarget | JiraTarget` shape (not correlated to `provider` at the type level, exactly as specced), but the schema adds a `superRefine` cross-check so a GitHub-shaped target submitted under `provider: 'jira'` (or the reverse) is rejected at parse time, since that correlation is clearly the spec's intent even though its type block does not encode it.
+
+  `@loombox/shared` gets its first real export: `TrackerBackend` and `TrackerBackendCapabilities`, plus the `TrackerBinding`/`TrackerListFilter`/`TrackerListPage`/`TrackerItemLive`/`TrackerTransition`/`TrackerBoard`/`TrackerSprint` shapes those methods reference. `list`/`get`/`create`/`update`/`listBindings` are required; `addComment`/`listTransitions`/`transition`/`listBoards`/`listSprints`/`moveToSprint` are optional, matching SPEC §7.10's phased delivery (issues/comments first, transitions next, boards/sprints last). A type-level `satisfies TrackerBackend` check in `tracker-backend.test.ts` proves a stub implementing only the required methods still satisfies the interface with every optional method absent, and fails to compile if that ever stops being true.
+
+  `apps/web` gets `$lib/tracker-mode-store.ts`, a per-project persisted `TrackerMode` (localStorage today, same injectable-storage pattern as `mcp-server-store.ts`/`plugin-store.ts`). `get()` returns `TrackerMode | undefined`: an unset project, or one whose stored value no longer validates, both read as `undefined`, never silently coerced to `{kind:'native'}`. No consumer wires this store into the UI yet; that is issue #212's job.
+
+- 23e157d: Render Markdown in the transcript instead of printing it literally
+
+  `MessageItem.svelte` interpolated `displayText` straight into a `<p>` with
+  `white-space: pre-wrap`, so a fenced code block showed its own backtick
+  fences and a `-` list showed dashes with no markers. There was no Markdown
+  dependency anywhere in `apps/web`. This was the largest finding of the v6
+  cockpit audit: most turns of real substance from a coding agent contain code
+  or a list, or both.
+
+  Agent and user turns now go through a real pipeline: `remark-parse` +
+  `remark-gfm` for CommonMark plus tables/strikethrough/task lists,
+  `remark-rehype` (without `allowDangerousHtml`, so a literal `<script>` or
+  `<img onerror=…>` typed by the agent is dropped before it ever becomes an
+  element rather than escaped-and-shown or executed), `rehype-sanitize` on
+  GitHub's own default schema (strips a `javascript:` link/image protocol),
+  then two small trusted plugins that run after sanitisation on purpose (an
+  external-link `target`/`rel` setter and a table-scroll wrapper), and finally
+  `rehype-highlight` with an explicit ~18-language `highlight.js` subset
+  (`typescript`, `javascript`, `python`, `bash`, `json`, `go`, `rust`, `sql`,
+  css/yaml/xml/markdown/dockerfile/java/cpp/csharp/ruby/diff and their common
+  aliases) rather than every grammar it ships. `$lib/markdown.ts` documents the
+  full ordering and why each step has to come where it does.
+
+  The transcript streams character by character (`TextPacer`, issue #137), and
+  re-running that whole pipeline on every 32ms reveal tick does not hold up on
+  a long turn. `splitStreamingMarkdown` finds the last point in the revealed
+  text where every block that has opened has also closed — the end of a
+  closing fence, or a blank line outside any fence — and only that "stable"
+  prefix is parsed; `MessageItem` only re-runs the real render when that
+  boundary itself advances, not on every tick. A still-open fenced code block
+  renders as a plain monospace box (the same code surface `GenericToolRow`'s
+  `.output` and `BashWidget`'s terminal already use, not a second visual
+  language) and is only syntax-highlighted the instant its closing fence
+  arrives, so a half-typed fence never flickers through a half-tokenised
+  state. Everything else (lists, tables, headings, emphasis) is styled with
+  Deck tokens directly in `MessageItem.svelte`'s own `<style>` block, not a
+  library stylesheet; a wide table scrolls horizontally inside its own wrapper
+  instead of stretching the transcript row.
+
+  `PlanCard` and tool-call output are explicitly out of scope here: `$lib/markdown`
+  is a plain, reusable module, but `ToolCallRow.svelte`/`PlanCard.svelte` and
+  the `tool-widgets/` tree were being worked on concurrently by other agents
+  during this change, so wiring them in is left as a small follow-up rather
+  than risking a collision.
+
+  Bundle cost, measured with `vite build` on `apps/web`: the client JS under
+  `_app/immutable` goes from 813,029 bytes raw / 231,245 bytes gzip to
+  1,144,276 bytes raw / 332,795 bytes gzip (+331,247 raw, +101,550 gzip, about
+  +44% gzip) — almost entirely inside the cockpit route's own chunk
+  (`nodes/2.*.js`, 265,788 bytes gzip on its own), which the client only loads
+  once a session is actually opened, not on first paint of the sign-in/inbox
+  screens.
+
+- 6b1465e: Replace the YOU/CLAUDE/TOOL gutter words with a glyph and a surface
+
+  The transcript gutter used to hold a `--text-caption-size` uppercase word
+  per row — `You`, the provider's name, or `Tool` — muted further to
+  `opacity: 0.5` on a thought. Only the user turn got a surface of its own;
+  an agent turn had none at all, so a long answer ran as an unbounded stream
+  of prose against the page background (v6 audit finding T3), and on the
+  phone that prose read low-contrast enough to pass as disabled text
+  (finding T5).
+
+  Settled with Lorenzo 2026-08-03: attribution by surface and glyph, not by
+  a label. Not a colour-only rail (fails for colour-blind readers), not a
+  circular avatar (drags the transcript toward chat), not spacing alone.
+
+  - An agent/thought turn now draws a small decorative provider glyph
+    (`icon-paths.ts`'s new `provider-claude`/`provider-codex`/`provider-gemini`/
+    `provider-ohmypi`/`provider-generic` marks, sourced from `$lib/providers`'s
+    existing `PROVIDER_LABELS`) and sits on its own quiet `--color-surface`,
+    so it reads as a bounded block instead of loose prose.
+  - The user turn keeps what already worked: the raised surface and the
+    gutter's accent bar. It never had a glyph and still doesn't.
+  - A tool call's gutter drops the "Tool" word — the tool-kind icon already
+    said it, and that column was already `aria-hidden` as a whole, so
+    nothing accessible is lost.
+  - A visually-hidden label (`.sr-only`, the same short word v5 painted
+    visibly) carries the role to assistive tech on every turn, in the same
+    reading-order position a sighted v5 reader's eye used to land on first.
+  - Consecutive turns from the same speaker (skipping over any tool calls in
+    between) no longer repeat the visible glyph — `$lib/transcript-attribution.ts`'s
+    `showsAttribution` decides this in `+page.svelte`'s transcript loop — but
+    the accessible label and each turn's own surface never get suppressed,
+    only the glyph does.
+  - The composer's gutter follows suit: no more caption-case "YOU", just the
+    same accent bar a `user` transcript row draws on its own gutter, still
+    aligned to the exact column every row shares.
+
+  Measured on the real rendered page at 390px (both themes, `--color-surface`
+  background against `--color-text-primary` prose): dark 15.5:1, light
+  17.8:1 — both well past the WCAG AA minimum of 4.5:1 for body text.
+
+- fc2c12e: Fix the per-session usage meter and add a near-context-limit warning (SPEC §7.9, issue #248)
+
+  The composer's context/cost meter (`ConfigBar.svelte`, previously wired up for the model/mode/reasoning-effort bar) is SPEC §7.9's live usage meter — this doesn't add a second one, it fixes and extends the one already there. Three real bugs, all in `@loombox/providers-core`, none visible from `ConfigBar.svelte`'s own diff:
+
+  - `AcpClient` was reading a raw `usage_update` wire event for field names (`tokensUsed`/`contextWindow`/`costUsd`) that don't exist on ACP's real shape. The protocol's actual `UsageUpdate` is `{used, size, cost}` with `cost: {amount, currency} | null` (agentclientprotocol.com/protocol/v1/schema) — so the meter never actually populated against a real ACP agent. Fixed in `client.ts`'s wire mapping; a non-USD `cost.currency` is left unconverted (`costUsd: undefined`) rather than mislabeled as dollars.
+  - `cost.amount` is documented as the session's running cumulative total, not a per-update delta — the reducer was summing it, double-counting every update after the first. `cumulativeCostUsd` now tracks the latest reported total (`Math.max` against the previous value, guarding only against an out-of-order delivery ever making it visibly shrink).
+  - A subagent tool call's `usage_update` reports its own, much smaller context window. The reducer now freezes the parent's `tokensUsed`/`contextWindow` across a subagent-attributed update instead of letting it overwrite them (previously masked by a UI-side guard, which just traded "the meter shows the wrong number" for "the meter shows nothing" while the subagent tool call was in flight) — the percentage no longer bounces either way. The subagent's cost is still folded into the cumulative figure, since ACP's own cumulative total already includes it.
+
+  The subagent/parent split has no protocol support — ACP's `usage_update` carries no tool-call linkage at all — so it stays a documented client-side heuristic (`UsageRecord.attributedToSubagent`'s doc comment in `transcript.ts` spells out what it keys on and the two known ways it can misfire).
+
+  New: a near-context-limit warning on the meter itself, at the newly-exported `CONTEXT_NEAR_LIMIT_THRESHOLD` (80%) — grounded against real-world auto-compaction thresholds observed on Claude Code (reported anywhere from ~80% to ~95% depending on source/version), so the warning fires before the earliest point any of them might silently compact. Carried to assistive tech via a `.sr-only` span (the meter's percentage track stays `aria-hidden`).
+
+  Cost stays whatever the agent process itself reports via ACP's `cost.amount` — there is no per-token price table anywhere in this repo, and none is added here; a provider that omits `cost` simply doesn't move the cumulative figure for that update rather than getting an invented number.
+
+  No aggregate spend-over-time view (issue #249) and no spend caps (issue #251) ship here — those build on `cumulativeCostUsd`, not the other way around. The broader attention-inbox surfacing of a near-limit session (issue #250) is separate too; this issue's own acceptance only asked for the warning on the meter itself.
+
+- 00ca502: Invert the dock icon and PWA home-screen icons to a white tile with the azure mark
+
+  `squircleTileSvg` (`apps/web/scripts/gen-brand-assets.mjs`) drew an azure tile
+  with the mark punched out in near-black `ACCENT_CONTRAST`. That read wrong in
+  the Dock: the mark disappeared into the fill instead of standing on it.
+
+  The tile is now white and the mark is stroked in the existing `AZURE` token
+  (`#3b9df7`), same geometry, padding and corner radius, just the two fills
+  swapped. `TILE_BG` moved from the old dark `#0b0d10` to `#ffffff` and is now
+  shared by `apple-touch-icon-180.png` and `maskable-512.png` too, so the app
+  icon is the same object on macOS, iOS and Android instead of a per-target
+  accident. The maskable-icon spec only requires an opaque background, not a
+  particular color, and its safe zone is about content placement, not
+  contrast, so nothing in the spec pushed back on white.
+
+  The menu-bar tray icons (`tray-iconTemplate.png`, `tray-iconTemplate@2x.png`)
+  are untouched: they stay alpha-only template images tinted by macOS, and a
+  colored tile there would render as an opaque blob.
+
+- Updated dependencies [5118b26]
+- Updated dependencies [a449b22]
+- Updated dependencies [d09e12b]
+- Updated dependencies [c97a2cf]
+- Updated dependencies [fc2c12e]
+  - @loombox/protocol@0.2.0
+  - @loombox/providers-core@0.2.0
+  - @loombox/crypto@0.0.2
+
 ## 0.1.7
 
 ### Patch Changes
