@@ -53,16 +53,19 @@
   /* ---------------------------------------------------------------- */
   --measure: 90ch; /* long-form prose in the transcript */
   --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
-  /* Widened from 2rem (coherence v5 design spec §4, issue #508): the
-     gutter now carries a visible `--text-caption-size` role word (You /
-     the provider's name / Tool) under the glyph, not just a bare dot —
-     2rem never fit a word like "GEMINI" on one line. 3.5rem then proved
-     too tight in practice: the words are centred no longer but aligned to
-     the inner edge with `--space-sm` of reserved padding, and at
-     `--text-caption-size` + `--text-caption-tracking` an uppercase
-     "CLAUDE" needs ~3.1rem before that padding is counted, so it sat flush
-     against the first word of every message. */
-  --gutter: 4.75rem;
+  /* v7 turn delimitation (design spec `2026-08-04-cockpit-v7-decisions.md`
+     §2, issue #667: B1-2 amended + B2-4) narrowed this from 4.75rem: the
+     gutter used to reserve room for a visible word (v5) then an icon glyph
+     (v6), and now paints nothing sighted at all — every role tells apart by
+     surface fill alone, so the column survives only as the shared alignment
+     device `MessageItem`/`ToolCallGutter`/`PlanCard`/`QueuedPromptBar`/the
+     composer (`+page.svelte`) all still read from `var(--gutter)`. 2.5rem is
+     the new floor: it comfortably fits `ToolCallGutter`'s tool-kind icon
+     (1em ~ the body font size, flush against `--space-sm` of reserved
+     padding) and `QueuedPromptBar`'s uppercase "You" caption, the two
+     surfaces that still paint something in this column, with room to
+     spare — going narrower starts crowding those, not this component. */
+  --gutter: 2.5rem;
   --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
   --sidebar-width-collapsed: 3.5rem;
   --nav-row-height: 2.5rem; /* 40px — v4 primary destination row height, spec 3.1 */

@@ -43,7 +43,6 @@
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
-  import { showsAttribution } from '$lib/transcript-attribution';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -3209,7 +3208,6 @@
                         : false}
                       turnActive={transcript?.turnActive ?? false}
                       providerId={selectedSession?.provider}
-                      showAttribution={showsAttribution(transcript?.items ?? [], itemIndex)}
                     />
                   {:else}
                     <ToolCallRow
