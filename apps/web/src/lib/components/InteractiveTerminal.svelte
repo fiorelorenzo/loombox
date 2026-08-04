@@ -2,15 +2,16 @@
   /**
    * The interactive PTY terminal (SPEC §7.5; issues #172/#173/#174), the
    * counterpart to `TerminalOutput.svelte`'s read-only rendering: this one
-   * owns a real xterm.js `Terminal`, opens a PTY on `sessionId`'s target via
-   * `client.openTerminal`, writes decrypted output chunks straight into it,
-   * and forwards every keystroke/resize back over `client` as encrypted
-   * `terminal_input`/`terminal_resize` frames. Reachability parity (#174):
-   * this is the ONE component used for both a `local` and an `ssh:` target
-   * (the target kind is the node's concern, invisible here) and for both
-   * desktop and a narrow/mobile viewport — there is no separate mobile
-   * variant, only CSS (`.interactive-terminal`'s `min-width: 0` + the
-   * container's own `overflow` below) adapting the same markup.
+   * owns real xterm.js `Terminal` instances, opens PTYs on `sessionId`'s
+   * target via `client.openTerminal`, writes decrypted output chunks
+   * straight into them, and forwards every keystroke/resize back over
+   * `client` as encrypted `terminal_input`/`terminal_resize` frames.
+   * Reachability parity (#174): this is the ONE component used for both a
+   * `local` and an `ssh:` target (the target kind is the node's concern,
+   * invisible here) and for both desktop and a narrow/mobile viewport —
+   * there is no separate mobile variant, only CSS (`.interactive-terminal`'s
+   * `min-width: 0` + the container's own `overflow` below) adapting the
+   * same markup.
    *
    * `client` is `$lib/terminal.ts`'s narrow `TerminalClient` interface
    * (mirrors `RelayClient`'s terminal methods) rather than `RelayClient`
@@ -22,133 +23,199 @@
    * resize -> resize frame) is unit-tested with `@xterm/xterm` mocked, but
    * the actual visual rendering can only be verified in a real browser.
    *
+   * One thin bar, not a card with its own titlebar (design spec
+   * `2026-08-04-cockpit-v7-decisions.md` §4 D1-2, issue #669): this
+   * component used to draw its own bordered card with a titlebar saying
+   * "Terminal" — a second frame nested inside the dock's OWN header and
+   * border, and a second copy of a word the dock's own toggle already
+   * says. Both are gone. What remains is one thin bar carrying the
+   * session's own working directory, the shell running the active PTY,
+   * live connection status, and a control to open another terminal —
+   * information a user would otherwise have to open a file tree to find,
+   * not a label they already know. `cwd`/`shell` are real values read off
+   * `TerminalClientState` (`terminalOpenOkV1`'s own fields, sealed under
+   * the session key exactly like every other terminal frame) — never a
+   * client-side guess: an isolated-worktree session's actual PTY directory
+   * differs from the session's plain `projectPath`, which is the whole
+   * reason this data is worth showing at all. `shell` is absent for an
+   * `ssh:` target (the remote login shell is never named ahead of time —
+   * see `openTerminalForBridge`'s own doc comment on the node), and the
+   * bar simply omits that segment rather than guessing.
+   *
+   * Multiple terminals per session were always a real capability of the
+   * wire protocol and this client's own store (`terminalsFor` returns a
+   * `Map`, `openTerminal` documents that calling it again "opens an
+   * ADDITIONAL terminal with its own id" sharing the session's working
+   * directory) — the UI never exposed it. The bar's new-tab control
+   * finally does: each open terminal is a `TabView`/`TabRuntime` pair (the
+   * former holds the plain reactive fields the bar and pane render off,
+   * the latter holds the imperative xterm.js/FitAddon/ResizeObserver
+   * handles a `$state` proxy has no business wrapping), keyed by a
+   * locally-generated `tabId` that never changes even when a retry
+   * (issue #582, below) swaps out the underlying `terminalId` — exactly
+   * mirroring this file's own pre-#669 single-terminal split between a
+   * stable component instance and a mutable `terminalId`. Only the active
+   * tab's pane is laid out (`.terminal-pane-active`); every other tab's
+   * pane stays mounted at `display: none` so its PTY and scrollback
+   * survive switching away from it, the same "never unmount to hide"
+   * discipline `+page.svelte`'s own terminal dock already applies one
+   * level up (see that file's `.terminal-dock` doc comment) — a hidden
+   * pane's `ResizeObserver` firing once it's shown again is what re-fits
+   * it, not a special case here.
+   *
+   * D2-2 (same spec section): this component's own card border/radius are
+   * gone too — the dock one level up now supplies the surface (moved to
+   * `--color-rail`) and the seam against the canvas (a colour step, no
+   * hairline). Nothing here draws a border of its own to compensate.
+   *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §4/§6,
-   * issue #437): this component now lives inside the Drawer's "Terminal"
-   * tab (overlay below `--bp-wide`, pinnable alongside Targets above it —
-   * that shell-level shuttle-in/shuttle-out transition already lives on
-   * `+page.svelte`'s `.drawer` and is untouched here). This restyle only
-   * covers the terminal's OWN chrome: a titlebar carrying a `StatusDot`
-   * for the connected/connecting/error/closed state (`status-crossfade` on
-   * change, thread-draw pulse while `opening`), a hand-styled danger
-   * banner for the error status matching `ErrorNotice`'s visual language
-   * (not the component itself — the existing status row's `terminal-status`
-   * `data-testid` is load-bearing for this file's tests, and `ErrorNotice`
-   * hardcodes its own `ui-error-notice` testid with no override), a
-   * `--color-focus-ring` highlight while the PTY has DOM focus (never
-   * accent — accent stays reserved for meaning per the brief), and the
-   * xterm.js canvas itself re-themed from the same design tokens so it
-   * reads as part of the same surface rather than a bare default-black
-   * box. None of this touches the data flow above: no prop contract, no
-   * status-transition logic, no I/O path changed.
+   * issue #437) / Deck migration (redesign v2 design spec §2, issue #470):
+   * predate #669 and described the now-removed titlebar/card; superseded
+   * by the doc comment above, not restated here.
    *
-   * Deck migration (redesign v2 design spec §2, issue #470): the chrome
-   * above already read Deck's `--color-*`/`--space-*`/`--radius-*` tokens
-   * end to end (`deck.css` kept every name `tokens.css` used to own, see
-   * that file's doc comment) — nothing here was hardcoded outside the
-   * xterm.js theme object below, which cannot read CSS custom properties
-   * and is exempt per this issue's acceptance criteria. The one real
-   * change: the titlebar now carries the same bespoke `Icon` (`tool-bash`)
-   * `TerminalOutput` adopted, so both terminal surfaces read as one family
-   * instead of `StatusDot` and the "Terminal" text label standing alone.
+   * Bounded wait + retry (issue #582): `status = 'opening'` has no ceiling
+   * of its own — a mount/retry against a node that never answers a
+   * `terminal_open` would sit "Connecting…" forever otherwise. Each tab
+   * owns its own bounded wait (`OPEN_TIMEOUT_MS`) on top of
+   * `TerminalClientState['status']`, which has no timeout of its own: a
+   * tab still `'opening'` when its timer fires shows a local, retryable
+   * `ErrorNotice` — worded, per `NewSessionDialog`'s identical "the agent
+   * is taking a while" case (issue #516), to say plainly that a timeout
+   * here does NOT mean the request failed, only that this client stopped
+   * waiting; "the node may be asleep, offline" reuses the exact phrasing
+   * `DirectoryPicker`/`ArchiveSessionDialog` already settled on (issue
+   * #505), not a third one. A real answer, however late, still clears it.
+   * Retry closes whichever attempt just timed out and opens a genuinely
+   * new one on the SAME tab (`RelayClient.openTerminal`'s own doc
+   * comment: calling it again opens an ADDITIONAL terminal with its own
+   * id) — never just clears the flag. This is a SEPARATE failure surface
+   * from the hand-rolled `.status.error` banner: that one still renders
+   * verbatim node-reported errors (e.g. "no shell available") under the
+   * load-bearing `terminal-status` testid this file's other tests pin
+   * down; the timeout state has no such legacy constraint, so it uses
+   * `ErrorNotice` directly.
    *
-   * Bounded wait + retry (issue #582): `status = 'opening'` used to have no
-   * ceiling — the v6 audit hit this against a node that never answers a
-   * `terminal_open` and the titlebar just said "Terminal connecting"
-   * forever. This component now owns its own bounded wait
-   * (`OPEN_TIMEOUT_MS`) on top of `TerminalClientState['status']`, which
-   * has no timeout of its own: a mount/retry still `'opening'` when its
-   * timer fires shows a local, retryable `ErrorNotice` — worded, per
-   * `NewSessionDialog`'s identical "the agent is taking a while" case
-   * (issue #516), to say plainly that a timeout here does NOT mean the
-   * request failed, only that this client stopped waiting; "the node may
-   * be asleep, offline" reuses the exact phrasing `DirectoryPicker`/
-   * `ArchiveSessionDialog` already settled on (issue #505), not a third
-   * one. A real answer, however late, still clears it (`onTerminalOutput`'s
-   * subscribe callback below). Retry (`retryTerminal`) asks the node to
-   * close whichever attempt just timed out and opens a genuinely new one
-   * (`RelayClient.openTerminal`'s own doc comment: calling it again opens
-   * an ADDITIONAL terminal with its own id) — never just clears the flag.
-   * This is a SEPARATE failure surface from the hand-rolled `.status.error`
-   * banner below it: that one still renders verbatim node-reported errors
-   * (e.g. "no shell available") under the load-bearing `terminal-status`
-   * testid this file's other tests pin down; the new timeout state below
-   * has no such legacy constraint, so it uses `ErrorNotice` directly.
-   *
-   * Bottom dock + real resize (issue #572): the terminal used to live in a
-   * fixed-width vertical Drawer tab; it is a wide, short, drag-resizable
-   * bottom dock now, and xterm.js's own layout does not react to a
-   * container resize on its own. `onMount` below loads `@xterm/addon-fit`
-   * and calls `fitAddon.fit()` (which calls `terminal.resize()`, which is
-   * what actually fires `onResize` above) both right after `terminal.open`
-   * and on every `ResizeObserver` notification for `container` — covering
-   * the initial mount, a continuous height drag, AND becoming visible
-   * again after the dock collapsed it to nothing (`display: none`) and
-   * reopened, all through the one mechanism. `liveCols`/`liveRows` mirror
-   * whatever `onResize` last reported as `data-cols`/`data-rows` on the
-   * root element — a plain, real-browser-and-test-both observable proof
-   * that a resize actually reflowed the terminal, not just its CSS box.
+   * Bottom dock + real resize (issue #572): `onMount` below loads
+   * `@xterm/addon-fit` per tab and calls `fitAddon.fit()` (which calls
+   * `terminal.resize()`, which is what actually fires `onResize`) both
+   * right after that tab's `terminal.open` and on every `ResizeObserver`
+   * notification for its own container — covering the initial mount, a
+   * continuous height drag, AND becoming visible again after the dock
+   * collapsed it to nothing or after switching tabs, all through the one
+   * mechanism. `liveCols`/`liveRows` on the active tab mirror whatever
+   * `onResize` last reported as `data-cols`/`data-rows` on the root
+   * element — a plain, real-browser-and-test-both observable proof that a
+   * resize actually reflowed the terminal, not just its CSS box.
    */
   import { onDestroy, onMount } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import type { TerminalClient } from '$lib/terminal';
   import type { TerminalClientState } from '$lib/relay-client';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
+  import IconButton from './ui/IconButton.svelte';
   import { Icon } from './icons';
   import ErrorNotice from './ui/ErrorNotice.svelte';
 
   interface Props {
     sessionId: string;
     client: TerminalClient;
-    /** Initial PTY size before xterm.js's own layout can report real dimensions; a later `terminal.onResize` corrects this once it knows the container's actual size. */
+    /** Initial PTY size before xterm.js's own layout can report real dimensions; a later `terminal.onResize` corrects this once it knows the container's actual size. Applies to every tab opened by this component instance, not just the first. */
     cols?: number;
     rows?: number;
   }
 
   const { sessionId, client, cols = 80, rows = 24 }: Props = $props();
 
-  let container: HTMLDivElement | undefined = $state();
-  let status = $state<TerminalClientState['status']>('opening');
-  let errorMessage = $state<string | undefined>();
-  /** DOM-focus tracking only, for the focused-state border (chrome, not I/O) — xterm.js mounts a hidden textarea inside `container` to capture keystrokes, so a bubbling `focusin`/`focusout` pair on the container is enough to know the PTY has focus. */
+  /** One open terminal's plain reactive fields — everything the bar and its pane render off. Deliberately holds nothing imperative (xterm.js instances, timers, subscriptions): see `TabRuntime` for that half of the split. */
+  interface TabView {
+    /** Stable for this tab's whole lifetime, unlike `TabRuntime.terminalId` below — a retry (issue #582) swaps the underlying terminal without this id (or this tab's xterm.js instance/scrollback) changing. */
+    id: string;
+    status: TerminalClientState['status'];
+    errorMessage?: string;
+    /** See this file's own top doc comment ("Bounded wait + retry"). */
+    timedOut: boolean;
+    liveCols: number;
+    liveRows: number;
+    /** Set once `status` is `'open'` — real values off `TerminalClientState`, never guessed (see the top doc comment). */
+    cwd?: string;
+    shell?: string;
+  }
+
+  /** One open terminal's imperative handles — never placed in a `$state` array/object: `Terminal`/`FitAddon`/`ResizeObserver`/timer handles are opaque class instances a reactive proxy has no business wrapping, and mutating them should never itself trigger a re-render (only `TabView`'s plain fields should). Keyed by `tabId` in the module-level `runtimes` map below, mirroring `TabView.id`. */
+  interface TabRuntime {
+    terminal: Terminal;
+    fitAddon?: FitAddon;
+    resizeObserver?: ResizeObserver;
+    /** The CURRENT terminal_open's id — reassigned on retry (issue #582), which is exactly why `onData`/`onResize` below read it through this mutable field rather than closing over a value captured at mount. */
+    terminalId?: string;
+    unsubscribeOutput?: () => void;
+    openTimeoutHandle?: ReturnType<typeof setTimeout>;
+  }
+
+  let tabs = $state<TabView[]>([]);
+  let activeTabId = $state<string | undefined>(undefined);
+  /** DOM-focus tracking only, for the pane's focus-visible ring (chrome, not I/O) — xterm.js mounts a hidden textarea inside a pane's container to capture keystrokes, so a bubbling `focusin`/`focusout` pair on it is enough to know the active PTY has focus. Only the active pane can ever hold real DOM focus (every other pane's container is `display: none`), so one flag for the whole component is enough — no need to track it per tab. */
   let focused = $state(false);
 
-  let terminal: Terminal | undefined;
-  let fitAddon: FitAddon | undefined;
-  let resizeObserver: ResizeObserver | undefined;
-  /** Mirrors of `terminal.cols`/`terminal.rows` as of the last `onResize` (see this file's own top doc comment) — rendered as `data-cols`/`data-rows` below so a resize (drag, initial fit, becoming visible again) is assertable by its REAL effect on the terminal, not just a CSS height change. Seeded from the constructed `terminal`'s own `cols`/`rows` in `onMount` below, not read directly from the `cols`/`rows` props here — reading a prop straight into a `$state` initializer only captures it once anyway (Svelte's own `state_referenced_locally` warning), so this reads the value from the one place that already needs to exist at that point regardless. */
-  let liveCols = $state(0);
-  let liveRows = $state(0);
-  let terminalId: string | undefined;
-  let unsubscribeOutput: (() => void) | undefined;
+  const runtimes = new SvelteMap<string, TabRuntime>();
+  let nextTabSeq = 0;
   let unsubscribeState: (() => void) | undefined;
-  /** Set once this mount/retry's own bounded wait on the PTY handshake elapses while `status` is still `'opening'` (issue #582) — `TerminalClientState['status']` has no such value of its own; this is purely local UI state, cleared the instant a real `'open'`/`'closed'`/`'error'` answer arrives, however late. */
-  let timedOut = $state(false);
-  let openTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const activeTab = $derived(tabs.find((tab) => tab.id === activeTabId));
 
   const statusTone = $derived<StatusTone>(
-    timedOut
-      ? 'danger'
-      : status === 'open'
-        ? 'success'
-        : status === 'error'
-          ? 'danger'
-          : status === 'closed'
-            ? 'neutral'
-            : 'info',
+    !activeTab
+      ? 'neutral'
+      : activeTab.timedOut
+        ? 'danger'
+        : activeTab.status === 'open'
+          ? 'success'
+          : activeTab.status === 'error'
+            ? 'danger'
+            : activeTab.status === 'closed'
+              ? 'neutral'
+              : 'info',
   );
 
+  /** The dot's accessible name — full sentence, unlike `statusWord` below (the bar's short VISIBLE text), mirroring the split `StatusDot` itself documents between a decorative dot and real meaning. */
   const statusLabel = $derived(
-    timedOut
-      ? 'Terminal timed out waiting to open'
-      : status === 'open'
-        ? 'Terminal connected'
-        : status === 'opening'
-          ? 'Terminal connecting'
-          : status === 'error'
-            ? `Terminal error: ${errorMessage ?? 'unknown error'}`
-            : 'Terminal closed',
+    !activeTab
+      ? 'Terminal'
+      : activeTab.timedOut
+        ? 'Terminal timed out waiting to open'
+        : activeTab.status === 'open'
+          ? 'Terminal connected'
+          : activeTab.status === 'opening'
+            ? 'Terminal connecting'
+            : activeTab.status === 'error'
+              ? `Terminal error: ${activeTab.errorMessage ?? 'unknown error'}`
+              : 'Terminal closed',
   );
+
+  /** The bar's own short, VISIBLE connection-status word (issue #669's acceptance: "shows... connection status", not just an aria-label on a dot no sighted user reads). */
+  const statusWord = $derived(
+    !activeTab
+      ? ''
+      : activeTab.timedOut
+        ? 'Timed out'
+        : activeTab.status === 'open'
+          ? 'Connected'
+          : activeTab.status === 'opening'
+            ? 'Connecting…'
+            : activeTab.status === 'error'
+              ? 'Error'
+              : 'Closed',
+  );
+
+  /** The shell's own file name (`/bin/zsh` -> `zsh`) — the bar shows the short, readable form; the full path is still available as the segment's `title` tooltip. */
+  const shellName = $derived(activeTab?.shell ? basename(activeTab.shell) : undefined);
+
+  function basename(path: string): string {
+    const index = path.lastIndexOf('/');
+    return index === -1 ? path : path.slice(index + 1);
+  }
 
   /** Reads a design token off `:root` at mount time so the xterm.js canvas (which cannot see CSS custom properties) draws from the same palette as everything around it, falling back to the dark/ink default for environments with no stylesheet (e.g. this file's jsdom tests). */
   function readToken(name: string, fallback: string): string {
@@ -157,40 +224,56 @@
     return value || fallback;
   }
 
-  /** How long a mount/retry's own PTY handshake may sit `'opening'` before this component gives up waiting on its own (issue #582) — `TerminalClientState` carries no timeout of its own. 10s matches every other request-shaped `RelayClient` default. */
+  /** How long a tab's own PTY handshake may sit `'opening'` before this component gives up waiting on its own (issue #582) — `TerminalClientState` carries no timeout of its own. 10s matches every other request-shaped `RelayClient` default. */
   const OPEN_TIMEOUT_MS = 10_000;
 
-  function clearOpenTimeout(): void {
-    if (openTimeoutHandle === undefined) return;
-    clearTimeout(openTimeoutHandle);
-    openTimeoutHandle = undefined;
+  function clearTabOpenTimeout(tabId: string): void {
+    const runtime = runtimes.get(tabId);
+    if (!runtime || runtime.openTimeoutHandle === undefined) return;
+    clearTimeout(runtime.openTimeoutHandle);
+    runtime.openTimeoutHandle = undefined;
   }
 
-  function armOpenTimeout(): void {
-    clearOpenTimeout();
-    openTimeoutHandle = setTimeout(() => {
-      openTimeoutHandle = undefined;
-      timedOut = true;
+  function armOpenTimeout(tabId: string): void {
+    clearTabOpenTimeout(tabId);
+    const runtime = runtimes.get(tabId);
+    if (!runtime) return;
+    runtime.openTimeoutHandle = setTimeout(() => {
+      runtime.openTimeoutHandle = undefined;
+      const view = tabs.find((tab) => tab.id === tabId);
+      if (view) view.timedOut = true;
     }, OPEN_TIMEOUT_MS);
   }
 
-  onMount(() => {
-    unsubscribeState = client.terminalsFor(sessionId).subscribe((map) => {
-      if (!terminalId) return;
-      const state = map.get(terminalId);
-      if (!state) return;
-      status = state.status;
-      errorMessage = state.error;
-      // A real answer, however late, is the honest resolution of this
-      // mount/retry's own bounded wait (issue #582's "a timeout does not
-      // mean the request failed" only holds if a late answer still lands).
-      if (state.status !== 'opening') {
-        clearOpenTimeout();
-        timedOut = false;
-      }
+  /** Opens a fresh PTY on `tabId` (first open, and issue #582's retry): arms this attempt's own bounded wait and re-subscribes `onTerminalOutput` to the new `terminalId` — never reused, per `RelayClient.openTerminal`'s own doc comment. */
+  function openWireTerminal(tabId: string): void {
+    const runtime = runtimes.get(tabId);
+    const view = tabs.find((tab) => tab.id === tabId);
+    if (!runtime || !view) return;
+    view.status = 'opening';
+    view.errorMessage = undefined;
+    view.timedOut = false;
+    runtime.unsubscribeOutput?.();
+    const terminalId = client.openTerminal(sessionId, runtime.terminal.cols, runtime.terminal.rows);
+    runtime.terminalId = terminalId;
+    runtime.unsubscribeOutput = client.onTerminalOutput(sessionId, terminalId, (chunk) => {
+      runtime.terminal.write(chunk);
     });
+    armOpenTimeout(tabId);
+  }
 
-    terminal = new Terminal({
+  /** Retry (issue #582): asks the node to close whichever attempt just timed out, then opens a genuinely new one on the SAME tab — never just clears the local flag. */
+  function retryTab(tabId: string): void {
+    clearTabOpenTimeout(tabId);
+    const staleId = runtimes.get(tabId)?.terminalId;
+    if (staleId) client.closeTerminal(sessionId, staleId);
+    openWireTerminal(tabId);
+  }
+
+  /** The bar's new-tab control (design spec §4 D1-2): opens an ADDITIONAL terminal for this session (they already share `worktreePath` on the node — issue #173) and switches to it. */
+  function addTab(): void {
+    const tabId = `tab-${nextTabSeq++}`;
+    const terminal = new Terminal({
       cols,
       rows,
       fontFamily: readToken('--font-mono', 'ui-monospace, monospace'),
@@ -203,125 +286,233 @@
         selectionBackground: readToken('--color-accent-subtle', 'rgba(59, 157, 247, 0.35)'),
       },
     });
-    liveCols = terminal.cols;
-    liveRows = terminal.rows;
-    if (container) terminal.open(container);
+    runtimes.set(tabId, { terminal });
+    tabs.push({
+      id: tabId,
+      status: 'opening',
+      errorMessage: undefined,
+      timedOut: false,
+      liveCols: terminal.cols,
+      liveRows: terminal.rows,
+      cwd: undefined,
+      shell: undefined,
+    });
+    activeTabId = tabId;
+    openWireTerminal(tabId);
+  }
 
-    // Reads the CURRENT `terminalId` at send time rather than closing over
-    // one captured at mount (issue #582's retry opens an ADDITIONAL
-    // terminal with a new id — see `openNewTerminal` — and these two
-    // listeners, registered once, must follow it there).
+  /** Closes one tab's terminal for good (never the last one — the bar always shows at least one, so the close control itself is hidden once only one remains). Removing the entry from `tabs` unmounts that tab's pane, whose `mountTerminalPane` action `destroy()` below does the actual PTY-close/dispose/unsubscribe work — one cleanup path shared with whole-component teardown, not two. */
+  function closeTab(tabId: string): void {
+    if (tabs.length <= 1) return;
+    const index = tabs.findIndex((tab) => tab.id === tabId);
+    if (index === -1) return;
+    tabs.splice(index, 1);
+    if (activeTabId === tabId) {
+      activeTabId = (tabs[index] ?? tabs[index - 1] ?? tabs[0])?.id;
+    }
+  }
+
+  /** The full teardown for one tab's terminal — shared by an explicit `closeTab` and by this component's own unmount (Svelte destroys every `{#each}` node, firing this same action `destroy()` for each remaining tab), exactly mirroring the pre-#669 single-terminal `onDestroy`. */
+  function cleanupTab(tabId: string): void {
+    const runtime = runtimes.get(tabId);
+    if (!runtime) return;
+    runtimes.delete(tabId);
+    runtime.unsubscribeOutput?.();
+    clearTabOpenTimeout(tabId);
+    runtime.resizeObserver?.disconnect();
+    if (runtime.terminalId) client.closeTerminal(sessionId, runtime.terminalId);
+    runtime.terminal.dispose();
+  }
+
+  /**
+   * A Svelte action, not a `bind:this` + effect: it gives this exact pane's
+   * container node the moment it enters the DOM (first render of a new
+   * tab, or a tab reappearing after the whole component remounts — never
+   * on a mere tab SWITCH, since an inactive pane stays mounted at
+   * `display: none` rather than being torn down) and again the moment it
+   * leaves, which is precisely the mount/unmount pairing this file's
+   * pre-#669 single terminal got for free from `onMount`/`onDestroy`.
+   */
+  function mountTerminalPane(node: HTMLDivElement, tabId: string): { destroy(): void } {
+    const runtime = runtimes.get(tabId);
+    if (!runtime) return { destroy() {} };
+    const { terminal } = runtime;
+    terminal.open(node);
+
+    // Reads the CURRENT `runtime.terminalId` at send time rather than
+    // closing over one captured here — issue #582's retry opens an
+    // ADDITIONAL terminal with a new id on this SAME tab, and these two
+    // listeners, registered once, must follow it there.
     terminal.onData((data) => {
-      if (terminalId) client.sendTerminalInput(sessionId, terminalId, data);
+      if (runtime.terminalId) client.sendTerminalInput(sessionId, runtime.terminalId, data);
     });
 
     terminal.onResize(({ cols: newCols, rows: newRows }) => {
-      liveCols = newCols;
-      liveRows = newRows;
-      if (terminalId) client.resizeTerminal(sessionId, terminalId, newCols, newRows);
+      const view = tabs.find((tab) => tab.id === tabId);
+      if (view) {
+        view.liveCols = newCols;
+        view.liveRows = newRows;
+      }
+      if (runtime.terminalId)
+        client.resizeTerminal(sessionId, runtime.terminalId, newCols, newRows);
     });
 
     // See this file's own top doc comment ("Bottom dock + real resize",
-    // issue #572) for why a `ResizeObserver`, not a `pointermove`
-    // listener, is the coalescing mechanism: it fires at most once per
-    // render frame no matter how many synchronous height writes happened
-    // since the last one, so a continuous drag calls `fit()` (and the
-    // real `resizeTerminal` it triggers) once per frame, not once per
-    // pointermove. Guarded for `jsdom` (no `ResizeObserver`); the real
-    // `@xterm/addon-fit` package runs unmocked against this file's own
-    // `FakeTerminal` regardless — `proposeDimensions()` bails out on the
-    // missing `terminal.element` a real `Terminal.open()` would have set,
-    // so `fit()` is a safe no-op here and a real resize in a real browser.
-    fitAddon = new FitAddon();
+    // issue #572) for why a `ResizeObserver`, not a `pointermove` listener,
+    // is the coalescing mechanism, and why it doubles as the "becoming
+    // visible again" fit — here that covers a dock resize AND switching
+    // back to this tab, through the one mechanism. Guarded for `jsdom` (no
+    // `ResizeObserver`); the real `@xterm/addon-fit` package runs unmocked
+    // against this file's own `FakeTerminal` regardless —
+    // `proposeDimensions()` bails out on the missing `terminal.element` a
+    // real `Terminal.open()` would have set, so `fit()` is a safe no-op
+    // here and a real resize in a real browser.
+    const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+    runtime.fitAddon = fitAddon;
     fitAddon.fit();
-    if (container && typeof ResizeObserver === 'function') {
-      resizeObserver = new ResizeObserver(() => fitAddon?.fit());
-      resizeObserver.observe(container);
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(() => fitAddon.fit());
+      observer.observe(node);
+      runtime.resizeObserver = observer;
     }
 
-    openNewTerminal();
+    return {
+      destroy() {
+        cleanupTab(tabId);
+      },
+    };
+  }
+
+  onMount(() => {
+    // One subscription for the whole component (not per tab): every open
+    // terminal for this session lands in the same `terminalsFor` map, so a
+    // single callback can update whichever tab(s) it names by matching
+    // each tab's CURRENT `runtime.terminalId`.
+    unsubscribeState = client.terminalsFor(sessionId).subscribe((map) => {
+      for (const tab of tabs) {
+        const runtime = runtimes.get(tab.id);
+        if (!runtime?.terminalId) continue;
+        const state = map.get(runtime.terminalId);
+        if (!state) continue;
+        tab.status = state.status;
+        tab.errorMessage = state.error;
+        tab.cwd = state.cwd;
+        tab.shell = state.shell;
+        // A real answer, however late, is the honest resolution of this
+        // tab's own bounded wait (issue #582's "a timeout does not mean
+        // the request failed" only holds if a late answer still lands).
+        if (state.status !== 'opening') {
+          clearTabOpenTimeout(tab.id);
+          tab.timedOut = false;
+        }
+      }
+    });
+
+    addTab();
   });
 
-  /** Opens a fresh PTY (mount, and issue #582's retry): arms this attempt's own bounded wait and re-subscribes `onTerminalOutput` to the new `terminalId` — never reused, per `RelayClient.openTerminal`'s own doc comment. */
-  function openNewTerminal(): void {
-    if (!terminal) return;
-    unsubscribeOutput?.();
-    status = 'opening';
-    errorMessage = undefined;
-    timedOut = false;
-    terminalId = client.openTerminal(sessionId, terminal.cols, terminal.rows);
-    const openedId = terminalId;
-    unsubscribeOutput = client.onTerminalOutput(sessionId, openedId, (chunk) => {
-      terminal?.write(chunk);
-    });
-    armOpenTimeout();
-  }
-
-  /** Retry (issue #582): asks the node to close whichever attempt just timed out, then opens a genuinely new one — never just clears the local flag. */
-  function retryTerminal(): void {
-    clearOpenTimeout();
-    const staleId = terminalId;
-    if (staleId) client.closeTerminal(sessionId, staleId);
-    openNewTerminal();
-  }
-
   onDestroy(() => {
-    unsubscribeOutput?.();
     unsubscribeState?.();
-    clearOpenTimeout();
-    resizeObserver?.disconnect();
-    if (terminalId) client.closeTerminal(sessionId, terminalId);
-    terminal?.dispose();
   });
 </script>
 
 <div
   class="interactive-terminal"
-  class:focused
   data-testid="interactive-terminal"
-  data-status={status}
-  data-cols={liveCols}
-  data-rows={liveRows}
+  data-status={activeTab?.status}
+  data-cols={activeTab?.liveCols ?? 0}
+  data-rows={activeTab?.liveRows ?? 0}
 >
-  <div class="terminal-titlebar">
-    <Icon name="tool-bash" class="terminal-titlebar-icon" />
+  <div class="terminal-bar" data-testid="terminal-bar">
     <StatusDot
       tone={statusTone}
-      pulse={status === 'opening' && !timedOut}
+      pulse={activeTab?.status === 'opening' && !activeTab?.timedOut}
       label={statusLabel}
       size="sm"
     />
-    <span class="terminal-titlebar-label font-mono">Terminal</span>
+    <span class="terminal-bar-status font-mono" data-testid="terminal-bar-status">{statusWord}</span
+    >
+    {#if activeTab?.cwd}
+      <span class="terminal-bar-sep" aria-hidden="true">·</span>
+      <span class="terminal-bar-cwd font-mono" title={activeTab.cwd} data-testid="terminal-bar-cwd">
+        {activeTab.cwd}
+      </span>
+    {/if}
+    {#if shellName}
+      <span class="terminal-bar-sep" aria-hidden="true">·</span>
+      <span
+        class="terminal-bar-shell font-mono"
+        title={activeTab?.shell}
+        data-testid="terminal-bar-shell"
+      >
+        {shellName}
+      </span>
+    {/if}
+    <div class="terminal-bar-spacer"></div>
+    {#if tabs.length > 1}
+      <div class="terminal-tabs" role="tablist" aria-label="Terminals" data-testid="terminal-tabs">
+        {#each tabs as tab, index (tab.id)}
+          <span class="terminal-tab" class:selected={tab.id === activeTabId}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab.id === activeTabId}
+              class="terminal-tab-select font-mono"
+              onclick={() => (activeTabId = tab.id)}
+              data-testid="terminal-tab"
+            >
+              {index + 1}
+            </button>
+            <IconButton
+              label={`Close terminal ${index + 1}`}
+              size="sm"
+              onclick={() => closeTab(tab.id)}
+              dataTestId="terminal-tab-close"
+            >
+              <Icon name="close" size="0.7rem" />
+            </IconButton>
+          </span>
+        {/each}
+      </div>
+    {/if}
+    <IconButton label="New terminal" onclick={addTab} dataTestId="terminal-new-tab">
+      <Icon name="plus" size="0.85rem" />
+    </IconButton>
   </div>
 
-  {#if timedOut}
-    <div class="terminal-timeout" data-testid="terminal-timeout">
-      <ErrorNotice
-        message="The terminal hasn't opened yet. This isn't necessarily a failure, we simply stopped waiting: the node may be asleep, offline, or slow to start the shell."
-        retryable
-        onRetry={retryTerminal}
-      />
-    </div>
-  {:else if status !== 'open'}
-    <div class="status" class:error={status === 'error'} data-testid="terminal-status">
-      {#if status === 'opening'}
-        Connecting…
-      {:else if status === 'error'}
-        {errorMessage ?? 'Terminal error'}
-      {:else if status === 'closed'}
-        Closed
+  {#each tabs as tab (tab.id)}
+    <div class="terminal-pane" class:terminal-pane-active={tab.id === activeTabId}>
+      {#if tab.timedOut}
+        <div class="terminal-timeout" data-testid="terminal-timeout">
+          <ErrorNotice
+            message="The terminal hasn't opened yet. This isn't necessarily a failure, we simply stopped waiting: the node may be asleep, offline, or slow to start the shell."
+            retryable
+            onRetry={() => retryTab(tab.id)}
+          />
+        </div>
+      {:else if tab.status !== 'open'}
+        <div class="status" class:error={tab.status === 'error'} data-testid="terminal-status">
+          {#if tab.status === 'opening'}
+            Connecting…
+          {:else if tab.status === 'error'}
+            {tab.errorMessage ?? 'Terminal error'}
+          {:else if tab.status === 'closed'}
+            Closed
+          {/if}
+        </div>
       {/if}
-    </div>
-  {/if}
 
-  <div
-    class="xterm-container"
-    bind:this={container}
-    data-testid="xterm-container"
-    onfocusin={() => (focused = true)}
-    onfocusout={() => (focused = false)}
-  ></div>
+      <div
+        class="xterm-container"
+        class:focused={tab.id === activeTabId && focused}
+        data-testid="xterm-container"
+        use:mountTerminalPane={tab.id}
+        onfocusin={() => (focused = true)}
+        onfocusout={() => (focused = false)}
+      ></div>
+    </div>
+  {/each}
 </div>
 
 <style>
@@ -331,42 +522,108 @@
     min-width: 0;
     min-height: 0;
     height: 100%;
-    background: var(--color-bg);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-    /* Focused-state border (chrome only): a hairline shift to
-       `--color-focus-ring`, never the accent — accent stays reserved for
-       meaning, per the redesign brief's "accent-for-meaning" discipline. */
-    transition: border-color var(--duration-fast) var(--ease-beat);
   }
 
-  .interactive-terminal.focused {
-    border-color: var(--color-focus-ring);
-  }
-
-  .terminal-titlebar {
+  /* One thin bar (design spec §4 D1-2, issue #669) replacing the old
+     bordered card's titlebar: no border/background of its own beyond a
+     hairline UNDER it separating it from the pane — the dock one level up
+     (`+page.svelte`'s `.terminal-dock`) now supplies the surface. */
+  .terminal-bar {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
     flex-shrink: 0;
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--color-surface);
+    padding: var(--space-2xs) var(--space-xs);
     border-bottom: 1px solid var(--color-border-subtle);
   }
 
-  /* `:global` — this class lands on `Icon`'s own root `<svg>`, one
-     component down, so Svelte's scoped-CSS hash on this file's stylesheet
-     never reaches it without the escape hatch. */
-  :global(.terminal-titlebar-icon) {
+  .terminal-bar-status {
+    flex-shrink: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .terminal-bar-sep {
     flex-shrink: 0;
     color: var(--color-text-muted);
   }
 
-  .terminal-titlebar-label {
+  /* The cwd segment is the one allowed to truncate — it's the longest and
+     least predictable value on the bar; `shell`/status/tabs stay fixed
+     width either side of it. */
+  .terminal-bar-cwd {
+    min-width: 3rem;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-size: var(--text-small-size);
     color: var(--color-text-muted);
-    letter-spacing: 0.02em;
+  }
+
+  .terminal-bar-shell {
+    flex-shrink: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
+  }
+
+  .terminal-bar-spacer {
+    flex: 1;
+    min-width: var(--space-sm);
+  }
+
+  .terminal-tabs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    flex-shrink: 0;
+  }
+
+  .terminal-tab {
+    display: flex;
+    align-items: center;
+    border-radius: var(--radius-sm);
+  }
+
+  .terminal-tab-select {
+    min-width: 1.5rem;
+    height: 1.5rem;
+    padding: 0 var(--space-2xs);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--text-caption-size);
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .terminal-tab-select:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .terminal-tab-select:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  .terminal-tab.selected .terminal-tab-select {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  .terminal-pane {
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+  }
+
+  /* Kept mounted at `display: none` rather than removed (this file's own
+     top doc comment: a `ResizeObserver` firing when this pane is shown
+     again is what re-fits it, the same mechanism `+page.svelte`'s dock
+     collapse/reopen already relies on). */
+  .terminal-pane.terminal-pane-active {
+    display: flex;
   }
 
   .status {
@@ -374,8 +631,6 @@
     font-family: var(--font-mono);
     font-size: var(--text-small-size);
     color: var(--color-text-muted);
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border-subtle);
     /* status-crossfade (redesign brief §2): a status change crossfades
        color/background, no snap. */
     transition:
@@ -394,12 +649,10 @@
   .status.error {
     color: var(--color-danger);
     background: var(--color-danger-subtle);
-    border-bottom-color: var(--color-danger);
   }
 
   .terminal-timeout {
     padding: var(--space-xs) var(--space-sm);
-    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .xterm-container {
@@ -407,7 +660,16 @@
     min-width: 0;
     min-height: 0;
     padding: var(--space-2xs);
-    background: var(--color-bg);
     overflow: hidden;
+    box-shadow: inset 0 0 0 0 transparent;
+    transition: box-shadow var(--duration-fast) var(--ease-beat);
+  }
+
+  /* The card's own focused-state border used to carry this signal; with
+     the card gone (D1-2), an inset ring on the pane itself is the
+     replacement — real chrome only while the PTY genuinely has DOM focus,
+     never a second permanent frame. */
+  .xterm-container.focused {
+    box-shadow: inset 0 0 0 1px var(--color-focus-ring);
   }
 </style>

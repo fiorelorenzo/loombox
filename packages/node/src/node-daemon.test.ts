@@ -2361,12 +2361,18 @@ describe('NodeDaemon interactive PTY terminals (SPEC §7.5; issues #172/#173)', 
         (m) =>
           m.type === 'terminal_opened' && (m as { requestId?: string }).requestId === 'req-open-1',
       )) as Extract<WireMessageV1, { type: 'terminal_opened' }>;
-      const openedPayload = await phoneOpen<{ outcome: string; message?: string }>(
-        session.id,
-        openedMessage.envelope,
-        key,
-      );
+      const openedPayload = await phoneOpen<{
+        outcome: string;
+        message?: string;
+        cwd?: string;
+        shell?: string;
+      }>(session.id, openedMessage.envelope, key);
       expect(openedPayload.outcome).toBe('ok');
+      // Issue #669: the terminal dock's chrome shows these as real values,
+      // not placeholders — `cwd` is the session's actual worktree/project
+      // root, `shell` is what `local` actually spawned.
+      expect(openedPayload.cwd).toBe(session.worktreePath);
+      expect(openedPayload.shell).toBe(process.env.SHELL ?? '/bin/bash');
 
       const inputEnvelope = await phoneSeal(
         session.id,

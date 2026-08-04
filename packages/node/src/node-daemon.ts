@@ -3643,9 +3643,11 @@ export class NodeDaemon extends EventEmitter {
 
     this.decryptTerminalOpenPayload(message)
       .then((payload) => this.openTerminalForBridge(bridge, message.terminalId, payload))
-      .then(() =>
+      .then(({ cwd, shell }) =>
         this.sendTerminalOpened(bridge.session.id, message.terminalId, message.requestId, {
           outcome: 'ok',
+          cwd,
+          shell,
         }),
       )
       .catch((error: unknown) => {
@@ -3686,12 +3688,20 @@ export class NodeDaemon extends EventEmitter {
    * `ssh:`, is gated identically. See `policy-enforced-pty.ts`'s own doc
    * comment for exactly how a denied line is stopped and what is (and is
    * not) covered.
+   *
+   * Returns the real `cwd`/`shell` this PTY actually started with
+   * (issue #669: `terminalOpenOkV1`'s own fields) — `cwd` is always
+   * `bridge.session.worktreePath` itself (known regardless of target
+   * kind); `shell` only for `local`, where the spawned binary is known
+   * ahead of time — an `ssh:` login shell is never named until it starts
+   * (see the `cd`-first-line comment below), so it stays `undefined`
+   * rather than a guess.
    */
   private async openTerminalForBridge(
     bridge: SessionBridge,
     terminalId: string,
     payload: TerminalOpenPayloadV1,
-  ): Promise<void> {
+  ): Promise<{ cwd: string; shell?: string }> {
     const target = this.targets.find((candidate) => candidate.id === bridge.targetId);
     if (!target) {
       throw new Error(`NodeDaemon: no target with id "${bridge.targetId}"`);
@@ -3702,10 +3712,12 @@ export class NodeDaemon extends EventEmitter {
       new PolicyEnforcedPty({ inner: pty, projectPath: bridge.session.projectPath, policy });
 
     let session: TerminalSession;
+    let shell: string | undefined;
     if (target.kind === 'local') {
+      shell = process.env.SHELL ?? '/bin/bash';
       const pty = defaultPtySpawn({
         terminalId,
-        file: process.env.SHELL ?? '/bin/bash',
+        file: shell,
         cwd: bridge.session.worktreePath,
         cols: payload.cols,
         rows: payload.rows,
@@ -3726,12 +3738,15 @@ export class NodeDaemon extends EventEmitter {
       // cost of that one line briefly appearing before `clear` wipes it —
       // an accepted, documented tradeoff (SPEC §16 grounding notes this is
       // the same channel primitive an interactive `ssh host` uses, which has
-      // this same limitation).
+      // this same limitation). No `shell` value returned below either, for
+      // the same reason: the remote login shell's binary is never named on
+      // this path.
       channel.write(`cd ${shQuote(bridge.session.worktreePath)} && clear\n`);
       session = this.terminalSupervisor.openWithPty(terminalId, gate(shellChannelToPty(channel)));
     }
 
     this.wireTerminalSession(bridge.session.id, session);
+    return { cwd: bridge.session.worktreePath, shell };
   }
 
   /**

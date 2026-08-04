@@ -36,8 +36,25 @@ describe('terminalOpenPayloadV1', () => {
 });
 
 describe('terminalOpenResultPayloadV1', () => {
-  it('parses the ok outcome', () => {
-    expect(parseTerminalOpenResultPayloadV1({ outcome: 'ok' }).outcome).toBe('ok');
+  it('parses the ok outcome with cwd and shell (issue #669: the terminal dock shows these as real values)', () => {
+    const result = parseTerminalOpenResultPayloadV1({
+      outcome: 'ok',
+      cwd: '/home/dev/project',
+      shell: '/bin/zsh',
+    });
+    expect(result.outcome).toBe('ok');
+    expect(result).toMatchObject({ cwd: '/home/dev/project', shell: '/bin/zsh' });
+  });
+
+  it('parses the ok outcome with shell omitted (an ssh: target never names its remote login shell ahead of time)', () => {
+    const result = parseTerminalOpenResultPayloadV1({ outcome: 'ok', cwd: '/home/dev/project' });
+    if (result.outcome !== 'ok') throw new Error('expected an ok outcome');
+    expect(result.cwd).toBe('/home/dev/project');
+    expect(result.shell).toBeUndefined();
+  });
+
+  it('rejects an ok outcome with no cwd — every node reply knows the PTY working directory', () => {
+    expect(() => parseTerminalOpenResultPayloadV1({ outcome: 'ok' })).toThrow();
   });
 
   it('parses the error outcome with a message', () => {

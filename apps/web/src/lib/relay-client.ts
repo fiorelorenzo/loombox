@@ -362,6 +362,10 @@ export interface TerminalClientState {
   error?: string;
   /** Set when `status` is `'closed'` — why (SPEC §7.5's client-close vs. the shell exiting on its own). */
   closedReason?: string;
+  /** Set once `status` is `'open'` — the PTY's real working directory (`terminalOpenOkV1.cwd`, issue #669). Real, never a client-side guess. */
+  cwd?: string;
+  /** Set once `status` is `'open'`, when the node reported one (`terminalOpenOkV1.shell`) — omitted for an `ssh:` target, which never names its remote login shell ahead of time. */
+  shell?: string;
 }
 
 /**
@@ -4228,6 +4232,8 @@ export class RelayClient {
           this.setTerminalState(message.sessionId, message.terminalId, {
             terminalId: message.terminalId,
             status: 'open',
+            cwd: payload.cwd,
+            shell: payload.shell,
           });
         } else {
           this.setTerminalState(message.sessionId, message.terminalId, {

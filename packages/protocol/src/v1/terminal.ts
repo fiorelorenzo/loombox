@@ -47,6 +47,25 @@ export type TerminalOpenPayloadV1 = z.infer<typeof terminalOpenPayloadV1>;
 /** A successful terminal_open. */
 export const terminalOpenOkV1 = z.object({
   outcome: z.literal('ok'),
+  /**
+   * The PTY's actual working directory — `bridge.session.worktreePath` on
+   * the node (the session's project root, or its isolated git worktree),
+   * `local` and `ssh:` alike. Real, not a client-side guess: the terminal
+   * dock's chrome (issue #669) shows this so a user never has to open a
+   * file tree to find where a command they type actually lands, which is
+   * exactly the case an isolated worktree makes this differ from the
+   * session's own `projectPath` the client already has decrypted locally.
+   */
+  cwd: z.string().min(1),
+  /**
+   * The shell binary running the PTY. Known for a `local` target
+   * (`process.env.SHELL`, or the `/bin/bash` fallback `openTerminalForBridge`
+   * spawns with) — omitted for `ssh:`, where the remote login shell is
+   * never named ahead of time (`ssh2`'s `Client.shell()` has no such
+   * introspection; see that function's own doc comment). Omitted, not
+   * guessed, per this package's "unknown is the honest value" discipline.
+   */
+  shell: z.string().min(1).optional(),
 });
 export type TerminalOpenOkV1 = z.infer<typeof terminalOpenOkV1>;
 

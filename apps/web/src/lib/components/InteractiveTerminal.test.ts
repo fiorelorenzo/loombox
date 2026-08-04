@@ -174,13 +174,63 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
     expect(instances).toHaveLength(1);
   });
 
-  it('draws the titlebar through the shared Icon component (Deck migration, #470)', () => {
+  it('shows cwd, shell, and connection status on the one thin bar once the terminal opens — real values, not placeholders (issue #669, D1-2)', async () => {
+    const client = fakeClient();
+    render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+    // The only icon left is the new-tab "+" — no separate titlebar icon
+    // (the old tool-bash glyph this file used to draw alongside the
+    // removed titlebar).
+    const icons = screen.getAllByTestId('icon');
+    expect(icons).toHaveLength(1);
+    expect(icons[0]?.getAttribute('data-icon-name')).toBe('plus');
+    expect(screen.getByTestId('terminal-bar-status').textContent?.trim()).toBe('Connecting…');
+    expect(screen.queryByTestId('terminal-bar-cwd')).toBeNull();
+    expect(screen.queryByTestId('terminal-bar-shell')).toBeNull();
+
+    let openedTerminalId = '';
+    client.terminalStore.subscribe((map) => {
+      const [id] = map.keys();
+      if (id) openedTerminalId = id;
+    })();
+
+    (client as unknown as { setStatus: (id: string, s: TerminalClientState) => void }).setStatus(
+      openedTerminalId,
+      {
+        terminalId: openedTerminalId,
+        status: 'open',
+        cwd: '/home/dev/loombox/.loombox/worktrees/sess-1',
+        shell: '/bin/zsh',
+      },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-bar-status').textContent?.trim()).toBe('Connected');
+    });
+    expect(screen.getByTestId('terminal-bar-cwd').textContent?.trim()).toBe(
+      '/home/dev/loombox/.loombox/worktrees/sess-1',
+    );
+    expect(screen.getByTestId('terminal-bar-shell').textContent?.trim()).toBe('zsh');
+  });
+
+  it('omits the shell segment entirely, rather than guessing, when the node never reported one (an ssh: target)', async () => {
     const client = fakeClient();
     render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
 
-    const icon = screen.getByTestId('icon');
-    expect(icon.getAttribute('data-icon-name')).toBe('tool-bash');
-    expect(icon.getAttribute('aria-hidden')).toBe('true');
+    let openedTerminalId = '';
+    client.terminalStore.subscribe((map) => {
+      const [id] = map.keys();
+      if (id) openedTerminalId = id;
+    })();
+
+    (client as unknown as { setStatus: (id: string, s: TerminalClientState) => void }).setStatus(
+      openedTerminalId,
+      { terminalId: openedTerminalId, status: 'open', cwd: '/srv/app' },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-bar-cwd').textContent?.trim()).toBe('/srv/app');
+    });
+    expect(screen.queryByTestId('terminal-bar-shell')).toBeNull();
   });
 
   it('flips to the open view once terminalsFor reports status open', async () => {
@@ -406,6 +456,79 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
       // wait elapses, proving retry re-arms rather than a one-shot dismissal.
       await vi.advanceTimersByTimeAsync(10_000);
       expect(screen.getByTestId('terminal-timeout')).toBeTruthy();
+    });
+  });
+
+  describe("the bar's new-tab control opens additional terminals (issue #669, D1-2)", () => {
+    it('a single terminal shows no tab strip and no close control', () => {
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      expect(screen.queryByTestId('terminal-tabs')).toBeNull();
+      expect(screen.getByTestId('terminal-new-tab')).toBeTruthy();
+    });
+
+    it('clicking + opens a genuinely additional terminal (a second openTerminal call, a second xterm.js instance) and switches to it', async () => {
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      expect(client.openCalls).toHaveLength(1);
+      expect(instances).toHaveLength(1);
+
+      await fireEvent.click(screen.getByTestId('terminal-new-tab'));
+
+      expect(client.openCalls).toHaveLength(2);
+      expect(instances).toHaveLength(2);
+      const tabs = screen.getAllByTestId('terminal-tab');
+      expect(tabs).toHaveLength(2);
+      // The new tab is the active one — the bar reflects ITS status, not
+      // the first tab's.
+      expect(tabs[1].getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByTestId('terminal-bar-status').textContent?.trim()).toBe('Connecting…');
+    });
+
+    it("the first tab's xterm instance and PTY survive switching to a second tab and back — never disposed, never re-opened", async () => {
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+      const firstInstance = instances[0];
+
+      await fireEvent.click(screen.getByTestId('terminal-new-tab'));
+      expect(client.openCalls).toHaveLength(2);
+
+      const tabs = screen.getAllByTestId('terminal-tab');
+      await fireEvent.click(tabs[0]);
+
+      expect(firstInstance?.disposed).toBe(false);
+      // Switching tabs is never a new PTY open — only + does that.
+      expect(client.openCalls).toHaveLength(2);
+      expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('closing a tab closes ITS terminal (not the other one) and falls back to a remaining tab, and the close control disappears once only one tab is left', async () => {
+      const client = fakeClient();
+      render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+      let firstTerminalId = '';
+      client.terminalStore.subscribe((map) => {
+        const [id] = map.keys();
+        if (id) firstTerminalId = id;
+      })();
+
+      await fireEvent.click(screen.getByTestId('terminal-new-tab'));
+      const secondInstance = instances[1];
+
+      const closeButtons = screen.getAllByTestId('terminal-tab-close');
+      expect(closeButtons).toHaveLength(2);
+      // Close the SECOND (active) tab, not the first.
+      await fireEvent.click(closeButtons[1]);
+
+      expect(client.closeCalls).toEqual([
+        { sessionId: 'sess-1', terminalId: expect.stringContaining('term-') },
+      ]);
+      expect(client.closeCalls[0]?.terminalId).not.toBe(firstTerminalId);
+      expect(secondInstance?.disposed).toBe(true);
+      expect(screen.queryByTestId('terminal-tabs')).toBeNull();
+      expect(screen.queryByTestId('terminal-tab-close')).toBeNull();
     });
   });
 });
