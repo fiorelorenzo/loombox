@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { renderMarkdownToHtml, splitStreamingMarkdown } from './markdown';
+import { highlightMarkdownToHtml, renderMarkdownToHtml, splitStreamingMarkdown } from './markdown';
 
 describe('renderMarkdownToHtml (#574)', () => {
-  it('renders a fenced ts block as a code block with no visible backticks, highlighted', () => {
+  it('renders a fenced ts block as a code block with no visible backticks, plain until highlighted (#600)', () => {
     const html = renderMarkdownToHtml('```ts\nconst x: number = 1;\n```');
     expect(html).not.toContain('```');
     expect(html).toContain('<pre>');
+    // The language class comes from remark-rehype's own fenced-code
+    // handling, not from the (now async, see #600) highlighter — it's
+    // there on the very first synchronous render.
     expect(html).toContain('language-ts');
-    // Actually tokenised, not just wrapped in a bare <code> block.
-    expect(html).toContain('hljs-keyword');
+    // No token spans yet: highlighting is `highlightMarkdownToHtml`'s job.
+    expect(html).not.toContain('hljs-');
   });
 
   it('renders a nested list with real markers and indentation (nested <ul>)', () => {
@@ -53,7 +56,7 @@ describe('renderMarkdownToHtml (#574)', () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 
-  it('does not highlight (but still renders as plain monospace) an unregistered language', () => {
+  it('renders an unregistered fence language as plain monospace, same as any other fence pre-highlight', () => {
     const html = renderMarkdownToHtml('```brainfuck\n+++.\n```');
     expect(html).toContain('<pre><code');
     expect(html).not.toContain('hljs-');
@@ -80,6 +83,75 @@ describe('renderMarkdownToHtml (#574)', () => {
 
   it('returns an empty string for empty input without invoking the pipeline', () => {
     expect(renderMarkdownToHtml('')).toBe('');
+  });
+});
+
+describe('highlightMarkdownToHtml (#600 async highlighter)', () => {
+  it('dynamically loads the grammar and returns fully tokenised html for a registered language', async () => {
+    const html = await highlightMarkdownToHtml('```ts\nconst x: number = 1;\n```');
+    expect(html).not.toBeNull();
+    expect(html).toContain('hljs-keyword');
+    expect(html).toContain('language-ts');
+  });
+
+  it('resolves an alias (py) to its canonical grammar (python) the same way the old eager registration did', async () => {
+    const html = await highlightMarkdownToHtml('```py\nimport os\n```');
+    expect(html).toContain('hljs-keyword');
+  });
+
+  it('returns null — nothing to upgrade — for an unregistered fence language, without fetching anything undefined', async () => {
+    const html = await highlightMarkdownToHtml('```brainfuck\n+++.\n```');
+    expect(html).toBeNull();
+  });
+
+  it('returns null for source with no fence at all', async () => {
+    expect(await highlightMarkdownToHtml('just prose, no code')).toBeNull();
+  });
+
+  it('returns null for empty input without invoking the pipeline', async () => {
+    expect(await highlightMarkdownToHtml('')).toBeNull();
+  });
+
+  it('highlights every registered language a single message references, not just the first', async () => {
+    const html = await highlightMarkdownToHtml(
+      '```ts\nconst x = 1;\n```\n\n```python\nimport os\n```',
+    );
+    expect(html).toContain('language-ts');
+    expect(html).toContain('language-python');
+    expect(html).toContain('hljs-keyword');
+  });
+
+  // Sanitisation ordering (issue #600 requirement): `highlightMarkdownToHtml`
+  // re-runs the whole pipeline — remark, `rehype-sanitize` on the unmodified
+  // default schema, the trusted plugins, *then* `rehypeHighlight` — rather
+  // than resuming from a stashed, already-sanitised tree. These two tests
+  // are the proof: a `<script>`/`<img onerror>` sitting right next to a
+  // fence that forces the async pipeline to actually run still can't reach
+  // the DOM as a live element through the highlighted output.
+  it('never lets a raw <script> tag become a live element through the async highlight path', async () => {
+    const html = await highlightMarkdownToHtml(
+      'before <script>alert(1)</script>\n\n```ts\nconst x = 1;\n```',
+    );
+    expect(html).not.toBeNull();
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('</script>');
+  });
+
+  it('never lets a raw <img onerror=...> become a live element through the async highlight path', async () => {
+    const html = await highlightMarkdownToHtml(
+      'raw <img src=x onerror=alert(1)>\n\n```ts\nconst x = 1;\n```',
+    );
+    expect(html).not.toBeNull();
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('<img');
+  });
+
+  it('still strips a javascript: protocol link through the async highlight path', async () => {
+    const html = await highlightMarkdownToHtml(
+      '[click me](javascript:alert(1))\n\n```ts\nconst x = 1;\n```',
+    );
+    expect(html).not.toBeNull();
+    expect(html).not.toContain('javascript:');
   });
 });
 

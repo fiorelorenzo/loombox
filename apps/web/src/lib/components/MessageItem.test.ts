@@ -285,13 +285,19 @@ describe('MessageItem: attribution by surface and glyph (design spec v6 §3.4, i
 describe('MessageItem: Markdown rendering (issue #574)', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('renders a fenced ts block as a code block with no visible backticks, highlighted', () => {
+  it('renders a fenced ts block as a code block with no visible backticks, plain first then highlighted (#600 async highlighter)', async () => {
     const { container } = render(MessageItem, {
       props: { item: messageItem({ text: '```ts\nconst x: number = 1;\n```' }) },
     });
     expect(screen.getByTestId('message-text').textContent).not.toContain('```');
+    // The language class is present immediately (remark-rehype's own
+    // fenced-code handling); the `hljs-*` token spans land once the
+    // dynamically-imported grammar (issue #600) resolves.
     expect(container.querySelector('pre code.language-ts')).toBeTruthy();
-    expect(container.querySelector('.hljs-keyword')).toBeTruthy();
+    expect(container.querySelector('.hljs-keyword')).toBeNull();
+    await vi.waitFor(() => {
+      expect(container.querySelector('.hljs-keyword')).toBeTruthy();
+    });
   });
 
   it('renders a nested markdown list with real <ul>/<li> markers and indentation, not literal dashes', () => {
@@ -341,13 +347,20 @@ describe('MessageItem: Markdown rendering (issue #574)', () => {
     expect(openFence.querySelector('.hljs-keyword')).toBeNull();
 
     // The fence closes and the turn ends (the real turn_ended signal): the
-    // open box is gone, replaced by the highlighted, rendered fence — one
-    // transition, not a toggle back and forth.
+    // open box is gone immediately, replaced by the closed-but-plain
+    // fence — one transition, not a toggle back and forth. Highlighting
+    // (issue #600) is a second, independent async upgrade of that same
+    // element once the dynamically-imported grammar resolves, not a third
+    // layout state.
     const full = opening + 'g(x);\n```\n\nDone.';
     await rerender({ item: { ...item, text: full }, turnActive: false });
     expect(queryByTestId('md-open-fence')).toBeNull();
-    expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeTruthy();
     expect(getByTestId('message-text').textContent).not.toContain('```');
+    expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeNull();
+    vi.useRealTimers();
+    await vi.waitFor(() => {
+      expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeTruthy();
+    });
   });
 
   it('sanitises a <script> and an <img onerror=...> in agent text — neither becomes a live element, and nothing executes', () => {

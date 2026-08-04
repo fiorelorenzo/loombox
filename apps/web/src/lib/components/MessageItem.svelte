@@ -87,7 +87,11 @@
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
   import { itemCopyText } from '$lib/copy';
-  import { renderMarkdownToHtml, splitStreamingMarkdown } from '$lib/markdown';
+  import {
+    highlightMarkdownToHtml,
+    renderMarkdownToHtml,
+    splitStreamingMarkdown,
+  } from '$lib/markdown';
   import { PROVIDER_LABELS } from '$lib/providers';
   import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
@@ -128,28 +132,77 @@
   });
   const displayText = $derived(item.text.slice(0, revealedLength));
 
-  // Markdown (issue #574, design spec §3.4): re-parsing the whole message
-  // through remark/rehype on every 32ms reveal tick does not hold up on a
-  // long turn, so `splitStreamingMarkdown` (`$lib/markdown`) finds the last
-  // position in `displayText` that is safe to fully parse — every block
-  // opened so far has also closed — and only that "stable" prefix goes
-  // through the real Markdown pipeline; a still-forming block after it
-  // (`tailText`) renders as plain text, and a still-open fenced code block
-  // (`openFence`) renders as a plain monospace box, never syntax-highlighted
-  // until its closing fence actually arrives. `lastStableSource`/
-  // `lastStableHtml` are plain (non-reactive) locals, not `$state`: most
-  // ticks only grow `tailText`, so this cache is what keeps the expensive
-  // parse+sanitize+highlight call from re-running on every one of them —
-  // it only reruns when the stable boundary itself actually advances.
+  // Markdown (issue #574, design spec §3.4; async highlighting issue #600):
+  // re-parsing the whole message through remark/rehype on every 32ms reveal
+  // tick does not hold up on a long turn, so `splitStreamingMarkdown`
+  // (`$lib/markdown`) finds the last position in `displayText` that is safe
+  // to fully parse — every block opened so far has also closed — and only
+  // that "stable" prefix goes through the real Markdown pipeline; a
+  // still-forming block after it (`tailText`) renders as plain text, and a
+  // still-open fenced code block (`openFence`) renders as a plain monospace
+  // box, never syntax-highlighted until its closing fence actually arrives.
+  // `lastStableSource`/`lastStableHtml` are plain (non-reactive) locals,
+  // not `$state`: most ticks only grow `tailText`, so this cache is what
+  // keeps the expensive parse+sanitize call from re-running on every one of
+  // them — it only reruns when the stable boundary itself actually
+  // advances.
+  //
+  // Highlighting (issue #600) is a second, independent, async trigger
+  // layered on top: `renderMarkdownToHtml` never highlights any more, so
+  // `lastStableHtml` is always ready the instant `stable` grows, as a plain
+  // render — the same unhighlighted-monospace state `openFence` already
+  // shows for a still-streaming fence, just for a now-closed one whose
+  // grammar hasn't loaded yet. `requestHighlight` fires `$lib/markdown`'s
+  // dynamic import in the background; when it resolves, it upgrades the
+  // render in place only if `source` still matches the *current*
+  // `lastStableSource` (reassigned synchronously, before the async call
+  // starts) — a resolution for a `stable` the message has since grown past
+  // is stale and silently dropped rather than clobbering a newer render
+  // with older content, and `destroyed` drops one that outlives the
+  // component itself. `highlightedHtml`/`highlightedForSource` are the only
+  // pieces written from outside this derived (the async callback), which is
+  // why `highlightedHtml` — unlike the two plain locals above — is
+  // `$state`: it is what needs to trigger a re-render once highlighting
+  // actually lands.
   let lastStableSource = '';
   let lastStableHtml = '';
+  let highlightedForSource = '';
+  let highlightedHtml = $state('');
+  let destroyed = false;
+
+  function requestHighlight(source: string) {
+    void highlightMarkdownToHtml(source).then((html) => {
+      if (html === null || destroyed || source !== lastStableSource) return;
+      highlightedForSource = source;
+      highlightedHtml = html;
+    });
+  }
+
   const rendered = $derived.by(() => {
     const split = splitStreamingMarkdown(displayText, !turnActive);
     if (split.stable !== lastStableSource) {
-      lastStableHtml = renderMarkdownToHtml(split.stable);
       lastStableSource = split.stable;
+      lastStableHtml = renderMarkdownToHtml(split.stable);
+      requestHighlight(split.stable);
     }
-    return { html: lastStableHtml, tailText: split.tailText, openFence: split.openFence };
+    // `highlightedHtml` is read unconditionally, before the branch that
+    // decides whether to use it: Svelte only subscribes `rendered` to the
+    // `$state` it actually reads during a given run, and a ternary
+    // short-circuits its untaken branch, so gating this read behind the
+    // `highlightedForSource === lastStableSource` check below would mean
+    // `rendered` never re-runs the *first* time highlighting actually
+    // lands for a given message (its own write happens on a run where the
+    // check was still false, so `highlightedHtml` was never touched, so
+    // there is no subscription to wake this derived back up).
+    const upgraded = highlightedHtml;
+    const html = highlightedForSource === lastStableSource ? upgraded : lastStableHtml;
+    return { html, tailText: split.tailText, openFence: split.openFence };
+  });
+
+  $effect(() => {
+    return () => {
+      destroyed = true;
+    };
   });
 
   $effect(() => {
@@ -404,10 +457,15 @@
      one tool-call widgets already use — `pre`/inline `code` here share the
      exact `--color-fill-subtle`/`--radius-md`/`--space-xs`+`--space-sm`
      recipe as `GenericToolRow`'s `.output` and `BashWidget`'s
-     `TerminalOutput`, so a closed, highlighted fence and the still-open
-     plain-monospace one it grew from (`.md-open-fence`, rendered directly
-     rather than through `{@html}` — see the script's `rendered` derivation)
-     never change shape, only colour, the instant highlighting turns on. */
+     `TerminalOutput`, so a closed fence and the still-open plain-monospace
+     one it grew from (`.md-open-fence`, rendered directly rather than
+     through `{@html}` — see the script's `rendered` derivation) never
+     change shape, only colour. That now also covers the gap between a
+     fence closing and its grammar loading (issue #600's async highlighter
+     — see `$lib/markdown`'s doc comment): both states are the identical
+     `.md-body pre`/`code.language-xxx` markup this selector already
+     covers, `hljs-*` token spans are the only thing that turns on once
+     highlighting actually lands. */
   :global(.md-body > :first-child) {
     margin-top: 0;
   }
