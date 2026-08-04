@@ -1326,6 +1326,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'tracker_snapshot_response':
+      case 'tracker_write_response':
+        // The owning node's reply to a client's tracker_snapshot_request/
+        // tracker_write_request (SPEC §7.10; issue #212) — fanned out to
+        // this session's subscribed clients exactly like fs_list_response
+        // above; the relay never opens the envelope, so it never learns a
+        // record's fields (SPEC §8's metadata boundary). A requesting
+        // client matches its own pending request by `requestId`; any other
+        // subscribed client simply has no pending request with that id.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'terminal_opened':
       case 'terminal_output':
       case 'terminal_closed':
@@ -1875,6 +1886,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
         // opaque `EncryptedEnvelope`; the requested path never reaches the
         // relay in the clear (SPEC §8's metadata boundary).
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'tracker_snapshot_request':
+      case 'tracker_write_request':
+        // tracker_snapshot_request/tracker_write_request (SPEC §7.10; issue
+        // #212): a client asking the owning node to read/write native
+        // tracker records for one of its sessions' bound projects — routed
+        // exactly like fs_list_request above. The relay only ever sees
+        // sessionId/targetId/requestId and an opaque `EncryptedEnvelope`;
+        // no record field ever reaches the relay in the clear (SPEC §8's
+        // metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':

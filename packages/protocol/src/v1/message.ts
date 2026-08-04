@@ -75,6 +75,12 @@ import {
   jiraConnectRequest,
   jiraConnectResponse,
 } from './account-connect';
+import {
+  trackerSnapshotRequest,
+  trackerSnapshotResponse,
+  trackerWriteRequest,
+  trackerWriteResponse,
+} from './tracker-records';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -160,6 +166,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   accountPinResponse,
   accountPinResolveRequest,
   accountPinResolveResponse,
+  trackerSnapshotRequest,
+  trackerSnapshotResponse,
+  trackerWriteRequest,
+  trackerWriteResponse,
   ping,
   pong,
 ]);

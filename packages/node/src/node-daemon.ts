@@ -89,6 +89,12 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type TrackerSnapshotRequest,
+  type TrackerSnapshotRequestPayloadV1,
+  type TrackerSnapshotResponsePayloadV1,
+  type TrackerWriteRequest,
+  type TrackerWriteRequestPayloadV1,
+  type TrackerWriteResponsePayloadV1,
   type WireMessageV1,
   type WrappedAmkEnvelope,
 } from '@loombox/protocol';
@@ -111,6 +117,7 @@ import { JiraConnectService } from './jira-connect';
 
 import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
+import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { PermissionPolicyStore } from './permission-policy-store';
 import { PolicyEnforcedExecutionTarget } from './policy-enforced-execution-target';
@@ -397,6 +404,18 @@ export interface NodeDaemonOptions {
    * fresh `TestRunnerConfigStore({ stateDir })`.
    */
   testRunnerConfigStore?: TestRunnerConfigStore;
+  /**
+   * This node's native tracker store (SPEC §7.10; issue #212, on top of
+   * #210's `NativeTrackerStore`): backs `tracker_snapshot_request`/
+   * `tracker_write_request` — the kanban/list UI's own read/write path,
+   * scoped through a session's bound `projectPath` exactly like
+   * `getExecutionTarget`'s `permissionPolicyStore` lookup above. The same
+   * store #211's (not-yet-hosted, #627) MCP tools bind to, so a human's
+   * UI edit and an agent's `tracker_update` tool call land in the same
+   * on-disk file. Injectable for tests; defaults to a fresh
+   * `NativeTrackerStore({ stateDir })`.
+   */
+  nativeTrackerStore?: NativeTrackerStore;
   /**
    * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
    * redesign v2 §3.2; issue #475) when this node handles an
@@ -866,6 +885,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly permissionPolicyStore: PermissionPolicyStore;
   /** SPEC §7.15; issue #245 — see `NodeDaemonOptions.testRunnerConfigStore`'s doc comment. */
   private readonly testRunnerConfigStore: TestRunnerConfigStore;
+  /** SPEC §7.10; issue #212 — see `NodeDaemonOptions.nativeTrackerStore`'s doc comment. */
+  private readonly nativeTrackerStore: NativeTrackerStore;
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
@@ -1000,6 +1021,8 @@ export class NodeDaemon extends EventEmitter {
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
       options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
+    this.nativeTrackerStore =
+      options.nativeTrackerStore ?? new NativeTrackerStore({ stateDir: options.stateDir });
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
     this.sshTargetStore =
@@ -2265,6 +2288,12 @@ export class NodeDaemon extends EventEmitter {
       case 'fs_list_request':
         this.handleFsListRequest(message);
         return;
+      case 'tracker_snapshot_request':
+        this.handleTrackerSnapshotRequest(message);
+        return;
+      case 'tracker_write_request':
+        this.handleTrackerWriteRequest(message);
+        return;
       case 'target_fs_list_request':
         this.handleTargetFsListRequest(message);
         return;
@@ -2759,6 +2788,184 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for its session's tracker
+   * snapshot (SPEC §7.10; issue #212) — the kanban/list UI's initial load
+   * and its Retry action both funnel through this same handler. Mirrors
+   * `handleFsListRequest` exactly: ignored if `sessionId` isn't one of
+   * this node's own bridges, a decrypt failure is logged and dropped
+   * (there is no path to reply about), and everything past that — an
+   * unreadable/corrupt store — becomes an `outcome: 'error'` response
+   * instead of a silent drop, per `@loombox/protocol`'s
+   * `trackerSnapshotResponsePayloadV1` doc comment.
+   */
+  private handleTrackerSnapshotRequest(message: TrackerSnapshotRequest): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTrackerSnapshotRequest(message)
+      .then((payload) => this.readTrackerSnapshotForBridge(bridge, payload))
+      .then((responsePayload) =>
+        this.sendTrackerSnapshotResponse(bridge.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle tracker_snapshot_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTrackerSnapshotRequest(
+    message: TrackerSnapshotRequest,
+  ): Promise<TrackerSnapshotRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TrackerSnapshotRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Reads `bridge`'s bound project's active records (or, with
+   * `includeArchived`, every record) plus its full type set — never
+   * throws: a corrupt on-disk store becomes an `outcome: 'error'` payload
+   * rather than an unhandled rejection, so {@link handleTrackerSnapshotRequest}
+   * always has a response to seal and send back.
+   */
+  private async readTrackerSnapshotForBridge(
+    bridge: SessionBridge,
+    payload: TrackerSnapshotRequestPayloadV1,
+  ): Promise<TrackerSnapshotResponsePayloadV1> {
+    try {
+      const projectPath = bridge.session.projectPath;
+      const records = this.nativeTrackerStore.list(projectPath, {
+        includeArchived: payload.includeArchived,
+      });
+      const types = this.nativeTrackerStore.listTypes(projectPath);
+      return { outcome: 'ok', records, types };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendTrackerSnapshotResponse(
+    sessionId: string,
+    requestId: string,
+    payload: TrackerSnapshotResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'tracker_snapshot_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to create/update a native
+   * tracker record, or define a custom type, against its session's bound
+   * project (SPEC §7.10; issue #212) — the kanban board's drag-to-move,
+   * the create/edit dialogs, and the custom-type dialog all funnel
+   * through this one handler. Mirrors `handleTrackerSnapshotRequest`'s
+   * guard/decrypt/reply shape exactly.
+   */
+  private handleTrackerWriteRequest(message: TrackerWriteRequest): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTrackerWriteRequest(message)
+      .then((payload) => this.applyTrackerWriteForBridge(bridge, payload))
+      .then((responsePayload) =>
+        this.sendTrackerWriteResponse(bridge.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle tracker_write_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTrackerWriteRequest(
+    message: TrackerWriteRequest,
+  ): Promise<TrackerWriteRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TrackerWriteRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Applies one create/update/defineType op against `bridge`'s bound
+   * project. `authorId` on a `create` is always this node's own bound
+   * `accountId` — never taken from the client payload (there is no such
+   * field on the wire schema), the human-UI counterpart of
+   * `tracker_create`'s MCP-tool "stamped from context, never from tool
+   * input" contract. Never throws: an unknown type or a missing record id
+   * (`NativeTrackerStoreError`) becomes an `outcome: 'error'` payload
+   * rather than an unhandled rejection, so {@link handleTrackerWriteRequest}
+   * always has a response to seal and send back.
+   */
+  private async applyTrackerWriteForBridge(
+    bridge: SessionBridge,
+    payload: TrackerWriteRequestPayloadV1,
+  ): Promise<TrackerWriteResponsePayloadV1> {
+    const projectPath = bridge.session.projectPath;
+    try {
+      switch (payload.op) {
+        case 'create': {
+          const record = this.nativeTrackerStore.create(projectPath, {
+            primaryType: payload.primaryType,
+            typeTags: payload.typeTags,
+            fields: payload.fields,
+            authorId: this.accountId,
+          });
+          return { outcome: 'ok', record };
+        }
+        case 'update': {
+          const record = this.nativeTrackerStore.update(projectPath, payload.id, {
+            primaryType: payload.primaryType,
+            typeTags: payload.typeTags,
+            fields: payload.fields,
+            archived: payload.archived,
+          });
+          return { outcome: 'ok', record };
+        }
+        case 'defineType': {
+          const typeDefinition = this.nativeTrackerStore.defineType(projectPath, {
+            id: payload.id,
+            label: payload.label,
+            builtin: false,
+            roles: payload.roles,
+          });
+          return { outcome: 'ok', typeDefinition };
+        }
+      }
+    } catch (error) {
+      const detail =
+        error instanceof NativeTrackerStoreError || error instanceof Error
+          ? error.message
+          : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendTrackerWriteResponse(
+    sessionId: string,
+    requestId: string,
+    payload: TrackerWriteResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
