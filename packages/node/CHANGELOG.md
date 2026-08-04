@@ -1,5 +1,50 @@
 # @loombox/node
 
+## 0.5.0
+
+### Minor Changes
+
+- 51ef3ac: Add the tracker backend composition layer (SPEC §7.10, §7.26, issue #631)
+
+  `@loombox/node` gets `resolveTrackerBackend` (`tracker-backend-composition.ts`), the one entry point that turns a project's `TrackerMode` into a working `GithubTrackerBackend`/`JiraTrackerBackend` or a typed `TrackerBackendResolutionError`, closing the gap that left #213/#214/#220 unreachable from the UI: it looks `mode.connectionId` up in the connected-account registry, applies issue #227's per-capability account pin (`resolveAccountForRead`/`resolveAccountForWrite`, every hard-fail case mapped to its own error kind), requires the pin's answer to agree with `mode.connectionId` exactly (`connectionPinMismatch` — the mechanism that keeps one project's mode from ever resolving against a different project's pinned account), and only then resolves the credential through this node's keyring (`GithubConnectService.getAccessToken`/`JiraConnectService.getCredential`) — never any other source, and re-asked on every backend call so a revoked/rotated credential takes effect on the next request. A `{kind:'native'}` mode always resolves to `{ok:false, error:{kind:'nativeMode'}}`; composing a native-mode backend is not this module's job.
+
+  `jira-connect.ts`'s and `jira-tracker-backend.ts`'s independently-declared, structurally-identical `JiraCredential` interfaces are deliberately left unconverged — TypeScript already accepts one everywhere the other is expected, and introducing a shared third declaration would force both files to import it, reopening the "a tracker backend never imports a connect module" boundary their own tests guard, to save two five-line interfaces that already cost nothing at the call site.
+
+  Server-side only: this lives in `@loombox/node`, not in `apps/web`'s dependency graph. The bridge dispatch (`readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge`) and the Tracker page's error-state rendering are follow-up work against this module's exported `resolveTrackerBackend`/`TrackerBackendResolutionError`.
+
+- a1038bf: Dispatch the tracker bridge on a project's mode, closing #631's own last gap (SPEC §7.10, §7.26)
+
+  The node now carries a connected-account registry of its own (`connected_account_list_request`, requested on every fresh relay connection alongside `amk_epoch_fetch_request`, mirroring how a client already does this on `attemptOpen()`), and the relay answers it for a node connection exactly like it already does for a client one — the "one open question" #631's plan left open, confirmed and closed.
+
+  `NodeDaemon.readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge` — previously the last unwired piece of #214/#215/#220, both merged and unreachable — now dispatch through one shared `resolveTrackerDispatch(projectPath, intent)` seam: `{kind:'native'}` behaves exactly as before (proven by the existing native tracker test suite passing untouched), `{kind:'live'}` resolves through `resolveTrackerBackend` and reaches the real `GithubTrackerBackend`/`JiraTrackerBackend`, and an unresolvable mode returns a typed error rather than ever falling back to the local native store. Reading and writing thread `intent:'read'`/`intent:'write'` through that one shared resolver — the only place the two bridge paths are allowed to differ — so they cannot resolve a project to two different tracker accounts.
+
+  `tracker-live-bridge.ts` (new) maps a live `TrackerItemLive` into the native tracker's own `TrackerRecordV1`/`TrackerTypeDefinitionV1` wire shape (only `title`/`workflowStatus` roles are mapped — the two the board actually needs to render and categorize), so the kanban/list views and issue #651's workflow-category grouping need no live-specific rendering path at all.
+
+  `trackerSnapshotErrorV1`/`trackerWriteErrorV1` gain an optional structured `reason: TrackerBackendResolutionErrorV1` (a wire mirror of `resolveTrackerBackend`'s own 10-member error union) alongside the existing plain `message` — checked against the existing shapes first per #631's own instruction, and widened only because a bare string cannot let a client switch on `kind`. The Tracker page's `.tracker-live-gap-note` (added by #672 to name this exact gap) is gone, replaced by a real connectivity-error state: `ErrorNotice` plus a reason-specific `Badge` (mirroring `AccountPinPicker.svelte`'s identical per-kind-badge convention).
+
+  **Proven live now, end to end through a real relay with a stubbed GitHub API:** live-mode read (`list`) and write (`update`), read/write resolving to the identical account, and the `accountNotConnected`/`credentialUnavailable` error cases — including a read against a project with a real, on-disk native record, proving the failure never falls back to it. **Still fixture-only:** Jira live coverage beyond `resolveTrackerBackend`'s own suite, `create`/`transition`/board-drag write-back (Jira transition discovery and GitHub's state-field translation are slice-2 work, not this issue's scope), and pagination past a live snapshot's first page (the bridge's wire schema carries no cursor).
+
+- cce97a8: Move a project's tracker mode from browser `localStorage` to the node (SPEC §7.10, issue #631)
+
+  `TrackerMode` used to be persisted only in the browser's `localStorage`, so a project switched to `live` GitHub or Jira tracking saved that choice per BROWSER, not per project, and the node had no way to see it at all — `NodeDaemon.readTrackerSnapshotForBridge` read the local native tracker store unconditionally because it was the only thing the node had, so a switched project silently kept showing local records.
+
+  `@loombox/node` gets `TrackerModeStore` (`tracker-mode-store.ts`), the exact sibling of `AccountPinStore`: one JSON file under `stateDir`, keyed by a project's absolute `projectPath`, re-validated on every read through `@loombox/protocol`'s `safeParseTrackerMode` — an on-disk value that no longer validates reads back as absent, never repaired into a guessed `{kind:'native'}`. `NodeDaemon` gains `tracker_mode_get_request`/`tracker_mode_set_request` handlers replying with `tracker_mode_response`, mirroring the account-pin request/reply convention exactly, plus a synchronous `this.trackerModeStore.get(projectPath)` read for other daemon code (the bridge dispatch consumes this next).
+
+  `@loombox/relay` gets `tracker_mode_get/set_request`/`tracker_mode_response` added to its existing client↔node routing switch (reusing the account-pin request table) — the protocol schemas alone don't make a message reach anywhere without this.
+
+  `apps/web`'s `tracker-mode-store.ts` gets `createRelayTrackerModeStorage`, now what `TrackerPage.svelte` actually constructs: relay-backed, with a real three-state `Readable<TrackerModeState>` (`'loading'`/`'loaded'`/`'error'`) so a saved mode can never flash the "choose a mode" setup step while its own node round trip is still in flight — collapsing "I don't know yet" into "never chosen" would reintroduce the exact guess issue #209 exists to prevent, one layer up. `TrackerConfigPanel.svelte`'s existing synchronous `TrackerModeStorage` (`get`/`set`) contract is unchanged and untouched.
+
+  **Migration, one-shot, node always wins**: on first load, a mode already saved in `localStorage` from before this change is pushed to the node (`tracker_mode_set_request`) and the local key is cleared — but only if the node had nothing saved; a mode the node already has always wins outright, and a failed push leaves the local key alone so a later retry can still migrate it. A project with no mode saved anywhere still reaches the exact same "choose native or live" setup step as before, once loading settles — the choice now lives on the node and is visible from any device.
+
+  The bridge dispatch (`readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge` actually consulting this mode, via `@loombox/node`'s `resolveTrackerBackend`) and the Tracker page's richer connectivity-error rendering are follow-up work on top of this transport.
+
+### Patch Changes
+
+- Updated dependencies [a1038bf]
+  - @loombox/protocol@0.5.0
+  - @loombox/crypto@0.0.5
+  - @loombox/shared@0.2.2
+
 ## 0.4.0
 
 ### Minor Changes
