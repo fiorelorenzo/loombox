@@ -184,6 +184,11 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
+    getTestRunnerConfig: vi.fn().mockResolvedValue({}),
+    runsFor: () => makeStore(new Map()),
+    startRun: vi.fn(() => 'run-fake'),
+    cancelRun: vi.fn(),
+    onRunOutput: vi.fn(() => () => {}),
   };
 }
 
@@ -377,7 +382,7 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.queryByTestId('right-sidebar')).toBeNull();
   });
 
-  it('the right sidebar offers Files/Config as sub-tabs now that Terminal has its own dock and Inbox/Nodes/Settings are pages (issue #571)', async () => {
+  it('the right sidebar offers Files/Config/Runner as sub-tabs now that Terminal has its own dock and Inbox/Nodes/Settings are pages (issue #571; #244)', async () => {
     mountCockpit({ sessions: [makeSession()] });
     // Open by default (design spec §3.3): a session is selected and this
     // suite's `stubMatchMedia(false)` reads as the wide viewport.
@@ -385,29 +390,38 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
 
     // One topbar toggle for the sidebar itself now, not a three-button
     // switch (2026-08-03: two controls for one choice was the defect) —
-    // the Files/Config choice moved onto sub-tabs inside the panel's own
-    // header instead.
+    // the Files/Config/Runner choice moved onto sub-tabs inside the
+    // panel's own header instead.
     const toggle = screen.getByTestId('workbench-toggle');
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('file-tree-toggle')).toBeTruthy();
     expect(screen.getByTestId('project-config-toggle')).toBeTruthy();
+    expect(screen.getByTestId('test-runner-toggle')).toBeTruthy();
     expect(screen.queryByTestId('terminal-toggle')).toBeNull();
     expect(screen.queryByTestId('inbox-toggle')).toBeNull();
     expect(screen.queryByTestId('targets-toggle')).toBeNull();
     expect(screen.queryByTestId('settings-toggle')).toBeNull();
 
     // The sub-tabs are a real `radiogroup`, not a second `aria-pressed`
-    // toggle group: exactly one of Files/Config is always selected.
+    // toggle group: exactly one of Files/Config/Runner is always selected.
     expect(screen.getByRole('radiogroup', { name: 'Workbench panel' })).toBeTruthy();
     expect(screen.getByTestId('file-tree-toggle').getAttribute('aria-checked')).toBe('true');
     expect(screen.getByTestId('file-tree-panel-wrapper')).toBeTruthy();
 
     // Switching tabs keeps the sidebar open and does not remount the other
-    // panel — both stay in the DOM, the inactive one is merely `hidden`.
+    // panels — all three stay in the DOM, the inactive ones are merely
+    // `hidden` (issue #244's runner surface must not lose a streaming run
+    // just because the user glanced at Files).
     await fireEvent.click(screen.getByTestId('project-config-toggle'));
     expect(screen.getByTestId('project-config-toggle').getAttribute('aria-checked')).toBe('true');
     expect(screen.getByTestId('right-sidebar')).toBeTruthy();
     expect(screen.getByTestId('file-tree-panel-wrapper').hidden).toBe(true);
+
+    await fireEvent.click(screen.getByTestId('test-runner-toggle'));
+    expect(screen.getByTestId('test-runner-toggle').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('test-runner-panel-wrapper')).toBeTruthy();
+    expect(screen.getByTestId('test-runner-panel-wrapper').hidden).toBe(false);
+    expect(screen.getByTestId('project-config-panel-wrapper').hidden).toBe(true);
 
     // The topbar toggle closes the whole panel, independent of which tab is active.
     await fireEvent.click(toggle);

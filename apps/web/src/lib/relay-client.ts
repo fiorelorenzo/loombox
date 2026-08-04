@@ -82,6 +82,14 @@ import {
   type TargetList,
   type TargetListEntry,
   type TargetUpdateResponse,
+  type RunExit,
+  type RunExitOutcomeV1,
+  type RunExitPayloadV1,
+  type RunOutput as RunOutputMessage,
+  type RunOutputPayloadV1,
+  type RunStarted,
+  type RunStartedResultPayloadV1,
+  type RunStartPayloadV1,
   type TerminalClosed,
   type TerminalClosedPayloadV1,
   type TerminalDataPayloadV1,
@@ -102,6 +110,7 @@ import {
   type TrackerWriteRequestPayloadV1,
   type TrackerWriteResponse,
   type TrackerWriteResponsePayloadV1,
+  type TestRunnerKindV1,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -352,6 +361,26 @@ export interface TerminalClientState {
   error?: string;
   /** Set when `status` is `'closed'` — why (SPEC §7.5's client-close vs. the shell exiting on its own). */
   closedReason?: string;
+}
+
+/**
+ * One in-flight (or exited/errored) test/lint/build run's lifecycle state
+ * (SPEC §7.15; issue #244), keyed by `runId` in {@link RelayClient.runsFor}'s
+ * returned `Map` — the run counterpart of {@link TerminalClientState}.
+ * Deliberately does NOT carry the run's own output (a live, potentially
+ * unbounded stream); see {@link RelayClient.onRunOutput} for that.
+ */
+export interface RunClientState {
+  runId: string;
+  kind: TestRunnerKindV1;
+  status: 'starting' | 'running' | 'exited' | 'error';
+  /** Set when `status` is `'error'` (the node's `run_started` came back with an error outcome — e.g. nothing configured for this kind — or this client's own encrypt/send failed). */
+  error?: string;
+  /** Set when `status` is `'exited'` — the run's terminal state (`@loombox/protocol`'s `RunExitPayloadV1`). */
+  outcome?: RunExitOutcomeV1;
+  exitCode?: number | null;
+  reason?: string;
+  cancelled?: boolean;
 }
 
 /**
@@ -1013,6 +1042,12 @@ export class RelayClient {
   >();
   /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalOutput}, fired with each decrypted `terminal_output` chunk as it arrives (never buffered here — see {@link TerminalClientState}'s doc comment for why). */
   private readonly terminalOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
+  /** Backs {@link runsFor} (SPEC §7.15; issue #244) — one reactive `Map<runId, RunClientState>` per session, mirroring {@link terminals}. */
+  private readonly runs = new Map<string, Writable<Map<string, RunClientState>>>();
+  /** requestId -> the session/run an in-flight `run_start` this client itself sent is about — the run counterpart of {@link pendingTerminalOpens}. */
+  private readonly pendingRunStarts = new Map<string, { sessionId: string; runId: string }>();
+  /** `${sessionId}:${runId}` -> every listener registered via {@link onRunOutput}, fired with each decrypted `run_output` chunk as it arrives (never buffered here — see {@link RunClientState}'s doc comment for why). */
+  private readonly runOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
   /** requestId -> the pending {@link listTargets} call it belongs to (issue #383). `target_list` carries routing metadata only (no `privateEnvelope`), so unlike `pendingFsListRequests`/`pendingTerminalOpens` this resolves a `Promise` directly rather than feeding a reactive store — one caller, one answer, no decrypt step needed. */
   private readonly pendingTargetListRequests = new Map<
     string,
@@ -2872,6 +2907,78 @@ export class RelayClient {
   }
 
   /**
+   * Every in-flight (or exited/errored) test/lint/build run for one session
+   * (SPEC §7.15; issue #244), reactive — mirrors {@link terminalsFor}. Never
+   * auto-starts anything: a run only starts existing once {@link startRun}
+   * is called for it.
+   */
+  runsFor(sessionId: string): Readable<Map<string, RunClientState>> {
+    return this.runStoreFor(sessionId);
+  }
+
+  /**
+   * Runs `sessionId`'s project's configured `kind` command on its target and
+   * streams the result (SPEC §7.15; issue #244). Returns the generated
+   * `runId` synchronously (mirrors {@link openTerminal}) so a caller can
+   * start listening via {@link onRunOutput} before the round trip to the
+   * node completes; `runsFor`'s state for it starts at `'starting'` and
+   * flips to `'running'`/`'error'` once the node's `run_started` reply (or a
+   * local encrypt/send failure) resolves, then to `'exited'` once its
+   * `run_exit` arrives. Calling this again (even for the same `kind`) starts
+   * an ADDITIONAL run with its own id.
+   */
+  startRun(sessionId: string, kind: TestRunnerKindV1): string {
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    const runId = generateId('run');
+    if (!targetId) {
+      this.setRunState(sessionId, runId, {
+        runId,
+        kind,
+        status: 'error',
+        error: `RelayClient: unknown session ${sessionId}`,
+      });
+      return runId;
+    }
+
+    this.setRunState(sessionId, runId, { runId, kind, status: 'starting' });
+    this.ensureSubscribed(sessionId);
+
+    const requestId = generateId('runreq');
+    this.pendingRunStarts.set(requestId, { sessionId, runId });
+    this.sendRunStart(sessionId, targetId, runId, requestId, kind).catch((error: unknown) => {
+      this.pendingRunStarts.delete(requestId);
+      this.setRunState(sessionId, runId, {
+        runId,
+        kind,
+        status: 'error',
+        error: errorMessage(error),
+      });
+    });
+    return runId;
+  }
+
+  /** Asks the owning node to cancel `runId` (SPEC §7.15). No envelope: cancelling carries no content, mirroring `@loombox/protocol`'s `runCancel` schema. Fire-and-forget — the run's own `run_exit` (with `cancelled: true`) is what actually confirms it stopped. */
+  cancelRun(sessionId: string, runId: string): void {
+    this.send({ type: 'run_cancel', protocolVersion: PROTOCOL_V1, sessionId, runId });
+  }
+
+  /**
+   * Registers `listener` to be called with each decrypted output chunk this
+   * run receives (SPEC §7.15) — mirrors {@link onTerminalOutput}. Returns an
+   * unsubscribe function; call it once the caller stops rendering this run.
+   */
+  onRunOutput(sessionId: string, runId: string, listener: (chunk: Uint8Array) => void): () => void {
+    const key = `${sessionId}:${runId}`;
+    let listeners = this.runOutputListeners.get(key);
+    if (!listeners) {
+      listeners = new Set();
+      this.runOutputListeners.set(key, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  /**
    * The composer's pending attachment list for one session (SPEC §7.25;
    * issues #151/#153/#155) — every image currently attached, uploading,
    * uploaded, failed, or rejected, in attach order. Starts empty; populated
@@ -3521,6 +3628,15 @@ export class RelayClient {
       case 'terminal_closed':
         this.handleTerminalClosed(message);
         return;
+      case 'run_started':
+        this.handleRunStarted(message);
+        return;
+      case 'run_output':
+        this.handleRunOutput(message);
+        return;
+      case 'run_exit':
+        this.handleRunExit(message);
+        return;
       case 'test_runner_config_result':
         this.handleTestRunnerConfigResult(message);
         return;
@@ -4166,6 +4282,126 @@ export class RelayClient {
     this.terminalStoreFor(sessionId).update((map) => {
       const next = new Map(map);
       next.set(terminalId, state);
+      return next;
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link startRun} calls (SPEC §7.15; issue #244) — mirrors `handleTerminalOpened`. */
+  private handleRunStarted(message: RunStarted): void {
+    const pending = this.pendingRunStarts.get(message.requestId);
+    if (!pending) return;
+    this.pendingRunStarts.delete(message.requestId);
+
+    const current = this.runStoreFor(message.sessionId);
+    const kind = get(current).get(message.runId)?.kind;
+    if (!kind) return; // the local starting state was already overwritten/removed somehow
+
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<RunStartedResultPayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        if (payload.outcome === 'ok') {
+          this.setRunState(message.sessionId, message.runId, {
+            runId: message.runId,
+            kind,
+            status: 'running',
+          });
+        } else {
+          this.setRunState(message.sessionId, message.runId, {
+            runId: message.runId,
+            kind,
+            status: 'error',
+            error: payload.message,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        this.setRunState(pending.sessionId, pending.runId, {
+          runId: pending.runId,
+          kind,
+          status: 'error',
+          error: errorMessage(error),
+        });
+      });
+  }
+
+  /** One chunk of a run's output (SPEC §7.15) — decrypted and fanned out to every listener {@link onRunOutput} registered for this exact `sessionId`/`runId`, never buffered by this class itself (see `RunClientState`'s doc comment). */
+  private handleRunOutput(message: RunOutputMessage): void {
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<RunOutputPayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        const listeners = this.runOutputListeners.get(`${message.sessionId}:${message.runId}`);
+        if (!listeners) return;
+        const bytes = base64ToBytes(payload.data);
+        for (const listener of listeners) listener(bytes);
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt run_output for session ${message.sessionId} run ${message.runId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** A run reached its terminal state (SPEC §7.15) — mirrors `handleTerminalClosed`. */
+  private handleRunExit(message: RunExit): void {
+    const current = this.runStoreFor(message.sessionId);
+    const kind = get(current).get(message.runId)?.kind;
+    if (!kind) return;
+
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<RunExitPayloadV1>(message.sessionId, message.envelope, key))
+      .then((payload) => {
+        this.setRunState(message.sessionId, message.runId, {
+          runId: message.runId,
+          kind,
+          status: 'exited',
+          outcome: payload.outcome,
+          exitCode: payload.exitCode,
+          reason: payload.reason,
+          cancelled: payload.cancelled,
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt run_exit for session ${message.sessionId} run ${message.runId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** Seals `{ kind }` and sends the `run_start` (SPEC §7.15; issue #244). */
+  private async sendRunStart(
+    sessionId: string,
+    targetId: string,
+    runId: string,
+    requestId: string,
+    kind: TestRunnerKindV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: RunStartPayloadV1 = { kind };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.send({
+      type: 'run_start',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId,
+      runId,
+      requestId,
+      envelope,
+    });
+  }
+
+  private runStoreFor(sessionId: string): Writable<Map<string, RunClientState>> {
+    let store = this.runs.get(sessionId);
+    if (!store) {
+      store = writable<Map<string, RunClientState>>(new Map());
+      this.runs.set(sessionId, store);
+    }
+    return store;
+  }
+
+  private setRunState(sessionId: string, runId: string, state: RunClientState): void {
+    this.runStoreFor(sessionId).update((map) => {
+      const next = new Map(map);
+      next.set(runId, state);
       return next;
     });
   }

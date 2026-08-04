@@ -490,6 +490,45 @@ export {
   UNRESOLVED_WORKFLOW_STATUS,
 } from './tracker-records';
 
+export type {
+  RunCancel,
+  RunExit,
+  RunExitOutcomeV1,
+  RunExitPayloadV1,
+  RunOutput,
+  RunOutputPayloadV1,
+  RunStart,
+  RunStarted,
+  RunStartedErrorV1,
+  RunStartedOkV1,
+  RunStartedResultPayloadV1,
+  RunStartPayloadV1,
+  TestRunnerKindV1,
+} from './test-runner';
+export {
+  parseRunExitPayloadV1,
+  parseRunOutputPayloadV1,
+  parseRunStartedResultPayloadV1,
+  parseRunStartPayloadV1,
+  runCancel,
+  runExit,
+  runExitOutcomeV1,
+  runExitPayloadV1,
+  runOutput,
+  runOutputPayloadV1,
+  runStart,
+  runStarted,
+  runStartedErrorV1,
+  runStartedOkV1,
+  runStartedResultPayloadV1,
+  runStartPayloadV1,
+  safeParseRunExitPayloadV1,
+  safeParseRunOutputPayloadV1,
+  safeParseRunStartedResultPayloadV1,
+  safeParseRunStartPayloadV1,
+  testRunnerKindV1,
+} from './test-runner';
+
 import { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 import { baseMessageV1, initialize, initializeResult, wireRole } from './handshake';
 import {
@@ -683,6 +722,19 @@ import {
   trackerWriteResponsePayloadV1,
   trackerWriteResultV1,
 } from './tracker-records';
+import {
+  runCancel,
+  runExit,
+  runExitOutcomeV1,
+  runExitPayloadV1,
+  runOutput,
+  runOutputPayloadV1,
+  runStart,
+  runStarted,
+  runStartedResultPayloadV1,
+  runStartPayloadV1,
+  testRunnerKindV1,
+} from './test-runner';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -853,4 +905,15 @@ export const schemasV1 = {
   trackerWriteResponsePayloadV1,
   trackerWriteRequest,
   trackerWriteResponse,
+  testRunnerKindV1,
+  runStartPayloadV1,
+  runStartedResultPayloadV1,
+  runOutputPayloadV1,
+  runExitOutcomeV1,
+  runExitPayloadV1,
+  runStart,
+  runStarted,
+  runOutput,
+  runExit,
+  runCancel,
 } as const;

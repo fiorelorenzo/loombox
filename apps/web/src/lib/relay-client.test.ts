@@ -4683,6 +4683,212 @@ describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#
   });
 });
 
+describe('RelayClient: test/lint/build runner (SPEC §7.15; issue #244)', () => {
+  it('startRun sends an encrypted run_start, flips to running on run_started ok, streams decrypted output to onRunOutput listeners, and run_exit settles the run with its outcome/exitCode', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-run-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-run-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_run_1', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-run-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const runs = client.runsFor(session.id);
+    const runId = client.startRun(session.id, 'test');
+    expect(get(runs).get(runId)).toEqual({ runId, kind: 'test', status: 'starting' });
+
+    const startRequest = (await node.waitFor((m) => m.type === 'run_start')) as {
+      type: 'run_start';
+      sessionId: string;
+      targetId: string;
+      runId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(startRequest.sessionId).toBe(session.id);
+    expect(startRequest.targetId).toBe('local');
+    expect(startRequest.runId).toBe(runId);
+    expect(Object.keys(startRequest).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'runId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+    const startPayload = await nodeOpen<{ kind: string }>(session.id, startRequest.envelope, key);
+    expect(startPayload).toEqual({ kind: 'test' });
+
+    node.send({
+      type: 'run_started',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      runId,
+      requestId: startRequest.requestId,
+      envelope: await nodeSeal(session.id, { outcome: 'ok' }, key),
+    });
+    await waitForStore(runs, (value) => value.get(runId)?.status === 'running');
+
+    // Output: node -> client, decrypted and fanned out to onRunOutput.
+    const received: Uint8Array[] = [];
+    const unsubscribe = client.onRunOutput(session.id, runId, (chunk) => {
+      received.push(chunk);
+    });
+    const outputBytes = new TextEncoder().encode('PASS src/foo.test.ts');
+    node.send({
+      type: 'run_output',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      runId,
+      envelope: await nodeSeal(
+        session.id,
+        { data: Buffer.from(outputBytes).toString('base64') },
+        key,
+      ),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toHaveLength(1);
+    expect(new TextDecoder().decode(received[0])).toBe('PASS src/foo.test.ts');
+    unsubscribe();
+
+    // run_exit: node -> client, settles the run's reactive state.
+    node.send({
+      type: 'run_exit',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      runId,
+      envelope: await nodeSeal(session.id, { outcome: 'pass', exitCode: 0 }, key),
+    });
+    await waitForStore(runs, (value) => value.get(runId)?.status === 'exited');
+    expect(get(runs).get(runId)).toEqual({
+      runId,
+      kind: 'test',
+      status: 'exited',
+      outcome: 'pass',
+      exitCode: 0,
+      reason: undefined,
+      cancelled: undefined,
+    });
+  });
+
+  it('run_started outcome: error flips the run to status: error with the message, without ever spawning', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-run-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-run-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_run_2', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-run-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const runs = client.runsFor(session.id);
+    const runId = client.startRun(session.id, 'lint');
+    const startRequest = (await node.waitFor((m) => m.type === 'run_start')) as {
+      type: 'run_start';
+      requestId: string;
+    };
+
+    node.send({
+      type: 'run_started',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      runId,
+      requestId: startRequest.requestId,
+      envelope: await nodeSeal(
+        session.id,
+        { outcome: 'error', message: 'no lint command configured for this project' },
+        key,
+      ),
+    });
+    await waitForStore(runs, (value) => value.get(runId)?.status === 'error');
+    expect(get(runs).get(runId)?.error).toBe('no lint command configured for this project');
+  });
+
+  it('cancelRun sends a plain run_cancel — no envelope, since cancelling carries no content', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-run-3';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-run-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_run_3', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-run-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const runId = client.startRun(session.id, 'build');
+    await node.waitFor((m) => m.type === 'run_start');
+
+    client.cancelRun(session.id, runId);
+    const cancelMessage = (await node.waitFor((m) => m.type === 'run_cancel')) as {
+      type: 'run_cancel';
+      sessionId: string;
+      runId: string;
+    };
+    expect(cancelMessage.sessionId).toBe(session.id);
+    expect(cancelMessage.runId).toBe(runId);
+    expect(Object.keys(cancelMessage).sort()).toEqual(
+      ['protocolVersion', 'runId', 'sessionId', 'type'].sort(),
+    );
+  });
+
+  it('startRun called twice (even for the same kind) generates two independent runIds', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-run-4';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-run-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_run_4', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-run-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const runA = client.startRun(session.id, 'test');
+    const runB = client.startRun(session.id, 'test');
+    expect(runA).not.toBe(runB);
+
+    const runs = client.runsFor(session.id);
+    await waitForStore(runs, (value) => value.has(runA) && value.has(runB));
+  });
+});
+
 /**
  * Applies Better Auth's own schema to a hermetic sqlite database — the same
  * call `packages/relay/src/auth.ts`'s `migrateBetterAuth` makes
