@@ -17,6 +17,8 @@ import {
   type EcdhKeyPair,
 } from '@loombox/crypto';
 import {
+  acpPermissionRequestPayloadSchema,
+  acpTranscriptUpdateSchema,
   cancelAllPermissionRequests,
   createPermissionQueueState,
   createTranscriptState,
@@ -39,6 +41,7 @@ import {
   PROTOCOL_V1,
   initializeResult,
   newDeviceBootstrapResponse,
+  safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
@@ -215,6 +218,44 @@ interface CachedAttachment {
 interface PermissionRequestPayload {
   toolCall: AcpToolCallUpdate;
   options: AcpPermissionOption[];
+}
+
+/**
+ * Parses and validates a decrypted `session_update` payload against
+ * `AcpSessionWireEvent`'s two disjoint halves. `AcpTranscriptUpdate` (the
+ * ACP-native `agent_message_chunk`/`tool_call`/`plan_update`/`usage_update`
+ * kinds, tried first as the more common case on the wire) is
+ * `@loombox/providers-core`'s surface to validate; `AcpSessionLifecycleEvent`
+ * (`session_status`/`config_options`/`config_option_update`/`turn_started`/
+ * `turn_ended`, loombox's own invention layered on top of ACP) is
+ * `@loombox/protocol`'s own "one validated source of truth" for those five
+ * kinds (`session-events.ts`'s doc comment) — this module is the one place
+ * that already depends on both packages, so it is where the two halves are
+ * tried and combined into one `AcpSessionWireEvent`. A payload matching
+ * neither throws, with both halves' rejection reasons, and is dropped
+ * before ever reaching {@link RelayClient.applyUpdate}'s reducer (issue
+ * #593 — closes the hole `openJson<AcpSessionWireEvent>`'s bare cast left
+ * open, the root cause behind #548's `id: undefined` symptom).
+ */
+function parseSessionWireEvent(raw: unknown): AcpSessionWireEvent {
+  const transcriptUpdate = acpTranscriptUpdateSchema.safeParse(raw);
+  if (transcriptUpdate.success) return transcriptUpdate.data;
+
+  const lifecycleEvent = safeParseSessionLifecycleEventV1(raw);
+  if (lifecycleEvent.success) {
+    // `session_status.status` is `SessionStatusV1` on the protocol side
+    // (its own wider 7-value enum, including 'queued'/'starting' — issues
+    // #252/#516) while `AcpSessionStatus` here is still the narrower
+    // five-value union; the reducer's `case 'session_status'`
+    // (`transcript.ts`) already stores whichever string arrives
+    // unchecked either way, so this makes that existing tolerance
+    // explicit rather than leaving it an implicit `as T` cast.
+    return lifecycleEvent.data as AcpSessionWireEvent;
+  }
+
+  throw new Error(
+    `matches neither AcpTranscriptUpdate (${transcriptUpdate.error.message}) nor AcpSessionLifecycleEvent (${lifecycleEvent.error.message})`,
+  );
 }
 
 /** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
@@ -2862,7 +2903,8 @@ export class RelayClient {
 
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
     this.getSessionKey(message.sessionId)
-      .then((key) => openJson<AcpSessionWireEvent>(message.sessionId, message.envelope, key))
+      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+      .then((raw) => parseSessionWireEvent(raw))
       .then((event) => {
         this.applyUpdate(message.sessionId, event);
         this.discardStalePermissionForToolCall(message.sessionId, event);
@@ -2880,7 +2922,7 @@ export class RelayClient {
       })
       .catch((error: unknown) => {
         console.warn(
-          `RelayClient: failed to decrypt session_update for ${message.sessionId}: ${errorMessage(error)}`,
+          `RelayClient: failed to decrypt/validate session_update for ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
   }
@@ -2894,7 +2936,8 @@ export class RelayClient {
    */
   private handlePermissionRequest(message: PermissionRequest): void {
     this.getSessionKey(message.sessionId)
-      .then((key) => openJson<PermissionRequestPayload>(message.sessionId, message.envelope, key))
+      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+      .then((raw): PermissionRequestPayload => acpPermissionRequestPayloadSchema.parse(raw))
       .then((payload) => {
         const store = this.permissionQueueStoreFor(message.sessionId);
         store.update(
@@ -2909,7 +2952,7 @@ export class RelayClient {
       })
       .catch((error: unknown) => {
         console.warn(
-          `RelayClient: failed to decrypt permission_request for session ${message.sessionId}: ${errorMessage(error)}`,
+          `RelayClient: failed to decrypt/validate permission_request for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
   }

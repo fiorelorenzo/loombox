@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import type { webcrypto } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import {
   decryptEnvelope,
@@ -300,6 +300,34 @@ async function waitForNotificationCount(
       }
     });
   });
+}
+
+/**
+ * Spies on `console.warn`, resolving `settled` the instant a call's first
+ * argument contains `substring` — the deterministic, event-driven signal
+ * that a rejected `handleSessionUpdate`/`handlePermissionRequest` promise
+ * chain (issue #593's drop-and-log path) has settled, mirroring
+ * `waitForStore`'s "resolve off a real notification; `timeoutMs` is only a
+ * backstop against a genuine hang in the real WebSocket/crypto stack this
+ * suite drives" shape for a value that isn't a Svelte store. `restore()`
+ * must be called once done observing, same as any other `vi.spyOn`.
+ */
+function watchConsoleWarnFor(
+  substring: string,
+  timeoutMs = 10_000,
+): { settled: Promise<void>; restore: () => void } {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const timer = setTimeout(
+    () => reject(new Error(`watchConsoleWarnFor(${JSON.stringify(substring)}): timed out`)),
+    timeoutMs,
+  );
+  const spy = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+    if (String(message).includes(substring)) {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+  return { settled: promise, restore: () => spy.mockRestore() };
 }
 
 /** Polls `storage.list()` (a real, possibly-async read, unlike `waitForStore`'s synchronous `get()`) until `predicate` holds — used to wait for a fire-and-forget IndexedDB write to actually land before the next step depends on it. */
@@ -1506,27 +1534,28 @@ describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () 
     }
   });
 
-  it('a malformed tool_call_update with no id never discards an unrelated pending permission request (issue #548)', async () => {
-    // `session_update`'s envelope is opaque to the relay and opened with
-    // `openJson<AcpSessionWireEvent>` — no Zod pass validates it against
-    // `AcpToolCallUpdate`'s declared `id: string` — so a node/provider
-    // variant that omits `id` delivers `undefined` at runtime, exactly
-    // like the `permission_request` envelope this same test malforms the
-    // same way. Before the fix, `event.id === undefined` matched this
-    // queue's one pending request (whose own `toolCall.id` is `undefined`
-    // for the identical reason) and cancelled it even though nothing was
-    // ever resolved anywhere.
+  it("a permission_request payload with a missing toolCall.id is dropped and logged, never reaching the queue, and a well-formed one still flows through afterward (issue #593; supersedes #548's reducer-level guard for this case)", async () => {
+    // #548 added a reducer-level guard (`discardStalePermissionForToolCall`'s
+    // `event.id === undefined` check, still in `relay-client.ts` — kept as
+    // defense in depth) for a malformed `tool_call`/`tool_call_update`
+    // whose `id` never validated against its declared `string` type. #593
+    // closes the hole one layer earlier: `handlePermissionRequest` now
+    // parses the decrypted payload against a real Zod schema before it
+    // ever reaches the permission queue, so a payload missing `id`
+    // (`JSON.stringify` drops an `undefined`-valued key entirely, exactly
+    // what a real malformed wire payload looks like) is dropped and
+    // logged right here — the queue never sees it at all.
     const amk = generateAmk();
-    const accountId = 'acct-stale-no-id';
+    const accountId = 'acct-permission-no-id';
 
     node = new FakeNode(relay.url, {
-      deviceId: 'node-stale-no-id',
+      deviceId: 'node-permission-no-id',
       devicePublicKey: randomBase64(),
       authToken: accountId,
     });
     await node.ready;
 
-    const session = makeSessionMeta({ id: 'sess_stale_no_id', accountId });
+    const session = makeSessionMeta({ id: 'sess_permission_no_id', accountId });
     const key = await deriveNodeSessionKey(amk, accountId, session.id);
     const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
     node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
@@ -1535,17 +1564,20 @@ describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () 
       relayUrl: relay.url,
       amk,
       accountId,
-      deviceId: 'client-stale-no-id',
+      deviceId: 'client-permission-no-id',
     });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
     const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
     const queue = client.permissionQueueFor(session.id);
-    const staleNotice = client.staleNoticeFor(session.id);
     await waitForStoreChange(client.sessions, initialSessions);
 
+    const warned = watchConsoleWarnFor(
+      `RelayClient: failed to decrypt/validate permission_request for session ${session.id}`,
+    );
+
     const option = { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const };
-    const requestEnvelope = await nodeSeal(
+    const malformedEnvelope = await nodeSeal(
       session.id,
       {
         toolCall: { kind: 'tool_call', id: undefined, title: 'Mystery permission' },
@@ -1558,15 +1590,68 @@ describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () 
       protocolVersion: PROTOCOL_V1,
       sessionId: session.id,
       requestId: 'req-no-id',
-      envelope: requestEnvelope,
+      envelope: malformedEnvelope,
     });
-    await waitForStore(queue, (value) => value.byId.size > 0);
+    await warned.settled;
 
-    // Same-shaped as the `permission_request` above: `session_update`'s
-    // envelope is exactly as unvalidated on this path, so a real
-    // malformed `tool_call_update` can carry `id: undefined` here too —
-    // this is the event under test.
-    const malformedUpdateEnvelope = await nodeSeal(
+    expect(get(queue).byId.size).toBe(0);
+    warned.restore();
+
+    // The client keeps working after dropping the malformed one: a
+    // well-formed request right after it still reaches the queue.
+    const wellFormedEnvelope = await nodeSeal(
+      session.id,
+      { toolCall: { kind: 'tool_call', id: 'tc1', title: 'Edit foo.ts' }, options: [option] },
+      key,
+    );
+    node.send({
+      type: 'permission_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-well-formed',
+      envelope: wellFormedEnvelope,
+    });
+    const state = await waitForStore(queue, (value) => value.byId.size > 0);
+    expect(state.byId.get('req-well-formed')?.toolCall).toEqual({
+      kind: 'tool_call',
+      id: 'tc1',
+      title: 'Edit foo.ts',
+    });
+  });
+
+  it("a session_update payload with a missing tool_call_update id is dropped and logged, never reaching the transcript, and a well-formed one still flows through afterward (issue #593; supersedes #548's reducer-level guard for this case)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-update-no-id';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-session-update-no-id',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_session_update_no_id', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-session-update-no-id',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+    const transcript = client.transcriptFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const warned = watchConsoleWarnFor(
+      `RelayClient: failed to decrypt/validate session_update for ${session.id}`,
+    );
+
+    const malformedEnvelope = await nodeSeal(
       session.id,
       { kind: 'tool_call_update', id: undefined, status: 'completed' },
       key,
@@ -1576,22 +1661,30 @@ describe('RelayClient: stale approve/deny discard (SPEC §7.3; issue #131)', () 
       protocolVersion: PROTOCOL_V1,
       sessionId: session.id,
       seq: 1,
-      envelope: malformedUpdateEnvelope,
+      envelope: malformedEnvelope,
     });
+    await warned.settled;
 
-    // `applyUpdate` reduces this event into the transcript synchronously,
-    // immediately before `discardStalePermissionForToolCall` runs on the
-    // very same event (no `await` between them, `relay-client.ts`'s
-    // `handleSessionUpdate`) — waiting for the transcript to reflect it
-    // is therefore an exact, non-racy signal that the stale-discard check
-    // for THIS event has already run, with no arbitrary real-time wait.
+    expect(get(transcript).items).toEqual([]);
+    warned.restore();
+
+    // The client keeps working after dropping the malformed one: a
+    // well-formed update right after it still reaches the transcript.
+    const wellFormedEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'tool_call', id: 'tc1', status: 'completed' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: wellFormedEnvelope,
+    });
     await waitForStore(client.transcriptFor(session.id), (value) =>
       value.items.some((item) => item.type === 'tool_call' && item.status === 'completed'),
     );
-
-    expect(get(queue).byId.size).toBe(1);
-    expect(get(queue).byId.get('req-no-id')).toBeDefined();
-    expect(get(staleNotice)).toBeUndefined();
   });
 });
 

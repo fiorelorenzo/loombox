@@ -138,3 +138,14 @@ export type {
   PendingPermissionRequest,
   PermissionResolveResult,
 } from './permission-queue-state';
+
+// v1: Zod validation for the ACP-native half of `AcpSessionWireEvent` plus
+// the `permission_request` payload (SPEC.md §7.24; issue #593). Used by
+// `apps/web`'s `relay-client.ts` to parse (not cast) a decrypted
+// `session_update`/`permission_request` envelope before it reaches the
+// transcript reducer.
+export {
+  acpPermissionRequestPayloadSchema,
+  acpToolCallUpdateSchema,
+  acpTranscriptUpdateSchema,
+} from './acp-wire-schema';
