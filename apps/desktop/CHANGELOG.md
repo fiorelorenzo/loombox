@@ -1,5 +1,14 @@
 # @loombox/desktop
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [51ef3ac]
+- Updated dependencies [a1038bf]
+- Updated dependencies [cce97a8]
+  - @loombox/node@0.5.0
+
 ## 0.2.2
 
 ### Patch Changes
