@@ -295,3 +295,18 @@ export {
   GithubTrackerRateLimitError,
   GithubTrackerRequestError,
 } from './github-tracker-backend';
+
+// v2: the live Jira `TrackerBackend` — issues + comments only, slice 1
+// of SPEC §7.10's phased tracker delivery (issue #214). Credentials come
+// only from an injected `resolveCredential`, never this package's own
+// `./jira-connect.ts`/`./keyring.ts` — see the module's own top comment.
+export type {
+  JiraCredential,
+  JiraTrackerBackendOptions,
+  ResolveJiraCredential,
+} from './jira-tracker-backend';
+export {
+  JiraTrackerAccessError,
+  JiraTrackerBackend,
+  JiraTrackerRequestError,
+} from './jira-tracker-backend';
