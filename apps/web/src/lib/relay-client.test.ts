@@ -3249,6 +3249,183 @@ describe('RelayClient: browseDirectory (SPEC §7.25 directory picker; issue #474
   });
 });
 
+describe('RelayClient: test runner config (SPEC §7.15; issue #245)', () => {
+  it('getTestRunnerConfig resolves with the decrypted saved commands the owning node replies with, sealed under the session key', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-runnercfg-get';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-runnercfg-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_runnercfg_get', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-runnercfg-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const getPromise = client.getTestRunnerConfig(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'test_runner_config_get')) as {
+      type: 'test_runner_config_get';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    // No envelope: a plain "which session am I asking about" request carries no content.
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { commands: { test: 'pnpm test', lint: 'pnpm lint' } },
+      key,
+    );
+    node.send({
+      type: 'test_runner_config_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(getPromise).resolves.toEqual({ test: 'pnpm test', lint: 'pnpm lint' });
+  });
+
+  it('setTestRunnerConfig seals only the submitted commands and resolves with the merged result the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-runnercfg-set';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-runnercfg-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_runnercfg_set', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-runnercfg-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const setPromise = client.setTestRunnerConfig(session.id, { build: 'pnpm build' });
+
+    const request = (await node.waitFor((m) => m.type === 'test_runner_config_set')) as {
+      type: 'test_runner_config_set';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ commands: unknown }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ commands: { build: 'pnpm build' } });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { commands: { test: 'pnpm test', build: 'pnpm build' } },
+      key,
+    );
+    node.send({
+      type: 'test_runner_config_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(setPromise).resolves.toEqual({ test: 'pnpm test', build: 'pnpm build' });
+  });
+
+  it('detectTestRunnerConfig resolves with the suggestions from a test_runner_config_detected reply, never a test_runner_config_result', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-runnercfg-detect';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-runnercfg-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_runnercfg_detect', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-runnercfg-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const detectPromise = client.detectTestRunnerConfig(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'test_runner_config_detect')) as {
+      type: 'test_runner_config_detect';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { suggestions: { test: 'pnpm test' } },
+      key,
+    );
+    node.send({
+      type: 'test_runner_config_detected',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(detectPromise).resolves.toEqual({ test: 'pnpm test' });
+  });
+
+  it('rejects immediately when there is no open connection, for all three calls', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-runnercfg-no-conn',
+      deviceId: 'client-runnercfg-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.getTestRunnerConfig('sess_x')).rejects.toThrow(/no open connection/);
+    await expect(client.setTestRunnerConfig('sess_x', {})).rejects.toThrow(/no open connection/);
+    await expect(client.detectTestRunnerConfig('sess_x')).rejects.toThrow(/no open connection/);
+  });
+});
+
 describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate picker; issue #475)', () => {
   it("resolves with the acting node's discovered SSH candidates, plain fields only (no envelope)", async () => {
     const amk = generateAmk();

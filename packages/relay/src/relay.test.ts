@@ -54,6 +54,11 @@ import {
   type TerminalOpened,
   type TerminalOutput,
   type TerminalResize,
+  type TestRunnerConfigDetect,
+  type TestRunnerConfigDetected,
+  type TestRunnerConfigGet,
+  type TestRunnerConfigResult,
+  type TestRunnerConfigSet,
 } from '@loombox/protocol';
 
 import { startRelay } from './relay';
@@ -2357,6 +2362,137 @@ describe('relay v1', () => {
           ]).toContain(key);
         }
       }
+    });
+  });
+
+  describe('test_runner_config_get/_set/_detect and their replies (SPEC §7.15; issue #245) — routed and fanned out exactly like fs_list_request/fs_list_response, always blind', () => {
+    /** Boots a relay, a `node`-role connection that has already announced `sessionId`, and a `client`-role connection subscribed to it (`session_resume`) — same shared setup the terminal tests above use. */
+    async function bootstrapAnnouncedSession(
+      sessionId: string,
+    ): Promise<{ url: string; node: WebSocket; client: WebSocket }> {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: sessionId, accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId,
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      return { url, node, client };
+    }
+
+    it('routes a client test_runner_config_get to the owning node — no envelope, since asking carries no content', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_runnercfg_get');
+
+      const request: TestRunnerConfigGet = {
+        type: 'test_runner_config_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_runnercfg_get',
+        requestId: 'req_get_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TestRunnerConfigGet;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client test_runner_config_set to the owning node, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_runnercfg_set');
+
+      const request: TestRunnerConfigSet = {
+        type: 'test_runner_config_set',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_runnercfg_set',
+        requestId: 'req_set_1',
+        envelope: fakeEnvelope('pnpm test'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TestRunnerConfigSet;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client test_runner_config_detect to the owning node — no envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_runnercfg_detect');
+
+      const request: TestRunnerConfigDetect = {
+        type: 'test_runner_config_detect',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_runnercfg_detect',
+        requestId: 'req_detect_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TestRunnerConfigDetect;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans test_runner_config_result out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_runnercfg_result');
+
+      const response: TestRunnerConfigResult = {
+        type: 'test_runner_config_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_runnercfg_result',
+        requestId: 'req_get_1',
+        envelope: fakeEnvelope('{"commands":{"test":"pnpm test"}}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as TestRunnerConfigResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans test_runner_config_detected out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_runnercfg_detected');
+
+      const response: TestRunnerConfigDetected = {
+        type: 'test_runner_config_detected',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_runnercfg_detected',
+        requestId: 'req_detect_1',
+        envelope: fakeEnvelope('{"suggestions":{"test":"pnpm test"}}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as TestRunnerConfigDetected;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
     });
   });
 

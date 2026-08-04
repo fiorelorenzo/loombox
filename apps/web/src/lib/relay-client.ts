@@ -41,6 +41,8 @@ import {
   PROTOCOL_V1,
   initializeResult,
   newDeviceBootstrapResponse,
+  parseTestRunnerConfigDetectedPayloadV1,
+  parseTestRunnerConfigResultPayloadV1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
   type ConnectedAccount,
@@ -80,6 +82,10 @@ import {
   type TerminalOpenResultPayloadV1,
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
+  type TestRunnerCommandsV1,
+  type TestRunnerConfigDetected,
+  type TestRunnerConfigResult,
+  type TestRunnerConfigSetPayloadV1,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -957,6 +963,22 @@ export class RelayClient {
     }
   >();
   /**
+   * requestId -> the pending {@link getTestRunnerConfig}/{@link setTestRunnerConfig}
+   * call it belongs to (SPEC §7.15; issue #245). Both resolve to the same
+   * `test_runner_config_result` reply, so they share this one map — like
+   * {@link pendingTargetFsListRequests} this resolves a `Promise` directly
+   * (one caller, one answer) and decrypts under the session key.
+   */
+  private readonly pendingTestRunnerConfigRequests = new Map<
+    string,
+    { resolve: (commands: TestRunnerCommandsV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link detectTestRunnerConfig} call it belongs to (SPEC §7.15; issue #245) — a separate map from {@link pendingTestRunnerConfigRequests} since its reply is `test_runner_config_detected`, not `test_runner_config_result`. */
+  private readonly pendingTestRunnerConfigDetectRequests = new Map<
+    string,
+    { resolve: (suggestions: TestRunnerCommandsV1) => void; reject: (error: Error) => void }
+  >();
+  /**
    * requestId -> the pending {@link discoverSshHosts} call it belongs to
    * (redesign v2 §3.2's add-target candidate picker; issue #475).
    * `ssh_discovery_response` carries plain fields only (no envelope — see
@@ -1642,6 +1664,145 @@ export class RelayClient {
           clearTimeout(timer);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
+    });
+  }
+
+  /**
+   * Reads `sessionId`'s project's saved test/lint/build commands from the
+   * owning node (SPEC §7.15; issue #245) — `{}` for a project with nothing
+   * saved yet. No envelope on the request (nothing to hide about "which
+   * session am I asking for"), same reasoning as {@link listTargets}.
+   * Requires an open connection and rejects on a timeout, mirroring
+   * `listTargets`'s "loud rejection over a silently dropped request".
+   */
+  getTestRunnerConfig(sessionId: string, timeoutMs = 5000): Promise<TestRunnerCommandsV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get test runner config, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('runnercfg');
+    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTestRunnerConfigRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for test_runner_config_result'));
+      }, timeoutMs);
+      this.pendingTestRunnerConfigRequests.set(requestId, {
+        resolve: (commands) => {
+          clearTimeout(timer);
+          resolve(commands);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'test_runner_config_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (merges over the existing saved commands) `sessionId`'s
+   * project's test/lint/build commands (SPEC §7.15; issue #245) — the
+   * explicit-override path and the "confirm a detected suggestion" path
+   * both call this with just the key(s) being changed. Resolves with the
+   * merged result (the same `test_runner_config_result` reply
+   * {@link getTestRunnerConfig} gets), so a caller's UI can show the saved
+   * state without a separate follow-up read.
+   */
+  setTestRunnerConfig(
+    sessionId: string,
+    commands: TestRunnerCommandsV1,
+    timeoutMs = 5000,
+  ): Promise<TestRunnerCommandsV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save test runner config, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('runnercfg');
+    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTestRunnerConfigRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for test_runner_config_result'));
+      }, timeoutMs);
+      this.pendingTestRunnerConfigRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: TestRunnerConfigSetPayloadV1 = { commands };
+      this.getSessionKey(sessionId)
+        .then((key) => sealJson(sessionId, payload, key))
+        .then((envelope) => {
+          this.send({
+            type: 'test_runner_config_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingTestRunnerConfigRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Asks the owning node to auto-detect `sessionId`'s project's test/lint/
+   * build commands (SPEC §7.15; issue #245) — a SUGGESTION only, never
+   * persisted by this call itself; a caller must follow up with
+   * {@link setTestRunnerConfig} to actually save any of it (issue #245's
+   * "shown ... for confirmation before being saved, not silently
+   * applied"). A longer default timeout than {@link getTestRunnerConfig}
+   * since detection means the node reading `package.json` on whichever
+   * target — `local` or `ssh:` — this session runs on, not just a local
+   * JSON-file read.
+   */
+  detectTestRunnerConfig(sessionId: string, timeoutMs = 15_000): Promise<TestRunnerCommandsV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot detect test runner config, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('runnercfgdetect');
+    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTestRunnerConfigDetectRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for test_runner_config_detected'));
+      }, timeoutMs);
+      this.pendingTestRunnerConfigDetectRequests.set(requestId, {
+        resolve: (suggestions) => {
+          clearTimeout(timer);
+          resolve(suggestions);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'test_runner_config_detect',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
     });
   }
 
@@ -2813,6 +2974,12 @@ export class RelayClient {
       case 'terminal_closed':
         this.handleTerminalClosed(message);
         return;
+      case 'test_runner_config_result':
+        this.handleTestRunnerConfigResult(message);
+        return;
+      case 'test_runner_config_detected':
+        this.handleTestRunnerConfigDetected(message);
+        return;
       case 'target_list':
         this.handleTargetList(message);
         return;
@@ -3016,6 +3183,53 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link getTestRunnerConfig}/{@link setTestRunnerConfig} calls (SPEC
+   * §7.15; issue #245). `test_runner_config_result` is fanned out to
+   * every client subscribed to the session (mirrors `fs_list_response`),
+   * so the same "requestId not pending means it isn't mine" guard as
+   * {@link handleFsListResponse} applies. Validated (not just cast — issue
+   * #593's own boundary discipline), same as `decryptSessionCreate`'s
+   * node-side counterpart.
+   */
+  private handleTestRunnerConfigResult(message: TestRunnerConfigResult): void {
+    const pending = this.pendingTestRunnerConfigRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingTestRunnerConfigRequests.delete(message.requestId);
+
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+      .then((decrypted) =>
+        pending.resolve(parseTestRunnerConfigResultPayloadV1(decrypted).commands),
+      )
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link detectTestRunnerConfig} calls (SPEC §7.15; issue #245) — same
+   * shape as {@link handleTestRunnerConfigResult}, against the separate
+   * {@link pendingTestRunnerConfigDetectRequests} map since the reply type
+   * differs.
+   */
+  private handleTestRunnerConfigDetected(message: TestRunnerConfigDetected): void {
+    const pending = this.pendingTestRunnerConfigDetectRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingTestRunnerConfigDetectRequests.delete(message.requestId);
+
+    this.getSessionKey(message.sessionId)
+      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+      .then((decrypted) =>
+        pending.resolve(parseTestRunnerConfigDetectedPayloadV1(decrypted).suggestions),
+      )
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   /**

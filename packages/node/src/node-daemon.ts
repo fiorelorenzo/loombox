@@ -69,6 +69,12 @@ import {
   type TerminalOpenResultPayloadV1,
   type TerminalResize,
   type TerminalResizePayloadV1,
+  type TestRunnerConfigDetect,
+  type TestRunnerConfigDetectedPayloadV1,
+  type TestRunnerConfigGet,
+  type TestRunnerConfigResultPayloadV1,
+  type TestRunnerConfigSet,
+  type TestRunnerConfigSetPayloadV1,
   type WireMessageV1,
   type WrappedAmkEnvelope,
 } from '@loombox/protocol';
@@ -106,6 +112,8 @@ import {
   type ProviderAvailabilityCandidate,
 } from './provider-availability';
 import { TargetHealthSampler } from './target-health-sampler';
+import { TestRunnerConfigStore } from './test-runner-config-store';
+import { detectTestRunnerCommands } from './test-runner-detect';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -352,6 +360,14 @@ export interface NodeDaemonOptions {
    * `PermissionPolicyStore({ stateDir })`.
    */
   permissionPolicyStore?: PermissionPolicyStore;
+  /**
+   * This node's per-project test/lint/build command config store (SPEC
+   * §7.15; issue #245): what `test_runner_config_get`/`_set`/`_detect`
+   * read/write, keyed by `bridge.session.projectPath` exactly like
+   * `permissionPolicyStore` above. Injectable for tests; defaults to a
+   * fresh `TestRunnerConfigStore({ stateDir })`.
+   */
+  testRunnerConfigStore?: TestRunnerConfigStore;
   /**
    * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
    * redesign v2 §3.2; issue #475) when this node handles an
@@ -742,6 +758,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly mcpSecretManager: NodeMcpSecretManager;
   /** SPEC §7.17; issue #256 — see `NodeDaemonOptions.permissionPolicyStore`'s doc comment. */
   private readonly permissionPolicyStore: PermissionPolicyStore;
+  /** SPEC §7.15; issue #245 — see `NodeDaemonOptions.testRunnerConfigStore`'s doc comment. */
+  private readonly testRunnerConfigStore: TestRunnerConfigStore;
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
@@ -863,6 +881,8 @@ export class NodeDaemon extends EventEmitter {
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
+    this.testRunnerConfigStore =
+      options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
     this.sshTargetStore =
@@ -2145,6 +2165,15 @@ export class NodeDaemon extends EventEmitter {
       case 'terminal_close':
         this.handleTerminalClose(message);
         return;
+      case 'test_runner_config_get':
+        this.handleTestRunnerConfigGet(message);
+        return;
+      case 'test_runner_config_set':
+        this.handleTestRunnerConfigSet(message);
+        return;
+      case 'test_runner_config_detect':
+        this.handleTestRunnerConfigDetect(message);
+        return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
         return;
@@ -3210,6 +3239,110 @@ export class NodeDaemon extends EventEmitter {
 
     this.clientInitiatedTerminalCloses.add(message.terminalId);
     this.terminalSupervisor.close(message.terminalId);
+  }
+
+  /** A client asked for a session's project's saved test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's own bridges. */
+  private handleTestRunnerConfigGet(message: TestRunnerConfigGet): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    const commands = this.testRunnerConfigStore.get(bridge.session.projectPath);
+    this.sendTestRunnerConfigResult(message.sessionId, message.requestId, { commands }).catch(
+      (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send test_runner_config_result for session ${message.sessionId}: ${detail}`,
+        );
+      },
+    );
+  }
+
+  /** A client asked to save (merge over) a session's project's test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's own bridges. Replies with the same `test_runner_config_result` `handleTestRunnerConfigGet` does, carrying the merged result, so "save" and "read the current value" are one client-side code path. */
+  private handleTestRunnerConfigSet(message: TestRunnerConfigSet): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptTestRunnerConfigSet(message)
+      .then((payload) => {
+        const commands = this.testRunnerConfigStore.save(
+          bridge.session.projectPath,
+          payload.commands,
+        );
+        return this.sendTestRunnerConfigResult(message.sessionId, message.requestId, { commands });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle test_runner_config_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptTestRunnerConfigSet(
+    message: TestRunnerConfigSet,
+  ): Promise<TestRunnerConfigSetPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<TestRunnerConfigSetPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendTestRunnerConfigResult(
+    sessionId: string,
+    requestId: string,
+    payload: TestRunnerConfigResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'test_runner_config_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked this node to inspect a session's project (on whichever
+   * target — `local` or `ssh:` — that session runs on) and propose
+   * test/lint/build commands (SPEC §7.15; issue #245). Never persists
+   * anything itself — `detectTestRunnerCommands` only reads
+   * `package.json`/lockfiles via the resolved `ExecutionTarget`, and the
+   * reply is a suggestion the client must submit back via
+   * `test_runner_config_set` to actually save (issue #245's "shown for
+   * confirmation before being saved, not silently applied"). Ignored if
+   * `sessionId` isn't one of this node's own bridges.
+   */
+  private handleTestRunnerConfigDetect(message: TestRunnerConfigDetect): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.getExecutionTarget(bridge.targetId, bridge.session.projectPath)
+      .then((target) => detectTestRunnerCommands(target, bridge.session.projectPath))
+      .then((suggestions) =>
+        this.sendTestRunnerConfigDetected(message.sessionId, message.requestId, { suggestions }),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle test_runner_config_detect for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async sendTestRunnerConfigDetected(
+    sessionId: string,
+    requestId: string,
+    payload: TestRunnerConfigDetectedPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'test_runner_config_detected',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
   }
 
   /**

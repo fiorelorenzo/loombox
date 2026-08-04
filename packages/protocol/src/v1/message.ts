@@ -52,6 +52,13 @@ import {
   connectedAccountList,
   connectedAccountListRequest,
 } from './connected-accounts';
+import {
+  testRunnerConfigDetect,
+  testRunnerConfigDetected,
+  testRunnerConfigGet,
+  testRunnerConfigResult,
+  testRunnerConfigSet,
+} from './test-runner-config';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -118,6 +125,11 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   connectedAccountAnnounce,
   connectedAccountListRequest,
   connectedAccountList,
+  testRunnerConfigGet,
+  testRunnerConfigSet,
+  testRunnerConfigResult,
+  testRunnerConfigDetect,
+  testRunnerConfigDetected,
   ping,
   pong,
 ]);
