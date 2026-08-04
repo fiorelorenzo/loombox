@@ -1,0 +1,430 @@
+<!--
+  SECTION A - the composer.
+  This file is the PATTERN every other section follows. Read it before writing one.
+
+  Structure per decision:
+    <section class="item" id="aN">
+      <div class="item-head"><span class="item-id">AN</span><h2>...</h2></div>
+      <blockquote class="item-quote">Lorenzo's own words</blockquote>
+      <p class="item-note">what the code does today, with file:line</p>
+      <div class="options">
+        <div class="opt is-current"> ... TODAY ... </div>
+        <div class="opt"> ... OPTION 1 ... </div>
+        <div class="opt"> ... OPTION 2 ... </div>
+      </div>
+    </section>
+
+  Rules: always include a faithful "today" so the change is judgeable; every
+  option gets a one-sentence <p class="opt-why"> saying what it trades; mocks
+  render inside <div class="stage">.
+-->
+
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>The two separators around the composer</h2>
+  </div>
+  <blockquote class="item-quote">
+    Nella pagina di interazione non ha senso quella riga orizzontale sopra all'input. [...] Non ha
+    senso neanche quella riga verticale blu di fianco all'input in basso.
+  </blockquote>
+  <p class="item-note">
+    Both are real and both are leftovers. <code>.canvas-footer</code> draws
+    <code>border-top: 1px solid var(--color-border)</code> (<code>+page.svelte:4878</code>) from
+    when the composer was plain text on the page background; <code>#577</code> then gave the field
+    its own border, so the strip is now separated twice. The blue bar is
+    <code>.composer-gutter { box-shadow: inset 2px 0 0 0 var(--color-accent) }</code>
+    (<code>:4933</code>), the timeline's "this turn is yours" thread, except here it has no row of
+    content beside it to anchor to. The code comment already worries it reads as
+    <em>dirt on the screen</em> on mobile, which is exactly what it does at every width.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Hairline + accent bar + field border</span>
+      </div>
+      <p class="opt-why">Three separators for one boundary. The field is already a box, so the rule above it separates nothing.</p>
+      <div class="stage">
+        <div class="s-cmp-scroll">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+          </div>
+        </div>
+        <div class="s-cmp-footer s-cmp-hairline">
+          <div class="lb-row">
+            <div class="lb-row-gutter s-cmp-accentbar"><span class="lb-caption">You</span></div>
+            <div class="lb-row-body" style="padding-block: 0">
+              <div class="lb-field">
+                <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt… (type @ to reference a file)"></textarea>
+                <div class="lb-inline tight">
+                  <button class="lb-iconbtn" aria-label="Attach image"><svg><use href="#i-attach" /></svg></button>
+                  <span class="lb-spacer"></span>
+                  <span class="lb-small">$0.00</span>
+                  <button class="lb-btn lb-btn-primary">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-1</span><span class="opt-title">Drop both</span></div>
+      <p class="opt-why">The field's own border is the boundary. <b>Nothing else changes.</b> Smallest possible change, and the composer stays visually part of the timeline it ends.</p>
+      <div class="stage">
+        <div class="s-cmp-scroll">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+          </div>
+        </div>
+        <div class="s-cmp-footer">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+            <div class="lb-row-body" style="padding-block: 0">
+              <div class="lb-field">
+                <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt… (type @ to reference a file)"></textarea>
+                <div class="lb-inline tight">
+                  <button class="lb-iconbtn" aria-label="Attach image"><svg><use href="#i-attach" /></svg></button>
+                  <span class="lb-spacer"></span>
+                  <span class="lb-small">$0.00</span>
+                  <button class="lb-btn lb-btn-primary">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-2</span><span class="opt-title">Drop both, and let the transcript slide under</span></div>
+      <p class="opt-why">Same as A1-1 plus a short fade where the scroll ends, so you can tell content continues above without drawing a line. <b>Costs a gradient, buys depth.</b></p>
+      <div class="stage">
+        <div class="s-cmp-scroll s-cmp-fade">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+          </div>
+        </div>
+        <div class="s-cmp-footer">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+            <div class="lb-row-body" style="padding-block: 0">
+              <div class="lb-field">
+                <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt… (type @ to reference a file)"></textarea>
+                <div class="lb-inline tight">
+                  <button class="lb-iconbtn" aria-label="Attach image"><svg><use href="#i-attach" /></svg></button>
+                  <span class="lb-spacer"></span>
+                  <span class="lb-small">$0.00</span>
+                  <button class="lb-btn lb-btn-primary">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-3</span><span class="opt-title">Drop both, and lift the field</span></div>
+      <p class="opt-why">No rules at all; the field sits on <code>--color-surface-raised</code> with a soft shadow so it reads as floating above the page. <b>Most distinct, least like the rest of the app</b>, which is currently flat everywhere.</p>
+      <div class="stage">
+        <div class="s-cmp-scroll">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+          </div>
+        </div>
+        <div class="s-cmp-footer">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+            <div class="lb-row-body" style="padding-block: 0">
+              <div class="lb-field s-cmp-lifted">
+                <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt… (type @ to reference a file)"></textarea>
+                <div class="lb-inline tight">
+                  <button class="lb-iconbtn" aria-label="Attach image"><svg><use href="#i-attach" /></svg></button>
+                  <span class="lb-spacer"></span>
+                  <span class="lb-small">$0.00</span>
+                  <button class="lb-btn lb-btn-primary">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a2">
+  <div class="item-head">
+    <span class="item-id">A2</span>
+    <h2>The attach affordance and the placeholder</h2>
+  </div>
+  <blockquote class="item-quote">
+    Nell'input farei più grande l'icona per allegare file che è molto piccola e cambierei il
+    placeholder.
+  </blockquote>
+  <p class="item-note">
+    Today: a default <code>IconButton</code> (<code>+page.svelte:3274</code>) labelled
+    <em>Attach image</em>, sharing a row with the config controls, the cost figure and Send, so it
+    is the smallest thing in a crowded row. The placeholder is
+    <code>"Send a follow-up prompt… (type @ to reference a file)"</code> (<code>:3259</code>), which
+    spends its width teaching a shortcut. Note the label says <em>image</em> but SPEC §7.12 covers
+    files generally, so the copy is also wrong.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">16px glyph, instructional placeholder</span></div>
+      <p class="opt-why">The one control that adds content is the least visible thing in the row.</p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt… (type @ to reference a file)"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn" aria-label="Attach image"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-badge">Claude Code</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-1</span><span class="opt-title">Bigger glyph, plain placeholder</span></div>
+      <p class="opt-why">20px target on a hover fill, and the placeholder just says what the box is for. <b>The @ hint moves to the hidden hint line</b> that already exists for screen readers.</p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach a file"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-badge">Claude Code</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-2</span><span class="opt-title">A labelled Add button</span></div>
+      <p class="opt-why">A bordered <code>+ Add</code> that opens files, images and <code>@</code> references from one menu. <b>Unmissable and self-explaining</b>, at the cost of more width than a glyph.</p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm"><svg style="width: 0.9rem; height: 0.9rem"><use href="#i-plus" /></svg>Add</button>
+            <span class="lb-badge">Claude Code</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-3</span><span class="opt-title">Attach on the left of the text, controls on the right</span></div>
+      <p class="opt-why">The attach button leaves the control row entirely and sits beside the caret, where the thing it adds will appear. <b>Splits input actions from turn settings</b>, which is the real reason the row feels crowded.</p>
+      <div class="stage">
+        <div class="lb-field s-cmp-splitfield">
+          <div class="s-cmp-inputline">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach a file"><svg><use href="#i-attach" /></svg></button>
+            <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          </div>
+          <div class="lb-inline tight">
+            <span class="lb-badge">Claude Code</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a3">
+  <div class="item-head">
+    <span class="item-id">A3</span>
+    <h2>Send and Stop while the agent is working</h2>
+  </div>
+  <blockquote class="item-quote">
+    Mentre l'agent sta scrivendo il bottone stop può prendere il posto di quello send, non ha senso
+    averli entrambi. Inoltre manca un loader per far capire che sta lavorando.
+  </blockquote>
+  <p class="item-note">
+    Confirmed: <code>TurnStopControl</code> renders only while <code>turnActive</code>
+    (<code>TurnStopControl.svelte:47</code>), but Send is rendered unconditionally right beside it
+    (<code>+page.svelte:3296-3307</code>), so a running turn shows two buttons. The only sign of
+    life today is a pulsing red dot inside Stop. All three options below make Stop
+    <em>replace</em> Send; they differ in where the sign of life goes.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Both buttons, a red dot for progress</span></div>
+      <p class="opt-why">Two primary-weight actions competing, and nothing that says work is happening except a 5px dot.</p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Send a follow-up prompt…"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn" aria-label="Attach"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn"><span class="lb-dot danger pulse"></span>Stop</button>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A3-1</span><span class="opt-title">Stop replaces Send, spinner in place</span></div>
+      <p class="opt-why">One button in one slot, carrying a spinner. <b>Nothing else on screen moves</b> when a turn starts, which is the quietest option.</p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-danger"><span class="lb-spin"></span>Stop</button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-sm)">Idle state for comparison</p>
+        <div class="lb-field">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A3-2</span><span class="opt-title">Stop replaces Send, status on the gutter</span></div>
+      <p class="opt-why">The button is just Stop; the working state is a live line in the transcript itself, on the gutter the turn already owns. <b>Progress belongs to the turn, not to a button.</b></p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body">
+            <div class="lb-inline tight lb-small"><span class="lb-spin"></span><span>Working<span class="s-cmp-ellip"></span></span><span class="lb-muted">· 14s</span></div>
+          </div>
+        </div>
+        <div class="lb-field" style="margin-top: var(--space-sm)">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-danger">Stop</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A3-3</span><span class="opt-title">Stop replaces Send, progress on the field edge</span></div>
+      <p class="opt-why">An indeterminate accent line along the top of the field while a turn runs. <b>Reads from across the room</b> and needs no extra row, but it is a new motion idiom for the app.</p>
+      <div class="stage">
+        <div class="lb-field s-cmp-progressline">
+          <textarea class="lb-input" rows="1" placeholder="Message the agent"></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn lb-lg" aria-label="Attach"><svg><use href="#i-attach" /></svg></button>
+            <span class="lb-spacer"></span>
+            <span class="lb-small lb-muted">14s</span>
+            <button class="lb-btn lb-btn-danger">Stop</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-cmp-scroll {
+    padding-bottom: var(--space-md);
+    position: relative;
+  }
+
+  .s-cmp-fade::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: var(--space-xl);
+    background: linear-gradient(to bottom, transparent, var(--color-bg));
+    pointer-events: none;
+  }
+
+  .s-cmp-footer {
+    padding-top: var(--space-sm);
+  }
+
+  .s-cmp-hairline {
+    border-top: 1px solid var(--color-border);
+  }
+
+  .s-cmp-accentbar {
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
+  }
+
+  .s-cmp-lifted {
+    background: var(--color-surface-raised);
+    border-color: var(--color-border-subtle);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius-lg);
+  }
+
+  .s-cmp-splitfield {
+    gap: var(--space-sm);
+  }
+
+  .s-cmp-inputline {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .s-cmp-progressline {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .s-cmp-progressline::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 2px;
+    width: 35%;
+    background: var(--color-accent);
+    animation: s-cmp-slide 1.5s var(--ease-beat) infinite;
+  }
+
+  @keyframes s-cmp-slide {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(386%);
+    }
+  }
+
+  .s-cmp-ellip::after {
+    content: '…';
+    animation: s-cmp-dots 1.4s steps(4, end) infinite;
+    clip-path: inset(0 100% 0 0);
+    animation-name: s-cmp-dots;
+  }
+
+  @keyframes s-cmp-dots {
+    to {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+</style>

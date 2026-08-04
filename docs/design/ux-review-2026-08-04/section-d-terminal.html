@@ -1,0 +1,875 @@
+<!--
+  SECTION D - terminal dock + header. Follows section-a-composer.html's
+  pattern exactly (see that file's own header comment for the structure
+  rules). Three decisions: D1 the terminal's own chrome inside the dock,
+  D2 the seam between canvas and dock, D3 the export control in the header.
+-->
+
+<section class="item" id="d1">
+  <div class="item-head">
+    <span class="item-id">D1</span>
+    <h2>The terminal's own chrome inside the dock</h2>
+  </div>
+  <blockquote class="item-quote">
+    nel terminale mi sembra che ci siano delle righe di troppo che non hanno senso [...]
+  </blockquote>
+  <p class="item-note">
+    Confirmed stack, outside in. The dock's own <code>border-top: 1px solid var(--color-border)</code>
+    (<code>+page.svelte:5230</code>, with <code>padding: var(--space-2xs)</code> at <code>:5229</code>)
+    wraps <code>InteractiveTerminal</code>'s own <code>border: 1px solid var(--color-border-subtle)</code>
+    plus <code>border-radius: var(--radius-lg)</code> (<code>InteractiveTerminal.svelte:335-336</code>).
+    Inside that second box, <code>.terminal-titlebar</code> (<code>:348-356</code>) renders a bash-tool
+    icon, a <code>StatusDot</code>, and the literal word "Terminal" in mono (<code>:287-296</code>);
+    then, conditionally, either the bounded-wait timeout banner (<code>:298-305</code>, CSS
+    <code>:400-403</code>) or the plain <code>.status</code> row for connecting/error/closed
+    (<code>:306-316</code>, CSS <code>:372-384</code>); then <code>.xterm-container</code> with its own
+    <code>padding: var(--space-2xs)</code> (<code>:409</code>). The toggle that opens this dock already
+    says "Terminal" (<code>+page.svelte:3006-3007</code>), so the titlebar repeats an identity the
+    button beside it already gave, inside a border the dock already drew. Separately: issue #663
+    suspects <code>FitAddon</code> over-counts rows against that same <code>.xterm-container</code>
+    padding, leaving genuinely blank lines at the bottom — a rendering bug, tracked on its own, not
+    addressed by any chrome choice here. None of the states below claim to fix it.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Card + titlebar inside the dock's own border</span>
+      </div>
+      <p class="opt-why">The toggle button already says Terminal; the titlebar repeats it inside a second border. Two identities and two boxes for a panel that only needs one.</p>
+      <div class="stage flush">
+        <div class="s-term-canvashint">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Pushed the fix to <code>main</code>; CI is green.</p></div>
+          </div>
+        </div>
+        <div class="s-term-dockwrap">
+          <div class="s-term-states">
+            <div class="s-term-state">
+              <p class="lb-caption">Open</p>
+              <div class="s-term-card">
+                <div class="s-term-titlebar">
+                  <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                  <span class="lb-dot ok"></span>
+                  <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                </div>
+                <div class="lb-console">
+                  <div><span class="dim">lorenzo@wove-mbp</span> <span class="dim">~/loombox/apps/web (main)</span> $ pnpm test</div>
+                  <div><span class="ok">✓</span> InteractiveTerminal.svelte.test.ts <span class="dim">(18 tests) 412ms</span></div>
+                  <div><span class="ok">✓</span> relay-client.test.ts <span class="dim">(54 tests) 891ms</span></div>
+                  <div><span class="ok">✓</span> +page.svelte.test.ts <span class="dim">(212 tests) 3.1s</span></div>
+                  <div><span class="dim">Test Files</span> 148 passed (148)</div>
+                  <div><span class="dim">Tests</span> 893 passed (893)</div>
+                  <div><span class="dim">Duration</span> 14.86s</div>
+                  <div><span class="dim">lorenzo@wove-mbp</span> <span class="dim">~/loombox/apps/web (main)</span> $ <span class="lb-caret"></span></div>
+                </div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Connecting</p>
+              <div class="s-term-card">
+                <div class="s-term-titlebar">
+                  <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                  <span class="lb-dot info pulse"></span>
+                  <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                </div>
+                <div class="s-term-status">Connecting…</div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Timed out</p>
+              <div class="s-term-card">
+                <div class="s-term-titlebar">
+                  <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                  <span class="lb-dot danger"></span>
+                  <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                </div>
+                <div class="s-term-timeoutwrap">
+                  <div class="s-term-timeout">
+                    <p class="s-term-timeout-msg">The terminal hasn't opened yet. The node may be asleep, offline, or slow to start the shell.</p>
+                    <button class="lb-btn lb-btn-sm">Retry</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-1</span><span class="opt-title">No titlebar, no card — the dock owns it</span></div>
+      <p class="opt-why">The dock's own border-top and padding become the only frame; no card, no titlebar, no repeated word. <b>One box, one label, but a returning user loses the dot</b> that used to say at a glance which state they're in.</p>
+      <div class="stage flush">
+        <div class="s-term-canvashint">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Pushed the fix to <code>main</code>; CI is green.</p></div>
+          </div>
+        </div>
+        <div class="s-term-dockwrap">
+          <div class="s-term-states">
+            <div class="s-term-state">
+              <p class="lb-caption">Open</p>
+              <div class="s-term-flat">
+                <div class="lb-console">
+                  <div><span class="dim">lorenzo@wove-mbp</span> <span class="dim">~/loombox/apps/web (main)</span> $ pnpm test</div>
+                  <div><span class="ok">✓</span> src/lib/relay-client.test.ts <span class="dim">(54 tests) 891ms</span></div>
+                  <div><span class="dim">Tests</span> 893 passed (893) <span class="dim">· 14.86s</span></div>
+                  <div><span class="dim">lorenzo@wove-mbp</span> <span class="dim">~/loombox/apps/web (main)</span> $ <span class="lb-caret"></span></div>
+                </div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Connecting</p>
+              <div class="s-term-flat s-term-flat-tall">
+                <div class="s-term-plainstatus">
+                  <span class="lb-spin"></span>
+                  <span class="lb-small lb-muted">Connecting…</span>
+                </div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Timed out</p>
+              <div class="s-term-flat s-term-flat-tall">
+                <div class="s-term-timeout">
+                  <p class="s-term-timeout-msg">The terminal hasn't opened yet. The node may be asleep, offline, or slow to start the shell.</p>
+                  <button class="lb-btn lb-btn-sm">Retry</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-2</span><span class="opt-title">One thin bar, carrying cwd/shell/status instead of the word</span></div>
+      <p class="opt-why">Same one-box frame the toggle already draws, but the bar earns its keep: cwd, shell, connection, a new tab. <b>Trades the word "Terminal" for information</b> you'd otherwise open a file tree to find.</p>
+      <div class="stage flush">
+        <div class="s-term-canvashint">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Pushed the fix to <code>main</code>; CI is green.</p></div>
+          </div>
+        </div>
+        <div class="s-term-dockwrap">
+          <div class="s-term-states">
+            <div class="s-term-state">
+              <p class="lb-caption">Open</p>
+              <div class="s-term-flat">
+                <div class="s-term-bar">
+                  <span class="lb-dot ok"></span>
+                  <span class="lb-mono lb-small">~/loombox/apps/web</span>
+                  <span class="lb-badge">zsh</span>
+                  <span class="lb-spacer"></span>
+                  <button class="lb-iconbtn" aria-label="New terminal tab"><svg><use href="#i-plus" /></svg></button>
+                </div>
+                <div class="lb-console">
+                  <div><span class="dim">lorenzo@wove-mbp</span> $ pnpm test</div>
+                  <div><span class="ok">✓</span> src/lib/relay-client.test.ts <span class="dim">(54 tests) 891ms</span></div>
+                  <div><span class="dim">Tests</span> 893 passed (893) <span class="dim">· 14.86s</span></div>
+                  <div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div>
+                </div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Connecting</p>
+              <div class="s-term-flat s-term-flat-tall">
+                <div class="s-term-bar">
+                  <span class="lb-dot info pulse"></span>
+                  <span class="lb-small">Connecting to wove-mbp…</span>
+                  <span class="lb-spacer"></span>
+                </div>
+              </div>
+            </div>
+            <div class="s-term-state">
+              <p class="lb-caption">Timed out</p>
+              <div class="s-term-flat s-term-flat-tall">
+                <div class="s-term-bar">
+                  <span class="lb-dot danger"></span>
+                  <span class="lb-small">Timed out waiting to open</span>
+                  <span class="lb-spacer"></span>
+                  <button class="lb-btn lb-btn-sm">Retry</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-3</span><span class="opt-title">Keep the card, drop the dock's own border-top</span></div>
+      <p class="opt-why">Keeps the titlebar's identity and the card's border exactly as they are; only the dock's own outer border-top and padding go. <b>Down to one box, but still two words that both say Terminal.</b></p>
+      <div class="stage flush">
+        <div class="s-term-canvashint">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body lb-prose"><p>Pushed the fix to <code>main</code>; CI is green.</p></div>
+          </div>
+        </div>
+        <div class="s-term-states s-term-states-flat">
+          <div class="s-term-state">
+            <p class="lb-caption">Open</p>
+            <div class="s-term-card">
+              <div class="s-term-titlebar">
+                <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                <span class="lb-dot ok"></span>
+                <span class="lb-mono s-term-titlebar-label">Terminal</span>
+              </div>
+              <div class="lb-console">
+                <div><span class="dim">lorenzo@wove-mbp</span> $ pnpm test</div>
+                <div><span class="ok">✓</span> src/lib/relay-client.test.ts <span class="dim">(54 tests) 891ms</span></div>
+                <div><span class="dim">Tests</span> 893 passed (893) <span class="dim">· 14.86s</span></div>
+                <div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-term-state">
+            <p class="lb-caption">Connecting</p>
+            <div class="s-term-card">
+              <div class="s-term-titlebar">
+                <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                <span class="lb-dot info pulse"></span>
+                <span class="lb-mono s-term-titlebar-label">Terminal</span>
+              </div>
+              <div class="s-term-status">Connecting…</div>
+            </div>
+          </div>
+          <div class="s-term-state">
+            <p class="lb-caption">Timed out</p>
+            <div class="s-term-card">
+              <div class="s-term-titlebar">
+                <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                <span class="lb-dot danger"></span>
+                <span class="lb-mono s-term-titlebar-label">Terminal</span>
+              </div>
+              <div class="s-term-timeoutwrap">
+                <div class="s-term-timeout">
+                  <p class="s-term-timeout-msg">The terminal hasn't opened yet. The node may be asleep, offline, or slow to start the shell.</p>
+                  <button class="lb-btn lb-btn-sm">Retry</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d2">
+  <div class="item-head">
+    <span class="item-id">D2</span>
+    <h2>The seam between the canvas and the terminal dock</h2>
+  </div>
+  <blockquote class="item-quote">
+    [...] non mi piace molto il bordo che c'è tra il body principale e l'inizio del terminale.
+  </blockquote>
+  <p class="item-note">
+    The seam is <code>.terminal-dock.terminal-dock-open</code>'s own
+    <code>border-top: 1px solid var(--color-border)</code> (<code>+page.svelte:5230</code>) against the
+    dock's <code>background: var(--color-surface)</code> (<code>:5202</code>). The actual drag target
+    sits on the same edge: <code>.terminal-dock-resize-handle</code> (<code>:5257-5266</code>, markup
+    <code>:3508-3520</code>) is a 6px hit-region, <code>background: transparent</code> at rest and
+    <code>var(--color-accent-subtle)</code> on hover/focus-visible (<code>:5268-5272</code>) — invisible
+    until the cursor is already on it. Every option below keeps the terminal's own chrome exactly as it
+    is today (D1 is a separate decision); only this one line changes.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Hairline, hidden handle</span></div>
+      <p class="opt-why">A 1px hairline plus an invisible 6px hit-region that only shows itself on hover. Nothing marks it as draggable until the cursor is already there.</p>
+      <div class="stage flush">
+        <div class="s-term-edge-demo">
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Resting</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Hover / drag</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle is-hover"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-1</span><span class="opt-title">A stronger edge, always on</span></div>
+      <p class="opt-why">A visibly thicker, higher-contrast line reads as a deliberate split before you ever touch it. <b>Always-on distinction costs a permanent visual seam</b> across every session, not just the ones with a terminal open.</p>
+      <div class="stage flush">
+        <div class="s-term-edge-demo">
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Resting</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle s-term-strong"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Hover / drag</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle is-hover"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-2</span><span class="opt-title">No border, a different surface</span></div>
+      <p class="opt-why">The dock sits on <code>--color-rail</code>, one shade off the canvas's <code>--color-bg</code>; the seam is a colour step, not a line. <b>No hairline to dislike, but the handle is now the only proof</b> it's a real edge, not just a lower panel.</p>
+      <div class="stage flush">
+        <div class="s-term-edge-demo">
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Resting</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle s-term-none"></div>
+              <div class="s-term-edge-dock s-term-rail">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Hover / drag</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle is-hover"></div>
+              <div class="s-term-edge-dock s-term-rail">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-3</span><span class="opt-title">Border only while the dock has focus</span></div>
+      <p class="opt-why">Invisible at rest, same surface as the canvas; a line appears only once the dock (or the drag itself) has focus. <b>Quietest option until you need it, but a mouse-only drag never triggers focus</b>, so hover still has to carry the same reveal.</p>
+      <div class="stage flush">
+        <div class="s-term-edge-demo">
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Resting</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle s-term-none"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-term-edge-col">
+            <p class="lb-caption">Focused (dragging)</p>
+            <div class="s-term-edge-mini">
+              <div class="s-term-edge-canvas"><span class="lb-small lb-muted">Pushed the fix to main; CI is green.</span></div>
+              <div class="s-term-edge-handle s-term-focus"></div>
+              <div class="s-term-edge-dock">
+                <div class="s-term-card focused">
+                  <div class="s-term-titlebar">
+                    <svg class="s-term-icon"><use href="#i-terminal" /></svg>
+                    <span class="lb-dot ok"></span>
+                    <span class="lb-mono s-term-titlebar-label">Terminal</span>
+                  </div>
+                  <div class="lb-console"><div><span class="dim">lorenzo@wove-mbp</span> $ <span class="lb-caret"></span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d3">
+  <div class="item-head">
+    <span class="item-id">D3</span>
+    <h2>The export control in the session header</h2>
+  </div>
+  <blockquote class="item-quote">
+    non capisco il senso del bottone per copiare che c'è in alto di fianco ai pulsanti workbench e
+    terminal.
+  </blockquote>
+  <p class="item-note">
+    <code>CopyButton</code> (<code>+page.svelte:3015-3020</code>) renders through <code>IconButton</code>
+    with only <code>Icon name="copy"</code> (<code>CopyButton.svelte:94-96</code>) — no visible text;
+    <code>label="Export transcript"</code> is the accessible name and tooltip only. It sits right after
+    two labelled toggles, Workbench (<code>+page.svelte:2975-2987</code>) and Terminal
+    (<code>:2996-3008</code>), both icon plus word. The comment above it (<code>:3009-3014</code>) argues
+    the bare glyph is deliberate: contrast with the labelled pair beside it should read as "this one does
+    something rather than opening something" — <code>CopyButton.svelte:39-43</code>'s own doc comment
+    calls this the <code>prominent</code> variant, full strength precisely because it has no repeating row
+    to share a dimmed rest state with. Lorenzo read that reasoning and still didn't get it from the button
+    itself.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Bare copy glyph, full strength</span></div>
+      <p class="opt-why">A bare glyph beside two labelled toggles, doing a copy-glyph action that isn't a copy. Nothing about it says what it does or why it looks different from its neighbours.</p>
+      <div class="stage">
+        <div class="s-term-topbar">
+          <div class="s-term-topbar-context">
+            <h1 class="s-term-topbar-title">Fix relay reconnect flapping after sleep/wake</h1>
+            <span class="s-term-topbar-breadcrumb">loombox <span aria-hidden="true">·</span> wove-mbp</span>
+          </div>
+          <div class="s-term-topbar-actions">
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="false"><svg class="s-term-btnicon"><use href="#i-workbench" /></svg>Workbench</button>
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="true"><svg class="s-term-btnicon"><use href="#i-terminal" /></svg>Terminal</button>
+            <button class="lb-iconbtn" aria-label="Export transcript" title="Export transcript"><svg><use href="#i-copy" /></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-1</span><span class="opt-title">Give it a label</span></div>
+      <p class="opt-why">Reads exactly like Workbench and Terminal beside it: icon, then the word. <b>Costs header width for one more label</b>, and the visible word finally makes the copy-glyph mismatch obvious enough to fix too.</p>
+      <div class="stage">
+        <div class="s-term-topbar">
+          <div class="s-term-topbar-context">
+            <h1 class="s-term-topbar-title">Fix relay reconnect flapping after sleep/wake</h1>
+            <span class="s-term-topbar-breadcrumb">loombox <span aria-hidden="true">·</span> wove-mbp</span>
+          </div>
+          <div class="s-term-topbar-actions">
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="false"><svg class="s-term-btnicon"><use href="#i-workbench" /></svg>Workbench</button>
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="true"><svg class="s-term-btnicon"><use href="#i-terminal" /></svg>Terminal</button>
+            <button class="lb-btn lb-btn-ghost"><svg class="s-term-btnicon"><use href="#i-download" /></svg>Export</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-2</span><span class="opt-title">Into an overflow menu with other session actions</span></div>
+      <p class="opt-why">Export joins Rename and Archive under one more-actions button, matching how those two already have to be exposed somewhere. <b>One button now stands for many; the export he reaches for often costs an extra click</b> the other two don't need as badly.</p>
+      <div class="stage">
+        <div class="s-term-topbar">
+          <div class="s-term-topbar-context">
+            <h1 class="s-term-topbar-title">Fix relay reconnect flapping after sleep/wake</h1>
+            <span class="s-term-topbar-breadcrumb">loombox <span aria-hidden="true">·</span> wove-mbp</span>
+          </div>
+          <div class="s-term-topbar-actions">
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="false"><svg class="s-term-btnicon"><use href="#i-workbench" /></svg>Workbench</button>
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="true"><svg class="s-term-btnicon"><use href="#i-terminal" /></svg>Terminal</button>
+            <button class="lb-iconbtn" aria-label="Session actions" title="Session actions"><svg><use href="#i-more" /></svg></button>
+          </div>
+        </div>
+        <p class="lb-caption s-term-menu-caption">Opens, anchored to the button</p>
+        <div class="lb-panel s-term-menu">
+          <div class="lb-listrow"><svg class="s-term-btnicon"><use href="#i-download" /></svg><span>Export transcript</span></div>
+          <div class="lb-listrow"><span>Rename session</span></div>
+          <div class="lb-listrow"><span>Archive session</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-3</span><span class="opt-title">Out of the header, into the session's own row menu</span></div>
+      <p class="opt-why">The header keeps only the two toggles that actually open a panel; export moves to the session's own row menu next to rename and archive. <b>Out of the header entirely, but out of reach from inside the transcript too</b> — a hop back to the sidebar he wasn't taking before.</p>
+      <div class="stage">
+        <div class="s-term-topbar">
+          <div class="s-term-topbar-context">
+            <h1 class="s-term-topbar-title">Fix relay reconnect flapping after sleep/wake</h1>
+            <span class="s-term-topbar-breadcrumb">loombox <span aria-hidden="true">·</span> wove-mbp</span>
+          </div>
+          <div class="s-term-topbar-actions">
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="false"><svg class="s-term-btnicon"><use href="#i-workbench" /></svg>Workbench</button>
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="true"><svg class="s-term-btnicon"><use href="#i-terminal" /></svg>Terminal</button>
+          </div>
+        </div>
+        <p class="lb-caption s-term-menu-caption">The session's own row, in the sidebar</p>
+        <div class="lb-listrow s-term-sessionrow">
+          <div class="s-term-sessionrow-main">
+            <span class="lb-small">Fix relay reconnect flapping after sleep/wake</span>
+            <span class="lb-caption">loombox · wove-mbp</span>
+          </div>
+          <span class="lb-spacer"></span>
+          <button class="lb-iconbtn" aria-label="Session actions" title="Session actions"><svg><use href="#i-more" /></svg></button>
+        </div>
+        <div class="lb-panel s-term-menu">
+          <div class="lb-listrow"><svg class="s-term-btnicon"><use href="#i-download" /></svg><span>Export transcript</span></div>
+          <div class="lb-listrow"><span>Rename session</span></div>
+          <div class="lb-listrow"><span>Archive session</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-4</span><span class="opt-title">Same bare glyph, download instead of copy</span></div>
+      <p class="opt-why">The smallest possible change: same bare glyph, same position, wrong verb fixed. <b>Solves the semantic bug, not the discoverability one</b> he actually ran into.</p>
+      <div class="stage">
+        <div class="s-term-topbar">
+          <div class="s-term-topbar-context">
+            <h1 class="s-term-topbar-title">Fix relay reconnect flapping after sleep/wake</h1>
+            <span class="s-term-topbar-breadcrumb">loombox <span aria-hidden="true">·</span> wove-mbp</span>
+          </div>
+          <div class="s-term-topbar-actions">
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="false"><svg class="s-term-btnicon"><use href="#i-workbench" /></svg>Workbench</button>
+            <button class="lb-btn lb-btn-ghost s-term-toggle" aria-pressed="true"><svg class="s-term-btnicon"><use href="#i-terminal" /></svg>Terminal</button>
+            <button class="lb-iconbtn" aria-label="Export transcript" title="Export transcript"><svg><use href="#i-download" /></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* Shared "canvas above the dock" sliver, D1 + D2. */
+  .s-term-canvashint {
+    padding: var(--space-md);
+    background: var(--color-bg);
+  }
+
+  /* D1: the dock's own outer chrome (border-top + padding), faithful to
+     `.terminal-dock.terminal-dock-open` (+page.svelte:5228-5231). */
+  .s-term-dockwrap {
+    padding: var(--space-2xs);
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .s-term-states {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: var(--space-sm);
+  }
+
+  /* D1-3: the card sits flush in the canvas, no dock chrome around it. */
+  .s-term-states-flat {
+    padding: var(--space-md);
+    background: var(--color-bg);
+  }
+
+  .s-term-state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  /* The component's own card: `.interactive-terminal`
+     (InteractiveTerminal.svelte:328-337). */
+  .s-term-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: border-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .s-term-card.focused {
+    border-color: var(--color-focus-ring);
+  }
+
+  /* `.terminal-titlebar` (InteractiveTerminal.svelte:348-356). */
+  .s-term-titlebar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-term-icon {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .s-term-titlebar-label {
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
+  }
+
+  /* `.status` (InteractiveTerminal.svelte:372-378, connecting/closed case). */
+  .s-term-status {
+    padding: var(--space-xs) var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+  }
+
+  /* `.terminal-timeout` wrapper (InteractiveTerminal.svelte:400-403) around
+     an ErrorNotice-styled banner (ErrorNotice.svelte:40-57). */
+  .s-term-timeoutwrap {
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  .s-term-timeout {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--color-danger-subtle);
+    border: 1px solid var(--color-danger);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .s-term-timeout-msg {
+    margin: 0;
+    color: var(--color-danger);
+    font-size: var(--text-small-size);
+  }
+
+  /* D1-1 / D1-2: no card border/radius, but the terminal content still
+     needs its own background — that part is functional, not decorative. */
+  .s-term-flat {
+    background: var(--color-bg);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .s-term-flat-tall {
+    min-height: 4.5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .s-term-plainstatus {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  /* D1-2's thin info bar, replacing the word "Terminal" with cwd/shell/status. */
+  .s-term-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  /* D2: the canvas/dock seam demo. */
+  .s-term-edge-demo {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: var(--space-md);
+    padding: var(--space-md);
+  }
+
+  .s-term-edge-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-term-edge-mini {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .s-term-edge-canvas {
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-bg);
+  }
+
+  /* The resize handle's own hit-region + seam
+     (+page.svelte:5257-5266, hover/focus :5268-5272). */
+  .s-term-edge-handle {
+    height: var(--space-xs);
+    cursor: row-resize;
+  }
+
+  .s-term-edge-handle::before {
+    content: '';
+    display: block;
+    height: 1px;
+    background: var(--color-border);
+  }
+
+  .s-term-edge-handle.is-hover {
+    background: var(--color-accent-subtle);
+  }
+
+  .s-term-edge-handle.is-hover::before {
+    background: transparent;
+  }
+
+  .s-term-edge-handle.s-term-strong::before {
+    height: 2px;
+    background: var(--color-border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .s-term-edge-handle.s-term-none::before {
+    background: transparent;
+  }
+
+  .s-term-edge-handle.s-term-focus::before {
+    background: var(--color-focus-ring);
+  }
+
+  .s-term-edge-dock {
+    padding: var(--space-2xs);
+    background: var(--color-surface);
+  }
+
+  .s-term-edge-dock.s-term-rail {
+    background: var(--color-rail);
+  }
+
+  /* D3: the session header group. Faithful to `.topbar`/`.topbar-context`/
+     `.topbar-actions` (+page.svelte:4664-4718). */
+  .s-term-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    height: var(--topbar-height);
+    padding: 0 var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .s-term-topbar-context {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .s-term-topbar-title {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-body-size);
+    font-weight: 500;
+  }
+
+  .s-term-topbar-breadcrumb {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  .s-term-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .s-term-btnicon {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  /* `aria-pressed`'s own treatment (+page.svelte:4720-4725 doc comment):
+     accent-subtle fill + accent border carries the open state. */
+  .s-term-toggle[aria-pressed='true'] {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .s-term-menu-caption {
+    margin: var(--space-sm) 0 var(--space-2xs);
+    padding: 0 var(--space-lg);
+  }
+
+  .s-term-menu {
+    margin: 0 var(--space-lg) var(--space-md);
+    max-width: 14rem;
+  }
+
+  .s-term-sessionrow {
+    margin: 0 var(--space-lg);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  .s-term-sessionrow-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    min-width: 0;
+  }
+</style>
