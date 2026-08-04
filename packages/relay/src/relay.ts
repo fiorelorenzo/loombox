@@ -300,6 +300,21 @@ export interface CreateRelayOptions {
    * `decommissionTargetRequestTtlMs`.
    */
   targetUpdateRequestTtlMs?: number;
+  /**
+   * How long any SPEC §7.26 connected-account request's (github/jira
+   * connect, disconnect, pin get/set/unset/resolve — issue #230; see the
+   * `pendingAccountRequests` doc comment below) per-requestId routing entry
+   * survives without its terminal reply, before the relay drops it on its
+   * own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_ACCOUNT_REQUEST_TTL_MS}; tests lower it to keep
+   * expiry-then-reuse assertions fast, exactly like
+   * `targetUpdateRequestTtlMs`. The GitHub device flow is this pair's
+   * slowest member (an operator has up to `expires_in` — GitHub's own
+   * default is 15 minutes — to approve in a browser), so the default is
+   * generous enough to cover it rather than tuned to the sub-second pin/
+   * disconnect calls that share this same table.
+   */
+  accountRequestTtlMs?: number;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -324,6 +339,8 @@ export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 export const DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS = 60_000;
 /** Sane default for {@link CreateRelayOptions.targetUpdateRequestTtlMs} — 5 minutes, generous because the underlying update re-runs supervisor provisioning (fetch + verify + stage an artifact over `ssh:`, #87); this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal update latency. */
 export const DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS = 5 * 60_000;
+/** Sane default for {@link CreateRelayOptions.accountRequestTtlMs} — 16 minutes, one past GitHub's own device-flow `expires_in` default (15 minutes, `github-device-flow.ts`), so a slow-but-real approval is never cut off by the relay's own routing-entry TTL; this only guards against a genuinely abandoned/crashed request leaking its entry forever (#230), not normal connect/pin/disconnect latency. */
+export const DEFAULT_ACCOUNT_REQUEST_TTL_MS = 16 * 60_000;
 /** Sane default for {@link CreateRelayOptions.healthCheck}'s `timeoutMs` (#270) — generous relative to a healthy `SELECT 1`/`PING` (single-digit milliseconds on the same host/LAN as prodbox's Postgres/Redis), short enough that a hung dependency still answers well within any external uptime checker's own timeout (these commonly run 5-30s). */
 export const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 2_000;
 
@@ -418,6 +435,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     opts.decommissionTargetRequestTtlMs ?? DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS;
   const targetUpdateRequestTtlMs =
     opts.targetUpdateRequestTtlMs ?? DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS;
+  const accountRequestTtlMs = opts.accountRequestTtlMs ?? DEFAULT_ACCOUNT_REQUEST_TTL_MS;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -547,6 +565,59 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     pendingTargetUpdateRequests.delete(requestId);
   }
 
+  /**
+   * SPEC §7.26's connected-accounts management surface (issue #230): every
+   * nodeId-scoped connect/disconnect/pin request shares this one routing
+   * table, exactly like `pendingProvisionRequests`/
+   * `pendingSshDiscoveryRequests` above and for the same reason — none has
+   * an existing session/target to fan a reply through (a pin can be set
+   * before any tracker session exists on that project; disconnecting an
+   * account has no target of its own; a connect flow's whole point is that
+   * the account doesn't exist yet). One shared map, not seven near-
+   * identical ones, because every member is "one client-owned requestId in
+   * flight, terminal reply delivered to that same client" with no other
+   * per-type state to track. `github_connect_start_request` is the one
+   * multi-message case (an intermediate `github_connect_device_code`
+   * before the terminal `github_connect_result`) — handled by simply not
+   * clearing the entry on the intermediate message, exactly like
+   * `provision_progress` vs. `provision_target_result` above.
+   * `github_connect_cancel_request` deliberately never touches this table:
+   * it's forwarded straight to the owning node by `nodeId` (the client
+   * already knows it, having started the flow), and the eventual
+   * `github_connect_result` (reason `'cancelled'`) is what retires the
+   * original request's own entry.
+   *
+   * Cleaned up in exactly three places so nothing ever leaks: the terminal
+   * reply itself, the requesting client's own disconnect
+   * (`dropConnection`), and the TTL timer set here (`accountRequestTtlMs`).
+   * Never persisted — purely routing metadata for a request currently in
+   * flight.
+   */
+  const pendingAccountRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: NodeJS.Timeout }
+  >();
+
+  function clearPendingAccountRequest(requestId: string): void {
+    const pending = pendingAccountRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingAccountRequests.delete(requestId);
+  }
+
+  /** Registers a fresh routing entry for `requestId`, owned by `connection`, retired automatically after `accountRequestTtlMs` if no terminal reply ever arrives — the one piece of setup every account-request handler below shares. */
+  function trackAccountRequest(requestId: string, connection: ClientConnection): void {
+    clearPendingAccountRequest(requestId);
+    const timeout = setTimeout(() => {
+      app.log.warn(
+        { requestId },
+        'relay: connected-account request routing entry expired before a terminal reply arrived',
+      );
+      pendingAccountRequests.delete(requestId);
+    }, accountRequestTtlMs);
+    pendingAccountRequests.set(requestId, { clientConnection: connection, timeout });
+  }
+
   app.addHook('onClose', async () => {
     for (const requestId of [...pendingProvisionRequests.keys()]) {
       clearPendingProvisionRequest(requestId);
@@ -562,6 +633,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     for (const requestId of [...pendingTargetUpdateRequests.keys()]) {
       clearPendingTargetUpdateRequest(requestId);
+    }
+    for (const requestId of [...pendingAccountRequests.keys()]) {
+      clearPendingAccountRequest(requestId);
     }
     await fanOutBackend.close();
   });
@@ -1389,6 +1463,61 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingTargetUpdateRequest(message.requestId);
         return;
       }
+      case 'github_connect_device_code': {
+        // #230: streamed once ahead of the terminal `github_connect_result`
+        // — delivered to the requesting client, routing entry kept (not
+        // retired), exactly like `provision_progress` above.
+        const pending = pendingAccountRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: github_connect_device_code for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        return;
+      }
+      case 'github_connect_result':
+      case 'jira_connect_response':
+      case 'account_pin_response':
+      case 'account_pin_resolve_response': {
+        // #230: every other single-shot connect/pin reply — delivered to
+        // the requesting client and the routing entry retired, exactly
+        // like `target_update_response` above.
+        const pending = pendingAccountRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId, type: message.type },
+            'relay: connected-account reply for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingAccountRequest(message.requestId);
+        return;
+      }
+      case 'connected_account_disconnect_response': {
+        // #230: same single-shot routing as above, plus (on success) the
+        // relay-side half of disconnecting — forgetting the synced
+        // metadata row; the node already deleted its local keyring entry
+        // before sending this (`github-connect.ts`/`jira-connect.ts`'s own
+        // `deleteAccessToken`/`deleteCredential`).
+        const pending = pendingAccountRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: connected_account_disconnect_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        if (message.outcome === 'ok') {
+          await store.connectedAccounts.remove(connection.accountId, message.accountId);
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingAccountRequest(message.requestId);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -1693,6 +1822,49 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(nodeConnection, message);
         return;
       }
+      case 'github_connect_start_request':
+      case 'jira_connect_request':
+      case 'connected_account_disconnect_request':
+      case 'account_pin_get_request':
+      case 'account_pin_set_request':
+      case 'account_pin_unset_request':
+      case 'account_pin_resolve_request': {
+        // #230: every SPEC §7.26 connect/disconnect/pin request shares one
+        // routing shape — direct-by-`nodeId`, scoped to the requester's
+        // account, exactly like `target_update_request` above (none of
+        // these has an existing target/session to resolve the owning node
+        // through). `pendingAccountRequests`'s own doc comment covers why
+        // one shared table backs every member, including this one's
+        // multi-message case (`github_connect_start_request`).
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId, type: message.type },
+            'relay: connected-account request for unknown/foreign node',
+          );
+          return;
+        }
+        trackAccountRequest(message.requestId, connection);
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'github_connect_cancel_request': {
+        // #230: fire-and-forget — forwarded straight to the same `nodeId`
+        // the original `github_connect_start_request` named (the client
+        // already knows it); the eventual `github_connect_result` (reason
+        // `'cancelled'`) retires that original request's own routing entry,
+        // so this message never touches `pendingAccountRequests` itself.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: github_connect_cancel_request for unknown/foreign node',
+          );
+          return;
+        }
+        sendDirect(nodeConnection, message);
+        return;
+      }
       case 'prompt_inject':
       case 'permission_response':
       case 'config_option':
@@ -1856,6 +2028,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // still-pending target_update_response.
       for (const [requestId, pending] of pendingTargetUpdateRequests) {
         if (pending.clientConnection === connection) clearPendingTargetUpdateRequest(requestId);
+      }
+      // #230: same reasoning as every cleanup above — a disconnected client
+      // can never receive a still-pending github/jira connect, disconnect,
+      // or pin get/set/unset/resolve reply.
+      for (const [requestId, pending] of pendingAccountRequests) {
+        if (pending.clientConnection === connection) clearPendingAccountRequest(requestId);
       }
     }
   }

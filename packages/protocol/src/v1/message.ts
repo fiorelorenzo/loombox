@@ -59,6 +59,22 @@ import {
   testRunnerConfigResult,
   testRunnerConfigSet,
 } from './test-runner-config';
+import {
+  accountPinGetRequest,
+  accountPinResolveRequest,
+  accountPinResolveResponse,
+  accountPinResponse,
+  accountPinSetRequest,
+  accountPinUnsetRequest,
+  connectedAccountDisconnectRequest,
+  connectedAccountDisconnectResponse,
+  githubConnectCancelRequest,
+  githubConnectDeviceCode,
+  githubConnectResult,
+  githubConnectStartRequest,
+  jiraConnectRequest,
+  jiraConnectResponse,
+} from './account-connect';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -130,6 +146,20 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   testRunnerConfigResult,
   testRunnerConfigDetect,
   testRunnerConfigDetected,
+  githubConnectStartRequest,
+  githubConnectCancelRequest,
+  githubConnectDeviceCode,
+  githubConnectResult,
+  jiraConnectRequest,
+  jiraConnectResponse,
+  connectedAccountDisconnectRequest,
+  connectedAccountDisconnectResponse,
+  accountPinGetRequest,
+  accountPinSetRequest,
+  accountPinUnsetRequest,
+  accountPinResponse,
+  accountPinResolveRequest,
+  accountPinResolveResponse,
   ping,
   pong,
 ]);

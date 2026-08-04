@@ -459,6 +459,8 @@ export interface ConnectedAccountStore {
   upsert(accountId: string, account: ConnectedAccount): Awaitable<void>;
   /** Every connected account synced under this loombox account, across every node that has announced one — never another account's rows. Never includes a `nodePresence` field (issue #228 computes it lazily, never synced) because `ConnectedAccount` itself has none. */
   listForAccount(accountId: string): Awaitable<readonly ConnectedAccount[]>;
+  /** Forgets one account's synced metadata row, scoped to `accountId` (issue #230's disconnect path) — the relay-side half of "disconnect deletes the local secret AND the synced row"; `github-connect.ts`/`jira-connect.ts` own the local keyring half. A no-op (not an error) if `id` was never synced or already removed, mirroring `DeviceTokenStore.revoke`'s own idempotent-delete convention. */
+  remove(accountId: string, id: string): Awaitable<void>;
 }
 
 export interface RelayStore {
@@ -1106,6 +1108,11 @@ function createConnectedAccountStore(): SyncConnectedAccountStore {
         result.push(account);
       }
       return result;
+    },
+    remove(accountId, id) {
+      const key = `${accountId}\0${id}`;
+      const record = byKey.get(key);
+      if (record && record.accountId === accountId) byKey.delete(key);
     },
   };
 }

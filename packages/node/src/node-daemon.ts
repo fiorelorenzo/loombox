@@ -32,15 +32,29 @@ import {
 } from '@loombox/crypto';
 import {
   PROTOCOL_V1,
+  connectedAccountSecretRef,
+  parseConnectedAccountId,
   parseSessionPrivateMetaV1,
+  type AccountPinGetRequest,
+  type AccountPinMapV1,
+  type AccountPinResolveOutcome,
+  type AccountPinResolveRequest,
+  type AccountPinSetRequest,
+  type AccountPinUnsetRequest,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
+  type ConnectedAccountDisconnectRequest,
   type DecommissionResultV1,
   type DecommissionTargetRequest,
   type FileEventPayloadV1,
   type FsListRequest,
   type FsListRequestPayloadV1,
   type FsListResponsePayloadV1,
+  type GithubConnectCancelRequest,
+  type GithubConnectOutcome,
+  type GithubConnectStartRequest,
+  type JiraConnectOutcome,
+  type JiraConnectRequest,
   type PromptInjectV1,
   type ProvisionProgress,
   type ProvisionTargetResult,
@@ -79,7 +93,22 @@ import {
   type WrappedAmkEnvelope,
 } from '@loombox/protocol';
 
+import {
+  AccountHostMismatchError,
+  AccountPinDanglingError,
+  AccountPinMalformedError,
+  AccountPinRequiredError,
+  AmbiguousAccountError,
+  resolveAccountForRead,
+  resolveAccountForWrite,
+  type AccountPinMap,
+} from './account-pin';
+import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { GithubDeviceFlowError } from './github-device-flow';
+import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
+import { JiraConnectService } from './jira-connect';
+
 import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
@@ -409,6 +438,14 @@ export interface NodeDaemonOptions {
     /** Overrides the remote supervisor base directory; defaults to `$HOME/.loombox/supervisor` (see `supervisor-provisioning.ts`). */
     baseDir?: string;
   };
+  /** SPEC §7.26, issue #230 — see `NodeDaemonOptions.jiraConnectService`/`accountPinStore`'s doc comments for the sibling stores this shares its convention with. Defaults to `new GithubConnectService({stateDir: options.stateDir})`. */
+  githubConnectService?: GithubConnectService;
+  /** Overrides `resolveGithubConnectClientId()`'s env lookup (`LOOMBOX_GITHUB_CONNECT_CLIENT_ID`) — tests inject a fixed id so they never depend on the real env. `undefined` (no client id configured, in production or a test) makes `github_connect_start_request` reply with a named `'error'` failure rather than attempting a device-flow call GitHub would just reject. */
+  githubConnectClientId?: string;
+  /** SPEC §7.26, issue #230 — see `NodeDaemonOptions.mcpConfigStore`'s own default-construction convention above. Defaults to `new JiraConnectService({stateDir: options.stateDir})`. */
+  jiraConnectService?: JiraConnectService;
+  /** SPEC §7.26, issue #227/#230 — this node's per-project, per-capability account pin map. Defaults to `new AccountPinStore({stateDir: options.stateDir})`, same convention as `mcpConfigStore`/`permissionPolicyStore` above. */
+  accountPinStore?: AccountPinStore;
 }
 
 export interface CreateNodeSessionOptions {
@@ -663,6 +700,75 @@ interface SessionBridge {
   remoteChild?: RemoteAgentChildProcess;
 }
 
+/** Maps a `GithubConnectService.connect` rejection to `github_connect_result`'s failure outcome — `GithubDeviceFlowError`'s own named `reason` (`'expired_token'` / `'access_denied'` / `'cancelled'`) passes straight through; anything else (no client id, `GithubIdentityError`, a network failure) becomes `'error'`. */
+function githubConnectFailureFromError(error: unknown): GithubConnectOutcome {
+  if (error instanceof GithubDeviceFlowError) {
+    return { outcome: 'failure', reason: error.reason, message: error.message };
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return { outcome: 'failure', reason: 'error', message: detail };
+}
+
+/** Maps one of `account-pin.ts`'s five `AccountResolutionError` subclasses to `account_pin_resolve_response`'s error outcome, field-for-field. `undefined` for anything else — `account-pin.ts`'s own contract is that its resolvers never throw anything but one of these five, so the caller treats that case as a defensive "should not happen" rather than a labelable response. */
+function accountPinResolveErrorFromException(error: unknown): AccountPinResolveOutcome | undefined {
+  if (error instanceof AccountPinRequiredError) {
+    return {
+      outcome: 'error',
+      errorType: 'AccountPinRequiredError',
+      message: error.message,
+      capability: error.capability,
+    };
+  }
+  if (error instanceof AccountPinMalformedError) {
+    return {
+      outcome: 'error',
+      errorType: 'AccountPinMalformedError',
+      message: error.message,
+      capability: error.capability,
+      pinnedAccountId: error.pinnedAccountId,
+    };
+  }
+  if (error instanceof AccountHostMismatchError) {
+    return {
+      outcome: 'error',
+      errorType: 'AccountHostMismatchError',
+      message: error.message,
+      capability: error.capability,
+      pinnedAccountId: error.pinnedAccountId,
+      expectedHost: error.expectedHost,
+      actualHost: error.actualHost,
+    };
+  }
+  if (error instanceof AccountPinDanglingError) {
+    return {
+      outcome: 'error',
+      errorType: 'AccountPinDanglingError',
+      message: error.message,
+      capability: error.capability,
+      pinnedAccountId: error.pinnedAccountId,
+    };
+  }
+  if (error instanceof AmbiguousAccountError) {
+    return {
+      outcome: 'error',
+      errorType: 'AmbiguousAccountError',
+      message: error.message,
+      capability: error.capability,
+      candidateAccountIds: [...error.candidateAccountIds],
+    };
+  }
+  return undefined;
+}
+
+/** `AccountPinStore.get`'s `AccountPinMap` (`string | null | undefined` values — `undefined` meaning "never iterated," never actually stored) narrowed to the wire's `AccountPinMapV1` (`string | null` only), by construction rather than a cast: drops any key whose value is `undefined` instead of asserting the type away. */
+function toWireAccountPinMap(map: AccountPinMap): AccountPinMapV1 {
+  const result: AccountPinMapV1 = {};
+  for (const [capability, value] of Object.entries(map)) {
+    if (value !== undefined) result[capability] = value;
+  }
+  return result;
+}
+
 /**
  * Ties `SessionManager` + `AgentSupervisor` + the v1 `RelayConnection`
  * together into one E2E-encrypted node (SPEC.md §5.1, §5.6, §8, §12 v1;
@@ -792,6 +898,17 @@ export class NodeDaemon extends EventEmitter {
    */
   private readonly providerAvailability = new Map<string, string[]>();
 
+  /** SPEC §7.26, issue #230's GitHub device-flow connect path. */
+  private readonly githubConnectService: GithubConnectService;
+  /** `resolveGithubConnectClientId()`'s result (or `NodeDaemonOptions.githubConnectClientId`'s test override) — `undefined` means this node has no GitHub OAuth App client id configured, so `handleGithubConnectStartRequest` fails immediately rather than attempting a call GitHub would reject. */
+  private readonly githubConnectClientId: string | undefined;
+  /** One `AbortController` per in-flight `github_connect_start_request`'s `requestId` — `handleGithubConnectCancelRequest` aborts through it; the entry is removed the moment the flow settles (success, failure, or cancellation), never left to leak. */
+  private readonly githubConnectFlows = new Map<string, AbortController>();
+  /** SPEC §7.26, issue #230's Jira API-token connect path. */
+  private readonly jiraConnectService: JiraConnectService;
+  /** SPEC §7.26, issue #227/#230's per-project, per-capability account pin map. */
+  private readonly accountPinStore: AccountPinStore;
+
   constructor(options: NodeDaemonOptions) {
     super();
     this.nodeId = options.nodeId;
@@ -892,6 +1009,13 @@ export class NodeDaemon extends EventEmitter {
       ? new TargetUpdateMonitor({ pinnedVersion: options.targetUpdate.pinnedVersion })
       : undefined;
     this.providerCandidates = options.providerCandidates ?? [];
+    this.githubConnectService =
+      options.githubConnectService ?? new GithubConnectService({ stateDir: options.stateDir });
+    this.githubConnectClientId = options.githubConnectClientId ?? resolveGithubConnectClientId();
+    this.jiraConnectService =
+      options.jiraConnectService ?? new JiraConnectService({ stateDir: options.stateDir });
+    this.accountPinStore =
+      options.accountPinStore ?? new AccountPinStore({ stateDir: options.stateDir });
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
@@ -2190,6 +2314,30 @@ export class NodeDaemon extends EventEmitter {
         // is listening, exactly like `'attachment_resolved'` above.
         this.emit('provision_target_request', message);
         return;
+      case 'github_connect_start_request':
+        this.handleGithubConnectStartRequest(message);
+        return;
+      case 'github_connect_cancel_request':
+        this.handleGithubConnectCancelRequest(message);
+        return;
+      case 'jira_connect_request':
+        this.handleJiraConnectRequest(message);
+        return;
+      case 'connected_account_disconnect_request':
+        this.handleConnectedAccountDisconnectRequest(message);
+        return;
+      case 'account_pin_get_request':
+        this.handleAccountPinGetRequest(message);
+        return;
+      case 'account_pin_set_request':
+        this.handleAccountPinSetRequest(message);
+        return;
+      case 'account_pin_unset_request':
+        this.handleAccountPinUnsetRequest(message);
+        return;
+      case 'account_pin_resolve_request':
+        this.handleAccountPinResolveRequest(message);
+        return;
       default:
         // Every other v1 message type (permission_response, config_option,
         // presence, blob_ref, ...) is out of this wave's scope; ignore
@@ -2795,6 +2943,263 @@ export class NodeDaemon extends EventEmitter {
   private sendSshDiscoveryResponse(requestId: string, result: SshDiscoveryResultV1): void {
     this.relay.send({
       type: 'ssh_discovery_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to start SPEC §7.26's GitHub
+   * device-flow connect (issue #222's flow, reachable here for #230).
+   * Fails immediately with a named `'error'` outcome if this node has no
+   * GitHub OAuth App client id configured (`githubConnectClientId`) —
+   * never attempts a call GitHub would just reject. Otherwise runs
+   * `GithubConnectService.connect`, streaming the device/user code back
+   * the moment GitHub issues it (`github_connect_device_code`) and
+   * announcing the resulting account (`connected_account_announce`, issue
+   * #221) before the terminal `github_connect_result` — a client that
+   * only listens for the terminal message still sees a fully synced
+   * account either way. `handleGithubConnectCancelRequest` aborts through
+   * the same `AbortController` this registers in `githubConnectFlows`.
+   */
+  private handleGithubConnectStartRequest(message: GithubConnectStartRequest): void {
+    if (!this.githubConnectClientId) {
+      this.sendGithubConnectResult(message.requestId, {
+        outcome: 'failure',
+        reason: 'error',
+        message:
+          'this node has no GitHub OAuth App client id configured (LOOMBOX_GITHUB_CONNECT_CLIENT_ID)',
+      });
+      return;
+    }
+    const controller = new AbortController();
+    this.githubConnectFlows.set(message.requestId, controller);
+    this.githubConnectService
+      .connect({
+        clientId: this.githubConnectClientId,
+        signal: controller.signal,
+        onUserCode: (info) => {
+          this.relay.send({
+            type: 'github_connect_device_code',
+            protocolVersion: PROTOCOL_V1,
+            requestId: message.requestId,
+            nodeId: this.nodeId,
+            userCode: info.userCode,
+            verificationUri: info.verificationUri,
+            ...(info.verificationUriComplete
+              ? { verificationUriComplete: info.verificationUriComplete }
+              : {}),
+            expiresInSeconds: info.expiresInSeconds,
+            intervalSeconds: info.intervalSeconds,
+          });
+        },
+      })
+      .then((account) => {
+        this.relay.send({
+          type: 'connected_account_announce',
+          protocolVersion: PROTOCOL_V1,
+          account,
+        });
+        this.sendGithubConnectResult(message.requestId, { outcome: 'success', account });
+      })
+      .catch((error: unknown) => {
+        this.sendGithubConnectResult(message.requestId, githubConnectFailureFromError(error));
+      })
+      .finally(() => {
+        this.githubConnectFlows.delete(message.requestId);
+      });
+  }
+
+  /** Cancels an in-flight `github_connect_start_request` — a no-op if `requestId` names no flow this node currently holds (already settled, or never started here). Fire-and-forget: `handleGithubConnectStartRequest`'s own `.catch` is what sends the resulting `github_connect_result` (reason `'cancelled'`), via `runGithubDeviceFlow`'s `AbortSignal` contract. */
+  private handleGithubConnectCancelRequest(message: GithubConnectCancelRequest): void {
+    this.githubConnectFlows.get(message.requestId)?.abort();
+  }
+
+  private sendGithubConnectResult(requestId: string, result: GithubConnectOutcome): void {
+    this.relay.send({
+      type: 'github_connect_result',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to run SPEC §7.26's Jira
+   * API-token connect path (issue #225's flow, reachable here for #230)
+   * against `{siteUrl, email, apiToken}` the operator just typed. One
+   * round trip — success announces the account (`connected_account_announce`,
+   * issue #221) before replying, exactly like the GitHub flow above.
+   */
+  private handleJiraConnectRequest(message: JiraConnectRequest): void {
+    this.jiraConnectService
+      .connect({ siteUrl: message.siteUrl, email: message.email, apiToken: message.apiToken })
+      .then((account) => {
+        this.relay.send({
+          type: 'connected_account_announce',
+          protocolVersion: PROTOCOL_V1,
+          account,
+        });
+        this.sendJiraConnectResponse(message.requestId, { outcome: 'success', account });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendJiraConnectResponse(message.requestId, { outcome: 'failure', message: detail });
+      });
+  }
+
+  private sendJiraConnectResponse(requestId: string, result: JiraConnectOutcome): void {
+    this.relay.send({
+      type: 'jira_connect_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to disconnect `accountId` —
+   * deletes the local keyring entry for whichever provider's connect
+   * service owns it (`GithubConnectService.deleteAccessToken` /
+   * `JiraConnectService.deleteCredential`, both keyed identically by
+   * `secretRef`), then replies `outcome: 'ok'`; the relay itself forgets
+   * the synced metadata row on that reply (`relay.ts`'s
+   * `connected_account_disconnect_response` handler), not this node. Does
+   * not scan for or unpin project pins referencing this account (issue
+   * #229's full scan-and-warn) — the client already confirmed with the
+   * operator before ever sending this (SPEC §7.26).
+   */
+  private handleConnectedAccountDisconnectRequest(
+    message: ConnectedAccountDisconnectRequest,
+  ): void {
+    const parsed = parseConnectedAccountId(message.accountId);
+    const secretRef = connectedAccountSecretRef(message.accountId);
+    const deletion =
+      parsed?.provider === 'github'
+        ? this.githubConnectService.deleteAccessToken({ secretRef })
+        : parsed?.provider === 'jira'
+          ? this.jiraConnectService.deleteCredential({ secretRef })
+          : Promise.reject(
+              new Error(
+                `connected_account_disconnect_request: unknown provider for account id "${message.accountId}"`,
+              ),
+            );
+    deletion
+      .then(() => {
+        this.relay.send({
+          type: 'connected_account_disconnect_response',
+          protocolVersion: PROTOCOL_V1,
+          requestId: message.requestId,
+          nodeId: this.nodeId,
+          accountId: message.accountId,
+          outcome: 'ok',
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.relay.send({
+          type: 'connected_account_disconnect_response',
+          protocolVersion: PROTOCOL_V1,
+          requestId: message.requestId,
+          nodeId: this.nodeId,
+          accountId: message.accountId,
+          outcome: 'error',
+          message: detail,
+        });
+      });
+  }
+
+  /** SPEC §7.26/#227's `AccountPinStore.get` — `projectPath`'s full pin map, unchanged. */
+  private handleAccountPinGetRequest(message: AccountPinGetRequest): void {
+    const pins = this.accountPinStore.get(message.projectPath);
+    this.sendAccountPinResponse(message.requestId, message.projectPath, pins);
+  }
+
+  /** `AccountPinStore.setPin` — pins `message.capability` to `message.accountId`, or records an explicit opt-out when it's `null`. Replies with the resulting full map so the client never needs a second round trip. */
+  private handleAccountPinSetRequest(message: AccountPinSetRequest): void {
+    this.accountPinStore.setPin(message.projectPath, message.capability, message.accountId);
+    this.sendAccountPinResponse(
+      message.requestId,
+      message.projectPath,
+      this.accountPinStore.get(message.projectPath),
+    );
+  }
+
+  /** `AccountPinStore.unsetPin` — reverts `message.capability` to unconfigured (deletes the key entirely, distinct from `handleAccountPinSetRequest`'s explicit-`null` opt-out). */
+  private handleAccountPinUnsetRequest(message: AccountPinUnsetRequest): void {
+    this.accountPinStore.unsetPin(message.projectPath, message.capability);
+    this.sendAccountPinResponse(
+      message.requestId,
+      message.projectPath,
+      this.accountPinStore.get(message.projectPath),
+    );
+  }
+
+  private sendAccountPinResponse(
+    requestId: string,
+    projectPath: string,
+    pins: AccountPinMap,
+  ): void {
+    this.relay.send({
+      type: 'account_pin_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      projectPath,
+      pins: toWireAccountPinMap(pins),
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to preview what
+   * `message.capability` currently resolves to for `message.projectPath`,
+   * without performing a write-back action (SPEC §7.26/#227's
+   * `resolveAccountForRead`/`resolveAccountForWrite`, reachable here for
+   * #230's pin picker). `message.accounts` — the client's own already-
+   * synced list — and this node's own locally-stored pin map are the only
+   * two inputs either resolver needs.
+   */
+  private handleAccountPinResolveRequest(message: AccountPinResolveRequest): void {
+    const pins = this.accountPinStore.get(message.projectPath);
+    const params = {
+      pins,
+      capability: message.capability,
+      accounts: message.accounts,
+      target: message.target,
+    };
+    try {
+      const account =
+        message.mode === 'read' ? resolveAccountForRead(params) : resolveAccountForWrite(params);
+      this.sendAccountPinResolveResponse(
+        message.requestId,
+        account ? { outcome: 'resolved', account } : { outcome: 'none' },
+      );
+    } catch (error) {
+      const outcome = accountPinResolveErrorFromException(error);
+      if (!outcome) {
+        // Defensive: account-pin.ts's own contract is that its resolvers
+        // only ever throw one of the five AccountResolutionError
+        // subclasses `accountPinResolveErrorFromException` checks —
+        // anything else is a bug in that contract, not a state this
+        // response type can label. Logged rather than silently dropped or
+        // left to crash this node's relay message handler.
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: unexpected error resolving account pin for "${message.capability}": ${detail}`,
+        );
+        return;
+      }
+      this.sendAccountPinResolveResponse(message.requestId, outcome);
+    }
+  }
+
+  private sendAccountPinResolveResponse(requestId: string, result: AccountPinResolveOutcome): void {
+    this.relay.send({
+      type: 'account_pin_resolve_response',
       protocolVersion: PROTOCOL_V1,
       requestId,
       nodeId: this.nodeId,

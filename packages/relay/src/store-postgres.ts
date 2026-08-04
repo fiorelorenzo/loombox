@@ -991,5 +991,11 @@ function createPostgresConnectedAccountStore(pg: PgLike): ConnectedAccountStore 
         return account;
       });
     },
+    async remove(accountId, id) {
+      await pg.query(`DELETE FROM connected_accounts WHERE account_id = $1 AND id = $2`, [
+        accountId,
+        id,
+      ]);
+    },
   };
 }
