@@ -193,6 +193,18 @@ export function createRelayTrackerModeStorage(
       return state.status === 'loaded' ? state.mode : undefined;
     },
     set: (mode) => {
+      // Optimistic, synchronous: `TrackerConfigPanel.svelte`'s own
+      // `presentation="header"` instance is a BRAND NEW component that
+      // mounts the moment `onChange` flips `TrackerPage.svelte`'s
+      // `trackerMode` away from `undefined`, and reads `storage.get()`
+      // once at construction — waiting for the network round trip to
+      // confirm before updating the store would hand that fresh mount a
+      // stale `undefined`, showing its own setup form again right after a
+      // successful save. Reconciled with the node's actual answer once it
+      // arrives (normally a no-op, since it just echoes `mode` back); a
+      // failed save still surfaces as a real error rather than silently
+      // keeping the optimistic value as if nothing went wrong.
+      store.set({ status: 'loaded', mode });
       void client.setTrackerMode(nodeId, projectPath, mode).then(
         (resolved) => store.set({ status: 'loaded', mode: resolved ?? mode }),
         (error: unknown) => {
