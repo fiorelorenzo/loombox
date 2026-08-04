@@ -3142,8 +3142,14 @@
                   section={settingsSection}
                   onSectionChange={selectSettingsSection}
                 />
-              {:else if mainView === 'tracker' && selectedSessionId && client}
-                <TrackerPage {client} sessionId={selectedSessionId} />
+              {:else if mainView === 'tracker' && selectedSessionId && selectedProjectPath && client}
+                <TrackerPage
+                  {client}
+                  sessionId={selectedSessionId}
+                  projectPath={selectedProjectPath}
+                  nodeId={selectedSession?.nodeId}
+                  {connectedAccounts}
+                />
               {/if}
             </div>
           {:else if !selectedSessionId}
@@ -3474,7 +3480,6 @@
                 <ProjectConfigPanel
                   projectPath={selectedProjectPath}
                   sessionId={selectedSessionId}
-                  {connectedAccounts}
                   relayClient={client}
                 />
               </div>

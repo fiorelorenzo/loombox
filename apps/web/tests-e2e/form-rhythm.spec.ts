@@ -128,7 +128,10 @@ test.describe('form rhythm (Field stacking contract)', () => {
 
     await page.goto('/');
     await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
-    await page.getByTestId('project-config-toggle').click();
+    // Reached from the Tracker page's own empty-state setup step now
+    // (issue #672, F1-1/F2-2) — Config's Tracker section is deleted, not
+    // mirrored, so `project-config-toggle` no longer leads here at all.
+    await page.getByTestId('destination-tracker').click();
     await expect(page.getByTestId('tracker-config-panel')).toBeVisible({ timeout: 30_000 });
 
     // Native-only shows a single Field (nothing to compare a gap against

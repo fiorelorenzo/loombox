@@ -85,6 +85,29 @@
     flex-shrink: 0;
   }
 
+  /* A page-header actions cluster wide enough to outgrow the title's own
+     row (e.g. Tracker's mode badge + Change/New type/New record buttons,
+     issue #672) needs a bounded width to wrap its OWN buttons against —
+     a bare `flex-wrap: wrap` on `.page-header`/`.page-header-actions`
+     alone does nothing here: an un-stretched flex item's `auto` sizing is
+     its unwrapped content width regardless of `flex-wrap`, so it silently
+     overflowed the page's own `--space-2xl` padding instead. Stacking the
+     title above a full-width, internally-wrapping actions row (mobile
+     only — `480px` mirrors `--bp-mobile`, unreadable directly in a media
+     query) fixes both: the row now has a real width to wrap against, and
+     it no longer competes with the title for space at all. */
+  @media (max-width: 480px) {
+    .page-header {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .page-header-actions {
+      flex-wrap: wrap;
+      width: 100%;
+    }
+  }
+
   .page-content {
     min-width: 0;
   }
