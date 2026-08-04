@@ -224,55 +224,34 @@ describe('MessageItem: one timeline metaphor (redesign v3 §3.4)', () => {
   });
 });
 
-describe('MessageItem: attribution by surface and glyph (design spec v6 §3.4, issue #575)', () => {
-  it("draws an agent turn's provider glyph decoratively in the gutter, with the role reaching assistive tech through a separate visually-hidden label", () => {
+describe('MessageItem: turn delimitation v7 (design spec §2, issue #667 — B1-2 amended + B2-4)', () => {
+  it('draws no glyph in the gutter for any role, provider, or grouping — the surface alone carries the distinction now', () => {
     const { container } = render(MessageItem, {
       props: { item: messageItem(), providerId: 'claude' },
     });
-    const glyph = container.querySelector('[data-icon-name="provider-claude"]');
-    expect(glyph).toBeTruthy();
-    expect(glyph?.getAttribute('aria-hidden')).toBe('true');
-
-    // The word itself is unchanged from v5 — "Claude", not the raw id — it
-    // just no longer paints. `.sr-only` is real text, never `aria-hidden`.
-    const label = screen.getByText('Claude');
-    expect(label.className).toContain('sr-only');
-    expect(label.getAttribute('aria-hidden')).not.toBe('true');
-  });
-
-  it('falls back to the plain provider-generic glyph for an unrecognized or omitted provider id, same as the "Agent" label fallback', () => {
-    const { container } = render(MessageItem, { props: { item: messageItem() } });
-    expect(container.querySelector('[data-icon-name="provider-generic"]')).toBeTruthy();
-    expect(screen.getByText('Agent').className).toContain('sr-only');
-  });
-
-  it('gives a user turn no glyph at all — the accent bar and raised surface already say "you"', () => {
-    const { container } = render(MessageItem, {
-      props: { item: messageItem({ kind: 'user_message_chunk' }) },
-    });
     expect(container.querySelector('[data-icon-name^="provider-"]')).toBeNull();
-    const label = screen.getByText('You');
-    expect(label.className).toContain('sr-only');
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    expect(document.querySelector('[data-icon-name^="provider-"]')).toBeNull();
   });
 
-  it("suppresses only the visible glyph when showAttribution is false — the accessible label and this turn's own surface stay", () => {
-    const { container } = render(MessageItem, {
-      props: { item: messageItem(), providerId: 'claude', showAttribution: false },
-    });
-    expect(container.querySelector('[data-icon-name^="provider-"]')).toBeNull();
-    // Still announced — a screen reader gets every turn's role regardless
-    // of whether consecutive turns repeat the glyph visually.
-    expect(screen.getByText('Claude').className).toContain('sr-only');
-    expect(screen.getByTestId('message-item').className).toMatch(/\bagent\b/);
-  });
-
-  it("labels an agent turn with the session's own provider name, not a generic word, when one is known", () => {
+  it("still announces the session's own provider name — or falls back to 'Agent'/'You' — through the off-screen .sr-only label alone", () => {
     render(MessageItem, { props: { item: messageItem(), providerId: 'codex' } });
-    expect(screen.getByText('Codex')).toBeTruthy();
-    expect(screen.queryByText('Agent')).toBeNull();
+    const providerLabel = screen.getByText('Codex');
+    expect(providerLabel.className).toContain('sr-only');
+    expect(providerLabel.getAttribute('aria-hidden')).not.toBe('true');
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem() } });
+    expect(screen.getByText('Agent').className).toContain('sr-only');
+    cleanup();
+
+    render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
+    expect(screen.getByText('You').className).toContain('sr-only');
   });
 
-  it("puts the user's own turn on a raised surface and an agent turn on its own quieter one — never the same class, never no surface", () => {
+  it('gives the user turn and the agent turn distinct role classes — the one signal each surface reads to tell them apart', () => {
     render(MessageItem, { props: { item: messageItem({ kind: 'user_message_chunk' }) } });
     expect(screen.getByTestId('message-item').className).toMatch(/\buser\b/);
     cleanup();

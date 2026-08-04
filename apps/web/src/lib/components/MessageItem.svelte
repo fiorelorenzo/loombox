@@ -30,52 +30,44 @@
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
    * §3.4 "Canvas and transcript" — one timeline metaphor): the root
    * `.message-item` is a full-width row split into a fixed `.gutter`
-   * (`var(--gutter)`) carrying the role glyph, and `.content` flowing in
-   * the remaining width — never a bubble, never right-aligned. `user` is
-   * told apart from `agent` with a hairline/tint on the gutter itself,
-   * never a different box — the old right-aligned accent-subtle bubble
-   * and the agent's full-width "card" look are both gone; every row reads
-   * the same shape. A plain CSS `animation` (`beat-in`,
-   * `--duration-base`/`--ease-beat`) plays once when the root element is
-   * first mounted into the keyed `{#each item.id}` list and never replays
-   * on the in-place prop updates that stream text into the same DOM node
-   * (verified by the existing "DOM node stays the same instance" test) —
-   * the un-staggered single beat-in the brief specifies for live-streamed
-   * arrivals. Reduced motion is handled for free: this animation is
-   * written entirely against `--duration-base`/`--ease-*`, which
-   * `tokens.css` already zeroes under `prefers-reduced-motion`.
+   * (`var(--gutter)`) and `.content` flowing in the remaining width —
+   * never a bubble, never right-aligned; the old right-aligned
+   * accent-subtle bubble and the agent's full-width "card" look are both
+   * gone, every row reads the same shape. A plain CSS `animation`
+   * (`beat-in`, `--duration-base`/`--ease-beat`) plays once when the root
+   * element is first mounted into the keyed `{#each item.id}` list and
+   * never replays on the in-place prop updates that stream text into the
+   * same DOM node (verified by the existing "DOM node stays the same
+   * instance" test) — the un-staggered single beat-in the brief specifies
+   * for live-streamed arrivals. Reduced motion is handled for free: this
+   * animation is written entirely against `--duration-base`/`--ease-*`,
+   * which `tokens.css` already zeroes under `prefers-reduced-motion`.
    *
-   * Attribution by surface and glyph, not by a word (design spec
-   * `2026-08-03-cockpit-v6-design.md` §3.4, issue #575, superseding v5 §4's
-   * visible caption-case word — settled with Lorenzo 2026-08-03: a
-   * colour-only rail fails for colour-blind readers, a circular avatar
-   * drags the transcript toward chat, spacing alone doesn't scan). The
-   * gutter stays the alignment device it was, it just holds a different
-   * mark now: an agent/thought turn draws a small decorative provider
-   * glyph (`providerId`, mapped through `$lib/providers`'s shared
-   * `PROVIDER_LABELS.glyph`, defaulting to `provider-generic` for an
-   * unrecognized or omitted id) rather than a word, and a user turn draws
-   * none at all — its accent bar and raised surface already say "you"
-   * without a label. Whatever replaced the word still has to reach
-   * assistive tech, so a visually-hidden `.sr-only` label (the same
-   * `PROVIDER_LABELS.role`/`"You"` text v5's visible word used to carry)
-   * sits beside the glyph on every turn, read in the same DOM position a
-   * sighted v5 reader's eye used to land on first.
+   * Turn delimitation v7 (`docs/superpowers/specs/2026-08-04-cockpit-v7-
+   * decisions.md` §2, issue #667 — B1-2 amended + B2-4, superseding the v6
+   * §3.4 glyph-plus-word scheme this doc comment used to describe): one
+   * signal per role, and nothing sighted paints in the gutter at all
+   * anymore. `user` gets `--color-surface-raised`; `agent` gets no fill
+   * and runs straight into the page background; neither carries a gutter
+   * accent bar — Lorenzo's amendment on B1-2 explicitly dropped the bar
+   * the option was drawn with ("only the different background... do not
+   * reintroduce a second mark to help"). `thought` is out of scope for
+   * both decisions and keeps its own pre-v7 quiet `--color-surface`
+   * surface (finding T3) as part of its separate collapsed-disclosure
+   * treatment.
    *
-   * `showAttribution` (default `true`) lets the caller suppress the
-   * visible glyph — never the `.sr-only` label, which stays on every turn
-   * so a screen reader always gets the role regardless of grouping — when
-   * this item is a direct continuation of the same speaker's previous
-   * turn (`+page.svelte`'s transcript loop decides that, skipping over
-   * any tool-call rows in between). The turn still keeps its own quiet
-   * surface either way: suppressing the glyph groups consecutive turns
-   * visually without merging them into one unbounded block.
-   *
-   * The agent/thought role also gains its own surface (`--color-surface`,
-   * quieter than the user's `--color-surface-raised`) so a long agent
-   * answer reads as a bounded block against the page rather than an
-   * unbounded run of prose (finding T3). The user's own turns keep the
-   * raised surface and the gutter's accent bar they already had.
+   * The gutter keeps its job as the shared alignment device — every
+   * sibling row shape (`ToolCallGutter`, `PlanCard`, `QueuedPromptBar`,
+   * the composer in `+page.svelte`) still reads `var(--gutter)`, narrowed
+   * for v7 since nothing here needs to fit a word or an icon anymore (see
+   * that token's own comment in `tokens.css`) — it just paints nothing:
+   * no glyph, no bar, only the same visually-hidden `.sr-only` label every
+   * turn has always carried (`PROVIDER_LABELS.role`/`"You"`), which is the
+   * whole reason dropping the glyph is a design choice and not an
+   * accessibility regression (B2-4's own acceptance bar). `showAttribution`
+   * and `$lib/transcript-attribution.ts`'s consecutive-run grouping are
+   * gone with the glyph they existed to hide — there was nothing left in
+   * the gutter for them to suppress.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
    * #468): the "Show thought" disclosure affordance draws its chevron from
@@ -104,19 +96,11 @@
     thinking?: boolean;
     /** True while this item's own turn is still live (issue #137's flush-on-`turn_ended` trigger). Defaults false, which flushes immediately — the correct behavior for replayed history and for every caller that doesn't pass it. */
     turnActive?: boolean;
-    /** The session's `ClientSessionMeta.provider` (e.g. `'claude'`) — only meaningful for an agent/thought row; a user row's glyph is always absent regardless. Omitted falls back to the generic `provider-generic` glyph/"Agent" label rather than guessing. */
+    /** The session's `ClientSessionMeta.provider` (e.g. `'claude'`) — only meaningful for an agent/thought row's `.sr-only` accessible label; a user row's label is always "You" regardless. Omitted falls back to the generic "Agent" label rather than guessing. */
     providerId?: string;
-    /** False when this turn is a direct continuation of the same speaker's previous one — hides the visible provider glyph so a run of consecutive turns doesn't repeat it, without touching the `.sr-only` accessible label or this turn's own surface. Defaults true: every caller that doesn't track runs gets the glyph every time, which is always correct, just not maximally quiet. */
-    showAttribution?: boolean;
   }
 
-  const {
-    item,
-    thinking = false,
-    turnActive = false,
-    providerId,
-    showAttribution = true,
-  }: Props = $props();
+  const { item, thinking = false, turnActive = false, providerId }: Props = $props();
 
   // Deliberately a one-time read of `item.text.length` at mount (`untrack`
   // opts out of the reactive dependency Svelte would otherwise warn about),
@@ -235,15 +219,6 @@
     role === 'user' ? 'You' : (providerId && PROVIDER_LABELS[providerId]?.role) || 'Agent',
   );
 
-  // The decorative glyph a sighted reader actually scans for now. `undefined`
-  // for a user turn: the accent bar plus raised surface already say "you",
-  // and design spec v6 §3.4 never gives the user role a glyph of its own.
-  const providerGlyph = $derived(
-    role === 'user'
-      ? undefined
-      : (providerId && PROVIDER_LABELS[providerId]?.glyph) || 'provider-generic',
-  );
-
   let expanded = $state(false);
 
   // The ticking header (issue #136): `elapsedSeconds` only ever advances
@@ -277,9 +252,6 @@
   data-testid="message-item"
 >
   <div class="gutter">
-    {#if providerGlyph && showAttribution}
-      <Icon name={providerGlyph} class="role-glyph" />
-    {/if}
     <span class="sr-only">{accessibleLabel}</span>
   </div>
   <div class="content">
@@ -342,10 +314,11 @@
     }
   }
 
-  /* Right-aligned, not centred: the icon sits flush against the inner edge
-     the same way `CLAUDE`/`GEMINI` used to under v5, so the column reads as
-     one clean rule against the content however wide a future glyph is, and
-     nothing can ever touch the prose. */
+  /* Right-aligned inner edge, matching `ToolCallGutter`/`QueuedPromptBar`'s
+     own copies of this rule even though nothing paints here anymore (v7
+     turn delimitation, issue #667) — the alignment behaviour stays
+     identical across every row type sharing this column regardless of
+     which of them currently holds visible content. */
   .gutter {
     flex: 0 0 var(--gutter);
     width: var(--gutter);
@@ -355,34 +328,14 @@
     gap: var(--space-3xs);
     padding-top: var(--space-sm);
     padding-right: var(--space-sm);
-    /* A user turn's glyph-less gutter (its `.sr-only` label is out of
-       flow) and a suppressed same-speaker agent turn (`showAttribution`
-       false, no icon rendered) would otherwise collapse to the height of
-       nothing at all — this keeps the accent bar/icon anchored to at
-       least one line of body prose regardless of what the gutter is
-       currently holding. */
-    min-height: var(--text-body-line);
-    overflow: hidden;
-  }
-
-  /* Design spec v6 §3.4 (issue #575): the decorative mark a sighted reader
-     scans for now, in place of v5's caption-case word. Always `aria-hidden`
-     (via `Icon`'s own default) — the `.sr-only` label right beside it is
-     what actually reaches assistive tech, same split `ToolCallGutter` and
-     `GenericToolRow` already use for their own kind glyph. `flex-shrink: 0`
-     used to sit here too, but `Icon`'s own `.icon { flex-shrink: 0; }`
-     scoped root rule already provides the identical value (issue #665's
-     guard-test scan) — redundant dead CSS, dropped rather than kept. */
-  :global(.role-glyph) {
-    color: var(--color-text-secondary);
   }
 
   /* The real accessible name every turn still carries (issue #575 point 6):
      the same short word v5 painted visibly, now off-screen but present in
      the DOM in the exact position a sighted v5 reader's eye used to land on
      first, so a screen reader's reading order is unchanged. Present on
-     EVERY turn regardless of `showAttribution` — only the glyph repeats or
-     not, the announced role never skips a turn. */
+     EVERY turn — v7 dropped the glyph that used to sit beside it (issue
+     #667), this label never depended on it being there. */
   .sr-only {
     position: absolute;
     width: 1px;
@@ -395,12 +348,12 @@
     border: 0;
   }
 
-  /* Distinguish user from agent with a hairline/tint on the gutter itself
-     — never a different box (the old right-aligned accent-subtle bubble,
-     and the agent's competing full-width "card" look, are both gone).
-     Design spec v6 §3.4 keeps the user's own second, redundant cue: the
-     raised surface plus this accent bar, so no single mark carries the
-     whole distinction alone. */
+  /* v7 turn delimitation (design spec §2, issue #667 — B1-2 amended): the
+     user's own turn keeps its one signal, a raised fill — no gutter accent
+     bar anymore, on this row or any other. "Exactly one signal per role,"
+     per Lorenzo's amendment on the option as drawn (which paired the fill
+     with a bar): the different background carries the whole distinction
+     alone. */
   .message-item.user {
     background: var(--color-surface-raised);
     border-radius: var(--radius-md);
@@ -408,28 +361,18 @@
     margin-inline: calc(var(--space-sm) * -1);
   }
 
-  .message-item.user .gutter {
-    box-shadow: inset 2px 0 0 0 var(--color-accent);
-  }
-
-  /* The agent's own quiet surface (design spec v6 §3.4, finding T3): a
-     long agent answer used to run straight into the page background with
-     no edge of its own. `--color-surface` is deliberately a notch quieter
-     than the user's `--color-surface-raised` — distinct enough to bound
-     the turn, quiet enough that the user's own surface still reads as the
-     more prominent of the two. A thought gets the same surface (it is
-     still the agent speaking, just further dimmed by `.content`'s own
+  /* The agent's own signal is absence (v7 §2's own framing): no fill at
+     all, so a long answer runs straight into the page background — the
+     pre-v6 behaviour, restored on purpose; `.agent` carries no rule of its
+     own here anymore. `.thought` keeps the pre-v7 `--color-surface` quiet
+     surface (design spec v6 §3.4, finding T3) as its own out-of-scope
+     collapsed-disclosure treatment (further dimmed by `.content`'s own
      opacity/italic below). */
-  .message-item.agent,
   .message-item.thought {
     background: var(--color-surface);
     border-radius: var(--radius-md);
     padding-inline: var(--space-sm);
     margin-inline: calc(var(--space-sm) * -1);
-  }
-
-  .message-item.thought :global(.role-glyph) {
-    opacity: 0.5;
   }
 
   .content {
@@ -673,13 +616,16 @@
     opacity: 1;
   }
 
-  /* Below `--bp-mobile` the role column collapses and its mark moves above
-     the turn (Lorenzo's ask, 2026-07-31, still true under v6's glyph). The
-     measurement that forced it: on a 390px phone the column spent 84px of
-     the width on v5's six-letter word, leaving the prose a 244px measure
-     that broke sentences every five or six words. v6's icon is far narrower
-     than the word it replaced, but the column still has to move as one
-     piece with every other row sharing it, so the geometry stays.
+  /* Below `--bp-mobile` the role column collapses and moves above the turn
+     (Lorenzo's ask, 2026-07-31) — still true post-v7 even though nothing
+     paints in the column anymore: it survives purely as the shared
+     alignment device every other row-shaped surface in the transcript
+     still reads from. The measurement that forced the original move: on a
+     390px phone the column spent 84px of the width on v5's six-letter
+     word, leaving the prose a 244px measure that broke sentences every
+     five or six words. v7's `--gutter` is already narrowed at every width
+     (`tokens.css`), but the column still has to move as one piece with
+     every other row sharing it, so the geometry stays.
 
      Every other surface sharing this column collapses at the same breakpoint
      (`QueuedPromptBar`, `ToolCallGutter` and its four widget rows,
@@ -688,15 +634,11 @@
      the exact defect the gutter was introduced to fix. `composer-strip`'s
      Playwright guard measures them against each other for that reason.
 
-     The gutter's accent thread goes with the column rather than moving to the
-     row's own left edge, which sounds like the obvious relocation and paints
-     nothing: a `user` row deliberately bleeds `--space-sm` outside the
-     transcript list (the `margin-inline`/`padding-inline` pair above), and
-     `.items` is an `overflow: auto` scroller, so it clips exactly the strip
-     that thread would live in — measured at 390px, the row's border box sits
-     at x=3.8 while the first painted pixel of its own background is at 11.4.
-     Nothing is lost: every role's own surface (the user's raised surface,
-     the agent/thought's quiet one) is still there on a phone regardless. */
+     Nothing else here is mobile-specific anymore: v7 dropped the gutter
+     accent bar everywhere, not just below this breakpoint, so there is no
+     bar-reset override left to write — every role's own surface cue (the
+     user's raised fill, the thought's quiet one) is still there on a phone
+     regardless. */
   @media (max-width: 479px) {
     .message-item {
       flex-direction: column;
@@ -712,12 +654,6 @@
 
     .content {
       padding-top: var(--space-3xs);
-    }
-
-    /* The 2px thread this column used to carry would now be a stub floating
-       beside the glyph — the "dirt on the screen" note above, again. */
-    .message-item.user .gutter {
-      box-shadow: none;
     }
   }
 </style>

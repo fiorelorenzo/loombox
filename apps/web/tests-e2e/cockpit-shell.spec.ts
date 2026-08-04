@@ -487,7 +487,7 @@ test.describe('cockpit shell', () => {
     expect(working?.x).toBe(quiet?.x);
   });
 
-  test('the transcript gutter and the composer gutter form one unbroken column, with no caption-case role word in either (issue #575)', async ({
+  test('the transcript gutter and the composer gutter form one unbroken column, narrower now that nothing paints in either (v7 turn delimitation, issue #667)', async ({
     page,
     loombox,
   }) => {
@@ -496,7 +496,7 @@ test.describe('cockpit shell', () => {
       kind: 'agent_message_chunk',
       turnId: 'turn-column',
       messageId: 'msg-column',
-      text: 'One turn, so the transcript has a role glyph to line up against.',
+      text: 'One turn, so the transcript has a gutter to line up against.',
     });
 
     const turnGutter = page.getByTestId('message-item').first().locator('.gutter');
@@ -504,28 +504,37 @@ test.describe('cockpit shell', () => {
     await expect(turnGutter).toBeVisible();
     await expect(composerGutter).toBeVisible();
 
-    // The old test compared the role WORDS' right edges, which lined up
-    // while the column defining them did not (the bug this test used to
-    // catch: `align-items: center` on the composer against `flex-end` on
-    // the transcript). Design spec v6 §3.4 replaced the word with a glyph
-    // (or nothing at all, for a user/composer row), so the column itself —
-    // not whatever happens to be painted inside it — is what has to align
-    // now: the gutter IS the alignment device.
+    // v6 replaced the role word with a glyph; v7 (issue #667, B2-4) drops
+    // the glyph too — the column itself, not whatever happens to be
+    // painted inside it, is what has to align, and now nothing paints
+    // inside either gutter at all.
     const turnBox = await turnGutter.boundingBox();
     const composerBox = await composerGutter.boundingBox();
     const turnRight = (turnBox?.x ?? 0) + (turnBox?.width ?? 0);
     const composerRight = (composerBox?.x ?? 0) + (composerBox?.width ?? 0);
     expect(Math.abs(turnRight - composerRight)).toBeLessThan(1);
 
-    // Attribution by glyph, not by a caption-case word: the agent turn
-    // carries a decorative provider glyph...
-    const glyph = page.getByTestId('message-item').first().locator('.role-glyph');
-    await expect(glyph).toBeVisible();
-    await expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    // The shared `--gutter` token itself is narrower for v7 (tokens.css's
+    // own comment records why 2.5rem, down from 4.75rem, is the new
+    // floor) — read from the token rather than a hardcoded pixel value so
+    // this stays a real regression guard, not a second copy of the number.
+    const remPx = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    const token = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--gutter').trim(),
+    );
+    expect(token).not.toBe('');
+    expect(parseFloat(token) * remPx).toBeLessThan(4.75 * remPx);
+    expect(turnBox?.width).toBeCloseTo(parseFloat(token) * remPx, 1);
 
-    // ...and the role still reaches assistive tech, just off-screen rather
-    // than painted: a visually-hidden label carries the real text, so
-    // sighted users never see "CLAUDE" or "YOU" spelled out anywhere.
+    // No glyph anywhere (B2-4) — the gutter carries only the off-screen
+    // label now.
+    await expect(page.locator('[data-icon-name^="provider-"]')).toHaveCount(0);
+
+    // ...and the role still reaches assistive tech, off-screen: a
+    // visually-hidden label carries the real text, so sighted users never
+    // see "CLAUDE" or "YOU" spelled out anywhere.
     const srLabel = page.getByTestId('message-item').first().locator('.sr-only');
     await expect(srLabel).toHaveText('Claude');
     // The standard clip-rect `.sr-only` technique keeps a 1x1px box in the
@@ -566,7 +575,7 @@ test.describe('cockpit shell', () => {
     expect(snapshot).toContain('Claude');
   });
 
-  test('consecutive turns from the same speaker do not repeat the attribution glyph, but each keeps its own surface (issue #575)', async ({
+  test('consecutive turns from the same speaker no longer carry any grouping logic — B2-4 removed the glyph that logic existed to suppress, so every turn renders identically regardless of what precedes it (v7 turn delimitation, issue #667)', async ({
     page,
     loombox,
   }) => {
@@ -587,22 +596,22 @@ test.describe('cockpit shell', () => {
     const items = page.getByTestId('message-item');
     await expect(items).toHaveCount(2);
 
-    // First of the run keeps the glyph; the immediate repeat drops it.
-    await expect(items.nth(0).locator('.role-glyph')).toBeVisible();
-    await expect(items.nth(1).locator('.role-glyph')).toHaveCount(0);
+    // No glyph on either turn — there is nothing left for a "first of the
+    // run" rule to keep or a "repeat" rule to drop.
+    await expect(items.nth(0).locator('[data-icon-name^="provider-"]')).toHaveCount(0);
+    await expect(items.nth(1).locator('[data-icon-name^="provider-"]')).toHaveCount(0);
 
     // The accessible label is never suppressed — every turn still
-    // announces its role even when the glyph doesn't repeat.
+    // announces its role regardless of adjacency.
+    await expect(items.nth(0).locator('.sr-only')).toHaveText('Claude');
     await expect(items.nth(1).locator('.sr-only')).toHaveText('Claude');
 
-    // Each turn keeps its own bounded surface regardless of grouping —
-    // suppressing the glyph groups the run visually, it never merges the
-    // two turns into one block.
+    // Each turn keeps its own bounded surface — consecutive same-speaker
+    // turns are two rows, never merged into one block.
     await expect(items.nth(1)).toHaveClass(/agent/);
 
-    // A user turn afterward breaks the run and gets its own attribution
-    // back (the user role never draws a glyph in the first place — its
-    // accent bar and raised surface already carry it).
+    // A user turn afterward gets its own tinted surface — the one signal
+    // B1-2 amended left it (no glyph, no accent bar, ever).
     await sendSessionUpdate(loombox.node, loombox.session, {
       kind: 'user_message_chunk',
       turnId: 'turn-3',
@@ -611,19 +620,8 @@ test.describe('cockpit shell', () => {
     });
     await expect(items).toHaveCount(3);
     await expect(items.nth(2)).toHaveClass(/user/);
-    await expect(items.nth(2).locator('.role-glyph')).toHaveCount(0);
+    await expect(items.nth(2).locator('[data-icon-name^="provider-"]')).toHaveCount(0);
     await expect(items.nth(2).locator('.sr-only')).toHaveText('You');
-
-    // And a fourth agent turn right after the user one gets its glyph back
-    // too — the run only resets, it never stays suppressed forever.
-    await sendSessionUpdate(loombox.node, loombox.session, {
-      kind: 'agent_message_chunk',
-      turnId: 'turn-4',
-      messageId: 'msg-4',
-      text: 'Third agent turn, after a user turn broke the run.',
-    });
-    await expect(items).toHaveCount(4);
-    await expect(items.nth(3).locator('.role-glyph')).toBeVisible();
   });
 
   test('switching Files to Config keeps the right sidebar open at the same width and does not remount the other panel (design spec §3.3, issue #571)', async ({
@@ -730,7 +728,7 @@ test.describe('cockpit shell', () => {
     expect(Math.abs((proseBox?.x ?? 0) - (fieldBox?.x ?? 0))).toBeLessThan(1);
   });
 
-  test('on a phone the role column collapses and every row keeps one left edge', async ({
+  test('on a phone the gutter column collapses and every row keeps one left edge (v7 turn delimitation, issue #667)', async ({
     page,
     loombox,
   }) => {
@@ -738,26 +736,27 @@ test.describe('cockpit shell', () => {
     await seedTurnWithToolCall(loombox);
     await page.setViewportSize({ width: 390, height: 780 });
 
-    const label = page.getByTestId('message-item').first().locator('.role-glyph');
+    const gutter = page.getByTestId('message-item').first().locator('.gutter');
     const prose = page.getByTestId('message-text').first();
     const toolCard = page.getByTestId('tool-card').first();
     // `.composer-field`, not the textarea inside it - see the desktop
     // version of this check (issue #577): the field's own edge is the
     // column now that it is a bordered, padded box.
     const field = page.locator('.composer-field');
-    await expect(label).toBeVisible();
+    await expect(gutter).toBeVisible();
 
-    const labelBox = await label.boundingBox();
+    const gutterBox = await gutter.boundingBox();
     const proseBox = await prose.boundingBox();
     const toolBox = await toolCard.boundingBox();
     const fieldBox = await field.boundingBox();
 
-    // Above the turn, not beside it: 84px of a 390px phone went to a
-    // six-letter word, which left the prose a 244px measure.
-    expect((labelBox?.y ?? 0) + (labelBox?.height ?? 0)).toBeLessThanOrEqual(
+    // Above the turn, not beside it: the column collapses to a stacked
+    // block regardless of what it holds — nothing sighted anymore (v7),
+    // but the geometry is unchanged from when it held an 84px word/glyph.
+    expect((gutterBox?.y ?? 0) + (gutterBox?.height ?? 0)).toBeLessThanOrEqual(
       (proseBox?.y ?? 0) + 1,
     );
-    expect(Math.abs((labelBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
+    expect(Math.abs((gutterBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
 
     // What the collapse is FOR. 244px before, 316px measured after.
     expect(proseBox?.width ?? 0).toBeGreaterThan(300);
@@ -769,22 +768,44 @@ test.describe('cockpit shell', () => {
     expect(Math.abs((fieldBox?.x ?? 0) - (proseBox?.x ?? 0))).toBeLessThan(1);
   });
 
-  test('the role column is still beside the turn one breakpoint up', async ({ page, loombox }) => {
+  test('the gutter column is still beside the turn one breakpoint up, flush against the content with nothing painted to hold a gap open (v7 turn delimitation, issue #667)', async ({
+    page,
+    loombox,
+  }) => {
     await gotoCockpit(page, loombox);
     await seedTurnWithToolCall(loombox);
     await page.setViewportSize({ width: 768, height: 900 });
 
-    const label = page.getByTestId('message-item').first().locator('.role-glyph');
+    const gutter = page.getByTestId('message-item').first().locator('.gutter');
     const prose = page.getByTestId('message-text').first();
-    await expect(label).toBeVisible();
-    const labelBox = await label.boundingBox();
+    await expect(gutter).toBeVisible();
+    const gutterBox = await gutter.boundingBox();
     const proseBox = await prose.boundingBox();
+    const gutterPaddingTop = await gutter.evaluate((el) =>
+      parseFloat(getComputedStyle(el).paddingTop),
+    );
 
     // The collapse is a phone rule (`--bp-mobile`), not a "narrow" one: a
     // tablet has room for the column and keeps it, so the media query must not
     // leak upward.
-    expect((labelBox?.x ?? 0) + (labelBox?.width ?? 0)).toBeLessThan(proseBox?.x ?? 0);
-    expect(Math.abs((labelBox?.y ?? 0) - (proseBox?.y ?? 0))).toBeLessThan(4);
+    //
+    // `toBeLessThanOrEqual`, not strictly less: v7 dropped the glyph that
+    // used to sit inset inside the gutter (its own `--space-sm` padding
+    // held a visible gap open before the prose). With nothing painted
+    // there anymore, the gutter's own box runs flush to content's left
+    // edge — still never overlapping it, which is the actual contract.
+    expect((gutterBox?.x ?? 0) + (gutterBox?.width ?? 0)).toBeLessThanOrEqual(
+      (proseBox?.x ?? 0) + 1,
+    );
+    // The two boxes' TOP edges no longer land at the same y: `.content`'s
+    // own `--space-sm` padding-top offsets the prose from the row's top,
+    // and `.gutter`'s matching padding-top (the same token, kept for
+    // parity with sibling gutters that still hold content — see that
+    // rule's own comment) offsets an equal amount from ITS box's top. Add
+    // it back before comparing, so this still proves the two columns
+    // start their content at the same baseline, not just that raw
+    // boundingBox() coordinates happen to differ by a padding value.
+    expect(Math.abs((gutterBox?.y ?? 0) + gutterPaddingTop - (proseBox?.y ?? 0))).toBeLessThan(4);
   });
 
   test('at 1440px opening the right sidebar reflows the canvas and dims nothing (design spec §3.1/§0.6, issue #571)', async ({

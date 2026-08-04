@@ -277,8 +277,8 @@
   /* Below `--bp-mobile` the whole role column collapses (see
      `MessageItem`'s own copy of this block). This one is a pure spacer, so
      collapsing it means dropping it: the card takes the full measure like
-     every other row, instead of keeping a 76px indent nothing lines up with
-     any more. */
+     every other row, instead of keeping a `var(--gutter)`-wide indent
+     nothing lines up with any more. */
   @media (max-width: 479px) {
     .plan-gutter {
       display: none;
