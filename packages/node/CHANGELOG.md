@@ -1,5 +1,112 @@
 # @loombox/node
 
+## 0.3.0
+
+### Minor Changes
+
+- 535a2ee: Add the SPEC §7.26 connect/disconnect/pin wire protocol, relay routing, node handlers, and `RelayClient` API for connected accounts (issue #230)
+
+  New `@loombox/protocol` message pairs: `github_connect_start_request`/`_cancel_request`/`_device_code`/`_result` (RFC 8628 device flow, issue #222), `jira_connect_request`/`_response` (API-token connect, issue #225), `connected_account_disconnect_request`/`_response`, and `account_pin_get/set/unset_request` + `account_pin_response` + `account_pin_resolve_request`/`_response` (per-project, per-capability pinning and hard-fail preview, issue #227). None of these ever carry a token, API key, or other secret — only metadata and routing fields.
+
+  `packages/relay`: routes every one of the above directly by `nodeId`, scoped to the requester's account, through one consolidated `pendingAccountRequests` table (mirrors the existing `provision_target_request`/`ssh_discovery_request` pattern); a successful disconnect also forgets the account's synced metadata row (`ConnectedAccountStore.remove`, new on the store interface, in-memory and Postgres).
+
+  `packages/node`: `NodeDaemon` now runs `GithubConnectService`/`JiraConnectService`/`AccountPinStore`/`account-pin.ts`'s resolvers against these messages — the device flow's user code streams back before the terminal result, a disconnect deletes the local keyring secret, and pin resolution surfaces `AccountPinRequiredError`/`AccountPinMalformedError`/`AccountHostMismatchError`/`AccountPinDanglingError`/`AmbiguousAccountError` as real, distinguishable response states.
+
+  `apps/web`'s `RelayClient` gains a `connectedAccounts` reactive store (fed by the existing `connected_account_list` snapshot) plus `startGithubConnect`/`connectJiraAccount`/`disconnectAccount`/`getAccountPins`/`setAccountPin`/`unsetAccountPin`/`resolveAccountPin`/`refreshConnectedAccounts` — the write-path client API #230's UI is built against.
+
+  **Scope note**: this change ships the wire protocol, relay routing, node handlers, and client API only. The Svelte UI itself (a Settings "Accounts" section, the device-flow/API-token connect forms, the per-project pin picker, and the disconnect confirmation) is tracked separately — see issue #230's own thread for the remaining UI work.
+
+- e89b263: Add GitHub `TrackerBackend` transitions, live tracker slice 2 (SPEC §7.10, issue #215)
+
+  `GithubTrackerBackend` now implements `listTransitions`/`transition`, GitHub's fixed two-state model rather than a discovered per-project workflow: `listTransitions` reports `close_completed`/`close_not_planned` when the issue is currently open, and `reopen` when it is closed, by reading the issue's current `state` first. `transition` applies one of those by `PATCH .../issues/{n} {state, state_reason}` (SPEC §7.10), so closing as completed and closing as not planned are distinct, inspectable outcomes end to end — a subsequent read reports the applied `fields.stateReason`, never a bare "closed". An unknown `transitionId` is rejected with `GithubTrackerAccessError` before any request is made.
+
+  `capabilities.transitions` flips to `true`; `boards`/`sprints` are unchanged (still `false`, deferred to #218). Slice 1's `list`/`get`/`create`/`update`/`addComment`/`listBindings` behaviour is untouched.
+
+- a006a1e: Add the Jira API-token connect path (SPEC §7.26, issue #225)
+
+  `@loombox/node` gets the zero-infrastructure Jira connect path: `JiraConnectService` (`jira-connect.ts`) takes `{siteUrl, email, apiToken}`, resolves identity via `GET /rest/api/3/myself` over Basic auth (`base64(email:apiToken)`, `jira-identity.ts`'s `resolveJiraIdentity`), and returns the metadata-only `ConnectedAccount` (issue #221) keyed on `(siteUrl-host, accountId)` — the stable Atlassian `accountId`, never the mutable `email`. This is the specific fix for emdash's `jira-connection-service.ts` single-row limitation (keyed on `email`, one row total): connecting a second Jira site, or a second account on the same site, gets its own `ConnectedAccount.id` and never overwrites an existing one.
+
+  `credentialSource` is `'api_token'`. The email/apiToken pair lives only in the node's OS keyring (`keyring.ts`'s `NodeKeyring`, the same abstraction and file-fallback #222's `GithubConnectService` uses) — Basic auth needs both on every request, and `email` is deliberately not a `ConnectedAccount` field, so it travels with the token as one keyring secret rather than living on the synced row. `getCredential` resolves a `ConnectedAccount` into the request base URL and a ready-to-set `Authorization` header — the seam #214's `JiraTrackerBackend` consumes, agreed over IRC while both issues were in flight.
+
+  No Jira OAuth 2.0 (3LO, #226), per-project pinning (#227, already shipped and reusable as-is), node-presence computation (#228), or connect-flow UI (#230) ship here.
+
+- a3c21b7: Add the Jira `TrackerBackend`, live tracker slice 1 (SPEC §7.10, issue #214)
+
+  `@loombox/node` gets `JiraTrackerBackend` (`jira-tracker-backend.ts`), the second concrete implementation of `@loombox/shared`'s `TrackerBackend` extension point (#209), after GitHub (#213). `list`/`get`/`create`/`update`/`addComment`/`listBindings` go against Jira Cloud REST v3 for a bound project: `list` searches via `POST /rest/api/3/search/jql` (the modern token-paginated replacement for the deprecated `search` endpoint), comment bodies and any `description` field are converted from plain text into a minimal `{type:'doc', version:1, content:[...]}` Atlassian Document Format document (and flattened back to plain text on read), and every request is composed purely from an injected `credential.baseUrl`, so the same backend works unmodified against both an OAuth-3LO-routed base (`https://api.atlassian.com/ex/jira/{cloudId}`) and a direct API-token site host. `create`/`update` each follow up with a `get` since Jira's own create/update responses don't carry the full issue (`{id, key, self}` only, and `204 No Content`, respectively).
+
+  Credentials come only from an injected `resolveCredential(connectionId): Promise<{baseUrl, authHeader}>`; this backend never runs a connect flow and never touches this package's own `keyring.ts`/`jira-connect.ts` directly.
+
+  `capabilities` reports `comments`/`labels: true`, `transitions`/`boards`/`sprints`/`milestones`/`customFields: false` for this slice. No transitions (#216), no boards/sprints (#217) ship here.
+
+- 2592c10: Add Jira `TrackerBackend` workflow transitions, live tracker slice 2 (SPEC §7.10, issue #216)
+
+  `JiraTrackerBackend` now implements `listTransitions`/`transition` by discovering Jira's real, per-project/per-issue-type workflow at runtime instead of assuming a fixed set: `listTransitions` calls `GET .../issue/{key}/transitions` and maps each entry to `{id, name, requiresFields}`, where `requiresFields` is read straight off Jira's own per-transition workflow-screen field map (`required: true`) — most commonly seen on a "Done"-category move that needs a `resolution`. `transition` posts the chosen id via `POST .../issue/{key}/transitions` and accepts an optional fourth argument (`options.fields`/`options.comment`) beyond `TrackerBackend.transition`'s own three-parameter shape, so a Jira-aware caller can supply what a field-requiring move needs; `options.comment` is converted to Atlassian Document Format the same way `addComment` does, sent as `update.comment`. If Jira's own workflow validation still rejects the request over a missing required field, that surfaces as a new typed `JiraTrackerTransitionValidationError` (carrying Jira's per-field messages) — never silently dropped, and never reported as a success.
+
+  `capabilities.transitions` flips to `true`; `boards`/`sprints` are unchanged (still `false`, deferred to #217). Slice 1's `list`/`get`/`create`/`update`/`addComment`/`listBindings` behaviour is untouched, both REST bases (OAuth 3LO `api.atlassian.com/ex/jira/{cloudId}` and direct-site API-token) are exercised for the new calls, and `@loombox/shared`'s `TrackerTransition` gets a new optional `requiresFields` field (GitHub's already-shipped fixed two-state transitions never set it).
+
+- 99e3583: Native tracker: kanban/list UI with custom type support (SPEC §7.10)
+
+  Adds the client surface for loombox's own local tracker (`packages/shared`'s `NativeTrackerStore`, #210): a full-width Tracker page reachable from the left sidebar once a session is selected, with a kanban board and a priority-sorted/assignee-filtered list view, both driven entirely by `@loombox/protocol`'s new role-driven helpers (`resolveRoleValue`/`groupByWorkflowStatus`/`sortByPriority`/`filterByAssignee`) so a built-in Task/Bug/Epic and a project-defined custom type render identically — nothing in this feature branches on a record's `primaryType`.
+
+  `@loombox/protocol` gets `tracker-records.ts`: the wire schema (`TrackerRecordV1`/`TrackerTypeDefinitionV1`) plus four new encrypted, session-scoped wire messages — `tracker_snapshot_request`/`_response` (read) and `tracker_write_request`/`_response` (create/update/defineType) — mirroring `fs.ts`'s existing pattern exactly. `@loombox/node` wires these into `NodeDaemon` against the same `NativeTrackerStore` a future MCP host will bind an agent's `tracker_*` tools to, so a human edit and an agent write land in the same on-disk file. `@loombox/relay` routes both pairs to/from the owning node exactly like `fs_list_request`/`_response`.
+
+  The UI ships: empty state with a "New record" CTA, a retryable `ErrorNotice` (matching the Files panel's #582 "didn't answer in time" wording) for both a wire error and a client-owned bounded-wait timeout, and a loading state that always terminates. The kanban board answers issue #212's mobile requirement directly: at <=767px it renders one column at a time with Prev/Next controls instead of a horizontal scroll of narrow columns. Moving a card between columns has two paths — native HTML5 drag-and-drop for a desktop mouse, and a fully keyboard/touch-operable "Move to" `Select` on every card — both calling the same `RelayClient.updateTrackerRecord`, never local component state. A "New type" dialog lets a project define a custom type's `roles` mapping (which `fields` key holds title/status/priority/assignee), after which every generic surface renders it correctly with no code change.
+
+- 7fc92d2: Add the native tracker's MCP tool contract (SPEC §7.10, §7.7)
+
+  `@loombox/node` gets `tracker-mcp-tools.ts`: `createTrackerMcpTools`, which builds `tracker_list`/`tracker_get`/`tracker_create`/`tracker_update`/`tracker_link_session` — the five tools SPEC §7.10 names for agent access to the native tracker — from a `NativeTrackerStore` plus a session's already-resolved `(projectPath, authorId, sessionId)`. Every input schema is a `.strict()` Zod object with no `projectPath`/`authorId`/`sessionId` field, so a session's tools are structurally bound to its own project and identity rather than merely checked against them; a call naming another project's record id fails exactly like a call naming a made-up one. Output is the real `TrackerRecord` (`fields`/`system`/indexed columns from #210's data model), with no ad-hoc DTO.
+
+  No node-side MCP host consumes this yet — this repo's whole MCP surface today only lets a session declare an _external_ MCP server (stdio/http/sse) that the ACP agent connects to itself; there is no mechanism to run an MCP server inside the node and serve tool calls from it. That's a distinct, larger piece of work, filed as a follow-up issue rather than faked here.
+
+- 344b4c7: Add the lazy per-node connected-account presence check (SPEC §7.26 "Node-locality", issue #228)
+
+  `NodeAccountPresence` (`account-presence.ts`) answers "does this node's OS keyring currently hold a connected account's credential" — the local half of SPEC §7.26's node-locality gap: a `ConnectedAccount`'s metadata row syncs through the relay, but its secret lives in one node's keyring, so a second node can see the account and still not be able to use it. The check is computed lazily (never eagerly probed at startup) and cached per `secretRef` in memory; a connect or disconnect on this node invalidates the cached answer via a new `onCredentialChanged` hook both `GithubConnectService` and `JiraConnectService` now call. `isPresent` returns only a boolean — the credential value never leaves the keyring read that produces it.
+
+  `GithubConnectService` and `JiraConnectService` previously each built their own private `NodeKeyring` (same service name, different file-fallback filename). Extracted into `connected-account-keyring.ts`'s `createConnectedAccountKeyring`, which both connect services and `NodeAccountPresence` now share — necessary for correctness, not just DRY: on this devbox's file-fallback path (no OS keyring session), a presence check built from its own independent file would silently report every real account absent.
+
+  `account-pin.ts` (#227) gains `resolveAccountForWriteOnThisNode`, layered on top of the existing `resolveAccountForWrite` (unchanged, same hard-fail cases, same tests green) — throws the new `AccountNotPresentOnNodeError` when the resolved account is not present on this node, a distinct outcome from "no pin" (`AccountPinRequiredError`) and "dangling pin" (`AccountPinDanglingError`).
+
+  Not shipped here: the multi-node wire/UI flow that asks a _different_ node whether it holds a pin's secret (SPEC §7.26 frames that as reusing §7.21's node-health reachability channel) — this issue is scoped to the local, per-node computation only.
+
+- e05423a: Add per-project test/lint/build command configuration and auto-detection (SPEC §7.15, issue #245)
+
+  A project's test/lint/build commands can now be read, saved, and auto-detected through the owning node: `TestRunnerConfigStore` (`@loombox/node`) persists them per project (mirrors `PermissionPolicyStore`'s JSON-file shape), and `detectTestRunnerCommands` proposes commands from `package.json`'s `scripts` block via whichever `ExecutionTarget` the project's session runs on (`local` or `ssh:`), picking `pnpm`/`yarn`/`npm` syntax off the project's lockfile. Detection only ever proposes a command for a script that genuinely exists — never a guessed default for a project with nothing detectable.
+
+  Five new v1 wire messages (`test_runner_config_get`/`_set`/`_detect` client-to-node, `test_runner_config_result`/`_detected` node-to-client), routed/fanned out by the relay exactly like `fs_list_request`/`fs_list_response`, sealed under the session key so no command string ever reaches the relay in the clear. `RelayClient` gains `getTestRunnerConfig`/`setTestRunnerConfig`/`detectTestRunnerConfig`; `ProjectConfigPanel` gains a new "Test, lint & build" section (`TestRunnerConfigPanel`) with per-command explicit save and an "Auto-detect" action whose suggestions are shown for confirmation and never applied without an explicit Accept click.
+
+  This ships the configuration half of SPEC §7.15's test runner (issue #245); the streaming execution half (issue #244, running the configured commands with live output and cancellation) is tracked separately.
+
+- 635e20d: Add the streaming test/lint/build runner surface (SPEC §7.15, issue #244)
+
+  Running a project's configured test/lint/build command (issue #245's config half) now streams live results from the cockpit instead of requiring a raw terminal. `packages/node/src/test-runner-process.ts` runs the command via `sh -c` on either target: locally with `child_process.spawn({ detached: true })`, so a cancel kills the whole process group (`process.kill(-pid, 'SIGKILL')`), not just the launcher; over `ssh:` it reuses the existing `RemoteProcessRunner` (setsid+fifo+log-tail) rather than opening a second channel, adding its own exit-code side-channel on top since that runner never captured one for a background job, and its cancel goes through `RemoteProcessRunner.stop()`, whose `setsid` branch now kills the whole remote process group (issue #642/#645). Both targets classify "command not found" as a uniform POSIX 127 instead of branching on ENOENT vs. remote shell text. `NodeDaemon` evaluates the project's permission policy (`evaluateCommandLine`, the same entry point `PolicyEnforcedPty`/`PolicyEnforcedExecutionTarget` use) before ever spawning, so a denied command surfaces as `could_not_start` with a policy reason and never runs.
+
+  Five new v1 wire messages (`run_start`/`run_cancel` client-to-node, `run_started`/`run_output`/`run_exit` node-to-client), modeled on `terminal.ts`, routed/fanned out by the relay exactly like `terminal_open`/`terminal_output`, sealed under the session key so no command, output, or outcome ever reaches the relay in the clear. `RelayClient` gains `startRun`/`cancelRun`/`onRunOutput`/`runsFor`. The right sidebar's Files/Config sub-tabs gain a third "Runner" tab (`RunnerPanel.svelte`): one Run/Cancel action per configured command, its combined output streaming live (reusing the display-only `TerminalOutput` component), settling to a pass/fail/could-not-start state with the real exit code.
+
+  Cancelling reaps the whole process tree on both targets, including forked grandchildren — verified with a `sleep 30 &`-forking fixture at the process, `NodeDaemon`, and (ssh) `RemoteProcessRunner` layers. Closing a node now also cancels every still-running local/ssh run instead of leaking it, the same way it already does for open terminals.
+
+### Patch Changes
+
+- 934301d: Fix `buildStopScript`'s `setsid` branch to kill the whole process group, not just the launcher (issue #642)
+
+  Stopping an `ssh:` session that had fallen back to `setsid` (the common case on a plain server without tmux/screen) ran `kill "$(cat pid)"`, which signals exactly one process. `setsid` makes the launched process a session leader, so its pid is also its process-group id, and anything real it launches (any agent or command that forks children) kept running on the remote host after "stop" returned. The `tmux`/`screen` branches never had this problem since they tear the whole session down.
+
+  `buildStopScript`'s `setsid` branch now sends `TERM` to the process group (`kill -TERM -"$pid"`, the leading dash), polls for up to 2 seconds so a well-behaved child gets a chance to clean up, then escalates to `KILL -"$pid"` for anything still alive. `buildIsRunningScript` is unchanged (it still reads the leader's own pid with `kill -0`), and stays correct because the stop script itself blocks until the group is confirmed dead or force-killed before its `exec()` resolves, so there is no window where a caller can observe a stopped session as still "alive".
+
+  New tests in `packages/node/src/ssh/remote-process-runner.test.ts` (using the `remote-sessions-test-sandbox` harness from #518) launch a `setsid` command that forks a real child, stop the session, and assert the child itself is gone (not just the launcher), plus confirm `isRunning()` still reports correctly across the new stop script.
+
+- Updated dependencies [79f9f19]
+- Updated dependencies [535a2ee]
+- Updated dependencies [2592c10]
+- Updated dependencies [99e3583]
+- Updated dependencies [e05423a]
+- Updated dependencies [635e20d]
+- Updated dependencies [29da402]
+  - @loombox/providers-core@0.3.0
+  - @loombox/protocol@0.3.0
+  - @loombox/shared@0.2.0
+  - @loombox/supervisor@0.1.2
+  - @loombox/crypto@0.0.3
+
 ## 0.2.0
 
 ### Minor Changes

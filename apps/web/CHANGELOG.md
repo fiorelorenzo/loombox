@@ -1,5 +1,99 @@
 # @loombox/web
 
+## 0.2.0
+
+### Minor Changes
+
+- 661aac2: Build the SPEC §7.26 connected-accounts Settings UI (issue #230), the Svelte-only remainder after #643 shipped the wire protocol/relay/node/client-API layer.
+
+  Settings gains an "Accounts" section (`ConnectedAccountsSection`), reachable in both the desktop sub-nav and the narrow segmented control:
+
+  - `ConnectedAccountsList` — a `Row`-based list mirroring `TargetStatusView`'s row/expansion/confirm pattern, rendering `label`/`avatarUrl`/`host`/`capabilities` from the real synced `ConnectedAccount` fields. `secretRef` is never rendered.
+  - `GithubConnectFlow` — a `Dialog` driving `RelayClient.startGithubConnect`'s device flow: the user code renders large, monospace, and selectable (with a copy button) as soon as it arrives, then a waiting state, then success/failure. Cancel calls the flow's own `cancel()`.
+  - `JiraConnectForm` — a three-field `Dialog` form (`siteUrl`/`email`/`apiToken`) over `connectJiraAccount`; a successful connect clears the form and stays open rather than closing, so a second/third Jira site adds a row instead of replacing one.
+  - Disconnect mirrors `TargetStatusView`'s `confirmingRemove` inline-bar pattern, with a generic warning that a pinned project may break (the full per-pin scan is issue #229).
+  - `AccountPinPicker` — the per-project, per-capability tri-state pin map (`getAccountPins`/`setAccountPin`/`unsetAccountPin`) as a real three-way `RadioGroup` (Unconfigured / Opted out / a specific account), plus a `resolveAccountPin` preview that renders `AccountPinRequiredError`/`AccountPinMalformedError`/`AccountHostMismatchError`/`AccountPinDanglingError`/`AmbiguousAccountError` as five distinct states with a concrete next step, never a raw error string.
+
+  Every account operation is node-scoped (connect/disconnect/pin storage all run on a specific node); the section carries one shared node picker, hidden when only one node is known.
+
+  `+page.svelte` passes `client`/`connectedAccounts` into `SettingsPage`, which gates the new "Accounts" nav entry on `client` being present, the same pattern `deviceId` already gates "Push" on.
+
+- 535a2ee: Add the SPEC §7.26 connect/disconnect/pin wire protocol, relay routing, node handlers, and `RelayClient` API for connected accounts (issue #230)
+
+  New `@loombox/protocol` message pairs: `github_connect_start_request`/`_cancel_request`/`_device_code`/`_result` (RFC 8628 device flow, issue #222), `jira_connect_request`/`_response` (API-token connect, issue #225), `connected_account_disconnect_request`/`_response`, and `account_pin_get/set/unset_request` + `account_pin_response` + `account_pin_resolve_request`/`_response` (per-project, per-capability pinning and hard-fail preview, issue #227). None of these ever carry a token, API key, or other secret — only metadata and routing fields.
+
+  `packages/relay`: routes every one of the above directly by `nodeId`, scoped to the requester's account, through one consolidated `pendingAccountRequests` table (mirrors the existing `provision_target_request`/`ssh_discovery_request` pattern); a successful disconnect also forgets the account's synced metadata row (`ConnectedAccountStore.remove`, new on the store interface, in-memory and Postgres).
+
+  `packages/node`: `NodeDaemon` now runs `GithubConnectService`/`JiraConnectService`/`AccountPinStore`/`account-pin.ts`'s resolvers against these messages — the device flow's user code streams back before the terminal result, a disconnect deletes the local keyring secret, and pin resolution surfaces `AccountPinRequiredError`/`AccountPinMalformedError`/`AccountHostMismatchError`/`AccountPinDanglingError`/`AmbiguousAccountError` as real, distinguishable response states.
+
+  `apps/web`'s `RelayClient` gains a `connectedAccounts` reactive store (fed by the existing `connected_account_list` snapshot) plus `startGithubConnect`/`connectJiraAccount`/`disconnectAccount`/`getAccountPins`/`setAccountPin`/`unsetAccountPin`/`resolveAccountPin`/`refreshConnectedAccounts` — the write-path client API #230's UI is built against.
+
+  **Scope note**: this change ships the wire protocol, relay routing, node handlers, and client API only. The Svelte UI itself (a Settings "Accounts" section, the device-flow/API-token connect forms, the per-project pin picker, and the disconnect confirmation) is tracked separately — see issue #230's own thread for the remaining UI work.
+
+- 99e3583: Native tracker: kanban/list UI with custom type support (SPEC §7.10)
+
+  Adds the client surface for loombox's own local tracker (`packages/shared`'s `NativeTrackerStore`, #210): a full-width Tracker page reachable from the left sidebar once a session is selected, with a kanban board and a priority-sorted/assignee-filtered list view, both driven entirely by `@loombox/protocol`'s new role-driven helpers (`resolveRoleValue`/`groupByWorkflowStatus`/`sortByPriority`/`filterByAssignee`) so a built-in Task/Bug/Epic and a project-defined custom type render identically — nothing in this feature branches on a record's `primaryType`.
+
+  `@loombox/protocol` gets `tracker-records.ts`: the wire schema (`TrackerRecordV1`/`TrackerTypeDefinitionV1`) plus four new encrypted, session-scoped wire messages — `tracker_snapshot_request`/`_response` (read) and `tracker_write_request`/`_response` (create/update/defineType) — mirroring `fs.ts`'s existing pattern exactly. `@loombox/node` wires these into `NodeDaemon` against the same `NativeTrackerStore` a future MCP host will bind an agent's `tracker_*` tools to, so a human edit and an agent write land in the same on-disk file. `@loombox/relay` routes both pairs to/from the owning node exactly like `fs_list_request`/`_response`.
+
+  The UI ships: empty state with a "New record" CTA, a retryable `ErrorNotice` (matching the Files panel's #582 "didn't answer in time" wording) for both a wire error and a client-owned bounded-wait timeout, and a loading state that always terminates. The kanban board answers issue #212's mobile requirement directly: at <=767px it renders one column at a time with Prev/Next controls instead of a horizontal scroll of narrow columns. Moving a card between columns has two paths — native HTML5 drag-and-drop for a desktop mouse, and a fully keyboard/touch-operable "Move to" `Select` on every card — both calling the same `RelayClient.updateTrackerRecord`, never local component state. A "New type" dialog lets a project define a custom type's `roles` mapping (which `fields` key holds title/status/priority/assignee), after which every generic surface renders it correctly with no code change.
+
+- e05423a: Add per-project test/lint/build command configuration and auto-detection (SPEC §7.15, issue #245)
+
+  A project's test/lint/build commands can now be read, saved, and auto-detected through the owning node: `TestRunnerConfigStore` (`@loombox/node`) persists them per project (mirrors `PermissionPolicyStore`'s JSON-file shape), and `detectTestRunnerCommands` proposes commands from `package.json`'s `scripts` block via whichever `ExecutionTarget` the project's session runs on (`local` or `ssh:`), picking `pnpm`/`yarn`/`npm` syntax off the project's lockfile. Detection only ever proposes a command for a script that genuinely exists — never a guessed default for a project with nothing detectable.
+
+  Five new v1 wire messages (`test_runner_config_get`/`_set`/`_detect` client-to-node, `test_runner_config_result`/`_detected` node-to-client), routed/fanned out by the relay exactly like `fs_list_request`/`fs_list_response`, sealed under the session key so no command string ever reaches the relay in the clear. `RelayClient` gains `getTestRunnerConfig`/`setTestRunnerConfig`/`detectTestRunnerConfig`; `ProjectConfigPanel` gains a new "Test, lint & build" section (`TestRunnerConfigPanel`) with per-command explicit save and an "Auto-detect" action whose suggestions are shown for confirmation and never applied without an explicit Accept click.
+
+  This ships the configuration half of SPEC §7.15's test runner (issue #245); the streaming execution half (issue #244, running the configured commands with live output and cancellation) is tracked separately.
+
+- 635e20d: Add the streaming test/lint/build runner surface (SPEC §7.15, issue #244)
+
+  Running a project's configured test/lint/build command (issue #245's config half) now streams live results from the cockpit instead of requiring a raw terminal. `packages/node/src/test-runner-process.ts` runs the command via `sh -c` on either target: locally with `child_process.spawn({ detached: true })`, so a cancel kills the whole process group (`process.kill(-pid, 'SIGKILL')`), not just the launcher; over `ssh:` it reuses the existing `RemoteProcessRunner` (setsid+fifo+log-tail) rather than opening a second channel, adding its own exit-code side-channel on top since that runner never captured one for a background job, and its cancel goes through `RemoteProcessRunner.stop()`, whose `setsid` branch now kills the whole remote process group (issue #642/#645). Both targets classify "command not found" as a uniform POSIX 127 instead of branching on ENOENT vs. remote shell text. `NodeDaemon` evaluates the project's permission policy (`evaluateCommandLine`, the same entry point `PolicyEnforcedPty`/`PolicyEnforcedExecutionTarget` use) before ever spawning, so a denied command surfaces as `could_not_start` with a policy reason and never runs.
+
+  Five new v1 wire messages (`run_start`/`run_cancel` client-to-node, `run_started`/`run_output`/`run_exit` node-to-client), modeled on `terminal.ts`, routed/fanned out by the relay exactly like `terminal_open`/`terminal_output`, sealed under the session key so no command, output, or outcome ever reaches the relay in the clear. `RelayClient` gains `startRun`/`cancelRun`/`onRunOutput`/`runsFor`. The right sidebar's Files/Config sub-tabs gain a third "Runner" tab (`RunnerPanel.svelte`): one Run/Cancel action per configured command, its combined output streaming live (reusing the display-only `TerminalOutput` component), settling to a pass/fail/could-not-start state with the real exit code.
+
+  Cancelling reaps the whole process tree on both targets, including forked grandchildren — verified with a `sleep 30 &`-forking fixture at the process, `NodeDaemon`, and (ssh) `RemoteProcessRunner` layers. Closing a node now also cancels every still-running local/ssh run instead of leaking it, the same way it already does for open terminals.
+
+- 8c833f3: Add the per-project TrackerMode picker and live-target configuration UI (SPEC §7.10, issue #220)
+
+  `ProjectConfigPanel`'s right-sidebar config surface now has a Tracker section, ahead of MCP servers/plugins since it's the one config choice SPEC §7.10 calls "every project chooses, once" that everything else in a future tracker view will depend on.
+
+  A project with no `TrackerMode` set (reading `tracker-mode-store.ts`, issue #209) opens straight into the picker: a `role="radiogroup"` choice between native and live, following #549's precedent for a genuinely mutually-exclusive control. Choosing live reveals a provider choice (GitHub/Jira) and then that provider's own target fields (`owner`/`repo`/optional Projects v2 board number for GitHub, `cloudId`/`projectKey` for Jira) — the fields are conditional on provider, never one flat set. The connected account is picked from a new `ConnectedAccountPicker`, backed by a new `RelayClient.connectedAccounts` store (fed by the `connected_account_list` snapshot #221 already syncs, the same "request once on handshake" shape `sessions` uses). No connected account for the chosen provider renders an `EmptyState` with a real, working next step ("Use native mode instead") rather than an empty dropdown — there is no in-app "connect an account" flow yet (that's #230), so this doesn't invent one.
+
+  Once a mode is saved, switching it is explicit: a summary card with a "Change tracker mode" button, not an always-editable form — the editor reopens pre-filled from the current mode, never blank. Draft validation goes through a new `tracker-config-form.ts`, a thin wrapper over `@loombox/protocol`'s own `trackerMode` Zod schema, so the form can never accept something the rest of the app's own re-validation would then reject; a bad or incomplete draft shows a real error, never a silent no-op.
+
+  New: `apps/web/src/lib/tracker-config-form.ts`, `apps/web/src/lib/components/ConnectedAccountPicker.svelte`, `apps/web/src/lib/components/TrackerConfigPanel.svelte`, plus their tests. `RelayClient` gained a `connectedAccounts` readable store (relay-client.ts, relay-client.test.ts) and `ProjectConfigPanel`/`+page.svelte` wire it through. `tests-e2e/form-rhythm.spec.ts` gained a case for the new form's field stacking.
+
+### Patch Changes
+
+- 7806db0: Lazily load the transcript Markdown syntax highlighter instead of shipping it in the cockpit's first chunk (issue #600)
+
+  #574 landed full Markdown rendering in the transcript, and `highlight.js` plus its 18 registered grammars (`rehype-highlight` in `apps/web/src/lib/markdown.ts`) landed eagerly in the cockpit route's own chunk — measured at +101,550 B gzip on top of #574's own pipeline. `$lib/markdown.ts`'s `renderMarkdownToHtml` (the synchronous first render every message goes through) no longer highlights at all; a new async `highlightMarkdownToHtml` dynamically imports `rehype-highlight` and only the grammar(s) a given message's fences actually reference, then upgrades the render in place once it resolves. A closed fence renders plain monospace (readable, escaped, already carrying its `language-xxx` class from `remark-rehype`'s own fenced-code handling) until then — the same state an _open_, still-streaming fence already renders as, so there's no new visual state and no flash to design around.
+
+  `MessageItem.svelte` composes the two independent async triggers (streaming's fence-close re-render, and the highlighter's own async arrival) without racing: a highlight result only applies if the stable source it was computed for is still current when it resolves.
+
+  Sanitisation ordering is unchanged — `highlightMarkdownToHtml` re-runs the identical pipeline (`remark-parse`/`remark-gfm` → `remark-rehype` without `allowDangerousHtml` → `rehype-sanitize` on the unmodified default schema → the trusted `externalLinks`/`wrapTables` plugins → `rehype-highlight` → `rehype-stringify`), just invoked asynchronously; highlighting still runs after sanitisation in every case.
+
+  Measured with `vite build` on `apps/web`: the cockpit route's own chunk (`nodes/2.*.js`) drops from 977,513 B / 269,244 B gzip to 811,570 B / 217,331 B gzip (−165,943 B raw, −51,913 B gzip, −19.3%). The highlighter and its grammars (~100 kB raw / ~33 kB gzip, in a shared chunk split out of the cockpit bundle) are now fetched only the first time a message's fence actually needs highlighting — never, for a session with no code blocks.
+
+- 29da402: Validate decrypted session_update/permission_request payloads with Zod instead of casting them (issue #593)
+
+  `apps/web`'s `relay-client.ts` opened every decrypted `session_update`/`permission_request` envelope with a bare `openJson<T>()` generic cast — nothing ever checked the JSON actually matched `AcpSessionWireEvent`/`PermissionRequestPayload`. `AcpToolCallUpdate.id` was declared `string` but could be `undefined` at runtime, the root cause behind #548 (patched there one reducer-level comparison at a time).
+
+  `@loombox/providers-core` gets a new `acp-wire-schema.ts`: Zod schemas for `AcpTranscriptUpdate`'s five ACP-native kinds (message/thought chunks, `tool_call`/`tool_call_update`, `plan_update`, `usage_update`) plus the `permission_request` payload — the half of `AcpSessionWireEvent` this package owns. The other half, loombox's five invented session-lifecycle kinds, is validated by `@loombox/protocol`'s existing `sessionLifecycleEventV1` schema instead of a new duplicate, since that package already documents itself as their "one validated source of truth" and providers-core keeps zero workspace dependencies by design.
+
+  `relay-client.ts` now parses (not casts) both payloads; a malformed one is dropped and logged before it ever reaches the transcript reducer or the permission queue. #548's reducer-level `id === undefined` guard stays in place as defense in depth, though it is no longer reachable through this path.
+
+- Updated dependencies [79f9f19]
+- Updated dependencies [535a2ee]
+- Updated dependencies [99e3583]
+- Updated dependencies [e05423a]
+- Updated dependencies [635e20d]
+- Updated dependencies [29da402]
+  - @loombox/providers-core@0.3.0
+  - @loombox/protocol@0.3.0
+  - @loombox/crypto@0.0.3
+
 ## 0.1.8
 
 ### Patch Changes
