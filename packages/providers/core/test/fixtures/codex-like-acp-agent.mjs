@@ -117,13 +117,12 @@ rl.on('line', (line) => {
           sessionId,
           update: {
             sessionUpdate: 'tool_call',
-            id: 'tc1',
+            toolCallId: 'tc1',
             title: 'Patch',
-            toolKind: 'edit',
+            kind: 'edit',
             status: 'pending',
-            diff: { path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' },
             rawInput: { path: 'src/foo.ts' },
-            content: [],
+            content: [{ type: 'diff', path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' }],
             // Deliberately no `_meta`: Codex has no confirmed parent-link
             // signal yet (SPEC.md §7.24), unlike claude-like-acp-agent.mjs.
           },
@@ -138,13 +137,12 @@ rl.on('line', (line) => {
         params: {
           sessionId,
           toolCall: {
-            id: 'tc1',
+            toolCallId: 'tc1',
             title: 'Patch',
-            toolKind: 'edit',
+            kind: 'edit',
             status: 'pending',
-            diff: { path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' },
             rawInput: { path: 'src/foo.ts' },
-            content: [],
+            content: [{ type: 'diff', path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' }],
             locations: [{ path: 'src/foo.ts' }],
           },
           options: [
@@ -170,7 +168,7 @@ rl.on('line', (line) => {
             sessionId,
             update: {
               sessionUpdate: 'tool_call_update',
-              id: 'tc1',
+              toolCallId: 'tc1',
               status: chosen === 'cancelled' ? 'failed' : 'completed',
             },
           },
@@ -200,9 +198,9 @@ rl.on('line', (line) => {
           sessionId,
           update: {
             sessionUpdate: 'tool_call',
-            id: 'tc-bash',
+            toolCallId: 'tc-bash',
             title: 'Bash',
-            toolKind: 'execute',
+            kind: 'execute',
             status: 'completed',
             rawInput: { command: 'pnpm test' },
             content: [{ type: 'text', text: 'ok' }],
