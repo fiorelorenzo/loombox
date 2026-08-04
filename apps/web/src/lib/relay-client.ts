@@ -34,6 +34,7 @@ import {
   type AcpToolCallUpdate,
   type PendingPermissionRequest,
   type PermissionQueueState,
+  type TranscriptItem,
   type TranscriptState,
 } from '@loombox/providers-core/browser';
 import {
@@ -423,6 +424,22 @@ export interface AttentionInboxItem {
   readonly outcome?: 'exited' | 'error';
   /** Set only for a `'session_outcome'` item, when the session's last settled turn carried one (`TranscriptState.lastStopReason`, SPEC §7.24) — extra context for why it stopped. */
   readonly stopReason?: string;
+  /**
+   * Set for a `'permission'` or `'awaiting_input'` item: the agent's most
+   * recent message in this session's transcript, so a reply/approval from
+   * the inbox has the same context replying from the session itself would
+   * (issue #662) — the "answer without being able to read the question"
+   * gap. Sourced from the transcript already subscribed for every tracked
+   * inbox session (`trackSessionForInbox`), never a second fetch; see
+   * `lastAgentMessageText`. Raw text, the same shape
+   * `TranscriptMessageItem.text` carries elsewhere — a renderer runs it
+   * through the same sanitised `/markdown` pipeline the transcript itself
+   * uses, never dumped as plain/raw text (issue #662's scope; the renderer
+   * is #671, out of scope here). `undefined` when the agent hasn't said
+   * anything in this session yet (e.g. a permission request on its very
+   * first turn) — not a stale placeholder.
+   */
+  readonly agentMessage?: string;
 }
 
 /**
@@ -456,6 +473,27 @@ function parseStatusTimestamp(updatedAt: string | undefined): number {
   if (!updatedAt) return Date.now();
   const parsed = Date.parse(updatedAt);
   return Number.isNaN(parsed) ? Date.now() : parsed;
+}
+
+/**
+ * The agent's most recent message text in a transcript — backs
+ * `AttentionInboxItem.agentMessage` (issue #662). Scans from the end:
+ * `TranscriptState.items` is append-only by first appearance (SPEC.md
+ * §7.24 "Ordered by first appearance; a coalesced chunk update never
+ * changes an item's position"), so a chunk that keeps growing never moves,
+ * and the last `'agent_message_chunk'` item in list order is also the most
+ * recently started one. Thoughts (`'agent_thought_chunk'`) and the user's
+ * own turns (`'user_message_chunk'`) are excluded on purpose — this is
+ * specifically what the agent said, not what it was thinking or what
+ * prompted it. `undefined` when the agent hasn't said anything yet in this
+ * session (e.g. a permission request on its very first turn).
+ */
+function lastAgentMessageText(items: readonly TranscriptItem[]): string | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.type === 'message' && item.kind === 'agent_message_chunk') return item.text;
+  }
+  return undefined;
 }
 
 export interface RelayClientOptions {
@@ -3472,6 +3510,9 @@ export class RelayClient {
   private recomputeAttentionInbox(): void {
     const items: AttentionInboxItem[] = [];
     for (const session of get(this.sessionsStore)) {
+      const transcript = get(this.transcriptStoreFor(session.id));
+      const agentMessage = lastAgentMessageText(transcript.items);
+
       const queue = get(this.permissionQueueStoreFor(session.id));
       const head = headPermissionRequest(queue, session.id);
       if (head) {
@@ -3483,10 +3524,10 @@ export class RelayClient {
           nodeId: session.nodeId,
           waitingSince: head.enqueuedAt,
           permission: head,
+          agentMessage,
         });
       }
 
-      const transcript = get(this.transcriptStoreFor(session.id));
       if (transcript.status === 'awaiting_input') {
         items.push({
           kind: 'awaiting_input',
@@ -3495,6 +3536,7 @@ export class RelayClient {
           projectPath: session.projectPath,
           nodeId: session.nodeId,
           waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
+          agentMessage,
         });
       } else if (transcript.status === 'exited' || transcript.status === 'error') {
         items.push({
