@@ -1,0 +1,823 @@
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>How a turn is delimited</h2>
+  </div>
+  <blockquote class="item-quote">
+    non mi piacciono le card dei messaggi dell'utente e dell'agente. Per niente.
+  </blockquote>
+  <p class="item-note">
+    Both roles get a filled, rounded box. <code>.message-item.user</code> sets
+    <code>background: var(--color-surface-raised)</code>, <code>border-radius: var(--radius-md)</code>
+    and <code>padding-inline</code> (<code>MessageItem.svelte:402-406</code>), and its gutter also
+    draws <code>box-shadow: inset 2px 0 0 0 var(--color-accent)</code> (<code>:409-411</code>).
+    <code>.message-item.agent</code>/<code>.thought</code> get the same radius and padding on
+    <code>--color-surface</code> instead (<code>:421-427</code>). The component's own comment admits
+    the redundancy for the user's case: "the user's own second, redundant cue: the raised surface
+    plus this accent bar, so no single mark carries the whole distinction alone"
+    (<code>:396-401</code>). But <code>.gutter</code> + <code>.content</code> is already the one
+    device that says "this is a turn" (v6 spec §3.4) — the fill repeats that same idea in a second,
+    boxier shape. The spec's own words for the tool-call case never got applied here: "one level of
+    card chrome, not two" (<code>2026-08-03-cockpit-v6-design.md:175</code>).
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Filled box, plus a gutter accent bar for the user</span>
+      </div>
+      <p class="opt-why">Two structures mark the same boundary: the box and the bar. <b>Neither one can be pointed to as the delimiter</b> — both are.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  The session list flickers whenever a new message streams in, like the whole row
+                  re-renders instead of just the text. Can you check whether
+                  <code>MessageItem</code> is keyed on something stable?
+                </p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+              <span class="lb-spacer"></span>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  Found it. The <code>{#each}</code> in <code>+page.svelte</code> keys off
+                  <code>item.id</code>, which is stable once assigned, but a freshly appended item
+                  gets a temporary id for one frame before the server ack replaces it, so Svelte
+                  tears the node down and remounts it.
+                </p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} providerId={session.provider} /&gt;
+{/each}</code></pre>
+                <ul>
+                  <li>Swap the temp id for a stable client-generated one instead of waiting on the ack</li>
+                  <li>Check whether <code>ToolCallGutter</code>'s own list has the same gap</li>
+                  <li>The <code>beat-in</code> mount animation replaying is the visible symptom, not a repaint</li>
+                </ul>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B1-1</span><span class="opt-title">No fill at all</span></div>
+      <p class="opt-why">Deletes the fill outright; the row's own spacing carries the boundary. <b>Reopens T3</b> for the agent, and since a user row has never had a glyph of its own, <b>the user turn loses its only visual mark</b> until B2 gives it one.</p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  The session list flickers whenever a new message streams in, like the whole row
+                  re-renders instead of just the text. Can you check whether
+                  <code>MessageItem</code> is keyed on something stable?
+                </p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-gap">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+              <span class="lb-spacer"></span>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-gap">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  Found it. The <code>{#each}</code> in <code>+page.svelte</code> keys off
+                  <code>item.id</code>, which is stable once assigned, but a freshly appended item
+                  gets a temporary id for one frame before the server ack replaces it, so Svelte
+                  tears the node down and remounts it.
+                </p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} providerId={session.provider} /&gt;
+{/each}</code></pre>
+                <ul>
+                  <li>Swap the temp id for a stable client-generated one instead of waiting on the ack</li>
+                  <li>Check whether <code>ToolCallGutter</code>'s own list has the same gap</li>
+                  <li>The <code>beat-in</code> mount animation replaying is the visible symptom, not a repaint</li>
+                </ul>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B1-2</span><span class="opt-title">Fill for the user only</span></div>
+      <p class="opt-why">Keeps the raised surface and accent bar for your own words only; the agent's fill is dropped so a long answer runs into the page background again. <b>Your prompt is what jumps out</b> scrolling back through a long session, at T3's cost.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  The session list flickers whenever a new message streams in, like the whole row
+                  re-renders instead of just the text. Can you check whether
+                  <code>MessageItem</code> is keyed on something stable?
+                </p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+              <span class="lb-spacer"></span>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  Found it. The <code>{#each}</code> in <code>+page.svelte</code> keys off
+                  <code>item.id</code>, which is stable once assigned, but a freshly appended item
+                  gets a temporary id for one frame before the server ack replaces it, so Svelte
+                  tears the node down and remounts it.
+                </p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} providerId={session.provider} /&gt;
+{/each}</code></pre>
+                <ul>
+                  <li>Swap the temp id for a stable client-generated one instead of waiting on the ack</li>
+                  <li>Check whether <code>ToolCallGutter</code>'s own list has the same gap</li>
+                  <li>The <code>beat-in</code> mount animation replaying is the visible symptom, not a repaint</li>
+                </ul>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B1-3</span><span class="opt-title">A hairline rule instead of a fill</span></div>
+      <p class="opt-why">One 1px rule between turns, no surface token at all. <b>Reads as a list, not a stack of boxes</b>, but a rule this quiet can vanish next to a bright code fence sitting right under it, and it marks a boundary, not a role.</p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  The session list flickers whenever a new message streams in, like the whole row
+                  re-renders instead of just the text. Can you check whether
+                  <code>MessageItem</code> is keyed on something stable?
+                </p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-hairline">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+              <span class="lb-spacer"></span>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-hairline">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  Found it. The <code>{#each}</code> in <code>+page.svelte</code> keys off
+                  <code>item.id</code>, which is stable once assigned, but a freshly appended item
+                  gets a temporary id for one frame before the server ack replaces it, so Svelte
+                  tears the node down and remounts it.
+                </p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} providerId={session.provider} /&gt;
+{/each}</code></pre>
+                <ul>
+                  <li>Swap the temp id for a stable client-generated one instead of waiting on the ack</li>
+                  <li>Check whether <code>ToolCallGutter</code>'s own list has the same gap</li>
+                  <li>The <code>beat-in</code> mount animation replaying is the visible symptom, not a repaint</li>
+                </ul>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B1-4</span><span class="opt-title">One flush tint, no radius, no bar</span></div>
+      <p class="opt-why">Keeps a tint per role — barely visible, full row width, square corners — and drops the gutter's accent bar since the tint alone already says which turn this is. <b>One signal instead of two</b>, not zero.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-flush-user">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  The session list flickers whenever a new message streams in, like the whole row
+                  re-renders instead of just the text. Can you check whether
+                  <code>MessageItem</code> is keyed on something stable?
+                </p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+              <span class="lb-spacer"></span>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>
+                  Found it. The <code>{#each}</code> in <code>+page.svelte</code> keys off
+                  <code>item.id</code>, which is stable once assigned, but a freshly appended item
+                  gets a temporary id for one frame before the server ack replaces it, so Svelte
+                  tears the node down and remounts it.
+                </p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} providerId={session.provider} /&gt;
+{/each}</code></pre>
+                <ul>
+                  <li>Swap the temp id for a stable client-generated one instead of waiting on the ack</li>
+                  <li>Check whether <code>ToolCallGutter</code>'s own list has the same gap</li>
+                  <li>The <code>beat-in</code> mount animation replaying is the visible symptom, not a repaint</li>
+                </ul>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="stage-label" style="margin: 0 var(--space-md) var(--space-sm)">At 360px — same three rows, no wide viewport required</p>
+      <div class="stage s-msg-narrow">
+        <div class="lb-row s-msg-flush-user">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>The session list flickers whenever a new message streams in. Can you check whether <code>MessageItem</code> is keyed on something stable?</p>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex s-msg-thought-content">
+              <span class="s-msg-thinking-timer">Thought for 6s</span>
+              <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text">
+                <p>Found it. A freshly appended item gets a temporary id for one frame before the ack lands, so Svelte remounts it.</p>
+                <pre><code>{#each transcript.items as item (item.id)}
+  &lt;MessageItem {item} /&gt;
+{/each}</code></pre>
+              </div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b2">
+  <div class="item-head">
+    <span class="item-id">B2</span>
+    <h2>Role attribution in the gutter</h2>
+  </div>
+  <blockquote class="item-quote">
+    non mi piacciono le card dei messaggi dell'utente e dell'agente. Per niente.
+  </blockquote>
+  <p class="item-note">
+    The visible caption word is already gone — v6 replaced it with a decorative glyph
+    (<code>MessageItem.svelte:280-283</code>), <code>aria-hidden</code>, backed by an off-screen
+    <code>.sr-only</code> label present on every row regardless of role (issue #575,
+    <code>:378-394</code>). But a user turn gets no glyph at all: <code>providerGlyph</code> is
+    explicitly <code>undefined</code> when <code>role === 'user'</code>, because "the accent bar
+    plus raised surface already say 'you'" (<code>:238-244</code>) — so the moment B1 changes that
+    fill, the user turn loses the only visual mark it ever had. Meanwhile the column is still
+    <code>--gutter: 4.75rem</code> (<code>tokens.css:65</code>), a width whose own comment says it
+    exists "because 'CLAUDE' had to fit" on one line (<code>:56-64</code>) — a word that has not
+    rendered since #575 landed. Every option below leaves the <code>.sr-only</code> label exactly
+    as is; only the sighted mark changes.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Glyph for the agent, nothing for the user, 4.75rem regardless</span></div>
+      <p class="opt-why"><b>The user's identity lives entirely in B1's fill, not in this column</b>, and the agent's glyph still sits in a width sized for a caption word that hasn't rendered in weeks.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above — two sentences, no reply yet.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — the <code>{#each}</code> key. Same reply as B1's Today.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B2-1</span><span class="opt-title">Every role gets a glyph, gutter shrinks to fit it</span></div>
+      <p class="opt-why">Gives the user its own icon too, then narrows the column since one glyph needs far less than a six-letter word ever did. <b>User identity stops depending on B1's fill</b>, but a small monochrome glyph now has to carry a distinction words used to make explicit.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter s-msg-gutter-sm"><svg class="s-msg-glyph"><use href="#i-user" /></svg></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter s-msg-gutter-sm"><svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg></div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter s-msg-gutter-sm"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — same reply, still a continuation of the same speaker so the glyph is suppressed here too.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B2-2</span><span class="opt-title">Smaller gutter, initials instead of an icon</span></div>
+      <p class="opt-why">Swaps the icon for a one-letter monogram — narrower to read, no icon vocabulary to learn. <b>Claude and Codex both round to "C"</b>, so the letter alone cannot always tell two agents apart.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter s-msg-gutter-sm"><span class="s-msg-monogram">Y</span></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter s-msg-gutter-sm"><span class="s-msg-monogram s-msg-glyph-dim">C</span></div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter s-msg-gutter-sm"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — same reply, still suppressed as a continuation.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B2-3</span><span class="opt-title">The word, but only on the first turn of a run</span></div>
+      <p class="opt-why">Brings the word back, reusing the same grouping <code>showsAttribution</code> already computes (<code>transcript-attribution.ts:36-45</code>). <b>Repeats far less</b> than v5 did, but a user turn is rarely part of a run of its own, so in practice it still shows a word almost every time — only the agent side goes quiet.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — continuation of the thought's run, so it stays wordless and glyph-less, exactly like today's suppression.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B2-4</span><span class="opt-title">Nothing in the gutter, role told by surface alone</span></div>
+      <p class="opt-why">Removes the mark entirely, sighted or not — the <code>.sr-only</code> label still reaches a screen reader regardless. <b>Narrowest column possible</b>, but it only works paired with a B1 option that keeps a per-role surface cue; shown here with B1-4's flush tint since nothing else is left to tell the roles apart.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-flush-user">
+          <div class="lb-row-gutter s-msg-gutter-xs"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter s-msg-gutter-xs"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-flush-agent">
+          <div class="lb-row-gutter s-msg-gutter-xs"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — same reply, told apart from the question above only by its tint.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b3">
+  <div class="item-head">
+    <span class="item-id">B3</span>
+    <h2>The per-row copy button</h2>
+  </div>
+  <blockquote class="item-quote">
+    non mi piacciono le card dei messaggi dell'utente e dell'agente. Per niente.
+  </blockquote>
+  <p class="item-note">
+    Every row — user, agent, thought — renders <code>CopyButton</code> with
+    <code>revealOnHover</code> (<code>MessageItem.svelte:317-319</code>). At rest it is fully
+    transparent on a hover-capable pointer (<code>CopyButton.svelte:146-148</code>) and sits at
+    <code>opacity: 0.7</code> permanently on touch (<code>:155-159</code>); hovering or focusing the
+    row brings it to full opacity (<code>MessageItem.svelte:673-676</code>,
+    <code>CopyButton.svelte:150-153</code>). Invisible chrome is still chrome: it reserves a slot at
+    the end of every single turn, and every row pays that layout cost even when nobody ever hovers
+    it.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">A hover-revealed icon at the end of every row</span></div>
+      <p class="opt-why"><b>Zero visual cost at rest, one reveal per row on hover</b> — but the slot itself, and the layout gap it reserves, exists on every turn regardless of whether it's ever used.</p>
+      <div class="stage">
+        <p class="stage-label">At rest</p>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text"><p>Found it — the <code>{#each}</code> key issue from B1's mock.</p></div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-sm)">Invisible on a hover-capable pointer; 0.7 opacity, always, on touch</p>
+      </div>
+      <div class="stage">
+        <p class="stage-label">On hover / focus</p>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text"><p>Found it — the <code>{#each}</code> key issue from B1's mock.</p></div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn s-msg-force-visible" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-sm)">Same button, full opacity — reached only by hovering or focusing the row</p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B3-1</span><span class="opt-title">On hover, in the gutter</span></div>
+      <p class="opt-why">Moves the button into the gutter, beside the role mark, revealed the same way. <b>Never displaces the prose it sits next to</b>, but it now competes with the glyph for a column that may already be shrinking under B2, and disappears entirely once the gutter collapses on a phone.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-user s-msg-accentbar">
+          <div class="lb-row-gutter">
+            <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy user message"><svg><use href="#i-copy" /></svg></button>
+          </div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Same flicker report as above.</p></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter">
+            <svg class="s-msg-glyph s-msg-glyph-dim"><use href="#i-claude" /></svg>
+            <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy thought message"><svg><use href="#i-copy" /></svg></button>
+          </div>
+          <div class="lb-row-body">
+            <div class="s-msg-thought-content"><span class="s-msg-thinking-timer">Thought for 6s</span> <button type="button" class="s-msg-expand"><svg><use href="#i-chevron-right" /></svg>Show thought</button></div>
+          </div>
+        </div>
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter">
+            <button class="lb-iconbtn s-msg-copybtn" aria-label="Copy agent message"><svg><use href="#i-copy" /></svg></button>
+          </div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text"><p>Found it — same reply, copy control now lives to the left instead of the right.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B3-2</span><span class="opt-title">A row action menu</span></div>
+      <p class="opt-why">One "…" button opens Copy plus room for whatever comes next. <b>Buys headroom for future actions without adding more hover chrome</b>, at the cost of a second click for the one action people actually use today.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-msg-contentflex">
+              <div class="lb-prose s-msg-text"><p>Found it — the <code>{#each}</code> key issue from B1's mock.</p></div>
+              <div class="s-msg-copyrow">
+                <button class="lb-iconbtn s-msg-copybtn s-msg-force-visible" aria-label="Row actions"><svg><use href="#i-more" /></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lb-panel s-msg-menu">
+          <button type="button" class="lb-listrow"><svg style="width: 1rem; height: 1rem"><use href="#i-copy" /></svg>Copy message</button>
+          <button type="button" class="lb-listrow"><svg style="width: 1rem; height: 1rem"><use href="#i-download" /></svg>Copy as Markdown</button>
+        </div>
+        <p class="lb-caption" style="margin: var(--space-sm) var(--space-md) 0">Menu open, for illustration</p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">B3-3</span><span class="opt-title">Selection-based copy, no control at all</span></div>
+      <p class="opt-why">No dedicated control anywhere; the browser's own text selection is the copy path. <b>Removes the chrome entirely</b>, but a selection can't cleanly grab a whole turn across a paragraph and a code fence in one drag, and it bypasses <code>itemCopyText</code>'s markdown-to-plain normalization.</p>
+      <div class="stage">
+        <div class="lb-row s-msg-fill-agent">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="lb-prose s-msg-text">
+              <p>Found it — the <span class="s-msg-selected">{#each} in +page.svelte keys off item.id</span>, which is stable once assigned.</p>
+            </div>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin: var(--space-sm) var(--space-md) 0">Highlighted span simulates a native text selection — no button anywhere on the row</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* Faithful reproductions of MessageItem.svelte:402-427's fill/radius/padding, and
+     :409-411's accent bar, built on the shared .lb-row skeleton. */
+  .s-msg-fill-user {
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  .s-msg-fill-agent {
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  .s-msg-accentbar .lb-row-gutter {
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
+  }
+
+  /* B1-1: extra rhythm between rows now that nothing else marks a turn. */
+  .s-msg-gap {
+    margin-top: var(--space-sm);
+  }
+
+  /* B1-3: a rule instead of a box. */
+  .s-msg-hairline {
+    border-top: 1px solid var(--color-border-subtle);
+    padding-top: var(--space-sm);
+    margin-top: var(--space-sm);
+  }
+
+  /* B1-4: a tint that spans the row exactly, no radius, no inset margin — one
+     surface per turn instead of a rounded box floating beside the gutter. */
+  .s-msg-flush-user {
+    background: var(--color-accent-subtle);
+  }
+
+  .s-msg-flush-agent {
+    background: var(--color-fill-subtle);
+  }
+
+  .s-msg-narrow {
+    max-width: 22.5rem;
+    margin-inline: auto;
+  }
+
+  /* Mirrors MessageItem.svelte's real .content: text plus a trailing copy slot. */
+  .s-msg-contentflex {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+  }
+
+  .s-msg-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .s-msg-thought-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    opacity: 0.65;
+    font-style: italic;
+  }
+
+  .s-msg-thinking-timer {
+    font-size: var(--text-caption-size);
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .s-msg-expand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font: inherit;
+    font-size: var(--text-small-size);
+    background: none;
+    border: none;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .s-msg-expand svg {
+    width: 0.75em;
+    height: 0.75em;
+  }
+
+  /* CopyButton.svelte:146-159's reveal-on-hover, reproduced against the row
+     rather than the real component's own .message-item:hover. */
+  .s-msg-copyrow {
+    flex-shrink: 0;
+  }
+
+  .s-msg-copybtn {
+    opacity: 0;
+  }
+
+  .lb-row:hover .s-msg-copybtn,
+  .lb-row:focus-within .s-msg-copybtn {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .s-msg-copybtn {
+      opacity: 0.7;
+    }
+  }
+
+  /* Static illustration only — pins a copy button open to show the hovered state. */
+  .s-msg-copybtn.s-msg-force-visible {
+    opacity: 1;
+  }
+
+  .s-msg-menu {
+    margin: var(--space-sm) var(--space-md) 0;
+  }
+
+  /* B3-3: simulates a native text selection highlight, no button involved. */
+  .s-msg-selected {
+    background: var(--color-accent-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  .s-msg-glyph {
+    width: 1.1rem;
+    height: 1.1rem;
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .s-msg-glyph-dim {
+    opacity: 0.5;
+  }
+
+  /* B2: a gutter sized for a lone glyph/initial instead of a six-letter word. */
+  .s-msg-gutter-sm {
+    flex: 0 0 2.25rem;
+    width: 2.25rem;
+  }
+
+  .s-msg-gutter-xs {
+    flex: 0 0 1.5rem;
+    width: 1.5rem;
+  }
+
+  .s-msg-monogram {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: var(--radius-full);
+    background: var(--color-fill-subtle);
+    color: var(--color-text-secondary);
+    font-size: var(--text-caption-size);
+    font-weight: 600;
+  }
+</style>

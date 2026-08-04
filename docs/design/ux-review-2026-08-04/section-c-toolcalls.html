@@ -1,0 +1,1372 @@
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>The resting state of a completed tool call</h2>
+  </div>
+  <blockquote class="item-quote">
+    non mi piace neanche tantissimo la card del tool use, anche se ho visto solo bash. Al momento
+    mi sembra che sprechi troppo spazio.
+  </blockquote>
+  <p class="item-note">
+    <code>BashWidget</code> defaults its body open for every call, regardless of outcome
+    (<code>let expanded = $state(true)</code>, <code>BashWidget.svelte:47</code>), and
+    <code>TerminalOutput</code> prints the whole string with no cap
+    (<code>{#if output}&lt;pre class="body"&gt;{output}&lt;/pre&gt;{/if}</code>, <code>TerminalOutput.svelte:62-64</code>;
+    its own style block at <code>:104-111</code> sets no <code>max-height</code> and no
+    <code>overflow-y</code> anywhere). <code>#576</code> already removed the double box
+    (<code>ToolCard.svelte:47-64</code>: a bash call renders with <code>surface={false}</code>, so
+    <code>TerminalOutput</code>'s own dark screen is the one surface it gets, not a second card
+    around it), which is a real fix: it closed 2026-08-03, one day before this review. What's
+    left is that a completed call costs exactly what its output costs, whether or not
+    that output is worth reading. Measured against the app's own real tokens
+    (<code>typography.css:39,89</code>: <code>html</code> sets
+    <code>font-size: var(--text-body-size)</code> on itself, so the app's actual root is 15.2px,
+    not the 16px browser default): a <code>pwd</code> with a one-line answer costs 106px; the
+    identical shape around a passing 13-line <code>vitest</code> tail, output nobody needs to read
+    since it went green, costs 393px. Neither figure includes the 8px gap to the next row
+    (<code>.items</code>' <code>gap: var(--space-sm)</code>, <code>+page.svelte:4817-4829</code>).
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Bordered console, unconditionally open</span>
+      </div>
+      <p class="opt-why">The box costs the same whether the call is a one-word answer or a page of green text, because nothing here reads the outcome before deciding how much room to take.</p>
+      <div class="stage">
+        <div class="s-tc-example">
+          <p class="lb-caption">Short call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                </button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <div class="s-tc-term-head">
+                    <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                    <code class="s-tc-term-cmd">pwd</code>
+                  </div>
+                  <pre class="s-tc-term-body">/home/dev/loombox/apps/web</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Long call, output nobody needs to read (it passed)</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                </button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <div class="s-tc-term-head">
+                    <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                    <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</code>
+                  </div>
+                  <pre class="s-tc-term-body"> RUN  v2.1.4 /home/dev/loombox/apps/web
+
+ &#10003; src/lib/relay-client.test.ts (14 tests) 892ms
+   &#10003; relay-client &gt; reconnect &gt; backs off exponentially 41ms
+   &#10003; relay-client &gt; reconnect &gt; resets backoff after a stable connection 12ms
+   &#10003; relay-client &gt; send &gt; buffers while socket is CONNECTING 8ms
+   &#10003; relay-client &gt; send &gt; flushes the buffer once OPEN 6ms
+   &#10003; relay-client &gt; heartbeat &gt; sends a ping every 20s 9ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  14:32:07
+   Duration  1.24s</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C1-1</span><span class="opt-title">One line, expandable</span></div>
+      <p class="opt-why">The command and its outcome share the gutter's own text line, so <code>pwd</code> and a 13-line pass cost the same row until you ask for more; <b>the output is a click away, not gone</b>, but you have to know there's a click to make.</p>
+      <div class="stage">
+        <div class="s-tc-example">
+          <p class="lb-caption">Short call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline is-fact">
+                <button type="button" class="s-tc-disclosure" aria-expanded="false">
+                  <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                </button>
+                <code class="s-tc-oneline-cmd">pwd</code>
+                <span class="s-tc-oneline-arrow">&rarr;</span>
+                <code class="s-tc-oneline-result">/home/dev/loombox/apps/web</code>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Long call, collapsed (default)</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <button type="button" class="s-tc-disclosure" aria-expanded="false">
+                  <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                </button>
+                <code class="s-tc-oneline-cmd">pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</code>
+                <span class="s-tc-oneline-chip">14 passed &middot; 892ms</span>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Same call, expanded</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                </button>
+                <code class="s-tc-oneline-cmd">pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</code>
+                <span class="s-tc-oneline-chip">14 passed &middot; 892ms</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <pre class="s-tc-term-body"> RUN  v2.1.4 /home/dev/loombox/apps/web
+
+ &#10003; src/lib/relay-client.test.ts (14 tests) 892ms
+   &#10003; relay-client &gt; reconnect &gt; backs off exponentially 41ms
+   &#10003; relay-client &gt; reconnect &gt; resets backoff after a stable connection 12ms
+   &#10003; relay-client &gt; send &gt; buffers while socket is CONNECTING 8ms
+   &#10003; relay-client &gt; send &gt; flushes the buffer once OPEN 6ms
+   &#10003; relay-client &gt; heartbeat &gt; sends a ping every 20s 9ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  14:32:07
+   Duration  1.24s</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C1-2</span><span class="opt-title">Two lines: command, then a short preview</span></div>
+      <p class="opt-why">The first output line sits right under the command with no box at all, so a scan catches both without a click; <b>there's no way back to line two from here</b>, so anything longer than a glance still needs the terminal dock (C2-4).</p>
+      <div class="stage">
+        <div class="s-tc-example">
+          <p class="lb-caption">Short call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-preview">
+                <div class="s-tc-preview-cmd">
+                  <code class="s-tc-preview-cmd-text">pwd</code>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-preview-line">/home/dev/loombox/apps/web</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Long call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-preview">
+                <div class="s-tc-preview-cmd">
+                  <code class="s-tc-preview-cmd-text">pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</code>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-preview-line">&#10003; src/lib/relay-client.test.ts (14 tests) 892ms&hellip;</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C1-3</span><span class="opt-title">Same card, tightened padding</span></div>
+      <p class="opt-why">Keeps the console people already recognise and just spends less on it: 106px&rarr;87px on the short call, 393px&rarr;374px on the long one, which proves <b>padding was never where the vitest tail's height came from</b>, so this option barely touches the case that started the complaint.</p>
+      <div class="stage">
+        <div class="s-tc-example">
+          <p class="lb-caption">Short call &middot; 87px</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                </button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body is-tight">
+                <div class="s-tc-term is-tight">
+                  <div class="s-tc-term-head">
+                    <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                    <code class="s-tc-term-cmd">pwd</code>
+                  </div>
+                  <pre class="s-tc-term-body">/home/dev/loombox/apps/web</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Long call &middot; 374px</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                </button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body is-tight">
+                <div class="s-tc-term is-tight">
+                  <div class="s-tc-term-head">
+                    <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                    <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</code>
+                  </div>
+                  <pre class="s-tc-term-body"> RUN  v2.1.4 /home/dev/loombox/apps/web
+
+ &#10003; src/lib/relay-client.test.ts (14 tests) 892ms
+   &#10003; relay-client &gt; reconnect &gt; backs off exponentially 41ms
+   &#10003; relay-client &gt; reconnect &gt; resets backoff after a stable connection 12ms
+   &#10003; relay-client &gt; send &gt; buffers while socket is CONNECTING 8ms
+   &#10003; relay-client &gt; send &gt; flushes the buffer once OPEN 6ms
+   &#10003; relay-client &gt; heartbeat &gt; sends a ping every 20s 9ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  14:32:07
+   Duration  1.24s</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C1-4</span><span class="opt-title">Inline, no container at all</span></div>
+      <p class="opt-why">No box, no border: the mono font and the alignment to the gutter are the only signal this is a tool call, the same trick <code>TerminalOutput</code>'s own prompt glyph already relies on; <b>reads as dense, continuous prose</b>, which is quiet in a long turn and easy to lose at a glance in a busy one.</p>
+      <div class="stage">
+        <div class="s-tc-example">
+          <p class="lb-caption">Short call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-plain">
+                <div class="s-tc-plain-cmd">
+                  <span>$ pwd</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <pre class="s-tc-plain-out">/home/dev/loombox/apps/web</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="s-tc-example">
+          <p class="lb-caption">Long call</p>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-plain">
+                <div class="s-tc-plain-cmd">
+                  <span>$ pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <pre class="s-tc-plain-out"> RUN  v2.1.4 /home/dev/loombox/apps/web
+
+ &#10003; src/lib/relay-client.test.ts (14 tests) 892ms
+   &#10003; relay-client &gt; reconnect &gt; backs off exponentially 41ms
+   &#10003; relay-client &gt; reconnect &gt; resets backoff after a stable connection 12ms
+   &#10003; relay-client &gt; send &gt; buffers while socket is CONNECTING 8ms
+   &#10003; relay-client &gt; send &gt; flushes the buffer once OPEN 6ms
+   &#10003; relay-client &gt; heartbeat &gt; sends a ping every 20s 9ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  14:32:07
+   Duration  1.24s</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c2">
+  <div class="item-head">
+    <span class="item-id">C2</span>
+    <h2>When the output is the point: failures and long tails</h2>
+  </div>
+  <p class="item-note">
+    Today doesn't branch on outcome inside the render path: the same unconditional
+    <code>&lt;pre&gt;{output}&lt;/pre&gt;</code> (<code>TerminalOutput.svelte:62-64</code>) prints a
+    failure exactly like it prints a pass, just with the status chip turned bold and red
+    (<code>ToolCallStatus.svelte:66-75</code>, the one state <code>#576</code> decided should
+    shout, while <code>completed</code> drops its label entirely at <code>:39-49</code>). That part
+    is correct, a failure is exactly when a card should spend its space, but there is still no
+    ceiling on it: neither the header rule (<code>TerminalOutput.svelte:78-84</code>) nor the body
+    rule (<code>:104-111</code>) sets a <code>max-height</code> or <code>overflow-y</code>
+    anywhere. A failing <code>tsc --noEmit</code> with a realistic 15 lines of errors already costs
+    481px, measured the same way as C1's numbers; a genuine stack trace or a full suite failure
+    would keep growing the transcript by exactly as many lines as the agent printed, with no way to
+    keep reading the turn underneath it while it's still on screen.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Same unbounded box, louder status chip</span></div>
+      <p class="opt-why">A failure gets the loud red label it earns, but the box under it is the identical uncapped <code>&lt;pre&gt;</code> a passing call would print, so a genuinely long failure has no floor and no ceiling.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card">
+            <div class="s-tc-header">
+              <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-tc-title">Bash</span>
+              <span class="lb-dot danger"></span>
+              <span class="s-tc-status-label is-failed">Failed</span>
+            </div>
+            <div class="s-tc-body">
+              <div class="s-tc-term">
+                <div class="s-tc-term-head">
+                  <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                  <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                </div>
+                <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+
+42   return resolveToolWidgetKind(items.find((i) =&gt; i.id === id));
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+src/lib/components/tool-widgets/BashWidget.svelte:43:32 - error TS2551: Property 'toolCallOutputTexts' does not exist on type 'TranscriptToolCallItem'. Did you mean 'toolCallOutputText'?
+
+43   const output = $derived(toolCallOutputTexts(item.content));
+                              ~~~~~~~~~~~~~~~~~~~
+
+Found 2 errors in 2 files.
+
+Errors  Files
+     1  src/lib/tool-widgets.ts:42
+     1  src/lib/components/tool-widgets/BashWidget.svelte:43</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C2-1</span><span class="opt-title">Force-expand in place, only for the calls that need it</span></div>
+      <p class="opt-why">Visually the failing case looks close to today, full text, no cap, disclosure locked so it can't be collapsed by accident; the real change is that this stops being every call's default and becomes a rule scoped to <code>failed</code>, so whichever resting state C1 picks, a failure overrides it.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card">
+            <div class="s-tc-header">
+              <button type="button" class="s-tc-disclosure" aria-expanded="true" disabled>
+                <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-tc-title">Bash</span>
+              <span class="lb-dot danger"></span>
+              <span class="s-tc-status-label is-failed">Failed &middot; can't collapse</span>
+            </div>
+            <div class="s-tc-body">
+              <div class="s-tc-term">
+                <div class="s-tc-term-head">
+                  <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                  <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                </div>
+                <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+
+42   return resolveToolWidgetKind(items.find((i) =&gt; i.id === id));
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Found 2 errors in 2 files.</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C2-2</span><span class="opt-title">Fixed-height scroller</span></div>
+      <p class="opt-why">Capped at <code>calc(var(--text-code-line) * 8)</code>, eight lines, so the card's height is bounded no matter how long the real output is; <b>a 15-line failure and a 400-line one cost the same card</b>, at the cost of a scrollbar inside a scrollable transcript.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card">
+            <div class="s-tc-header">
+              <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-tc-title">Bash</span>
+              <span class="lb-dot danger"></span>
+              <span class="s-tc-status-label is-failed">Failed</span>
+            </div>
+            <div class="s-tc-body">
+              <div class="s-tc-term is-scroll">
+                <div class="s-tc-term-head">
+                  <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                  <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                </div>
+                <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+
+42   return resolveToolWidgetKind(items.find((i) =&gt; i.id === id));
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+src/lib/components/tool-widgets/BashWidget.svelte:43:32 - error TS2551: Property 'toolCallOutputTexts' does not exist on type 'TranscriptToolCallItem'. Did you mean 'toolCallOutputText'?
+
+43   const output = $derived(toolCallOutputTexts(item.content));
+                              ~~~~~~~~~~~~~~~~~~~
+
+Found 2 errors in 2 files.
+
+Errors  Files
+     1  src/lib/tool-widgets.ts:42
+     1  src/lib/components/tool-widgets/BashWidget.svelte:43</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C2-3</span><span class="opt-title">First N lines plus a count</span></div>
+      <p class="opt-why">A hard cut at 5 of 15 lines with a named remainder ("+10 more lines") tells you exactly how much you're not seeing, which a scroller doesn't; <b>you decide whether the rest is worth opening</b> instead of discovering it by scrolling into it.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card">
+            <div class="s-tc-header">
+              <button type="button" class="s-tc-disclosure" aria-expanded="true">
+                <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-tc-title">Bash</span>
+              <span class="lb-dot danger"></span>
+              <span class="s-tc-status-label is-failed">Failed</span>
+            </div>
+            <div class="s-tc-body">
+              <div class="s-tc-term">
+                <div class="s-tc-term-head">
+                  <svg class="s-tc-prompt"><use href="#i-terminal" /></svg>
+                  <code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                </div>
+                <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+
+42   return resolveToolWidgetKind(items.find((i) =&gt; i.id === id));
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+src/lib/components/tool-widgets/BashWidget.svelte:43:32 - error TS2551: Property 'toolCallOutputTexts' does not exist</pre>
+                <button type="button" class="s-tc-clip-more">+10 more lines</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C2-4</span><span class="opt-title">A link into the terminal dock</span></div>
+      <p class="opt-why">The card shows the command, the exit code and the first error line, then points at the bottom terminal dock the v6 design spec already commits to (<code>2026-08-03-cockpit-v6-design.md</code> &sect;0 point 4, &sect;3.1); <b>the transcript stays a log of decisions</b>, but reading the rest costs a context switch out of the message you were just reading.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card">
+            <div class="s-tc-docklink">
+              <code class="s-tc-docklink-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+              <span class="s-tc-docklink-exit">exit 1</span>
+              <span class="lb-dot danger"></span>
+            </div>
+            <div class="s-tc-docklink-err">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type&hellip;</div>
+            <button type="button" class="lb-btn lb-btn-sm lb-btn-ghost s-tc-docklink-open">
+              <svg style="width: 0.85rem; height: 0.85rem"><use href="#i-terminal" /></svg>
+              Open in terminal
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c3">
+  <div class="item-head">
+    <span class="item-id">C3</span>
+    <h2>A burst of five to fifteen calls in one turn</h2>
+  </div>
+  <p class="item-note">
+    Nothing groups adjacent tool calls today. The only separation device in the transcript is a
+    flat <code>gap: var(--space-sm)</code> between every <code>&lt;li&gt;</code>
+    (<code>+page.svelte:4817-4829</code>), the identical rule between a tool call and the message
+    before or after it, so a run of six calls from one turn looks exactly like six unrelated turns
+    interleaved with nothing. Measured with the same real tokens as C1/C2: six ordinary calls where
+    everything goes right (<code>pwd</code>, <code>git status --porcelain</code>, an edit, a
+    <code>grep</code>, a passing type check, a commit) already cost 782px stacked. Make one of
+    those six a realistic failure instead, the same <code>tsc --noEmit</code> from C2, and the
+    identical six calls cost 1194px, more than a 13-inch laptop's visible transcript height, for a
+    turn that did five unremarkable things and one that needs attention. <code>#202</code> already
+    files exactly this gap as the tier-3 "burst/group summary card," gated on the subagent-tree
+    work landing first (issue body, "Depends on: Implement subagent and nested tool-call tree
+    rendering"). The three options below sit at different distances from that ticket: C3-1 is a
+    smaller step that doesn't wait on it, C3-2 leans on whichever shape C1 lands on, and C3-3 is
+    <code>#202</code> itself, brought forward as a concrete layout instead of left as a future
+    bullet.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Six independent cards, one failure buried in the middle</span></div>
+      <p class="opt-why">Every call pays for its own border and its own header regardless of what's next to it, so a turn that did five small things and one real failure reads as seven equally-weighted boxes stacked to 1194px.</p>
+      <div class="stage">
+        <ol class="s-tc-burstlist">
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+              <div class="s-tc-card">
+                <div class="s-tc-header">
+                  <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                  <span class="s-tc-title">Bash</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-body">
+                  <div class="s-tc-term">
+                    <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">pwd</code></div>
+                    <pre class="s-tc-term-body">/home/dev/loombox/apps/web</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+              <div class="s-tc-card">
+                <div class="s-tc-header">
+                  <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                  <span class="s-tc-title">Bash</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-body">
+                  <div class="s-tc-term">
+                    <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">git status --porcelain</code></div>
+                    <pre class="s-tc-term-body"> M apps/web/src/lib/tool-widgets.ts
+ M docs/design/ux-review-2026-08-04/section-c-toolcalls.html</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-edit" /></svg></div>
+              <div class="s-tc-card">
+                <button type="button" class="s-tc-disclosure s-tc-disclosure-title" aria-expanded="true">
+                  <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                  <span class="s-tc-title">Edit apps/web/src/lib/tool-widgets.ts</span>
+                </button>
+                <span class="lb-dot ok"></span>
+                <div class="s-tc-body">
+                  <div class="s-tc-diff">
+                    <div class="s-tc-diff-head">
+                      <span class="s-tc-diff-path">apps/web/src/lib/tool-widgets.ts</span>
+                      <span><span class="s-tc-diff-added">+1</span><span class="s-tc-diff-removed">-1</span></span>
+                    </div>
+                    <ol class="s-tc-diff-lines">
+                      <li><span class="s-tc-diff-lineno">41</span><span class="s-tc-diff-lineno">41</span><span class="s-tc-diff-marker"> </span><span>  if (item.diff) return 'edit-write';</span></li>
+                      <li class="is-removed"><span class="s-tc-diff-lineno">42</span><span class="s-tc-diff-lineno"></span><span class="s-tc-diff-marker">-</span><span>  if (item.toolKind === 'execute') return 'bash';</span></li>
+                      <li class="is-added"><span class="s-tc-diff-lineno"></span><span class="s-tc-diff-lineno">42</span><span class="s-tc-diff-marker">+</span><span>  if (item.toolKind === 'execute' || item.toolName === 'Bash') return 'bash';</span></li>
+                      <li><span class="s-tc-diff-lineno">43</span><span class="s-tc-diff-lineno">43</span><span class="s-tc-diff-marker"> </span><span>  if (isTodoInput(item.rawInput)) return 'todo';</span></li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+              <div class="s-tc-card">
+                <div class="s-tc-header">
+                  <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                  <span class="s-tc-title">Bash</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-body">
+                  <div class="s-tc-term">
+                    <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">grep -n "resolveToolWidgetKind" apps/web/src/lib/tool-widgets.ts</code></div>
+                    <pre class="s-tc-term-body">42:export function resolveToolWidgetKind(item: TranscriptToolCallItem): ToolWidgetKind {</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+              <div class="s-tc-card">
+                <div class="s-tc-header">
+                  <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                  <span class="s-tc-title">Bash</span>
+                  <span class="lb-dot danger"></span>
+                  <span class="s-tc-status-label is-failed">Failed</span>
+                </div>
+                <div class="s-tc-body">
+                  <div class="s-tc-term">
+                    <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code></div>
+                    <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+
+42   return resolveToolWidgetKind(items.find((i) =&gt; i.id === id));
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+src/lib/components/tool-widgets/BashWidget.svelte:43:32 - error TS2551: Property 'toolCallOutputTexts' does not exist on type 'TranscriptToolCallItem'. Did you mean 'toolCallOutputText'?
+
+43   const output = $derived(toolCallOutputTexts(item.content));
+                              ~~~~~~~~~~~~~~~~~~~
+
+Found 2 errors in 2 files.
+
+Errors  Files
+     1  src/lib/tool-widgets.ts:42
+     1  src/lib/components/tool-widgets/BashWidget.svelte:43</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li>
+            <div class="s-tc-row">
+              <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+              <div class="s-tc-card">
+                <div class="s-tc-header">
+                  <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                  <span class="s-tc-title">Bash</span>
+                  <span class="lb-dot ok"></span>
+                </div>
+                <div class="s-tc-body">
+                  <div class="s-tc-term">
+                    <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">git commit -m 'fix: route exec tools to BashWidget'</code></div>
+                    <pre class="s-tc-term-body">[main 4a1c9e2] fix: route exec tools to BashWidget
+ 1 file changed, 3 insertions(+), 1 deletion(-)</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C3-1</span><span class="opt-title">Consecutive calls grouped under one shared container</span></div>
+      <p class="opt-why">One border wraps the whole run instead of paying for six, and each call keeps its own header and body inside it, so the run reads as one thing on the page even though it's still six things to scroll past; it's <code>#576</code>'s "one level of chrome" applied per-burst instead of per-call, and it doesn't wait on <code>#202</code>'s subagent-tree dependency.</p>
+      <div class="stage flush">
+        <div class="s-tc-burst">
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">pwd</code></div>
+                  <pre class="s-tc-term-body">/home/dev/loombox/apps/web</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot ok"></span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">git status --porcelain</code></div>
+                  <pre class="s-tc-term-body"> M apps/web/src/lib/tool-widgets.ts</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-edit" /></svg></div>
+            <div class="s-tc-card">
+              <button type="button" class="s-tc-disclosure s-tc-disclosure-title" aria-expanded="true">
+                <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+                <span class="s-tc-title">Edit apps/web/src/lib/tool-widgets.ts</span>
+              </button>
+              <span class="lb-dot ok"></span>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-header">
+                <button type="button" class="s-tc-disclosure" aria-expanded="true"><svg class="s-tc-chev"><use href="#i-chevron-down" /></svg></button>
+                <span class="s-tc-title">Bash</span>
+                <span class="lb-dot danger"></span>
+                <span class="s-tc-status-label is-failed">Failed</span>
+              </div>
+              <div class="s-tc-body">
+                <div class="s-tc-term">
+                  <div class="s-tc-term-head"><svg class="s-tc-prompt"><use href="#i-terminal" /></svg><code class="s-tc-term-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code></div>
+                  <pre class="s-tc-term-body">src/lib/tool-widgets.ts:42:10 - error TS2345: Argument of type 'TranscriptToolCallItem | undefined' is not assignable to parameter of type 'TranscriptToolCallItem'.
+Found 2 errors in 2 files.</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C3-2</span><span class="opt-title">Compact list, one line per call</span></div>
+      <p class="opt-why">Every call in the run renders as C1-1's single line regardless of its own resting state, so six calls become a six-line scannable log that fits in a fraction of 1194px; <b>it only works because it borrows C1-1's shape</b>, so choosing a boxed default there leaves this option with nothing to build on.</p>
+      <div class="stage">
+        <div class="s-tc-compact">
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline is-fact">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">pwd</code>
+                <span class="s-tc-oneline-arrow">&rarr;</span>
+                <code class="s-tc-oneline-result">/home/dev/loombox/apps/web</code>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">git status --porcelain</code>
+                <span class="s-tc-oneline-chip">1 file changed</span>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-edit" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">Edit apps/web/src/lib/tool-widgets.ts</code>
+                <span class="s-tc-oneline-chip">+1&nbsp;&minus;1</span>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">grep -n "resolveToolWidgetKind" apps/web/src/lib/tool-widgets.ts</code>
+                <span class="s-tc-oneline-chip">1 match</span>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                <span class="s-tc-status-label is-failed">2 errors</span>
+                <span class="lb-dot danger"></span>
+              </div>
+            </div>
+          </div>
+          <div class="s-tc-row">
+            <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+            <div class="s-tc-card">
+              <div class="s-tc-oneline">
+                <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+                <code class="s-tc-oneline-cmd">git commit -m 'fix: route exec tools to BashWidget'</code>
+                <span class="s-tc-oneline-chip">1 file changed</span>
+                <span class="lb-dot ok"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">C3-3</span><span class="opt-title">A summary row that expands</span></div>
+      <p class="opt-why">The whole run costs about one call's height until you ask, but the summary line has to say "1 failed" itself or a run that actually needs attention scrolls past unnoticed; this is <code>#202</code>'s own card, not a new idea, and picking it here means building it now instead of waiting on the subagent-tree work it's currently gated behind.</p>
+      <div class="stage">
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card s-tc-card-surface">
+            <button type="button" class="s-tc-summary-row" aria-expanded="false">
+              <svg class="s-tc-chev"><use href="#i-chevron-right" /></svg>
+              <span class="s-tc-title">6 tool calls</span>
+              <span class="s-tc-summary-stats">5 succeeded, <span class="s-tc-summary-danger">1 failed</span> &middot; 3.4s</span>
+              <span class="lb-dot danger"></span>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Expanded, same calls through their normal renderer</p>
+        <div class="s-tc-row">
+          <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+          <div class="s-tc-card s-tc-card-surface">
+            <button type="button" class="s-tc-summary-row" aria-expanded="true">
+              <svg class="s-tc-chev"><use href="#i-chevron-down" /></svg>
+              <span class="s-tc-title">6 tool calls</span>
+              <span class="s-tc-summary-stats">5 succeeded, <span class="s-tc-summary-danger">1 failed</span> &middot; 3.4s</span>
+              <span class="lb-dot danger"></span>
+            </button>
+            <div class="s-tc-summary-detail">
+              <div class="s-tc-compact">
+                <div class="s-tc-row">
+                  <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+                  <div class="s-tc-card">
+                    <div class="s-tc-oneline is-fact">
+                      <code class="s-tc-oneline-cmd">pwd</code>
+                      <span class="s-tc-oneline-arrow">&rarr;</span>
+                      <code class="s-tc-oneline-result">/home/dev/loombox/apps/web</code>
+                      <span class="lb-dot ok"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="s-tc-row">
+                  <div class="s-tc-gutter" aria-hidden="true"><svg class="s-tc-icon"><use href="#i-terminal" /></svg></div>
+                  <div class="s-tc-card">
+                    <div class="s-tc-oneline">
+                      <code class="s-tc-oneline-cmd">pnpm --filter @loombox/web exec tsc --noEmit</code>
+                      <span class="s-tc-status-label is-failed">2 errors</span>
+                      <span class="lb-dot danger"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* Shared tool-call row anatomy (ToolCallGutter.svelte + ToolCard.svelte),
+     reproduced at real component fidelity rather than borrowed from
+     .lb-row/.lb-row-gutter: MessageItem's gutter and the tool-call gutter
+     use different padding-top values (--space-sm vs --space-2xs), and this
+     whole section's argument rests on getting that difference right. */
+  .s-tc-row {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .s-tc-gutter {
+    flex: 0 0 var(--gutter);
+    width: var(--gutter);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    padding-top: var(--space-2xs);
+    padding-right: var(--space-sm);
+  }
+
+  .s-tc-icon {
+    width: 1.1rem;
+    height: 1.1rem;
+    color: var(--color-text-secondary);
+  }
+
+  /* ToolCard surface={false}: layout only, no border/background. */
+  .s-tc-card {
+    flex: 1;
+    min-width: 0;
+    padding-top: var(--space-2xs);
+  }
+
+  /* ToolCard surface={true}, used only where a payload has no surface of
+     its own (the C3-3 summary row). */
+  .s-tc-card-surface {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  .s-tc-example + .s-tc-example {
+    margin-top: var(--space-lg);
+  }
+
+  .s-tc-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+  }
+
+  .s-tc-disclosure {
+    display: inline-flex;
+    align-items: center;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .s-tc-disclosure:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .s-tc-disclosure-title {
+    gap: var(--space-sm);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    color: inherit;
+    width: 100%;
+  }
+
+  .s-tc-chev {
+    width: 0.7em;
+    height: 0.7em;
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .s-tc-disclosure[aria-expanded='false'] .s-tc-chev {
+    transform: rotate(-90deg);
+  }
+
+  .s-tc-title {
+    flex: 1;
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-status-label {
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .s-tc-status-label.is-failed {
+    color: var(--color-danger);
+    font-weight: 700;
+    background: var(--color-danger-subtle);
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+  }
+
+  .s-tc-body {
+    margin-top: var(--space-xs);
+    min-width: 0;
+  }
+
+  .s-tc-body.is-tight {
+    margin-top: var(--space-3xs);
+  }
+
+  /* TerminalOutput.svelte, reproduced 1:1. */
+  .s-tc-term {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--color-bg);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+  }
+
+  .s-tc-term-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-prompt {
+    width: 1em;
+    height: 1em;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .s-tc-term-cmd {
+    flex: 1;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-term-body {
+    margin: 0;
+    padding: var(--space-sm) var(--space-sm);
+    white-space: pre-wrap;
+    overflow-x: auto;
+    color: var(--color-text-secondary);
+  }
+
+  /* C1-3: tightened padding, same box. */
+  .s-tc-term.is-tight .s-tc-term-head {
+    padding: var(--space-3xs) var(--space-2xs);
+  }
+
+  .s-tc-term.is-tight .s-tc-term-body {
+    padding: var(--space-2xs) var(--space-2xs);
+  }
+
+  /* C2-2: fixed-height scroller, capped at a stated number of code lines. */
+  .s-tc-term.is-scroll .s-tc-term-body {
+    max-height: calc(var(--text-code-line) * 8);
+    overflow-y: auto;
+  }
+
+  /* C2-3: hard-clipped body plus a named remainder affordance. */
+  .s-tc-clip-more {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: var(--text-small-size);
+    color: var(--color-accent);
+    background: none;
+    border: none;
+    border-top: 1px solid var(--color-border-subtle);
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+  }
+
+  /* C1-1 / C3-2 / C3-3: the single-line resting form. */
+  .s-tc-oneline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    padding-top: var(--space-3xs);
+  }
+
+  .s-tc-oneline-cmd {
+    color: var(--color-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  /* .is-fact: a "command -> literal result" row (a short call whose
+     whole point is that it's short). The command is the identity and must
+     never lose characters to a shrink deficit it didn't cause; the result
+     is the free-text part, so it's the one allowed to truncate. Rows with
+     a chip instead of a result (a long command, no separate value) keep
+     the default: the command itself is what needs to shrink there. */
+  .s-tc-oneline.is-fact .s-tc-oneline-cmd {
+    flex-shrink: 0;
+    min-width: auto;
+  }
+
+  .s-tc-oneline-arrow {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .s-tc-oneline-result {
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .s-tc-oneline-chip {
+    font-family: var(--font-ui);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .s-tc-oneline .lb-dot {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* C1-2: command line, then one truncated preview line, no box. */
+  .s-tc-preview-cmd {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    padding-top: var(--space-3xs);
+  }
+
+  .s-tc-preview-cmd-text {
+    flex: 1;
+    color: var(--color-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .s-tc-preview-line {
+    margin-top: var(--space-3xs);
+    padding-left: var(--space-lg);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* C1-4: mono prose, no box, no border. */
+  .s-tc-plain {
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    padding-top: var(--space-3xs);
+  }
+
+  .s-tc-plain-cmd {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-plain-out {
+    margin: var(--space-2xs) 0 0;
+    white-space: pre-wrap;
+    color: var(--color-text-secondary);
+  }
+
+  /* C2-4: compact summary line pointing at the terminal dock. */
+  .s-tc-docklink {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    padding-top: var(--space-3xs);
+  }
+
+  .s-tc-docklink-cmd {
+    flex: 1;
+    color: var(--color-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .s-tc-docklink-exit {
+    font-family: var(--font-ui);
+    font-size: var(--text-caption-size);
+    color: var(--color-danger);
+    background: var(--color-danger-subtle);
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+  }
+
+  .s-tc-docklink-err {
+    margin-top: var(--space-2xs);
+    padding-left: var(--space-lg);
+    color: var(--color-danger);
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .s-tc-docklink-open {
+    margin-top: var(--space-sm);
+  }
+
+  /* Burst mocks (C3). */
+  .s-tc-burstlist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  /* C3-1: one shared border around the run instead of one per call. */
+  .s-tc-burst {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+  }
+
+  .s-tc-burst .s-tc-row {
+    padding-inline: var(--space-sm);
+    padding-block: var(--space-2xs);
+  }
+
+  .s-tc-burst .s-tc-row + .s-tc-row {
+    border-top: 1px solid var(--color-border-subtle);
+  }
+
+  /* C3-2: a tight vertical list of one-line calls. */
+  .s-tc-compact {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  /* C3-3: the collapsed/expandable burst summary. */
+  .s-tc-summary-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .s-tc-summary-stats {
+    flex: 1;
+    font-weight: 400;
+    color: var(--color-text-secondary);
+  }
+
+  .s-tc-summary-danger {
+    color: var(--color-danger);
+    font-weight: 600;
+  }
+
+  .s-tc-summary-detail {
+    margin-top: var(--space-sm);
+  }
+
+  /* Edit tool-call widget (EditWriteWidget.svelte + DiffViewer.svelte),
+     reproduced at real component fidelity: Card elevation="raised",
+     padding="none", plus DiffViewer's own header/line styling. */
+  .s-tc-diff {
+    overflow: hidden;
+    font-size: var(--text-code-size);
+    font-family: var(--font-mono);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .s-tc-diff-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-tc-diff-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-diff-added {
+    color: var(--color-success);
+  }
+
+  .s-tc-diff-removed {
+    color: var(--color-danger);
+    margin-left: var(--space-xs);
+  }
+
+  .s-tc-diff-lines {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .s-tc-diff-lines li {
+    display: flex;
+    padding: 0 var(--space-sm);
+    color: var(--color-text-secondary);
+  }
+
+  .s-tc-diff-lines li.is-added {
+    background: var(--color-success-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-diff-lines li.is-removed {
+    background: var(--color-danger-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-tc-diff-lineno {
+    display: inline-block;
+    width: 2.5rem;
+    text-align: right;
+    opacity: 0.45;
+    flex-shrink: 0;
+    padding-right: var(--space-sm);
+  }
+
+  .s-tc-diff-marker {
+    width: 1rem;
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+</style>

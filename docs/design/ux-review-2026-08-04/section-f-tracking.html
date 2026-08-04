@@ -1,0 +1,1132 @@
+<!--
+  SECTION E - the attention inbox.
+  Structural pattern and rules: see section-a-composer.html.
+-->
+
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>The path from nothing to a working tracker</h2>
+  </div>
+  <blockquote class="item-quote">
+    Mi immagino che ci debbano essere dei prompt per collegare account jira e github se non già
+    collegati, e di collegare un tracker per il progetto oppure usare quello locale.
+  </blockquote>
+  <p class="item-note">
+    A project with no tracker chosen gets no invitation anywhere. <code>TrackerPage.svelte:237-241</code>
+    renders a bare <code>EmptyState</code> ("This project has no tracker records yet.") with a single
+    "New record" button: no mention of GitHub, Jira, or that a choice even exists. That is also the only
+    thing the destination ever shows, because <code>readTrackerSnapshotForBridge</code>
+    (<code>node-daemon.ts:2876-2887</code>) always reads from the local <code>NativeTrackerStore</code>
+    regardless of what mode a project is set to (issue #631 confirms the live GitHub/Jira backends are
+    still not wired to the account registry at all). The one surface that does ask native-or-live,
+    <code>TrackerConfigPanel</code>, sits inside Config, a sub-tab of the collapsible right sidebar
+    (<code>ProjectConfigPanel.svelte:92-99</code>). Pick Live there with no account connected and the only
+    way out is <code>TrackerConfigPanel.svelte:206-214</code>'s "Use native mode instead" button;
+    connecting an account is an unrelated flow, in Settings &rarr; Accounts
+    (<code>SettingsPage.svelte:209-211</code>, <code>ConnectedAccountsSection.svelte:123-142</code>).
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">A blank empty state, and a buried escape hatch</span></div>
+      <p class="opt-why">Neither surface asks the actual question. One never mentions a tracker exists; the other only offers to fall back to native.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+          <span class="lb-spacer"></span>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm">New type</button>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+          </div>
+        </div>
+        <div class="s-f-empty">
+          <svg class="s-f-empty-mark"><use href="#i-tracker" /></svg>
+          <p class="lb-small lb-muted">This project has no tracker records yet.</p>
+          <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Right sidebar &rarr; Config &rarr; Tracker, two clicks away</p>
+        <div class="s-f-configcard lb-panel">
+          <div class="lb-panel-head">Tracker</div>
+          <div class="s-f-configcard-body">
+            <p class="lb-small lb-muted" style="margin: 0; flex-basis: 100%">No connected GitHub account yet.</p>
+            <button class="lb-btn lb-btn-sm">Use native mode instead</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F1-1</span><span class="opt-title">The Tracker destination asks, right there</span></div>
+      <p class="opt-why">The empty state itself becomes the setup step. <b>Fixes the exact place the confusion happens</b>, at the cost of the destination briefly showing a decision instead of data.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+        </div>
+        <div class="s-f-wizard">
+          <p class="lb-small lb-muted">Choose how this project tracks work.</p>
+          <div class="s-f-wizard-cards">
+            <button class="s-f-wizard-card">
+              <svg class="s-f-wizard-icon"><use href="#i-github" /></svg>
+              <span class="s-f-wizard-card-title">Connect GitHub</span>
+              <span class="lb-caption">Issues + Projects v2</span>
+            </button>
+            <button class="s-f-wizard-card">
+              <svg class="s-f-wizard-icon"><use href="#i-jira" /></svg>
+              <span class="s-f-wizard-card-title">Connect Jira</span>
+              <span class="lb-caption">Cloud site + project</span>
+            </button>
+            <button class="s-f-wizard-card is-selected">
+              <svg class="s-f-wizard-icon"><use href="#i-workbench" /></svg>
+              <span class="s-f-wizard-card-title">Use the local tracker</span>
+              <span class="lb-caption">No account needed</span>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Already connected: same page, one row</p>
+        <div class="s-f-shortcut">
+          <svg class="s-f-icon"><use href="#i-github" /></svg>
+          <span class="lb-small">Connected as <b>lorenzo-fiore</b></span>
+          <span class="lb-spacer"></span>
+          <button class="lb-btn lb-btn-primary lb-btn-sm">Track loombox/loombox</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F1-2</span><span class="opt-title">A step when the project is added</span></div>
+      <p class="opt-why">Asked once, at the moment a project has the least state to protect. <b>Never surprises you later</b>, but skip past it and the Tracker page is back to today's silence.</p>
+      <div class="stage">
+        <div class="s-f-dialoghead">
+          <span class="lb-small" style="font-weight: 600">Add project</span>
+          <span class="lb-caption">Step 3 of 3</span>
+        </div>
+        <div class="lb-stack">
+          <div class="lb-field"><span class="lb-caption">Path</span><span class="lb-mono lb-small">~/code/loombox</span></div>
+          <div class="s-f-wizard-cards s-f-wizard-cards-compact">
+            <button class="s-f-wizard-card"><svg class="s-f-wizard-icon"><use href="#i-github" /></svg><span class="s-f-wizard-card-title">GitHub</span></button>
+            <button class="s-f-wizard-card"><svg class="s-f-wizard-icon"><use href="#i-jira" /></svg><span class="s-f-wizard-card-title">Jira</span></button>
+            <button class="s-f-wizard-card is-selected"><svg class="s-f-wizard-icon"><use href="#i-workbench" /></svg><span class="s-f-wizard-card-title">Local</span></button>
+          </div>
+        </div>
+        <div class="lb-inline" style="justify-content: flex-end; margin-top: var(--space-md)">
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">Back</button>
+          <button class="lb-btn lb-btn-primary lb-btn-sm">Add project</button>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Already connected: the same step, pre-filled</p>
+        <div class="s-f-shortcut">
+          <svg class="s-f-icon"><use href="#i-github" /></svg>
+          <span class="lb-small">lorenzo-fiore already connected &mdash; repo guessed from the path</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F1-3</span><span class="opt-title">A persistent card in Config, with a nudge to find it</span></div>
+      <p class="opt-why">Smallest change: the same form, but the collapsed sidebar's own toggle carries a dot until a project has a tracker. <b>Cheapest to build, still asks you to already know Config exists.</b></p>
+      <div class="stage">
+        <div class="s-f-railtoggle">
+          <button class="lb-iconbtn lb-lg s-f-railtoggle-btn">
+            <svg><use href="#i-workbench" /></svg>
+            <span class="lb-dot warn s-f-railtoggle-dot"></span>
+          </button>
+          <span class="lb-small lb-muted">Sidebar toggle, tracker unset</span>
+        </div>
+        <div class="s-f-configcard lb-panel">
+          <div class="lb-panel-head">Tracker <span class="lb-badge warn">Not set up</span></div>
+          <div class="s-f-configcard-body">
+            <p class="lb-small lb-muted" style="margin: 0; flex-basis: 100%">This project has no tracker. Pick one to start filing issues from here.</p>
+          </div>
+          <div class="s-f-wizard-cards s-f-wizard-cards-compact" style="padding: 0 var(--space-md) var(--space-md)">
+            <button class="s-f-wizard-card"><svg class="s-f-wizard-icon"><use href="#i-github" /></svg><span class="s-f-wizard-card-title">GitHub</span></button>
+            <button class="s-f-wizard-card"><svg class="s-f-wizard-icon"><use href="#i-jira" /></svg><span class="s-f-wizard-card-title">Jira</span></button>
+            <button class="s-f-wizard-card is-selected"><svg class="s-f-wizard-icon"><use href="#i-workbench" /></svg><span class="s-f-wizard-card-title">Local</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f2">
+  <div class="item-head">
+    <span class="item-id">F2</span>
+    <h2>Where per-project tracker configuration belongs</h2>
+  </div>
+  <blockquote class="item-quote">
+    La gestione del tracker nella workbench non &egrave; chiara per niente.
+  </blockquote>
+  <p class="item-note">
+    The whole answer sits in one radiogroup: <code>TrackerConfigPanel.svelte:158-179</code> ("Tracking
+    mode", Native vs Live), inside the Tracker section of <code>ProjectConfigPanel.svelte:92-99</code>,
+    itself the Config sub-tab of a right sidebar issue #571 made collapsible. Once saved, the only trace
+    of the choice is a one-line <code>Badge</code> (<code>describeTrackerMode</code>,
+    <code>tracker-config-form.ts:136-145</code>, e.g. "Live &mdash; GitHub: loombox/loombox") that only
+    renders inside that same hidden sub-tab (<code>TrackerConfigPanel.svelte:144-149</code>). The Tracker
+    page itself, where Lorenzo actually looked, carries no trace of the mode at all: it always renders
+    whatever <code>NativeTrackerStore</code> has (<code>node-daemon.ts:2876-2887</code>), so today a
+    project saved as Live looks byte-for-byte identical to one saved as Native. "Which tracker is this
+    project on" has no answer on the page that asks the question.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">The saved mode only shows inside Config</span></div>
+      <p class="opt-why">The badge that answers "which tracker" exists, but only where you'd already have to be looking for it.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+          <span class="lb-spacer"></span>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm">New type</button>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+          </div>
+        </div>
+        <p class="lb-small lb-muted">Board renders below. Nothing here says which tracker it comes from.</p>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Right sidebar &rarr; Config &rarr; Tracker</p>
+        <div class="s-f-configcard lb-panel">
+          <div class="lb-panel-head">Tracker</div>
+          <div class="s-f-configcard-body">
+            <span class="lb-badge accent">Live &mdash; GitHub: loombox/loombox</span>
+            <button class="lb-btn lb-btn-sm">Change tracker mode</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F2-1</span><span class="opt-title">Same form, mirrored as a badge on the Tracker page</span></div>
+      <p class="opt-why">The form doesn't move, only a read-only mirror does. <b>Cheapest fix for "which tracker is this"</b>, but the actual control stays two clicks away in Config.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+          <button class="s-f-modebadge"><svg class="s-f-icon"><use href="#i-github" /></svg>Live &middot; loombox/loombox</button>
+          <span class="lb-spacer"></span>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm">New type</button>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+          </div>
+        </div>
+        <p class="lb-small lb-muted">Clicking the badge opens Config, same form as today.</p>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Right sidebar &rarr; Config &rarr; Tracker (unchanged)</p>
+        <div class="s-f-configcard lb-panel">
+          <div class="lb-panel-head">Tracker</div>
+          <div class="s-f-configcard-body">
+            <span class="lb-badge accent">Live &mdash; GitHub: loombox/loombox</span>
+            <button class="lb-btn lb-btn-sm">Change tracker mode</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F2-2</span><span class="opt-title">The picker itself moves to the page header</span></div>
+      <p class="opt-why">One surface for "what is this" and "change what this is". <b>Removes Config as a hop entirely</b> for this one setting, at the cost of Config's Tracker section disappearing outright.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+          <button class="s-f-modecontrol"><svg class="s-f-icon"><use href="#i-github" /></svg><span>Live: loombox/loombox</span><svg class="s-f-icon"><use href="#i-chevron-down" /></svg></button>
+          <span class="lb-spacer"></span>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm">New type</button>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Clicked: expands in place, no navigation</p>
+        <div class="s-f-radio-group">
+          <button class="s-f-radio-option"><span class="s-f-radio-option-title">Native</span><span class="s-f-radio-option-desc">loombox's own local tracker &mdash; no external account needed.</span></button>
+          <button class="s-f-radio-option s-f-radio-option-selected"><span class="s-f-radio-option-title">Live</span><span class="s-f-radio-option-desc">Work directly against a connected GitHub or Jira project.</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F2-3</span><span class="opt-title">A dedicated project settings surface</span></div>
+      <p class="opt-why">Tracker mode is a project fact, not a session config item, so it moves out of session-scoped Config into where project settings belong. <b>The most correct home long term</b>, but it is a new surface to build from nothing.</p>
+      <div class="stage">
+        <div class="s-f-pagehead">
+          <span class="s-f-pagetitle">Tracker</span>
+          <span class="lb-badge accent">Live &middot; GitHub</span>
+          <span class="lb-spacer"></span>
+          <div class="lb-inline tight">
+            <button class="lb-btn lb-btn-sm">New type</button>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">New record</button>
+          </div>
+        </div>
+        <p class="lb-small lb-muted">The badge opens Project settings, not Config.</p>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Project row &rarr; &hellip; &rarr; Project settings</p>
+        <div class="s-f-projectrow">
+          <svg class="s-f-icon"><use href="#i-folder" /></svg>
+          <span class="lb-small">loombox</span>
+          <span class="lb-spacer"></span>
+          <button class="lb-iconbtn"><svg><use href="#i-more" /></svg></button>
+        </div>
+        <div class="s-f-configcard lb-panel">
+          <div class="lb-panel-head">Project settings &mdash; Tracker</div>
+          <div class="s-f-configcard-body">
+            <span class="lb-badge accent">Live &mdash; GitHub: loombox/loombox</span>
+            <button class="lb-btn lb-btn-sm">Change tracker mode</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f3">
+  <div class="item-head">
+    <span class="item-id">F3</span>
+    <h2>Managing issues with the local tracker</h2>
+  </div>
+  <blockquote class="item-quote">
+    Quando si usa quello locale la gestione degli issue e dei tipi deve essere pi&ugrave; intuitiva.
+  </blockquote>
+  <p class="item-note">
+    Creating and editing a record already has a real, generic form: <code>TrackerRecordDialog.svelte</code>
+    picks a Type, then renders one <code>Field</code> per role that type maps
+    (<code>visibleRoles</code>, <code>TrackerRecordDialog.svelte:89-91</code>), reached from the page
+    header's "New record" button (<code>TrackerPage.svelte:219</code>) or a card's own title
+    (<code>TrackerCard.svelte:80-87</code>). Type management has no comparable surface to be faithful to,
+    so the today card below is what exists instead: <code>TrackerDefineTypeDialog.svelte</code> is a
+    one-way form asking for an id, a label, and for each of the four roles a raw text input naming the
+    exact <code>fields</code> key that role maps to (<code>:135-151</code>, e.g. "Status field" expecting
+    you to already know your own record shape well enough to type <code>status</code>). Its own client
+    interface, <code>TrackerTypeClient</code> (<code>TrackerPage.svelte:70-73</code>), exposes only
+    <code>defineTrackerType</code>: no update, no list, no delete. Once a type is saved there is nowhere
+    in the app to see it again, only its label quietly appearing in the Type dropdown next time.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Creating works; defining a type is write-only</span></div>
+      <p class="opt-why">The form you use constantly is fine. The one you use rarely asks you to already know the data model, then forgets what you told it.</p>
+      <div class="stage">
+        <p class="stage-label">Creating a record</p>
+        <div class="lb-field">
+          <span class="lb-inline tight"><span class="lb-small">Type: Bug</span><span class="lb-spacer"></span><svg class="s-f-icon"><use href="#i-chevron-down" /></svg></span>
+        </div>
+        <div class="lb-stack" style="margin-top: var(--space-sm)">
+          <div class="lb-field"><span class="lb-caption">Title</span><span class="lb-small">The tracker board orders its columns alphabetically</span></div>
+          <div class="lb-field"><span class="lb-caption">Status</span><span class="lb-small">todo</span></div>
+          <div class="lb-field"><span class="lb-caption">Priority</span><span class="lb-small">high</span></div>
+        </div>
+        <div class="lb-inline" style="justify-content: flex-end; margin-top: var(--space-sm)">
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">Cancel</button>
+          <button class="lb-btn lb-btn-primary lb-btn-sm">Create</button>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-lg)">Defining a type &mdash; the only surface, and the last time you'll see it</p>
+        <div class="lb-stack">
+          <div class="lb-field"><span class="lb-caption">Id</span><span class="lb-mono lb-small">bug</span></div>
+          <div class="lb-field"><span class="lb-caption">Label</span><span class="lb-small">Bug</span></div>
+          <div class="lb-field"><span class="lb-caption">Status field</span><span class="lb-mono lb-small">status</span></div>
+          <div class="lb-field"><span class="lb-caption">Priority field</span><span class="lb-mono lb-small">priority</span></div>
+        </div>
+        <p class="lb-small lb-muted" style="margin-top: var(--space-sm)">Saved. No list, no edit, no delete anywhere in the app.</p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F3-1</span><span class="opt-title">Sensible built-ins, editing hidden until asked for</span></div>
+      <p class="opt-why">Task/Bug/Epic cover most projects out of the box; typing "bug:" picks the type for you. <b>Fastest common path</b>, and the machinery only shows up if you go looking for "Manage types".</p>
+      <div class="stage">
+        <p class="stage-label">Quick create</p>
+        <div class="lb-field">
+          <input class="lb-input" placeholder="New record&hellip;" value="bug: the terminal drops blank rows at the bottom" />
+          <div class="lb-inline tight">
+            <span class="lb-badge danger">Bug</span>
+            <span class="lb-small lb-muted">detected from "bug:"</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">Create</button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-lg)">Types stay out of the way until you ask</p>
+        <div class="s-f-pagehead" style="margin-bottom: 0">
+          <span class="lb-small lb-muted">Task &middot; Bug &middot; Epic</span>
+          <span class="lb-spacer"></span>
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">Manage types</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F3-2</span><span class="opt-title">A visible type manager, a real tab</span></div>
+      <p class="opt-why">Types get the same first-class page every other record type gets. <b>Nothing hidden, easiest to trust</b>, but it's a whole extra tab for something you touch rarely.</p>
+      <div class="stage">
+        <div class="s-f-viewtabs">
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">Board</button>
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">List</button>
+          <button class="lb-btn lb-btn-sm s-f-viewtab-selected">Types</button>
+        </div>
+        <div class="s-f-typelist">
+          <div class="s-f-typerow">
+            <span class="lb-small" style="font-weight: 600; flex: 0 0 4rem">Task</span>
+            <span class="lb-mono lb-caption">title &middot; status &middot; priority &middot; assignee</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-iconbtn"><svg><use href="#i-more" /></svg></button>
+          </div>
+          <div class="s-f-typerow">
+            <span class="lb-small" style="font-weight: 600; flex: 0 0 4rem">Bug</span>
+            <span class="lb-mono lb-caption">title &middot; status &middot; priority</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-iconbtn"><svg><use href="#i-more" /></svg></button>
+          </div>
+          <div class="s-f-typerow">
+            <span class="lb-small" style="font-weight: 600; flex: 0 0 4rem">Epic</span>
+            <span class="lb-mono lb-caption">title &middot; status</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-iconbtn"><svg><use href="#i-more" /></svg></button>
+          </div>
+        </div>
+        <div class="lb-inline" style="justify-content: flex-end; margin-top: var(--space-sm)">
+          <button class="lb-btn lb-btn-sm"><svg style="width: 0.9rem; height: 0.9rem"><use href="#i-plus" /></svg>New type</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F3-3</span><span class="opt-title">Types inferred from use, no upfront modeling</span></div>
+      <p class="opt-why">You never model anything before you need it; the system notices a repeated shape after the fact. <b>Zero upfront machinery</b>, but the first few records of a new shape stay unstructured until you accept the suggestion.</p>
+      <div class="stage">
+        <p class="stage-label">Creating a record &mdash; no type up front</p>
+        <div class="lb-field">
+          <input class="lb-input" placeholder="What needs doing?" value="Give the async panels one shared load/error/empty component" />
+          <div class="lb-inline tight">
+            <span class="lb-badge">status: todo</span>
+            <span class="lb-badge">+ add a field</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-primary lb-btn-sm">Create</button>
+          </div>
+        </div>
+        <p class="lb-caption" style="margin-top: var(--space-lg)">After a few records shaped the same way</p>
+        <div class="s-f-suggestion">
+          <svg class="s-f-icon"><use href="#i-brain" /></svg>
+          <span class="lb-small">You've created 3 records with status + priority. Save this shape as a type called "Task"?</span>
+          <span class="lb-spacer"></span>
+          <button class="lb-btn lb-btn-ghost lb-btn-sm">Not now</button>
+          <button class="lb-btn lb-btn-primary lb-btn-sm">Save as type</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f4">
+  <div class="item-head">
+    <span class="item-id">F4</span>
+    <h2>The board itself</h2>
+  </div>
+  <blockquote class="item-quote">
+    The board renders its columns as done, in-progress, todo, left to right. That is alphabetical order
+    [...] It is still wrong: a kanban's columns are a workflow, and reading it right to left to follow
+    work is the opposite of what every board a user has ever seen does.
+  </blockquote>
+  <p class="item-note">
+    <code>TrackerBoard.svelte:52-56</code> derives <code>columns</code> as
+    <code>[...groups.keys()].sort()</code>, alphabetical exactly as issue #651 describes, and a status
+    with zero records never appears at all since <code>groups</code> only has the keys
+    <code>groupByWorkflowStatus</code> actually saw (<code>tracker-record.ts:206-219</code>). Desktop
+    columns are fixed <code>flex: 0 0 18rem</code> (<code>TrackerBoard.svelte:195</code>) inside an
+    <code>overflow-x: auto</code> row (<code>:184-189</code>): three columns already fits most laptops
+    without scrolling, but six would not (6 &times; 18rem plus five 0.75rem gaps is close to 1790px, wider
+    than a 1440px laptop screen). Mobile (&le;767px) already has a real answer, one column at a time with
+    Prev/Next (<code>:236-265</code>, exercised by <code>tracker-mobile.spec.ts:95-128</code>); #651
+    requires that order to follow the workflow sequence rather than the alphabet, so it doesn't need
+    reinventing, only re-feeding.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Alphabetical, and an empty status can't render at all</span></div>
+      <p class="opt-why">"Done" sorts before "In progress" and "Todo", so the board reads the workflow backwards, and a fourth status with no cards yet would simply not show up as a column.</p>
+      <div class="stage">
+        <p class="stage-label">Desktop &mdash; alphabetical order, not workflow order</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The terminal may be allocating more xterm rows than fit, leaving blank lines at the bottom</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Agent text and thinking appear in one burst at the end of the turn instead of streaming, and no test would catch it</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span><span class="lb-badge danger">P0</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Todo <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The thinking block forgets whether you opened it, on every single turn</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">The inbox can take an answer but cannot show the question, because the item model carries no message</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">A fourth status with no cards yet, "In review", would render no column at all</p>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Narrow width &mdash; 390px, Prev/Next already starts on "Done"</p>
+        <div class="s-f-mobileframe">
+      <div class="s-f-mobilenav">
+        <button class="lb-iconbtn" aria-label="Previous column" disabled><svg style="transform: rotate(90deg)"><use href="#i-chevron-down" /></svg></button>
+        <span class="s-f-mobilenav-title">Done <span class="s-f-col-count">1</span></span>
+        <button class="lb-iconbtn" aria-label="Next column"><svg style="transform: rotate(-90deg)"><use href="#i-chevron-down" /></svg></button>
+      </div>
+      <div class="s-f-col-cards">
+      <div class="s-f-card"><span class="s-f-card-title">The terminal may be allocating more xterm rows than fit, leaving blank lines at the bottom</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+      </div>
+    </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F4-1</span><span class="opt-title">Workflow order, still one row, still scrolls</span></div>
+      <p class="opt-why">Only the sort key changes, the smallest patch on top of #651. <b>Six columns still don't fit a laptop</b>, which is the part #651's own fix doesn't solve by itself.</p>
+      <div class="stage">
+        <p class="stage-label">Jira workflow &mdash; six statuses, ordered, 18rem columns</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Backlog <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Selected for development <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Bring macOS-local resident node provisioning up to parity with SSH, as the first of the three local platforms</span><div class="s-f-card-meta"><span class="lb-badge">Task</span><span class="lb-badge warn">high</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The tracker board orders its columns alphabetically instead of deriving the real workflow order from the tracker</span><div class="s-f-card-meta"><span class="lb-badge">Bug</span><span class="lb-badge warn">high</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In review <span class="s-f-col-count">0</span></h4>
+          <div class="s-f-col-cards">
+          
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Give the async panels one shared load/error/empty component, instead of a fourth hand-rolled copy</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Won&rsquo;t do <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Tokenise the stragglers: icon sizes, dialog geometry, one-off dimensions</span><div class="s-f-card-meta"><span class="lb-badge">Chore</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Local tracker &mdash; three statuses, already unaffected</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Todo <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The thinking block forgets whether you opened it, on every single turn</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">The inbox can take an answer but cannot show the question, because the item model carries no message</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Agent text and thinking appear in one burst at the end of the turn instead of streaming, and no test would catch it</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span><span class="lb-badge danger">P0</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The terminal may be allocating more xterm rows than fit, leaving blank lines at the bottom</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Narrow width &mdash; 390px, same workflow order</p>
+        <div class="s-f-mobileframe">
+      <div class="s-f-mobilenav">
+        <button class="lb-iconbtn" aria-label="Previous column" disabled><svg style="transform: rotate(90deg)"><use href="#i-chevron-down" /></svg></button>
+        <span class="s-f-mobilenav-title">Backlog <span class="s-f-col-count">2</span></span>
+        <button class="lb-iconbtn" aria-label="Next column"><svg style="transform: rotate(-90deg)"><use href="#i-chevron-down" /></svg></button>
+      </div>
+      <div class="s-f-col-cards">
+      <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+      <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+      </div>
+    </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F4-2</span><span class="opt-title">Group into workflow categories</span></div>
+      <p class="opt-why">Collapses whatever a workflow's granularity is into the three-stage shape every board already reads at a glance. <b>Same column count regardless of a tracker's own workflow size</b>, but a status's own name gets one visual step further from its cards.</p>
+      <div class="stage">
+        <p class="stage-label">Jira workflow &mdash; six statuses grouped into three categories</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-category">
+          <h4 class="s-f-category-head">To do <span class="s-f-col-count">3</span></h4>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Backlog</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+            <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+            </div>
+          </div>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Selected for development</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Bring macOS-local resident node provisioning up to parity with SSH, as the first of the three local platforms</span><div class="s-f-card-meta"><span class="lb-badge">Task</span><span class="lb-badge warn">high</span></div></div>
+            </div>
+          </div>
+        </section>
+        <section class="s-f-category">
+          <h4 class="s-f-category-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">In progress</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">The tracker board orders its columns alphabetically instead of deriving the real workflow order from the tracker</span><div class="s-f-card-meta"><span class="lb-badge">Bug</span><span class="lb-badge warn">high</span></div></div>
+            </div>
+          </div>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">In review <span class="s-f-col-count">0</span></span>
+            <div class="s-f-col-cards">
+            
+            </div>
+          </div>
+        </section>
+        <section class="s-f-category">
+          <h4 class="s-f-category-head">Done <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Done</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Give the async panels one shared load/error/empty component, instead of a fourth hand-rolled copy</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+            </div>
+          </div>
+          <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Won&rsquo;t do</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Tokenise the stragglers: icon sizes, dialog geometry, one-off dimensions</span><div class="s-f-card-meta"><span class="lb-badge">Chore</span></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Local tracker &mdash; three statuses, already one category each, board is unchanged</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Todo <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The thinking block forgets whether you opened it, on every single turn</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">The inbox can take an answer but cannot show the question, because the item model carries no message</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Agent text and thinking appear in one burst at the end of the turn instead of streaming, and no test would catch it</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span><span class="lb-badge danger">P0</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The terminal may be allocating more xterm rows than fit, leaving blank lines at the bottom</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Narrow width &mdash; 390px, Prev/Next now steps through three categories</p>
+        <div class="s-f-mobileframe">
+      <div class="s-f-mobilenav">
+        <button class="lb-iconbtn" aria-label="Previous column" disabled><svg style="transform: rotate(90deg)"><use href="#i-chevron-down" /></svg></button>
+        <span class="s-f-mobilenav-title">To do <span class="s-f-col-count">3</span></span>
+        <button class="lb-iconbtn" aria-label="Next column"><svg style="transform: rotate(-90deg)"><use href="#i-chevron-down" /></svg></button>
+      </div>
+      <div class="s-f-col-cards">
+      <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Backlog</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+            <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+            </div>
+          </div>
+      <div class="s-f-substatus">
+            <span class="s-f-substatus-head">Selected for development</span>
+            <div class="s-f-col-cards">
+            <div class="s-f-card"><span class="s-f-card-title">Bring macOS-local resident node provisioning up to parity with SSH, as the first of the three local platforms</span><div class="s-f-card-meta"><span class="lb-badge">Task</span><span class="lb-badge warn">high</span></div></div>
+            </div>
+          </div>
+      </div>
+    </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">F4-3</span><span class="opt-title">Narrower columns with a visible peek</span></div>
+      <p class="opt-why">12rem columns fit roughly five before the edge, with a fade telling you there's more instead of cutting off silently. <b>Still a horizontal scroller past four or five columns</b>, just a more honest one.</p>
+      <div class="stage">
+        <p class="stage-label">Jira workflow &mdash; six statuses, 12rem columns</p>
+        <div class="s-f-board-scroll s-f-peek">
+      <div class="s-f-board">
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">Backlog <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">Selected for development <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Bring macOS-local resident node provisioning up to parity with SSH, as the first of the three local platforms</span><div class="s-f-card-meta"><span class="lb-badge">Task</span><span class="lb-badge warn">high</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The tracker board orders its columns alphabetically instead of deriving the real workflow order from the tracker</span><div class="s-f-card-meta"><span class="lb-badge">Bug</span><span class="lb-badge warn">high</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">In review <span class="s-f-col-count">0</span></h4>
+          <div class="s-f-col-cards">
+          
+          </div>
+        </section>
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Give the async panels one shared load/error/empty component, instead of a fourth hand-rolled copy</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col s-f-col-narrow">
+          <h4 class="s-f-col-head">Won&rsquo;t do <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Tokenise the stragglers: icon sizes, dialog geometry, one-off dimensions</span><div class="s-f-card-meta"><span class="lb-badge">Chore</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-2xs)">2 more columns to the right</p>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Local tracker &mdash; three statuses, already unaffected</p>
+        <div class="s-f-board-scroll ">
+      <div class="s-f-board">
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Todo <span class="s-f-col-count">2</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The thinking block forgets whether you opened it, on every single turn</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          <div class="s-f-card"><span class="s-f-card-title">The inbox can take an answer but cannot show the question, because the item model carries no message</span><div class="s-f-card-meta"><span class="lb-badge">Feature</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">In progress <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">Agent text and thinking appear in one burst at the end of the turn instead of streaming, and no test would catch it</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span><span class="lb-badge danger">P0</span></div></div>
+          </div>
+        </section>
+        <section class="s-f-col">
+          <h4 class="s-f-col-head">Done <span class="s-f-col-count">1</span></h4>
+          <div class="s-f-col-cards">
+          <div class="s-f-card"><span class="s-f-card-title">The terminal may be allocating more xterm rows than fit, leaving blank lines at the bottom</span><div class="s-f-card-meta"><span class="lb-badge">Fix</span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+        <p class="lb-caption" style="margin-top: var(--space-md)">Narrow width &mdash; 390px, unaffected by the desktop column width</p>
+        <div class="s-f-mobileframe">
+      <div class="s-f-mobilenav">
+        <button class="lb-iconbtn" aria-label="Previous column" disabled><svg style="transform: rotate(90deg)"><use href="#i-chevron-down" /></svg></button>
+        <span class="s-f-mobilenav-title">Backlog <span class="s-f-col-count">2</span></span>
+        <button class="lb-iconbtn" aria-label="Next column"><svg style="transform: rotate(-90deg)"><use href="#i-chevron-down" /></svg></button>
+      </div>
+      <div class="s-f-col-cards">
+      <div class="s-f-card"><span class="s-f-card-title">Windows-local resident node: the fourth platform, and the one whose assumptions differ most</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+      <div class="s-f-card"><span class="s-f-card-title">Linux-local resident node: fill in the systemd-user backend once the platform seam exists</span><div class="s-f-card-meta"><span class="lb-badge">Task</span></div></div>
+      </div>
+    </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-f-pagehead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+    flex-wrap: wrap;
+  }
+
+  .s-f-pagetitle {
+    font-size: var(--text-title-size);
+    font-weight: var(--text-title-weight);
+  }
+
+  .s-f-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: var(--space-md);
+    padding: var(--space-2xl) var(--space-md);
+  }
+
+  .s-f-empty-mark {
+    width: 3rem;
+    height: 3rem;
+    opacity: 0.14;
+    color: var(--color-text-primary);
+  }
+
+  .s-f-configcard {
+    margin-top: var(--space-sm);
+  }
+
+  .s-f-configcard-body {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    flex-wrap: wrap;
+  }
+
+  .s-f-wizard {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .s-f-wizard-cards {
+    display: flex;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .s-f-wizard-cards-compact .s-f-wizard-card {
+    flex: 1 1 6rem;
+    padding: var(--space-sm);
+  }
+
+  .s-f-wizard-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2xs);
+    flex: 1 1 9rem;
+    padding: var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+  }
+
+  .s-f-wizard-card.is-selected {
+    border-color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .s-f-wizard-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    color: var(--color-text-secondary);
+  }
+
+  .s-f-wizard-card-title {
+    font-weight: 500;
+    font-size: var(--text-small-size);
+  }
+
+  .s-f-shortcut {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-fill-subtle);
+  }
+
+  .s-f-dialoghead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-md);
+  }
+
+  .s-f-railtoggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .s-f-railtoggle-btn {
+    position: relative;
+  }
+
+  .s-f-railtoggle-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+  }
+
+  .s-f-modebadge,
+  .s-f-modecontrol {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-fill-subtle);
+    font-size: var(--text-small-size);
+    color: var(--color-text-primary);
+    cursor: pointer;
+  }
+
+  .s-f-projectrow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    margin-bottom: var(--space-sm);
+  }
+
+  .s-f-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-f-radio-option {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    text-align: left;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    border-left: 2px solid transparent;
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .s-f-radio-option-selected {
+    border-left-color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .s-f-radio-option-title {
+    font-weight: 500;
+  }
+
+  .s-f-radio-option-desc {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
+  .s-f-viewtabs {
+    display: flex;
+    gap: var(--space-2xs);
+    margin-bottom: var(--space-md);
+  }
+
+  .s-f-viewtab-selected {
+    background: var(--color-fill);
+    color: var(--color-text-primary);
+  }
+
+  .s-f-typelist {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-f-typerow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+  }
+
+  .s-f-suggestion {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border: 1px solid var(--color-accent-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-accent-subtle);
+  }
+
+  .s-f-suggestion svg {
+    color: var(--color-accent);
+    width: 1.1rem;
+    height: 1.1rem;
+    flex: none;
+  }
+
+  /* Bare inline icons (not inside .lb-iconbtn/.lb-btn), sized like section-a's own inline svg style. */
+  .s-f-icon {
+    width: 1rem;
+    height: 1rem;
+    flex: none;
+  }
+
+  /* Board mocks, shared by F4's today card and every option. */
+  .s-f-board-scroll {
+    overflow-x: auto;
+    padding-bottom: var(--space-2xs);
+  }
+
+  .s-f-board {
+    display: flex;
+    gap: var(--space-md);
+  }
+
+  .s-f-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    flex: 0 0 18rem;
+    min-width: 0;
+  }
+
+  .s-f-col-narrow {
+    flex-basis: 12rem;
+  }
+
+  .s-f-col-head,
+  .s-f-category-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin: 0 0 var(--space-sm);
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+  }
+
+  .s-f-col-count {
+    color: var(--color-text-muted);
+    font-weight: 400;
+  }
+
+  .s-f-col-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-height: 2rem;
+  }
+
+  .s-f-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .s-f-card-title {
+    font-size: var(--text-small-size);
+    color: var(--color-text-primary);
+  }
+
+  .s-f-card-meta {
+    display: flex;
+    gap: var(--space-2xs);
+    flex-wrap: wrap;
+  }
+
+  /* F4-2's category grouping: one super-column per statusCategory, holding
+     one sub-status block per real status inside it. */
+  .s-f-category {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 15rem;
+    min-width: 0;
+  }
+
+  .s-f-substatus {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
+    margin-bottom: var(--space-sm);
+  }
+
+  .s-f-substatus:last-child {
+    margin-bottom: 0;
+  }
+
+  .s-f-substatus-head {
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+  }
+
+  /* F4-3's "more columns to the right" fade, over the scroll container. */
+  .s-f-peek {
+    position: relative;
+  }
+
+  .s-f-peek::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: var(--space-2xs);
+    width: 3rem;
+    background: linear-gradient(to right, transparent, var(--color-bg));
+    pointer-events: none;
+  }
+
+  /* The 390px mobile frame every F4 card's narrow-width fallback renders in. */
+  .s-f-mobileframe {
+    max-width: 390px;
+    margin-inline: auto;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm);
+  }
+
+  .s-f-mobilenav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+  }
+
+  .s-f-mobilenav-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+  }
+</style>

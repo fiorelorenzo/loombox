@@ -1,0 +1,810 @@
+<!--
+  SECTION E - the attention inbox.
+  Structural pattern and rules: see section-a-composer.html.
+-->
+
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>What one row shows at rest</h2>
+  </div>
+  <blockquote class="item-quote">
+    Nella inbox avrebbe senso mostrare l'ultimo messaggio dell'agente compreso anche di domande a
+    risposta multipla ecc. se presenti.
+  </blockquote>
+  <p class="item-note">
+    Confirmed: a row renders the session title, project path and node beside a status dot, then a
+    one-line derived <code>needLabel()</code> (<code>AttentionInbox.svelte:169-186</code>,
+    <code>:102-119</code>) — never the agent's own words. A <code>'permission'</code> row does
+    already mount the real <code>PermissionCard</code> with its real options
+    (<code>:187-193</code>), and an <code>'awaiting_input'</code> row does already mount a real
+    reply form (<code>:194-218</code>), so you can act without navigating — you just can't read
+    what you're acting on, because <code>AttentionInboxItem</code>
+    (<code>relay-client.ts:410-426</code>) carries no field for the agent's last message. That's
+    <code>#662</code>, in progress: it adds the message from the transcript the inbox already
+    subscribes (<code>relay-client.ts:3461-3462</code>), sanitised through the same
+    <code>/markdown</code> pipeline the transcript uses. Every option below designs as if that
+    field exists and renders it through <code>.lb-prose</code>.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Identity + a derived need label; the agent's own words never ride along</span></div>
+      <p class="opt-why">A permission already carries its real tool-call content and an awaiting_input already carries a reply box, but neither shows <b>the sentence the agent actually said before asking</b> — you approve or reply blind.</p>
+      <div class="stage">
+        <ul class="s-inb-list">
+          <li class="s-inb-row" data-kind="session_outcome"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Add eslint --max-warnings=0 to CI</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Finished: end_turn</p></div><span class="s-inb-trailing">Exited</span></li>
+      <li class="s-inb-row" data-kind="session_outcome"><span class="s-inb-lead"><span class="lb-dot danger md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Backfill node labels</strong><small>/home/dev/loombox · mac-mini</small></button><p class="s-inb-need">Errored: refused: migration touches 40k rows without --force</p></div><span class="s-inb-trailing">Error</span></li>
+      <li class="s-inb-row" data-kind="awaiting_input"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Speed up cold start</strong><small>/home/dev/loombox · mbp-lorenzo</small></button><p class="s-inb-need">Waiting for your reply</p><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></div><span class="s-inb-trailing">Awaiting you</span></li>
+      <li class="s-inb-row" data-kind="awaiting_input"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Draft the webhooks changeset</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Waiting for your reply</p><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></div><span class="s-inb-trailing">Awaiting you</span></li>
+      <li class="s-inb-row" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Clean up stale build cache</strong><small>/home/dev/loombox · mbp-lorenzo</small></button><p class="s-inb-need">Needs approval: Run rm -rf node_modules</p><div class="s-inb-permcard"><div class="s-inb-permcard-head"><span class="lb-dot warn pulse"></span><span class="s-inb-permcard-title">Run rm -rf node_modules</span></div><pre class="s-inb-permcard-field">rm -rf node_modules</pre><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></div></div><span class="s-inb-trailing">Needs permission</span></li>
+      <li class="s-inb-row" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Stripe webhook handler</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Needs approval: Write apps/api/src/routes/webhooks.ts</p><div class="s-inb-permcard"><div class="s-inb-permcard-head"><span class="lb-dot warn pulse"></span><span class="s-inb-permcard-title">Write apps/api/src/routes/webhooks.ts</span></div><p class="s-inb-permcard-path"><svg><use href="#i-file"/></svg><span>apps/api/src/routes/webhooks.ts</span></p><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></div></div><span class="s-inb-trailing">Needs permission</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E1-1</span><span class="opt-title">One line, question truncated</span></div>
+      <p class="opt-why">Six sessions fit in one glance and nothing but a scroll separates you from the seventh, but <b>every question still needs a tap to actually read</b>.</p>
+      <div class="stage">
+        <ul class="s-inb-list s-inb-dense">
+          <li class="s-inb-drow" data-kind="session_outcome"><span class="lb-dot"></span><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">pitchbox · gpu-01</span><span class="s-inb-dmsg">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</span><span class="s-inb-dtime">3h</span></li>
+          <li class="s-inb-drow" data-kind="session_outcome"><span class="lb-dot danger"></span><strong>Backfill node labels</strong><span class="s-inb-meta">loombox · mac-mini</span><span class="s-inb-dmsg">The backfill would touch roughly 40,000 session rows and I don't have --force, so I stopped before writing anything.</span><span class="s-inb-dtime">2h</span></li>
+          <li class="s-inb-drow" data-kind="awaiting_input"><span class="lb-dot"></span><strong>Speed up cold start</strong><span class="s-inb-meta">loombox · mbp-lorenzo</span><span class="s-inb-dmsg">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</span><span class="s-inb-dtime">41m</span></li>
+          <li class="s-inb-drow" data-kind="awaiting_input"><span class="lb-dot"></span><strong>Draft the webhooks changeset</strong><span class="s-inb-meta">pitchbox · gpu-01</span><span class="s-inb-dmsg">I can log this as a minor (new /webhooks route) or a patch (it silently 404'd before). Which do you want?</span><span class="s-inb-dtime">18m</span></li>
+          <li class="s-inb-drow" data-kind="permission"><span class="lb-dot warn pulse"></span><strong>Clean up stale build cache</strong><span class="s-inb-meta">loombox · mbp-lorenzo</span><span class="s-inb-dmsg">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</span><span class="s-inb-dtime">6m</span></li>
+          <li class="s-inb-drow" data-kind="permission"><span class="lb-dot warn pulse"></span><strong>Stripe webhook handler</strong><span class="s-inb-meta">pitchbox · gpu-01</span><span class="s-inb-dmsg">Added signature verification and the checkout.session.completed handler — apps/api doesn't have a routes/ folder yet.</span><span class="s-inb-dtime">2m</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E1-2</span><span class="opt-title">Two lines: identity, then the question</span></div>
+      <p class="opt-why">The question gets its own full-width line instead of fighting the title for space, so <b>most questions are readable without opening the session</b>, at roughly double today's row height.</p>
+      <div class="stage">
+        <ul class="s-inb-list s-inb-twoline">
+          <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+          <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot danger md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Backfill node labels</strong><span class="s-inb-meta">/home/dev/loombox · mac-mini · 2h</span></div><p class="s-inb-tline2">The backfill would touch roughly 40,000 session rows and I don't have --force, so I stopped before writing anything.</p></div><span class="s-inb-ttrailing">Error</span></li>
+          <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><p class="s-inb-tline2">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+          <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Draft the webhooks changeset</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 18m</span></div><p class="s-inb-tline2">I can log this as a minor (new /webhooks route) or a patch (it silently 404'd before). Which do you want?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+          <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Stripe webhook handler</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 2m</span></div><p class="s-inb-tline2">Added signature verification and the checkout.session.completed handler — apps/api doesn't have a routes/ folder yet.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E1-3</span><span class="opt-title">A card per session, message in full, answer attached</span></div>
+      <p class="opt-why">Nothing is hidden and nothing needs opening — the last message renders in full and the real answer sits right under it, but <b>six of these is a lot of scrolling</b> compared to a list you can scan in one glance.</p>
+      <div class="stage">
+        <ul class="s-inb-list s-inb-cardlist">
+          <li class="s-inb-crow" data-kind="session_outcome"><div class="s-inb-chead"><span class="lb-dot md"></span><div class="s-inb-cid"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><span class="s-inb-ctrailing">Exited</span></div><div class="lb-prose s-inb-cmsg"><p>Done. Added the flag to <code>.github/workflows/ci.yml</code> and fixed the four warnings it turned up in <code>apps/api</code>.</p></div><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Open session</button></li>
+          <li class="s-inb-crow" data-kind="session_outcome"><div class="s-inb-chead"><span class="lb-dot danger md"></span><div class="s-inb-cid"><strong>Backfill node labels</strong><span class="s-inb-meta">/home/dev/loombox · mac-mini · 2h</span></div><span class="s-inb-ctrailing">Error</span></div><div class="lb-prose s-inb-cmsg"><p>The backfill would touch roughly 40,000 session rows and I don’t have <code>--force</code>, so I stopped before writing anything.</p></div><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Open session</button></li>
+          <li class="s-inb-crow" data-kind="awaiting_input"><div class="s-inb-chead"><span class="lb-dot md"></span><div class="s-inb-cid"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><span class="s-inb-ctrailing">Awaiting you</span></div><div class="lb-prose s-inb-cmsg"><p>Which of these three do you want for the cold-start fix?</p><ol><li><strong>Lazy-load</strong> the provider adapters behind a dynamic <code>import()</code></li><li><strong>Precompute</strong> the adapter registry at build time and ship it as JSON</li><li><strong>Cache</strong> the resolved registry in IndexedDB after first load</li></ol></div><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></li>
+          <li class="s-inb-crow" data-kind="awaiting_input"><div class="s-inb-chead"><span class="lb-dot md"></span><div class="s-inb-cid"><strong>Draft the webhooks changeset</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 18m</span></div><span class="s-inb-ctrailing">Awaiting you</span></div><div class="lb-prose s-inb-cmsg"><p>I can log this as a <code>minor</code> (new <code>/webhooks</code> route) or a <code>patch</code> (the route silently 404’d before, so this reads as a fix). Which do you want?</p></div><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></li>
+          <li class="s-inb-crow" data-kind="permission"><div class="s-inb-chead"><span class="lb-dot warn pulse md"></span><div class="s-inb-cid"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><span class="s-inb-ctrailing">Needs permission</span></div><div class="lb-prose s-inb-cmsg"><p>The Vite cache still points at the old workspace layout after the <code>apps/web</code> rename, so I want to clear <code>node_modules</code> and reinstall clean before rerunning the build.</p></div><pre class="s-inb-permcard-field">rm -rf node_modules</pre><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></li>
+          <li class="s-inb-crow" data-kind="permission"><div class="s-inb-chead"><span class="lb-dot warn pulse md"></span><div class="s-inb-cid"><strong>Stripe webhook handler</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 2m</span></div><span class="s-inb-ctrailing">Needs permission</span></div><div class="lb-prose s-inb-cmsg"><p>Added signature verification and the <code>checkout.session.completed</code> handler. <code>apps/api</code> doesn’t have a <code>routes/</code> folder yet, so this creates one, flagging before I write it.</p></div><p class="s-inb-permcard-path"><svg><use href="#i-file"/></svg><span>apps/api/src/routes/webhooks.ts</span></p><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E1-4</span><span class="opt-title">Grouped by project</span></div>
+      <p class="opt-why">A project you're focused on shows everything about it in one place, but <b>the single oldest thing needing you can sink to the bottom of a group you haven't opened</b> — here pitchbox's 3h-old row loses the top spot to loombox's 2h-old one just because "l" sorts before "p".</p>
+      <div class="stage">
+        <div class="s-inb-group">
+          <div class="s-inb-ghead"><svg><use href="#i-folder"/></svg><span>/home/dev/loombox</span><span class="lb-badge">3</span></div>
+          <ul class="s-inb-list s-inb-twoline">
+            <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot danger md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Backfill node labels</strong><span class="s-inb-meta">/home/dev/loombox · mac-mini · 2h</span></div><p class="s-inb-tline2">The backfill would touch roughly 40,000 session rows and I don't have --force, so I stopped before writing anything.</p></div><span class="s-inb-ttrailing">Error</span></li>
+            <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><p class="s-inb-tline2">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+            <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          </ul>
+        </div>
+        <div class="s-inb-group">
+          <div class="s-inb-ghead"><svg><use href="#i-folder"/></svg><span>/home/dev/pitchbox</span><span class="lb-badge">3</span></div>
+          <ul class="s-inb-list s-inb-twoline">
+            <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+            <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Draft the webhooks changeset</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 18m</span></div><p class="s-inb-tline2">I can log this as a minor (new /webhooks route) or a patch (it silently 404'd before). Which do you want?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+            <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Stripe webhook handler</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 2m</span></div><p class="s-inb-tline2">Added signature verification and the checkout.session.completed handler — apps/api doesn't have a routes/ folder yet.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="e2">
+  <div class="item-head">
+    <span class="item-id">E2</span>
+    <h2>Answering in place</h2>
+  </div>
+  <blockquote class="item-quote">
+    L'idea della inbox è di dar modo all'utente di rispondere al volo a tutte le sessioni che
+    hanno bisogno di lui senza dover ogni volta andare alla sessione in questione.
+  </blockquote>
+  <p class="item-note">
+    Confirmed: <code>onResolve</code> and <code>onReply</code> already answer without navigating
+    (<code>AttentionInbox.svelte:187-193</code>, <code>:194-218</code>). What happens right after
+    isn't designed, it's a side effect of how the list is built: every session subscribes both its
+    transcript and its permission queue back into <code>recomputeAttentionInbox</code>
+    (<code>relay-client.ts:3461-3462</code>), which rebuilds the whole array from scratch
+    (<code>:3472-3514</code>). The instant <code>resolvePermission</code> removes the head of a
+    queue (<code>:2503</code>), or a reply moves a session off <code>awaiting_input</code>, that row
+    is gone on the very next tick — no confirmation, no undo, nothing shown for what just
+    happened. A session that only finished has no answer to give and, today, no dismiss action
+    either: it sits in the inbox until you open it.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Full inline widgets, row gone the instant you act</span></div>
+      <p class="opt-why">Two of the three cases already answer without leaving the inbox, but resolving or replying <b>removes the row on the very next store update</b> — the same tick, nothing shown in between.</p>
+      <div class="stage">
+        <ul class="s-inb-list">
+          <li class="s-inb-row" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Clean up stale build cache</strong><small>/home/dev/loombox · mbp-lorenzo</small></button><p class="s-inb-need">Needs approval: Run rm -rf node_modules</p><div class="s-inb-permcard"><div class="s-inb-permcard-head"><span class="lb-dot warn pulse"></span><span class="s-inb-permcard-title">Run rm -rf node_modules</span></div><pre class="s-inb-permcard-field">rm -rf node_modules</pre><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></div></div><span class="s-inb-trailing">Needs permission</span></li>
+          <li class="s-inb-row" data-kind="awaiting_input"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Draft the webhooks changeset</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Waiting for your reply</p><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></div><span class="s-inb-trailing">Awaiting you</span></li>
+          <li class="s-inb-row" data-kind="session_outcome"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Add eslint --max-warnings=0 to CI</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Finished: end_turn</p></div><span class="s-inb-trailing">Exited</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E2-1</span><span class="opt-title">Same inline widgets, row fades instead of vanishing</span></div>
+      <p class="opt-why">The exact same buttons and reply box; only what happens after changes, dimming to show the outcome for a couple of seconds before it actually clears — <b>a mis-tap gets a window to be undone</b> instead of none.</p>
+      <div class="stage">
+        <ul class="s-inb-list">
+          <li class="s-inb-row" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Clean up stale build cache</strong><small>/home/dev/loombox · mbp-lorenzo</small></button><p class="s-inb-need">Needs approval: Run rm -rf node_modules</p><div class="s-inb-permcard"><div class="s-inb-permcard-head"><span class="lb-dot warn pulse"></span><span class="s-inb-permcard-title">Run rm -rf node_modules</span></div><pre class="s-inb-permcard-field">rm -rf node_modules</pre><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></div></div><span class="s-inb-trailing">Needs permission</span></li>
+          <li class="s-inb-row" data-kind="awaiting_input"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Draft the webhooks changeset</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Waiting for your reply</p><form class="s-inb-reply"><input class="s-inb-reply-input" placeholder="Send a follow-up without leaving the inbox…" /><button class="lb-btn lb-btn-sm lb-btn-ghost" type="button">Send</button></form></div><span class="s-inb-trailing">Awaiting you</span></li>
+          <li class="s-inb-row" data-kind="session_outcome"><span class="s-inb-lead"><span class="lb-dot md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Add eslint --max-warnings=0 to CI</strong><small>/home/dev/pitchbox · gpu-01</small></button><p class="s-inb-need">Finished: end_turn</p></div><span class="s-inb-trailing">Exited</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">A couple of seconds after tapping Allow once</p>
+        <ul class="s-inb-list">
+          <li class="s-inb-row s-inb-dim" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><strong>Clean up stale build cache</strong><small class="s-inb-meta">/home/dev/loombox · mbp-lorenzo</small><p class="s-inb-outcome-line"><svg><use href="#i-check"/></svg>Allowed once<button class="s-inb-undo" type="button">Undo</button></p></div></li>
+        </ul>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E2-2</span><span class="opt-title">Answering opens a focused overlay</span></div>
+      <p class="opt-why">Every case opens its own panel to answer, so a long question finally gets real room and a mis-tap can't land on the row behind it, but <b>it's a context switch for every single answer</b>, not just the hard ones.</p>
+      <div class="stage">
+        <div class="s-inb-overlay-wrap">
+          <ul class="s-inb-list s-inb-twoline s-inb-overlay-bg">
+            <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+            <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Draft the webhooks changeset</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 18m</span></div><p class="s-inb-tline2">I can log this as a minor (new /webhooks route) or a patch (it silently 404'd before). Which do you want?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+            <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+          </ul>
+          <div class="s-inb-overlay">
+            <div class="s-inb-overlay-head"><span class="lb-dot warn pulse md"></span>
+              <div class="s-inb-cid"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo</span></div>
+              <button class="lb-iconbtn s-inb-overlay-close" aria-label="Close" type="button"><svg><use href="#i-x"/></svg></button>
+            </div>
+            <div class="lb-prose s-inb-cmsg"><p>The Vite cache still points at the old workspace layout after the <code>apps/web</code> rename, so I want to clear <code>node_modules</code> and reinstall clean before rerunning the build.</p></div>
+            <pre class="s-inb-permcard-field">rm -rf node_modules</pre>
+            <div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E2-3</span><span class="opt-title">Collapsed by default, expands to answer, collapses to a chip</span></div>
+      <p class="opt-why">Nothing shows an answer surface until you ask for it, and after you answer it doesn't vanish, it <b>shrinks to one line you can still undo</b> — the most deliberate of the three, and the slowest to blast through six items.</p>
+      <div class="stage">
+        <p class="stage-label">At rest</p>
+        <ul class="s-inb-list s-inb-twoline">
+          <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">Tapped to expand</p>
+        <ul class="s-inb-list">
+          <li class="s-inb-row" data-kind="permission"><span class="s-inb-lead"><span class="lb-dot warn pulse md"></span></span><div class="s-inb-body"><button class="s-inb-open" type="button"><strong>Clean up stale build cache</strong><small>/home/dev/loombox · mbp-lorenzo</small></button><p class="s-inb-need">Needs approval: Run rm -rf node_modules</p><div class="s-inb-permcard"><div class="s-inb-permcard-head"><span class="lb-dot warn pulse"></span><span class="s-inb-permcard-title">Run rm -rf node_modules</span></div><pre class="s-inb-permcard-field">rm -rf node_modules</pre><div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div></div></div><span class="s-inb-trailing">Needs permission</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">After answering</p>
+        <ul class="s-inb-list">
+          <li class="s-inb-chip"><svg><use href="#i-check"/></svg><span>Clean up stale build cache — Allowed once</span><button class="s-inb-undo" type="button">Undo</button></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="e3">
+  <div class="item-head">
+    <span class="item-id">E3</span>
+    <h2>Getting through a queue</h2>
+  </div>
+  <blockquote class="item-quote">
+    Anche la UI della inbox va migliorata.
+  </blockquote>
+  <p class="item-note">
+    Confirmed: <code>AttentionInbox.svelte</code> has no keydown handling of its own — the only
+    keyboard path is <code>PermissionCard</code>'s own digit-key/Esc listener, and it only fires
+    while that one card holds DOM focus (<code>PermissionCard.svelte:14-19</code>), not across the
+    list. There is no row-to-row navigation and no count of what's left. The empty state is the
+    shared <code>EmptyState</code> primitive with a fixed message and no <code>cta</code>
+    (<code>AttentionInbox.svelte:163-165</code>, <code>EmptyState.svelte:21-38</code>): a dimmed
+    mark and "Nothing needs your attention." whether the inbox has never had anything in it or you
+    just cleared twelve items in a row.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Plain scroll; each permission card answers its own digit keys</span></div>
+      <p class="opt-why">The list is just a scroll and each <code>PermissionCard</code> already listens for its own digit keys while it holds focus, but <b>nothing moves the list itself</b> — no row-to-row navigation, no count of what's left, and "Nothing needs your attention" either way.</p>
+      <div class="stage">
+        <p class="stage-label">Mid-queue</p>
+        <ul class="s-inb-list s-inb-twoline">
+          <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><p class="s-inb-tline2">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+          <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">Empty</p>
+        <div class="s-inb-empty"><svg><use href="#i-inbox"/></svg><p>Nothing needs your attention.</p></div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E3-1</span><span class="opt-title">Keyboard-first: j/k to move, digits to choose</span></div>
+      <p class="opt-why"><code>j</code>/<code>k</code> moves a list-wide focus row, the same digit keys the permission card already listens for now answer whichever row is focused, and Enter drops into its reply box: fastest once you know it, but <b>discoverability rides entirely on the hint bar</b>.</p>
+      <div class="stage">
+        <p class="stage-label">Mid-queue</p>
+        <div class="s-inb-hintbar"><span class="s-inb-kbd">j</span><span class="s-inb-kbd">k</span><span>navigate</span><span class="s-inb-kbd">1</span>–<span class="s-inb-kbd">3</span><span>choose</span><span class="s-inb-kbd">Enter</span><span>reply</span></div>
+        <ul class="s-inb-list s-inb-twoline">
+          <li class="s-inb-trow s-inb-focused" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><p class="s-inb-tline2">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+          <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">Empty</p>
+        <div class="s-inb-empty"><svg style="color: var(--color-success)"><use href="#i-check"/></svg><p>Inbox clear. 6 answered in 3m40s — j/k still work here if more come in.</p></div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E3-2</span><span class="opt-title">One at a time, auto-advancing</span></div>
+      <p class="opt-why">One case fills the screen and answering advances to the next automatically (the same panel as E2-2, chained across the queue): the least likely place for a mis-tap to chain into the next item, and the one done state that gets to feel like something, at the cost of <b>never letting you skip ahead to the one item you actually want first</b>.</p>
+      <div class="stage">
+        <p class="stage-label">Mid-queue</p>
+        <div class="s-inb-progress"><span>3 of 6</span><span>2 left after this</span></div>
+        <div class="s-inb-progress-bar"><div class="s-inb-progress-fill" style="width: 50%"></div></div>
+        <div class="s-inb-overlay">
+          <div class="s-inb-overlay-head"><span class="lb-dot warn pulse md"></span>
+            <div class="s-inb-cid"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo</span></div>
+          </div>
+          <div class="lb-prose s-inb-cmsg"><p>The Vite cache still points at the old workspace layout after the <code>apps/web</code> rename, so I want to clear <code>node_modules</code> and reinstall clean before rerunning the build.</p></div>
+          <pre class="s-inb-permcard-field">rm -rf node_modules</pre>
+          <div class="s-inb-permcard-opts"><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">1</span>Allow once</button><button class="lb-btn lb-btn-primary lb-btn-sm"><span class="s-inb-shortcut">2</span>Allow for this session</button><button class="lb-btn lb-btn-danger lb-btn-sm"><span class="s-inb-shortcut">3</span>Deny</button></div>
+        </div>
+        <hr class="lb-hr" />
+        <p class="stage-label">Empty</p>
+        <div class="s-inb-empty"><svg style="color: var(--color-success)"><use href="#i-check"/></svg><p>That's everything. Six answered in 4 minutes.</p>
+          <button class="lb-btn lb-btn-sm">Back to sessions</button></div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">E3-3</span><span class="opt-title">Plain scroll, pinned counter</span></div>
+      <p class="opt-why">Same list, same clicks, plus a pinned count and a done message that says what actually happened: <b>the smallest change of the three</b>, and it still leaves keyboard navigation and auto-advance on the table.</p>
+      <div class="stage">
+        <p class="stage-label">Mid-queue</p>
+        <div class="s-inb-counter"><span class="lb-dot warn pulse md"></span>3 need you</div>
+        <ul class="s-inb-list s-inb-twoline">
+          <li class="s-inb-trow" data-kind="permission"><span class="lb-dot warn pulse md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Clean up stale build cache</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 6m</span></div><p class="s-inb-tline2">The Vite cache still points at the old workspace layout, so I want to clear node_modules and reinstall clean.</p></div><span class="s-inb-ttrailing">Needs permission</span></li>
+          <li class="s-inb-trow" data-kind="awaiting_input"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Speed up cold start</strong><span class="s-inb-meta">/home/dev/loombox · mbp-lorenzo · 41m</span></div><p class="s-inb-tline2">Which of these three do you want for the cold-start fix: lazy-load the adapters, precompute the registry at build time, or cache it in IndexedDB?</p></div><span class="s-inb-ttrailing">Awaiting you</span></li>
+          <li class="s-inb-trow" data-kind="session_outcome"><span class="lb-dot md"></span><div class="s-inb-tbody"><div class="s-inb-tline1"><strong>Add eslint --max-warnings=0 to CI</strong><span class="s-inb-meta">/home/dev/pitchbox · gpu-01 · 3h</span></div><p class="s-inb-tline2">Done. Added the flag to .github/workflows/ci.yml and fixed the four warnings it turned up in apps/api.</p></div><span class="s-inb-ttrailing">Exited</span></li>
+        </ul>
+        <hr class="lb-hr" />
+        <p class="stage-label">Empty</p>
+        <div class="s-inb-empty"><svg><use href="#i-inbox"/></svg><p>All caught up. Nothing needs you right now.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* Row list base, faithful to AttentionInbox.svelte's own `.item`/`Row`
+     layout (leading dot, flexible body, trailing status label). */
+  .s-inb-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .s-inb-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+  }
+
+  .s-inb-lead {
+    display: inline-flex;
+    flex-shrink: 0;
+    margin-top: var(--space-3xs);
+  }
+
+  .s-inb-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .s-inb-open {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    align-items: flex-start;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .s-inb-open small {
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-need {
+    margin: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-trailing {
+    flex-shrink: 0;
+    margin-left: auto;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-meta {
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+  }
+
+  /* Permission card mock, faithful to PermissionCard.svelte's own
+     floating elevation tier and shortcut-chip options. */
+  .s-inb-permcard {
+    margin-top: var(--space-2xs);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-md) var(--space-lg);
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .s-inb-permcard-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .s-inb-permcard-title {
+    font-weight: 600;
+  }
+
+  .s-inb-permcard-field {
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-small-size);
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+
+  .s-inb-permcard-path {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin: 0;
+    font-size: var(--text-small-size);
+  }
+
+  .s-inb-permcard-path svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+
+  .s-inb-permcard-opts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .s-inb-shortcut {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.1rem;
+    margin-right: var(--space-2xs);
+    opacity: 0.85;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    padding: 0 var(--space-2xs);
+  }
+
+  /* Inline reply form, faithful to AttentionInbox.svelte's own `.reply`. */
+  .s-inb-reply {
+    display: flex;
+    gap: var(--space-xs);
+    margin-top: var(--space-2xs);
+  }
+
+  .s-inb-reply-input {
+    flex: 1;
+    min-width: 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-strong);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-2xs) var(--space-sm);
+    font: inherit;
+    font-size: var(--text-small-size);
+  }
+
+  .s-inb-reply-input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  /* E1-1: dense, one line per session. */
+  .s-inb-dense {
+    gap: var(--space-2xs);
+  }
+
+  .s-inb-drow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .s-inb-drow strong {
+    flex-shrink: 0;
+    font-size: var(--text-small-size);
+    white-space: nowrap;
+  }
+
+  .s-inb-drow .s-inb-meta {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .s-inb-dmsg {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-dtime {
+    flex-shrink: 0;
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+  }
+
+  /* E1-2 / E1-4: two-line row. */
+  .s-inb-trow {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .s-inb-tbody {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+  }
+
+  .s-inb-tline1 {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+  }
+
+  .s-inb-tline1 strong {
+    font-size: var(--text-small-size);
+  }
+
+  .s-inb-tline2 {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-ttrailing {
+    flex-shrink: 0;
+    margin-left: auto;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  /* Keyboard focus ring for a list-wide selected row (E3-1), echoing the
+     shared Row primitive's own `.ui-row-active` treatment. */
+  .s-inb-focused {
+    background: var(--color-accent-subtle);
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
+    border-color: transparent;
+  }
+
+  /* E1-3: full card, message in full, answer attached. */
+  .s-inb-cardlist {
+    gap: var(--space-md);
+  }
+
+  .s-inb-crow {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-md) var(--space-lg);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+  }
+
+  .s-inb-chead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .s-inb-cid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .s-inb-cid strong {
+    font-size: var(--text-body-size);
+  }
+
+  .s-inb-ctrailing {
+    flex-shrink: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-cmsg p {
+    margin: 0 0 var(--space-sm);
+  }
+
+  .s-inb-cmsg > :last-child {
+    margin-bottom: 0;
+  }
+
+  /* E1-4: project group header. */
+  .s-inb-group {
+    margin-bottom: var(--space-md);
+  }
+
+  .s-inb-group:last-child {
+    margin-bottom: 0;
+  }
+
+  .s-inb-ghead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs);
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-ghead svg {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-muted);
+  }
+
+  /* Empty state mock, faithful to the shared EmptyState primitive. */
+  .s-inb-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: var(--space-md);
+    padding: var(--space-2xl);
+  }
+
+  .s-inb-empty svg {
+    width: 4rem;
+    height: 4rem;
+    opacity: 0.14;
+    color: var(--color-text-primary);
+  }
+
+  .s-inb-empty p {
+    margin: 0;
+    max-width: 28rem;
+    color: var(--color-text-secondary);
+  }
+
+  /* E2-1 / E2-3: an answered row that greys out or collapses instead of
+     vanishing, with an undo affordance. */
+  .s-inb-dim {
+    opacity: 0.55;
+  }
+
+  .s-inb-outcome-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin: var(--space-2xs) 0 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-outcome-line svg {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-success);
+    flex-shrink: 0;
+  }
+
+  .s-inb-undo {
+    background: none;
+    border: none;
+    padding: 0;
+    margin-left: var(--space-xs);
+    font: inherit;
+    font-size: var(--text-small-size);
+    color: var(--color-accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .s-inb-chip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-xs) var(--space-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-inb-chip svg {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-success);
+    flex-shrink: 0;
+  }
+
+  .s-inb-chip span {
+    flex: 1;
+  }
+
+  /* E2-2: focused overlay above a dimmed background list. */
+  .s-inb-overlay-wrap {
+    position: relative;
+  }
+
+  .s-inb-overlay-bg {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .s-inb-overlay {
+    margin: var(--space-md) auto 0;
+    max-width: 26rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .s-inb-overlay-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .s-inb-overlay-close {
+    margin-left: auto;
+  }
+
+  /* E3-2: one-at-a-time progress. */
+  .s-inb-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+  }
+
+  .s-inb-progress-bar {
+    height: 3px;
+    margin-top: var(--space-2xs);
+    margin-bottom: var(--space-sm);
+    background: var(--color-fill);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+  }
+
+  .s-inb-progress-fill {
+    height: 100%;
+    background: var(--color-accent);
+    border-radius: var(--radius-full);
+  }
+
+  /* E3-1: keyboard hint bar. */
+  .s-inb-hintbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    margin-bottom: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+  }
+
+  .s-inb-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.4rem;
+    padding: 0 var(--space-2xs);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    color: var(--color-text-secondary);
+    background: var(--color-surface-raised);
+  }
+
+  /* E3-3: pinned "N need you" counter. */
+  .s-inb-counter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-sm);
+    margin-bottom: var(--space-sm);
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    font-size: var(--text-caption-size);
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+</style>
