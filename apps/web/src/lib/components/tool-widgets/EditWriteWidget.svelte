@@ -93,8 +93,11 @@
     border-radius: var(--radius-sm);
   }
 
+  /* `flex-shrink: 0` used to sit here too, but `Icon`'s own
+     `.icon { flex-shrink: 0; }` scoped root rule already provides the
+     identical value (issue #665's guard-test scan) — redundant dead CSS,
+     dropped rather than kept. */
   :global(.disclosure-icon) {
-    flex-shrink: 0;
     color: var(--color-text-muted);
     transition: transform var(--duration-fast) var(--ease-beat);
   }

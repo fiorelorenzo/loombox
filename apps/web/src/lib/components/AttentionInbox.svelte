@@ -166,7 +166,7 @@
     <ul>
       {#each items as item (itemKey(item))}
         {@const status = itemStatus(item)}
-        <Row as="li" class="item" data-kind={item.kind} dataTestId="attention-inbox-item">
+        <Row as="li" class="item" surface data-kind={item.kind} dataTestId="attention-inbox-item">
           {#snippet leading()}
             <StatusDot tone={status.tone} label={status.label} />
           {/snippet}
@@ -177,6 +177,7 @@
           <Button
             variant="ghost"
             class="open"
+            align="start"
             onclick={() => onOpenSession(item.sessionId)}
             dataTestId="attention-inbox-open"
           >
@@ -243,23 +244,17 @@
      not a boxed card. Session-row visual language (redesign v3 design
      spec §3.6): the per-kind signal now lives on the leading `StatusDot`
      alone, not a second colored border — `PermissionCard` (rendered
-     inline below) keeps its own full `floating` tier untouched. `Row`
-     (issue #579) now owns the leading/content/trailing flex layout and
-     the radius; this is only the background/border/animation this row
-     still wants on top of it. `:global()` because `Row` renders its own
-     root in its own component scope. */
+     inline below) keeps its own full `floating` tier untouched. `Row`'s
+     own `surface` prop (issue #665, following `ToolCard`'s #576
+     precedent) now draws the background/border/hover treatment; this is
+     only the padding and the row's own beat-in reveal on top of it.
+     `:global()` because `Row` renders its own root in its own component
+     scope. */
   :global(.item) {
     padding: var(--space-sm) var(--space-md);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border-subtle);
-    transition: background-color var(--duration-fast) var(--ease-beat);
     /* beat-in (redesign brief §2): 4px upward slide + fade, staggered
        20ms/item, capped at 5 rows. */
     animation: beat-in var(--duration-base) var(--ease-beat) both;
-  }
-
-  :global(.item:hover) {
-    background: var(--color-fill-subtle);
   }
 
   :global(.item:nth-child(2)) {
@@ -304,25 +299,13 @@
      which carries `Button`'s own scope hash, not this component's, so a
      plain (non-`:global`) selector would never match (same rationale
      `CommandPalette`'s `:global(.command-palette-panel)` documents).
-     Resets `Button`'s ghost chrome (centered layout, padding, underline
-     hover) back to a quiet, left-aligned, stacked title/subtitle control —
-     `.item:hover` above already carries the row's own hover feedback. */
+     `Button`'s `align="start"` prop (issue #665) now supplies the
+     left-aligned, stacked title/subtitle layout and drops the
+     hover-underline; this is only the padding this quiet trigger still
+     wants on top of it — `.item`'s own hover feedback (via `Row`'s
+     `surface`) already carries the row's own hover treatment. */
   :global(.open) {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-3xs);
     padding: 0;
-    text-align: left;
-  }
-
-  :global(.open .ui-button-label) {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  :global(.open:not(:disabled):hover) {
-    background: transparent;
-    text-decoration: none;
   }
 
   :global(.open) small {

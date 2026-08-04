@@ -368,12 +368,15 @@
      color/hover-underline/disabled/focus-ring chrome (issue #579's
      data-attribute/aria-attribute passthrough is what let `aria-expanded`
      and `data-testid` reach the real `<button>` through it) — this is
-     only the toggle's own quieter resting opacity on top of that.
-     `:global()` because `Button` renders its own root in its own
-     component scope. */
+     only the toggle's own quieter resting opacity on top of that. The
+     smooth fade used to need its own `transition: opacity ...` here too,
+     but `.ui-button`'s own scoped root rule always won that fight (issue
+     #665 — verified by compiling both and reading the emitted CSS), so
+     `Button`'s own transition list now claims `opacity` unconditionally
+     instead — nothing left here to lose the fight. `:global()` because
+     `Button` renders its own root in its own component scope. */
   :global(.overflow-toggle) {
     opacity: 0.75;
-    transition: opacity var(--duration-fast) var(--ease-beat);
   }
 
   :global(.overflow-toggle:not(:disabled):hover) {

@@ -34,6 +34,15 @@
    * (a `stopPropagation` boundary wraps it): a trailing action cluster is
    * always a separate target from the row's own click, never a second way
    * to trigger — or accidentally double-fire — it.
+   *
+   * `surface` (issue #665) draws the shared card treatment (background/
+   * border, plus the matching hover tint) directly on `Row`'s own root —
+   * for a row that needs to read as a standalone card rather than a plain
+   * list row (e.g. `AttentionInbox`'s item). Mirrors `ToolCard`'s own
+   * required `surface` prop precedent (#576): a call site that used to
+   * fight `.ui-row`'s scoped root rule with a `:global()` override (losing
+   * the specificity fight silently — verified by compiling both and
+   * reading the emitted CSS) gets a prop instead.
    */
   import type { Snippet } from 'svelte';
 
@@ -46,6 +55,8 @@
     onclick?: (event: MouseEvent) => void;
     /** Selected/current treatment — a caller maps its own vocabulary (`.selected`, `.active`) onto this one flag, exactly like StatusDot's `tone`. */
     active?: boolean;
+    /** Draws the shared card background/border/hover treatment on the root element (issue #665) — omit for a plain, chromeless row. */
+    surface?: boolean;
     disabled?: boolean;
     leading?: Snippet;
     trailing?: Snippet;
@@ -63,6 +74,7 @@
     href,
     onclick,
     active = false,
+    surface = false,
     disabled = false,
     leading,
     trailing,
@@ -112,6 +124,7 @@
   {title}
   class={`ui-row ui-row-${as} ${className}`.trim()}
   class:ui-row-active={active}
+  class:ui-row-surface={surface}
   class:ui-row-clickable={!!onclick}
   data-testid={dataTestId}
 >
@@ -179,6 +192,19 @@
   .ui-row-active {
     background: var(--color-accent-subtle);
     box-shadow: inset 2px 0 0 0 var(--color-accent);
+  }
+
+  /* `surface` (issue #665): the card treatment — background/border plus a
+     matching hover tint — for a row that reads as a standalone card
+     rather than a plain list row (e.g. `AttentionInbox`'s item). Mirrors
+     `ToolCard`'s own `surface` prop precedent (#576). */
+  .ui-row-surface {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  .ui-row-surface:hover {
+    background: var(--color-fill-subtle);
   }
 
   .ui-row-leading {

@@ -40,6 +40,23 @@
    * isn't a toggle. `title` is the matching hover tooltip, for the widths
    * where such a control hides its own visible word.
    *
+   * `align` (issue #665): `'center'` (default) is today's centered-content
+   * look, unchanged for every existing caller. `'start'` left-aligns the
+   * button's own content instead of centering it (`AppearanceSettings`-style
+   * option buttons stay centered; a `fullWidth` trigger that should hug the
+   * left edge, like `OnboardingGate`'s choice-card triggers, needs this) and,
+   * because `children` always renders inside this file's own
+   * `.ui-button-label` wrapper, also stacks and left-aligns a multi-line
+   * label — a title above a subtitle, e.g. `AttentionInbox`'s Open control.
+   * This replaces the pattern of a call site fighting `.ui-button`'s
+   * centered layout with a `:global()` override: Svelte scopes `.ui-button`
+   * with a hash class the consumer's plain `.foo` selector can never match
+   * at equal-or-higher specificity, so `align-items`/`justify-content` land
+   * on `.ui-button` and the override is silently discarded — verified by
+   * compiling both and reading the emitted CSS. A call site needing to
+   * override a primitive's layout is a missing prop, not a louder selector
+   * (the same precedent `ToolCard`'s `surface` prop set in #576).
+   *
    * `role`/`ariaChecked`/`tabindex`/`onkeydown` exist for the one other
    * shape a shared button needs to take on: a member of a `role="radiogroup"`
    * (issue #549, `ConfigBar`'s mode control). A toggle button
@@ -57,6 +74,7 @@
 
   export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
   export type ButtonSize = 'sm' | 'md';
+  export type ButtonAlign = 'center' | 'start';
 
   interface Props {
     variant?: ButtonVariant;
@@ -71,6 +89,8 @@
     ariaLabel?: string;
     /** Omit for a plain action; set for a real toggle (drives `aria-pressed` and the pressed treatment). */
     pressed?: boolean;
+    /** `'center'` (default) is today's centered look; `'start'` left-aligns the button's content and, when it renders a multi-line label, stacks and left-aligns those lines too (issue #665). */
+    align?: ButtonAlign;
     /** Overrides the native implicit role (`"button"`) — e.g. `"radio"` for a member of a `role="radiogroup"`. Omit for a plain button. */
     role?: string;
     /** Sets `aria-checked` — pair with `role="radio"`; never with `pressed`/`aria-pressed` on the same button. */
@@ -119,6 +139,7 @@
     onclick,
     ariaLabel,
     pressed,
+    align = 'center',
     role,
     ariaChecked,
     tabindex,
@@ -139,6 +160,7 @@
   class={`ui-button ui-button-${variant} ui-button-${size} ${className}`.trim()}
   class:ui-button-full={fullWidth}
   class:ui-button-pressed={pressed === true}
+  class:ui-button-align-start={align === 'start'}
   disabled={isDisabled}
   aria-busy={loading || undefined}
   aria-label={ariaLabel}
@@ -179,12 +201,39 @@
       background-color var(--duration-fast) var(--ease-beat),
       border-color var(--duration-fast) var(--ease-beat),
       color var(--duration-fast) var(--ease-beat),
+      /* Not used by any built-in variant, but claimed here so a caller's own
+         resting-opacity treatment (e.g. `PermissionCard`'s overflow toggle,
+         issue #665) fades instead of snapping, without that caller having to
+         fight `.ui-button`'s own transition list for the property. */
+      opacity var(--duration-fast) var(--ease-beat),
       transform var(--duration-instant) var(--ease-beat);
   }
 
   .ui-button-label {
     display: inline-flex;
     align-items: center;
+  }
+
+  /* `align="start"` (issue #665): left-aligns the button's own content
+     instead of centering it, and — since `children` always renders inside
+     `.ui-button-label` above — stacks and left-aligns a multi-line label
+     too (a title above a subtitle). Also drops the ghost/secondary
+     hover-underline, since a start-aligned trigger reads as a row/tile,
+     not an inline text link. */
+  .ui-button-align-start {
+    align-items: flex-start;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .ui-button-align-start .ui-button-label {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3xs);
+  }
+
+  .ui-button-align-start:not(:disabled):hover {
+    text-decoration: none;
   }
 
   .ui-button-md {

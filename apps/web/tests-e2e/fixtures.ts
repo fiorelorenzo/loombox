@@ -43,9 +43,13 @@ let userCounter = 0;
  * ever reaches the relay. This intercepts only that relay-origin traffic
  * and replays the REAL response (via `route.fetch()`, an actual network
  * call, never a stub) with an added `Access-Control-Allow-*` header set —
- * the request/response themselves are untouched.
+ * the request/response themselves are untouched. Exported (not just used
+ * by the `loombox` fixture below) so a spec needing an authenticated-but-
+ * no-AMK session (e.g. onboarding, issue #665) can sign a user up against a
+ * real relay without going through the full `loombox` fixture, which also
+ * seeds an AMK.
  */
-async function bridgeRelayCors(page: Page, relayHttpBaseUrl: string): Promise<void> {
+export async function bridgeRelayCors(page: Page, relayHttpBaseUrl: string): Promise<void> {
   await page.route(`${relayHttpBaseUrl}/**`, async (route) => {
     const request = route.request();
     const origin = (await request.headerValue('origin')) ?? '*';

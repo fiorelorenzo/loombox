@@ -285,9 +285,12 @@
   /* `:global` — the `entry-icon` class lands on the `<svg>` `Icon.svelte`
      (a child component) renders, which carries `Icon`'s own scope hash,
      not this file's, so a plain (non-`:global`) selector would never
-     match (same rationale `+page.svelte`'s `.rail-icon` documents). */
+     match (same rationale `+page.svelte`'s `.rail-icon` documents).
+     `flex-shrink: 0` used to sit here too, but `Icon`'s own
+     `.icon { flex-shrink: 0; }` scoped root rule already provides the
+     identical value (issue #665's guard-test scan) — redundant dead CSS,
+     dropped rather than kept. */
   :global(.entry-icon) {
-    flex-shrink: 0;
     width: 1.125rem;
     height: 1.125rem;
     color: var(--color-text-secondary);

@@ -267,8 +267,12 @@
     flex-shrink: 0;
   }
 
+  /* `flex-shrink: 0` used to sit here too, but `IconButton`'s own
+     `.ui-icon-button { flex-shrink: 0; }` scoped root rule always won that
+     fight (issue #665 — verified by compiling both and reading the
+     emitted CSS) *and* already declares the exact value this wanted, so
+     it's just redundant dead CSS, dropped rather than kept. */
   :global(.remove) {
-    flex-shrink: 0;
     opacity: 0.6;
   }
 
