@@ -348,6 +348,7 @@ export {
 export type {
   GitHubTarget,
   JiraTarget,
+  TrackerBackendResolutionErrorV1,
   TrackerMode,
   TrackerModeGetRequest,
   TrackerModeResponse,
@@ -358,6 +359,7 @@ export {
   jiraTarget,
   parseTrackerMode,
   safeParseTrackerMode,
+  trackerBackendResolutionErrorV1,
   trackerMode,
   trackerModeGetRequest,
   trackerModeResponse,

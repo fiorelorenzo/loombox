@@ -44,26 +44,29 @@
    * section there is no node to pick) into that panel's "Connect
    * GitHub"/"Connect Jira" empty-state CTA.
    *
-   * **#631 closed the transport gap, not the bridge-dispatch one.**
-   * `TrackerMode` used to live only in this browser's `localStorage` —
-   * `NodeDaemon.readTrackerSnapshotForBridge`
-   * (`packages/node/src/node-daemon.ts`) read the local native store
-   * unconditionally because the native store was the only thing the node
-   * had, so a project switched to `live` still showed local records, with
-   * no error. `trackerMode` below is now node-backed
-   * (`createRelayTrackerModeStorage`) and never flashes a stale "never
-   * chosen" while its own round trip is in flight (`trackerModeStatus`'s
-   * `'loading'` gate below) — but the record data under it still doesn't
-   * follow a `live` choice; wiring `readTrackerSnapshotForBridge` itself
-   * to consult this mode is a separate, node-side follow-up. Rather than
-   * let that "look like it works and not" silently (this file's own issue
-   * explicitly forbids that), `.tracker-live-gap-note` renders whenever
-   * `trackerMode.kind === 'live'` and a snapshot has actually loaded,
-   * naming #631 directly instead of pretending the synced board is real.
+   * **#631 closed the bridge-dispatch gap too, not just transport.**
+   * `NodeDaemon.readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge`
+   * (`packages/node/src/node-daemon.ts`) used to read the local native
+   * store unconditionally, so a project switched to `live` still showed
+   * local records, with no error — the mode reached the node (this
+   * file's own earlier gap) but nothing on the node consulted it. Both
+   * bridge paths now dispatch on the mode through one shared resolver
+   * (`resolveTrackerDispatch`, node-side); a `live` mode that cannot
+   * resolve (missing account, revoked credential, unpinned write, ...)
+   * comes back as `snapshot.status === 'error'` below, never a silent
+   * fallback to the local store — SPEC §7.10's explicit
+   * connectivity-error state. `snapshot.errorReason` (SPEC §7.10, issue
+   * #631) carries the structured `TrackerBackendResolutionError` kind
+   * when the failure is a resolution failure specifically; `RESOLUTION_ERROR_COPY`
+   * below is what renders it as more than a bare message.
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import type { Readable } from 'svelte/store';
-  import type { ConnectedAccount, TrackerMode } from '@loombox/protocol';
+  import type {
+    ConnectedAccount,
+    TrackerBackendResolutionErrorV1,
+    TrackerMode,
+  } from '@loombox/protocol';
   import {
     buildTrackerTypeRegistryV1,
     type TrackerRecordV1,
@@ -203,6 +206,21 @@
     client,
     refreshConnectedAccounts: () => client.refreshConnectedAccounts(),
   });
+
+  /** A short label per `TrackerBackendResolutionErrorV1.kind` (SPEC §7.10, issue #631) — the badge above `ErrorNotice`'s own message when `snapshot.errorReason` is set, mirroring `AccountPinPicker.svelte`'s identical "a `Badge` per resolution-error kind" convention for #227's five pin errors. `nativeMode` is included for exhaustiveness (the bridge dispatch never actually produces it for a live-mode snapshot) rather than leaving this map's keys out of sync with the wire union. */
+  const RESOLUTION_ERROR_BADGE: Record<TrackerBackendResolutionErrorV1['kind'], string> = {
+    nativeMode: 'Native mode',
+    accountNotConnected: 'Not connected',
+    accountPinRequired: 'Pin required',
+    accountPinMalformed: 'Malformed pin',
+    accountPinDangling: 'Dangling pin',
+    accountHostMismatch: 'Host mismatch',
+    accountAmbiguous: 'Ambiguous',
+    accountPinOptedOut: 'Opted out',
+    connectionPinMismatch: 'Mode/pin mismatch',
+    credentialUnavailable: 'Credential unavailable',
+    credentialSourceUnsupported: 'Unsupported credential',
+  };
 
   type ViewMode = 'kanban' | 'list';
   const VIEWS: { id: ViewMode; label: string; icon: IconName }[] = [
@@ -380,31 +398,26 @@
       />
     </div>
   {:else if snapshot.status === 'error' || timedOut}
-    <ErrorNotice
-      message={timedOut
-        ? "This project's tracker didn't answer in time. The node may be asleep, offline, or on an older relay."
-        : (snapshot.error ?? 'Failed to load the tracker.')}
-      retryable
-      onRetry={retry}
-    />
+    <div class="tracker-snapshot-error" data-testid="tracker-snapshot-error">
+      {#if !timedOut && snapshot.errorReason}
+        <Badge tone="danger" size="sm" dataTestId="tracker-snapshot-error-badge">
+          {RESOLUTION_ERROR_BADGE[snapshot.errorReason.kind]}
+        </Badge>
+      {/if}
+      <ErrorNotice
+        message={timedOut
+          ? "This project's tracker didn't answer in time. The node may be asleep, offline, or on an older relay."
+          : (snapshot.error ?? 'Failed to load the tracker.')}
+        retryable
+        onRetry={retry}
+      />
+    </div>
   {:else if snapshot.status === 'loading'}
     <p class="tracker-page-loading" data-testid="tracker-page-loading">
       <WovenLoader size="sm" label="Loading tracker" />
       Loading…
     </p>
   {:else}
-    {#if trackerMode.kind === 'live'}
-      <p class="tracker-live-gap-note" data-testid="tracker-live-gap-note">
-        <Badge tone="warning" size="sm">Not yet synced</Badge>
-        Live tracker sync isn't wired up end to end yet — what's below still comes from the local tracker,
-        not {trackerMode.provider === 'github' ? 'GitHub' : 'Jira'} (<a
-          href="https://github.com/fiorelorenzo/loombox/issues/631"
-          target="_blank"
-          rel="noreferrer">#631</a
-        >).
-      </p>
-    {/if}
-
     {#if snapshot.records.length === 0}
       <EmptyState message="This project has no tracker records yet.">
         {#snippet cta()}
@@ -488,20 +501,11 @@
     color: var(--color-text-secondary);
   }
 
-  .tracker-live-gap-note {
+  .tracker-snapshot-error {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-xs);
-    margin: 0 0 var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-surface-raised);
-    color: var(--color-text-secondary);
-  }
-
-  .tracker-live-gap-note a {
-    color: inherit;
   }
 
   .tracker-page-view-tabs {

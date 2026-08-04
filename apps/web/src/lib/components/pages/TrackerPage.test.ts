@@ -63,10 +63,14 @@ describe('TrackerPage tracker-mode loading gate (issue #631)', () => {
     resolve(githubMode);
     await waitFor(() => expect(screen.queryByTestId('tracker-mode-loading')).toBeNull());
 
-    // Settled: renders the live-mode gap note (issue #631's own remaining
-    // gap — see TrackerPage.svelte's doc comment), never the setup step.
+    // Settled: renders the SAME board a native project would (issue
+    // #631's bridge-dispatch closed this gap) — no gap note, no setup
+    // step, and the empty-state board is what a fresh live-mode
+    // project's ok/empty snapshot renders, same as it always has for
+    // native.
     expect(screen.queryByTestId('tracker-setup')).toBeNull();
-    expect(screen.getByTestId('tracker-live-gap-note')).toBeTruthy();
+    expect(screen.queryByTestId('tracker-live-gap-note')).toBeNull();
+    expect(screen.getByTestId('ui-empty-state')).toBeTruthy();
   });
 
   it('a project that has genuinely never chosen a mode renders the setup step only once loading settles, never immediately', async () => {
@@ -116,5 +120,74 @@ describe('TrackerPage tracker-mode loading gate (issue #631)', () => {
 
     await waitFor(() => expect(screen.queryByTestId('tracker-setup')).toBeNull());
     expect(setTrackerMode).toHaveBeenCalledWith('node-1', '/home/dev/proj', { kind: 'native' });
+  });
+});
+
+describe('TrackerPage tracker-snapshot connectivity-error state (SPEC §7.10, issue #631)', () => {
+  it('accountNotConnected renders a real error state with its own badge \u2014 never the removed gap note, never a silent board', async () => {
+    const errorState = writable<TrackerSnapshotState>({
+      status: 'error',
+      records: [],
+      types: [],
+      error:
+        "This project's tracker points at a connected account that no longer exists. Reconnect it, or change the tracker mode, in Settings.",
+      errorReason: { kind: 'accountNotConnected', connectionId: 'github:github.com:1111' },
+    });
+    render(TrackerPage, {
+      props: baseProps({
+        getTrackerMode: vi.fn(async () => githubMode),
+        trackerSnapshotFor: () => errorState,
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('tracker-snapshot-error')).toBeTruthy());
+    expect(screen.queryByTestId('tracker-live-gap-note')).toBeNull();
+    expect(screen.queryByTestId('tracker-setup')).toBeNull();
+    expect(screen.getByTestId('tracker-snapshot-error-badge').textContent).toContain(
+      'Not connected',
+    );
+    expect(screen.getByTestId('ui-error-notice').textContent).toContain('no longer exists');
+  });
+
+  it('credentialUnavailable renders its own distinct badge', async () => {
+    const errorState = writable<TrackerSnapshotState>({
+      status: 'error',
+      records: [],
+      types: [],
+      error:
+        "This project's tracker credential isn't available in this node's keyring. Reconnect the account in Settings.",
+      errorReason: { kind: 'credentialUnavailable', connectionId: 'github:github.com:1111' },
+    });
+    render(TrackerPage, {
+      props: baseProps({
+        getTrackerMode: vi.fn(async () => githubMode),
+        trackerSnapshotFor: () => errorState,
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('tracker-snapshot-error')).toBeTruthy());
+    expect(screen.getByTestId('tracker-snapshot-error-badge').textContent).toContain(
+      'Credential unavailable',
+    );
+    expect(screen.getByTestId('ui-error-notice').textContent).toContain("isn't available");
+  });
+
+  it('a plain message-only error (no resolveTrackerBackend involved \u2014 e.g. a corrupt native store) renders the message with no badge', async () => {
+    const errorState = writable<TrackerSnapshotState>({
+      status: 'error',
+      records: [],
+      types: [],
+      error: 'native tracker store is corrupt',
+    });
+    render(TrackerPage, {
+      props: baseProps({
+        getTrackerMode: vi.fn(async () => ({ kind: 'native' }) as TrackerMode),
+        trackerSnapshotFor: () => errorState,
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('tracker-snapshot-error')).toBeTruthy());
+    expect(screen.queryByTestId('tracker-snapshot-error-badge')).toBeNull();
+    expect(screen.getByTestId('ui-error-notice').textContent).toContain('corrupt');
   });
 });

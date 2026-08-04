@@ -682,6 +682,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     sendJson(connection.socket, message);
   }
 
+  /** SPEC §7.26, issue #221/#631: `connected_account_list_request`'s reply, shared by both `handleClientMessage` and `handleNodeMessage` — a node needs its own account's registry exactly like a client does (`@loombox/node`'s `resolveTrackerBackend`, issue #631, is the first node-side consumer), scoped identically to `connection.accountId` either way. One implementation rather than two near-identical case bodies is what keeps a future change here (an added field, a different scoping rule) from landing in only one of the two call sites. */
+  async function sendConnectedAccountList(connection: Connection): Promise<void> {
+    const accounts = await store.connectedAccounts.listForAccount(connection.accountId);
+    const response: ConnectedAccountList = {
+      type: 'connected_account_list',
+      protocolVersion: PROTOCOL_V1,
+      accounts: [...accounts],
+    };
+    sendDirect(connection, response);
+  }
+
   // #97: publishing goes through the fan-out backend rather than iterating
   // `registry.clients` directly — with the default in-process backend this
   // is exactly the old direct-iteration fan-out (see
@@ -1542,6 +1553,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingAccountRequest(message.requestId);
         return;
       }
+      case 'connected_account_list_request': {
+        // SPEC §7.26, issue #631: the node-side counterpart of the client
+        // case below — same account-scoped read (`@loombox/node`'s
+        // `resolveTrackerBackend` is the first caller, on handshake), so
+        // both dispatch through the identical `sendConnectedAccountList`.
+        await sendConnectedAccountList(connection);
+        return;
+      }
       default:
         app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
     }
@@ -1611,13 +1630,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // `session_list_request` above — never another account's rows, and
         // never a token (the store only ever holds `ConnectedAccount`s,
         // which have no token field to leak in the first place).
-        const accounts = await store.connectedAccounts.listForAccount(connection.accountId);
-        const response: ConnectedAccountList = {
-          type: 'connected_account_list',
-          protocolVersion: PROTOCOL_V1,
-          accounts: [...accounts],
-        };
-        sendDirect(connection, response);
+        await sendConnectedAccountList(connection);
         return;
       }
       case 'session_resume': {

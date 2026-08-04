@@ -157,6 +157,34 @@ describe('connected_account_announce / connected_account_list_request (SPEC §7.
     expect(response.accounts[0]?.secretRef).toBe(account.secretRef);
   });
 
+  it('the announcing node itself can also request the list — issue #631\u2019s resolveTrackerBackend needs this, since the registry lives relay-side and a node has no independent copy', async () => {
+    const { url } = await startTestRelay();
+
+    const { socket: nodeSocket } = await initConnection(url, {
+      role: 'node',
+      deviceId: 'node-1',
+      authToken: 'acct_1',
+    });
+    const account = githubAccount();
+    const announce: ConnectedAccountAnnounce = {
+      type: 'connected_account_announce',
+      protocolVersion: PROTOCOL_V1,
+      account,
+    };
+    nodeSocket.send(JSON.stringify(announce));
+    await sleep(50);
+
+    const listRequest: ConnectedAccountListRequest = {
+      type: 'connected_account_list_request',
+      protocolVersion: PROTOCOL_V1,
+    };
+    nodeSocket.send(JSON.stringify(listRequest));
+    const response = (await nextMessage(nodeSocket)) as unknown as ConnectedAccountList;
+
+    expect(response.type).toBe('connected_account_list');
+    expect(response.accounts).toEqual([account]);
+  });
+
   it('boundary: a smuggled token field never reaches the store or a listing client — the wire schema strips it', async () => {
     const { url, store } = await startTestRelay();
 

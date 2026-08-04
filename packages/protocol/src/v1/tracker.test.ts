@@ -6,6 +6,7 @@ import {
   jiraTarget,
   parseTrackerMode,
   safeParseTrackerMode,
+  trackerBackendResolutionErrorV1,
   trackerMode,
   trackerModeResponse,
   trackerModeSetRequest,
@@ -209,5 +210,41 @@ describe('tracker mode sync messages (issue #631)', () => {
       mode: { kind: 'native' },
     });
     expect(parsed.mode).toEqual({ kind: 'native' });
+  });
+});
+
+describe('trackerBackendResolutionErrorV1 (SPEC §7.10, issue #631)', () => {
+  it('parses every kind resolveTrackerBackend can produce, field-for-field', () => {
+    const cases = [
+      { kind: 'nativeMode' },
+      { kind: 'accountNotConnected', connectionId: 'conn-1' },
+      { kind: 'accountPinRequired', capability: 'github' },
+      { kind: 'accountPinMalformed', capability: 'github', pinnedAccountId: 'not-real' },
+      { kind: 'accountPinDangling', capability: 'github', pinnedAccountId: 'gone' },
+      {
+        kind: 'accountHostMismatch',
+        capability: 'github',
+        pinnedAccountId: 'acct-1',
+        expectedHost: 'github.com',
+        actualHost: 'ghe.example.com',
+      },
+      { kind: 'accountAmbiguous', capability: 'github', candidateAccountIds: ['a', 'b'] },
+      { kind: 'accountPinOptedOut', capability: 'github' },
+      { kind: 'connectionPinMismatch', connectionId: 'conn-1', pinnedAccountId: 'conn-2' },
+      { kind: 'credentialUnavailable', connectionId: 'conn-1' },
+      {
+        kind: 'credentialSourceUnsupported',
+        connectionId: 'conn-1',
+        credentialSource: 'oauth_3lo',
+      },
+    ];
+    for (const value of cases) {
+      expect(trackerBackendResolutionErrorV1.parse(value)).toEqual(value);
+    }
+  });
+
+  it('rejects an unknown kind and a kind missing its own required fields', () => {
+    expect(() => trackerBackendResolutionErrorV1.parse({ kind: 'somethingElse' })).toThrow();
+    expect(() => trackerBackendResolutionErrorV1.parse({ kind: 'accountNotConnected' })).toThrow();
   });
 });

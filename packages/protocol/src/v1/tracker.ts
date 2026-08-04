@@ -95,6 +95,64 @@ export function safeParseTrackerMode(data: unknown): z.SafeParseReturnType<unkno
   return trackerMode.safeParse(data);
 }
 
+/**
+ * Every way `resolveTrackerBackend` (`@loombox/node`'s
+ * `tracker-backend-composition.ts`, issue #631) can fail to compose a
+ * working `TrackerBackend` for a `live` mode, mirrored onto the wire
+ * field-for-field so `tracker_snapshot_response`/`tracker_write_response`
+ * can carry it as `trackerSnapshotErrorV1`/`trackerWriteErrorV1`'s own
+ * optional `reason` (see `tracker-records.ts`'s doc comment on those two
+ * schemas for why a bare `message` string cannot express this on its
+ * own) — the Tracker page switches on `kind`, never string-matches
+ * `message`, mirroring `accountPinResolveOutcome`'s own identical "the
+ * wire mirrors this package's own typed error union" convention for
+ * #227's five pin-resolution errors. `nativeMode` is included for
+ * completeness (the bridge dispatch itself never calls the resolver for
+ * a native-mode project, so a client should never actually observe this
+ * variant) rather than leaving the two unions structurally different for
+ * one member.
+ */
+export const trackerBackendResolutionErrorV1 = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('nativeMode') }),
+  z.object({ kind: z.literal('accountNotConnected'), connectionId: z.string().min(1) }),
+  z.object({ kind: z.literal('accountPinRequired'), capability: z.string().min(1) }),
+  z.object({
+    kind: z.literal('accountPinMalformed'),
+    capability: z.string().min(1),
+    pinnedAccountId: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('accountPinDangling'),
+    capability: z.string().min(1),
+    pinnedAccountId: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('accountHostMismatch'),
+    capability: z.string().min(1),
+    pinnedAccountId: z.string().min(1),
+    expectedHost: z.string().min(1),
+    actualHost: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('accountAmbiguous'),
+    capability: z.string().min(1),
+    candidateAccountIds: z.array(z.string().min(1)),
+  }),
+  z.object({ kind: z.literal('accountPinOptedOut'), capability: z.string().min(1) }),
+  z.object({
+    kind: z.literal('connectionPinMismatch'),
+    connectionId: z.string().min(1),
+    pinnedAccountId: z.string().min(1),
+  }),
+  z.object({ kind: z.literal('credentialUnavailable'), connectionId: z.string().min(1) }),
+  z.object({
+    kind: z.literal('credentialSourceUnsupported'),
+    connectionId: z.string().min(1),
+    credentialSource: z.string().min(1),
+  }),
+]);
+export type TrackerBackendResolutionErrorV1 = z.infer<typeof trackerBackendResolutionErrorV1>;
+
 /*
  * ---------------------------------------------------------------------------
  * Syncing the mode to the node (issue #631)
