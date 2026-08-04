@@ -1,5 +1,16 @@
 # @loombox/supervisor
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [79f9f19]
+- Updated dependencies [29da402]
+  - @loombox/providers-core@0.3.0
+  - @loombox/providers-claude@0.0.3
+  - @loombox/providers-codex@0.0.3
+  - @loombox/providers-ohmypi@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,5 +1,22 @@
 # @loombox/desktop
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [535a2ee]
+- Updated dependencies [e89b263]
+- Updated dependencies [a006a1e]
+- Updated dependencies [a3c21b7]
+- Updated dependencies [2592c10]
+- Updated dependencies [99e3583]
+- Updated dependencies [7fc92d2]
+- Updated dependencies [344b4c7]
+- Updated dependencies [934301d]
+- Updated dependencies [e05423a]
+- Updated dependencies [635e20d]
+  - @loombox/node@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes
