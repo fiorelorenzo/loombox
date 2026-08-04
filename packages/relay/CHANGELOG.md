@@ -1,5 +1,13 @@
 # @loombox/relay
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [7606627]
+- Updated dependencies [ebcf227]
+  - @loombox/protocol@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

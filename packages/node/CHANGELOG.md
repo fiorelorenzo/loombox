@@ -1,5 +1,54 @@
 # @loombox/node
 
+## 0.4.0
+
+### Minor Changes
+
+- ebcf227: Terminal dock: the terminal's own card and duplicated "Terminal" titlebar are gone (issue #669, design spec §4 D1-2/D2-2). One thin bar remains at the top of the dock, carrying live connection status, the session's real working directory, the shell running the active PTY, and a new-tab control that opens genuinely additional terminals for the same session, each kept alive when you switch away from it. `cwd`/`shell` are real values reported by the node (`terminal_opened`'s payload gained these two fields) — never guessed client-side.
+
+  The dock itself moved to `--color-rail` and dropped its hairline border against the canvas, so the seam is a colour step instead of a line; the resize handle stays discoverable on hover and still works from the keyboard.
+
+### Patch Changes
+
+- 7606627: Group the tracker kanban board into three fixed workflow-category columns instead of one column per raw status
+
+  The board rendered one column per distinct `workflowStatus` value, sorted
+  alphabetically — "Done" sorted ahead of "In progress"/"Todo", reading the
+  workflow backwards, and a status with zero records never rendered a
+  column at all, so the board changed shape as work moved and nothing
+  could be dragged into an empty state (issue #651, superseded in scope by
+  v7 decision F4-2, `2026-08-04-cockpit-v7-decisions.md` §6).
+
+  The board now always renders exactly three columns, in workflow order —
+  To Do / In Progress / Done — derived from the tracker rather than
+  hand-written per component: `@loombox/protocol` gets
+  `resolveWorkflowCategory`/`groupByWorkflowCategory`, which collapse
+  loombox's own local status vocabulary into the same
+  `new`/`indeterminate`/`done` ids Jira's `statusCategory` already uses
+  verbatim. `TrackerBoard.svelte`/`TrackerCard.svelte` group and move
+  records by category id, never a raw status string, and an empty category
+  still renders its column and still accepts a drop. Three fixed `18rem`
+  columns fit any real laptop width with no horizontal scroller — the
+  six-raw-status board this replaces could overflow one (1778px of content
+  measured in a 1080px container).
+
+  `@loombox/node`'s Jira and GitHub `TrackerBackend`s gain the matching
+  `workflowCategory` field on every `TrackerItemLive` they return
+  (`deriveJiraWorkflowCategory` reads Jira's own `status.statusCategory.key`
+  verbatim; `deriveGithubWorkflowCategory` maps GitHub's `open`/`closed`
+  state, since GitHub has no third state of its own). Neither is reachable
+  by the board yet — `NodeDaemon.readTrackerSnapshotForBridge` always reads
+  the native store regardless of `TrackerMode` (issue #631) — so only the
+  local/native half of this is proven live end to end; the Jira/GitHub
+  category derivation is unit-tested against realistic API payload
+  fixtures pending #631.
+
+- Updated dependencies [7606627]
+- Updated dependencies [ebcf227]
+  - @loombox/protocol@0.4.0
+  - @loombox/crypto@0.0.4
+  - @loombox/shared@0.2.1
+
 ## 0.3.0
 
 ### Minor Changes

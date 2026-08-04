@@ -1,5 +1,13 @@
 # @loombox/crypto
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [7606627]
+- Updated dependencies [ebcf227]
+  - @loombox/protocol@0.4.0
+
 ## 0.0.3
 
 ### Patch Changes
