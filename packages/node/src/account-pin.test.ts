@@ -4,14 +4,18 @@ import { connectedAccountSecretRef, type ConnectedAccount } from '@loombox/proto
 
 import {
   AccountHostMismatchError,
+  AccountNotPresentOnNodeError,
   AccountPinDanglingError,
   AccountPinMalformedError,
   AccountPinRequiredError,
   AmbiguousAccountError,
+  ensureAccountPresentOnThisNode,
   resolveAccountForRead,
   resolveAccountForWrite,
+  resolveAccountForWriteOnThisNode,
   type AccountPinMap,
   type AccountResolutionTarget,
+  type NodePresenceCheck,
 } from './account-pin';
 
 function account(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
@@ -302,5 +306,90 @@ describe('resolveAccountForWrite', () => {
         target: GITHUB_COM,
       }),
     ).toThrow(AccountHostMismatchError);
+  });
+});
+
+/** A `NodePresenceCheck` stub keyed on `secretRef` — never touches a real keyring, mirroring how `NodeAccountPresence` itself is exercised in `account-presence.test.ts`. */
+function presenceOf(presentSecretRefs: readonly string[]): NodePresenceCheck {
+  return {
+    async isPresent(account) {
+      return presentSecretRefs.includes(account.secretRef);
+    },
+  };
+}
+
+describe('ensureAccountPresentOnThisNode (SPEC §7.26 "Node-locality", issue #228)', () => {
+  it('resolves without throwing when the presence check reports the account present', async () => {
+    await expect(
+      ensureAccountPresentOnThisNode(octocat, 'github', presenceOf([octocat.secretRef])),
+    ).resolves.toBeUndefined();
+  });
+
+  it('throws AccountNotPresentOnNodeError when the presence check reports the account absent', async () => {
+    await expect(ensureAccountPresentOnThisNode(octocat, 'github', presenceOf([]))).rejects.toThrow(
+      AccountNotPresentOnNodeError,
+    );
+  });
+});
+
+describe('resolveAccountForWriteOnThisNode (SPEC §7.26 "Node-locality", issue #228)', () => {
+  it('resolves when the pinned account is present on this node', async () => {
+    const pins: AccountPinMap = { github: octocat.id };
+    const resolved = await resolveAccountForWriteOnThisNode(
+      { pins, capability: 'github', accounts: [octocat, otherGithub], target: GITHUB_COM },
+      presenceOf([octocat.secretRef]),
+    );
+    expect(resolved).toBe(octocat);
+  });
+
+  it('throws AccountNotPresentOnNodeError — a distinct outcome from "no pin" and from "ambiguous" — when the pinned account resolves but this node holds no local secret for it', async () => {
+    const pins: AccountPinMap = { github: octocat.id };
+    await expect(
+      resolveAccountForWriteOnThisNode(
+        { pins, capability: 'github', accounts: [octocat, otherGithub], target: GITHUB_COM },
+        presenceOf([]), // otherGithub's secret is present, but octocat's — the pinned one — is not
+      ),
+    ).rejects.toThrow(AccountNotPresentOnNodeError);
+  });
+
+  it("never reaches the presence check at all — #227's hard-fail cases stay intact — for an absent (unconfigured) pin", async () => {
+    let presenceChecked = false;
+    await expect(
+      resolveAccountForWriteOnThisNode(
+        { pins: {}, capability: 'github', accounts: [octocat], target: GITHUB_COM },
+        {
+          async isPresent() {
+            presenceChecked = true;
+            return true;
+          },
+        },
+      ),
+    ).rejects.toThrow(AccountPinRequiredError);
+    expect(presenceChecked).toBe(false);
+  });
+
+  it('still hard-fails on a host mismatch before ever consulting node-presence (#227 unchanged)', async () => {
+    const pins: AccountPinMap = { github: octocat.id };
+    await expect(
+      resolveAccountForWriteOnThisNode(
+        {
+          pins,
+          capability: 'github',
+          accounts: [octocat],
+          target: { provider: 'github', host: 'github.example.com' },
+        },
+        presenceOf([octocat.secretRef]),
+      ),
+    ).rejects.toThrow(AccountHostMismatchError);
+  });
+
+  it('still hard-fails on a dangling pin before ever consulting node-presence (#227 unchanged)', async () => {
+    const pins: AccountPinMap = { github: 'github:github.com:404404' };
+    await expect(
+      resolveAccountForWriteOnThisNode(
+        { pins, capability: 'github', accounts: [octocat], target: GITHUB_COM },
+        presenceOf(['anything']),
+      ),
+    ).rejects.toThrow(AccountPinDanglingError);
   });
 });

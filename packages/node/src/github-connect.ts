@@ -3,9 +3,11 @@
  * (issue #222): `./github-device-flow.ts`'s RFC 8628 grant against GitHub,
  * `./github-identity.ts`'s `GET /user` identity resolution keyed on the
  * numeric id, a write of the resulting token to this node's OS keyring
- * (`./keyring.ts`, same abstraction and file-fallback discipline
- * `./mcp-secrets.ts` already uses for per-project MCP secret values), and
- * the metadata-only `ConnectedAccount` that write's `secretRef` names.
+ * (`./connected-account-keyring.ts`'s shared binding — the same one
+ * `./jira-connect.ts` and this package's node-presence check,
+ * `./account-presence.ts`, both reuse rather than each inventing their
+ * own), and the metadata-only `ConnectedAccount` that write's `secretRef`
+ * names.
  *
  * **The token never leaves {@link GithubConnectService.connect}'s local
  * scope except into the keyring.** It is not a field of the returned
@@ -18,9 +20,6 @@
  * holds no relay connection itself and invents no second one.
  * --------------------------------------------------------------------- */
 
-import path from 'node:path';
-
-import { deriveSharedSecretBits, importAesGcmKey } from '@loombox/crypto';
 import {
   composeConnectedAccountId,
   connectedAccount,
@@ -29,19 +28,19 @@ import {
 } from '@loombox/protocol';
 
 import {
+  CONNECTED_ACCOUNT_KEYRING_SERVICE,
+  createConnectedAccountKeyring,
+  type ConnectedAccountKeyringOptions,
+} from './connected-account-keyring';
+import {
   GITHUB_CONNECT_SCOPES,
   runGithubDeviceFlow,
   type GithubDeviceCodeInfo,
 } from './github-device-flow';
 import { resolveGithubIdentity } from './github-identity';
-import { NodeIdentityStore } from './identity';
-import { FileKeyringBackend, NodeKeyring, type KeyringBackend } from './keyring';
-import { defaultNodeStateDir } from './ssh/verify-and-persist';
+import type { NodeKeyring } from './keyring';
 
 const GITHUB_HOST = 'github.com';
-const SECRETS_FILE_NAME = 'github-connect-secrets.local.json';
-/** Every connected GitHub account's token shares this one `NodeKeyring` service; `account` is the per-account `secretRef` computed by `@loombox/protocol`'s `connectedAccountSecretRef`. */
-const SECRET_KEYRING_SERVICE = 'loombox-connected-account';
 
 /**
  * The env var a deployment sets its public GitHub OAuth App client id
@@ -86,25 +85,17 @@ function deriveGithubCapabilities(grantedScopes: readonly string[]): string[] {
   return capabilities;
 }
 
-export interface GithubConnectServiceOptions {
-  /** Injectable for tests (`os.mkdtemp()`); defaults to `defaultNodeStateDir()`, shared with every other node store. */
-  stateDir?: string;
+export interface GithubConnectServiceOptions extends ConnectedAccountKeyringOptions {
   /**
-   * Injectable for tests: overrides how the OS-native keyring backend is
-   * probed for this service's token storage (issue #118). Defaults to
-   * `keyring.ts`'s `createOsKeyringBackend`. Pass `async () => undefined`
-   * to force the 0600-file fallback deterministically (see
-   * `keyring.test.ts`).
+   * Called after a token write (`connect`) or delete
+   * (`deleteAccessToken`) changes what this node's keyring holds for
+   * `secretRef` — the hook `./account-presence.ts`'s `NodeAccountPresence`
+   * (issue #228) binds to invalidate its cached presence answer for that
+   * account, so a connect or disconnect on this node is never followed by
+   * a stale "present"/"absent" read. Optional; omitted by tests and by
+   * any caller that doesn't hold a presence cache.
    */
-  osKeyringBackendFactory?: () => Promise<KeyringBackend | undefined>;
-  /**
-   * Where the file-fallback's AES-GCM encryption key comes from: a
-   * self-ECDH derivation over this node's own identity keypair, exactly
-   * like `./mcp-secrets.ts`'s `NodeMcpSecretManager`. Defaults to a fresh
-   * `NodeIdentityStore({ stateDir })`; injectable so a caller that already
-   * holds one doesn't force a second independent load.
-   */
-  identityStore?: NodeIdentityStore;
+  onCredentialChanged?: (secretRef: string) => void;
 }
 
 export interface ConnectGithubAccountOptions {
@@ -130,24 +121,11 @@ export interface ConnectGithubAccountOptions {
  */
 export class GithubConnectService {
   private readonly keyring: NodeKeyring;
+  private readonly onCredentialChanged: ((secretRef: string) => void) | undefined;
 
   constructor(options: GithubConnectServiceOptions = {}) {
-    const stateDir = options.stateDir ?? defaultNodeStateDir();
-    const identityStore = options.identityStore ?? new NodeIdentityStore({ stateDir });
-    this.keyring = new NodeKeyring({
-      osBackendFactory: options.osKeyringBackendFactory,
-      fileBackend: new FileKeyringBackend({
-        filePath: path.join(stateDir, SECRETS_FILE_NAME),
-        encryptionKey: async () => {
-          const identity = await identityStore.loadOrCreate();
-          const bits = await deriveSharedSecretBits(
-            identity.keyPair.privateKey,
-            identity.keyPair.publicKey,
-          );
-          return importAesGcmKey(bits);
-        },
-      }),
-    });
+    this.keyring = createConnectedAccountKeyring(options);
+    this.onCredentialChanged = options.onCredentialChanged;
   }
 
   /**
@@ -181,7 +159,8 @@ export class GithubConnectService {
 
     // The token touches this one keyring write and nothing else — it is
     // never assigned to any field of the ConnectedAccount built below.
-    await this.keyring.set(SECRET_KEYRING_SERVICE, secretRef, flow.accessToken);
+    await this.keyring.set(CONNECTED_ACCOUNT_KEYRING_SERVICE, secretRef, flow.accessToken);
+    this.onCredentialChanged?.(secretRef);
 
     const grantedScopes = flow.grantedScope.length > 0 ? flow.grantedScope.split(',') : [];
     const now = Date.now();
@@ -208,11 +187,12 @@ export class GithubConnectService {
 
   /** This account's stored token, or `undefined` if never connected (or since disconnected). Never reaches the relay or a client — a purely local read for whichever node needs to actually call the GitHub API on this account's behalf. */
   async getAccessToken(account: Pick<ConnectedAccount, 'secretRef'>): Promise<string | undefined> {
-    return this.keyring.get(SECRET_KEYRING_SERVICE, account.secretRef);
+    return this.keyring.get(CONNECTED_ACCOUNT_KEYRING_SERVICE, account.secretRef);
   }
 
   /** Deletes a connected account's stored token — the local half of disconnecting it (the metadata row itself is the caller's/relay's concern, not this service's). */
   async deleteAccessToken(account: Pick<ConnectedAccount, 'secretRef'>): Promise<void> {
-    await this.keyring.delete(SECRET_KEYRING_SERVICE, account.secretRef);
+    await this.keyring.delete(CONNECTED_ACCOUNT_KEYRING_SERVICE, account.secretRef);
+    this.onCredentialChanged?.(account.secretRef);
   }
 }
