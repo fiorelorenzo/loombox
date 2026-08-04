@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from '@loombox/providers-core/browser';
 import { createInMemoryMcpServerConfigStorage } from '$lib/mcp-server-store';
 import { createInMemoryPluginConfigStorage } from '$lib/plugin-store';
-import { createInMemoryTrackerModeStorage } from '$lib/tracker-mode-store';
 import ProjectConfigPanel from './ProjectConfigPanel.svelte';
 
 afterEach(() => cleanup());
@@ -13,39 +12,17 @@ afterEach(() => cleanup());
 const preset = MCP_SERVER_PRESET_CATALOG.find((p) => p.config.name === 'filesystem')!;
 
 describe('ProjectConfigPanel (issue #366)', () => {
-  it('mounts the tracker, MCP-server, and plugin config panels for the given project', () => {
+  it('mounts the MCP-server and plugin config panels for the given project', () => {
     render(ProjectConfigPanel, {
       props: {
         projectPath: '/tmp/project',
         mcpStorage: createInMemoryMcpServerConfigStorage(),
         pluginStorage: createInMemoryPluginConfigStorage(),
-        trackerStorage: createInMemoryTrackerModeStorage(),
       },
     });
 
-    expect(screen.getByTestId('tracker-config-panel')).toBeTruthy();
     expect(screen.getByTestId('mcp-config-panel')).toBeTruthy();
     expect(screen.getByTestId('plugin-config-panel')).toBeTruthy();
-  });
-
-  it('saving a tracker mode round-trips through its own storage and calls onTrackerModeChange, independently of the other two panels', async () => {
-    const trackerStorage = createInMemoryTrackerModeStorage();
-    const calls: unknown[] = [];
-    render(ProjectConfigPanel, {
-      props: {
-        projectPath: '/tmp/project',
-        mcpStorage: createInMemoryMcpServerConfigStorage(),
-        pluginStorage: createInMemoryPluginConfigStorage(),
-        trackerStorage,
-        onTrackerModeChange: (mode) => calls.push(mode),
-      },
-    });
-
-    await fireEvent.click(screen.getByTestId('tracker-mode-native'));
-    await fireEvent.click(screen.getByTestId('tracker-save'));
-
-    expect(trackerStorage.get()).toEqual({ kind: 'native' });
-    expect(calls).toEqual([{ kind: 'native' }]);
   });
 
   it('quick-adding an MCP preset produces a server record in the panel and its own storage', async () => {

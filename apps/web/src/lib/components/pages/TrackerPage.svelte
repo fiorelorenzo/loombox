@@ -26,9 +26,42 @@
    * already-subscribed value as a prop, since it owns its own bounded-wait
    * timeout (issue #582; see `TIMEOUT_MS` below) the same way that
    * component owns its own `OPEN_TIMEOUT_MS`.
+   *
+   * F1-1/F2-2 (issue #672; spec §6) folded the per-project `TrackerMode`
+   * picker into this page, reading `tracker-mode-store.ts` (#209) directly
+   * (`trackerModeStorage`/`trackerMode` below) so this page can branch on
+   * it — `Config`'s old Tracker section is deleted outright, not mirrored
+   * (F2-1 was not picked), so this is now the ONLY place a project's
+   * tracker mode is shown or changed. No mode saved yet: the page's own
+   * empty state stops being blank and becomes `TrackerConfigPanel`'s own
+   * setup form, rendered inline (F1-1) — the exact surface issue #220
+   * already built, just relocated. A mode already saved: the header's
+   * `actions` cluster gets a compact "what is this / change what this is"
+   * control instead (F2-2), the same `TrackerConfigPanel` in its
+   * `presentation="header"` shape (a `Dialog`, not an inline form — a
+   * page-header bar has no room to grow one). `accountConnect` threads
+   * this page's own already-known `nodeId` (the session's own node, so
+   * unlike Settings' accounts section there is no node to pick) into that
+   * panel's "Connect GitHub"/"Connect Jira" empty-state CTA.
+   *
+   * **The #631 gap, stated explicitly rather than shipped silently**:
+   * `NodeDaemon.readTrackerSnapshotForBridge`
+   * (`packages/node/src/node-daemon.ts:2876-2891`) reads the local native
+   * store unconditionally and never consults `TrackerMode` — a project
+   * switched to `live` still shows local records, with no error. This
+   * issue does not wait on #631 (a node-side fix, out of scope for a
+   * client surface issue) and ships the picker anyway: {@link
+   * trackerMode} is real, persisted, and drives the header/empty-state
+   * correctly, but the record data below it does not yet follow a `live`
+   * choice. Rather than let that "look like it works and not" silently
+   * (this file's own issue explicitly forbids that), `.tracker-live-gap-
+   * note` renders whenever `trackerMode.kind === 'live'` and a snapshot has
+   * actually loaded, naming #631 directly instead of pretending the synced
+   * board is real.
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import type { Readable } from 'svelte/store';
+  import type { ConnectedAccount, TrackerMode } from '@loombox/protocol';
   import {
     buildTrackerTypeRegistryV1,
     type TrackerRecordV1,
@@ -36,12 +69,17 @@
     type TrackerTypeDefinitionV1,
   } from '@loombox/protocol';
   import type { TrackerSnapshotState } from '$lib/relay-client';
+  import { createLocalStorageTrackerModeStorage } from '$lib/tracker-mode-store';
   import { Icon, type IconName } from '../icons';
+  import type { GithubConnectClient } from '../GithubConnectFlow.svelte';
+  import type { JiraConnectClient } from '../JiraConnectForm.svelte';
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ErrorNotice from '../ui/ErrorNotice.svelte';
+  import Badge from '../ui/Badge.svelte';
   import WovenLoader from '../WovenLoader.svelte';
   import TrackerBoard from '../TrackerBoard.svelte';
+  import TrackerConfigPanel, { type AccountConnectCapability } from '../TrackerConfigPanel.svelte';
   import TrackerListView from '../TrackerListView.svelte';
   import TrackerRecordDialog, { type TrackerRecordClient } from '../TrackerRecordDialog.svelte';
   import TrackerManageTypesDialog, {
@@ -49,8 +87,8 @@
   } from '../TrackerManageTypesDialog.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. */
-  export interface TrackerPageClient {
+  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. Also extends `GithubConnectClient`/`JiraConnectClient` and carries `refreshConnectedAccounts` (issue #672): `RelayClient` already implements all three (issue #230/#221), and this page's own `accountConnect` prop to `TrackerConfigPanel` needs exactly that surface — see the file doc comment. */
+  export interface TrackerPageClient extends GithubConnectClient, JiraConnectClient {
     trackerSnapshotFor: (sessionId: string) => Readable<TrackerSnapshotState>;
     reloadTrackerSnapshot: (sessionId: string) => void;
     createTrackerRecord: (
@@ -71,14 +109,35 @@
       sessionId: string,
       type: { id: string; label: string; roles: Partial<Record<TrackerRoleV1, string>> },
     ) => Promise<TrackerTypeDefinitionV1>;
+    refreshConnectedAccounts: () => void;
   }
 
   interface Props {
     client: TrackerPageClient;
     sessionId: string;
+    /** Keys `tracker-mode-store.ts`'s storage, same as `ProjectConfigPanel`'s old `projectPath` prop did. */
+    projectPath: string;
+    /** The session's own node (SPEC §7.26's node-locality) — the node a fresh GitHub/Jira connect from this page's header/empty-state runs on. `undefined` degrades to `GithubConnectFlow`/`JiraConnectForm`'s own "select a node" message rather than hiding the connect buttons. */
+    nodeId: string | undefined;
+    /** `RelayClient.connectedAccounts`'s latest snapshot — forwarded straight to `TrackerConfigPanel`, same "this page fetches nothing of its own" split every prop here already follows. */
+    connectedAccounts?: readonly ConnectedAccount[];
   }
 
-  const { client, sessionId }: Props = $props();
+  const { client, sessionId, projectPath, nodeId, connectedAccounts = [] }: Props = $props();
+
+  /** This project's saved tracker mode (issue #672) — `undefined` means never chosen, which is what puts this page into its own setup state (F1-1) instead of the board/list. `trackerModeStorage` is `$derived` off `projectPath` (a different project has its own storage key entirely, same `TrackerModeStorage` shape `TrackerConfigPanel`'s own default construction uses). `trackerMode` is a writable `$derived` off it: reading `projectPath`/`trackerModeStorage` keeps it in sync with the prop the normal way, and {@link handleModeChange} reassigning it directly (Svelte 5's writable-derived override) is exactly what lets a just-saved mode take effect immediately, without a separate `$state`/`$effect` pair to keep in sync by hand. */
+  const trackerModeStorage = $derived(createLocalStorageTrackerModeStorage(projectPath));
+  let trackerMode = $derived<TrackerMode | undefined>(trackerModeStorage.get());
+
+  function handleModeChange(mode: TrackerMode): void {
+    trackerMode = mode;
+  }
+
+  const accountConnect = $derived<AccountConnectCapability>({
+    nodeId,
+    client,
+    refreshConnectedAccounts: () => client.refreshConnectedAccounts(),
+  });
 
   type ViewMode = 'kanban' | 'list';
   const VIEWS: { id: ViewMode; label: string; icon: IconName }[] = [
@@ -213,14 +272,38 @@
 </script>
 
 {#snippet actions()}
-  <Button variant="secondary" size="sm" onclick={() => (manageTypesDialogOpen = true)}>
-    Manage types
-  </Button>
-  <Button variant="primary" size="sm" onclick={openCreateDialog}>New record</Button>
+  {#if trackerMode !== undefined}
+    <TrackerConfigPanel
+      presentation="header"
+      {projectPath}
+      storage={trackerModeStorage}
+      {connectedAccounts}
+      {accountConnect}
+      onChange={handleModeChange}
+    />
+    <Button variant="secondary" size="sm" onclick={() => (manageTypesDialogOpen = true)}>
+      Manage types
+    </Button>
+    <Button variant="primary" size="sm" onclick={openCreateDialog}>New record</Button>
+  {/if}
 {/snippet}
 
 <PageLayout title="Tracker" testid="tracker-page" {actions}>
-  {#if snapshot.status === 'error' || timedOut}
+  {#if trackerMode === undefined}
+    <div class="tracker-setup" data-testid="tracker-setup">
+      <p class="tracker-setup-intro">
+        This project has no tracker set up yet. Connect a GitHub or Jira project, or use loombox's
+        own local tracker — chosen right here.
+      </p>
+      <TrackerConfigPanel
+        {projectPath}
+        storage={trackerModeStorage}
+        {connectedAccounts}
+        {accountConnect}
+        onChange={handleModeChange}
+      />
+    </div>
+  {:else if snapshot.status === 'error' || timedOut}
     <ErrorNotice
       message={timedOut
         ? "This project's tracker didn't answer in time. The node may be asleep, offline, or on an older relay."
@@ -233,47 +316,61 @@
       <WovenLoader size="sm" label="Loading tracker" />
       Loading…
     </p>
-  {:else if snapshot.records.length === 0}
-    <EmptyState message="This project has no tracker records yet.">
-      {#snippet cta()}
-        <Button variant="primary" onclick={openCreateDialog}>New record</Button>
-      {/snippet}
-    </EmptyState>
   {:else}
-    <div
-      class="tracker-page-view-tabs"
-      role="radiogroup"
-      aria-label="Tracker view"
-      bind:this={viewTabsEl}
-    >
-      {#each VIEWS as view (view.id)}
-        <Button
-          variant="ghost"
-          size="sm"
-          class={`tracker-page-view-tab ${viewMode === view.id ? 'selected' : ''}`.trim()}
-          role="radio"
-          ariaChecked={viewMode === view.id}
-          tabindex={viewMode === view.id ? 0 : -1}
-          ariaLabel={view.label}
-          onclick={() => (viewMode = view.id)}
-          onkeydown={handleViewKeydown}
-          dataTestId={`tracker-view-${view.id}`}
-        >
-          <Icon name={view.icon} />
-          {view.label}
-        </Button>
-      {/each}
-    </div>
+    {#if trackerMode.kind === 'live'}
+      <p class="tracker-live-gap-note" data-testid="tracker-live-gap-note">
+        <Badge tone="warning" size="sm">Not yet synced</Badge>
+        Live tracker sync isn't wired up end to end yet — what's below still comes from the local tracker,
+        not {trackerMode.provider === 'github' ? 'GitHub' : 'Jira'} (<a
+          href="https://github.com/fiorelorenzo/loombox/issues/631"
+          target="_blank"
+          rel="noreferrer">#631</a
+        >).
+      </p>
+    {/if}
 
-    {#if viewMode === 'kanban'}
-      <TrackerBoard
-        records={snapshot.records}
-        types={registry}
-        onMove={handleMove}
-        onOpen={openEditDialog}
-      />
+    {#if snapshot.records.length === 0}
+      <EmptyState message="This project has no tracker records yet.">
+        {#snippet cta()}
+          <Button variant="primary" onclick={openCreateDialog}>New record</Button>
+        {/snippet}
+      </EmptyState>
     {:else}
-      <TrackerListView records={snapshot.records} types={registry} onOpen={openEditDialog} />
+      <div
+        class="tracker-page-view-tabs"
+        role="radiogroup"
+        aria-label="Tracker view"
+        bind:this={viewTabsEl}
+      >
+        {#each VIEWS as view (view.id)}
+          <Button
+            variant="ghost"
+            size="sm"
+            class={`tracker-page-view-tab ${viewMode === view.id ? 'selected' : ''}`.trim()}
+            role="radio"
+            ariaChecked={viewMode === view.id}
+            tabindex={viewMode === view.id ? 0 : -1}
+            ariaLabel={view.label}
+            onclick={() => (viewMode = view.id)}
+            onkeydown={handleViewKeydown}
+            dataTestId={`tracker-view-${view.id}`}
+          >
+            <Icon name={view.icon} />
+            {view.label}
+          </Button>
+        {/each}
+      </div>
+
+      {#if viewMode === 'kanban'}
+        <TrackerBoard
+          records={snapshot.records}
+          types={registry}
+          onMove={handleMove}
+          onOpen={openEditDialog}
+        />
+      {:else}
+        <TrackerListView records={snapshot.records} types={registry} onOpen={openEditDialog} />
+      {/if}
     {/if}
   {/if}
 </PageLayout>
@@ -301,6 +398,34 @@
     align-items: center;
     gap: var(--space-sm);
     color: var(--color-text-secondary);
+  }
+
+  .tracker-setup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    max-width: 34rem;
+  }
+
+  .tracker-setup-intro {
+    margin: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .tracker-live-gap-note {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin: 0 0 var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    color: var(--color-text-secondary);
+  }
+
+  .tracker-live-gap-note a {
+    color: inherit;
   }
 
   .tracker-page-view-tabs {
