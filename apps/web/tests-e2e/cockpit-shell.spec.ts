@@ -236,11 +236,18 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('settings-toggle')).toHaveCount(0);
     await expect(page.getByTestId('terminal-toggle')).toHaveCount(0);
 
-    // The sub-tabs are a real `radiogroup` (exactly Files and Config),
-    // not the old duplicate `aria-pressed` strip this panel's own header
-    // comment used to warn against re-adding.
+    // The sub-tabs are a real `radiogroup` — a named set (Files, Config,
+    // Runner; issue #244 added Runner as a third), not a raw `toHaveCount`
+    // that would silently pass whether a tab was lost or an unrelated one
+    // (e.g. Terminal) crept back in. Asserting each accessible name AND
+    // that the group's total matches the named set catches both.
     const tabs = page.getByRole('radiogroup', { name: 'Workbench panel' });
-    await expect(tabs.getByRole('radio')).toHaveCount(2);
+    const radios = tabs.getByRole('radio');
+    await expect(radios).toHaveCount(3);
+    await expect(radios.filter({ hasText: 'Files' })).toHaveCount(1);
+    await expect(radios.filter({ hasText: 'Config' })).toHaveCount(1);
+    await expect(radios.filter({ hasText: 'Runner' })).toHaveCount(1);
+    await expect(radios.filter({ hasText: 'Terminal' })).toHaveCount(0);
     await expect(page.getByTestId('file-tree-toggle')).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByTestId('file-tree-panel-wrapper')).toBeVisible();
   });
