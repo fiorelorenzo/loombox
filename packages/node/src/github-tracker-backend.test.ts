@@ -14,12 +14,13 @@ import {
 } from './github-tracker-backend';
 
 /**
- * `GithubTrackerBackend` (SPEC §7.10, issue #213) against a stubbed
+ * `GithubTrackerBackend` (SPEC §7.10, issues #213/#215) against a stubbed
  * `fetchImpl` only — never the real GitHub API, per the acceptance
- * criterion. Covers the five required methods, the `resolveCredential`-only
- * credential boundary, `capabilities`, and the four real-world GitHub
- * behaviours the issue calls out by name: pagination, rate limiting,
- * 404-as-no-access, and pull-requests-returned-as-issues.
+ * criterion. Covers the five required methods, `listTransitions`/
+ * `transition` (slice 2), the `resolveCredential`-only credential
+ * boundary, `capabilities`, and the four real-world GitHub behaviours the
+ * issue calls out by name: pagination, rate limiting, 404-as-no-access,
+ * and pull-requests-returned-as-issues.
  */
 
 const TOKEN = 'ghp_the-resolved-token';
@@ -75,12 +76,12 @@ function backend(
   });
 }
 
-describe('GithubTrackerBackend.capabilities (issue #213 slice 1)', () => {
-  it('reports comments/labels/milestones true, transitions/boards/sprints/customFields false', () => {
+describe('GithubTrackerBackend.capabilities (issues #213/#215 slices 1+2)', () => {
+  it('reports comments/transitions/labels/milestones true, boards/sprints/customFields false', () => {
     const svc = backend(vi.fn());
     expect(svc.capabilities).toEqual({
       comments: true,
-      transitions: false,
+      transitions: true,
       boards: false,
       sprints: false,
       labels: true,
@@ -395,5 +396,108 @@ describe('GithubTrackerBackend real-world GitHub behaviour (issue #213 acceptanc
     const svc = backend(fetchImpl);
 
     await expect(svc.get(binding(), '5')).rejects.toBeInstanceOf(GithubTrackerAccessError);
+  });
+});
+
+describe('GithubTrackerBackend.listTransitions/transition (issue #215 slice 2)', () => {
+  it('listTransitions() on an open issue offers exactly close_completed/close_not_planned', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toBe('https://api.github.com/repos/fiorelorenzo/loombox/issues/213');
+      return githubResponse(200, issuePayload({ state: 'open' }));
+    });
+    const svc = backend(fetchImpl);
+
+    const transitions = await svc.listTransitions(binding(), '213');
+
+    expect(transitions).toEqual([
+      { id: 'close_completed', name: 'Close as completed' },
+      { id: 'close_not_planned', name: 'Close as not planned' },
+    ]);
+  });
+
+  it('listTransitions() on a closed issue offers exactly reopen', async () => {
+    const fetchImpl = vi.fn(async () =>
+      githubResponse(200, issuePayload({ state: 'closed', state_reason: 'completed' })),
+    );
+    const svc = backend(fetchImpl);
+
+    const transitions = await svc.listTransitions(binding(), '213');
+
+    expect(transitions).toEqual([{ id: 'reopen', name: 'Reopen' }]);
+  });
+
+  it('listTransitions() rejects a payload that turns out to be a pull request', async () => {
+    const fetchImpl = vi.fn(async () =>
+      githubResponse(
+        200,
+        issuePayload({
+          number: 5,
+          pull_request: { url: 'https://api.github.com/repos/fiorelorenzo/loombox/pulls/5' },
+        }),
+      ),
+    );
+    const svc = backend(fetchImpl);
+
+    await expect(svc.listTransitions(binding(), '5')).rejects.toBeInstanceOf(
+      GithubTrackerAccessError,
+    );
+  });
+
+  it('transition("close_completed") PATCHes {state: "closed", state_reason: "completed"}', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.github.com/repos/fiorelorenzo/loombox/issues/213');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        state: 'closed',
+        state_reason: 'completed',
+      });
+      return githubResponse(200, issuePayload({ state: 'closed', state_reason: 'completed' }));
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(svc.transition(binding(), '213', 'close_completed')).resolves.toBeUndefined();
+  });
+
+  it('transition("close_not_planned") PATCHes {state: "closed", state_reason: "not_planned"} — distinguishable from close_completed', async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          state: 'closed',
+          state_reason: 'not_planned',
+        });
+      }
+      return githubResponse(200, issuePayload({ state: 'closed', state_reason: 'not_planned' }));
+    });
+    const svc = backend(fetchImpl);
+
+    await svc.transition(binding(), '213', 'close_not_planned');
+
+    // End-to-end: a subsequent read reports the distinct outcome, not a bare "closed".
+    const readBack = await svc.get(binding(), '213');
+    expect(readBack.fields.state).toBe('closed');
+    expect(readBack.fields.stateReason).toBe('not_planned');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('transition("reopen") PATCHes {state: "open", state_reason: "reopened"}', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.github.com/repos/fiorelorenzo/loombox/issues/213');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(String(init?.body))).toEqual({ state: 'open', state_reason: 'reopened' });
+      return githubResponse(200, issuePayload({ state: 'open', state_reason: 'reopened' }));
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(svc.transition(binding(), '213', 'reopen')).resolves.toBeUndefined();
+  });
+
+  it('transition() rejects an unknown transitionId without making a request — never a discovered per-project workflow', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+
+    await expect(svc.transition(binding(), '213', 'move-to-in-progress')).rejects.toBeInstanceOf(
+      GithubTrackerAccessError,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

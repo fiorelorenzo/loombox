@@ -1,13 +1,27 @@
 /* ---------------------------------------------------------------------
- * The GitHub `TrackerBackend` — live tracker slice 1 (SPEC §7.10 "GitHub,
- * full feature set... REST for issues/comments/labels/milestones/
- * assignees", `docs.github.com/en/rest/issues/*`; issue #213). Implements
- * `@loombox/shared`'s `TrackerBackend` extension point (#209) for
- * `list`/`get`/`create`/`update`/`addComment` against a bound
- * `owner/repo`. Non-goals, deferred to later slices/issues: workflow
- * transitions (`listTransitions`/`transition`, #215), boards/Projects v2
- * (`listBoards`/`listSprints`/`moveToSprint`, #218), and the Jira backend
- * (#214) — none of those optional methods are implemented here.
+ * The GitHub `TrackerBackend` — live tracker slices 1 + 2 (SPEC §7.10
+ * "GitHub, full feature set... REST for issues/comments/labels/
+ * milestones/assignees", `docs.github.com/en/rest/issues/*`; issues
+ * #213/#215). Implements `@loombox/shared`'s `TrackerBackend` extension
+ * point (#209) for `list`/`get`/`create`/`update`/`addComment` (slice 1)
+ * plus `listTransitions`/`transition` (slice 2, issue #215) against a
+ * bound `owner/repo`. Non-goals, deferred to a later slice/issue: boards/
+ * Projects v2 (`listBoards`/`listSprints`/`moveToSprint`, #218) and the
+ * Jira backend (#214) — neither of those optional methods is implemented
+ * here.
+ *
+ * **Slice 2 — transitions are GitHub's fixed two-state model, not a
+ * discovered workflow (SPEC §7.10).** "GitHub has no built-in transition
+ * concept... a transition is `PATCH .../issues/{n} {state, state_reason}`,
+ * so `transitions` on the GitHub backend degrades to a fixed two-state
+ * set rather than a discovered per-project workflow like Jira's" (#216).
+ * `listTransitions` reports the moves actually available from the
+ * issue's *current* state — `close_completed`/`close_not_planned` when
+ * open, `reopen` when closed — rather than always offering all three;
+ * `transition` applies one by PATCHing `state`/`state_reason` together,
+ * so closing as "completed" and closing as "not planned" are distinct,
+ * inspectable outcomes end to end (`fields.stateReason` on the returned
+ * item), never collapsed into a single generic "closed".
  *
  * **Credentials only through `resolveCredential`.** SPEC §7.10: "this
  * section never performs an OAuth flow or stores a token itself; it
@@ -66,6 +80,7 @@ import type {
   TrackerItemLive,
   TrackerListFilter,
   TrackerListPage,
+  TrackerTransition,
 } from '@loombox/shared';
 import type { GitHubTarget } from '@loombox/protocol';
 
@@ -200,6 +215,36 @@ function pickIssueWriteFields(fields: Record<string, unknown>): Record<string, u
   return picked;
 }
 
+/**
+ * GitHub's entire transition surface (SPEC §7.10, issue #215): exactly
+ * two states plus a `state_reason` qualifier for *why* an issue closed.
+ * There is no per-project workflow to discover — this fixed map IS the
+ * graph, for every GitHub issue, always — unlike Jira's own
+ * `GET .../transitions` discovery (#216, `JiraTrackerBackend`).
+ */
+const GITHUB_TRANSITIONS: Record<
+  string,
+  {
+    readonly state: 'open' | 'closed';
+    readonly stateReason: 'completed' | 'not_planned' | 'reopened';
+  }
+> = {
+  close_completed: { state: 'closed', stateReason: 'completed' },
+  close_not_planned: { state: 'closed', stateReason: 'not_planned' },
+  reopen: { state: 'open', stateReason: 'reopened' },
+};
+
+/** Which of `GITHUB_TRANSITIONS` are actually available given an issue's *current* `state` — a closed issue can only reopen, an open one can only close (one way or the other), never all three at once. */
+function transitionsForState(state: string): TrackerTransition[] {
+  if (state === 'closed') {
+    return [{ id: 'reopen', name: 'Reopen' }];
+  }
+  return [
+    { id: 'close_completed', name: 'Close as completed' },
+    { id: 'close_not_planned', name: 'Close as not planned' },
+  ];
+}
+
 function requireGithubTarget(target: TrackerBinding['target']): GitHubTarget {
   if (
     typeof target !== 'object' ||
@@ -283,14 +328,14 @@ export interface GithubTrackerBackendOptions {
   now?: () => number;
 }
 
-/** The GitHub `TrackerBackend` (SPEC §7.10, issue #213). One instance is reusable across every bound repo — `resolveCredential` is re-invoked per call rather than a token being cached on the instance, so a revoked/rotated credential takes effect on the very next call. */
+/** The GitHub `TrackerBackend` (SPEC §7.10, issues #213/#215). One instance is reusable across every bound repo — `resolveCredential` is re-invoked per call rather than a token being cached on the instance, so a revoked/rotated credential takes effect on the very next call. */
 export class GithubTrackerBackend implements TrackerBackend {
   readonly id = 'github' as const;
 
-  /** Slice 1 (issue #213): issues + comments only. `transitions`/`boards`/`sprints` land in #215/#218; GitHub issues have no generic custom-field analog, so `customFields` stays false permanently for this provider. */
+  /** Slices 1+2 (issues #213/#215): issues, comments, and the fixed two-state transition model. `boards`/`sprints` land in #218; GitHub issues have no generic custom-field analog, so `customFields` stays false permanently for this provider. */
   readonly capabilities: TrackerBackendCapabilities = {
     comments: true,
-    transitions: false,
+    transitions: true,
     boards: false,
     sprints: false,
     labels: true,
@@ -415,6 +460,52 @@ export class GithubTrackerBackend implements TrackerBackend {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ body }),
+    });
+  }
+
+  /**
+   * The moves actually available from this issue's *current* state
+   * (SPEC §7.10, issue #215) — `close_completed`/`close_not_planned` for
+   * an open issue, `reopen` for a closed one. Always this fixed pair,
+   * never a discovered per-project workflow: GitHub has no workflow
+   * concept to discover in the first place.
+   */
+  async listTransitions(binding: TrackerBinding, externalId: string): Promise<TrackerTransition[]> {
+    const target = requireGithubTarget(binding.target);
+    const response = await this.request(binding, issueUrl(target, externalId));
+    const raw = (await response.json()) as Record<string, unknown>;
+    if (isPullRequestPayload(raw)) {
+      throw new GithubTrackerAccessError(
+        `github tracker: ${target.owner}/${target.repo}#${externalId} is a pull request, not an issue — GitHub's issues API serves both from the same endpoint, and this backend only surfaces issues`,
+      );
+    }
+    return transitionsForState(String((raw as unknown as GithubIssuePayload).state));
+  }
+
+  /**
+   * Applies one of `GITHUB_TRANSITIONS` by PATCHing `state`/`state_reason`
+   * together (SPEC §7.10: "a transition is `PATCH .../issues/{n}
+   * {state, state_reason}`"). Close-as-completed and close-as-not-planned
+   * are distinct outcomes end to end — the returned/subsequently-read
+   * item's `fields.stateReason` carries whichever one was applied, never
+   * collapsed into a bare "closed".
+   */
+  async transition(
+    binding: TrackerBinding,
+    externalId: string,
+    transitionId: string,
+  ): Promise<void> {
+    const target = requireGithubTarget(binding.target);
+    const move = GITHUB_TRANSITIONS[transitionId];
+    if (!move) {
+      throw new GithubTrackerAccessError(
+        `github tracker: unknown transitionId '${transitionId}' — GitHub's fixed set is close_completed/close_not_planned/reopen`,
+      );
+    }
+    await this.request(binding, issueUrl(target, externalId), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state: move.state, state_reason: move.stateReason }),
     });
   }
 }
