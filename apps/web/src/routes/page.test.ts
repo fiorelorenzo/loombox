@@ -130,6 +130,8 @@ interface FakeClientScenario {
   transcripts?: Record<string, TranscriptState>;
   /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
   permissionQueues?: Record<string, PermissionQueueState>;
+  /** Seeds `attentionInbox()`'s store (issue #167's wiring tests below) — the store itself is memoized on the fake client instance (mirrors `sessions`/`status`), so a test can grab it via `client.attentionInbox()` and `.set()` a new snapshot to simulate the real `RelayClient`'s own live recompute, without re-implementing that recompute here (already covered end to end in `relay-client.test.ts`). */
+  attentionInboxItems?: AttentionInboxItem[];
 }
 
 /**
@@ -143,12 +145,13 @@ interface FakeClientScenario {
 function createFakeClient(scenario: FakeClientScenario = {}) {
   const statusStore = makeStore<ConnectionStatus>('idle');
   const sessionsStore = makeStore<ClientSessionMeta[]>(scenario.sessions ?? []);
+  const attentionInboxStore = makeStore<AttentionInboxItem[]>(scenario.attentionInboxItems ?? []);
   return {
     status: statusStore,
     sessions: sessionsStore,
     connectedAccounts: makeStore(scenario.connectedAccounts ?? []),
     sessionDecryptFailures: makeStore(0),
-    attentionInbox: () => makeStore<AttentionInboxItem[]>([]),
+    attentionInbox: () => attentionInboxStore,
     connect: vi.fn(() => statusStore.set('open')),
     close: vi.fn(),
     listTargets: vi.fn().mockResolvedValue(scenario.targets ?? []),
@@ -561,6 +564,112 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
 
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     expect(toggle.getAttribute('aria-label')).toBe('Collapse sidebar');
+  });
+});
+
+describe('cockpit shell: attention inbox wiring (issue #167)', () => {
+  /**
+   * `AttentionInbox.svelte`/`InboxPage.svelte`'s own component tests
+   * (`AttentionInbox.test.ts`/`InboxPage.test.ts`) already cover rendering
+   * and prop-callback wiring in isolation, and `relay-client.test.ts`
+   * already covers `RelayClient.attentionInbox()`'s own live recompute
+   * (surfacing/clearing each class as the underlying transcript/queue
+   * state changes). What none of those cover — and what regressed once
+   * before at this exact seam (`account-health-badge`, issue #568's "one
+   * dot, never one per poll") — is `+page.svelte`'s OWN wiring: that the
+   * two badges reading `attentionInboxItems.length` stay in lockstep with
+   * the one store `client.attentionInbox()` returns, and that its
+   * `onResolve`/`onOpenSession` props actually reach the real
+   * `resolvePermission`/`selectSession` calls, not just a spy prop.
+   */
+  function makeInboxPermissionItem(
+    overrides: Partial<AttentionInboxItem> = {},
+  ): AttentionInboxItem {
+    return {
+      kind: 'permission',
+      sessionId: 'sess_1',
+      sessionTitle: 'Refactor relay routing',
+      projectPath: '/home/dev/loombox',
+      nodeId: 'node_1',
+      waitingSince: 1,
+      permission: {
+        requestId: 'req-inbox-1',
+        sessionId: 'sess_1',
+        toolCall: { kind: 'tool_call', id: 'tc-1', title: 'Run tests' },
+        options: [
+          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+        ],
+        parentToolCallId: undefined,
+        enqueuedAt: 1,
+      },
+      ...overrides,
+    };
+  }
+
+  it('shows exactly one badge on the sidebar destination and one on the mobile tabbar, both tracking the live attentionInbox() store, and both clear together when it empties (mirrors the #568 health-dot fix: never one badge per poll)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      attentionInboxItems: [makeInboxPermissionItem()],
+    });
+
+    expect((await screen.findByTestId('inbox-count')).textContent).toBe('1');
+    expect(screen.queryAllByTestId('inbox-count')).toHaveLength(1);
+    expect(screen.getByTestId('tabbar-inbox-count').textContent).toBe('1');
+    expect(screen.queryAllByTestId('tabbar-inbox-count')).toHaveLength(1);
+
+    // The exact same store `attentionInbox()` returns on every call (the
+    // real `RelayClient`'s own contract, mirrored by the fake here) —
+    // pushing the empty snapshot the real client would produce once the
+    // request resolves clears both badges together in one render, not one
+    // lingering while the other clears.
+    client.attentionInbox().set([]);
+
+    await vi.waitFor(() => expect(screen.queryByTestId('inbox-count')).toBeNull());
+    expect(screen.queryByTestId('tabbar-inbox-count')).toBeNull();
+  });
+
+  it("approving a permission item from the inbox calls the same resolvePermission the session's own queue bar uses (issue #168)", async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      attentionInboxItems: [makeInboxPermissionItem()],
+    });
+
+    await screen.findByTestId('destination-inbox');
+    await fireEvent.click(screen.getByTestId('destination-inbox'));
+    const row = await screen.findByTestId('attention-inbox-item');
+    await fireEvent.click(within(row).getByRole('button', { name: /Allow/ }));
+
+    expect(client.resolvePermission).toHaveBeenCalledWith(
+      'sess_1',
+      'req-inbox-1',
+      expect.objectContaining({ optionId: 'allow', kind: 'allow_once' }),
+    );
+  });
+
+  it('opening a session from an inbox item navigates to it and leaves the Inbox page, exactly like picking it from the sidebar (issue #168)', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      attentionInboxItems: [
+        {
+          kind: 'awaiting_input',
+          sessionId: 'sess_1',
+          sessionTitle: 'Refactor relay routing',
+          projectPath: '/home/dev/loombox',
+          nodeId: 'node_1',
+          waitingSince: 1,
+        },
+      ],
+    });
+
+    await screen.findByTestId('destination-inbox');
+    await fireEvent.click(screen.getByTestId('destination-inbox'));
+    const row = await screen.findByTestId('attention-inbox-item');
+    await fireEvent.click(within(row).getByTestId('attention-inbox-open'));
+
+    expect(screen.queryByTestId('inbox-page')).toBeNull();
+    expect(screen.getByTestId('destination-inbox').className).not.toContain('active');
+    expect(await screen.findByTestId('composer-input')).toBeTruthy();
   });
 });
 

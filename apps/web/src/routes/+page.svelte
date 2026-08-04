@@ -3504,7 +3504,9 @@
         <Icon name="inbox" class="tabbar-icon" />
         <span>Inbox</span>
         {#if attentionInboxItems.length > 0}
-          <span class="tabbar-badge">{attentionInboxItems.length}</span>
+          <span class="tabbar-badge" data-testid="tabbar-inbox-count"
+            >{attentionInboxItems.length}</span
+          >
         {/if}
       </button>
       <button
