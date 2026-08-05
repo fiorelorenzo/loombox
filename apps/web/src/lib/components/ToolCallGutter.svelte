@@ -39,7 +39,19 @@
     flex-direction: column;
     align-items: flex-end;
     gap: var(--space-3xs);
-    padding-top: var(--space-2xs);
+    /* Optical nudge, issue #703: an SVG icon at `1em` sits flush to its own
+       box top (no font leading), while the header text next to it carries
+       real ascent metrics above its glyphs — so with zero top offset the
+       icon reads noticeably higher than the command it names. This value
+       is calibrated against the header text alone (measured on real
+       `BashWidget`/`GenericToolRow` rows, both themes): `ToolCard`'s own
+       `.tool-card-plain` used to carry a matching copy of this same
+       padding "to align with the icon", which instead cancelled the nudge
+       out (both sides sink together) and put the glyph visibly *below*
+       the command line — see that rule's own comment for why it was
+       removed rather than kept in sync.
+    */
+    padding-top: var(--space-sm);
     /* Same inner-edge alignment and reserved padding as `MessageItem`'s
        gutter, so the role column reads as one rule down the whole transcript
        rather than two columns that nearly line up. */
