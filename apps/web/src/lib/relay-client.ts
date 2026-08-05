@@ -2,6 +2,7 @@ import type { webcrypto } from 'node:crypto';
 import { derived, get, writable, type Readable, type Writable } from 'svelte/store';
 import {
   deriveKeyTree,
+  deriveProjectKey,
   deriveSessionKey,
   encryptEnvelope,
   envelopeToWire,
@@ -325,20 +326,22 @@ export interface FileTreeDirectoryState {
 }
 
 /**
- * One session's bound project's native tracker state (SPEC §7.10; issue
- * #212) — the kanban board and list view's own read model, keyed by
- * `sessionId` in {@link RelayClient.trackerSnapshotFor}'s returned store.
- * `'loading'`/`'error'` are the only states before a `records`/`types`
- * pair lands — an `'error'` keeps whatever it last had (empty on a first
- * load failure) so {@link RelayClient.reloadTrackerSnapshot}'s Retry
- * doesn't have to special-case anything, exactly like
- * `FileTreeDirectoryState`'s own contract. A write
- * ({@link RelayClient.createTrackerRecord}/{@link RelayClient.updateTrackerRecord}/
- * {@link RelayClient.defineTrackerType}) merges its own returned
- * record/type into `records`/`types` directly rather than re-fetching a
- * full snapshot — the kanban board's drag-to-move stays snappy, and the
- * merge is exactly as authoritative as a re-fetch would be: both read the
- * same `tracker_write_response`, straight from `NativeTrackerStore`.
+ * One project's native tracker state (SPEC §7.10; issue #212, #697), keyed
+ * by `projectPath` in {@link RelayClient.trackerSnapshotFor}'s returned
+ * store. Project-scoped rather than session-scoped (issue #697): a
+ * project's tracker outlives any one session that reads it, and is
+ * reachable with none running at all. `'loading'`/`'error'` are the only
+ * states before a `records`/`types` pair lands — an `'error'` keeps
+ * whatever it last had (empty on a first load failure) so
+ * {@link RelayClient.reloadTrackerSnapshot}'s Retry doesn't have to
+ * special-case anything, exactly like `FileTreeDirectoryState`'s own
+ * contract. A write ({@link RelayClient.createTrackerRecord}/
+ * {@link RelayClient.updateTrackerRecord}/{@link RelayClient.defineTrackerType})
+ * merges its own returned record/type into `records`/`types` directly
+ * rather than re-fetching a full snapshot — the kanban board's
+ * drag-to-move stays snappy, and the merge is exactly as authoritative as
+ * a re-fetch would be: both read the same `tracker_write_response`,
+ * straight from `NativeTrackerStore`.
  */
 export interface TrackerSnapshotState {
   status: 'loading' | 'loaded' | 'error';
@@ -1053,6 +1056,8 @@ export class RelayClient {
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per client instance, same caching shape as {@link sessionKeys}. */
   private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
+  /** Backs {@link getProjectKey} (issue #697) — a project's key is derived once per client instance, same caching shape as {@link sessionKeys}/{@link targetKeys}. Keyed by `projectPath` alone, not `nodeId`+`projectPath`: `deriveProjectKey`'s own derivation path (`['project', accountId, projectPath]`) has no `nodeId` component, matching the project being the resource, not any one node that happens to serve it. */
+  private readonly projectKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1073,16 +1078,20 @@ export class RelayClient {
    * same session is simply not a key here and is ignored.
    */
   private readonly pendingFsListRequests = new Map<string, { sessionId: string; path: string }>();
-  /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212) — one reactive `TrackerSnapshotState` per session. */
+  /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
-  /** Sessions {@link trackerSnapshotFor} has already sent an initial `tracker_snapshot_request` for — mirrors `fileTreeFor`'s own `get(store).has('')` lazy-load-once check, without needing to inspect the store's current value to tell "never requested" apart from "requested and still loading". */
+  /** Projects {@link trackerSnapshotFor} has already sent an initial `tracker_snapshot_request` for — mirrors `fileTreeFor`'s own `get(store).has('')` lazy-load-once check, without needing to inspect the store's current value to tell "never requested" apart from "requested and still loading". Keyed by `projectPath` (issue #697): two sessions bound to the same project now share one load instead of each firing (and racing) their own. */
   private readonly trackerSnapshotsRequested = new Set<string>();
-  /** requestId -> the session an in-flight `tracker_snapshot_request` this client itself sent is about (issue #212). `tracker_snapshot_response` is fanned out to every client subscribed to the session (mirrors `fs_list_response`), so this map is also this client's filter for "is this reply actually to one of MY requests" — the same sibling-device-awareness `pendingFsListRequests` documents above. */
-  private readonly pendingTrackerSnapshotRequests = new Map<string, { sessionId: string }>();
-  /** requestId -> the pending {@link createTrackerRecord}/{@link updateTrackerRecord}/{@link defineTrackerType} call it belongs to (issue #212) — resolves a `Promise` directly, exactly like `pendingDecommissionTargetRequests`, filtered the same "not pending means it isn't mine" way `pendingTrackerSnapshotRequests` is. */
+  /** requestId -> the project an in-flight `tracker_snapshot_request` this client itself sent is about (issue #212, #697). `tracker_snapshot_response` is routed directly back to the requesting client alone (SPEC §7.10, issue #697 — `nodeId` addresses exactly one node and the relay answers exactly the requester, unlike the old session-fanned `fs_list_response`), so this map exists to decrypt under the right project key and to guard against a stray/duplicate reply arriving after this client's own timeout already cleaned the entry up — the same guard `pendingTargetFsListRequests` documents. */
+  private readonly pendingTrackerSnapshotRequests = new Map<string, { projectPath: string }>();
+  /** requestId -> the pending {@link createTrackerRecord}/{@link updateTrackerRecord}/{@link defineTrackerType} call it belongs to (issue #212, #697) — resolves a `Promise` directly, exactly like `pendingTargetFsListRequests`, carrying `projectPath` for the same reason (decrypting the response under the right project key). */
   private readonly pendingTrackerWriteRequests = new Map<
     string,
-    { resolve: (payload: TrackerWriteResponsePayloadV1) => void; reject: (error: Error) => void }
+    {
+      projectPath: string;
+      resolve: (payload: TrackerWriteResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
   >();
   /** Backs {@link terminalsFor} (SPEC §7.5; issues #172/#173/#174) — one reactive `Map<terminalId, TerminalClientState>` per session. */
   private readonly terminals = new Map<string, Writable<Map<string, TerminalClientState>>>();
@@ -2799,42 +2808,47 @@ export class RelayClient {
   }
 
   /**
-   * A session's bound project's native tracker snapshot (SPEC §7.10; issue
-   * #212), reactive — the kanban board and list view's own read model.
-   * Lazily sends one `tracker_snapshot_request` the first time this is
-   * called for a session (mirrors `fileTreeFor`'s lazy root load); call
-   * again freely, it never re-requests on its own — use
-   * {@link reloadTrackerSnapshot} for a manual reload (Retry, or after a
-   * write this client didn't itself make, e.g. another device's edit).
+   * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
+   * reactive — the kanban board and list view's own read model. Addressed
+   * by `nodeId` + `projectPath` (issue #697), not a session: the project's
+   * tracker is reachable with no session running for it at all, and even
+   * for a project that has never had one. Lazily sends one
+   * `tracker_snapshot_request` the first time this is called for a
+   * project (mirrors `fileTreeFor`'s lazy root load); call again freely,
+   * it never re-requests on its own — use {@link reloadTrackerSnapshot}
+   * for a manual reload (Retry, or after a write this client didn't
+   * itself make, e.g. another device's edit).
    */
-  trackerSnapshotFor(sessionId: string): Readable<TrackerSnapshotState> {
-    const store = this.trackerSnapshotStoreFor(sessionId);
-    this.ensureSubscribed(sessionId);
-    if (!this.trackerSnapshotsRequested.has(sessionId)) this.reloadTrackerSnapshot(sessionId);
+  trackerSnapshotFor(nodeId: string, projectPath: string): Readable<TrackerSnapshotState> {
+    const store = this.trackerSnapshotStoreFor(projectPath);
+    if (!this.trackerSnapshotsRequested.has(projectPath)) {
+      this.reloadTrackerSnapshot(nodeId, projectPath);
+    }
     return store;
   }
 
   /**
-   * Re-fetches a session's tracker snapshot from scratch — the Retry
+   * Re-fetches a project's tracker snapshot from scratch — the Retry
    * action on a board/list stuck in `'error'` (issue #212's "a node that
    * does not answer gets the same retryable `ErrorNotice` treatment #582
    * established for the Files panel" acceptance), and the general-purpose
    * manual reload {@link trackerSnapshotFor}'s doc comment points to.
    */
-  reloadTrackerSnapshot(sessionId: string, includeArchived?: boolean): void {
-    this.trackerSnapshotsRequested.add(sessionId);
-    this.trackerSnapshotStoreFor(sessionId).update((state) => ({ ...state, status: 'loading' }));
-    this.ensureSubscribed(sessionId);
-    this.sendTrackerSnapshotRequest(sessionId, includeArchived).catch((error: unknown) => {
-      this.setTrackerSnapshotError(sessionId, errorMessage(error));
-    });
+  reloadTrackerSnapshot(nodeId: string, projectPath: string, includeArchived?: boolean): void {
+    this.trackerSnapshotsRequested.add(projectPath);
+    this.trackerSnapshotStoreFor(projectPath).update((state) => ({ ...state, status: 'loading' }));
+    this.sendTrackerSnapshotRequest(nodeId, projectPath, includeArchived).catch(
+      (error: unknown) => {
+        this.setTrackerSnapshotError(projectPath, errorMessage(error));
+      },
+    );
   }
 
   /**
-   * Creates a native tracker record against `sessionId`'s bound project
-   * (SPEC §7.10; issue #212) — the create dialog's submit action, going
-   * through the real `NativeTrackerStore` on the node exactly like an
-   * agent's `tracker_create` MCP tool call (#211) would, never local
+   * Creates a native tracker record against `projectPath` on `nodeId`
+   * (SPEC §7.10; issue #212, #697) — the create dialog's submit action,
+   * going through the real `NativeTrackerStore` on the node exactly like
+   * an agent's `tracker_create` MCP tool call (#211) would, never local
    * component state. `system.authorId` is stamped by the node from its
    * own bound account, never from this input (mirrors the MCP tool's own
    * "never from tool input" contract). Merges the returned record into
@@ -2843,29 +2857,34 @@ export class RelayClient {
    * something concrete to show the user.
    */
   async createTrackerRecord(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     input: { primaryType: string; typeTags?: string[]; fields: Record<string, unknown> },
   ): Promise<TrackerRecordV1> {
-    const response = await this.sendTrackerWriteRequest(sessionId, { op: 'create', ...input });
+    const response = await this.sendTrackerWriteRequest(nodeId, projectPath, {
+      op: 'create',
+      ...input,
+    });
     if (response.outcome === 'error') throw new Error(response.message);
     if (!response.record) {
       throw new Error('RelayClient: tracker_write_response(create) carried no record');
     }
-    this.mergeTrackerRecord(sessionId, response.record);
+    this.mergeTrackerRecord(projectPath, response.record);
     return response.record;
   }
 
   /**
-   * Patches an existing native tracker record (SPEC §7.10; issue #212) —
-   * the edit dialog's submit action AND the kanban board's drag-to-move
-   * (a `fields` patch setting the moved-to column's `workflowStatus` role
-   * value), both going through the real store, never local component
-   * state. Omitted fields are left as-is, matching
+   * Patches an existing native tracker record (SPEC §7.10; issue #212,
+   * #697) — the edit dialog's submit action AND the kanban board's
+   * drag-to-move (a `fields` patch setting the moved-to column's
+   * `workflowStatus` role value), both going through the real store,
+   * never local component state. Omitted fields are left as-is, matching
    * `NativeTrackerStore.update`. See {@link createTrackerRecord}'s doc
    * comment for the merge-on-success/reject-on-failure contract.
    */
   async updateTrackerRecord(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     id: string,
     patch: {
       primaryType?: string;
@@ -2874,19 +2893,23 @@ export class RelayClient {
       archived?: boolean;
     },
   ): Promise<TrackerRecordV1> {
-    const response = await this.sendTrackerWriteRequest(sessionId, { op: 'update', id, ...patch });
+    const response = await this.sendTrackerWriteRequest(nodeId, projectPath, {
+      op: 'update',
+      id,
+      ...patch,
+    });
     if (response.outcome === 'error') throw new Error(response.message);
     if (!response.record) {
       throw new Error('RelayClient: tracker_write_response(update) carried no record');
     }
-    this.mergeTrackerRecord(sessionId, response.record);
+    this.mergeTrackerRecord(projectPath, response.record);
     return response.record;
   }
 
   /**
    * Registers a project-defined custom tracker type (SPEC §7.10; issue
-   * #212) — the "Custom type" dialog's submit action. Once defined, every
-   * generic role-driven UI (kanban grouping, priority sort, assignee
+   * #212, #697) — the "Custom type" dialog's submit action. Once defined,
+   * every generic role-driven UI (kanban grouping, priority sort, assignee
    * filter) renders records of this type identically to a built-in one,
    * with no per-type UI code (issue #212's central acceptance) — see
    * `@loombox/protocol`'s `tracker-records.ts` role helpers. See
@@ -2894,15 +2917,19 @@ export class RelayClient {
    * reject-on-failure contract.
    */
   async defineTrackerType(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     type: { id: string; label: string; roles: Partial<Record<TrackerRoleV1, string>> },
   ): Promise<TrackerTypeDefinitionV1> {
-    const response = await this.sendTrackerWriteRequest(sessionId, { op: 'defineType', ...type });
+    const response = await this.sendTrackerWriteRequest(nodeId, projectPath, {
+      op: 'defineType',
+      ...type,
+    });
     if (response.outcome === 'error') throw new Error(response.message);
     if (!response.typeDefinition) {
       throw new Error('RelayClient: tracker_write_response(defineType) carried no typeDefinition');
     }
-    this.mergeTrackerType(sessionId, response.typeDefinition);
+    this.mergeTrackerType(projectPath, response.typeDefinition);
     return response.typeDefinition;
   }
 
@@ -4013,41 +4040,44 @@ export class RelayClient {
   }
 
   /**
-   * The owning node's reply to one of this client's own
-   * `tracker_snapshot_request`s (SPEC §7.10; issue #212). Fanned out to
-   * every client subscribed to the session exactly like `fs_list_response`
-   * — same sibling-device-awareness guard as {@link handleFsListResponse}.
-   * The decrypted payload is validated against
-   * `trackerSnapshotResponsePayloadV1` (issue #593's decrypt-boundary
-   * convention), not a bare generic cast.
+   * The addressed node's reply to one of this client's own
+   * `tracker_snapshot_request`s (SPEC §7.10; issue #212, #697). Routed
+   * directly back to this client alone (issue #697: `nodeId` addresses
+   * exactly one node, and the relay answers exactly the requester, unlike
+   * the old session-fanned `fs_list_response`) — `pending` still guards
+   * against a stray/duplicate reply arriving after this client's own
+   * timeout already cleaned the entry up, the same guard
+   * {@link handleTargetFsListResponse} documents. The decrypted payload is
+   * validated against `trackerSnapshotResponsePayloadV1` (issue #593's
+   * decrypt-boundary convention), not a bare generic cast.
    */
   private handleTrackerSnapshotResponse(message: TrackerSnapshotResponse): void {
     const pending = this.pendingTrackerSnapshotRequests.get(message.requestId);
     if (!pending) return;
     this.pendingTrackerSnapshotRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.getProjectKey(pending.projectPath)
+      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
       .then((raw) => trackerSnapshotResponsePayloadV1.parse(raw))
       .then((payload) => {
         if (payload.outcome === 'ok') {
-          this.trackerSnapshotStoreFor(message.sessionId).set({
+          this.trackerSnapshotStoreFor(pending.projectPath).set({
             status: 'loaded',
             records: payload.records,
             types: payload.types,
           });
         } else {
-          this.setTrackerSnapshotError(message.sessionId, payload.message, payload.reason);
+          this.setTrackerSnapshotError(pending.projectPath, payload.message, payload.reason);
         }
       })
       .catch((error: unknown) => {
-        this.setTrackerSnapshotError(pending.sessionId, errorMessage(error));
+        this.setTrackerSnapshotError(pending.projectPath, errorMessage(error));
       });
   }
 
   /**
-   * The owning node's reply to one of this client's own
-   * `tracker_write_request`s (SPEC §7.10; issue #212) — resolves the
+   * The addressed node's reply to one of this client's own
+   * `tracker_write_request`s (SPEC §7.10; issue #212, #697) — resolves the
    * `Promise` {@link sendTrackerWriteRequest} returned, same
    * "requestId not pending means it isn't mine" guard as
    * {@link handleTargetList}. Validated against
@@ -4059,8 +4089,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTrackerWriteRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.getProjectKey(pending.projectPath)
+      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
       .then((raw) => trackerWriteResponsePayloadV1.parse(raw))
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
@@ -4225,43 +4255,41 @@ export class RelayClient {
     });
   }
 
-  /** Seals `{ includeArchived }` and sends the `tracker_snapshot_request` (SPEC §7.10; issue #212), tracking it in {@link pendingTrackerSnapshotRequests} so the eventual `tracker_snapshot_response` can be told apart from a sibling device's own request for the same session. */
+  /** Seals `{ includeArchived }` under `projectPath`'s project key and sends the `tracker_snapshot_request` (SPEC §7.10; issue #212, #697), tracking it in {@link pendingTrackerSnapshotRequests} so the eventual `tracker_snapshot_response` decrypts under the right key and a stray late reply after this client's own timeout is ignored. */
   private async sendTrackerSnapshotRequest(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     includeArchived?: boolean,
   ): Promise<void> {
-    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
-    if (!targetId) {
-      throw new Error(`RelayClient: unknown session ${sessionId}`);
-    }
-    const key = await this.getSessionKey(sessionId);
+    const key = await this.getProjectKey(projectPath);
     const payload: TrackerSnapshotRequestPayloadV1 = { includeArchived };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await sealJson(projectPath, payload, key);
     const requestId = generateId('trackersnap');
-    this.pendingTrackerSnapshotRequests.set(requestId, { sessionId });
+    this.pendingTrackerSnapshotRequests.set(requestId, { projectPath });
     this.send({
       type: 'tracker_snapshot_request',
       protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId,
+      nodeId,
+      projectPath,
       requestId,
       envelope,
     });
   }
 
   /**
-   * Seals `payload` and sends the `tracker_write_request` (SPEC §7.10;
-   * issue #212), resolving once the matching `tracker_write_response`
-   * arrives — mirrors {@link decommissionTarget}'s promise+timeout shape
-   * (a deliberate, one-shot write a caller awaits), not
-   * {@link sendFsListRequest}'s fire-and-let-the-store-update shape,
-   * since a write's caller ({@link createTrackerRecord}/
-   * {@link updateTrackerRecord}/{@link defineTrackerType}) needs the
-   * outcome directly to know whether to close its dialog or show an
-   * error.
+   * Seals `payload` under `projectPath`'s project key and sends the
+   * `tracker_write_request` (SPEC §7.10; issue #212, #697), resolving once
+   * the matching `tracker_write_response` arrives — mirrors
+   * {@link decommissionTarget}'s promise+timeout shape (a deliberate,
+   * one-shot write a caller awaits), not {@link sendFsListRequest}'s
+   * fire-and-let-the-store-update shape, since a write's caller
+   * ({@link createTrackerRecord}/{@link updateTrackerRecord}/
+   * {@link defineTrackerType}) needs the outcome directly to know whether
+   * to close its dialog or show an error.
    */
   private async sendTrackerWriteRequest(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     payload: TrackerWriteRequestPayloadV1,
     timeoutMs = 10_000,
   ): Promise<TrackerWriteResponsePayloadV1> {
@@ -4270,12 +4298,8 @@ export class RelayClient {
         new Error('RelayClient: cannot write tracker record, no open connection'),
       );
     }
-    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
-    if (!targetId) {
-      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
-    }
-    const key = await this.getSessionKey(sessionId);
-    const envelope = await sealJson(sessionId, payload, key);
+    const key = await this.getProjectKey(projectPath);
+    const envelope = await sealJson(projectPath, payload, key);
     const requestId = generateId('trackerwrite');
     return new Promise<TrackerWriteResponsePayloadV1>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -4283,6 +4307,7 @@ export class RelayClient {
         reject(new Error('RelayClient: timed out waiting for tracker_write_response'));
       }, timeoutMs);
       this.pendingTrackerWriteRequests.set(requestId, {
+        projectPath,
         resolve: (response) => {
           clearTimeout(timer);
           resolve(response);
@@ -4292,12 +4317,11 @@ export class RelayClient {
           reject(error);
         },
       });
-      this.ensureSubscribed(sessionId);
       this.send({
         type: 'tracker_write_request',
         protocolVersion: PROTOCOL_V1,
-        sessionId,
-        targetId,
+        nodeId,
+        projectPath,
         requestId,
         envelope,
       });
@@ -4574,22 +4598,22 @@ export class RelayClient {
     });
   }
 
-  private trackerSnapshotStoreFor(sessionId: string): Writable<TrackerSnapshotState> {
-    let store = this.trackerSnapshots.get(sessionId);
+  private trackerSnapshotStoreFor(projectPath: string): Writable<TrackerSnapshotState> {
+    let store = this.trackerSnapshots.get(projectPath);
     if (!store) {
       store = writable<TrackerSnapshotState>({ status: 'loading', records: [], types: [] });
-      this.trackerSnapshots.set(sessionId, store);
+      this.trackerSnapshots.set(projectPath, store);
     }
     return store;
   }
 
-  /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same session might have left behind. */
+  /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same project might have left behind. */
   private setTrackerSnapshotError(
-    sessionId: string,
+    projectPath: string,
     message: string,
     reason?: TrackerBackendResolutionErrorV1,
   ): void {
-    this.trackerSnapshotStoreFor(sessionId).update((state) => ({
+    this.trackerSnapshotStoreFor(projectPath).update((state) => ({
       ...state,
       status: 'error',
       error: message,
@@ -4597,9 +4621,9 @@ export class RelayClient {
     }));
   }
 
-  /** Merges a written record into a session's snapshot store — replaces the existing entry by `id`, or appends a new one. See `TrackerSnapshotState`'s doc comment for why a write merges rather than re-fetching. */
-  private mergeTrackerRecord(sessionId: string, record: TrackerRecordV1): void {
-    this.trackerSnapshotStoreFor(sessionId).update((state) => {
+  /** Merges a written record into a project's snapshot store — replaces the existing entry by `id`, or appends a new one. See `TrackerSnapshotState`'s doc comment for why a write merges rather than re-fetching. */
+  private mergeTrackerRecord(projectPath: string, record: TrackerRecordV1): void {
+    this.trackerSnapshotStoreFor(projectPath).update((state) => {
       const index = state.records.findIndex((existing) => existing.id === record.id);
       const records =
         index === -1
@@ -4609,9 +4633,9 @@ export class RelayClient {
     });
   }
 
-  /** Merges a defined type into a session's snapshot store — same replace-or-append shape as {@link mergeTrackerRecord}. */
-  private mergeTrackerType(sessionId: string, type: TrackerTypeDefinitionV1): void {
-    this.trackerSnapshotStoreFor(sessionId).update((state) => {
+  /** Merges a defined type into a project's snapshot store — same replace-or-append shape as {@link mergeTrackerRecord}. */
+  private mergeTrackerType(projectPath: string, type: TrackerTypeDefinitionV1): void {
+    this.trackerSnapshotStoreFor(projectPath).update((state) => {
       const index = state.types.findIndex((existing) => existing.id === type.id);
       const types =
         index === -1
@@ -4645,6 +4669,16 @@ export class RelayClient {
     if (!key) {
       key = deriveTargetKey(this.amk, this.accountId, targetId);
       this.targetKeys.set(targetId, key);
+    }
+    return key;
+  }
+
+  /** Same caching shape as {@link getSessionKey}/{@link getTargetKey}, for {@link projectKeys} (issue #697's project-addressed tracker records). */
+  private getProjectKey(projectPath: string): Promise<CryptoKey> {
+    let key = this.projectKeys.get(projectPath);
+    if (!key) {
+      key = deriveProjectKey(this.amk, this.accountId, projectPath);
+      this.projectKeys.set(projectPath, key);
     }
     return key;
   }

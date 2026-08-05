@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process';
 import type { webcrypto } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AcpProvider } from '@loombox/providers-core';
 import {
   connectedAccountSecretRef,
   PROTOCOL_V1,
@@ -19,7 +16,6 @@ import {
   type WireMessageV1,
 } from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
-import { AgentSupervisor, defaultPtySpawn, TerminalSupervisor } from '@loombox/supervisor';
 import {
   decryptEnvelope,
   deriveKeyTree,
@@ -40,44 +36,22 @@ import { createNode, type NodeDaemon } from './node-daemon';
 import { TrackerModeStore } from './tracker-mode-store';
 
 /**
- * Live-mode dispatch, end to end (SPEC §7.10, §7.26; issue #631):
- * `readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge` reach a
- * REAL `GithubTrackerBackend`, composed through a REAL `GithubConnectService`
- * and a real file-fallback keyring (mirrors
- * `tracker-backend-composition.test.ts`'s own end-to-end block), over a
- * REAL relay and a REAL session bridge (mirrors
- * `node-daemon-tracker.test.ts`'s harness) — only the actual GitHub HTTP
- * call is stubbed (`trackerBackendFetchImpl`). `node-daemon-tracker.test.ts`
- * itself is untouched by this issue and is the proof native mode behaves
- * exactly as before (acceptance: those 8 tests still pass unmodified).
+ * Live-mode dispatch, end to end (SPEC §7.10, §7.26; issue #631;
+ * re-addressed by `nodeId` + `projectPath` under issue #697):
+ * `readTrackerSnapshot`/`applyTrackerWrite` reach a REAL `GithubTrackerBackend`,
+ * composed through a REAL `GithubConnectService` and a real file-fallback
+ * keyring (mirrors `tracker-backend-composition.test.ts`'s own end-to-end
+ * block), over a REAL relay — only the actual GitHub HTTP call is stubbed
+ * (`trackerBackendFetchImpl`). No session is ever created in this suite
+ * (issue #697's whole point: a project's tracker, native or live, is
+ * reachable with no agent session running for it) — mirrors
+ * `node-daemon-tracker.test.ts`'s harness exactly. That file itself is
+ * untouched by this issue's dispatch logic and is the proof native mode
+ * behaves exactly as before (acceptance: those tests still pass, addressing
+ * aside).
  */
 
 type CryptoKey = webcrypto.CryptoKey;
-
-const execFileAsync = promisify(execFile);
-
-function echoProvider(): AcpProvider {
-  return {
-    id: 'test-echo',
-    spawnConfig: ({ cwd }) => ({
-      command: process.execPath,
-      args: [
-        path.join(
-          path.dirname(new URL(import.meta.url).pathname),
-          '..',
-          '..',
-          'providers',
-          'core',
-          'test',
-          'fixtures',
-          'echo-acp-agent.mjs',
-        ),
-      ],
-      cwd,
-    }),
-    enrich: (update) => update,
-  };
-}
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
@@ -91,22 +65,23 @@ function randomBase64(byteLength = 32): string {
   return toBase64(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
-async function derivePhoneSessionKey(
+/** Mirrors `node-daemon-tracker.test.ts`'s own `derivePhoneProjectKey` exactly — an independent derivation off `deriveKeyTree`/`importAesGcmKey`, not a call to `deriveProjectKey` itself, so this proves real wire interop. */
+async function derivePhoneProjectKey(
   amk: Uint8Array,
   accountId: string,
-  sessionId: string,
+  projectPath: string,
 ): Promise<CryptoKey> {
-  const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
+  const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
   return importAesGcmKey(node.key);
 }
 
 async function phoneSeal(
-  sessionId: string,
+  resourceId: string,
   value: unknown,
   key: CryptoKey,
 ): Promise<EncryptedEnvelope> {
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
-  const envelope = await encryptEnvelope(sessionId, plaintext, key);
+  const envelope = await encryptEnvelope(resourceId, plaintext, key);
   return {
     resourceId: envelope.resourceId,
     iv: toBase64(envelope.iv),
@@ -116,7 +91,7 @@ async function phoneSeal(
 }
 
 async function phoneOpen<T>(
-  sessionId: string,
+  resourceId: string,
   wire: EncryptedEnvelope,
   key: CryptoKey,
 ): Promise<T> {
@@ -125,7 +100,7 @@ async function phoneOpen<T>(
     iv: fromBase64(wire.iv),
     ciphertext: fromBase64(wire.ciphertext),
   };
-  const plaintext = await decryptEnvelope(sessionId, envelope, key);
+  const plaintext = await decryptEnvelope(resourceId, envelope, key);
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
@@ -272,14 +247,6 @@ function sleep(ms: number): Promise<void> {
   return promise;
 }
 
-/** Real hermetic bash (issue #503), matching `node-daemon-tracker.test.ts`'s own copy. */
-function hermeticTerminalSupervisor(): TerminalSupervisor {
-  return new TerminalSupervisor({
-    spawnPty: (options) =>
-      defaultPtySpawn({ ...options, args: [...(options.args ?? []), '--noprofile', '--norc'] }),
-  });
-}
-
 function githubAccount(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
   const id = 'github:github.com:1111';
   return {
@@ -365,6 +332,8 @@ const githubMode: TrackerMode = {
   target: { owner: 'fiorelorenzo', repo: 'loombox' },
 };
 
+const NODE_ID = 'node-tracker-live';
+
 let relay: StartedRelay;
 let projectPath: string;
 let nodeStateDir: string;
@@ -374,21 +343,15 @@ let announcer: AnnouncerPeer | undefined;
 
 beforeEach(async () => {
   relay = await startRelay();
-  projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-tracker-live-test-'));
+  // A plain identifier, deliberately never created as a real directory —
+  // see `node-daemon-tracker.test.ts`'s identical `beforeEach` comment:
+  // nothing about live-mode dispatch (`TrackerModeStore`/`AccountPinStore`/
+  // `GithubConnectService`/`GithubTrackerBackend`) ever touches the
+  // filesystem at `projectPath` itself, and issue #697 means no session
+  // (which previously needed a real git repo to create) is created here
+  // either.
+  projectPath = '/home/dev/no-session-live-project';
   nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-tracker-live-state-'));
-  await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
-  await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
-  await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
-  await execFileAsync('git', ['commit', '--allow-empty', '-m', 'initial commit'], {
-    cwd: projectPath,
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'loombox test',
-      GIT_AUTHOR_EMAIL: 'test@loombox.dev',
-      GIT_COMMITTER_NAME: 'loombox test',
-      GIT_COMMITTER_EMAIL: 'test@loombox.dev',
-    },
-  });
 });
 
 afterEach(async () => {
@@ -396,7 +359,6 @@ afterEach(async () => {
   announcer?.close();
   if (node) await node.close();
   await relay.close();
-  await rm(projectPath, { recursive: true, force: true });
   await rm(nodeStateDir, { recursive: true, force: true });
 });
 
@@ -414,7 +376,7 @@ interface ConnectOverTheWireOptions {
 
 async function connectOverTheWire(
   opts: ConnectOverTheWireOptions = {},
-): Promise<{ sessionId: string; key: CryptoKey; accountId: string }> {
+): Promise<{ key: CryptoKey; accountId: string }> {
   const amk = generateAmk();
   const accountId = opts.accountId ?? 'acct-tracker-live';
 
@@ -457,14 +419,12 @@ async function connectOverTheWire(
   node = createNode({
     relayUrl: relay.url,
     stateDir: nodeStateDir,
-    nodeId: 'node-tracker-live',
+    nodeId: NODE_ID,
     deviceId: 'device-node-tracker-live',
     devicePublicKey: randomBase64(),
     authToken: accountId,
     accountId,
     amk,
-    supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-    terminalSupervisor: hermeticTerminalSupervisor(),
     githubConnectService: new GithubConnectService({
       stateDir: nodeStateDir,
       osKeyringBackendFactory: async () => undefined,
@@ -476,8 +436,7 @@ async function connectOverTheWire(
     trackerBackendFetchImpl: opts.fetchImpl,
   });
 
-  const session = await node.createSession({ projectPath, provider: 'test-echo' });
-  const key = await derivePhoneSessionKey(amk, accountId, session.id);
+  const key = await derivePhoneProjectKey(amk, accountId, projectPath);
 
   phone = new TestPhone(relay.url, {
     deviceId: 'device-phone-tracker-live',
@@ -485,23 +444,18 @@ async function connectOverTheWire(
     authToken: accountId,
   });
   await phone.ready;
-  phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
-  await phone.waitFor((m) => m.type === 'session_announce');
 
-  return { sessionId: session.id, key, accountId };
+  return { key, accountId };
 }
 
-async function requestSnapshot(
-  sessionId: string,
-  key: CryptoKey,
-): Promise<TrackerSnapshotResponsePayloadV1> {
+async function requestSnapshot(key: CryptoKey): Promise<TrackerSnapshotResponsePayloadV1> {
   const requestId = `snap-${Math.random()}`;
-  const envelope = await phoneSeal(sessionId, {}, key);
+  const envelope = await phoneSeal(projectPath, {}, key);
   phone!.send({
     type: 'tracker_snapshot_request',
     protocolVersion: PROTOCOL_V1,
-    sessionId,
-    targetId: 'local',
+    nodeId: NODE_ID,
+    projectPath,
     requestId,
     envelope,
   });
@@ -509,21 +463,20 @@ async function requestSnapshot(
     (m) => m.type === 'tracker_snapshot_response' && m.requestId === requestId,
   );
   if (reply.type !== 'tracker_snapshot_response') throw new Error('unreachable');
-  return phoneOpen<TrackerSnapshotResponsePayloadV1>(sessionId, reply.envelope, key);
+  return phoneOpen<TrackerSnapshotResponsePayloadV1>(projectPath, reply.envelope, key);
 }
 
 async function requestWrite(
-  sessionId: string,
   key: CryptoKey,
   payload: Record<string, unknown>,
 ): Promise<TrackerWriteResponsePayloadV1> {
   const requestId = `write-${Math.random()}`;
-  const envelope = await phoneSeal(sessionId, payload, key);
+  const envelope = await phoneSeal(projectPath, payload, key);
   phone!.send({
     type: 'tracker_write_request',
     protocolVersion: PROTOCOL_V1,
-    sessionId,
-    targetId: 'local',
+    nodeId: NODE_ID,
+    projectPath,
     requestId,
     envelope,
   });
@@ -531,21 +484,21 @@ async function requestWrite(
     (m) => m.type === 'tracker_write_response' && m.requestId === requestId,
   );
   if (reply.type !== 'tracker_write_response') throw new Error('unreachable');
-  return phoneOpen<TrackerWriteResponsePayloadV1>(sessionId, reply.envelope, key);
+  return phoneOpen<TrackerWriteResponsePayloadV1>(projectPath, reply.envelope, key);
 }
 
-describe('NodeDaemon live tracker wire path — real relay, real GithubConnectService/keyring, stubbed GitHub API (SPEC §7.10, §7.26; issue #631)', () => {
+describe('NodeDaemon live tracker wire path — real relay, real GithubConnectService/keyring, stubbed GitHub API, NO session/bridge ever created (SPEC §7.10, §7.26; issues #631, #697)', () => {
   it('read reaches the real (stubbed) GitHub API and returns the fetched issue, mapped into the native record wire shape', async () => {
     const account = githubAccount();
     const calls: RecordedFetch[] = [];
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode,
       announcedAccount: account,
       keyringToken: 'ghp_real_token',
       fetchImpl: githubFetchStub(calls, 'ghp_real_token'),
     });
 
-    const snapshot = await requestSnapshot(sessionId, key);
+    const snapshot = await requestSnapshot(key);
     expect(snapshot.outcome).toBe('ok');
     if (snapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(snapshot.records).toHaveLength(1);
@@ -568,7 +521,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
   it('write (update) reaches the real (stubbed) GitHub API and returns the patched issue', async () => {
     const account = githubAccount();
     const calls: RecordedFetch[] = [];
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode,
       announcedAccount: account,
       keyringToken: 'ghp_real_token',
@@ -576,7 +529,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
       fetchImpl: githubFetchStub(calls, 'ghp_real_token'),
     });
 
-    const response = await requestWrite(sessionId, key, {
+    const response = await requestWrite(key, {
       op: 'update',
       id: '42',
       fields: { title: 'Ship it faster', state: 'closed' },
@@ -593,7 +546,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
   it('a live-mode defineType fails immediately, with no backend call at all — a live project\u2019s types come from the provider, never a user definition', async () => {
     const account = githubAccount();
     const calls: RecordedFetch[] = [];
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode,
       announcedAccount: account,
       keyringToken: 'ghp_real_token',
@@ -601,7 +554,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
       fetchImpl: githubFetchStub(calls, 'ghp_real_token'),
     });
 
-    const response = await requestWrite(sessionId, key, {
+    const response = await requestWrite(key, {
       op: 'defineType',
       id: 'feature',
       label: 'Feature',
@@ -614,7 +567,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
   it('read and write resolve the same project to the same tracker — both calls land on the identical owner/repo, from one shared resolution', async () => {
     const account = githubAccount();
     const calls: RecordedFetch[] = [];
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode,
       announcedAccount: account,
       keyringToken: 'ghp_real_token',
@@ -622,8 +575,8 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
       fetchImpl: githubFetchStub(calls, 'ghp_real_token'),
     });
 
-    await requestSnapshot(sessionId, key);
-    await requestWrite(sessionId, key, { op: 'update', id: '42', fields: { title: 'x' } });
+    await requestSnapshot(key);
+    await requestWrite(key, { op: 'update', id: '42', fields: { title: 'x' } });
 
     expect(calls).toHaveLength(2);
     expect(new URL(calls[0]!.url).pathname.replace(/\/issues.*$/, '')).toBe(
@@ -647,12 +600,12 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
       authorId: 'someone',
     });
 
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode, // connectionId 'github:github.com:1111', never announced below
       fetchImpl: githubFetchStub(calls, 'irrelevant'),
     });
 
-    const snapshot = await requestSnapshot(sessionId, key);
+    const snapshot = await requestSnapshot(key);
     expect(snapshot.outcome).toBe('error');
     if (snapshot.outcome !== 'error') throw new Error('unreachable');
     expect(snapshot.reason).toEqual({
@@ -667,7 +620,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
     expect(JSON.stringify(snapshot)).not.toContain(seeded.id);
     expect(calls).toHaveLength(0);
 
-    const writeResponse = await requestWrite(sessionId, key, {
+    const writeResponse = await requestWrite(key, {
       op: 'update',
       id: '42',
       fields: { title: 'x' },
@@ -680,7 +633,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
   it('credentialUnavailable: an announced, pinned account with no token in this node\u2019s keyring renders a typed error, never the local store', async () => {
     const account = githubAccount();
     const calls: RecordedFetch[] = [];
-    const { sessionId, key } = await connectOverTheWire({
+    const { key } = await connectOverTheWire({
       mode: githubMode,
       announcedAccount: account,
       // No keyringToken — the account is connected/pinned but this
@@ -689,7 +642,7 @@ describe('NodeDaemon live tracker wire path — real relay, real GithubConnectSe
       fetchImpl: githubFetchStub(calls, 'irrelevant'),
     });
 
-    const snapshot = await requestSnapshot(sessionId, key);
+    const snapshot = await requestSnapshot(key);
     expect(snapshot.outcome).toBe('error');
     if (snapshot.outcome !== 'error') throw new Error('unreachable');
     expect(snapshot.reason).toEqual({ kind: 'credentialUnavailable', connectionId: account.id });

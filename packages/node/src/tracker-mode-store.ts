@@ -7,7 +7,7 @@
  *
  * `TrackerMode` used to live only in the browser's `localStorage`
  * (`apps/web/src/lib/tracker-mode-store.ts`), which made the node
- * structurally unable to honour it — `NodeDaemon.readTrackerSnapshotForBridge`
+ * structurally unable to honour it — `NodeDaemon.readTrackerSnapshot`
  * read the native store unconditionally because the native store was the
  * only thing it had. This store is the fix's node-side half: `nodeId`'s
  * own persisted answer to "how does this project track work", read and

@@ -1337,17 +1337,6 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
-      case 'tracker_snapshot_response':
-      case 'tracker_write_response':
-        // The owning node's reply to a client's tracker_snapshot_request/
-        // tracker_write_request (SPEC §7.10; issue #212) — fanned out to
-        // this session's subscribed clients exactly like fs_list_response
-        // above; the relay never opens the envelope, so it never learns a
-        // record's fields (SPEC §8's metadata boundary). A requesting
-        // client matches its own pending request by `requestId`; any other
-        // subscribed client simply has no pending request with that id.
-        fanOutDirect(message.sessionId, message);
-        return;
       case 'terminal_opened':
       case 'terminal_output':
       case 'terminal_closed':
@@ -1516,10 +1505,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'jira_connect_response':
       case 'account_pin_response':
       case 'account_pin_resolve_response':
-      case 'tracker_mode_response': {
-        // #230/#631: every other single-shot connect/pin/tracker-mode
-        // reply — delivered to the requesting client and the routing
-        // entry retired, exactly like `target_update_response` above.
+      case 'tracker_mode_response':
+      case 'tracker_snapshot_response':
+      case 'tracker_write_response': {
+        // #230/#631/#697: every other single-shot connect/pin/tracker-mode/
+        // tracker-record reply — delivered to the requesting client and the
+        // routing entry retired, exactly like `target_update_response` above.
         const pending = pendingAccountRequests.get(message.requestId);
         if (!pending || pending.clientConnection.accountId !== connection.accountId) {
           app.log.warn(
@@ -1867,15 +1858,21 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'account_pin_unset_request':
       case 'account_pin_resolve_request':
       case 'tracker_mode_get_request':
-      case 'tracker_mode_set_request': {
-        // #230/#631: every SPEC §7.26 connect/disconnect/pin request, plus
-        // SPEC §7.10's tracker-mode get/set (issue #631), shares one
-        // routing shape — direct-by-`nodeId`, scoped to the requester's
-        // account, exactly like `target_update_request` above (none of
-        // these has an existing target/session to resolve the owning node
-        // through). `pendingAccountRequests`'s own doc comment covers why
-        // one shared table backs every member, including this one's
-        // multi-message case (`github_connect_start_request`).
+      case 'tracker_mode_set_request':
+      case 'tracker_snapshot_request':
+      case 'tracker_write_request': {
+        // #230/#631/#697: every SPEC §7.26 connect/disconnect/pin request,
+        // SPEC §7.10's tracker-mode get/set (issue #631), and (as of #697)
+        // the tracker-record snapshot/write requests, share one routing
+        // shape — direct-by-`nodeId`, scoped to the requester's account,
+        // exactly like `target_update_request` above (none of these has an
+        // existing target/session to resolve the owning node through — the
+        // tracker-record pair used to route by `sessionId`, but #697
+        // re-addressed them by `nodeId` + `projectPath` since a project's
+        // records must be reachable with no session running at all).
+        // `pendingAccountRequests`'s own doc comment covers why one shared
+        // table backs every member, including this one's multi-message case
+        // (`github_connect_start_request`).
         const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
         if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
           app.log.warn(
@@ -1915,17 +1912,6 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
         // opaque `EncryptedEnvelope`; the requested path never reaches the
         // relay in the clear (SPEC §8's metadata boundary).
-        await routeToOwningNode(message.sessionId, message);
-        return;
-      case 'tracker_snapshot_request':
-      case 'tracker_write_request':
-        // tracker_snapshot_request/tracker_write_request (SPEC §7.10; issue
-        // #212): a client asking the owning node to read/write native
-        // tracker records for one of its sessions' bound projects — routed
-        // exactly like fs_list_request above. The relay only ever sees
-        // sessionId/targetId/requestId and an opaque `EncryptedEnvelope`;
-        // no record field ever reaches the relay in the clear (SPEC §8's
-        // metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':

@@ -1,8 +1,8 @@
 /* ---------------------------------------------------------------------
  * The live-mode half of the tracker bridge (SPEC §7.10; issue #631):
  * turns a resolved `TrackerBackend` call's `TrackerItemLive` result into
- * exactly the wire shape `NodeDaemon.readTrackerSnapshotForBridge`/
- * `applyTrackerWriteForBridge` already speak for a native-mode project
+ * exactly the wire shape `NodeDaemon.readTrackerSnapshot`/
+ * `applyTrackerWrite` already speak for a native-mode project
  * (`TrackerRecordV1`/`TrackerTypeDefinitionV1`, `tracker-records.ts`'s
  * own "native tracker's wire contract") — the Tracker page's kanban/list
  * views, `resolveRoleValue`, `resolveWorkflowCategory`, and

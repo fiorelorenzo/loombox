@@ -99,9 +99,9 @@ import { JiraTrackerBackend } from './jira-tracker-backend';
  * `resolveAccountForWrite` (never defaults) for a write-back action
  * (comment, transition, status change). Selecting the wrong one is the
  * exact bug SPEC §7.26 calls out — a live-mode project's read path and
- * write path (issue #631's own follow-up: `readTrackerSnapshotForBridge`/
- * `applyTrackerWriteForBridge`) each call `resolveTrackerBackend` with
- * their own intent; neither shares the other's resolution.
+ * write path (issue #631's own follow-up: `NodeDaemon.readTrackerSnapshot`/
+ * `applyTrackerWrite`) each call `resolveTrackerBackend` with their own
+ * intent; neither shares the other's resolution.
  */
 export type TrackerBackendIntent = 'read' | 'write';
 

@@ -25,6 +25,7 @@ import {
 } from '@loombox/supervisor';
 import {
   deriveKeyTree,
+  deriveProjectKey,
   deriveSessionKey,
   importAesGcmKey,
   openJson,
@@ -198,12 +199,13 @@ type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * {@link NodeDaemon.resolveTrackerDispatch}'s result — the one seam both
- * `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge`
- * (SPEC §7.10; issue #631) branch on, so a project's mode/account/pin
- * state can never be read differently by the two bridge paths. `'live'`
- * carries everything `tracker-live-bridge.ts`'s conversions need
- * (`provider`/`connectionId`, alongside the composed `backend`/`binding`
- * `@loombox/shared`'s `TrackerBackend` itself takes).
+ * `readTrackerSnapshot` and `applyTrackerWrite` (SPEC §7.10; issue #631;
+ * project-addressed rather than bridge-addressed by issue #697) branch on,
+ * so a project's mode/account/pin state can never be read differently by
+ * the two dispatch paths. `'live'` carries everything `tracker-live-
+ * bridge.ts`'s conversions need (`provider`/`connectionId`, alongside the
+ * composed `backend`/`binding` `@loombox/shared`'s `TrackerBackend` itself
+ * takes).
  */
 type TrackerBridgeDispatch =
   | { readonly kind: 'native' }
@@ -457,12 +459,12 @@ export interface NodeDaemonOptions {
    * This node's native tracker store (SPEC §7.10; issue #212, on top of
    * #210's `NativeTrackerStore`): backs `tracker_snapshot_request`/
    * `tracker_write_request` — the kanban/list UI's own read/write path,
-   * scoped through a session's bound `projectPath` exactly like
-   * `getExecutionTarget`'s `permissionPolicyStore` lookup above. The same
-   * store #211's (not-yet-hosted, #627) MCP tools bind to, so a human's
-   * UI edit and an agent's `tracker_update` tool call land in the same
-   * on-disk file. Injectable for tests; defaults to a fresh
-   * `NativeTrackerStore({ stateDir })`.
+   * keyed directly by the wire message's own `projectPath` (issue #697's
+   * node-addressing: no session/bridge required to read or write a
+   * project's records). The same store #211's (not-yet-hosted, #627) MCP
+   * tools bind to, so a human's UI edit and an agent's `tracker_update`
+   * tool call land in the same on-disk file. Injectable for tests;
+   * defaults to a fresh `NativeTrackerStore({ stateDir })`.
    */
   nativeTrackerStore?: NativeTrackerStore;
   /**
@@ -907,6 +909,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per process, same caching shape as {@link sessionKeys}. */
   private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
+  /** Backs {@link getProjectKey} (SPEC §8; issue #697's project-addressed tracker records) — a project's key is derived once per process, same caching shape as {@link sessionKeys}/{@link targetKeys}, keyed by `projectPath`. */
+  private readonly projectKeys = new Map<string, Promise<CryptoKey>>();
 
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   /** Per-target concurrency caps + overflow queue (SPEC §7.16, issue #252) — the one chokepoint every session's launch (`local` or `ssh:`) passes through; see `./session-concurrency-gate.ts`. */
@@ -989,9 +993,9 @@ export class NodeDaemon extends EventEmitter {
   private readonly jiraConnectService: JiraConnectService;
   /** SPEC §7.26, issue #227/#230's per-project, per-capability account pin map. */
   private readonly accountPinStore: AccountPinStore;
-  /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshotForBridge` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Consumed by {@link resolveTrackerDispatch}, the shared seam both `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge` dispatch through. */
+  /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshot` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Consumed by {@link resolveTrackerDispatch}, the shared seam both `readTrackerSnapshot` and `applyTrackerWrite` dispatch through. */
   private readonly trackerModeStore: TrackerModeStore;
-  /** SPEC §7.26, issue #631: this node's own view of the connected-account registry, which lives relay-side (`connected_accounts` table, migration `0011_connected_accounts`) — a node has no local copy of its own, exactly like a client. Requested on every fresh relay connection ({@link sendConnectedAccountListRequest}, mirroring {@link sendAmkEpochFetchRequest}) and replaced wholesale on every `connected_account_list` reply ({@link handleConnectedAccountList}) — the wire message carries no `requestId` to correlate (`@loombox/protocol`'s `connectedAccountList` doc comment), so this also transparently picks up a future relay-initiated push, not just this node's own request. Empty until that first reply lands, which is a safe default: `resolveTrackerBackend` sees no accounts and fails closed (`accountNotConnected`), never a stale or fabricated match. `readTrackerSnapshotForBridge`/`applyTrackerWriteForBridge` (via {@link resolveTrackerDispatch}) are the first consumers. */
+  /** SPEC §7.26, issue #631: this node's own view of the connected-account registry, which lives relay-side (`connected_accounts` table, migration `0011_connected_accounts`) — a node has no local copy of its own, exactly like a client. Requested on every fresh relay connection ({@link sendConnectedAccountListRequest}, mirroring {@link sendAmkEpochFetchRequest}) and replaced wholesale on every `connected_account_list` reply ({@link handleConnectedAccountList}) — the wire message carries no `requestId` to correlate (`@loombox/protocol`'s `connectedAccountList` doc comment), so this also transparently picks up a future relay-initiated push, not just this node's own request. Empty until that first reply lands, which is a safe default: `resolveTrackerBackend` sees no accounts and fails closed (`accountNotConnected`), never a stale or fabricated match. `readTrackerSnapshot`/`applyTrackerWrite` (via {@link resolveTrackerDispatch}) are the first consumers. */
   private connectedAccounts: readonly ConnectedAccount[] = [];
   /** `NodeDaemonOptions.trackerBackendFetchImpl`'s stored value — see that field's own doc comment. */
   private readonly trackerBackendFetchImpl: typeof fetch | undefined;
@@ -2296,13 +2300,14 @@ export class NodeDaemon extends EventEmitter {
    * `handleAmkEpochFetchResponse` applies before ever emitting, re-checked
    * here since adoption is the security-relevant step and callers should
    * never be trusted to skip a stale epoch on their own. Clears every
-   * cached session key (and {@link targetKeys}, issue #474's directory
-   * picker) so any *new* session/target-browse after this call derives
-   * from the new epoch; already-cached keys for sessions created before
-   * rotation are left alone for this process's remaining lifetime (see
-   * `session-keys.ts`'s doc comment for why the AMK is the sole root of
-   * derivation — there is no separate per-epoch history kept across a
-   * restart in this wave).
+   * cached session key (and {@link targetKeys}/{@link projectKeys}, issue
+   * #474's directory picker and issue #697's project-addressed tracker
+   * records respectively) so any *new* session/target-browse/tracker
+   * request after this call derives from the new epoch; already-cached
+   * keys from before rotation are left alone for this process's
+   * remaining lifetime (see `session-keys.ts`'s doc comment for why the
+   * AMK is the sole root of derivation — there is no separate per-epoch
+   * history kept across a restart in this wave).
    */
   adoptAmkEpoch(newAmk: Uint8Array, epoch: number): boolean {
     if (epoch <= this.amkEpoch) return false;
@@ -2310,6 +2315,7 @@ export class NodeDaemon extends EventEmitter {
     this.amkEpoch = epoch;
     this.sessionKeys.clear();
     this.targetKeys.clear();
+    this.projectKeys.clear();
     this.emit('amk-epoch-adopted', { epoch });
     return true;
   }
@@ -2906,29 +2912,46 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * A client asked (via the relay) this node for its session's tracker
+   * A client asked (via the relay) this node for a project's tracker
    * snapshot (SPEC §7.10; issue #212) — the kanban/list UI's initial load
-   * and its Retry action both funnel through this same handler. Mirrors
-   * `handleFsListRequest` exactly: ignored if `sessionId` isn't one of
-   * this node's own bridges, a decrypt failure is logged and dropped
-   * (there is no path to reply about), and everything past that — an
-   * unreadable/corrupt store — becomes an `outcome: 'error'` response
-   * instead of a silent drop, per `@loombox/protocol`'s
-   * `trackerSnapshotResponsePayloadV1` doc comment.
+   * and its Retry action both funnel through this same handler.
+   * Node-addressed by `nodeId` + `projectPath` (issue #697): no session or
+   * `SessionBridge` is required, or even consulted, to read a project's
+   * tracker — exactly the same addressing `handleTrackerModeGetRequest`
+   * already uses. A project's records must be reachable from the Tracker
+   * page with no agent session running for it at all, which the old
+   * `this.bridges.get(message.sessionId)` guard structurally could never
+   * allow (that guard, and this handler's own former `if (!bridge) return`,
+   * are gone). Every request now gets an answer: an envelope that fails to
+   * decrypt/parse (a stale AMK epoch, a corrupt or foreign envelope, ...)
+   * becomes an `outcome: 'error'` response exactly like an unreadable
+   * native store or an unresolvable `TrackerMode` dispatch already did —
+   * never a silently dropped request, which could only ever surface to the
+   * client as #691's class of bug one layer down: a timeout with no real
+   * cause attached (this issue's own motivating bug report).
    */
   private handleTrackerSnapshotRequest(message: TrackerSnapshotRequest): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
-
     this.decryptTrackerSnapshotRequest(message)
-      .then((payload) => this.readTrackerSnapshotForBridge(bridge, payload))
+      .then((payload) => this.readTrackerSnapshot(message.projectPath, payload))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: could not read tracker_snapshot_request envelope for project ${message.projectPath}: ${detail}`,
+        );
+        return { outcome: 'error' as const, message: `This request could not be read: ${detail}` };
+      })
       .then((responsePayload) =>
-        this.sendTrackerSnapshotResponse(bridge.session.id, message.requestId, responsePayload),
+        this.sendTrackerSnapshotResponse(
+          message.nodeId,
+          message.projectPath,
+          message.requestId,
+          responsePayload,
+        ),
       )
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
-          `NodeDaemon: failed to handle tracker_snapshot_request for session ${message.sessionId}: ${detail}`,
+          `NodeDaemon: failed to send tracker_snapshot_response for project ${message.projectPath}: ${detail}`,
         );
       });
   }
@@ -2936,13 +2959,13 @@ export class NodeDaemon extends EventEmitter {
   private async decryptTrackerSnapshotRequest(
     message: TrackerSnapshotRequest,
   ): Promise<TrackerSnapshotRequestPayloadV1> {
-    const key = await this.getSessionKey(message.sessionId);
-    return openJson<TrackerSnapshotRequestPayloadV1>(message.sessionId, message.envelope, key);
+    const key = await this.getProjectKey(message.projectPath);
+    return openJson<TrackerSnapshotRequestPayloadV1>(message.projectPath, message.envelope, key);
   }
 
   /**
-   * The one seam `readTrackerSnapshotForBridge` and `applyTrackerWriteForBridge`
-   * both dispatch through (SPEC §7.10; issue #631) — `projectPath`'s
+   * The one seam `readTrackerSnapshot` and `applyTrackerWrite` both
+   * dispatch through (SPEC §7.10; issue #631) — `projectPath`'s
    * `TrackerMode` is read here exactly once per call
    * (`this.trackerModeStore.get`, "never chosen" defaulting to
    * `{kind:'native'}`, same as `handleTrackerModeGetRequest`'s own
@@ -2950,7 +2973,7 @@ export class NodeDaemon extends EventEmitter {
    * `resolveTrackerBackend` here exactly once per call, against this
    * daemon's own `connectedAccounts`/`accountPinStore`/
    * `githubConnectService`/`jiraConnectService`. There is structurally
-   * nowhere for the two bridge paths to see a different mode, a
+   * nowhere for the two dispatch paths to see a different mode, a
    * different account list, or a different pin than each other — the
    * only place they're allowed to differ is `intent`, which changes
    * which #227 resolver `resolveTrackerBackend` applies
@@ -2988,27 +3011,26 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Reads `bridge`'s bound project's tracker (SPEC §7.10; issue #631):
-   * dispatches on the project's `TrackerMode` through
-   * {@link resolveTrackerDispatch}, shared with
-   * {@link applyTrackerWriteForBridge} so the two can't diverge.
-   * `'native'` ({@link readNativeTrackerSnapshot}) behaves exactly as
-   * before this issue. `'live'` ({@link readLiveTrackerSnapshot}) calls
-   * the resolved `TrackerBackend.list` and maps its `TrackerItemLive[]`
-   * through `tracker-live-bridge.ts` into the same
-   * `TrackerRecordV1[]`/`TrackerTypeDefinitionV1[]` shape, so the
-   * Tracker page's kanban/list views need no live-specific rendering
-   * path. `'error'` (an unresolvable mode) never falls back to the
-   * native store — SPEC §7.10's explicit connectivity-error state — and
-   * carries both a human `message` and the structured `reason`
-   * `TrackerPage.svelte` switches on. {@link handleTrackerSnapshotRequest}
-   * always has a response to seal and send back either way.
+   * Reads `projectPath`'s tracker (SPEC §7.10; issue #631; project-
+   * addressed directly rather than through a `SessionBridge` since issue
+   * #697): dispatches on the project's `TrackerMode` through
+   * {@link resolveTrackerDispatch}, shared with {@link applyTrackerWrite}
+   * so the two can't diverge. `'native'` ({@link readNativeTrackerSnapshot})
+   * behaves exactly as before this issue. `'live'`
+   * ({@link readLiveTrackerSnapshot}) calls the resolved `TrackerBackend.list`
+   * and maps its `TrackerItemLive[]` through `tracker-live-bridge.ts` into
+   * the same `TrackerRecordV1[]`/`TrackerTypeDefinitionV1[]` shape, so the
+   * Tracker page's kanban/list views need no live-specific rendering path.
+   * `'error'` (an unresolvable mode) never falls back to the native store
+   * — SPEC §7.10's explicit connectivity-error state — and carries both a
+   * human `message` and the structured `reason` `TrackerPage.svelte`
+   * switches on. {@link handleTrackerSnapshotRequest} always has a
+   * response to seal and send back either way.
    */
-  private async readTrackerSnapshotForBridge(
-    bridge: SessionBridge,
+  private async readTrackerSnapshot(
+    projectPath: string,
     payload: TrackerSnapshotRequestPayloadV1,
   ): Promise<TrackerSnapshotResponsePayloadV1> {
-    const projectPath = bridge.session.projectPath;
     const dispatch = await this.resolveTrackerDispatch(projectPath, 'read');
     if (dispatch.kind === 'error') return trackerResolutionErrorPayload(dispatch.error);
     if (dispatch.kind === 'native') return this.readNativeTrackerSnapshot(projectPath, payload);
@@ -3033,8 +3055,8 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * The live half of {@link readTrackerSnapshotForBridge}. Only the
-   * first page of `dispatch.backend.list` is fetched — `tracker_snapshot_request`
+   * The live half of {@link readTrackerSnapshot}. Only the first page of
+   * `dispatch.backend.list` is fetched — `tracker_snapshot_request`
    * carries no cursor field for a caller to page through, a real,
    * documented limitation of this bridge rather than dropped pagination.
    * Never throws: a backend/network failure (as opposed to a resolution
@@ -3058,16 +3080,18 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private async sendTrackerSnapshotResponse(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     requestId: string,
     payload: TrackerSnapshotResponsePayloadV1,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
-    const envelope = await sealJson(sessionId, payload, key);
+    const key = await this.getProjectKey(projectPath);
+    const envelope = await sealJson(projectPath, payload, key);
     this.relay.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId,
+      nodeId,
+      projectPath,
       requestId,
       envelope,
     });
@@ -3075,25 +3099,35 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * A client asked (via the relay) this node to create/update a native
-   * tracker record, or define a custom type, against its session's bound
-   * project (SPEC §7.10; issue #212) — the kanban board's drag-to-move,
-   * the create/edit dialogs, and the custom-type dialog all funnel
-   * through this one handler. Mirrors `handleTrackerSnapshotRequest`'s
-   * guard/decrypt/reply shape exactly.
+   * tracker record, or define a custom type, against a project (SPEC
+   * §7.10; issue #212) — the kanban board's drag-to-move, the create/edit
+   * dialogs, and the custom-type dialog all funnel through this one
+   * handler. Mirrors `handleTrackerSnapshotRequest`'s node-addressed
+   * decrypt/reply shape exactly, including its "every request gets an
+   * answer" contract (issue #697).
    */
   private handleTrackerWriteRequest(message: TrackerWriteRequest): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
-
     this.decryptTrackerWriteRequest(message)
-      .then((payload) => this.applyTrackerWriteForBridge(bridge, payload))
+      .then((payload) => this.applyTrackerWrite(message.projectPath, payload))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: could not read tracker_write_request envelope for project ${message.projectPath}: ${detail}`,
+        );
+        return { outcome: 'error' as const, message: `This request could not be read: ${detail}` };
+      })
       .then((responsePayload) =>
-        this.sendTrackerWriteResponse(bridge.session.id, message.requestId, responsePayload),
+        this.sendTrackerWriteResponse(
+          message.nodeId,
+          message.projectPath,
+          message.requestId,
+          responsePayload,
+        ),
       )
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
-          `NodeDaemon: failed to handle tracker_write_request for session ${message.sessionId}: ${detail}`,
+          `NodeDaemon: failed to send tracker_write_response for project ${message.projectPath}: ${detail}`,
         );
       });
   }
@@ -3101,23 +3135,23 @@ export class NodeDaemon extends EventEmitter {
   private async decryptTrackerWriteRequest(
     message: TrackerWriteRequest,
   ): Promise<TrackerWriteRequestPayloadV1> {
-    const key = await this.getSessionKey(message.sessionId);
-    return openJson<TrackerWriteRequestPayloadV1>(message.sessionId, message.envelope, key);
+    const key = await this.getProjectKey(message.projectPath);
+    return openJson<TrackerWriteRequestPayloadV1>(message.projectPath, message.envelope, key);
   }
 
   /**
-   * Applies one create/update/defineType op against `bridge`'s bound
-   * project (SPEC §7.10; issue #631) — dispatches on `TrackerMode`
+   * Applies one create/update/defineType op against `projectPath` (SPEC
+   * §7.10; issue #631; project-addressed directly rather than through a
+   * `SessionBridge` since issue #697) — dispatches on `TrackerMode`
    * through {@link resolveTrackerDispatch}, called with `intent:'write'`
    * (never `'read'`) so an unpinned live account never defaults
    * silently — see that method's own doc comment. `'error'` never falls
-   * back to the native store, same as {@link readTrackerSnapshotForBridge}.
+   * back to the native store, same as {@link readTrackerSnapshot}.
    */
-  private async applyTrackerWriteForBridge(
-    bridge: SessionBridge,
+  private async applyTrackerWrite(
+    projectPath: string,
     payload: TrackerWriteRequestPayloadV1,
   ): Promise<TrackerWriteResponsePayloadV1> {
-    const projectPath = bridge.session.projectPath;
     const dispatch = await this.resolveTrackerDispatch(projectPath, 'write');
     if (dispatch.kind === 'error') return trackerResolutionErrorPayload(dispatch.error);
     if (dispatch.kind === 'native') return this.applyNativeTrackerWrite(projectPath, payload);
@@ -3177,7 +3211,7 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * The live half of {@link applyTrackerWriteForBridge}. `create`/`update`
+   * The live half of {@link applyTrackerWrite}. `create`/`update`
    * forward `fields` straight to the resolved `TrackerBackend` — a live
    * record has no native `primaryType`/`typeTags`/`archived` concept to
    * apply, see `tracker-live-bridge.ts`'s own doc comment for what a
@@ -3224,16 +3258,18 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private async sendTrackerWriteResponse(
-    sessionId: string,
+    nodeId: string,
+    projectPath: string,
     requestId: string,
     payload: TrackerWriteResponsePayloadV1,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
-    const envelope = await sealJson(sessionId, payload, key);
+    const key = await this.getProjectKey(projectPath);
+    const envelope = await sealJson(projectPath, payload, key);
     this.relay.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId,
+      nodeId,
+      projectPath,
       requestId,
       envelope,
     });
@@ -4513,6 +4549,16 @@ export class NodeDaemon extends EventEmitter {
     if (!key) {
       key = deriveTargetKey(this.amk, this.accountId, targetId);
       this.targetKeys.set(targetId, key);
+    }
+    return key;
+  }
+
+  /** Same caching shape as {@link getSessionKey}/{@link getTargetKey}, for {@link projectKeys} (issue #697's project-addressed tracker records — `@loombox/crypto`'s `deriveProjectKey`, the account-scoped sibling of `deriveSessionKey`, keyed by `projectPath` rather than `sessionId` so a client can reach a project's tracker with no session running for it at all). */
+  private getProjectKey(projectPath: string): Promise<CryptoKey> {
+    let key = this.projectKeys.get(projectPath);
+    if (!key) {
+      key = deriveProjectKey(this.amk, this.accountId, projectPath);
+      this.projectKeys.set(projectPath, key);
     }
     return key;
   }

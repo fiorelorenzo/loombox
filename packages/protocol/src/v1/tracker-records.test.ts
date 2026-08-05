@@ -21,6 +21,7 @@ import {
   type TrackerRecordV1,
   type TrackerTypeDefinitionV1,
 } from './tracker-records';
+import { PROTOCOL_V1 } from './handshake';
 
 const envelope = {
   resourceId: 'session-1',
@@ -320,8 +321,8 @@ describe('tracker_snapshot_request / tracker_snapshot_response (the top-level wi
     const result = trackerSnapshotRequest.safeParse({
       type: 'tracker_snapshot_request',
       protocolVersion: 1,
-      sessionId: 'session-1',
-      targetId: 'local',
+      nodeId: 'node-1',
+      projectPath: '/home/dev/p',
       requestId: 'req-1',
       envelope,
     });
@@ -332,7 +333,8 @@ describe('tracker_snapshot_request / tracker_snapshot_response (the top-level wi
     const result = trackerSnapshotResponse.safeParse({
       type: 'tracker_snapshot_response',
       protocolVersion: 1,
-      sessionId: 'session-1',
+      nodeId: 'node-1',
+      projectPath: '/home/dev/p',
       requestId: 'req-1',
       envelope,
     });
@@ -345,8 +347,8 @@ describe('tracker_write_request / tracker_write_response (the top-level wire mes
     const result = trackerWriteRequest.safeParse({
       type: 'tracker_write_request',
       protocolVersion: 1,
-      sessionId: 'session-1',
-      targetId: 'local',
+      nodeId: 'node-1',
+      projectPath: '/home/dev/p',
       requestId: 'req-2',
       envelope,
     });
@@ -357,10 +359,55 @@ describe('tracker_write_request / tracker_write_response (the top-level wire mes
     const result = trackerWriteResponse.safeParse({
       type: 'tracker_write_response',
       protocolVersion: 1,
-      sessionId: 'session-1',
+      nodeId: 'node-1',
+      projectPath: '/home/dev/p',
       requestId: 'req-2',
       envelope,
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe('tracker record messages are project-addressed (issue #697)', () => {
+  const base = { protocolVersion: PROTOCOL_V1, requestId: 'req-1', envelope } as const;
+  const addressed = { nodeId: 'node-1', projectPath: '/home/dev/p' } as const;
+
+  it.each([
+    ['tracker_snapshot_request', trackerSnapshotRequest],
+    ['tracker_snapshot_response', trackerSnapshotResponse],
+    ['tracker_write_response', trackerWriteResponse],
+  ] as const)('%s carries nodeId + projectPath', (type, schema) => {
+    expect(schema.safeParse({ type, ...base, ...addressed }).success).toBe(true);
+  });
+
+  it('a session-addressed request no longer parses, so a stale client cannot half-work', () => {
+    // The point of the cutover: an old client sending sessionId+targetId must
+    // fail the schema outright rather than reach a node that would then read
+    // an undefined projectPath.
+    const stale = {
+      type: 'tracker_snapshot_request',
+      ...base,
+      sessionId: 'sess-1',
+      targetId: 'local',
+    };
+    expect(trackerSnapshotRequest.safeParse(stale).success).toBe(false);
+  });
+
+  it('read and write are addressed identically, so they cannot mean different trackers', () => {
+    const read = trackerSnapshotRequest.safeParse({
+      type: 'tracker_snapshot_request',
+      ...base,
+      ...addressed,
+    });
+    const write = trackerWriteRequest.safeParse({
+      type: 'tracker_write_request',
+      ...base,
+      ...addressed,
+      envelope: envelope,
+    });
+    expect([read.success, write.success]).toEqual([true, true]);
+    expect(Object.keys(trackerSnapshotRequest.shape).sort()).toEqual(
+      Object.keys(trackerWriteRequest.shape).sort(),
+    );
   });
 });
