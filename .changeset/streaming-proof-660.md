@@ -1,7 +1,7 @@
 ---
-"@loombox/web": patch
-"@loombox/node": patch
-"@loombox/providers-core": patch
+'@loombox/web': patch
+'@loombox/node': patch
+'@loombox/providers-core': patch
 ---
 
 Fixed a real bug behind issue #660 (agent text appearing in one burst instead of streaming): `RelayClient` never resent `session_resume` after a reconnect, so a session's live updates silently stopped arriving once its connection dropped and came back (a slept laptop, a network blip, a heartbeat timeout) until the whole page reloaded. Now every session still marked as subscribed gets resumed again on every fresh handshake, first connect or reconnect alike.
