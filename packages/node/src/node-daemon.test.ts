@@ -646,8 +646,15 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     // used to hand back the internal shape directly, which is why it agreed
     // with the bug: `thought_level` never appeared at all, and the ids were
     // invented short names rather than the real provider-qualified ones.
+    //
+    // `id` and `type` ride along because writing an option back needs them
+    // (issue #707): the agent's `configId` is the entry's own `id`, which is
+    // NOT its category — sending the category is rejected outright. So they
+    // reach the client too rather than being dropped at the mapping.
     expect(initialCatalog!.options).toEqual([
       {
+        id: 'mode',
+        type: 'select',
         category: 'mode',
         current: 'default',
         choices: [
@@ -656,6 +663,8 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
         ],
       },
       {
+        id: 'model',
+        type: 'select',
         category: 'model',
         current: 'anthropic/claude-sonnet-5',
         choices: [
@@ -664,14 +673,31 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
         ],
       },
       {
-        // The agent's own `id` is 'thinking' while its `category` is
-        // 'thought_level'; the mapping keys on category, so this is the
-        // category that must land here.
+        // The clearest case of the id-vs-category split: this entry's own
+        // `id` is 'thinking' while its `category` is 'thought_level'. The
+        // mapping keys on category, and #707 sources `configId` from `id`.
+        id: 'thinking',
+        type: 'select',
         category: 'thought_level',
         current: 'auto',
         choices: [
           { id: 'off', name: 'Off' },
           { id: 'auto', name: 'Auto' },
+        ],
+      },
+      {
+        // A category this client has never heard of. The mapping is required
+        // to pass it through untouched rather than drop it (`AcpConfigOption`
+        // is typed for exactly this), and asserting it HERE, at the node's
+        // own wire boundary, is what proves the guarantee survives the whole
+        // way to a client rather than only inside `mapConfigOptions`.
+        id: 'reasoning_style_v3',
+        type: 'select',
+        category: 'reasoning_style_v3',
+        current: 'balanced',
+        choices: [
+          { id: 'balanced', name: 'Balanced' },
+          { id: 'aggressive', name: 'Aggressive' },
         ],
       },
     ]);
