@@ -1,0 +1,521 @@
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>Model &amp; thinking effort: fix the wire, then pick a layout</h2>
+  </div>
+  <blockquote class="item-quote">
+    sotto all'input deve esserci anche scritto il modello in uso (con possibilità di cambiarlo) e
+    l'effort di pensiero con possibilità di cambiarlo. ovviamente intelligente, con le opzioni
+    giuste per ogni provider in uso
+  </blockquote>
+  <p class="item-note">
+    Not a missing feature — a broken wire. <code>ConfigBar</code> already exists as SPEC.md
+    §7.24 &ldquo;Model, mode &amp; reasoning effort&rdquo;'s specified home for exactly these two
+    controls, mounted in the one row under the composer since Lorenzo's own July 30 request put it
+    there. It renders only the agent name and the cost meter today — I read the live DOM and it is
+    literally <code>Oh My Pi</code> + <code>$0.00</code> — because <code>options</code> is always
+    empty. <code>client.ts:432</code> seeds every new session from
+    <code>this.lastConfigCatalog</code>, and that field is populated only by <code>initialize</code>
+    (<code>:408</code>); <code>session/new</code>'s own response is typed as a bare
+    <code>{ sessionId: string }</code> (<code>:427</code>), so whatever catalogue it carries is
+    never even parsed. Probed against the real <code>omp acp</code> binary directly:
+    <code>initialize</code> returns no <code>configOptions</code> at all — <code>session/new</code>
+    is where the real catalogue lives, 26 models, thinking
+    (<code>off/auto/low/medium/high/xhigh/max</code>), mode (<code>default/plan</code>). There's a
+    shape to bridge too: the wire sends
+    <code>{id,name,category,type,currentValue,options:[{value,name,description}]}</code>, the
+    internal <code>AcpConfigOption</code> (<code>types.ts:158</code>) is
+    <code>{category,current,choices:[{id,name}]}</code>. Read <code>session/new</code>'s response
+    and map that shape, and &ldquo;le opzioni giuste per ogni provider&rdquo; comes for free — the
+    agent declares its own catalogue per provider; loombox's only job is to stop discarding it and
+    render whatever arrives. What's left to decide is presentation: 26 models and 7 thinking levels
+    is a lot to fit under one composer row. Every option below also carries a second, orthogonal
+    fork: <code>session/set_config_option</code> changes the running session only — nothing in the
+    client persists a choice past it, so a &ldquo;remember for new sessions&rdquo; checkbox is new
+    plumbing, not a flip of a switch that already exists. Each mock below shows where it would sit.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Agent name + cost only</span>
+      </div>
+      <p class="opt-why">
+        Nothing to pick because nothing arrives — the row's own design is fine, everything wrong is
+        upstream of it.
+      </p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Oh My Pi</span></div>
+          <div class="lb-row-body lb-prose">
+            <p>Migrated the retry queue to exponential backoff. Tests are green.</p>
+          </div>
+        </div>
+        <div class="lb-hr"></div>
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-1</span><span class="opt-title">Inline, one picker per category</span>
+      </div>
+      <p class="opt-why">
+        Every category stays one click away, nothing hidden behind another control.
+        <b>Trades width</b> for directness — a model name plus a thinking level plus the meter is
+        most of the row before Send even shows up, and it only tightens as a provider's model names
+        get longer.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <div class="e1-control">
+              <span class="e1-label">Thinking</span>
+              <button type="button" class="e1-select" aria-haspopup="listbox">
+                <span class="e1-select-value">High</span>
+                <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+            </div>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">A longer model name</p>
+        <div class="lb-inline e1-bar">
+          <span class="e1-agent">Oh My Pi</span>
+          <button type="button" class="e1-select e1-long" aria-haspopup="listbox">
+            <span class="e1-select-value">Claude 3.5 Haiku (Legacy, Extended Vision)</span>
+            <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+          </button>
+          <div class="e1-control">
+            <span class="e1-label">Thinking</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Medium</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <span class="lb-spacer"></span>
+          <span class="lb-small e1-mono">12k / 200k · $0.02</span>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Model picker open</p>
+        <div class="lb-panel e1-select-list">
+          <button type="button" class="lb-listrow e1-select-option is-selected">
+            <span>Claude Opus 5</span><svg class="e1-check"><use href="#i-check" /></svg>
+          </button>
+          <button type="button" class="lb-listrow e1-select-option"><span>Claude Sonnet 4.5</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>GPT-5.1</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>GPT-5.1 Mini</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>Gemini 3 Pro</span></button>
+          <div class="lb-listrow e1-select-more"><span class="lb-caption">+ 21 more, scrolls</span></div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember as default for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">
+          This session only, unless checked — <code>session/set_config_option</code> is per-session;
+          it doesn't touch what the <em>next</em> session starts with.
+        </p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px, tapped open (today's own "···" toggle)</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            Same crowding <code>ConfigBar</code>'s own doc comment already flags for the old strip —
+            three inline controls don't get narrower just because the window did; the "···" opens
+            straight onto this row.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-2</span><span class="opt-title">One consolidated control</span>
+      </div>
+      <p class="opt-why">
+        Model, thinking and mode collapse into one button reading <code>Opus 5 · High</code> that
+        opens a single popover holding all three. <b>Trades a second click</b> for the narrowest
+        footprint of the three — thinking and mode are both hidden until the trigger opens, model
+        included.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="dialog">
+              <span class="e1-select-value">Opus 5 · High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Popover open</p>
+        <div class="lb-panel e1-popover">
+          <div class="e1-popover-section">
+            <span class="lb-caption">Model</span>
+            <button type="button" class="lb-listrow e1-select-option is-selected">
+              <span>Claude Opus 5</span><svg class="e1-check"><use href="#i-check" /></svg>
+            </button>
+            <button type="button" class="lb-listrow e1-select-option"><span>Claude Sonnet 4.5</span></button>
+            <div class="lb-listrow e1-select-more"><span class="lb-caption">+ 24 more, scrolls</span></div>
+          </div>
+          <div class="e1-popover-section">
+            <span class="lb-caption">Thinking</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Thinking">
+              <button type="button" class="e1-mode-choice">Off</button>
+              <button type="button" class="e1-mode-choice">Auto</button>
+              <button type="button" class="e1-mode-choice">Low</button>
+              <button type="button" class="e1-mode-choice">Medium</button>
+              <button type="button" class="e1-mode-choice is-selected">High</button>
+              <button type="button" class="e1-mode-choice">Xhigh</button>
+              <button type="button" class="e1-mode-choice">Max</button>
+            </div>
+          </div>
+          <div class="e1-popover-section">
+            <span class="lb-caption">Mode</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Mode">
+              <button type="button" class="e1-mode-choice is-selected">Default</button>
+              <button type="button" class="e1-mode-choice">Plan</button>
+            </div>
+          </div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">
+          This session only, unless checked — <code>session/set_config_option</code> is mid-session
+          and per-session, model, thinking and mode alike.
+        </p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Opus 5 · High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            One control, one line — narrow enough it may not need the "···" fold at all. The one
+            place this layout wins outright.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-3</span><span class="opt-title">Model inline, thinking in overflow</span>
+      </div>
+      <p class="opt-why">
+        Model — what actually changes turn to turn — stays inline; thinking, changed far less often,
+        moves behind a settings icon beside it. <b>Trades a click for the control used rarely</b> to
+        keep the one used often free; wrong the day that usage pattern flips.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <button type="button" class="lb-iconbtn" aria-label="Turn settings" aria-haspopup="menu">
+              <svg><use href="#i-more" /></svg>
+            </button>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Settings menu open</p>
+        <div class="lb-panel e1-popover e1-settings-menu">
+          <div class="e1-popover-section">
+            <span class="lb-caption">Thinking</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Thinking">
+              <button type="button" class="e1-mode-choice">Off</button>
+              <button type="button" class="e1-mode-choice">Auto</button>
+              <button type="button" class="e1-mode-choice">Low</button>
+              <button type="button" class="e1-mode-choice">Medium</button>
+              <button type="button" class="e1-mode-choice is-selected">High</button>
+              <button type="button" class="e1-mode-choice">Xhigh</button>
+              <button type="button" class="e1-mode-choice">Max</button>
+            </div>
+          </div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">This session only, unless checked.</p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            Only model needs the fold — thinking already left this row, so tapping "···" costs one
+            picker's width, not two.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .e1-bar {
+    width: 100%;
+    flex-wrap: wrap;
+    font-size: var(--text-small-size);
+  }
+
+  .e1-agent {
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+
+  .e1-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .e1-label {
+    color: var(--color-text-secondary);
+  }
+
+  .e1-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Faithful to ui/Select.svelte's `sm` trigger. */
+  .e1-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    max-width: 100%;
+    padding: var(--space-2xs) var(--space-md);
+    background: var(--color-surface);
+    color: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  /* Illustrates truncation against a long provider model name — the fixed
+     width is the measurement this row exists to show, not a token. */
+  .e1-select.e1-long {
+    max-width: 11rem;
+  }
+
+  .e1-select-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .e1-select-chevron {
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .e1-check {
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    color: currentColor;
+  }
+
+  .e1-substage-label {
+    margin: var(--space-lg) 0 var(--space-2xs);
+  }
+
+  .e1-select-list {
+    max-width: 18rem;
+    padding: var(--space-2xs);
+  }
+
+  .e1-select-option {
+    width: 100%;
+    justify-content: space-between;
+    background: transparent;
+    border: 0;
+    text-align: left;
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  .e1-select-option.is-selected {
+    color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .e1-select-more {
+    justify-content: center;
+    cursor: default;
+  }
+
+  .e1-select-more:hover {
+    background: transparent;
+  }
+
+  .e1-remember {
+    cursor: pointer;
+  }
+
+  .e1-remember input[type='checkbox'] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--color-accent);
+  }
+
+  .e1-fact {
+    margin: var(--space-2xs) 0 0;
+  }
+
+  .e1-popover {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 20rem;
+    padding: var(--space-sm);
+  }
+
+  .e1-popover .e1-select-option,
+  .e1-popover .e1-select-more,
+  .e1-popover .e1-remember {
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  .e1-popover-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .e1-settings-menu {
+    max-width: 14rem;
+  }
+
+  /* Faithful to ConfigBar.svelte's own `mode` segmented control. */
+  .e1-mode {
+    display: inline-flex;
+    flex-wrap: wrap;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .e1-mode-choice {
+    padding: var(--space-2xs) var(--space-sm);
+    background: transparent;
+    border: 0;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  .e1-mode-choice:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .e1-mode-choice.is-selected {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  /* The composer's own content-column width at a phone measure, illustrated
+     rather than tokenised — this is the constraint being discussed. */
+  .e1-narrow {
+    max-width: 17rem;
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+  }
+
+  .e1-narrow .e1-bar {
+    margin-bottom: var(--space-2xs);
+  }
+
+  .e1-narrow-note {
+    margin: 0;
+  }
+</style>

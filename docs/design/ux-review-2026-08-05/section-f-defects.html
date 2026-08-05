@@ -1,0 +1,263 @@
+<!--
+  SECTION F - defects found while investigating the review.
+  These need no decision from Lorenzo: they are broken, and the fix is the fix.
+  They are in the artifact so he can see what the review turned up beyond what
+  he asked for, and so the board entries have somewhere to point.
+
+  Every claim here was verified by me directly - by reading the file, or by
+  driving the real app on the Mac over CDP against production. Where something
+  is inferred rather than observed, it says so.
+-->
+
+<style>
+  .s-def-grid {
+    display: grid;
+    gap: var(--space-md);
+  }
+  .s-def-repro {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-sm) var(--space-md);
+    border-left: 2px solid var(--color-danger);
+    background: var(--color-danger-subtle);
+    border-radius: var(--radius-sm);
+  }
+  .s-def-repro-title {
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-danger);
+  }
+  .s-def-step {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: baseline;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+  .s-def-step-n {
+    flex: 0 0 1.25rem;
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+  /* F2 - the two gutter alignments, drawn to scale against a real row. */
+  .s-def-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+  .s-def-gutter {
+    flex: 0 0 2.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  .s-def-gutter.is-bad {
+    padding-top: var(--space-2xs);
+  }
+  .s-def-glyph {
+    color: var(--color-text-muted);
+  }
+  .s-def-cmd {
+    flex: 1;
+    min-width: 0;
+  }
+  .s-def-ruler {
+    position: relative;
+  }
+  .s-def-ruler::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: 0.65em;
+    border-top: 1px dashed var(--color-accent);
+    opacity: 0.7;
+  }
+</style>
+
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>Files and Terminal die for good after the node restarts</h2>
+  </div>
+  <blockquote class="item-quote">
+    nella workbench il tab files non funziona. [...] il terminale spesso non funziona
+  </blockquote>
+  <p class="item-note">
+    Both, same cause, and it is the bug I already fixed once. A node keeps a
+    <code>SessionBridge</code> per live session, created in exactly one place
+    (<code>node-daemon.ts:1905</code>, inside session creation) and never rebuilt for a session
+    that was already on disk. <b>Eleven</b> handlers open with
+    <code>if (!bridge) return;</code> &mdash; <code>fs_list_request</code> (<code>:2836</code>),
+    <code>terminal_open</code> (<code>:3947</code>), terminal input/resize/close, the three
+    test-runner handlers, <code>run_start</code>, <code>run_cancel</code> and
+    <code>prompt_inject</code>. So the moment the node restarts &mdash; a deploy, a crash, a
+    reboot &mdash; every pre-existing session keeps rendering its transcript from the client's own
+    cache while every one of those requests is dropped without a reply. The client waits out its
+    own 10s deadline (<code>FileTreePanel.svelte:82</code>,
+    <code>InteractiveTerminal.svelte:293</code>) and then blames the node for being asleep or
+    offline, which is exactly the wrong thing to tell you: the node is awake, connected, and
+    ignoring you.
+  </p>
+  <p class="item-note">
+    This is the same defect class as <code>#697</code>, the tracker bug you found last round. That
+    fix removed the guard on one handler and left the other eleven. The comment it left behind at
+    <code>:2922-2925</code> even says so out loud. Better yet, the terminal handler's own doc
+    comment promises the opposite of what the code does: <em>&ldquo;so the client never hangs
+    waiting for a reply that never comes&rdquo;</em>, three lines above the return that hangs it.
+  </p>
+  <p class="item-note">
+    And the node already knows. A session reloaded from disk after a restart comes back marked
+    <code>'disconnected'</code> on purpose, with the reasoning written out at
+    <code>session-manager.ts:49-53</code>: <em>&ldquo;a node restart means the agent process that
+    made a saved 'running' or 'paused' record true is simply gone, and pretending otherwise would
+    let a client believe it can resume into a live agent that no longer exists&rdquo;</em>. That is
+    exactly right, and then nobody tells you. The client draws the session like any other, offers
+    Files and Terminal, and the handlers meet both with silence &mdash; so the one honest piece of
+    state in the system never reaches the screen.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Observed</span><span class="opt-title">Reproduced on your Mac, against production</span>
+      </div>
+      <p class="opt-why">Not inferred from the code. I drove the real window over CDP and watched both fail, then read the handlers to explain it.</p>
+      <div class="stage">
+        <div class="s-def-repro">
+          <span class="s-def-repro-title">Reproduction</span>
+          <div class="s-def-step"><span class="s-def-step-n">1</span><span>Restart the node daemon. Leave the session alone; do not create a new one.</span></div>
+          <div class="s-def-step"><span class="s-def-step-n">2</span><span>Load the app fresh and open the session. The transcript renders normally, so nothing looks wrong.</span></div>
+          <div class="s-def-step"><span class="s-def-step-n">3</span><span>Open Files &rarr; <span class="lb-mono">This folder didn't answer in time.</span> Open Terminal &rarr; <span class="lb-mono">The terminal hasn't opened yet.</span></span></div>
+          <div class="s-def-step"><span class="s-def-step-n">4</span><span>A brand-new terminal tab fails the same way. Only starting a new session brings either back.</span></div>
+        </div>
+        <div class="lb-spacer"></div>
+        <p class="lb-small lb-muted">
+          One trap worth naming, because it fooled me for a while: right after the restart the
+          Files tree still <em>looked</em> fine. That was the client replaying its own cached
+          listing. On a genuinely cold load both fail together, every time.
+        </p>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Answer every request, and rebuild the bridge on demand</span>
+      </div>
+      <p class="opt-why">Three parts, and the last is the one that matters: the node stops answering with silence, the client shows the state the node already has, and re-attaching does not mean starting over.</p>
+      <div class="stage">
+        <div class="lb-stack">
+          <div class="lb-listrow"><span class="lb-badge danger">today</span><span class="lb-small">no bridge &rarr; <span class="lb-mono">return</span> &rarr; the client invents a reason 10s later</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">1</span><span class="lb-small">every handler replies, <span class="lb-mono">outcome: 'error'</span> carrying the real reason</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">2</span><span class="lb-small">the session row shows <span class="lb-mono">disconnected</span>, which the node already recorded</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">3</span><span class="lb-small">opening Files or a terminal on it offers to resume, instead of failing for 10s</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f2">
+  <div class="item-head">
+    <span class="item-id">F2</span>
+    <h2>The tool-call glyph sits below the line it belongs to</h2>
+  </div>
+  <blockquote class="item-quote">
+    le icone dei comandi eseguiti di quando esegue un tool non sono allineate con il testo del
+    comando
+  </blockquote>
+  <p class="item-note">
+    Real, and it is one declaration. <code>.tool-gutter</code> carries
+    <code>padding-top: var(--space-2xs)</code> (<code>ToolCallGutter.svelte:27</code>) inside a
+    row that is already <code>align-items: flex-start</code>. The row aligns the gutter's top edge
+    to the command's top edge correctly, and then that padding pushes the glyph 4px down from it,
+    so it lands between the first and second line instead of on the first. The padding is
+    decorative; the gutter's real job, keeping the glyph flush to the column's right edge, is done
+    by <code>align-items: flex-end</code> and is unaffected by removing it.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Glyph 4px low</span>
+      </div>
+      <p class="opt-why">Reads as sloppy at every width, and worse on a one-line command where there is no second line for the eye to forgive it against.</p>
+      <div class="stage">
+        <div class="s-def-row">
+          <div class="s-def-gutter is-bad"><span class="s-def-glyph">&#9656;</span></div>
+          <div class="s-def-cmd s-def-ruler">
+            <span class="lb-mono">$ git status -sb &amp;&amp; git log --oneline -12</span>
+          </div>
+        </div>
+        <div class="stage-label">dashed line = the command's first text line</div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Drop the padding</span>
+      </div>
+      <p class="opt-why">Glyph and command share one baseline; nothing else in the row moves.</p>
+      <div class="stage">
+        <div class="s-def-row">
+          <div class="s-def-gutter"><span class="s-def-glyph">&#9656;</span></div>
+          <div class="s-def-cmd s-def-ruler">
+            <span class="lb-mono">$ git status -sb &amp;&amp; git log --oneline -12</span>
+          </div>
+        </div>
+        <div class="stage-label">same row, padding removed</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f3">
+  <div class="item-head">
+    <span class="item-id">F3</span>
+    <h2>The terminal prints its own plumbing before your prompt</h2>
+  </div>
+  <blockquote class="item-quote">
+    quando funziona ci sono delle righe in alto di testo prima della riga per i comandi che non
+    c'entrano niente
+  </blockquote>
+  <p class="item-note">
+    Found it, with one honest caveat. On an <b>SSH</b> target the node writes
+    <code>cd &lt;worktree&gt; &amp;&amp; clear</code> into the shell channel and only then wires
+    the output listeners (<code>node-daemon.ts:4049</code>, listeners at <code>:4053</code>), so
+    that command and whatever the login shell printed before it are already in the buffer when
+    the client attaches. The code comment calls this <em>&ldquo;an accepted, documented
+    tradeoff&rdquo;</em>; you are the evidence that it is not accepted. It exists because
+    <code>ssh2</code>'s shell channel has no <code>cwd</code> option, unlike a local
+    <code>node-pty</code> spawn.
+  </p>
+  <p class="item-note">
+    The caveat: your session is a <b>local</b> target, and the local branch has no such write &mdash;
+    I opened a terminal on it and got a single clean prompt row and nothing else. So either you
+    saw this on an SSH target, or there is a second source I have not reproduced. Worth one
+    sentence from you before I fix the wrong thing.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Setup leaks into the scrollback</span>
+      </div>
+      <p class="opt-why">The first thing a new terminal shows is the app talking to itself.</p>
+      <div class="stage">
+        <div class="lb-console">
+          <div>Last login: Tue Aug  5 13:58:02 2026 from 100.87.202.117</div>
+          <div>$ cd /home/dev/Progetti/loombox &amp;&amp; clear</div>
+          <div>dev@devbox:~/Progetti/loombox$ <span class="lb-caret"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Swallow everything before the shell is placed</span>
+      </div>
+      <p class="opt-why">Attach the listeners first and discard output until the setup command's own <span class="lb-mono">clear</span> lands, so the user's first line is their prompt.</p>
+      <div class="stage">
+        <div class="lb-console">
+          <div>dev@devbox:~/Progetti/loombox$ <span class="lb-caret"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

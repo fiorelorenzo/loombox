@@ -1,0 +1,844 @@
+/*
+ * Shared shell + mock primitives for the 2026-08-04 UX proposal artifact.
+ *
+ * RULES FOR SECTION AUTHORS
+ * -------------------------
+ * 1. Compose from the primitives below. They are faithful reproductions of the
+ *    real app's Deck tokens and components. Do NOT restate a token's value.
+ * 2. A section may add CSS ONLY for structure that does not exist here, and
+ *    every such rule MUST be prefixed with the section id (e.g. `.s-composer-*`).
+ *    Never redefine a `.lb-*` class.
+ * 3. Every colour, space, radius and duration comes from a `var(--...)`. A raw
+ *    hex or px in a section is a bug, with two exceptions: mock content
+ *    dimensions (a fake avatar's size) and deliberate illustrations of a
+ *    measurement being discussed.
+ * 4. Both themes must work. Test with the toggle, do not assume dark.
+ */
+
+/* ---------------------------------------------------------------- */
+/* The real palette (apps/web/src/lib/styles/deck.css)                */
+/* ---------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+  --color-bg: #0a0c0f;
+  --color-surface: #0e1114;
+  --color-surface-raised: #101418;
+  --color-rail: #08090b;
+  --color-overlay: rgb(5 6 8 / 72%);
+  --color-border-subtle: rgb(255 255 255 / 9%);
+  --color-border: rgb(255 255 255 / 16%);
+  --color-border-strong: rgb(255 255 255 / 28%);
+  --color-fill-subtle: rgb(255 255 255 / 6%);
+  --color-fill: rgb(255 255 255 / 12%);
+  --color-text-primary: #e6e9ec;
+  --color-text-secondary: #8b9299;
+  --color-text-muted: #5a6167;
+  --color-text-inverse: #0a0c0f;
+  --color-accent: #3b9df7;
+  --color-accent-hover: #3690e3;
+  --color-accent-active: #3387d4;
+  --color-accent-subtle: rgb(59 157 247 / 16%);
+  --color-accent-contrast: #0a0a0a;
+  --color-success: #34d399;
+  --color-success-subtle: rgb(52 211 153 / 16%);
+  --color-warning: #f5b942;
+  --color-warning-subtle: rgb(245 185 66 / 16%);
+  --color-danger: #f26565;
+  --color-danger-subtle: rgb(242 101 101 / 16%);
+  --color-info: #5aa2e0;
+  --color-info-subtle: rgb(90 162 224 / 16%);
+  --color-focus-ring: var(--color-border-strong);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 55%);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #e3e7ef;
+  --color-surface: #fafbfd;
+  --color-surface-raised: #ffffff;
+  --color-rail: #c7ced9;
+  --color-overlay: rgb(10 14 20 / 40%);
+  --color-border-subtle: rgb(15 23 35 / 18%);
+  --color-border: rgb(15 23 35 / 28%);
+  --color-border-strong: rgb(15 23 35 / 38%);
+  --color-fill-subtle: rgb(15 23 35 / 5%);
+  --color-fill: rgb(15 23 35 / 10%);
+  --color-text-primary: #10141a;
+  --color-text-secondary: #454b57;
+  --color-text-muted: #6b7280;
+  --color-text-inverse: #fafbfd;
+  --color-accent-contrast: #ffffff;
+  --shadow-sm: 0 1px 2px rgb(10 14 20 / 12%);
+  --shadow-md: 0 4px 10px rgb(10 14 20 / 16%);
+  --shadow-lg: 0 10px 24px rgb(10 14 20 / 22%);
+}
+
+/* ---------------------------------------------------------------- */
+/* The real structural scale (apps/web/src/lib/styles/tokens.css)     */
+/* ---------------------------------------------------------------- */
+:root {
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.375rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 3rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 999px;
+
+  --measure: 90ch;
+  --measure-wide: 120ch;
+  --gutter: 4.75rem;
+  --sidebar-width: 17rem;
+  --nav-row-height: 2.5rem;
+  --nav-icon-size: 1.25rem;
+  --status-dot-size-sm: 0.55rem;
+  --status-dot-size-md: 0.85rem;
+  --topbar-height: 3rem;
+
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 360ms;
+  --duration-weave: 640ms;
+  --ease-beat: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-shuttle: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-tension: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* typography.css */
+  --font-ui: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-display-size: 1.75rem;
+  --text-display-line: 2.15rem;
+  --text-display-weight: 650;
+  --text-title-size: 1.125rem;
+  --text-title-line: 1.5rem;
+  --text-title-weight: 600;
+  --text-body-size: 0.95rem;
+  --text-body-line: 1.45rem;
+  --text-body-weight: 400;
+  --text-small-size: 0.8rem;
+  --text-small-line: 1.15rem;
+  --text-small-weight: 400;
+  --text-caption-size: 0.7rem;
+  --text-caption-line: 1rem;
+  --text-caption-weight: 500;
+  --text-caption-tracking: 0.08em;
+  --text-code-size: 0.85rem;
+  --text-code-line: 1.4rem;
+  --text-code-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-weave: 0ms;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Artifact chrome (NOT part of the app — the review page itself)     */
+/* ---------------------------------------------------------------- */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+}
+
+.doc {
+  max-width: 1460px;
+  margin: 0 auto;
+  padding: var(--space-2xl) var(--space-xl) var(--space-3xl);
+}
+
+.doc-head {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-lg);
+  margin-bottom: var(--space-2xl);
+}
+
+.doc-head h1 {
+  font-size: var(--text-display-size);
+  line-height: var(--text-display-line);
+  font-weight: var(--text-display-weight);
+  margin: 0 0 var(--space-sm);
+}
+
+.doc-head p {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-sm);
+  max-width: 78ch;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-xl);
+  background: var(--color-rail);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.toolbar strong {
+  font-size: var(--text-small-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-right: auto;
+}
+
+/* A reviewed item: the question, then its options side by side. */
+.item {
+  margin: 0 0 var(--space-3xl);
+  scroll-margin-top: 4rem;
+}
+
+.item-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+.item-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-small-size);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.item-head h2 {
+  font-size: var(--text-title-size);
+  line-height: var(--text-title-line);
+  font-weight: var(--text-title-weight);
+  margin: 0;
+}
+
+.item-quote {
+  border-left: 2px solid var(--color-border-strong);
+  padding-left: var(--space-md);
+  margin: 0 0 var(--space-md);
+  color: var(--color-text-secondary);
+  font-style: italic;
+  max-width: 78ch;
+}
+
+.item-note {
+  margin: 0 0 var(--space-lg);
+  color: var(--color-text-secondary);
+  max-width: 78ch;
+}
+
+.item-note code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+  color: var(--color-text-primary);
+}
+
+.options {
+  display: grid;
+  gap: var(--space-lg);
+  /* Two up, not three. A mock of a prose layout is unjudgeable in a 360px
+     column: the text wraps every four words and every option looks equally
+     cramped, which hides exactly the difference being asked about. The
+     `Narrow` toggle in the toolbar is how a phone width gets checked, on
+     purpose and one decision at a time. */
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  align-items: start;
+}
+
+.options.stack {
+  grid-template-columns: 1fr;
+}
+
+.opt {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.opt.is-current {
+  border-style: dashed;
+  border-color: var(--color-danger);
+}
+
+.opt-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-fill-subtle);
+}
+
+.opt-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.opt.is-current .opt-tag {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.opt-title {
+  font-weight: 600;
+  font-size: var(--text-small-size);
+}
+
+.opt-why {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md) 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-small-size);
+  line-height: 1.4;
+}
+
+.opt-why b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+/* The frame a mock is rendered inside: it stands in for the app canvas. */
+.stage {
+  margin: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-subtle);
+  flex: 1;
+}
+
+.stage.flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.stage-label {
+  font-size: var(--text-caption-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-sm);
+}
+
+/* ---------------------------------------------------------------- */
+/* App primitives — faithful mocks. USE THESE, do not reinvent.       */
+/* ---------------------------------------------------------------- */
+
+/* Button (apps/web/src/lib/components/ui/Button.svelte) */
+.lb-btn {
+  font: inherit;
+  font-size: var(--text-small-size);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    border-color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-btn:hover {
+  background: var(--color-fill);
+}
+
+.lb-btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+}
+
+.lb-btn-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.lb-btn-danger {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.lb-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.lb-btn-ghost:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-btn[disabled],
+.lb-btn.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lb-btn-sm {
+  padding: var(--space-3xs) var(--space-sm);
+  font-size: var(--text-caption-size);
+}
+
+/* IconButton */
+.lb-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-iconbtn:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-iconbtn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.lb-iconbtn.lb-lg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.lb-iconbtn.lb-lg svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/*
+ * A labelled button carrying an icon (the real topbar's `Workbench`/`Terminal`
+ * buttons are exactly this). Without it an inline `<svg>` falls back to the
+ * 300x150 default and swallows the mock, which is what happened the first time
+ * this artifact was assembled.
+ */
+.lb-btn svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.lb-btn.lb-btn-sm svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* StatusDot */
+.lb-dot {
+  display: inline-block;
+  width: var(--status-dot-size-sm);
+  height: var(--status-dot-size-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  flex: none;
+}
+
+.lb-dot.md {
+  width: var(--status-dot-size-md);
+  height: var(--status-dot-size-md);
+}
+
+.lb-dot.ok {
+  background: var(--color-success);
+}
+.lb-dot.warn {
+  background: var(--color-warning);
+}
+.lb-dot.danger {
+  background: var(--color-danger);
+}
+.lb-dot.info {
+  background: var(--color-info);
+}
+.lb-dot.accent {
+  background: var(--color-accent);
+}
+
+.lb-dot.pulse {
+  animation: lb-pulse 1.6s var(--ease-beat) infinite;
+}
+
+@keyframes lb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Badge */
+.lb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.lb-badge.ok {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.lb-badge.warn {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.lb-badge.danger {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.lb-badge.accent {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+/* Typography helpers */
+.lb-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+}
+
+.lb-caption {
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.lb-small {
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line);
+  color: var(--color-text-secondary);
+}
+
+.lb-muted {
+  color: var(--color-text-muted);
+}
+
+.lb-secondary {
+  color: var(--color-text-secondary);
+}
+
+/* The transcript timeline: a fixed gutter column plus content.
+   This is the app's one alignment device and every transcript mock
+   must keep rows aligned to it. */
+.lb-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.lb-row-gutter {
+  flex: 0 0 var(--gutter);
+  width: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3xs);
+  padding-top: var(--space-sm);
+  padding-right: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.lb-row-gutter .lb-caption {
+  text-align: right;
+}
+
+.lb-row-body {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-sm) 0;
+}
+
+.lb-row-body > :first-child {
+  margin-top: 0;
+}
+
+.lb-row-body > :last-child {
+  margin-bottom: 0;
+}
+
+.lb-row-body p {
+  margin: 0 0 var(--space-sm);
+}
+
+/* Prose rendered from agent Markdown */
+.lb-prose pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  margin: 0 0 var(--space-sm);
+}
+
+.lb-prose code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+}
+
+.lb-prose p > code,
+.lb-prose li > code {
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.lb-prose ul,
+.lb-prose ol {
+  margin: 0 0 var(--space-sm);
+  padding-left: var(--space-lg);
+}
+
+.lb-prose li {
+  margin-bottom: var(--space-2xs);
+}
+
+/* Console output (TerminalOutput.svelte) */
+.lb-console {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.lb-console .ok {
+  color: var(--color-success);
+}
+.lb-console .err {
+  color: var(--color-danger);
+}
+.lb-console .dim {
+  color: var(--color-text-muted);
+}
+
+/* A generic panel/list row */
+.lb-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.lb-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--text-small-size);
+  font-weight: 600;
+}
+
+.lb-listrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.lb-listrow:last-child {
+  border-bottom: 0;
+}
+
+.lb-listrow:hover {
+  background: var(--color-fill-subtle);
+}
+
+/* Text input / textarea */
+.lb-input {
+  font: inherit;
+  font-size: var(--text-body-size);
+  width: 100%;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+}
+
+.lb-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.lb-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+.lb-field:focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+}
+
+/* Spinner, standing in for WovenLoader */
+.lb-spin {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-fill);
+  border-top-color: var(--color-accent);
+  animation: lb-spin 700ms linear infinite;
+  flex: none;
+}
+
+@keyframes lb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A caret that marks live streaming text */
+.lb-caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+  animation: lb-blink 1s steps(2, start) infinite;
+}
+
+@keyframes lb-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.lb-hr {
+  height: 1px;
+  background: var(--color-border-subtle);
+  border: 0;
+  margin: var(--space-md) 0;
+}
+
+/* Utility layout */
+.lb-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.lb-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.lb-inline.tight {
+  gap: var(--space-2xs);
+}
+
+.lb-spacer {
+  flex: 1;
+}
+
+.lb-pill-group {
+  display: inline-flex;
+  padding: var(--space-3xs);
+  gap: var(--space-3xs);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-md);
+}
+
+.lb-pill-group .lb-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.lb-pill-group .lb-btn[aria-pressed='true'] {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}

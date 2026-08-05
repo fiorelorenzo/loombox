@@ -1,0 +1,383 @@
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>The topbar restructure: kill Workbench, promote the tabs</h2>
+  </div>
+  <blockquote class="item-quote">
+    secondo me possiamo eliminare il pulsante workbench e lasciare solo i tre delle tab dentro a un
+    button group e un icon button per aprire e chiudere il pannello laterale. facciamo in ordine:
+    jump to, terminale e poi il button del pannello laterale.
+  </blockquote>
+  <p class="item-note">
+    Today <code>.topbar-actions</code> holds three ghost buttons in this exact order — Workbench,
+    Terminal, Jump to… (<code>+page.svelte:3055-3110</code>) — inside a two-zone
+    <code>justify-content: space-between</code> flex with no centre slot
+    (<code>:4774-4828</code>). Files/Config/Runner live entirely inside the right sidebar's own
+    header as a <code>role="radiogroup"</code> (<code>:3457-3489</code>), the precedent issue #549
+    set for any mutually-exclusive, always-one-selected control — the same idiom
+    <code>ConfigBar</code>'s mode switch uses. The panel's own open/close button carries
+    <code>aria-pressed</code> instead, because unlike a tab, "closed" is a real state, not a missing
+    selection. Both roles are already on two different controls today, but one is nested inside what
+    the other reveals: a screen reader only meets the radiogroup after it has already activated the
+    toggle that shows it. Every option below that puts the tabs in the topbar places both widgets
+    side by side with no reveal dependency between them — cleaner at the ARIA layer, not just
+    visually. Tab selection itself is not persisted: a reload always lands back on Files
+    (<code>:271</code>, <code>:1478</code>) — true of Today and of any option below unless its own
+    <code>opt-why</code> says otherwise.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span
+        ><span class="opt-title">Workbench, Terminal, Jump to — tabs hidden inside the panel</span>
+      </div>
+      <p class="opt-why">
+        Three controls for what is really two decisions — whether the panel is open, and which tab
+        it shows — and the second one <b>doesn't exist on screen until the first one is already
+        true.</b>
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Workbench">
+              <svg><use href="#i-workbench" /></svg>Workbench
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Workbench pressed → panel opens on whichever tab was last active
+        </p>
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="true" title="Workbench">
+              <svg><use href="#i-workbench" /></svg>Workbench
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+          </div>
+        </div>
+        <div class="s-topbar-layout">
+          <div class="s-topbar-canvas"></div>
+          <div class="s-topbar-panel">
+            <div class="s-topbar-panel-head">
+              <div class="lb-pill-group" role="radiogroup" aria-label="Workbench panel">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-file" /></svg>Files
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-drag" /></svg>Config
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-check" /></svg>Runner
+                </button>
+              </div>
+            </div>
+            <div class="s-topbar-panel-body lb-small lb-muted">— file tree —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-1</span><span class="opt-title">Tabs live in the topbar, always</span>
+      </div>
+      <p class="opt-why">
+        Workbench is gone; the button group sits right before the icon toggle, so picking a tab and
+        opening the panel read as one gesture. Clicking any tab opens the panel on it even from
+        closed. <b>Costs permanent topbar width whether or not the panel is ever open</b>, and now
+        that the group is always-on chrome, it should also persist its selection — a control that's
+        always visible resetting itself on reload would read as broken in a way a hidden one never
+        did.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <div class="lb-pill-group s-topbar-tabs" role="radiogroup" aria-label="Workbench panel">
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                <svg><use href="#i-file" /></svg>Files
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-drag" /></svg>Config
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-check" /></svg>Runner
+              </button>
+            </div>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="false"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Panel closed here — nothing above changes when it opens
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-2</span
+        ><span class="opt-title">Tabs live in the topbar, only while the panel is open</span>
+      </div>
+      <p class="opt-why">
+        No width spent while the panel is shut — the icon toggle sits alone next to Terminal — but
+        the topbar's own content shifts the instant you open it, <b>the exact kind of relocation he
+        flags as a defect in A2, just moved here.</b> Persistence stays pointless: the group vanishes
+        the moment there'd be a reason to remember which tab was picked.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="false"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Panel opened → the same zone grows by three buttons, everything left of it jumps
+        </p>
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <div class="lb-pill-group s-topbar-tabs" role="radiogroup" aria-label="Workbench panel">
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                <svg><use href="#i-file" /></svg>Files
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-drag" /></svg>Config
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-check" /></svg>Runner
+              </button>
+            </div>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="true"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-3</span
+        ><span class="opt-title">Icon toggle only — the tabs stay in the panel</span>
+      </div>
+      <p class="opt-why">
+        Least crowding of the three, zero shifting, and Workbench still dies in favour of a plain
+        icon in the right order. <b>But it only does half of what he asked</b> — the button group
+        never reaches the topbar at all, so say so plainly if this is the pick. Tab persistence is
+        unaffected, since nothing about where the tabs live has changed.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="true"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="s-topbar-layout">
+          <div class="s-topbar-canvas"></div>
+          <div class="s-topbar-panel">
+            <div class="s-topbar-panel-head">
+              <div class="lb-pill-group" role="radiogroup" aria-label="Workbench panel">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-file" /></svg>Files
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-drag" /></svg>Config
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-check" /></svg>Runner
+                </button>
+              </div>
+            </div>
+            <div class="s-topbar-panel-body lb-small lb-muted">— file tree —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-topbar-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    height: var(--topbar-height);
+    padding: 0 var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .s-topbar-context {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .s-topbar-title {
+    margin: 0;
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .s-topbar-breadcrumb {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  .s-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  /* Mirrors the real Button doc-comment at `+page.svelte:4830-4835`: pressed
+     state is accent-subtle fill + accent border, nothing extra. */
+  .s-topbar-actions [aria-pressed='true'] {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .s-topbar-tabs .lb-btn[aria-checked='true'],
+  .s-topbar-panel-head .lb-btn[aria-checked='true'] {
+    background: var(--color-surface-raised);
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-topbar-layout {
+    display: flex;
+    height: 7rem;
+  }
+
+  .s-topbar-canvas {
+    flex: 1;
+    background: var(--color-surface);
+  }
+
+  .s-topbar-panel {
+    flex: 0 0 30%;
+    min-width: 0;
+    border-left: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-topbar-panel-head {
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-topbar-panel-body {
+    padding: var(--space-sm);
+  }
+</style>

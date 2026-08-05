@@ -1,0 +1,3965 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>loombox UX review, 2026-08-05</title>
+    <style>
+/*
+ * Shared shell + mock primitives for the 2026-08-04 UX proposal artifact.
+ *
+ * RULES FOR SECTION AUTHORS
+ * -------------------------
+ * 1. Compose from the primitives below. They are faithful reproductions of the
+ *    real app's Deck tokens and components. Do NOT restate a token's value.
+ * 2. A section may add CSS ONLY for structure that does not exist here, and
+ *    every such rule MUST be prefixed with the section id (e.g. `.s-composer-*`).
+ *    Never redefine a `.lb-*` class.
+ * 3. Every colour, space, radius and duration comes from a `var(--...)`. A raw
+ *    hex or px in a section is a bug, with two exceptions: mock content
+ *    dimensions (a fake avatar's size) and deliberate illustrations of a
+ *    measurement being discussed.
+ * 4. Both themes must work. Test with the toggle, do not assume dark.
+ */
+
+/* ---------------------------------------------------------------- */
+/* The real palette (apps/web/src/lib/styles/deck.css)                */
+/* ---------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+  --color-bg: #0a0c0f;
+  --color-surface: #0e1114;
+  --color-surface-raised: #101418;
+  --color-rail: #08090b;
+  --color-overlay: rgb(5 6 8 / 72%);
+  --color-border-subtle: rgb(255 255 255 / 9%);
+  --color-border: rgb(255 255 255 / 16%);
+  --color-border-strong: rgb(255 255 255 / 28%);
+  --color-fill-subtle: rgb(255 255 255 / 6%);
+  --color-fill: rgb(255 255 255 / 12%);
+  --color-text-primary: #e6e9ec;
+  --color-text-secondary: #8b9299;
+  --color-text-muted: #5a6167;
+  --color-text-inverse: #0a0c0f;
+  --color-accent: #3b9df7;
+  --color-accent-hover: #3690e3;
+  --color-accent-active: #3387d4;
+  --color-accent-subtle: rgb(59 157 247 / 16%);
+  --color-accent-contrast: #0a0a0a;
+  --color-success: #34d399;
+  --color-success-subtle: rgb(52 211 153 / 16%);
+  --color-warning: #f5b942;
+  --color-warning-subtle: rgb(245 185 66 / 16%);
+  --color-danger: #f26565;
+  --color-danger-subtle: rgb(242 101 101 / 16%);
+  --color-info: #5aa2e0;
+  --color-info-subtle: rgb(90 162 224 / 16%);
+  --color-focus-ring: var(--color-border-strong);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 55%);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #e3e7ef;
+  --color-surface: #fafbfd;
+  --color-surface-raised: #ffffff;
+  --color-rail: #c7ced9;
+  --color-overlay: rgb(10 14 20 / 40%);
+  --color-border-subtle: rgb(15 23 35 / 18%);
+  --color-border: rgb(15 23 35 / 28%);
+  --color-border-strong: rgb(15 23 35 / 38%);
+  --color-fill-subtle: rgb(15 23 35 / 5%);
+  --color-fill: rgb(15 23 35 / 10%);
+  --color-text-primary: #10141a;
+  --color-text-secondary: #454b57;
+  --color-text-muted: #6b7280;
+  --color-text-inverse: #fafbfd;
+  --color-accent-contrast: #ffffff;
+  --shadow-sm: 0 1px 2px rgb(10 14 20 / 12%);
+  --shadow-md: 0 4px 10px rgb(10 14 20 / 16%);
+  --shadow-lg: 0 10px 24px rgb(10 14 20 / 22%);
+}
+
+/* ---------------------------------------------------------------- */
+/* The real structural scale (apps/web/src/lib/styles/tokens.css)     */
+/* ---------------------------------------------------------------- */
+:root {
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.375rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 3rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 999px;
+
+  --measure: 90ch;
+  --measure-wide: 120ch;
+  --gutter: 4.75rem;
+  --sidebar-width: 17rem;
+  --nav-row-height: 2.5rem;
+  --nav-icon-size: 1.25rem;
+  --status-dot-size-sm: 0.55rem;
+  --status-dot-size-md: 0.85rem;
+  --topbar-height: 3rem;
+
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 360ms;
+  --duration-weave: 640ms;
+  --ease-beat: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-shuttle: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-tension: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* typography.css */
+  --font-ui: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-display-size: 1.75rem;
+  --text-display-line: 2.15rem;
+  --text-display-weight: 650;
+  --text-title-size: 1.125rem;
+  --text-title-line: 1.5rem;
+  --text-title-weight: 600;
+  --text-body-size: 0.95rem;
+  --text-body-line: 1.45rem;
+  --text-body-weight: 400;
+  --text-small-size: 0.8rem;
+  --text-small-line: 1.15rem;
+  --text-small-weight: 400;
+  --text-caption-size: 0.7rem;
+  --text-caption-line: 1rem;
+  --text-caption-weight: 500;
+  --text-caption-tracking: 0.08em;
+  --text-code-size: 0.85rem;
+  --text-code-line: 1.4rem;
+  --text-code-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-weave: 0ms;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Artifact chrome (NOT part of the app — the review page itself)     */
+/* ---------------------------------------------------------------- */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+}
+
+.doc {
+  max-width: 1460px;
+  margin: 0 auto;
+  padding: var(--space-2xl) var(--space-xl) var(--space-3xl);
+}
+
+.doc-head {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-lg);
+  margin-bottom: var(--space-2xl);
+}
+
+.doc-head h1 {
+  font-size: var(--text-display-size);
+  line-height: var(--text-display-line);
+  font-weight: var(--text-display-weight);
+  margin: 0 0 var(--space-sm);
+}
+
+.doc-head p {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-sm);
+  max-width: 78ch;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-xl);
+  background: var(--color-rail);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.toolbar strong {
+  font-size: var(--text-small-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-right: auto;
+}
+
+/* A reviewed item: the question, then its options side by side. */
+.item {
+  margin: 0 0 var(--space-3xl);
+  scroll-margin-top: 4rem;
+}
+
+.item-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+.item-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-small-size);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.item-head h2 {
+  font-size: var(--text-title-size);
+  line-height: var(--text-title-line);
+  font-weight: var(--text-title-weight);
+  margin: 0;
+}
+
+.item-quote {
+  border-left: 2px solid var(--color-border-strong);
+  padding-left: var(--space-md);
+  margin: 0 0 var(--space-md);
+  color: var(--color-text-secondary);
+  font-style: italic;
+  max-width: 78ch;
+}
+
+.item-note {
+  margin: 0 0 var(--space-lg);
+  color: var(--color-text-secondary);
+  max-width: 78ch;
+}
+
+.item-note code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+  color: var(--color-text-primary);
+}
+
+.options {
+  display: grid;
+  gap: var(--space-lg);
+  /* Two up, not three. A mock of a prose layout is unjudgeable in a 360px
+     column: the text wraps every four words and every option looks equally
+     cramped, which hides exactly the difference being asked about. The
+     `Narrow` toggle in the toolbar is how a phone width gets checked, on
+     purpose and one decision at a time. */
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  align-items: start;
+}
+
+.options.stack {
+  grid-template-columns: 1fr;
+}
+
+.opt {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.opt.is-current {
+  border-style: dashed;
+  border-color: var(--color-danger);
+}
+
+.opt-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-fill-subtle);
+}
+
+.opt-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.opt.is-current .opt-tag {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.opt-title {
+  font-weight: 600;
+  font-size: var(--text-small-size);
+}
+
+.opt-why {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md) 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-small-size);
+  line-height: 1.4;
+}
+
+.opt-why b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+/* The frame a mock is rendered inside: it stands in for the app canvas. */
+.stage {
+  margin: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-subtle);
+  flex: 1;
+}
+
+.stage.flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.stage-label {
+  font-size: var(--text-caption-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-sm);
+}
+
+/* ---------------------------------------------------------------- */
+/* App primitives — faithful mocks. USE THESE, do not reinvent.       */
+/* ---------------------------------------------------------------- */
+
+/* Button (apps/web/src/lib/components/ui/Button.svelte) */
+.lb-btn {
+  font: inherit;
+  font-size: var(--text-small-size);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    border-color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-btn:hover {
+  background: var(--color-fill);
+}
+
+.lb-btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+}
+
+.lb-btn-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.lb-btn-danger {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.lb-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.lb-btn-ghost:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-btn[disabled],
+.lb-btn.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lb-btn-sm {
+  padding: var(--space-3xs) var(--space-sm);
+  font-size: var(--text-caption-size);
+}
+
+/* IconButton */
+.lb-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-iconbtn:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-iconbtn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.lb-iconbtn.lb-lg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.lb-iconbtn.lb-lg svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/*
+ * A labelled button carrying an icon (the real topbar's `Workbench`/`Terminal`
+ * buttons are exactly this). Without it an inline `<svg>` falls back to the
+ * 300x150 default and swallows the mock, which is what happened the first time
+ * this artifact was assembled.
+ */
+.lb-btn svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.lb-btn.lb-btn-sm svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* StatusDot */
+.lb-dot {
+  display: inline-block;
+  width: var(--status-dot-size-sm);
+  height: var(--status-dot-size-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  flex: none;
+}
+
+.lb-dot.md {
+  width: var(--status-dot-size-md);
+  height: var(--status-dot-size-md);
+}
+
+.lb-dot.ok {
+  background: var(--color-success);
+}
+.lb-dot.warn {
+  background: var(--color-warning);
+}
+.lb-dot.danger {
+  background: var(--color-danger);
+}
+.lb-dot.info {
+  background: var(--color-info);
+}
+.lb-dot.accent {
+  background: var(--color-accent);
+}
+
+.lb-dot.pulse {
+  animation: lb-pulse 1.6s var(--ease-beat) infinite;
+}
+
+@keyframes lb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Badge */
+.lb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.lb-badge.ok {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.lb-badge.warn {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.lb-badge.danger {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.lb-badge.accent {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+/* Typography helpers */
+.lb-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+}
+
+.lb-caption {
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.lb-small {
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line);
+  color: var(--color-text-secondary);
+}
+
+.lb-muted {
+  color: var(--color-text-muted);
+}
+
+.lb-secondary {
+  color: var(--color-text-secondary);
+}
+
+/* The transcript timeline: a fixed gutter column plus content.
+   This is the app's one alignment device and every transcript mock
+   must keep rows aligned to it. */
+.lb-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.lb-row-gutter {
+  flex: 0 0 var(--gutter);
+  width: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3xs);
+  padding-top: var(--space-sm);
+  padding-right: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.lb-row-gutter .lb-caption {
+  text-align: right;
+}
+
+.lb-row-body {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-sm) 0;
+}
+
+.lb-row-body > :first-child {
+  margin-top: 0;
+}
+
+.lb-row-body > :last-child {
+  margin-bottom: 0;
+}
+
+.lb-row-body p {
+  margin: 0 0 var(--space-sm);
+}
+
+/* Prose rendered from agent Markdown */
+.lb-prose pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  margin: 0 0 var(--space-sm);
+}
+
+.lb-prose code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+}
+
+.lb-prose p > code,
+.lb-prose li > code {
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.lb-prose ul,
+.lb-prose ol {
+  margin: 0 0 var(--space-sm);
+  padding-left: var(--space-lg);
+}
+
+.lb-prose li {
+  margin-bottom: var(--space-2xs);
+}
+
+/* Console output (TerminalOutput.svelte) */
+.lb-console {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.lb-console .ok {
+  color: var(--color-success);
+}
+.lb-console .err {
+  color: var(--color-danger);
+}
+.lb-console .dim {
+  color: var(--color-text-muted);
+}
+
+/* A generic panel/list row */
+.lb-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.lb-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--text-small-size);
+  font-weight: 600;
+}
+
+.lb-listrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.lb-listrow:last-child {
+  border-bottom: 0;
+}
+
+.lb-listrow:hover {
+  background: var(--color-fill-subtle);
+}
+
+/* Text input / textarea */
+.lb-input {
+  font: inherit;
+  font-size: var(--text-body-size);
+  width: 100%;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+}
+
+.lb-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.lb-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+.lb-field:focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+}
+
+/* Spinner, standing in for WovenLoader */
+.lb-spin {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-fill);
+  border-top-color: var(--color-accent);
+  animation: lb-spin 700ms linear infinite;
+  flex: none;
+}
+
+@keyframes lb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A caret that marks live streaming text */
+.lb-caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+  animation: lb-blink 1s steps(2, start) infinite;
+}
+
+@keyframes lb-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.lb-hr {
+  height: 1px;
+  background: var(--color-border-subtle);
+  border: 0;
+  margin: var(--space-md) 0;
+}
+
+/* Utility layout */
+.lb-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.lb-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.lb-inline.tight {
+  gap: var(--space-2xs);
+}
+
+.lb-spacer {
+  flex: 1;
+}
+
+.lb-pill-group {
+  display: inline-flex;
+  padding: var(--space-3xs);
+  gap: var(--space-3xs);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-md);
+}
+
+.lb-pill-group .lb-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.lb-pill-group .lb-btn[aria-pressed='true'] {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+
+      /* Artifact-only chrome for the assembled page */
+      .navlink {
+        font-size: var(--text-small-size);
+        color: var(--color-text-secondary);
+        text-decoration: none;
+        padding: var(--space-2xs) var(--space-sm);
+        border-radius: var(--radius-md);
+      }
+      .navlink:hover {
+        background: var(--color-fill-subtle);
+        color: var(--color-text-primary);
+      }
+      .sec {
+        margin-bottom: var(--space-3xl);
+        scroll-margin-top: 4rem;
+      }
+      .sec-title {
+        display: flex;
+        align-items: center;
+        gap: var(--space-md);
+        font-size: var(--text-display-size);
+        line-height: var(--text-display-line);
+        font-weight: var(--text-display-weight);
+        margin: 0 0 var(--space-xl);
+        padding-bottom: var(--space-sm);
+        border-bottom: 1px solid var(--color-border);
+      }
+      .sec-letter {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.25rem;
+        height: 2.25rem;
+        border-radius: var(--radius-md);
+        background: var(--color-accent-subtle);
+        color: var(--color-accent);
+        font-family: var(--font-mono);
+        font-size: var(--text-title-size);
+      }
+      .missing {
+        border: 1px dashed var(--color-warning);
+        background: var(--color-warning-subtle);
+        color: var(--color-warning);
+        border-radius: var(--radius-lg);
+        padding: var(--space-md);
+        margin-bottom: var(--space-xl);
+      }
+      .howto {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        background: var(--color-surface);
+        padding: var(--space-lg);
+        margin-bottom: var(--space-2xl);
+      }
+      .howto h3 {
+        margin: 0 0 var(--space-sm);
+        font-size: var(--text-title-size);
+      }
+      .howto ol {
+        margin: 0;
+        padding-left: var(--space-lg);
+        color: var(--color-text-secondary);
+      }
+      .howto li {
+        margin-bottom: var(--space-2xs);
+      }
+      .howto code {
+        font-family: var(--font-mono);
+        font-size: var(--text-code-size);
+        background: var(--color-fill-subtle);
+        border-radius: var(--radius-sm);
+        padding: 0 var(--space-2xs);
+        color: var(--color-text-primary);
+      }
+    </style>
+  </head>
+  <body>
+<!--
+  Icon sprite for the UX proposal artifact. Stroke icons on a 24 box, 1.75
+  stroke, matching the app's own Icon set closely enough to judge a layout.
+
+  Use: <svg class="i"><use href="#i-attach"/></svg>
+  Size comes from the caller (`.lb-iconbtn svg` etc.), never from here.
+-->
+<svg width="0" height="0" style="position: absolute" aria-hidden="true">
+  <defs>
+    <g id="g-base" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+
+  <symbol id="i-attach" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21.4 11.05 12.25 20.2a5.5 5.5 0 0 1-7.78-7.78l9.2-9.2a3.67 3.67 0 1 1 5.18 5.19l-9.2 9.19a1.83 1.83 0 1 1-2.6-2.59l8.5-8.49" />
+  </symbol>
+
+  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <circle cx="8.5" cy="9.5" r="1.6" />
+    <path d="m3.5 17 4.8-4.6a2 2 0 0 1 2.7 0l6.2 5.8" />
+  </symbol>
+
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5v14M5 12h14" />
+  </symbol>
+
+  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 12 20 4l-8 16-2-6.5z" />
+  </symbol>
+
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />
+  </symbol>
+
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15V5a2 2 0 0 1 2-2h8" />
+  </symbol>
+
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 19h16" />
+  </symbol>
+
+  <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+  </symbol>
+
+  <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m6 9 6 6 6-6" />
+  </symbol>
+
+  <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m9 6 6 6-6 6" />
+  </symbol>
+
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 8 4 4-4 4M12.5 16H19" />
+  </symbol>
+
+  <symbol id="i-workbench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <path d="M14 4v16" />
+  </symbol>
+
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 3v5h5" />
+    <path d="M19 8v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7z" />
+  </symbol>
+
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </symbol>
+
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m16 16 4.5 4.5" />
+  </symbol>
+
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 12.5 4.5 4.5L19 7" />
+  </symbol>
+
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 6l12 12M18 6 6 18" />
+  </symbol>
+
+  <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 13h5l1.5 3h5L16 13h5" />
+    <path d="M4.5 6.5 3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5l-1.5-6.5A2 2 0 0 0 17.6 5H6.4a2 2 0 0 0-1.9 1.5z" />
+  </symbol>
+
+  <symbol id="i-tracker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <path d="M9 4v16M15 4v16" />
+  </symbol>
+
+  <symbol id="i-github" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48l-.01-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.03a9.5 9.5 0 0 1 5 0c1.91-1.3 2.75-1.03 2.75-1.03.55 1.38.2 2.4.1 2.65.64.7 1.03 1.6 1.03 2.69 0 3.85-2.34 4.7-4.57 4.95.36.31.68.92.68 1.85l-.01 2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z" />
+  </symbol>
+
+  <symbol id="i-jira" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2.5 21 11h-4.5A4.5 4.5 0 0 1 12 6.5z" />
+    <path d="M7.5 7 16.5 15.5H12A4.5 4.5 0 0 1 7.5 11z" />
+    <path d="M3 11.5 12 20H7.5A4.5 4.5 0 0 1 3 15.5z" />
+  </symbol>
+
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 1 0-5.7-5.7l-1.2 1.2" />
+    <path d="M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 1 0 11 18.7l1.2-1.2" />
+  </symbol>
+
+  <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.5 4.5A2.5 2.5 0 0 0 7 7a2.5 2.5 0 0 0-1.5 4.5A2.5 2.5 0 0 0 7 16a2.5 2.5 0 0 0 2.5 2.5V4.5z" />
+    <path d="M14.5 4.5A2.5 2.5 0 0 1 17 7a2.5 2.5 0 0 1 1.5 4.5A2.5 2.5 0 0 1 17 16a2.5 2.5 0 0 1-2.5 2.5V4.5z" />
+  </symbol>
+
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="8" r="3.5" />
+    <path d="M5 20a7 7 0 0 1 14 0" />
+  </symbol>
+
+  <symbol id="i-claude" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v18M4 7.5l16 9M20 7.5l-16 9" />
+  </symbol>
+
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 4.5 21 19H3z" />
+    <path d="M12 10v4M12 16.5v.01" />
+  </symbol>
+
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 7.5V12l3 2" />
+  </symbol>
+
+  <symbol id="i-drag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 7h8M8 12h8M8 17h8" />
+  </symbol>
+
+  <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14.5 4.5 19.5 9.5 8 21H3v-5z" />
+    <path d="m12.5 6.5 5 5" />
+  </symbol>
+</svg>
+
+
+    <div class="toolbar">
+      <strong>loombox UX review</strong>
+      <a class="navlink" href="#sec-a">Space & measure</a>
+        <a class="navlink" href="#sec-b">Thoughts & turns</a>
+        <a class="navlink" href="#sec-c">Topbar & panels</a>
+        <a class="navlink" href="#sec-d">Agent / Tracker</a>
+        <a class="navlink" href="#sec-e">Model & effort</a>
+        <a class="navlink" href="#sec-f">Defects found</a>
+      <button class="lb-btn lb-btn-sm" id="theme">Light</button>
+      <button class="lb-btn lb-btn-sm" id="narrow">Narrow</button>
+    </div>
+
+    <div class="doc">
+      <div class="doc-head">
+        <h1>UX review, 4 August 2026</h1>
+        <p>
+          Every visual decision from your feedback on v0.2.0, each with what the app does today and
+          two to four ways it could work instead. Nothing here is built yet. Pick one per decision
+          and I will put them on the board as specified issues.
+        </p>
+        <p>
+          The red dashed card is always what ships today, rebuilt faithfully from the current code
+          so the comparison is real. Every option says what it trades, not only what it looks like.
+        </p>
+      </div>
+
+      <div class="howto">
+        <h3>How to answer</h3>
+        <ol>
+          <li>Go through the decisions in order. Each has an id like <code>B1</code>.</li>
+          <li>Pick one option per decision, by id: <code>B1-2</code>.</li>
+          <li>
+            If nothing fits, say so on that decision and what is missing. That is a useful answer,
+            not a failure.
+          </li>
+          <li>
+            Reply with just the list, for example
+            <code>A1-1, A2-3, A3-1, B1-2, B2-1, ...</code>
+          </li>
+        </ol>
+      </div>
+
+      
+
+
+    <div class="sec" id="sec-a">
+      <h2 class="sec-title"><span class="sec-letter">A</span> Space & measure</h2>
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>The measure: readable prose vs. wasted canvas</h2>
+  </div>
+  <blockquote class="item-quote">
+    mi sembra che ci sia un sacco di spazio orizzontale inutilizzato nel body principale
+  </blockquote>
+  <p class="item-note">
+    Real, and not an accident. <code>--measure: 90ch</code> (<code>tokens.css:54</code>) drives
+    <code>.items { max-width: var(--measure); margin-inline: auto }</code>
+    (<code>+page.svelte:4930</code>), and <code>.canvas-footer</code> mirrors it
+    (<code>:4994</code>) — the code's own comment says transcript prose used to run the full
+    1440–1920px canvas at ~150 characters a line (<code>:4924-4926</code>), and 90ch was the fix.
+    At his measured 1182px canvas that comes out to an 863px column, so roughly 320px sits empty
+    on the two sides combined. A wider <code>--measure-wide: 120ch</code> token already exists for
+    code, diffs and terminal output — <code>DiffViewer</code> and <code>PageLayout</code> both use
+    it (<code>DiffViewer.svelte:100</code>, <code>PageLayout.svelte:54</code>) — but inside the
+    transcript itself <code>.items</code> caps the whole <code>&lt;ol&gt;</code> at 90ch, narrower
+    than 120ch, so a diff nested in a tool-call row can never actually reach its own wider cap. The
+    wide measure is already written; it just can't fire where he's looking. In the mocks below the
+    accent block is the content column and the amber dashed patch is where it collides with
+    something else.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">One fixed measure — 90ch, everywhere</span>
+      </div>
+      <p class="opt-why">
+        Correct today, but only in isolation: a single 90ch cap has no way to know a code block or
+        a whole canvas isn't prose, so everything pays the readability tax whether it needs it or
+        not.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">His window, panel closed — 1182px canvas</p>
+          <div class="s-sp-bar">
+            <div class="s-sp-canvas"></div>
+            <div class="s-sp-col" style="left: 13.5%; width: 73.0%">863px</div>
+          </div>
+          <p class="lb-small s-sp-metrics">863px column, centred · ~160px empty on each side</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-1</span><span class="opt-title">Widen the one measure to 100ch</span></div>
+      <p class="opt-why">
+        One universal number stays the simplest rule to reason about, and it still respects the
+        readability ceiling the cap exists for — but it only buys back part of the emptiness at his
+        width and gets relatively worse again on anything wider, and it does nothing for code,
+        diffs or terminal rows, which stay exactly as narrow as prose for no reason.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">His window, panel closed — same 1182px canvas</p>
+          <div class="s-sp-bar">
+            <div class="s-sp-canvas"></div>
+            <div class="s-sp-col" style="left: 9.45%; width: 81.1%">959px</div>
+          </div>
+          <p class="lb-small s-sp-metrics">959px column (100ch) · ~112px empty on each side</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-2</span><span class="opt-title">Split the measure by content type</span></div>
+      <p class="opt-why">
+        <b>Recommended.</b> Prose keeps exactly the measure that's already correct; code, diffs,
+        tool rows and terminal output stop pretending to be prose and take the width they actually
+        need. Trades one uniform rhythm down the transcript for two, in exchange for a
+        <code>--measure-wide</code> token that's already declared in the codebase but currently
+        can't do anything — this is what makes it real.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">Same transcript, two widths</p>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body">
+              <div class="s-sp-measure-box lb-prose" style="width: 73%">
+                <p>
+                  The rollback stays safe because the migration is additive — it doesn't touch any
+                  existing column, it only adds a new index and a new table, so reverting to the
+                  previous release loses nothing that was written in between.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body">
+              <div class="s-sp-measure-box" style="width: 100%; padding: 0">
+                <pre class="lb-console" style="margin: 0"><span class="dim">$</span> pnpm test apps/web/src/lib/tokens --reporter=verbose
+<span class="ok">✓</span> --measure caps transcript prose at 90ch (already correct)
+<span class="ok">✓</span> --measure-wide is declared for code, diffs and terminal rows
+<span class="err">✗</span> --measure-wide never actually applies inside .items (parent caps first)
+<span class="dim">2 passed, 1 failed (340ms)</span></pre>
+              </div>
+            </div>
+          </div>
+          <p class="lb-small s-sp-metrics">prose: 73% of the canvas (863px) · code: 100% (1182px)</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-3</span><span class="opt-title">Scale the measure with the viewport (clamp)</span></div>
+      <p class="opt-why">
+        Grows with the display instead of staying frozen at 90ch, so a wide monitor stops wasting
+        space by design rather than by luck. But <code>clamp(80ch, 60vw, 112ch)</code> reads
+        <code>vw</code> — the whole browser window — not the canvas actually available; it doesn't
+        know a side panel ate width, so with one open it can ask for more room than the canvas has
+        left, which is the overflow shown below.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">His window, panel closed — 1182px canvas</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 12.7%; width: 74.6%">882px</div>
+            </div>
+            <p class="lb-small s-sp-metrics">882px (60vw) · barely wider than today, floor/ceiling not reached yet</p>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">A 2560px display, panel closed — 2272px canvas</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 26.4%; width: 47.2%">1074px</div>
+            </div>
+            <p class="lb-small s-sp-metrics">capped at the 112ch ceiling — still short of the ~150-char line the fix targets</p>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">His window, panel open — canvas drops to 799px</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 19.6%; width: 54.3%"></div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 5.7%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">still demands 882px (60vw hasn't changed) in a 799px canvas — ~83px spill into the panel</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a2">
+  <div class="item-head">
+    <span class="item-id">A2</span>
+    <h2>Column centring when a side panel opens</h2>
+  </div>
+  <blockquote class="item-quote">
+    mi da anche fastidio che quando i due pannelli laterali sono aperti il contenuto e l'input non
+    sono centrati
+  </blockquote>
+  <p class="item-note">
+    Measured over CDP at his 1470px window. Panel closed: canvas spans 288→1470 (1182px), column
+    447→1311 (863px) — centred inside the canvas, and <code>.canvas-footer</code> (input included)
+    shares the identical rule (<code>+page.svelte:4994</code>), so it moves with it. Panel open:
+    canvas shrinks to 288→1087 (799px, the 383px panel takes the rest), column 303→1072 (769px) —
+    still perfectly centred <em>inside the canvas</em>. Nothing here is uncentred by the code's own
+    arithmetic. What he's actually seeing: the canvas is flush against the left rail and only its
+    right edge moves, so opening one 383px panel drags the whole canvas — and everything centred in
+    it — 144px left, while shrinking the column by 94px, in the same frame. A shift and a resize at
+    once is what reads as "not centred," more than either alone would. In every mock below the
+    accent block is the content column and the amber dashed patch is where it collides with the
+    rail or the panel.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Centred in the canvas, wherever the canvas is</span>
+      </div>
+      <p class="opt-why">
+        Mathematically fair — always dead centre inside whatever the canvas currently is — but the
+        canvas itself isn't centred in the window, and it moves and narrows the instant a panel
+        opens, so "centred" stops feeling true exactly when it matters most.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel closed</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 30.4%; width: 58.7%">863px</div>
+            </div>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 20.6%; width: 52.3%">769px</div>
+            </div>
+          </div>
+          <p class="lb-small s-sp-metrics">opening the panel moves the column 144px left and shrinks it by 94px, at once</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-1</span><span class="opt-title">Centre on the window, not the canvas</span></div>
+      <p class="opt-why">
+        Locks the column to the window's real midpoint, so it finally reads as centred to the eye
+        that's judging it against the whole screen. It no longer respects the canvas's own right
+        edge to get there, so with a panel open it can crowd into — and here, slightly under — that
+        panel.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, centred in the 1182px canvas.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — centred on the window's midpoint</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-mid" style="left: 50%"></div>
+              <div class="s-sp-col" style="left: 23.8%; width: 50.1%">769px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 2.3%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">column centred on the dashed window-midline instead of the canvas — right edge lands ~33px inside the panel</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-2</span><span class="opt-title">Keep canvas-centred, stop resizing the column</span></div>
+      <p class="opt-why">
+        Removes the narrowing half of the "shift and resize" complaint outright — the column is
+        always exactly 863px. His own measured panel-open canvas (799px) is already narrower than
+        that fixed width, so the column no longer fits centred and overflows both edges at once —
+        into the rail on the left as much as the panel on the right.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, centred in the 1182px canvas.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — width held at 863px, still canvas-centred</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col-over" style="left: 17.4%; width: 2.2%"></div>
+              <div class="s-sp-col" style="left: 19.6%; width: 54.3%">863px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 2.2%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">863px held fixed in a now-799px canvas — ~32px spills into the rail, ~32px into the panel; it no longer fits</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-3</span><span class="opt-title">Anchor to a fixed offset from the left rail</span></div>
+      <p class="opt-why">
+        The most literal answer to "never moves": position and width both pinned to the closed-panel
+        geometry, so the panel is the only thing that ever moves. It has no way to yield when a
+        panel actually opens, so the collision is total rather than a few pixels — this only works
+        paired with a hard rule for what happens below the width where it no longer fits at all.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, starting 447px from the window's left edge.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — position and width both pinned</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 30.4%; width: 43.5%">863px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 15.2%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">pinned at the same 447px offset — the panel opens directly under its right ~223px</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-sp-pad {
+    padding: var(--space-md);
+  }
+
+  .s-sp-group + .s-sp-group {
+    margin-top: var(--space-md);
+  }
+
+  .s-sp-label {
+    margin: 0 0 var(--space-2xs);
+  }
+
+  .s-sp-metrics {
+    margin: var(--space-2xs) 0 0;
+  }
+
+  /* One "window" or "canvas": a proportional map, not a literal-px
+     reproduction — every left/width below is a percentage of this bar's
+     own container, computed from the measured geometry, so the relative
+     widths stay honest at any stage size. */
+  .s-sp-bar {
+    position: relative;
+    display: flex;
+    height: var(--space-3xl);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-bg);
+  }
+
+  .s-sp-rail,
+  .s-sp-panel {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .s-sp-rail {
+    background: var(--color-rail);
+  }
+
+  .s-sp-panel {
+    background: var(--color-surface-raised);
+    border-left: 1px solid var(--color-border);
+  }
+
+  .s-sp-canvas {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* The content column, drawn over the bar at the same percentage basis. */
+  .s-sp-col,
+  .s-sp-col-over {
+    position: absolute;
+    top: var(--space-2xs);
+    bottom: var(--space-2xs);
+    border-radius: var(--radius-sm);
+  }
+
+  .s-sp-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    white-space: nowrap;
+    background: var(--color-accent-subtle);
+    border: 1px solid var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    font-weight: 600;
+    color: var(--color-accent);
+  }
+
+  /* Where the column above collides with the rail or an open panel. */
+  .s-sp-col-over {
+    background: var(--color-warning-subtle);
+    border: 1px dashed var(--color-warning);
+  }
+
+  /* The window's true horizontal midpoint, for A2-1. */
+  .s-sp-mid {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--color-border-strong);
+  }
+
+  /* A dashed frame around a piece of mock content, sized to a measure
+     percentage, so the width difference is visible even before reading
+     a single word of the text inside it. */
+  .s-sp-measure-box {
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm) var(--space-md);
+  }
+</style>
+
+    </div>
+
+    <div class="sec" id="sec-b">
+      <h2 class="sec-title"><span class="sec-letter">B</span> Thoughts & turns</h2>
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>Thoughts stop being cards</h2>
+  </div>
+  <blockquote class="item-quote">
+    toglierei la card per i pensieri e farei solo testo collassabile con un font più leggero
+    rispetto al testo delle risposte
+  </blockquote>
+  <p class="item-note">
+    Today a thought is a filled, rounded box: <code>.message-item.thought { background:
+    var(--color-surface); border-radius: var(--radius-md); padding-inline: var(--space-sm) }</code>
+    (<code>MessageItem.svelte:371-376</code>). The only "lighter" signal on top of that is
+    <code>opacity: 0.65; font-style: italic</code> on <code>.content</code>
+    (<code>:389-392</code>) — the type is the same size as the answer beneath it, just faded and
+    slanted. Shown below expanded, since the collapsed default and where the label sits are B2's
+    decision, not this one. One thing to weigh in B1-2: the gutter column isn't empty real estate —
+    it already carries the row's accessible role name (off-screen since v7, <code>:339-349</code>)
+    and, on a tool call, a live glyph (<code>ToolCallGutter.svelte</code>). A third meaning painted
+    into the same 76px risks reading as something it isn't.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Filled card, italic + dimmed text</span>
+      </div>
+      <p class="opt-why">A rounded, coloured box around every thought, and "lighter" means 65% opacity plus italics, not a real type change.</p>
+      <div class="stage">
+        <div class="lb-row s-thoughts-card">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-dim">
+              <span class="s-thoughts-timer">Thought for 12s</span>
+              <p class="s-thoughts-text">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Plain text, lighter and smaller — no container</span>
+      </div>
+      <p class="opt-why">Drops the card and the italic for a real size and colour step down from the answer; <b>nothing but the type itself</b> now marks where a thought starts or ends.</p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Same plain text, plus a quiet rule in the gutter</span>
+      </div>
+      <p class="opt-why">Marks the aside in the column the eye already scans first, in neutral grey — never the accent blue A1 already flagged as "dirt on the screen" — but <b>stacks a third meaning</b> onto a column that already carries role attribution and tool glyphs.</p>
+      <div class="stage">
+        <div class="lb-row s-thoughts-rule">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b2">
+  <div class="item-head">
+    <span class="item-id">B2</span>
+    <h2>The label moves above the thought, and the state is remembered</h2>
+  </div>
+  <blockquote class="item-quote">
+    di default espanso e poi ricorda la scelta il thought of possiamo metterlo sopra al pensiero
+    per risparmiare spazio orizzontale, vicino al tasto per collassare
+  </blockquote>
+  <p class="item-note">
+    Today <code>Thought for Ns</code> is a <code>&lt;span class="thinking-timer"&gt;</code> that
+    sits inline before the paragraph (<code>MessageItem.svelte:273</code>), so every thought's
+    text starts indented behind however wide that label is. It defaults collapsed —
+    <code>let expanded = $state(false)</code> (<code>:222</code>) — and that flag lives only on
+    the component instance: nothing reads or writes storage, so a reload resets every thought back
+    to collapsed, mid-conversation or not. The app already has a working pattern for "remember one
+    choice across reloads": <code>apps/web/src/lib/accent.ts</code> reads a single
+    <code>localStorage</code> key once at startup into a module-level store (<code>STORAGE_KEY =
+    'loombox:accent'</code>, <code>:30</code>) that every consumer subscribes to — copying that
+    shape is most of this ticket. What's actually open is scope: one preference, one per session,
+    or one per thought. That choice is the options below.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Collapsed by default, label indents the text, forgotten on reload</span>
+      </div>
+      <p class="opt-why">Two costs at once: it loads collapsed every time, and once opened the timer eats the first ~90px of every line instead of sitting beside the toggle.</p>
+      <div class="stage">
+        <p class="stage-label">On load</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <button type="button" class="s-thoughts-expand">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-right" /></svg>
+                Show thought
+              </button>
+            </div>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-md)">After tapping to expand</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-1</span><span class="opt-title">One global switch — every thought follows it</span>
+      </div>
+      <p class="opt-why">One boolean in <code>localStorage</code>, read once and applied everywhere, the same shape as <code>accent.ts</code>. <b>Matches his own phrasing — "la scelta" is singular — and is the cheapest of the three to build, explain and ship.</b></p>
+      <div class="stage">
+        <div class="lb-panel s-thoughts-pref-panel">
+          <div class="lb-listrow">
+            <span class="lb-small">Always expand thoughts</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-sm" aria-pressed="true">On</button>
+          </div>
+        </div>
+        <div class="lb-row" style="margin-top: var(--space-md)">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 4s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              The rollback path only exists if the additive column ships first, so ordering the
+              migrations matters here.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>I split it into two migrations so the rollback stays safe either way.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-2</span><span class="opt-title">Remembered for this session only</span>
+      </div>
+      <p class="opt-why">Reads as intended right up until a reload or a new session, then quietly reverts to expanded. <b>Solves nothing the global switch doesn't, while adding a session-scoped store to maintain.</b></p>
+      <div class="stage">
+        <div class="lb-inline" style="margin-bottom: var(--space-md)">
+          <span class="lb-badge warn">Session-only</span>
+          <span class="lb-small lb-muted">forgotten the moment you reload or start a new session</span>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-3</span><span class="opt-title">Remembered per individual thought</span>
+      </div>
+      <p class="opt-why">The most literal reading of "remember the choice", keyed per thought in <code>localStorage</code>. Finest possible control, but <b>the key count only ever grows</b>, and two thoughts in one transcript rarely need different defaults.</p>
+      <div class="stage">
+        <div class="lb-inline" style="margin-bottom: var(--space-md)">
+          <span class="lb-badge">Per thought</span>
+          <span class="lb-small lb-muted">shown here: you collapsed the second one last time — only that one stays collapsed</span>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="false" aria-label="Expand thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-right" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 4s</span>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>I split it into two migrations so the rollback stays safe either way.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b3">
+  <div class="item-head">
+    <span class="item-id">B3</span>
+    <h2>The user turn's contrast is wrong in both themes, in opposite directions</h2>
+  </div>
+  <blockquote class="item-quote">
+    vorrei anche rendere meno evidente la card dei messaggi dell'utente, c'è troppo stacco nel tema
+    chiaro, nel tema scuro invece non abbastanza
+  </blockquote>
+  <p class="item-note">
+    <code>.message-item.user { background: var(--color-surface-raised); border-radius:
+    var(--radius-md); padding-inline: var(--space-sm) }</code> (<code>MessageItem.svelte:357-362</code>)
+    is one rule for two themes whose palettes move by very different amounts:
+    <code>--color-surface-raised</code> is <code>#101418</code> on a <code>#0a0c0f</code> canvas in
+    dark, a CIE lightness step of <b>ΔL* ≈ 2.8</b> — almost nothing; in light it's
+    <code>#ffffff</code> on <code>#e3e7ef</code>, <b>ΔL* ≈ 8.4</b>, three times the step, the
+    starkest edge on the page. Both swatches below use the same real numbers, forced side by side
+    (the page's own dark/light toggle can only show one at a time).
+    <span class="lb-badge warn"
+      ><svg style="width: 0.7rem; height: 0.7rem; margin-right: 2px"><use href="#i-warn" /></svg>No
+      bar</span
+    >
+    v7 already settled the rest of this row in decision B1-2 (issue #667): "the user's own turn
+    keeps its one signal, a raised fill — no gutter accent bar anymore… exactly one signal per
+    role" (<code>:351-356</code>). None of the options below bring one back.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Same fill rule, opposite result per theme</span>
+      </div>
+      <p class="opt-why">One flat colour, unrelated to the canvas beneath it in either theme, so the two themes land on opposite sides of "just right" by construction.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 2.8, nearly invisible</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 8.4, starkest edge on the page</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-1</span><span class="opt-title">Retune the two fills to match</span>
+      </div>
+      <p class="opt-why">Hand-picks a fill for each theme that lands at the same ΔL* ≈ 5 step, so the edge reads equally quiet in both. <b>Fixes the asymmetry directly, but the exact values still need eyeballing on a real screen</b> — these are illustrative, not final.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 4.9</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-tuned"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 5.0</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-tuned"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-2</span><span class="opt-title">Drop the fill, hairline border in both</span>
+      </div>
+      <p class="opt-why">The card becomes an outline of <code>var(--color-border)</code> — a token that already differs correctly per theme, so nothing needs tuning by hand. <b>Cheapest and most consistent, but a 1px line reads flatter than a fill</b> and can wash out under a low-contrast display setting.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-outline"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-outline"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-3</span><span class="opt-title">Faint accent-tinted wash, keyed to theme</span>
+      </div>
+      <p class="opt-why"><code>color-mix(in srgb, var(--color-accent) 8%, transparent)</code> derives a whisper of the app's own "yours" colour from a token that's already identical in both themes, so one line of CSS lands at ΔL* ≈ 4.5 in dark and ≈ 2.4 in light with no per-theme tuning. <b>Ties the signal to the accent blue used for links and Send</b>, which could read as interactive when it isn't.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 4.5</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-wash"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 2.4</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-wash"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ---- B1: card vs plain text ------------------------------------- */
+
+  /* Faithful reproduction of `.message-item.thought` (MessageItem.svelte:371-376). */
+  .s-thoughts-card {
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  /* The gutter+content row's inner flex pairing of timer and text
+     (`.content`'s own layout, MessageItem.svelte:378-385). */
+  .s-thoughts-inline {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+  }
+
+  /* `.message-item.thought .content` (MessageItem.svelte:389-392) — today's
+     only "lighter" signal, applied to both the timer and the text. */
+  .s-thoughts-dim {
+    opacity: 0.65;
+    font-style: italic;
+  }
+
+  .s-thoughts-timer {
+    flex-shrink: 0;
+    font-size: var(--text-caption-size);
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-primary);
+  }
+
+  /* B1-1/B1-2/B2's option rows: a real type-scale step down instead of
+     opacity, and no italic. */
+  .s-thoughts-timer-plain {
+    color: var(--color-text-muted);
+    opacity: 1;
+  }
+
+  .s-thoughts-text {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .s-thoughts-text-plain {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+    line-height: var(--text-small-line);
+    font-style: normal;
+  }
+
+  /* B2's options: label sits above, so the paragraph is a full-width block
+     below it rather than a flex sibling squeezed beside the timer. */
+  .s-thoughts-text-full {
+    flex: initial;
+    margin-top: var(--space-2xs);
+  }
+
+  /* Quiet aside marker in the gutter (B1-2) — neutral, deliberately not the
+     accent blue A1 already flagged as reading like dirt on the screen. */
+  .s-thoughts-rule .lb-row-gutter {
+    box-shadow: inset -2px 0 0 0 var(--color-border-strong);
+  }
+
+  /* ---- B2: collapse control + expand affordance -------------------- */
+
+  .s-thoughts-expand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .s-thoughts-chevron {
+    width: 0.75em;
+    height: 0.75em;
+  }
+
+  .s-thoughts-head-row {
+    align-items: center;
+  }
+
+  .s-thoughts-pref-panel .lb-listrow {
+    border-bottom: 0;
+  }
+
+  /* ---- B3: forcing both themes to render at once -------------------- */
+
+  /* `:root[data-theme='light']` (_shell.css:56-76) can only ever match the
+     real document root, so it cannot be scoped to a subtree — there is no
+     way to show both themes at once without restating the handful of
+     colour variables a swatch actually reads. Values copied verbatim from
+     _shell.css:21-76; keep in sync if that palette moves. */
+  .s-thoughts-pair {
+    display: flex;
+    gap: var(--space-md);
+    align-items: stretch;
+  }
+
+  .s-thoughts-force {
+    flex: 1;
+    min-width: 0;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border-subtle);
+    overflow: hidden;
+  }
+
+  .s-thoughts-force[data-force='dark'] {
+    color-scheme: dark;
+    --color-bg: #0a0c0f;
+    --color-surface-raised: #101418;
+    --color-border: rgb(255 255 255 / 16%);
+    --color-border-subtle: rgb(255 255 255 / 9%);
+    --color-fill-subtle: rgb(255 255 255 / 6%);
+    --color-text-primary: #e6e9ec;
+    --color-text-secondary: #8b9299;
+    --color-text-muted: #5a6167;
+  }
+
+  .s-thoughts-force[data-force='light'] {
+    color-scheme: light;
+    --color-bg: #e3e7ef;
+    --color-surface-raised: #ffffff;
+    --color-border: rgb(15 23 35 / 28%);
+    --color-border-subtle: rgb(15 23 35 / 18%);
+    --color-fill-subtle: rgb(15 23 35 / 5%);
+    --color-text-primary: #10141a;
+    --color-text-secondary: #454b57;
+    --color-text-muted: #6b7280;
+  }
+
+  .s-thoughts-force-label {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    background: var(--color-fill-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-thoughts-force-body {
+    background: var(--color-bg);
+    color: var(--color-text-primary);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  /* Faithful `.message-item.user` (MessageItem.svelte:357-362) — reused
+     as-is for "Today" since forcing the theme already makes the swatch's
+     own `var(--color-surface-raised)` resolve correctly on both sides. */
+  .s-thoughts-user {
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  /* B3-1: hand-tuned per theme to the same ΔL* ≈ 5 step (CIE lightness,
+     computed off the real palette above) — illustrative, not final. */
+  .s-thoughts-force[data-force='dark'] .is-tuned {
+    background: #16181b;
+  }
+  .s-thoughts-force[data-force='light'] .is-tuned {
+    background: #f4f5f9;
+  }
+
+  /* B3-2: no fill at all, just the theme's own border token. */
+  .is-outline {
+    background: none;
+    border: 1px solid var(--color-border);
+  }
+
+  /* B3-3: a themed wash derived from the existing accent token — no new
+     colour, no per-theme branching. */
+  .is-wash {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+</style>
+
+    </div>
+
+    <div class="sec" id="sec-c">
+      <h2 class="sec-title"><span class="sec-letter">C</span> Topbar & panels</h2>
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>The topbar restructure: kill Workbench, promote the tabs</h2>
+  </div>
+  <blockquote class="item-quote">
+    secondo me possiamo eliminare il pulsante workbench e lasciare solo i tre delle tab dentro a un
+    button group e un icon button per aprire e chiudere il pannello laterale. facciamo in ordine:
+    jump to, terminale e poi il button del pannello laterale.
+  </blockquote>
+  <p class="item-note">
+    Today <code>.topbar-actions</code> holds three ghost buttons in this exact order — Workbench,
+    Terminal, Jump to… (<code>+page.svelte:3055-3110</code>) — inside a two-zone
+    <code>justify-content: space-between</code> flex with no centre slot
+    (<code>:4774-4828</code>). Files/Config/Runner live entirely inside the right sidebar's own
+    header as a <code>role="radiogroup"</code> (<code>:3457-3489</code>), the precedent issue #549
+    set for any mutually-exclusive, always-one-selected control — the same idiom
+    <code>ConfigBar</code>'s mode switch uses. The panel's own open/close button carries
+    <code>aria-pressed</code> instead, because unlike a tab, "closed" is a real state, not a missing
+    selection. Both roles are already on two different controls today, but one is nested inside what
+    the other reveals: a screen reader only meets the radiogroup after it has already activated the
+    toggle that shows it. Every option below that puts the tabs in the topbar places both widgets
+    side by side with no reveal dependency between them — cleaner at the ARIA layer, not just
+    visually. Tab selection itself is not persisted: a reload always lands back on Files
+    (<code>:271</code>, <code>:1478</code>) — true of Today and of any option below unless its own
+    <code>opt-why</code> says otherwise.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span
+        ><span class="opt-title">Workbench, Terminal, Jump to — tabs hidden inside the panel</span>
+      </div>
+      <p class="opt-why">
+        Three controls for what is really two decisions — whether the panel is open, and which tab
+        it shows — and the second one <b>doesn't exist on screen until the first one is already
+        true.</b>
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Workbench">
+              <svg><use href="#i-workbench" /></svg>Workbench
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Workbench pressed → panel opens on whichever tab was last active
+        </p>
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="true" title="Workbench">
+              <svg><use href="#i-workbench" /></svg>Workbench
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+          </div>
+        </div>
+        <div class="s-topbar-layout">
+          <div class="s-topbar-canvas"></div>
+          <div class="s-topbar-panel">
+            <div class="s-topbar-panel-head">
+              <div class="lb-pill-group" role="radiogroup" aria-label="Workbench panel">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-file" /></svg>Files
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-drag" /></svg>Config
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-check" /></svg>Runner
+                </button>
+              </div>
+            </div>
+            <div class="s-topbar-panel-body lb-small lb-muted">— file tree —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-1</span><span class="opt-title">Tabs live in the topbar, always</span>
+      </div>
+      <p class="opt-why">
+        Workbench is gone; the button group sits right before the icon toggle, so picking a tab and
+        opening the panel read as one gesture. Clicking any tab opens the panel on it even from
+        closed. <b>Costs permanent topbar width whether or not the panel is ever open</b>, and now
+        that the group is always-on chrome, it should also persist its selection — a control that's
+        always visible resetting itself on reload would read as broken in a way a hidden one never
+        did.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <div class="lb-pill-group s-topbar-tabs" role="radiogroup" aria-label="Workbench panel">
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                <svg><use href="#i-file" /></svg>Files
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-drag" /></svg>Config
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-check" /></svg>Runner
+              </button>
+            </div>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="false"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Panel closed here — nothing above changes when it opens
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-2</span
+        ><span class="opt-title">Tabs live in the topbar, only while the panel is open</span>
+      </div>
+      <p class="opt-why">
+        No width spent while the panel is shut — the icon toggle sits alone next to Terminal — but
+        the topbar's own content shifts the instant you open it, <b>the exact kind of relocation he
+        flags as a defect in A2, just moved here.</b> Persistence stays pointless: the group vanishes
+        the moment there'd be a reason to remember which tab was picked.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="false"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Panel opened → the same zone grows by three buttons, everything left of it jumps
+        </p>
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <div class="lb-pill-group s-topbar-tabs" role="radiogroup" aria-label="Workbench panel">
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                <svg><use href="#i-file" /></svg>Files
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-drag" /></svg>Config
+              </button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                <svg><use href="#i-check" /></svg>Runner
+              </button>
+            </div>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="true"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-3</span
+        ><span class="opt-title">Icon toggle only — the tabs stay in the panel</span>
+      </div>
+      <p class="opt-why">
+        Least crowding of the three, zero shifting, and Workbench still dies in favour of a plain
+        icon in the right order. <b>But it only does half of what he asked</b> — the button group
+        never reaches the topbar at all, so say so plainly if this is the pick. Tab persistence is
+        unaffected, since nothing about where the tabs live has changed.
+      </p>
+      <div class="stage flush">
+        <div class="s-topbar-bar">
+          <div class="s-topbar-context">
+            <h1 class="s-topbar-title">Fix relay reconnect backoff</h1>
+            <span class="s-topbar-breadcrumb"
+              >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+            >
+          </div>
+          <div class="s-topbar-actions">
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+              <svg><use href="#i-search" /></svg>Jump to…
+            </button>
+            <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+              <svg><use href="#i-terminal" /></svg>Terminal
+            </button>
+            <button
+              class="lb-iconbtn"
+              aria-pressed="true"
+              aria-label="Toggle workbench panel"
+              title="Workbench panel"
+            >
+              <svg><use href="#i-workbench" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="s-topbar-layout">
+          <div class="s-topbar-canvas"></div>
+          <div class="s-topbar-panel">
+            <div class="s-topbar-panel-head">
+              <div class="lb-pill-group" role="radiogroup" aria-label="Workbench panel">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-file" /></svg>Files
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-drag" /></svg>Config
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-check" /></svg>Runner
+                </button>
+              </div>
+            </div>
+            <div class="s-topbar-panel-body lb-small lb-muted">— file tree —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-topbar-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    height: var(--topbar-height);
+    padding: 0 var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .s-topbar-context {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .s-topbar-title {
+    margin: 0;
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .s-topbar-breadcrumb {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  .s-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  /* Mirrors the real Button doc-comment at `+page.svelte:4830-4835`: pressed
+     state is accent-subtle fill + accent border, nothing extra. */
+  .s-topbar-actions [aria-pressed='true'] {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .s-topbar-tabs .lb-btn[aria-checked='true'],
+  .s-topbar-panel-head .lb-btn[aria-checked='true'] {
+    background: var(--color-surface-raised);
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-topbar-layout {
+    display: flex;
+    height: 7rem;
+  }
+
+  .s-topbar-canvas {
+    flex: 1;
+    background: var(--color-surface);
+  }
+
+  .s-topbar-panel {
+    flex: 0 0 30%;
+    min-width: 0;
+    border-left: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-topbar-panel-head {
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-topbar-panel-body {
+    padding: var(--space-sm);
+  }
+</style>
+
+    </div>
+
+    <div class="sec" id="sec-d">
+      <h2 class="sec-title"><span class="sec-letter">D</span> Agent / Tracker</h2>
+<section class="item" id="d1">
+  <div class="item-head">
+    <span class="item-id">D1</span>
+    <h2>Where the Agent / Tracker switch lives</h2>
+  </div>
+  <blockquote class="item-quote">
+    il tracker non ha senso che stia come voce principale nella sidebar. lo metterei come pulsante
+    dentro alla sessione in modo che sia legato al progetto. ad esempio potremmo fare un button group
+    con due voci agent e tracker e metterlo verso il centro in alto.
+  </blockquote>
+  <p class="item-note">
+    This is an information-architecture change only, not a data one. Issue #697 (merged, live)
+    already made tracker records project-addressed — <code>trackerProject</code> carries only
+    <code>{nodeId, projectPath}</code> (<code>:603</code>, <code>:1121</code>,
+    <code>:2001-2004</code>) and <code>TrackerPage</code> takes <code>client</code>/<code>projectPath</code>/<code>nodeId</code>
+    with no session argument at all (<code>:2655-2683</code>'s own comment). The data layer is ready;
+    nothing about the transport changes below, only where the entry point sits.
+    <code>.topbar</code> today is a two-zone <code>justify-content: space-between</code> flex with no
+    centre slot (<code>:4774-4828</code>), so "verso il centro" needs a real three-zone layout, not a
+    middle child bolted onto the existing one — C1-1 shows what happens when someone takes the
+    shortcut instead. Every mock below that isn't Today assumes <b>C1 has already landed as C1-1</b>
+    (tabs always in the topbar, its widest variant) for the right zone — the honest worst case for
+    crowding; C1-2 or C1-3 would leave more room than shown here. On the sidebar's own
+    <code>Tracker</code> destination row (<code>:2671-2683</code>): every option below keeps it,
+    demoted rather than deleted, for two reasons that hold regardless of which option wins — it is
+    still the only way into Tracker for a project with no session open (the switch itself, like
+    today's Workbench/Terminal, only exists once a session is selected), and the mobile tabbar has no
+    Tracker slot of its own (<code>Sessions</code> / <code>Inbox</code> / <code>Command</code> only,
+    <code>:3645-3687</code>), so the sidebar sheet stays its only route there too.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Tracker is a primary sidebar destination</span>
+      </div>
+      <p class="opt-why">
+        One flat list puts a project-scoped concern next to an app-wide one, so Tracker outranks the
+        very session it's supposed to be tied to — <b>and it's reachable with no project or session
+        in view at all.</b>
+      </p>
+      <div class="stage flush">
+        <div class="s-at-frame">
+          <div class="s-at-rail">
+            <div class="s-at-rail-row s-at-rail-active"><svg><use href="#i-inbox" /></svg><span>Inbox</span></div>
+            <div class="s-at-rail-row"><svg><use href="#i-tracker" /></svg><span>Tracker</span></div>
+          </div>
+          <div class="s-at-main">
+            <div class="s-at-bar">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Fix relay reconnect backoff</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+                >
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Workbench">
+                  <svg><use href="#i-workbench" /></svg>Workbench
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+              </div>
+            </div>
+            <div class="s-at-canvas">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body lb-small">Can you check why the relay keeps dropping the websocket?</div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-small lb-muted">Looking at the backoff timer now…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="lb-small s-at-subnote">
+        <b>No session open:</b> Workbench/Terminal disappear too (<code>:3055</code>'s own gate), only
+        Jump to survives; Tracker is still one click away in the sidebar regardless.
+        <b>Mobile:</b> Tracker's row is the sole path in, reached through the sessions sheet — no
+        tabbar entry exists for it.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-1</span><span class="opt-title">A true centre zone</span>
+      </div>
+      <p class="opt-why">
+        Reads exactly like his sketch — breadcrumb left, switch centred, controls right — but only if
+        it's built as a dedicated three-column layout. <b>Bolt it onto today's
+        <code>space-between</code> flex instead and it drifts</b> the moment the left and right zones
+        don't match width, which they never reliably do once C1's own button group is in the right
+        zone.
+      </p>
+      <div class="stage flush">
+        <div class="s-at-frame">
+          <div class="s-at-rail">
+            <div class="s-at-rail-row s-at-rail-active"><svg><use href="#i-inbox" /></svg><span>Inbox</span></div>
+            <div class="s-at-rail-row s-at-rail-fallback">
+              <svg><use href="#i-tracker" /></svg><span>Tracker</span><span class="lb-badge">fallback</span>
+            </div>
+          </div>
+          <div class="s-at-main">
+            <div class="s-at-bar s-at-bar-naive">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Fix relay reconnect backoff</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+                >
+              </div>
+              <div class="lb-pill-group s-at-switch" role="radiogroup" aria-label="View">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-claude" /></svg>Agent
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-tracker" /></svg>Tracker
+                </button>
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <div class="lb-pill-group s-at-tabs" role="radiogroup" aria-label="Workbench panel">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-file" /></svg>Files
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-drag" /></svg>Config
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-check" /></svg>Runner
+                  </button>
+                </div>
+                <button
+                  class="lb-iconbtn"
+                  aria-pressed="false"
+                  aria-label="Toggle workbench panel"
+                  title="Workbench panel"
+                >
+                  <svg><use href="#i-workbench" /></svg>
+                </button>
+              </div>
+            </div>
+            <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+              Same layout, a long project path — the switch drifts right, away from true centre
+            </p>
+            <div class="s-at-bar s-at-bar-naive">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Migrate the relay worker fleet to the new staging cluster</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-relay-worker-eu-west-1-staging
+                  <span aria-hidden="true">·</span> relay-eu-west-1-worker-03.internal</span
+                >
+              </div>
+              <div class="lb-pill-group s-at-switch" role="radiogroup" aria-label="View">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-claude" /></svg>Agent
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-tracker" /></svg>Tracker
+                </button>
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <div class="lb-pill-group s-at-tabs" role="radiogroup" aria-label="Workbench panel">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-file" /></svg>Files
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-drag" /></svg>Config
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-check" /></svg>Runner
+                  </button>
+                </div>
+                <button
+                  class="lb-iconbtn"
+                  aria-pressed="false"
+                  aria-label="Toggle workbench panel"
+                  title="Workbench panel"
+                >
+                  <svg><use href="#i-workbench" /></svg>
+                </button>
+              </div>
+            </div>
+            <div class="s-at-canvas">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body lb-small">Can you check why the relay keeps dropping the websocket?</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="lb-small s-at-subnote">
+        <b>No session open:</b> nothing to switch between, so the whole centre zone is empty rather
+        than showing a disabled control — Tracker stays reachable only from the sidebar's fallback
+        row above. <b>Mobile:</b> three zones don't fit; the switch would have to drop out of the
+        topbar entirely below <code>--bp-desktop</code> and reappear as its own full-width bar, which
+        is most of D1-3's layout anyway, just conditionally.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-2</span
+        ><span class="opt-title">The switch sits left, right after the breadcrumb</span>
+      </div>
+      <p class="opt-why">
+        Reads as a property of the project you're looking at, not a global mode, and never drifts
+        because it isn't centred against anything. <b>It competes for the same shrinking room as the
+        title and breadcrumb</b>, which already truncate on their own — one more thing in that zone
+        means they give way sooner.
+      </p>
+      <div class="stage flush">
+        <div class="s-at-frame">
+          <div class="s-at-rail">
+            <div class="s-at-rail-row s-at-rail-active"><svg><use href="#i-inbox" /></svg><span>Inbox</span></div>
+            <div class="s-at-rail-row s-at-rail-fallback">
+              <svg><use href="#i-tracker" /></svg><span>Tracker</span><span class="lb-badge">fallback</span>
+            </div>
+          </div>
+          <div class="s-at-main">
+            <div class="s-at-bar">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Fix relay reconnect backoff</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+                >
+                <div class="lb-pill-group s-at-switch" role="radiogroup" aria-label="View">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-claude" /></svg>Agent
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-tracker" /></svg>Tracker
+                  </button>
+                </div>
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <div class="lb-pill-group s-at-tabs" role="radiogroup" aria-label="Workbench panel">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-file" /></svg>Files
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-drag" /></svg>Config
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-check" /></svg>Runner
+                  </button>
+                </div>
+                <button
+                  class="lb-iconbtn"
+                  aria-pressed="false"
+                  aria-label="Toggle workbench panel"
+                  title="Workbench panel"
+                >
+                  <svg><use href="#i-workbench" /></svg>
+                </button>
+              </div>
+            </div>
+            <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+              A long project path pushes the switch against the button group — no drift, just an
+              earlier squeeze
+            </p>
+            <div class="s-at-bar">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Migrate the relay worker fleet to the new staging cluster</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-relay-worker-eu-west-1-staging
+                  <span aria-hidden="true">·</span> relay-eu-west-1-worker-03.internal</span
+                >
+                <div class="lb-pill-group s-at-switch" role="radiogroup" aria-label="View">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-claude" /></svg>Agent
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-tracker" /></svg>Tracker
+                  </button>
+                </div>
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <div class="lb-pill-group s-at-tabs" role="radiogroup" aria-label="Workbench panel">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-file" /></svg>Files
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-drag" /></svg>Config
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-check" /></svg>Runner
+                  </button>
+                </div>
+                <button
+                  class="lb-iconbtn"
+                  aria-pressed="false"
+                  aria-label="Toggle workbench panel"
+                  title="Workbench panel"
+                >
+                  <svg><use href="#i-workbench" /></svg>
+                </button>
+              </div>
+            </div>
+            <div class="s-at-canvas">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body lb-small">Can you check why the relay keeps dropping the websocket?</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="lb-small s-at-subnote">
+        <b>No session open:</b> nothing to switch on, so it doesn't render — title falls back to
+        "No session selected" and the breadcrumb disappears with it, same as Today.
+        <b>Mobile:</b> title and breadcrumb already truncate hardest here first; the switch is
+        usually the first thing pushed out of view, worse than D1-1's clean drop.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-3</span
+        ><span class="opt-title">The switch sits above the canvas, not in the topbar</span>
+      </div>
+      <p class="opt-why">
+        Unambiguously scoped to the session's own content, indented to the transcript's own gutter so
+        it reads as part of it, not chrome — and it never has to fight the topbar for width at any
+        breakpoint, mobile included. <b>Costs a whole extra row</b> the other two options don't need,
+        just to hold two buttons.
+      </p>
+      <div class="stage flush">
+        <div class="s-at-frame">
+          <div class="s-at-rail">
+            <div class="s-at-rail-row s-at-rail-active"><svg><use href="#i-inbox" /></svg><span>Inbox</span></div>
+            <div class="s-at-rail-row s-at-rail-fallback">
+              <svg><use href="#i-tracker" /></svg><span>Tracker</span><span class="lb-badge">fallback</span>
+            </div>
+          </div>
+          <div class="s-at-main">
+            <div class="s-at-bar">
+              <div class="s-at-context">
+                <h1 class="s-at-title">Fix relay reconnect backoff</h1>
+                <span class="s-at-breadcrumb"
+                  >loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span
+                >
+              </div>
+              <div class="s-at-actions">
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" title="Jump to… (Ctrl/Cmd+K)">
+                  <svg><use href="#i-search" /></svg>Jump to…
+                </button>
+                <button class="lb-btn lb-btn-ghost lb-btn-sm" aria-pressed="false" title="Terminal">
+                  <svg><use href="#i-terminal" /></svg>Terminal
+                </button>
+                <div class="lb-pill-group s-at-tabs" role="radiogroup" aria-label="Workbench panel">
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                    <svg><use href="#i-file" /></svg>Files
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-drag" /></svg>Config
+                  </button>
+                  <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                    <svg><use href="#i-check" /></svg>Runner
+                  </button>
+                </div>
+                <button
+                  class="lb-iconbtn"
+                  aria-pressed="false"
+                  aria-label="Toggle workbench panel"
+                  title="Workbench panel"
+                >
+                  <svg><use href="#i-workbench" /></svg>
+                </button>
+              </div>
+            </div>
+            <div class="s-at-canvasbar">
+              <div class="lb-pill-group s-at-switch" role="radiogroup" aria-label="View">
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">
+                  <svg><use href="#i-claude" /></svg>Agent
+                </button>
+                <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">
+                  <svg><use href="#i-tracker" /></svg>Tracker
+                </button>
+              </div>
+            </div>
+            <div class="s-at-canvas">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body lb-small">Can you check why the relay keeps dropping the websocket?</div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-small lb-muted">Looking at the backoff timer now…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="lb-small s-at-subnote">
+        <b>No session open:</b> there's no canvas to put it above — the empty state keeps the
+        sidebar's fallback row as the only path to Tracker, exactly like Today, just for one fewer
+        reason. <b>Mobile:</b> unaffected by any topbar squeeze, since it was never part of the
+        topbar — one full-width bar at every breakpoint, and it can absorb the tabbar's missing
+        Tracker slot for free once a session is open.
+      </p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-at-frame {
+    display: flex;
+  }
+
+  .s-at-rail {
+    flex: 0 0 11rem;
+    min-width: 0;
+    background: var(--color-rail);
+    border-right: 1px solid var(--color-border-subtle);
+    padding: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-at-rail-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
+  .s-at-rail-row svg {
+    width: 1rem;
+    height: 1rem;
+    flex: none;
+  }
+
+  .s-at-rail-active {
+    background: var(--color-fill);
+    color: var(--color-text-primary);
+    font-weight: 600;
+  }
+
+  .s-at-rail-fallback {
+    margin-top: var(--space-sm);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border-subtle);
+    opacity: 0.72;
+    justify-content: space-between;
+  }
+
+  .s-at-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-at-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    height: var(--topbar-height);
+    padding: 0 var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  /* D1-1 only: three children in the SAME space-between flex the app ships
+     today, deliberately not a dedicated grid — this is what "just add a
+     middle child" produces. */
+  .s-at-bar-naive .s-at-context {
+    flex: 0 1 auto;
+  }
+
+  .s-at-context {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .s-at-title {
+    margin: 0;
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .s-at-breadcrumb {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  .s-at-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .s-at-switch {
+    flex-shrink: 0;
+  }
+
+  .s-at-actions [aria-pressed='true'] {
+    background: var(--color-accent-subtle);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .s-at-switch .lb-btn[aria-checked='true'],
+  .s-at-tabs .lb-btn[aria-checked='true'] {
+    background: var(--color-surface-raised);
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-primary);
+  }
+
+  .s-at-canvas {
+    padding: var(--space-md) var(--space-lg);
+  }
+
+  /* D1-3 only: a second bar, scoped to the content column via the same
+     gutter width the transcript rows use, so it reads as belonging to the
+     canvas rather than to the topbar above it. */
+  .s-at-canvasbar {
+    padding: var(--space-sm) var(--space-lg) var(--space-sm) calc(var(--gutter) + var(--space-lg));
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-at-subnote {
+    margin: var(--space-sm) var(--space-md) 0;
+    color: var(--color-text-secondary);
+  }
+</style>
+
+    </div>
+
+    <div class="sec" id="sec-e">
+      <h2 class="sec-title"><span class="sec-letter">E</span> Model & effort</h2>
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>Model &amp; thinking effort: fix the wire, then pick a layout</h2>
+  </div>
+  <blockquote class="item-quote">
+    sotto all'input deve esserci anche scritto il modello in uso (con possibilità di cambiarlo) e
+    l'effort di pensiero con possibilità di cambiarlo. ovviamente intelligente, con le opzioni
+    giuste per ogni provider in uso
+  </blockquote>
+  <p class="item-note">
+    Not a missing feature — a broken wire. <code>ConfigBar</code> already exists as SPEC.md
+    §7.24 &ldquo;Model, mode &amp; reasoning effort&rdquo;'s specified home for exactly these two
+    controls, mounted in the one row under the composer since Lorenzo's own July 30 request put it
+    there. It renders only the agent name and the cost meter today — I read the live DOM and it is
+    literally <code>Oh My Pi</code> + <code>$0.00</code> — because <code>options</code> is always
+    empty. <code>client.ts:432</code> seeds every new session from
+    <code>this.lastConfigCatalog</code>, and that field is populated only by <code>initialize</code>
+    (<code>:408</code>); <code>session/new</code>'s own response is typed as a bare
+    <code>{ sessionId: string }</code> (<code>:427</code>), so whatever catalogue it carries is
+    never even parsed. Probed against the real <code>omp acp</code> binary directly:
+    <code>initialize</code> returns no <code>configOptions</code> at all — <code>session/new</code>
+    is where the real catalogue lives, 26 models, thinking
+    (<code>off/auto/low/medium/high/xhigh/max</code>), mode (<code>default/plan</code>). There's a
+    shape to bridge too: the wire sends
+    <code>{id,name,category,type,currentValue,options:[{value,name,description}]}</code>, the
+    internal <code>AcpConfigOption</code> (<code>types.ts:158</code>) is
+    <code>{category,current,choices:[{id,name}]}</code>. Read <code>session/new</code>'s response
+    and map that shape, and &ldquo;le opzioni giuste per ogni provider&rdquo; comes for free — the
+    agent declares its own catalogue per provider; loombox's only job is to stop discarding it and
+    render whatever arrives. What's left to decide is presentation: 26 models and 7 thinking levels
+    is a lot to fit under one composer row. Every option below also carries a second, orthogonal
+    fork: <code>session/set_config_option</code> changes the running session only — nothing in the
+    client persists a choice past it, so a &ldquo;remember for new sessions&rdquo; checkbox is new
+    plumbing, not a flip of a switch that already exists. Each mock below shows where it would sit.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Agent name + cost only</span>
+      </div>
+      <p class="opt-why">
+        Nothing to pick because nothing arrives — the row's own design is fine, everything wrong is
+        upstream of it.
+      </p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Oh My Pi</span></div>
+          <div class="lb-row-body lb-prose">
+            <p>Migrated the retry queue to exponential backoff. Tests are green.</p>
+          </div>
+        </div>
+        <div class="lb-hr"></div>
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline tight">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">$0.00</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-1</span><span class="opt-title">Inline, one picker per category</span>
+      </div>
+      <p class="opt-why">
+        Every category stays one click away, nothing hidden behind another control.
+        <b>Trades width</b> for directness — a model name plus a thinking level plus the meter is
+        most of the row before Send even shows up, and it only tightens as a provider's model names
+        get longer.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <div class="e1-control">
+              <span class="e1-label">Thinking</span>
+              <button type="button" class="e1-select" aria-haspopup="listbox">
+                <span class="e1-select-value">High</span>
+                <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+            </div>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">A longer model name</p>
+        <div class="lb-inline e1-bar">
+          <span class="e1-agent">Oh My Pi</span>
+          <button type="button" class="e1-select e1-long" aria-haspopup="listbox">
+            <span class="e1-select-value">Claude 3.5 Haiku (Legacy, Extended Vision)</span>
+            <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+          </button>
+          <div class="e1-control">
+            <span class="e1-label">Thinking</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Medium</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <span class="lb-spacer"></span>
+          <span class="lb-small e1-mono">12k / 200k · $0.02</span>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Model picker open</p>
+        <div class="lb-panel e1-select-list">
+          <button type="button" class="lb-listrow e1-select-option is-selected">
+            <span>Claude Opus 5</span><svg class="e1-check"><use href="#i-check" /></svg>
+          </button>
+          <button type="button" class="lb-listrow e1-select-option"><span>Claude Sonnet 4.5</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>GPT-5.1</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>GPT-5.1 Mini</span></button>
+          <button type="button" class="lb-listrow e1-select-option"><span>Gemini 3 Pro</span></button>
+          <div class="lb-listrow e1-select-more"><span class="lb-caption">+ 21 more, scrolls</span></div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember as default for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">
+          This session only, unless checked — <code>session/set_config_option</code> is per-session;
+          it doesn't touch what the <em>next</em> session starts with.
+        </p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px, tapped open (today's own "···" toggle)</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            Same crowding <code>ConfigBar</code>'s own doc comment already flags for the old strip —
+            three inline controls don't get narrower just because the window did; the "···" opens
+            straight onto this row.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-2</span><span class="opt-title">One consolidated control</span>
+      </div>
+      <p class="opt-why">
+        Model, thinking and mode collapse into one button reading <code>Opus 5 · High</code> that
+        opens a single popover holding all three. <b>Trades a second click</b> for the narrowest
+        footprint of the three — thinking and mode are both hidden until the trigger opens, model
+        included.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="dialog">
+              <span class="e1-select-value">Opus 5 · High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Popover open</p>
+        <div class="lb-panel e1-popover">
+          <div class="e1-popover-section">
+            <span class="lb-caption">Model</span>
+            <button type="button" class="lb-listrow e1-select-option is-selected">
+              <span>Claude Opus 5</span><svg class="e1-check"><use href="#i-check" /></svg>
+            </button>
+            <button type="button" class="lb-listrow e1-select-option"><span>Claude Sonnet 4.5</span></button>
+            <div class="lb-listrow e1-select-more"><span class="lb-caption">+ 24 more, scrolls</span></div>
+          </div>
+          <div class="e1-popover-section">
+            <span class="lb-caption">Thinking</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Thinking">
+              <button type="button" class="e1-mode-choice">Off</button>
+              <button type="button" class="e1-mode-choice">Auto</button>
+              <button type="button" class="e1-mode-choice">Low</button>
+              <button type="button" class="e1-mode-choice">Medium</button>
+              <button type="button" class="e1-mode-choice is-selected">High</button>
+              <button type="button" class="e1-mode-choice">Xhigh</button>
+              <button type="button" class="e1-mode-choice">Max</button>
+            </div>
+          </div>
+          <div class="e1-popover-section">
+            <span class="lb-caption">Mode</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Mode">
+              <button type="button" class="e1-mode-choice is-selected">Default</button>
+              <button type="button" class="e1-mode-choice">Plan</button>
+            </div>
+          </div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">
+          This session only, unless checked — <code>session/set_config_option</code> is mid-session
+          and per-session, model, thinking and mode alike.
+        </p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Opus 5 · High</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            One control, one line — narrow enough it may not need the "···" fold at all. The one
+            place this layout wins outright.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-3</span><span class="opt-title">Model inline, thinking in overflow</span>
+      </div>
+      <p class="opt-why">
+        Model — what actually changes turn to turn — stays inline; thinking, changed far less often,
+        moves behind a settings icon beside it. <b>Trades a click for the control used rarely</b> to
+        keep the one used often free; wrong the day that usage pattern flips.
+      </p>
+      <div class="stage">
+        <div class="lb-field">
+          <textarea
+            class="lb-input"
+            rows="1"
+            placeholder="Send a follow-up prompt… (type @ to reference a file)"
+          ></textarea>
+          <div class="lb-inline e1-bar">
+            <button class="lb-iconbtn" aria-label="Attach image">
+              <svg><use href="#i-attach" /></svg>
+            </button>
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select" aria-haspopup="listbox">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+            <button type="button" class="lb-iconbtn" aria-label="Turn settings" aria-haspopup="menu">
+              <svg><use href="#i-more" /></svg>
+            </button>
+            <span class="lb-spacer"></span>
+            <span class="lb-small e1-mono">76k / 200k · $1.74</span>
+            <button class="lb-btn lb-btn-primary">Send</button>
+          </div>
+        </div>
+
+        <p class="lb-caption e1-substage-label">Settings menu open</p>
+        <div class="lb-panel e1-popover e1-settings-menu">
+          <div class="e1-popover-section">
+            <span class="lb-caption">Thinking</span>
+            <div class="e1-mode" role="radiogroup" aria-label="Thinking">
+              <button type="button" class="e1-mode-choice">Off</button>
+              <button type="button" class="e1-mode-choice">Auto</button>
+              <button type="button" class="e1-mode-choice">Low</button>
+              <button type="button" class="e1-mode-choice">Medium</button>
+              <button type="button" class="e1-mode-choice is-selected">High</button>
+              <button type="button" class="e1-mode-choice">Xhigh</button>
+              <button type="button" class="e1-mode-choice">Max</button>
+            </div>
+          </div>
+          <label class="lb-listrow e1-remember">
+            <input type="checkbox" /><span>Remember for new sessions</span>
+          </label>
+        </div>
+        <p class="lb-small e1-fact">This session only, unless checked.</p>
+
+        <div class="lb-hr"></div>
+        <p class="lb-caption e1-substage-label">Below 480px</p>
+        <div class="e1-narrow">
+          <div class="lb-inline e1-bar">
+            <span class="e1-agent">Oh My Pi</span>
+            <button type="button" class="e1-select">
+              <span class="e1-select-value">Claude Opus 5</span>
+              <svg class="e1-select-chevron"><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <p class="lb-small e1-narrow-note">
+            Only model needs the fold — thinking already left this row, so tapping "···" costs one
+            picker's width, not two.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .e1-bar {
+    width: 100%;
+    flex-wrap: wrap;
+    font-size: var(--text-small-size);
+  }
+
+  .e1-agent {
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+
+  .e1-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .e1-label {
+    color: var(--color-text-secondary);
+  }
+
+  .e1-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Faithful to ui/Select.svelte's `sm` trigger. */
+  .e1-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    max-width: 100%;
+    padding: var(--space-2xs) var(--space-md);
+    background: var(--color-surface);
+    color: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  /* Illustrates truncation against a long provider model name — the fixed
+     width is the measurement this row exists to show, not a token. */
+  .e1-select.e1-long {
+    max-width: 11rem;
+  }
+
+  .e1-select-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .e1-select-chevron {
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+  }
+
+  .e1-check {
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    color: currentColor;
+  }
+
+  .e1-substage-label {
+    margin: var(--space-lg) 0 var(--space-2xs);
+  }
+
+  .e1-select-list {
+    max-width: 18rem;
+    padding: var(--space-2xs);
+  }
+
+  .e1-select-option {
+    width: 100%;
+    justify-content: space-between;
+    background: transparent;
+    border: 0;
+    text-align: left;
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  .e1-select-option.is-selected {
+    color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .e1-select-more {
+    justify-content: center;
+    cursor: default;
+  }
+
+  .e1-select-more:hover {
+    background: transparent;
+  }
+
+  .e1-remember {
+    cursor: pointer;
+  }
+
+  .e1-remember input[type='checkbox'] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--color-accent);
+  }
+
+  .e1-fact {
+    margin: var(--space-2xs) 0 0;
+  }
+
+  .e1-popover {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 20rem;
+    padding: var(--space-sm);
+  }
+
+  .e1-popover .e1-select-option,
+  .e1-popover .e1-select-more,
+  .e1-popover .e1-remember {
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  .e1-popover-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .e1-settings-menu {
+    max-width: 14rem;
+  }
+
+  /* Faithful to ConfigBar.svelte's own `mode` segmented control. */
+  .e1-mode {
+    display: inline-flex;
+    flex-wrap: wrap;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .e1-mode-choice {
+    padding: var(--space-2xs) var(--space-sm);
+    background: transparent;
+    border: 0;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+  }
+
+  .e1-mode-choice:hover {
+    background: var(--color-fill-subtle);
+  }
+
+  .e1-mode-choice.is-selected {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  /* The composer's own content-column width at a phone measure, illustrated
+     rather than tokenised — this is the constraint being discussed. */
+  .e1-narrow {
+    max-width: 17rem;
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+  }
+
+  .e1-narrow .e1-bar {
+    margin-bottom: var(--space-2xs);
+  }
+
+  .e1-narrow-note {
+    margin: 0;
+  }
+</style>
+
+    </div>
+
+    <div class="sec" id="sec-f">
+      <h2 class="sec-title"><span class="sec-letter">F</span> Defects found</h2>
+<!--
+  SECTION F - defects found while investigating the review.
+  These need no decision from Lorenzo: they are broken, and the fix is the fix.
+  They are in the artifact so he can see what the review turned up beyond what
+  he asked for, and so the board entries have somewhere to point.
+
+  Every claim here was verified by me directly - by reading the file, or by
+  driving the real app on the Mac over CDP against production. Where something
+  is inferred rather than observed, it says so.
+-->
+
+<style>
+  .s-def-grid {
+    display: grid;
+    gap: var(--space-md);
+  }
+  .s-def-repro {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-sm) var(--space-md);
+    border-left: 2px solid var(--color-danger);
+    background: var(--color-danger-subtle);
+    border-radius: var(--radius-sm);
+  }
+  .s-def-repro-title {
+    font-size: var(--text-small-size);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-danger);
+  }
+  .s-def-step {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: baseline;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+  .s-def-step-n {
+    flex: 0 0 1.25rem;
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+  /* F2 - the two gutter alignments, drawn to scale against a real row. */
+  .s-def-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+  .s-def-gutter {
+    flex: 0 0 2.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  .s-def-gutter.is-bad {
+    padding-top: var(--space-2xs);
+  }
+  .s-def-glyph {
+    color: var(--color-text-muted);
+  }
+  .s-def-cmd {
+    flex: 1;
+    min-width: 0;
+  }
+  .s-def-ruler {
+    position: relative;
+  }
+  .s-def-ruler::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: 0.65em;
+    border-top: 1px dashed var(--color-accent);
+    opacity: 0.7;
+  }
+</style>
+
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>Files and Terminal die for good after the node restarts</h2>
+  </div>
+  <blockquote class="item-quote">
+    nella workbench il tab files non funziona. [...] il terminale spesso non funziona
+  </blockquote>
+  <p class="item-note">
+    Both, same cause, and it is the bug I already fixed once. A node keeps a
+    <code>SessionBridge</code> per live session, created in exactly one place
+    (<code>node-daemon.ts:1905</code>, inside session creation) and never rebuilt for a session
+    that was already on disk. <b>Eleven</b> handlers open with
+    <code>if (!bridge) return;</code> &mdash; <code>fs_list_request</code> (<code>:2836</code>),
+    <code>terminal_open</code> (<code>:3947</code>), terminal input/resize/close, the three
+    test-runner handlers, <code>run_start</code>, <code>run_cancel</code> and
+    <code>prompt_inject</code>. So the moment the node restarts &mdash; a deploy, a crash, a
+    reboot &mdash; every pre-existing session keeps rendering its transcript from the client's own
+    cache while every one of those requests is dropped without a reply. The client waits out its
+    own 10s deadline (<code>FileTreePanel.svelte:82</code>,
+    <code>InteractiveTerminal.svelte:293</code>) and then blames the node for being asleep or
+    offline, which is exactly the wrong thing to tell you: the node is awake, connected, and
+    ignoring you.
+  </p>
+  <p class="item-note">
+    This is the same defect class as <code>#697</code>, the tracker bug you found last round. That
+    fix removed the guard on one handler and left the other eleven. The comment it left behind at
+    <code>:2922-2925</code> even says so out loud. Better yet, the terminal handler's own doc
+    comment promises the opposite of what the code does: <em>&ldquo;so the client never hangs
+    waiting for a reply that never comes&rdquo;</em>, three lines above the return that hangs it.
+  </p>
+  <p class="item-note">
+    And the node already knows. A session reloaded from disk after a restart comes back marked
+    <code>'disconnected'</code> on purpose, with the reasoning written out at
+    <code>session-manager.ts:49-53</code>: <em>&ldquo;a node restart means the agent process that
+    made a saved 'running' or 'paused' record true is simply gone, and pretending otherwise would
+    let a client believe it can resume into a live agent that no longer exists&rdquo;</em>. That is
+    exactly right, and then nobody tells you. The client draws the session like any other, offers
+    Files and Terminal, and the handlers meet both with silence &mdash; so the one honest piece of
+    state in the system never reaches the screen.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Observed</span><span class="opt-title">Reproduced on your Mac, against production</span>
+      </div>
+      <p class="opt-why">Not inferred from the code. I drove the real window over CDP and watched both fail, then read the handlers to explain it.</p>
+      <div class="stage">
+        <div class="s-def-repro">
+          <span class="s-def-repro-title">Reproduction</span>
+          <div class="s-def-step"><span class="s-def-step-n">1</span><span>Restart the node daemon. Leave the session alone; do not create a new one.</span></div>
+          <div class="s-def-step"><span class="s-def-step-n">2</span><span>Load the app fresh and open the session. The transcript renders normally, so nothing looks wrong.</span></div>
+          <div class="s-def-step"><span class="s-def-step-n">3</span><span>Open Files &rarr; <span class="lb-mono">This folder didn't answer in time.</span> Open Terminal &rarr; <span class="lb-mono">The terminal hasn't opened yet.</span></span></div>
+          <div class="s-def-step"><span class="s-def-step-n">4</span><span>A brand-new terminal tab fails the same way. Only starting a new session brings either back.</span></div>
+        </div>
+        <div class="lb-spacer"></div>
+        <p class="lb-small lb-muted">
+          One trap worth naming, because it fooled me for a while: right after the restart the
+          Files tree still <em>looked</em> fine. That was the client replaying its own cached
+          listing. On a genuinely cold load both fail together, every time.
+        </p>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Answer every request, and rebuild the bridge on demand</span>
+      </div>
+      <p class="opt-why">Three parts, and the last is the one that matters: the node stops answering with silence, the client shows the state the node already has, and re-attaching does not mean starting over.</p>
+      <div class="stage">
+        <div class="lb-stack">
+          <div class="lb-listrow"><span class="lb-badge danger">today</span><span class="lb-small">no bridge &rarr; <span class="lb-mono">return</span> &rarr; the client invents a reason 10s later</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">1</span><span class="lb-small">every handler replies, <span class="lb-mono">outcome: 'error'</span> carrying the real reason</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">2</span><span class="lb-small">the session row shows <span class="lb-mono">disconnected</span>, which the node already recorded</span></div>
+          <div class="lb-listrow"><span class="lb-badge ok">3</span><span class="lb-small">opening Files or a terminal on it offers to resume, instead of failing for 10s</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f2">
+  <div class="item-head">
+    <span class="item-id">F2</span>
+    <h2>The tool-call glyph sits below the line it belongs to</h2>
+  </div>
+  <blockquote class="item-quote">
+    le icone dei comandi eseguiti di quando esegue un tool non sono allineate con il testo del
+    comando
+  </blockquote>
+  <p class="item-note">
+    Real, and it is one declaration. <code>.tool-gutter</code> carries
+    <code>padding-top: var(--space-2xs)</code> (<code>ToolCallGutter.svelte:27</code>) inside a
+    row that is already <code>align-items: flex-start</code>. The row aligns the gutter's top edge
+    to the command's top edge correctly, and then that padding pushes the glyph 4px down from it,
+    so it lands between the first and second line instead of on the first. The padding is
+    decorative; the gutter's real job, keeping the glyph flush to the column's right edge, is done
+    by <code>align-items: flex-end</code> and is unaffected by removing it.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Glyph 4px low</span>
+      </div>
+      <p class="opt-why">Reads as sloppy at every width, and worse on a one-line command where there is no second line for the eye to forgive it against.</p>
+      <div class="stage">
+        <div class="s-def-row">
+          <div class="s-def-gutter is-bad"><span class="s-def-glyph">&#9656;</span></div>
+          <div class="s-def-cmd s-def-ruler">
+            <span class="lb-mono">$ git status -sb &amp;&amp; git log --oneline -12</span>
+          </div>
+        </div>
+        <div class="stage-label">dashed line = the command's first text line</div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Drop the padding</span>
+      </div>
+      <p class="opt-why">Glyph and command share one baseline; nothing else in the row moves.</p>
+      <div class="stage">
+        <div class="s-def-row">
+          <div class="s-def-gutter"><span class="s-def-glyph">&#9656;</span></div>
+          <div class="s-def-cmd s-def-ruler">
+            <span class="lb-mono">$ git status -sb &amp;&amp; git log --oneline -12</span>
+          </div>
+        </div>
+        <div class="stage-label">same row, padding removed</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f3">
+  <div class="item-head">
+    <span class="item-id">F3</span>
+    <h2>The terminal prints its own plumbing before your prompt</h2>
+  </div>
+  <blockquote class="item-quote">
+    quando funziona ci sono delle righe in alto di testo prima della riga per i comandi che non
+    c'entrano niente
+  </blockquote>
+  <p class="item-note">
+    Found it, with one honest caveat. On an <b>SSH</b> target the node writes
+    <code>cd &lt;worktree&gt; &amp;&amp; clear</code> into the shell channel and only then wires
+    the output listeners (<code>node-daemon.ts:4049</code>, listeners at <code>:4053</code>), so
+    that command and whatever the login shell printed before it are already in the buffer when
+    the client attaches. The code comment calls this <em>&ldquo;an accepted, documented
+    tradeoff&rdquo;</em>; you are the evidence that it is not accepted. It exists because
+    <code>ssh2</code>'s shell channel has no <code>cwd</code> option, unlike a local
+    <code>node-pty</code> spawn.
+  </p>
+  <p class="item-note">
+    The caveat: your session is a <b>local</b> target, and the local branch has no such write &mdash;
+    I opened a terminal on it and got a single clean prompt row and nothing else. So either you
+    saw this on an SSH target, or there is a second source I have not reproduced. Worth one
+    sentence from you before I fix the wrong thing.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Setup leaks into the scrollback</span>
+      </div>
+      <p class="opt-why">The first thing a new terminal shows is the app talking to itself.</p>
+      <div class="stage">
+        <div class="lb-console">
+          <div>Last login: Tue Aug  5 13:58:02 2026 from 100.87.202.117</div>
+          <div>$ cd /home/dev/Progetti/loombox &amp;&amp; clear</div>
+          <div>dev@devbox:~/Progetti/loombox$ <span class="lb-caret"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Fix</span><span class="opt-title">Swallow everything before the shell is placed</span>
+      </div>
+      <p class="opt-why">Attach the listeners first and discard output until the setup command's own <span class="lb-mono">clear</span> lands, so the user's first line is their prompt.</p>
+      <div class="stage">
+        <div class="lb-console">
+          <div>dev@devbox:~/Progetti/loombox$ <span class="lb-caret"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+    </div>
+    </div>
+
+    <script>
+      const root = document.documentElement;
+      const themeBtn = document.getElementById('theme');
+      themeBtn.addEventListener('click', () => {
+        const light = root.getAttribute('data-theme') === 'light';
+        root.setAttribute('data-theme', light ? 'dark' : 'light');
+        themeBtn.textContent = light ? 'Light' : 'Dark';
+      });
+
+      // Squeezes every stage to a phone-ish measure, so an option can be
+      // judged at 390px without resizing the window.
+      const narrowBtn = document.getElementById('narrow');
+      narrowBtn.addEventListener('click', () => {
+        const on = document.body.classList.toggle('is-narrow');
+        narrowBtn.textContent = on ? 'Wide' : 'Narrow';
+      });
+    </script>
+    <style>
+      body.is-narrow .options {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      }
+      body.is-narrow .stage {
+        max-width: 390px;
+      }
+    </style>
+  </body>
+</html>
