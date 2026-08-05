@@ -591,6 +591,17 @@
   let connectedAccounts = $state<ConnectedAccount[]>([]);
   let selectedSessionId = $state<string | undefined>(undefined);
   /**
+   * The project the Tracker destination currently points at (issue #697)
+   * — decoupled from `selectedSessionId` on purpose, since a project's
+   * tracker is reachable with no session selected at all (see
+   * `TrackerPage.svelte`'s own doc comment). Whichever action ran last
+   * wins: selecting a session sets this to that session's own project
+   * ({@link selectSession} below), and {@link openTrackerForProject} sets
+   * it directly from a project row's own "Open tracker" action, with no
+   * session involved at all.
+   */
+  let trackerProject = $state<{ nodeId: string; projectPath: string } | undefined>(undefined);
+  /**
    * The client-side project registry (design spec v4 §4.2; SPEC §6's
    * "Project: any folder ... does not have to be a git repository").
    * Created once, for this component's lifetime. `adoptFromSessions`
@@ -1106,6 +1117,8 @@
 
   function selectSession(id: string): void {
     selectedSessionId = id;
+    const session = sessions.find((entry) => entry.id === id);
+    if (session) trackerProject = { nodeId: session.nodeId, projectPath: session.projectPath };
     // Design spec v4 §3.3: picking a session always shows the transcript,
     // even if a destination (Inbox/Nodes/Settings) was showing a moment ago:
     // selecting a session is never a no-op just because you were looking
@@ -1975,6 +1988,22 @@
     projectStore.adoptFromSessions(sessions);
   }
 
+  /**
+   * Opens the Tracker page for `project` directly (issue #697) — reachable
+   * from a project's own "more actions" menu with no session involved at
+   * all, unlike the top nav's `destination-tracker` shortcut (which only
+   * ever reflects whichever session happens to be selected, via
+   * {@link selectSession}). Leaves `selectedSessionId` untouched,
+   * mirroring every other destination's own "selecting one leaves the
+   * session alone" contract (§3.3).
+   */
+  function openTrackerForProject(project: Project): void {
+    trackerProject = { nodeId: project.nodeId, projectPath: project.path };
+    mainView = 'tracker';
+    sessionsSheetOpen = false;
+    closeSidebarMenus();
+  }
+
   /** The session row menu's "Archive session…" action (design spec v4 §3.2; issue #512). */
   function openArchiveSessionDialog(session: ClientSessionMeta): void {
     archivingSession = session;
@@ -2623,21 +2652,22 @@
               >
             {/if}
           </button>
-          {#if selectedSessionId}
+          {#if trackerProject}
             <!-- Project-scoped, unlike Inbox above (issue #212): the
-                 native tracker's kanban/list UI needs a bound session to
-                 route its wire requests through (`TrackerPage`'s own doc
-                 comment), so this row only appears once one is selected —
-                 the same gate the right sidebar's Config tab already uses
-                 for `selectedProjectPath`. Closes `sessionsSheetOpen`
-                 itself (mirrors the tabbar's own `tabbar-inbox` handler,
-                 not this same nav's `destination-inbox` sibling, which
-                 has no mobile-tabbar duplicate to lean on) — Tracker has
-                 no tabbar entry of its own, so this row IS the only
-                 mobile path to it, and it must close the sheet it lives
-                 inside on its way there or the backdrop it leaves open
-                 blocks the destination page underneath (caught by
-                 `tracker-mobile.spec.ts`). -->
+                 native tracker's kanban/list UI is reachable once a
+                 project is in view, not once a session is selected
+                 (issue #697 dropped the session dependency entirely —
+                 `TrackerPage.svelte`'s own doc comment) — the same gate
+                 the right sidebar's Config tab uses for
+                 `selectedProjectPath`, one layer looser. Closes
+                 `sessionsSheetOpen` itself (mirrors the tabbar's own
+                 `tabbar-inbox` handler, not this same nav's
+                 `destination-inbox` sibling, which has no mobile-tabbar
+                 duplicate to lean on) — Tracker has no tabbar entry of
+                 its own, so this row IS the only mobile path to it, and
+                 it must close the sheet it lives inside on its way there
+                 or the backdrop it leaves open blocks the destination
+                 page underneath (caught by `tracker-mobile.spec.ts`). -->
             <button
               type="button"
               class="destination-row"
@@ -2801,6 +2831,14 @@
                         }}
                       >
                         New session
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => openTrackerForProject(row.project)}
+                        data-testid="project-open-tracker"
+                      >
+                        Open tracker
                       </button>
                       <button
                         type="button"
@@ -3142,12 +3180,11 @@
                   section={settingsSection}
                   onSectionChange={selectSettingsSection}
                 />
-              {:else if mainView === 'tracker' && selectedSessionId && selectedProjectPath && client}
+              {:else if mainView === 'tracker' && trackerProject && client}
                 <TrackerPage
                   {client}
-                  sessionId={selectedSessionId}
-                  projectPath={selectedProjectPath}
-                  nodeId={selectedSession?.nodeId}
+                  projectPath={trackerProject.projectPath}
+                  nodeId={trackerProject.nodeId}
                   {connectedAccounts}
                 />
               {/if}

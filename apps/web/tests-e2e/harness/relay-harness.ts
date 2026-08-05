@@ -50,6 +50,16 @@ export async function deriveNodeSessionKey(
   return importAesGcmKey(node.key);
 }
 
+/** The project-addressed tracker records' own derivation (issue #697) — `['project', accountId, projectPath]`, mirroring `deriveNodeSessionKey` above but never the same key, even for the same account, and with no session involved at all: both a node and a browser client derive it locally from the AMK they already hold. */
+export async function deriveNodeProjectKey(
+  amk: Uint8Array,
+  accountId: string,
+  projectPath: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
+  return importAesGcmKey(node.key);
+}
+
 export async function nodeSeal(
   sessionId: string,
   value: unknown,

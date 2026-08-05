@@ -40,7 +40,7 @@
    * (F2-2), the same `TrackerConfigPanel` in its `presentation="header"`
    * shape (a `Dialog`, not an inline form — a page-header bar has no room
    * to grow one). `accountConnect` threads this page's own already-known
-   * `nodeId` (the session's own node, so unlike Settings' accounts
+   * `nodeId` (the project's own node, so unlike Settings' accounts
    * section there is no node to pick) into that panel's "Connect
    * GitHub"/"Connect Jira" empty-state CTA.
    *
@@ -59,6 +59,16 @@
    * #631) carries the structured `TrackerBackendResolutionError` kind
    * when the failure is a resolution failure specifically; `RESOLUTION_ERROR_COPY`
    * below is what renders it as more than a bare message.
+   *
+   * **Issue #697: this page no longer needs a session at all.** Every
+   * wire request it sends — tracker mode (already node-addressed since
+   * #631) AND, as of this fix, tracker snapshot/write — is addressed by
+   * `nodeId` + `projectPath` alone, sealed to a project key
+   * (`@loombox/crypto`'s `deriveProjectKey`), not a session key. Before
+   * #697 the records half rode `sessionId`, which made them unreachable
+   * whenever no agent session happened to be running for the project —
+   * this component takes `nodeId`/`projectPath` props directly now and
+   * has no `sessionId` prop left to take.
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import type { Readable } from 'svelte/store';
@@ -96,17 +106,19 @@
   } from '../TrackerManageTypesDialog.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `sessionId` as its first argument, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures) — {@link dialogClient} below adapts this into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. Also extends `GithubConnectClient`/`JiraConnectClient`/`TrackerModeClient` (the last for issue #631's node-backed mode — `createRelayTrackerModeStorage`'s own narrow-client seam) and carries `refreshConnectedAccounts` (issue #672): `RelayClient` already implements all four (issue #230/#221/#631), and this page's own `accountConnect` prop to `TrackerConfigPanel` needs the connect ones — see the file doc comment. */
+  /** Mirrors `RelayClient`'s own tracker methods field-for-field (every write takes `nodeId`+`projectPath` as its first two arguments, matching `RelayClient.createTrackerRecord`/`updateTrackerRecord`/`defineTrackerType`'s real signatures — issue #697 re-addressed these off `sessionId` entirely) — {@link dialogClient} below adapts this into the node/project-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect. Also extends `GithubConnectClient`/`JiraConnectClient`/`TrackerModeClient` (the last for issue #631's node-backed mode — `createRelayTrackerModeStorage`'s own narrow-client seam) and carries `refreshConnectedAccounts` (issue #672): `RelayClient` already implements all four (issue #230/#221/#631), and this page's own `accountConnect` prop to `TrackerConfigPanel` needs the connect ones — see the file doc comment. */
   export interface TrackerPageClient
     extends GithubConnectClient, JiraConnectClient, TrackerModeClient {
-    trackerSnapshotFor: (sessionId: string) => Readable<TrackerSnapshotState>;
-    reloadTrackerSnapshot: (sessionId: string) => void;
+    trackerSnapshotFor: (nodeId: string, projectPath: string) => Readable<TrackerSnapshotState>;
+    reloadTrackerSnapshot: (nodeId: string, projectPath: string) => void;
     createTrackerRecord: (
-      sessionId: string,
+      nodeId: string,
+      projectPath: string,
       input: { primaryType: string; typeTags?: string[]; fields: Record<string, unknown> },
     ) => Promise<TrackerRecordV1>;
     updateTrackerRecord: (
-      sessionId: string,
+      nodeId: string,
+      projectPath: string,
       id: string,
       patch: {
         primaryType?: string;
@@ -116,7 +128,8 @@
       },
     ) => Promise<TrackerRecordV1>;
     defineTrackerType: (
-      sessionId: string,
+      nodeId: string,
+      projectPath: string,
       type: { id: string; label: string; roles: Partial<Record<TrackerRoleV1, string>> },
     ) => Promise<TrackerTypeDefinitionV1>;
     refreshConnectedAccounts: () => void;
@@ -124,16 +137,23 @@
 
   interface Props {
     client: TrackerPageClient;
-    sessionId: string;
     /** Keys `tracker-mode-store.ts`'s storage, same as `ProjectConfigPanel`'s old `projectPath` prop did. */
     projectPath: string;
-    /** The session's own node (SPEC §7.26's node-locality) — the node a fresh GitHub/Jira connect from this page's header/empty-state runs on. `undefined` degrades to `GithubConnectFlow`/`JiraConnectForm`'s own "select a node" message rather than hiding the connect buttons. */
+    /**
+     * The project's own node (SPEC §7.26's node-locality) — every wire
+     * request this page sends (tracker mode AND, since issue #697,
+     * tracker records) is addressed by this plus {@link projectPath}
+     * alone, with no session involved. `undefined` degrades to a real
+     * error state below (mirrors `GithubConnectFlow`/`JiraConnectForm`'s
+     * own "select a node" message) rather than hiding the page or
+     * guessing.
+     */
     nodeId: string | undefined;
     /** `RelayClient.connectedAccounts`'s latest snapshot — forwarded straight to `TrackerConfigPanel`, same "this page fetches nothing of its own" split every prop here already follows. */
     connectedAccounts?: readonly ConnectedAccount[];
   }
 
-  const { client, sessionId, projectPath, nodeId, connectedAccounts = [] }: Props = $props();
+  const { client, projectPath, nodeId, connectedAccounts = [] }: Props = $props();
 
   /**
    * This project's saved tracker mode (issue #672, node-backed by #631).
@@ -163,13 +183,13 @@
   function subscribeTrackerMode(): void {
     unsubscribeTrackerMode?.();
     if (nodeId === undefined) {
-      // No node bound to this session (yet) — a real, named error state
+      // No node bound to this project (yet) — a real, named error state
       // (SPEC §7.10 forbids guessing a mode with no node to ask), never a
       // silent "never chosen" that would offer a setup form pointed at
       // nowhere.
       trackerModeStorage = undefined;
       trackerModeStatus = 'error';
-      trackerModeError = 'No node is available for this session yet.';
+      trackerModeError = 'No node is available for this project yet.';
       trackerMode = undefined;
       return;
     }
@@ -280,7 +300,14 @@
 
   function subscribe(): void {
     unsubscribe?.();
-    unsubscribe = client.trackerSnapshotFor(sessionId).subscribe((value) => {
+    if (nodeId === undefined) {
+      // Mirrors `subscribeTrackerMode`'s own guard just above: with no
+      // node to ask, there is nothing to fetch — the tracker-mode error
+      // state already covers this in the template (it renders first), so
+      // this store is simply never consulted while that holds.
+      return;
+    }
+    unsubscribe = client.trackerSnapshotFor(nodeId, projectPath).subscribe((value) => {
       snapshot = value;
       if (value.status === 'loading') {
         if (timeoutHandle === undefined && !timedOut) armBoundedWait();
@@ -301,26 +328,46 @@
   });
 
   // Re-subscribes if the caller ever points this page at a different
-  // session (a mount-time-only `onMount` would keep listening to the OLD
-  // session's store forever otherwise).
+  // project/node (a mount-time-only `onMount` would keep listening to the
+  // OLD project's store forever otherwise; issue #697 dropped `sessionId`
+  // as the reactive key in favor of the two fields that actually address
+  // the tracker now).
   $effect(() => {
-    void sessionId;
+    void nodeId;
+    void projectPath;
     subscribe();
     timedOut = false;
   });
 
   function retry(): void {
     timedOut = false;
-    client.reloadTrackerSnapshot(sessionId);
+    if (nodeId === undefined) return;
+    client.reloadTrackerSnapshot(nodeId, projectPath);
   }
 
   const registry = $derived(buildTrackerTypeRegistryV1(snapshot.types));
 
-  /** Adapts {@link client} into the session-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect (both mirror `AddProjectDialog`'s established "a dialog calls its own narrow client directly" convention) — binds `sessionId` once here rather than threading it through every dialog prop. */
+  /**
+   * `nodeId` is only ever `undefined` while the tracker-mode error state
+   * above is showing (see {@link subscribeTrackerMode}'s guard) — none of
+   * `dialogClient`'s methods below are reachable from the template until
+   * `trackerModeStatus === 'loaded'`, which cannot happen without a node.
+   * Throws rather than silently no-op-ing if that invariant is ever
+   * wrong, matching this codebase's "never a silent drop" convention.
+   */
+  function requireNodeId(): string {
+    if (nodeId === undefined) {
+      throw new Error('TrackerPage: no node available for this project');
+    }
+    return nodeId;
+  }
+
+  /** Adapts {@link client} into the node/project-free shape `TrackerRecordDialog`/`TrackerManageTypesDialog` expect (both mirror `AddProjectDialog`'s established "a dialog calls its own narrow client directly" convention) — binds `nodeId`/`projectPath` once here (issue #697) rather than threading them through every dialog prop. */
   const dialogClient = $derived<TrackerRecordClient & TrackerTypeClient>({
-    createTrackerRecord: (input) => client.createTrackerRecord(sessionId, input),
-    updateTrackerRecord: (id, patch) => client.updateTrackerRecord(sessionId, id, patch),
-    defineTrackerType: (type) => client.defineTrackerType(sessionId, type),
+    createTrackerRecord: (input) => client.createTrackerRecord(requireNodeId(), projectPath, input),
+    updateTrackerRecord: (id, patch) =>
+      client.updateTrackerRecord(requireNodeId(), projectPath, id, patch),
+    defineTrackerType: (type) => client.defineTrackerType(requireNodeId(), projectPath, type),
   });
 
   let recordDialogOpen = $state(false);
@@ -347,8 +394,8 @@
     if (!record) return;
     const type = registry.get(record.primaryType);
     const key = type?.roles.workflowStatus;
-    if (!key) return;
-    void client.updateTrackerRecord(sessionId, id, {
+    if (!key || nodeId === undefined) return;
+    void client.updateTrackerRecord(nodeId, projectPath, id, {
       fields: { ...record.fields, [key]: workflowStatus },
     });
   }
@@ -406,7 +453,7 @@
       {/if}
       <ErrorNotice
         message={timedOut
-          ? "This project's tracker didn't answer in time. The node may be asleep, offline, or on an older relay."
+          ? "This project's tracker didn't answer in time. The node isn't reachable right now, or this relay predates project-scoped tracker requests (issue #697)."
           : (snapshot.error ?? 'Failed to load the tracker.')}
         retryable
         onRetry={retry}

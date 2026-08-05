@@ -41,7 +41,6 @@ function baseClient(overrides: Partial<TrackerPageClient> = {}): TrackerPageClie
 function baseProps(overrides: Partial<TrackerPageClient> = {}) {
   return {
     client: baseClient(overrides),
-    sessionId: 'session-1',
     projectPath: '/home/dev/proj',
     nodeId: 'node-1',
   };
@@ -96,7 +95,7 @@ describe('TrackerPage tracker-mode loading gate (issue #631)', () => {
     expect(screen.getByTestId('ui-error-notice').textContent).toContain('relay unreachable');
   });
 
-  it('no node bound to the session yet surfaces as a named error, never a guessed "never chosen" setup step', () => {
+  it('no node bound to the project yet surfaces as a named error, never a guessed "never chosen" setup step', () => {
     const props = baseProps();
     render(TrackerPage, { props: { ...props, nodeId: undefined } });
 
@@ -189,5 +188,55 @@ describe('TrackerPage tracker-snapshot connectivity-error state (SPEC §7.10, is
     await waitFor(() => expect(screen.getByTestId('tracker-snapshot-error')).toBeTruthy());
     expect(screen.queryByTestId('tracker-snapshot-error-badge')).toBeNull();
     expect(screen.getByTestId('ui-error-notice').textContent).toContain('corrupt');
+  });
+});
+
+describe('TrackerPage tracker-record addressing (issue #697): no session anywhere', () => {
+  it('trackerSnapshotFor is addressed by nodeId + projectPath alone, reachable with no session prop to give it', async () => {
+    const trackerSnapshotFor = vi.fn(() =>
+      writable<TrackerSnapshotState>({ status: 'loaded', records: [], types: [] }),
+    );
+    render(TrackerPage, {
+      props: baseProps({
+        getTrackerMode: vi.fn(async () => ({ kind: 'native' }) as TrackerMode),
+        trackerSnapshotFor,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(trackerSnapshotFor).toHaveBeenCalledWith('node-1', '/home/dev/proj'),
+    );
+  });
+
+  it('a snapshot stuck loading past 10s times out with the corrected, narrower copy \u2014 never the old "may be asleep" hedge', async () => {
+    vi.useFakeTimers();
+    const loadingState = writable<TrackerSnapshotState>({
+      status: 'loading',
+      records: [],
+      types: [],
+    });
+    render(TrackerPage, {
+      props: baseProps({
+        getTrackerMode: vi.fn(async () => ({ kind: 'native' }) as TrackerMode),
+        trackerSnapshotFor: () => loadingState,
+      }),
+    });
+
+    // Flushes the tracker-mode round trip's own promise chain (a real
+    // microtask, unaffected by fake timers) before the bounded wait below
+    // even starts counting.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByTestId('tracker-page-loading')).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const notice = screen.getByTestId('ui-error-notice');
+    // The old three-way "asleep, offline, or on an older relay" hedge is
+    // gone: issue #697 made the node's answer mandatory, so a timeout now
+    // names the two causes that can still actually produce one.
+    expect(notice.textContent).not.toContain('asleep');
+    expect(notice.textContent).toContain("isn't reachable right now");
+    expect(notice.textContent).toContain('relay predates project-scoped tracker requests');
+    vi.useRealTimers();
   });
 });

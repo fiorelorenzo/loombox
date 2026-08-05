@@ -109,6 +109,16 @@ async function deriveNodeTargetKey(
   return importAesGcmKey(node.key);
 }
 
+/** The project-addressed tracker records' own derivation (issue #697) — `['project', accountId, projectPath]`, mirroring `deriveNodeSessionKey`/`deriveNodeTargetKey` above but never the same key, even for the same account, and with no session or target involved at all. */
+async function deriveNodeProjectKey(
+  amk: Uint8Array,
+  accountId: string,
+  projectPath: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
+  return importAesGcmKey(node.key);
+}
+
 async function nodeSeal(
   sessionId: string,
   value: unknown,
@@ -2890,8 +2900,8 @@ describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
   });
 });
 
-describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
-  it('trackerSnapshotFor lazily loads a session\u2019s tracker snapshot, decrypting a real tracker_snapshot_response the node opaquely routed back', async () => {
+describe('RelayClient: native tracker (SPEC §7.10, §7.26; issues #212, #697)', () => {
+  it('trackerSnapshotFor lazily loads a project\u2019s tracker snapshot with NO session anywhere \u2014 decrypting a real tracker_snapshot_response sealed to the project key, addressed by nodeId+projectPath alone', async () => {
     const amk = generateAmk();
     const accountId = 'acct-tracker-snapshot';
 
@@ -2901,28 +2911,41 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_1', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-1' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const snapshot = client.trackerSnapshotFor(session.id);
+    const projectPath = '/workspace/proj-1';
+    const snapshot = client.trackerSnapshotFor('node_tracker_1', projectPath);
 
     const request = (await node.waitFor((m) => m.type === 'tracker_snapshot_request')) as {
       type: 'tracker_snapshot_request';
-      sessionId: string;
-      targetId: string;
+      nodeId: string;
+      projectPath: string;
       requestId: string;
       envelope: EncryptedEnvelope;
     };
-    expect(request.sessionId).toBe(session.id);
-    expect(request.targetId).toBe('local');
+    expect(request.nodeId).toBe('node_tracker_1');
+    expect(request.projectPath).toBe(projectPath);
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'nodeId', 'projectPath', 'protocolVersion', 'requestId', 'type'].sort(),
+    );
+
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const requestPayload = await nodeOpen<{ includeArchived?: boolean }>(
+      projectPath,
+      request.envelope,
+      key,
+    );
+    expect(requestPayload).toEqual({});
 
     const taskRecord = {
       id: 'rec-1',
@@ -2954,14 +2977,15 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       },
     };
     const responseEnvelope = await nodeSeal(
-      session.id,
+      projectPath,
       { outcome: 'ok', records: [taskRecord], types: [taskType] },
       key,
     );
     node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_1',
+      projectPath,
       requestId: request.requestId,
       envelope: responseEnvelope,
     });
@@ -2971,7 +2995,48 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
     expect(loaded.types).toEqual([taskType]);
   });
 
-  it('surfaces an error outcome as status "error" rather than hanging, and reloadTrackerSnapshot retries', async () => {
+  it('is keyed by projectPath, not a session: a second call for the same project reuses the one store and never fires a second request (issue #697\u2019s "two sessions on one project fetch and fight" fix)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-tracker-dedupe';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-tracker-dedupe',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_dedupe',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-tracker-dedupe',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const projectPath = '/workspace/proj-dedupe';
+    const first = client.trackerSnapshotFor('node_tracker_dedupe', projectPath);
+    await node.waitFor((m) => m.type === 'tracker_snapshot_request');
+
+    // A second caller for the SAME project (e.g. a different session bound
+    // to it) gets the identical store back, with no fresh request fired.
+    const second = client.trackerSnapshotFor('node_tracker_dedupe', projectPath);
+    expect(second).toBe(first);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const requests = node.messages.filter((m) => m.type === 'tracker_snapshot_request');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('surfaces an error outcome as status "error" rather than hanging, and reloadTrackerSnapshot retries \u2014 still no session involved', async () => {
     const amk = generateAmk();
     const accountId = 'acct-tracker-error';
 
@@ -2981,30 +3046,34 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_2', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-2' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const snapshot = client.trackerSnapshotFor(session.id);
+    const projectPath = '/workspace/proj-2';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const snapshot = client.trackerSnapshotFor('node_tracker_2', projectPath);
     const request = (await node.waitFor((m) => m.type === 'tracker_snapshot_request')) as {
       requestId: string;
     };
     const errorEnvelope = await nodeSeal(
-      session.id,
+      projectPath,
       { outcome: 'error', message: 'the node did not answer in time' },
       key,
     );
     node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_2',
+      projectPath,
       requestId: request.requestId,
       envelope: errorEnvelope,
     });
@@ -3012,16 +3081,17 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
     expect(errored.error).toBe('the node did not answer in time');
 
     // Retry: reloadTrackerSnapshot sends a fresh request; a successful reply flips status back to loaded.
-    client.reloadTrackerSnapshot(session.id);
+    client.reloadTrackerSnapshot('node_tracker_2', projectPath);
     const retryRequest = (await node.waitFor((m) => {
       if (m.type !== 'tracker_snapshot_request') return false;
       return (m as { requestId: string }).requestId !== request.requestId;
     })) as { requestId: string };
-    const okEnvelope = await nodeSeal(session.id, { outcome: 'ok', records: [], types: [] }, key);
+    const okEnvelope = await nodeSeal(projectPath, { outcome: 'ok', records: [], types: [] }, key);
     node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_2',
+      projectPath,
       requestId: retryRequest.requestId,
       envelope: okEnvelope,
     });
@@ -3029,9 +3099,9 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
     expect(reloaded.records).toEqual([]);
   });
 
-  it("a client ignores a tracker_snapshot_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+  it('ignores a tracker_snapshot_response for a requestId it never sent \u2014 a stray/duplicate-reply guard, same shape pendingTargetFsListRequests documents (issue #697: the relay now answers the requester alone, so this is no longer about a sibling device\u2019s own reply, just a late/duplicate one)', async () => {
     const amk = generateAmk();
-    const accountId = 'acct-tracker-sibling';
+    const accountId = 'acct-tracker-stray';
 
     node = new FakeNode(relay.url, {
       deviceId: 'node-tracker-3',
@@ -3039,38 +3109,42 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_3', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_3',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-3' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const snapshot = client.trackerSnapshotFor(session.id);
+    const projectPath = '/workspace/proj-3';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const snapshot = client.trackerSnapshotFor('node_tracker_3', projectPath);
     await node.waitFor((m) => m.type === 'tracker_snapshot_request'); // this client's own request
 
-    const foreignEnvelope = await nodeSeal(
-      session.id,
+    const strayEnvelope = await nodeSeal(
+      projectPath,
       { outcome: 'ok', records: [], types: [] },
       key,
     );
     node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_3',
+      projectPath,
       requestId: 'req-not-mine',
-      envelope: foreignEnvelope,
+      envelope: strayEnvelope,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(get(snapshot).status).toBe('loading');
   });
 
-  it('createTrackerRecord sends a real tracker_write_request(op: create), resolves with the node\u2019s record, and merges it into the snapshot store', async () => {
+  it('createTrackerRecord sends a real tracker_write_request(op: create) addressed by nodeId+projectPath, resolves with the node\u2019s record, and merges it into the snapshot store \u2014 no session anywhere', async () => {
     const amk = generateAmk();
     const accountId = 'acct-tracker-create';
 
@@ -3080,31 +3154,36 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_4', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_4',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-4' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const createPromise = client.createTrackerRecord(session.id, {
+    const projectPath = '/workspace/proj-4';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const createPromise = client.createTrackerRecord('node_tracker_4', projectPath, {
       primaryType: 'task',
       fields: { title: 'Ship it', status: 'todo' },
     });
 
     const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
       type: 'tracker_write_request';
-      sessionId: string;
-      targetId: string;
+      nodeId: string;
+      projectPath: string;
       requestId: string;
       envelope: EncryptedEnvelope;
     };
+    expect(request.nodeId).toBe('node_tracker_4');
+    expect(request.projectPath).toBe(projectPath);
     const requestPayload = await nodeOpen<{ op: string; primaryType: string }>(
-      session.id,
+      projectPath,
       request.envelope,
       key,
     );
@@ -3132,18 +3211,19 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
         comments: [],
       },
     };
-    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', record }, key);
+    const responseEnvelope = await nodeSeal(projectPath, { outcome: 'ok', record }, key);
     node.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_4',
+      projectPath,
       requestId: request.requestId,
       envelope: responseEnvelope,
     });
 
     const resolved = await createPromise;
     expect(resolved).toEqual(record);
-    const snapshot = client.trackerSnapshotFor(session.id);
+    const snapshot = client.trackerSnapshotFor('node_tracker_4', projectPath);
     await waitForStore(snapshot, (value) => value.records.some((r) => r.id === 'rec-created'));
   });
 
@@ -3157,18 +3237,21 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_5', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_5',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-5' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const createPromise = client.createTrackerRecord(session.id, {
+    const projectPath = '/workspace/proj-5';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const createPromise = client.createTrackerRecord('node_tracker_5', projectPath, {
       primaryType: 'ghost-type',
       fields: {},
     });
@@ -3176,14 +3259,15 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       requestId: string;
     };
     const errorEnvelope = await nodeSeal(
-      session.id,
+      projectPath,
       { outcome: 'error', message: 'unknown tracker type "ghost-type"' },
       key,
     );
     node.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_5',
+      projectPath,
       requestId: request.requestId,
       envelope: errorEnvelope,
     });
@@ -3191,7 +3275,7 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
     await expect(createPromise).rejects.toThrow('unknown tracker type "ghost-type"');
   });
 
-  it('updateTrackerRecord sends a real tracker_write_request(op: update) — the kanban board\u2019s drag-to-move path', async () => {
+  it('updateTrackerRecord sends a real tracker_write_request(op: update) \u2014 the kanban board\u2019s drag-to-move path, addressed by nodeId+projectPath', async () => {
     const amk = generateAmk();
     const accountId = 'acct-tracker-update';
 
@@ -3201,18 +3285,21 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_6', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_6',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-6' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const updatePromise = client.updateTrackerRecord(session.id, 'rec-1', {
+    const projectPath = '/workspace/proj-6';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const updatePromise = client.updateTrackerRecord('node_tracker_6', projectPath, 'rec-1', {
       fields: { title: 'Ship it', status: 'done' },
     });
     const request = (await node.waitFor((m) => m.type === 'tracker_write_request')) as {
@@ -3220,7 +3307,7 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       envelope: EncryptedEnvelope;
     };
     const requestPayload = await nodeOpen<{ op: string; id: string }>(
-      session.id,
+      projectPath,
       request.envelope,
       key,
     );
@@ -3248,11 +3335,12 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
         comments: [],
       },
     };
-    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', record }, key);
+    const responseEnvelope = await nodeSeal(projectPath, { outcome: 'ok', record }, key);
     node.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_6',
+      projectPath,
       requestId: request.requestId,
       envelope: responseEnvelope,
     });
@@ -3271,18 +3359,21 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       authToken: accountId,
     });
     await node.ready;
-
-    const session = makeSessionMeta({ id: 'sess_tracker_7', accountId, targetId: 'local' });
-    const key = await deriveNodeSessionKey(amk, accountId, session.id);
-    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
-    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_tracker_7',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker-7' });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
-    await waitForStore(client.sessions, (value) => value.length > 0);
 
-    const definePromise = client.defineTrackerType(session.id, {
+    const projectPath = '/workspace/proj-7';
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const definePromise = client.defineTrackerType('node_tracker_7', projectPath, {
       id: 'feature-request',
       label: 'Feature Request',
       roles: { title: 'summary', workflowStatus: 'stage' },
@@ -3296,18 +3387,19 @@ describe('RelayClient: native tracker (SPEC §7.10; issue #212)', () => {
       builtin: false,
       roles: { title: 'summary', workflowStatus: 'stage' },
     };
-    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', typeDefinition }, key);
+    const responseEnvelope = await nodeSeal(projectPath, { outcome: 'ok', typeDefinition }, key);
     node.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: session.id,
+      nodeId: 'node_tracker_7',
+      projectPath,
       requestId: request.requestId,
       envelope: responseEnvelope,
     });
 
     const resolved = await definePromise;
     expect(resolved).toEqual(typeDefinition);
-    const snapshot = client.trackerSnapshotFor(session.id);
+    const snapshot = client.trackerSnapshotFor('node_tracker_7', projectPath);
     await waitForStore(snapshot, (value) => value.types.some((t) => t.id === 'feature-request'));
   });
 });
