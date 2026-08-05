@@ -1,5 +1,12 @@
 # @loombox/shared
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [35f3924]
+  - @loombox/protocol@0.5.1
+
 ## 0.2.2
 
 ### Patch Changes

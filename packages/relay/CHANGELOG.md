@@ -1,5 +1,17 @@
 # @loombox/relay
 
+## 0.4.1
+
+### Patch Changes
+
+- 35f3924: Tracker records are addressed by project, not by session, so a project's tracker
+  is readable when no agent session is running for it. Adds a project resource key
+  to the AMK key tree (`['project', accountId, projectPath]`), re-addresses the
+  four tracker record messages to `nodeId` + `projectPath`, and makes the node
+  answer every request it receives rather than dropping unanswerable ones.
+- Updated dependencies [35f3924]
+  - @loombox/protocol@0.5.1
+
 ## 0.4.0
 
 ### Minor Changes
