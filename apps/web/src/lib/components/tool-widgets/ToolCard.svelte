@@ -78,10 +78,20 @@
 
   /* No border, no background: the row's own header text (or a bespoke
      widget's own body surface, e.g. TerminalOutput/DiffViewer) is the only
-     thing on screen. The top offset matches ToolCallGutter's own
-     `padding-top` so a plain row's text still sits on the icon's baseline
-     rather than a hair above it. */
-  .tool-card-plain {
-    padding-top: var(--space-2xs);
-  }
+     thing on screen. No `tool-card-plain` rule below on purpose (issue
+     #703): this class used to carry its own `padding-top` matching
+     `ToolCallGutter`'s, on the theory that copying the value would
+     "align with the icon" — instead it sank the header text by that same
+     amount a second time (the gutter's padding is already sized to line
+     the icon up with a header that starts flush at the row's own top),
+     so a plain row's text sat visibly *below* the icon rather than
+     beside it. Verified on real rendered `BashWidget`/`GenericToolRow`
+     rows in both themes, short and truncated commands alike. The class
+     stays on the root element above (`ToolCard.test.ts` asserts its
+     presence as the surface/plain switch) even with no styling of its
+     own now. `tool-card-surface` above keeps its own padding on every
+     side — that box earns a real inset for its border, not an alignment
+     hack — so it carries a separate, smaller, pre-existing offset in the
+     (rarer) expanded/multi-line state that this fix does not attempt to
+     close. */
 </style>
