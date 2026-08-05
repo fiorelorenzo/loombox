@@ -21,6 +21,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish",
+    "dev:browser-seed": "tsx scripts/dev-browser-seed.mjs",
     "e2e:v0": "tsx scripts/v0-e2e-harness.mjs",
     "e2e:v1": "tsx scripts/v1-e2e-harness.mjs",
     "e2e:web": "pnpm --filter @loombox/web run e2e"

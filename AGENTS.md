@@ -78,10 +78,81 @@ branch-protection rule cannot mark the check "required"; the gate is procedural,
 CI runs on every PR and we never merge a red one, always via a feature branch + PR,
 never a direct push to `main`.
 
+## Checking the PWA here, headless (the Mac is only for Electron)
+
+Most UX/UI work needs no Mac at all. This box has **Chrome 149 and Playwright's own
+chromium installed** (what it lacks is a GUI, not a browser), and `http://localhost`
+is a secure context, so `crypto.subtle` exists and the app's E2E crypto works
+headless with no TLS cert and no Chromium flags. Verified on the real app: a headless
+tab reaches a fully decrypted cockpit, and clicks, typed keystrokes and ARIA
+snapshots all go through the app's own handlers.
+
+Two routes, pick by what you are checking.
+
+**Specs, screenshots, regressions → `tests-e2e`.** Each spec stands up its own
+throwaway relay, account and fake encrypted node, so it needs no dev loop, no OAuth
+and no AMK juggling:
+
+```bash
+pnpm --filter @loombox/web exec playwright test tests-e2e/pwa-shell.spec.ts
+```
+
+It really does run here (measured: 4/4 in 20s). Do not run it while `scripts/dev.sh`
+is up — it builds, and they share `.svelte-kit/`.
+
+**Iterating by hand against the real loop → seed a headless tab.** Two commands, and
+the second one is the whole point of `scripts/dev-browser-seed.mjs`: a fresh browser
+profile is a new device with no session (login is GitHub OAuth, unclickable headless)
+and no AMK, so it resolves both — the bearer token the app keeps in `localStorage`
+(reusing a live Better Auth session or minting one) and the account AMK, recovered
+from `LOOMBOX_RECOVERY_CODE` through the relay escrow with `@loombox/node`'s own
+bootstrap, the same crypto path the app's new-device flow drives.
+
+```bash
+scripts/dev.sh --no-mac          # relay + node + web on localhost
+pnpm dev:browser-seed            # -> ~/.loombox/dev-browser-seed.json (0600)
+pnpm dev:browser-seed --force-new-session   # ignore a live session, mint a fresh one
+```
+
+Then, in the `browser` tool (`{"action":"open","url":"http://localhost:5173"}` first):
+
+```js
+const seed = JSON.parse(require('node:fs').readFileSync('/home/dev/.loombox/dev-browser-seed.json', 'utf8'));
+await tab.evaluate((s) => {
+  localStorage.setItem('loombox:auth-session', JSON.stringify({ token: s.token, accountId: s.accountId }));
+  localStorage.setItem('loombox:relay-url', s.relayUrl);
+  localStorage.setItem(`loombox:amk:${s.accountId}`, s.amkBase64);
+}, seed);
+await tab.goto(seed.webUrl);
+```
+
+The seed file is read inside the tool's own code on purpose: the token and the AMK
+never pass through the transcript. For the same reason, **never hand-type the Recovery
+Code into the app in an agent session** — the ARIA snapshot of that input reports its
+`value`, so the code ends up in the log.
+
+What the script deliberately does not do is create the account: only a real GitHub
+OAuth sign-in does that. So right after `scripts/dev.sh --fresh` you need one sign-in
+from a browser someone can click (the desktop app on the Mac), and every headless run
+after that reuses the account.
+
+What still genuinely needs the Mac: the Electron shell itself (main/preload, window,
+menus, deep links, notifications, auto-update) and judging macOS type rendering or
+real trackpad/retina feel. Everything else — layout, flows, dark/light, mobile
+viewports, live agent turns against the dev node — is drivable from here.
+
+Two habits worth keeping from the Mac notes, since they apply identically: `tab.fill`
+times out on this app's textarea (use `tab.click(selector)` then
+`page.keyboard.type(...)`), and assert on state the app derives (an enabled submit
+button, a filtered list) so a pass means the app reacted rather than that you mutated
+its DOM. And stop short of anything with real side effects: creating a session really
+does spawn an agent on the node.
+
 ## Testing the desktop app on the Mac (from the devbox)
 
-The Electron desktop app (`apps/desktop`) can only render on the Mac (the devbox is
-headless — no GUI, no Chrome). Do not ask the human to run anything by hand: launch it
+The Electron desktop app (`apps/desktop`) can only render on the Mac (the devbox has
+Chrome but no GUI), so this is the route for Electron-specific work — see the section
+above for everything else. Do not ask the human to run anything by hand: launch it
 for them with one command from the devbox.
 
 ```bash

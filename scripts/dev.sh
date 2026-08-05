@@ -458,6 +458,9 @@ cat <<EOF
      node inspector   127.0.0.1:${NODE_INSPECT_PORT}$([ "$NODE_STARTED" = 1 ] || echo '  (node not running — see above)')
 
    next: open http://localhost:${WEB_PORT} and sign in with GitHub.
+   a headless browser on THIS box instead of the app on the Mac:
+   \`pnpm dev:browser-seed\` writes the session + AMK a fresh profile needs
+   (scripts/dev-browser-seed.mjs; AGENTS.md, "Checking the PWA here, headless").
    attach a debugger: chrome://inspect on this box (or VS Code's "Attach to
    Node Process") against 127.0.0.1:${RELAY_INSPECT_PORT} for the relay and
    127.0.0.1:${NODE_INSPECT_PORT} for the node.

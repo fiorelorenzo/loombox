@@ -5,12 +5,15 @@ import { defineConfig, devices } from '@playwright/test';
 // then drives it in a real Chromium against a real, throwaway
 // `@loombox/relay` instance + fake encrypted node each spec stands up
 // itself (`tests-e2e/fixtures.ts`) — nothing about the app under test is
-// stubbed. This box has no browser installed (see AGENTS.md/CLAUDE.md), so
-// `pnpm exec playwright test` only actually runs on CI's `e2e` job
-// (`.github/workflows/ci.yml`, `actions/setup-node` + `playwright install
-// --with-deps chromium` on `ubuntu-latest`, which does have one) — this
-// config and every spec under `tests-e2e/` are written to run there, not
-// locally on the devbox.
+// stubbed. CI's `e2e` job (`.github/workflows/ci.yml`, `actions/setup-node` +
+// `playwright install --with-deps chromium` on `ubuntu-latest`) is still the
+// gate, but this suite ALSO runs on the devbox — Playwright's chromium is
+// installed there and a spec takes seconds (measured: `pwa-shell.spec.ts`
+// 4/4 in 20s), so it is the cheapest way to check a UI change here without
+// the Electron app on the Mac (AGENTS.md, "Checking the PWA here,
+// headless"). One caveat locally: `webServer` builds, and a build shares
+// `.svelte-kit/` with a running `scripts/dev.sh`, so stop the dev loop
+// first.
 export default defineConfig({
   testDir: './tests-e2e',
   fullyParallel: true,
