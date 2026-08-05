@@ -64,6 +64,10 @@ import {
   type TestRunnerConfigGet,
   type TestRunnerConfigResult,
   type TestRunnerConfigSet,
+  type TrackerSnapshotRequest,
+  type TrackerSnapshotResponse,
+  type TrackerWriteRequest,
+  type TrackerWriteResponse,
 } from '@loombox/protocol';
 
 import { startRelay } from './relay';
@@ -2061,6 +2065,188 @@ describe('relay v1', () => {
       send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
       const firstClientNext = await nextMessage(firstClient);
       expect(firstClientNext.type).toBe('session_list');
+    });
+  });
+
+  describe('tracker_snapshot_request/_response and tracker_write_request/_response (issue #697) — re-addressed by nodeId + projectPath, same direct-by-nodeId request shape as target_update_request and the same single-shot pendingAccountRequests response shape as tracker_mode_response, always blind', () => {
+    it("routes a tracker_snapshot_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker',
+        targets: [{ id: 'local', kind: 'local', label: 'local', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: TrackerSnapshotRequest = {
+        type: 'tracker_snapshot_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker',
+        projectPath: '/home/dev/proj',
+        requestId: 'req_tracker_snap_1',
+        envelope: fakeEnvelope('snapshot-request'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as TrackerSnapshotRequest;
+      expect(received).toEqual(request);
+      // No `sessionId`/`targetId` on the wire at all — the pre-#697 shape is gone.
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'nodeId', 'projectPath', 'protocolVersion', 'requestId', 'type'].sort(),
+      );
+    });
+
+    it('does not route a tracker_snapshot_request to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_foreign',
+        targets: [{ id: 'local', kind: 'local', label: 'local', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'tracker_snapshot_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_foreign',
+        projectPath: '/home/dev/proj',
+        requestId: 'req_tracker_snap_intruder',
+        envelope: fakeEnvelope('snapshot-request-intruder'),
+      } satisfies TrackerSnapshotRequest);
+
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers tracker_snapshot_response back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_reply',
+        targets: [{ id: 'local', kind: 'local', label: 'local', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: TrackerSnapshotRequest = {
+        type: 'tracker_snapshot_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_reply',
+        projectPath: '/home/dev/proj',
+        requestId: 'req_tracker_snap_2',
+        envelope: fakeEnvelope('snapshot-request-2'),
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: TrackerSnapshotResponse = {
+        type: 'tracker_snapshot_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_reply',
+        projectPath: '/home/dev/proj',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('snapshot-response-2'),
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as TrackerSnapshotResponse;
+      expect(received).toEqual(response);
+
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('routes a tracker_write_request to the node and its tracker_write_response back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_write',
+        targets: [{ id: 'local', kind: 'local', label: 'local', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+
+      const request: TrackerWriteRequest = {
+        type: 'tracker_write_request',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_write',
+        projectPath: '/home/dev/proj',
+        requestId: 'req_tracker_write_1',
+        envelope: fakeEnvelope('write-request'),
+      };
+      send(requester, request);
+      const receivedRequest = (await nextMessage(node)) as unknown as TrackerWriteRequest;
+      expect(receivedRequest).toEqual(request);
+
+      const response: TrackerWriteResponse = {
+        type: 'tracker_write_response',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tracker_write',
+        projectPath: '/home/dev/proj',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('write-response'),
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as TrackerWriteResponse;
+      expect(received).toEqual(response);
     });
   });
 

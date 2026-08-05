@@ -1,23 +1,20 @@
-import { execFile } from 'node:child_process';
 import type { webcrypto } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { AcpProvider } from '@loombox/providers-core';
 import {
   buildTrackerTypeRegistryV1,
   PROTOCOL_V1,
   resolveWorkflowCategory,
   type EncryptedEnvelope,
+  type TrackerMode,
   type TrackerSnapshotResponsePayloadV1,
   type TrackerWriteResponsePayloadV1,
   type WireMessageV1,
 } from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
-import { AgentSupervisor, defaultPtySpawn, TerminalSupervisor } from '@loombox/supervisor';
 import {
   decryptEnvelope,
   deriveKeyTree,
@@ -28,48 +25,28 @@ import {
 
 import { createNode, type NodeDaemon } from './node-daemon';
 import { NativeTrackerStore } from './native-tracker-store';
+import { TrackerModeStore } from './tracker-mode-store';
 
 /**
  * The wire-level proof for issue #212's central acceptance criterion —
  * "UI is exercised against the MCP-created/updated records so agent
- * writes show up live": a session-scoped `tracker_snapshot_request`/
- * `tracker_write_request` pair, sealed/opened exactly like a real client
- * would, against the SAME `NativeTrackerStore` a future MCP host binds an
- * agent's `tracker_*` tools to (issue #211) — proven here by seeding a
- * record directly through the store (standing in for an agent write) and
- * observing it over the wire. Mirrors `node-daemon-permission-policy.test.ts`'s
- * real-relay harness shape (same echo provider, same phone-side crypto
- * helpers), narrowed to what tracker requests need: no terminal, no
- * permission policy, and an event-driven `TestPhone.waitFor` (a single
- * hang-guard timeout, no busy-poll) rather than that file's polling loop.
+ * writes show up live" — re-proven under issue #697's project addressing:
+ * a `tracker_snapshot_request`/`tracker_write_request` pair, sealed/opened
+ * exactly like a real client would under `deriveProjectKey`, against the
+ * SAME `NativeTrackerStore` a future MCP host binds an agent's `tracker_*`
+ * tools to (issue #211) — proven here by seeding a record directly through
+ * the store (standing in for an agent write) and observing it over the
+ * wire. No session is ever created in this suite (that is #697's whole
+ * point: the Tracker page's records must be reachable with no agent
+ * session running, and no bridge to route through) — mirrors
+ * `node-daemon-permission-policy.test.ts`'s real-relay harness shape (same
+ * phone-side crypto helpers), narrowed to what tracker requests need: no
+ * terminal, no permission policy, no session/`SessionBridge` at all, and
+ * an event-driven `TestPhone.waitFor` (a single hang-guard timeout, no
+ * busy-poll) rather than that file's polling loop.
  */
 
 type CryptoKey = webcrypto.CryptoKey;
-
-const execFileAsync = promisify(execFile);
-
-function echoProvider(): AcpProvider {
-  return {
-    id: 'test-echo',
-    spawnConfig: ({ cwd }) => ({
-      command: process.execPath,
-      args: [
-        path.join(
-          path.dirname(new URL(import.meta.url).pathname),
-          '..',
-          '..',
-          'providers',
-          'core',
-          'test',
-          'fixtures',
-          'echo-acp-agent.mjs',
-        ),
-      ],
-      cwd,
-    }),
-    enrich: (update) => update,
-  };
-}
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
@@ -83,22 +60,32 @@ function randomBase64(byteLength = 32): string {
   return toBase64(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
-async function derivePhoneSessionKey(
+/**
+ * Independently derives the exact same project key `NodeDaemon.getProjectKey`
+ * computes internally (via `@loombox/crypto`'s `deriveProjectKey`) — built
+ * straight off `deriveKeyTree`/`importAesGcmKey` rather than calling
+ * `deriveProjectKey` itself, so this test proves real wire interop rather
+ * than being tautological against the same helper the implementation calls
+ * (mirrors this file's own former `derivePhoneSessionKey`, and
+ * `session-keys.ts`'s documented `['project', accountId, projectPath]`
+ * path).
+ */
+async function derivePhoneProjectKey(
   amk: Uint8Array,
   accountId: string,
-  sessionId: string,
+  projectPath: string,
 ): Promise<CryptoKey> {
-  const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
+  const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
   return importAesGcmKey(node.key);
 }
 
 async function phoneSeal(
-  sessionId: string,
+  resourceId: string,
   value: unknown,
   key: CryptoKey,
 ): Promise<EncryptedEnvelope> {
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
-  const envelope = await encryptEnvelope(sessionId, plaintext, key);
+  const envelope = await encryptEnvelope(resourceId, plaintext, key);
   return {
     resourceId: envelope.resourceId,
     iv: toBase64(envelope.iv),
@@ -108,7 +95,7 @@ async function phoneSeal(
 }
 
 async function phoneOpen<T>(
-  sessionId: string,
+  resourceId: string,
   wire: EncryptedEnvelope,
   key: CryptoKey,
 ): Promise<T> {
@@ -117,7 +104,7 @@ async function phoneOpen<T>(
     iv: fromBase64(wire.iv),
     ciphertext: fromBase64(wire.ciphertext),
   };
-  const plaintext = await decryptEnvelope(sessionId, envelope, key);
+  const plaintext = await decryptEnvelope(resourceId, envelope, key);
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
@@ -126,7 +113,7 @@ interface PendingWaiter {
   resolve: (message: WireMessageV1) => void;
 }
 
-/** A bare client speaking just enough of the v1 handshake to resume a session and exchange `tracker_*` requests/responses — event-driven throughout: `waitFor` resolves the instant a matching message arrives, with a single hang-guard timeout rather than a poll loop. */
+/** A bare client speaking just enough of the v1 handshake to exchange `tracker_*` requests/responses — event-driven throughout: `waitFor` resolves the instant a matching message arrives, with a single hang-guard timeout rather than a poll loop. */
 class TestPhone {
   readonly messages: WireMessageV1[] = [];
   private readonly socket: WebSocket;
@@ -210,14 +197,6 @@ class TestPhone {
   }
 }
 
-/** Real hermetic bash (issue #503), matching `node-daemon.test.ts`'s own `hermeticTerminalSupervisor()` — a running session needs a `TerminalSupervisor` even though this suite never opens one. */
-function hermeticTerminalSupervisor(): TerminalSupervisor {
-  return new TerminalSupervisor({
-    spawnPty: (options) =>
-      defaultPtySpawn({ ...options, args: [...(options.args ?? []), '--noprofile', '--norc'] }),
-  });
-}
-
 let relay: StartedRelay;
 let projectPath: string;
 let nodeStateDir: string;
@@ -225,23 +204,19 @@ let node: NodeDaemon | undefined;
 let phone: TestPhone | undefined;
 let trackerStore: NativeTrackerStore;
 
+const NODE_ID = 'node-tracker';
+const ACCOUNT_ID = 'acct-tracker';
+
 beforeEach(async () => {
   relay = await startRelay();
-  projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-tracker-test-'));
+  // A plain identifier, deliberately never created as a real directory —
+  // `NativeTrackerStore` is a `stateDir`-scoped JSON file keyed by the
+  // literal `projectPath` string (see its own doc comment), so nothing
+  // about this suite's central claim — a project's tracker is reachable
+  // with no bridge and no session — depends on the path resolving to
+  // anything on disk.
+  projectPath = '/home/dev/no-session-project';
   nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-tracker-state-'));
-  await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
-  await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
-  await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
-  await execFileAsync('git', ['commit', '--allow-empty', '-m', 'initial commit'], {
-    cwd: projectPath,
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'loombox test',
-      GIT_AUTHOR_EMAIL: 'test@loombox.dev',
-      GIT_COMMITTER_NAME: 'loombox test',
-      GIT_COMMITTER_EMAIL: 'test@loombox.dev',
-    },
-  });
   trackerStore = new NativeTrackerStore({ stateDir: nodeStateDir });
 });
 
@@ -249,59 +224,48 @@ afterEach(async () => {
   phone?.close();
   if (node) await node.close();
   await relay.close();
-  await rm(projectPath, { recursive: true, force: true });
   await rm(nodeStateDir, { recursive: true, force: true });
 });
 
-async function connectOverTheWire(): Promise<{
-  sessionId: string;
-  key: CryptoKey;
-  accountId: string;
-}> {
+/** Boots the node and a bare phone client — no session, no bridge, ever. */
+async function connectOverTheWire(): Promise<{ key: CryptoKey; amk: Uint8Array }> {
   const amk = generateAmk();
-  const accountId = 'acct-tracker';
 
   node = createNode({
     relayUrl: relay.url,
     stateDir: nodeStateDir,
-    nodeId: 'node-tracker',
+    nodeId: NODE_ID,
     deviceId: 'device-node-tracker',
     devicePublicKey: randomBase64(),
-    authToken: accountId,
-    accountId,
+    authToken: ACCOUNT_ID,
+    accountId: ACCOUNT_ID,
     amk,
-    supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-    terminalSupervisor: hermeticTerminalSupervisor(),
     nativeTrackerStore: trackerStore,
   });
 
-  const session = await node.createSession({ projectPath, provider: 'test-echo' });
-  const key = await derivePhoneSessionKey(amk, accountId, session.id);
+  const key = await derivePhoneProjectKey(amk, ACCOUNT_ID, projectPath);
 
   phone = new TestPhone(relay.url, {
     deviceId: 'device-phone-tracker',
     devicePublicKey: randomBase64(),
-    authToken: accountId,
+    authToken: ACCOUNT_ID,
   });
   await phone.ready;
-  phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
-  await phone.waitFor((m) => m.type === 'session_announce');
 
-  return { sessionId: session.id, key, accountId };
+  return { key, amk };
 }
 
 async function requestSnapshot(
-  sessionId: string,
   key: CryptoKey,
   includeArchived?: boolean,
 ): Promise<TrackerSnapshotResponsePayloadV1> {
   const requestId = `snap-${Math.random()}`;
-  const envelope = await phoneSeal(sessionId, { includeArchived }, key);
+  const envelope = await phoneSeal(projectPath, { includeArchived }, key);
   phone!.send({
     type: 'tracker_snapshot_request',
     protocolVersion: PROTOCOL_V1,
-    sessionId,
-    targetId: 'local',
+    nodeId: NODE_ID,
+    projectPath,
     requestId,
     envelope,
   });
@@ -309,21 +273,20 @@ async function requestSnapshot(
     (m) => m.type === 'tracker_snapshot_response' && m.requestId === requestId,
   );
   if (reply.type !== 'tracker_snapshot_response') throw new Error('unreachable');
-  return phoneOpen<TrackerSnapshotResponsePayloadV1>(sessionId, reply.envelope, key);
+  return phoneOpen<TrackerSnapshotResponsePayloadV1>(projectPath, reply.envelope, key);
 }
 
 async function requestWrite(
-  sessionId: string,
   key: CryptoKey,
   payload: Record<string, unknown>,
 ): Promise<TrackerWriteResponsePayloadV1> {
   const requestId = `write-${Math.random()}`;
-  const envelope = await phoneSeal(sessionId, payload, key);
+  const envelope = await phoneSeal(projectPath, payload, key);
   phone!.send({
     type: 'tracker_write_request',
     protocolVersion: PROTOCOL_V1,
-    sessionId,
-    targetId: 'local',
+    nodeId: NODE_ID,
+    projectPath,
     requestId,
     envelope,
   });
@@ -331,37 +294,38 @@ async function requestWrite(
     (m) => m.type === 'tracker_write_response' && m.requestId === requestId,
   );
   if (reply.type !== 'tracker_write_response') throw new Error('unreachable');
-  return phoneOpen<TrackerWriteResponsePayloadV1>(sessionId, reply.envelope, key);
+  return phoneOpen<TrackerWriteResponsePayloadV1>(projectPath, reply.envelope, key);
 }
 
-describe('NodeDaemon native tracker wire path — real terminal-free session, real relay (SPEC §7.10; issue #212)', () => {
-  it('tracker_snapshot_request returns the bound project\u2019s built-in types and an empty record list for a fresh project', async () => {
-    const { sessionId, key } = await connectOverTheWire();
-    const snapshot = await requestSnapshot(sessionId, key);
-    expect(snapshot.outcome).toBe('ok');
-    if (snapshot.outcome !== 'ok') throw new Error('unreachable');
-    expect(snapshot.records).toEqual([]);
-    expect(snapshot.types.map((t) => t.id).sort()).toEqual(['bug', 'epic', 'task']);
-  });
-
-  it('a record seeded directly through the store — standing in for an agent\u2019s tracker_create MCP call (#211) — shows up live in a snapshot fetched over the wire', async () => {
-    const { sessionId, key } = await connectOverTheWire();
+describe('NodeDaemon native tracker wire path — real terminal-free node, real relay, NO session/bridge ever created (SPEC §7.10; issues #212, #697)', () => {
+  it('tracker_snapshot_request returns real records for a project with no bridge at all — not by tearing a session down, by never creating one', async () => {
+    const { key } = await connectOverTheWire();
     const seeded = trackerStore.create(projectPath, {
       primaryType: 'task',
       fields: { title: 'Agent-authored', status: 'todo' },
       authorId: 'agent-session-1',
     });
 
-    const snapshot = await requestSnapshot(sessionId, key);
+    const snapshot = await requestSnapshot(key);
     expect(snapshot.outcome).toBe('ok');
     if (snapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(snapshot.records).toHaveLength(1);
     expect(snapshot.records[0]).toEqual(seeded);
+    expect(snapshot.types.map((t) => t.id).sort()).toEqual(['bug', 'epic', 'task']);
   });
 
-  it('tracker_write_request(op: create) persists through the real store and stamps authorId from the node\u2019s own accountId, never from the payload', async () => {
-    const { sessionId, key, accountId } = await connectOverTheWire();
-    const response = await requestWrite(sessionId, key, {
+  it('tracker_snapshot_request returns an empty record list and the built-in types for a project that has never had any tracker activity', async () => {
+    const { key } = await connectOverTheWire();
+    const snapshot = await requestSnapshot(key);
+    expect(snapshot.outcome).toBe('ok');
+    if (snapshot.outcome !== 'ok') throw new Error('unreachable');
+    expect(snapshot.records).toEqual([]);
+    expect(snapshot.types.map((t) => t.id).sort()).toEqual(['bug', 'epic', 'task']);
+  });
+
+  it('tracker_write_request(op: create) persists through the real store with no session, and stamps authorId from the node\u2019s own accountId, never from the payload', async () => {
+    const { key } = await connectOverTheWire();
+    const response = await requestWrite(key, {
       op: 'create',
       primaryType: 'task',
       fields: { title: 'Ship it', status: 'todo' },
@@ -371,19 +335,19 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
     expect(response.record).toBeDefined();
     const record = response.record!;
     expect(record.fields).toEqual({ title: 'Ship it', status: 'todo' });
-    expect(record.system.authorId).toBe(accountId);
+    expect(record.system.authorId).toBe(ACCOUNT_ID);
     expect(trackerStore.get(projectPath, record.id)).toEqual(record);
   });
 
   it('tracker_write_request(op: update) moves a record between kanban columns through the real store', async () => {
-    const { sessionId, key } = await connectOverTheWire();
+    const { key } = await connectOverTheWire();
     const created = trackerStore.create(projectPath, {
       primaryType: 'task',
       fields: { title: 'Ship it', status: 'todo' },
       authorId: 'agent-session-1',
     });
 
-    const response = await requestWrite(sessionId, key, {
+    const response = await requestWrite(key, {
       op: 'update',
       id: created.id,
       fields: { title: 'Ship it', status: 'done' },
@@ -395,8 +359,8 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
   });
 
   it('tracker_write_request(op: defineType) registers a custom type through the real store, visible in the next snapshot', async () => {
-    const { sessionId, key } = await connectOverTheWire();
-    const response = await requestWrite(sessionId, key, {
+    const { key } = await connectOverTheWire();
+    const response = await requestWrite(key, {
       op: 'defineType',
       id: 'feature-request',
       label: 'Feature Request',
@@ -411,7 +375,7 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
       roles: { title: 'summary', workflowStatus: 'stage' },
     });
 
-    const snapshot = await requestSnapshot(sessionId, key);
+    const snapshot = await requestSnapshot(key);
     expect(snapshot.outcome).toBe('ok');
     if (snapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(snapshot.types.map((t) => t.id).sort()).toEqual([
@@ -423,8 +387,8 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
   });
 
   it('tracker_write_request(op: create) with an unknown type comes back as a retryable outcome: error, never a silent drop', async () => {
-    const { sessionId, key } = await connectOverTheWire();
-    const response = await requestWrite(sessionId, key, {
+    const { key } = await connectOverTheWire();
+    const response = await requestWrite(key, {
       op: 'create',
       primaryType: 'ghost-type',
       fields: {},
@@ -435,7 +399,7 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
   });
 
   it('tracker_snapshot_request(includeArchived: true) includes an archived record; the default excludes it', async () => {
-    const { sessionId, key } = await connectOverTheWire();
+    const { key } = await connectOverTheWire();
     const created = trackerStore.create(projectPath, {
       primaryType: 'task',
       fields: { title: 'Old' },
@@ -443,26 +407,26 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
     });
     trackerStore.update(projectPath, created.id, { archived: true });
 
-    const defaultSnapshot = await requestSnapshot(sessionId, key);
+    const defaultSnapshot = await requestSnapshot(key);
     expect(defaultSnapshot.outcome).toBe('ok');
     if (defaultSnapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(defaultSnapshot.records).toEqual([]);
 
-    const fullSnapshot = await requestSnapshot(sessionId, key, true);
+    const fullSnapshot = await requestSnapshot(key, true);
     expect(fullSnapshot.outcome).toBe('ok');
     if (fullSnapshot.outcome !== 'ok') throw new Error('unreachable');
     expect(fullSnapshot.records).toHaveLength(1);
   });
 
   it('moving a card across a workflow-category boundary (issue #651, v7 decision F4-2) writes the literal category id back through the real store, and it resolves to the same category on a fresh snapshot', async () => {
-    const { sessionId, key } = await connectOverTheWire();
+    const { key } = await connectOverTheWire();
     const created = trackerStore.create(projectPath, {
       primaryType: 'task',
       fields: { title: 'Ship it', status: 'todo' },
       authorId: 'agent-session-1',
     });
 
-    const initialSnapshot = await requestSnapshot(sessionId, key);
+    const initialSnapshot = await requestSnapshot(key);
     expect(initialSnapshot.outcome).toBe('ok');
     if (initialSnapshot.outcome !== 'ok') throw new Error('unreachable');
     const registry = buildTrackerTypeRegistryV1(initialSnapshot.types);
@@ -475,7 +439,7 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
     // 'complete' or 'closed' — see `TrackerCard.svelte`'s own "Move to"
     // wiring and `resolveWorkflowCategory`'s doc comment on why that
     // round-trips.
-    const response = await requestWrite(sessionId, key, {
+    const response = await requestWrite(key, {
       op: 'update',
       id: created.id,
       fields: { title: 'Ship it', status: 'done' },
@@ -491,10 +455,68 @@ describe('NodeDaemon native tracker wire path — real terminal-free session, re
     // resolves to the same category — nothing about this round-trip
     // depended on client-held state.
     expect(trackerStore.get(projectPath, created.id)?.fields.status).toBe('done');
-    const finalSnapshot = await requestSnapshot(sessionId, key);
+    const finalSnapshot = await requestSnapshot(key);
     expect(finalSnapshot.outcome).toBe('ok');
     if (finalSnapshot.outcome !== 'ok') throw new Error('unreachable');
     const reread = finalSnapshot.records.find((record) => record.id === created.id)!;
     expect(resolveWorkflowCategory(reread, registry)).toBe('done');
+  });
+});
+
+describe('tracker_snapshot_request/tracker_write_request answer every request, never silence it (issue #697; #691\u2019s class one layer down)', () => {
+  it('an envelope that fails to decrypt (wrong key entirely) comes back as an outcome: error response, not a timeout', async () => {
+    const { amk } = await connectOverTheWire();
+    // A key derived for a DIFFERENT project — decrypting under the real
+    // project key will fail its AES-GCM auth tag, exactly the "unparseable
+    // envelope" case #697 requires an answer for.
+    const wrongKey = await derivePhoneProjectKey(amk, ACCOUNT_ID, '/home/dev/some-other-project');
+
+    const requestId = `snap-bad-${Math.random()}`;
+    const envelope = await phoneSeal(projectPath, { includeArchived: false }, wrongKey);
+    phone!.send({
+      type: 'tracker_snapshot_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: NODE_ID,
+      projectPath,
+      requestId,
+      envelope,
+    });
+    const reply = await phone!.waitFor(
+      (m) => m.type === 'tracker_snapshot_response' && m.requestId === requestId,
+    );
+    if (reply.type !== 'tracker_snapshot_response') throw new Error('unreachable');
+    // The response envelope is sealed under the REAL project key (the node
+    // derives it locally, independent of what the request could decrypt
+    // under) — open it with the correct key to read the error.
+    const correctKey = await derivePhoneProjectKey(amk, ACCOUNT_ID, projectPath);
+    const payload = await phoneOpen<TrackerSnapshotResponsePayloadV1>(
+      projectPath,
+      reply.envelope,
+      correctKey,
+    );
+    expect(payload.outcome).toBe('error');
+  });
+
+  it('a live-mode project this node cannot resolve a backend for (no connected account) still answers with an outcome: error response, not silence', async () => {
+    const { key } = await connectOverTheWire();
+    // Puts the project in live mode with no connected GitHub account at
+    // all — `resolveTrackerDispatch` cannot compose a backend, which is a
+    // real "cannot serve" case distinct from a decrypt failure, already
+    // routed through `trackerResolutionErrorPayload` rather than a silent
+    // drop. Written through a fresh `TrackerModeStore` pointed at the same
+    // `nodeStateDir` the node itself defaults its own store to (mirrors
+    // `node-daemon-tracker-live.test.ts`'s own `connectOverTheWire` setup)
+    // — `TrackerModeStore.get` re-reads from disk on every call, so the
+    // node picks this up on its very next request with no extra wiring.
+    const mode: TrackerMode = {
+      kind: 'live',
+      provider: 'github',
+      connectionId: 'github:github.com:no-such-account',
+      target: { owner: 'octo', repo: 'demo' },
+    };
+    new TrackerModeStore({ stateDir: nodeStateDir }).set(projectPath, mode);
+
+    const snapshot = await requestSnapshot(key);
+    expect(snapshot.outcome).toBe('error');
   });
 });
