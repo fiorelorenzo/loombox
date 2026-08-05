@@ -69,6 +69,15 @@ services:
       # (default, unchanged). Set to redis://redis:6379 (and bring up the
       # `redis` profile below) only when running more than one relay replica.
       REDIS_URL: ${REDIS_URL:-}
+      # Issue #655: this deploy's git commit, so the running relay can
+      # announce a build identity a connecting node/client compares itself
+      # against — sourced from the exact same $SHA scripts/deploy-prod.sh
+      # already computes and writes to DEPLOYED.json, never a second,
+      # independently-computed value. Unset in dev (docker compose without
+      # a deploy) and on scripts/dev.sh's non-Docker path, where
+      # `build-identity.ts` falls back to a real `git rev-parse HEAD`
+      # against this checkout instead.
+      LOOMBOX_BUILD_COMMIT: ${LOOMBOX_BUILD_COMMIT:-}
     ports:
       # loopback-only publish; host Caddy reverse-proxies to this (prodbox
       # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).

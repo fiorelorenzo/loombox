@@ -44,6 +44,7 @@ import {
   type AccountPinUnsetRequest,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
+  type BuildIdentityV1,
   type ConfigOption,
   type ConfigOptionSetResult,
   type ConnectedAccount,
@@ -239,6 +240,16 @@ export interface NodeDaemonOptions {
   devicePublicKey: string;
   /** Opaque Better Auth bearer token (SPEC §8). */
   authToken: string;
+  /**
+   * This node's own build identity (issue #655): its `package.json`
+   * version plus, when honestly recoverable, the commit it's running from
+   * — see `./build-identity.ts`'s `readNodeBuildIdentity()`, which
+   * `main.ts` resolves once at startup and passes here. Forwarded verbatim
+   * to `RelayConnection`, sent on every `initialize`. Omitted (every
+   * existing test) means no field on the wire at all, exactly the
+   * pre-#655 shape a node without this option produces.
+   */
+  buildIdentity?: BuildIdentityV1;
   /**
    * The account this node's sessions are scoped under (`SessionMetaPublic.accountId`,
    * the relay's routing/listing key). Must currently equal `authToken`: the
@@ -1034,6 +1045,7 @@ export class NodeDaemon extends EventEmitter {
       webSocketImpl: options.webSocketImpl,
       initialBackoffMs: options.reconnect?.initialBackoffMs,
       maxBackoffMs: options.reconnect?.maxBackoffMs,
+      buildIdentity: options.buildIdentity,
     });
     // Built off `this.relay` (constructed just above) rather than a new
     // connection — issue #156's "no new direct supervisor-to-relay

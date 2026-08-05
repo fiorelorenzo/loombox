@@ -6,6 +6,7 @@ import {
   PROTOCOL_V1,
   initializeResult,
   safeParseWireMessageV1,
+  type BuildIdentityV1,
   type Initialize,
   type Ping,
   type WireMessageV1,
@@ -73,6 +74,16 @@ export interface RelayConnectionOptions {
    * for silence.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * This node's own build identity (issue #655): sent on every `initialize`
+   * (and every reconnect's fresh one) so the relay can record and expose
+   * "what version is this node running" — `main.ts` resolves this once at
+   * startup via `build-identity.ts`'s `readNodeBuildIdentity()` and passes
+   * the plain value here. Omitted (every existing test, and any node build
+   * that predates #655) simply never sends the field — `initialize`'s
+   * schema already tolerates that (additive, optional).
+   */
+  buildIdentity?: BuildIdentityV1;
 }
 
 /**
@@ -214,6 +225,7 @@ export class RelayConnection extends EventEmitter {
         authToken: this.options.authToken,
         deviceId: this.options.deviceId,
         devicePublicKey: this.options.devicePublicKey,
+        ...(this.options.buildIdentity ? { buildIdentity: this.options.buildIdentity } : {}),
       };
       socket.send(JSON.stringify(initialize));
     });

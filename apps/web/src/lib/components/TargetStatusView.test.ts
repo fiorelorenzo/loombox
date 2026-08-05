@@ -597,3 +597,88 @@ describe('TargetStatusView connection management (redesign v2 §3.3 Reconnect/Up
     expect(onRefresh).toHaveBeenCalled();
   });
 });
+
+describe('TargetStatusView build identity (issue #655)', () => {
+  const BUILD_TARGETS: TargetListEntry[] = [
+    {
+      nodeId: 'node_same',
+      targetId: 'local',
+      label: 'Same build',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      build: { version: '0.5.1', commit: 'relay-sha' },
+    },
+    {
+      nodeId: 'node_drifted',
+      targetId: 'local',
+      label: 'Drifted build',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      build: { version: '0.5.1', commit: 'drifted-sha' },
+    },
+    {
+      nodeId: 'node_unknown',
+      targetId: 'local',
+      label: 'No identity at all',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      // No build field — a node that predates #655.
+    },
+  ];
+  const RELAY_BUILD = { version: '0.5.1', commit: 'relay-sha' };
+
+  it('shows the node\u2019s own version and stays silent (no Behind badge) when it matches the relay — outcome 1', () => {
+    render(TargetStatusView, {
+      props: {
+        targets: BUILD_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        relayBuildIdentity: RELAY_BUILD,
+      },
+    });
+    expect(screen.getByTestId('target-build-node_same:local').textContent).toBe('v0.5.1');
+    expect(screen.queryByTestId('target-behind-node_same:local')).toBeNull();
+  });
+
+  it('flags a node whose build differs from the relay with a Behind badge on its own row — outcome 2, the one that does not exist before #655', () => {
+    render(TargetStatusView, {
+      props: {
+        targets: BUILD_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        relayBuildIdentity: RELAY_BUILD,
+      },
+    });
+    expect(screen.getByTestId('target-behind-node_drifted:local').textContent?.trim()).toBe(
+      'Behind',
+    );
+    // Still fully listed, not refused — the row itself renders normally.
+    expect(screen.getByText('Drifted build')).toBeTruthy();
+  });
+
+  it('never flags a node with no build identity at all as behind — unknown is not a claim this view can back up', () => {
+    render(TargetStatusView, {
+      props: {
+        targets: BUILD_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        relayBuildIdentity: RELAY_BUILD,
+      },
+    });
+    expect(screen.queryByTestId('target-build-node_unknown:local')).toBeNull();
+    expect(screen.queryByTestId('target-behind-node_unknown:local')).toBeNull();
+  });
+
+  it('never flags anything as behind when this client has no relayBuildIdentity yet (no handshake landed)', () => {
+    render(TargetStatusView, {
+      props: { targets: BUILD_TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+    expect(screen.queryByTestId('target-behind-node_drifted:local')).toBeNull();
+  });
+});

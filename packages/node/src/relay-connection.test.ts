@@ -202,6 +202,27 @@ describe('RelayConnection', () => {
       h.relay.close();
     });
 
+    it('includes buildIdentity in initialize when configured (issue #655), and omits it when not (back-compat default)', () => {
+      const buildIdentity = { version: '0.5.1', commit: 'node-sha' };
+      const h = harness({ buildIdentity });
+      h.relay.connect();
+      h.sockets[0].triggerOpen();
+
+      expect(h.sockets[0].sent).toEqual([
+        {
+          type: 'initialize',
+          protocolVersion: PROTOCOL_V1,
+          role: 'node',
+          authToken: BASE_OPTIONS.authToken,
+          deviceId: BASE_OPTIONS.deviceId,
+          devicePublicKey: BASE_OPTIONS.devicePublicKey,
+          buildIdentity,
+        },
+      ]);
+
+      h.relay.close();
+    });
+
     it('emits error instead of open when the relay rejects the handshake, and still reconnects once the relay closes the socket (#108)', async () => {
       const h = harness({ initialBackoffMs: 50 });
       h.relay.connect();

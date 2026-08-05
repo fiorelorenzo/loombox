@@ -41,6 +41,7 @@ import {
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
+  buildIdentityMismatch,
   initializeResult,
   newDeviceBootstrapResponse,
   parseTestRunnerConfigDetectedPayloadV1,
@@ -63,6 +64,7 @@ import {
   type FsListResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
+  type BuildIdentityV1,
   type Initialize,
   type JiraConnectOutcome,
   type NewDeviceBootstrapRequest,
@@ -127,7 +129,13 @@ import {
 } from './attachments';
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
 
-export type { ConnectedAccount, TargetHealth, TargetListEntry } from '@loombox/protocol';
+export type {
+  ConnectedAccount,
+  BuildIdentityV1,
+  TargetHealth,
+  TargetListEntry,
+} from '@loombox/protocol';
+export { buildIdentityMismatch };
 export type {
   ProvisionProgress,
   ProvisionStepIdV1,
@@ -1011,6 +1019,16 @@ export class RelayClient {
   readonly sessionDecryptFailures: Readable<number>;
   /** SPEC §7.26's connected-accounts registry (issue #221; the connect/pin/disconnect write path is issue #230) — every `ConnectedAccount` synced under this account, across every node. Requested once alongside `session_list_request` on every fresh `attemptOpen()` (including a reconnect); a full-replace snapshot, never a delta — see {@link handleConnectedAccountList}. Call {@link refreshConnectedAccounts} to re-request it (e.g. right after a connect/disconnect this client itself drove). */
   readonly connectedAccounts: Readable<ConnectedAccount[]>;
+  /**
+   * This RELAY's own build identity (issue #655), from the most recent
+   * `initialize_result` — "what is actually being served", the baseline a
+   * node's row compares its own `TargetListEntry.build` against
+   * (`SettingsPage`/`TargetStatusView`'s `relayBuildIdentity` prop reads
+   * this directly). `undefined` before the first successful handshake, and
+   * for a relay build that predates #655 (the field is additive/optional
+   * on the wire) — either way, "unknown" never gets rendered as "behind".
+   */
+  readonly relayBuildIdentity: Readable<BuildIdentityV1 | undefined>;
 
   private readonly options: RelayClientOptions;
   private readonly amk: Uint8Array;
@@ -1023,6 +1041,8 @@ export class RelayClient {
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly sessionDecryptFailuresStore: Writable<number> = writable(0);
   private readonly connectedAccountsStore: Writable<ConnectedAccount[]> = writable([]);
+  private readonly relayBuildIdentityStore: Writable<BuildIdentityV1 | undefined> =
+    writable(undefined);
   /** requestId -> the pending `startGithubConnect` call it belongs to (SPEC §7.26, issue #230). `github_connect_device_code` streams once via `onDeviceCode` (kept in the map, not deleted — the terminal `github_connect_result` is what settles and removes it), mirroring `pendingProvisionRequests`' `onProgress`/final-result split. Plain fields only (no envelope), so like `pendingSshDiscoveryRequests` this resolves a Promise directly. */
   private readonly pendingGithubConnectRequests = new Map<
     string,
@@ -1291,6 +1311,7 @@ export class RelayClient {
     this.sessions = this.sessionsStore;
     this.sessionDecryptFailures = this.sessionDecryptFailuresStore;
     this.connectedAccounts = this.connectedAccountsStore;
+    this.relayBuildIdentity = this.relayBuildIdentityStore;
 
     // Reloads whatever this account's outbox already had persisted (issue
     // #130's "outbox survives a full page reload") — fire-and-forget since
@@ -1370,6 +1391,12 @@ export class RelayClient {
           // instead of hot-looping at `initialBackoffMs` forever.
           this.backoffMs = this.initialBackoffMs;
           this.statusStore.set('open');
+          // Issue #655: this relay's own build identity, so a node's row
+          // can be compared against "what is actually being served" — set
+          // on every successful handshake (including a reconnect against
+          // an upgraded/downgraded relay), `undefined` for a relay build
+          // that predates the field.
+          this.relayBuildIdentityStore.set(result.data.buildIdentity);
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
           this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });

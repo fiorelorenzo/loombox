@@ -9,6 +9,7 @@ import {
   safeParseWireMessageV1,
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
+  type BuildIdentityV1,
   type ConnectedAccountList,
   type InitializeResult,
   type Pong,
@@ -96,6 +97,8 @@ interface NodeConnection extends BaseConnection {
   kind: 'node';
   /** nodeId(s) this connection has announced as, via `target_announce`/`session_announce`. */
   nodeIds: Set<string>;
+  /** This node's own build identity, from its `initialize.buildIdentity` (issue #655) — `undefined` for a node that predates the field. Connection-scoped, exactly like `reachable` (`registry.nodeConnectionsByNodeId`): never persisted in `TargetStore`, since it isn't a per-target property and a disconnected node has nothing live to report. */
+  buildIdentity?: BuildIdentityV1;
 }
 
 interface ClientConnection extends BaseConnection {
@@ -315,6 +318,19 @@ export interface CreateRelayOptions {
    * disconnect calls that share this same table.
    */
   accountRequestTtlMs?: number;
+  /**
+   * This relay's own build identity (issue #655): "what is actually being
+   * served", echoed back in every `initialize_result` a connecting peer
+   * receives (`buildIdentityV1`'s own doc comment on why nothing here is
+   * ever parsed for ordering — only equality, via `buildIdentityMismatch`).
+   * `createRelay` stays synchronous exactly like `push.vapidKeys` above —
+   * resolving a real one needs `build-identity.ts`'s async `git rev-parse`/
+   * env-var lookup, so `main.ts` resolves it once at boot and passes the
+   * plain value here. Omitted (every existing test, and any relay build
+   * that predates #655) simply never sends the field — `initializeResult`
+   * schema already tolerates that (additive, optional).
+   */
+  buildIdentity?: BuildIdentityV1;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -436,6 +452,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const targetUpdateRequestTtlMs =
     opts.targetUpdateRequestTtlMs ?? DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS;
   const accountRequestTtlMs = opts.accountRequestTtlMs ?? DEFAULT_ACCOUNT_REQUEST_TTL_MS;
+  const relayBuildIdentity = opts.buildIdentity;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -877,7 +894,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
     const connection: Connection =
       message.role === 'node'
-        ? { kind: 'node', socket, deviceId: message.deviceId, accountId, nodeIds: new Set() }
+        ? {
+            kind: 'node',
+            socket,
+            deviceId: message.deviceId,
+            accountId,
+            nodeIds: new Set(),
+            buildIdentity: message.buildIdentity,
+          }
         : {
             kind: 'client',
             socket,
@@ -899,6 +923,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       protocolVersion: PROTOCOL_V1,
       negotiatedVersion: negotiated,
       capabilities: [...RELAY_CAPABILITIES],
+      ...(relayBuildIdentity ? { buildIdentity: relayBuildIdentity } : {}),
     };
     sendDirect(connection, initResult);
     return connection;
@@ -1583,11 +1608,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // true only while that nodeId still has a live relay connection
         // (`registry.nodeConnectionsByNodeId`); a node that announced then
         // disconnected still shows up (so a client can see it existed) but
-        // as unreachable.
+        // as unreachable. `build` (issue #655) is that same live
+        // connection's own `buildIdentity` — absent for exactly the same
+        // two reasons `reachable` can be false/health can be missing: no
+        // live connection, or a node that predates the field.
         const perNode = store.targets.listForAccount(connection.accountId);
         const targets: TargetListEntry[] = [];
         for (const { nodeId, targets: nodeTargets } of perNode) {
-          const reachable = registry.nodeConnectionsByNodeId.get(nodeId) !== undefined;
+          const nodeConnection = registry.nodeConnectionsByNodeId.get(nodeId);
+          const reachable = nodeConnection !== undefined;
           for (const target of nodeTargets) {
             // Issues #253/#269: the latest `target_status` sample for this
             // target, if any has arrived yet — `undefined` for a node that
@@ -1601,6 +1630,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               reachable,
               providers: target.providers,
               ...(health ? { health } : {}),
+              ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
             });
           }
         }

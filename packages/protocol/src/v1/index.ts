@@ -8,11 +8,19 @@
 export type { Base64String, EncryptedEnvelope, EncryptionAlg } from './envelope';
 export { base64String, encryptedEnvelope, encryptionAlg } from './envelope';
 
-export type { BaseMessageV1, Initialize, InitializeResult, WireRole } from './handshake';
+export type {
+  BaseMessageV1,
+  BuildIdentityV1,
+  Initialize,
+  InitializeResult,
+  WireRole,
+} from './handshake';
 export {
   PROTOCOL_V1,
   SUPPORTED_PROTOCOL_VERSIONS,
   baseMessageV1,
+  buildIdentityMismatch,
+  buildIdentityV1,
   initialize,
   initializeResult,
   negotiateVersion,

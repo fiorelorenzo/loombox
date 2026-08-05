@@ -29,7 +29,7 @@
     NotificationPreferences as NotificationPreferencesData,
     NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
-  import type { ConnectedAccount, TargetListEntry } from '$lib/relay-client';
+  import type { BuildIdentityV1, ConnectedAccount, TargetListEntry } from '$lib/relay-client';
   import AppearanceSettings from '../AppearanceSettings.svelte';
   import ConnectedAccountsSection, {
     type ConnectedAccountsClient,
@@ -57,6 +57,8 @@
     loading: boolean;
     error: string | undefined;
     focusTarget?: FocusTarget;
+    /** This account's relay's own build identity (issue #655) — forwarded straight to `TargetStatusView`, whose own doc comment explains the "behind" flag it drives. */
+    relayBuildIdentity?: BuildIdentityV1;
     onRefresh: () => void;
     /** Opens the zero-touch provision-and-pair wizard (`AddTargetWizard`); moved onto this section from the old `NodesPage`'s own page actions. */
     onAddTarget: () => void;
@@ -82,6 +84,7 @@
     loading,
     error,
     focusTarget,
+    relayBuildIdentity,
     onRefresh,
     onAddTarget,
     onConnectNode,
@@ -203,7 +206,14 @@
               {@render nodesActions()}
             </div>
           </div>
-          <TargetStatusView {targets} {loading} {error} {focusTarget} {onRefresh} />
+          <TargetStatusView
+            {targets}
+            {loading}
+            {error}
+            {focusTarget}
+            {onRefresh}
+            {relayBuildIdentity}
+          />
         </section>
       {:else if activeSection === 'accounts' && client}
         <section class="settings-section" data-testid="settings-section-accounts">
