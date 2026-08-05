@@ -5,7 +5,7 @@ import {
   type TrackerTypeDefinitionV1,
 } from '@loombox/protocol';
 import { expect, test } from './fixtures';
-import { nodeSeal } from './harness/relay-harness';
+import { deriveNodeProjectKey, nodeSeal } from './harness/relay-harness';
 
 /**
  * The kanban board at a real laptop width (issue #651, v7 decision F4-2's
@@ -88,15 +88,18 @@ test.describe('Tracker kanban board fits a laptop width, no horizontal scroller 
       record('rec-5', 5, 'done', 'Done item'),
       record('rec-6', 6, 'closed', 'Closed item'),
     ];
+    const projectPath = '/workspace/e2e-project';
+    const key = await deriveNodeProjectKey(loombox.amk, loombox.accountId, projectPath);
     const envelope = await nodeSeal(
-      loombox.session.sessionId,
+      projectPath,
       { outcome: 'ok', records, types: [TASK_TYPE] },
-      loombox.session.key,
+      key,
     );
     loombox.node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: loombox.session.sessionId,
+      nodeId: 'e2e-node-daemon',
+      projectPath,
       requestId: request.requestId,
       envelope,
     });

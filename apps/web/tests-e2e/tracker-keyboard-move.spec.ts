@@ -6,7 +6,7 @@ import {
   type TrackerWriteRequest,
 } from '@loombox/protocol';
 import { expect, test } from './fixtures';
-import { nodeOpen, nodeSeal } from './harness/relay-harness';
+import { deriveNodeProjectKey, nodeOpen, nodeSeal } from './harness/relay-harness';
 
 /**
  * The kanban board's keyboard/menu path (issue #212's explicit acceptance:
@@ -86,15 +86,18 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
         system: makeSystem(),
       },
     ];
+    const projectPath = '/workspace/e2e-project';
+    const key = await deriveNodeProjectKey(loombox.amk, loombox.accountId, projectPath);
     const snapshotEnvelope = await nodeSeal(
-      loombox.session.sessionId,
+      projectPath,
       { outcome: 'ok', records, types: [TASK_TYPE] },
-      loombox.session.key,
+      key,
     );
     loombox.node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: loombox.session.sessionId,
+      nodeId: 'e2e-node-daemon',
+      projectPath,
       requestId: snapshotRequest.requestId,
       envelope: snapshotEnvelope,
     });
@@ -122,9 +125,9 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
       (message) => message.type === 'tracker_write_request',
     )) as TrackerWriteRequest;
     const payload = await nodeOpen<{ op: string; id: string; fields: Record<string, unknown> }>(
-      loombox.session.sessionId,
+      projectPath,
       writeRequest.envelope,
-      loombox.session.key,
+      key,
     );
     // The fake node never told the browser anything but the two records
     // seeded above — this request is the ONLY way the app could have
@@ -144,14 +147,15 @@ test.describe('Native tracker kanban board — keyboard-operable "Move to" (issu
       updatedAt: 2,
     };
     const writeEnvelope = await nodeSeal(
-      loombox.session.sessionId,
+      projectPath,
       { outcome: 'ok', record: updatedRecord },
-      loombox.session.key,
+      key,
     );
     loombox.node.send({
       type: 'tracker_write_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: loombox.session.sessionId,
+      nodeId: 'e2e-node-daemon',
+      projectPath,
       requestId: writeRequest.requestId,
       envelope: writeEnvelope,
     });

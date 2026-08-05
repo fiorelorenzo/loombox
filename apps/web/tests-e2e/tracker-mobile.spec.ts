@@ -5,7 +5,7 @@ import {
   type TrackerTypeDefinitionV1,
 } from '@loombox/protocol';
 import { expect, test } from './fixtures';
-import { nodeSeal } from './harness/relay-harness';
+import { deriveNodeProjectKey, nodeSeal } from './harness/relay-harness';
 
 /**
  * The native tracker's kanban board at the width it is actually promised
@@ -85,15 +85,18 @@ test.describe('Native tracker kanban board at 390px (issue #212)', () => {
         system: makeSystem(),
       },
     ];
+    const projectPath = '/workspace/e2e-project';
+    const key = await deriveNodeProjectKey(loombox.amk, loombox.accountId, projectPath);
     const envelope = await nodeSeal(
-      loombox.session.sessionId,
+      projectPath,
       { outcome: 'ok', records, types: [TASK_TYPE] },
-      loombox.session.key,
+      key,
     );
     loombox.node.send({
       type: 'tracker_snapshot_response',
       protocolVersion: PROTOCOL_V1,
-      sessionId: loombox.session.sessionId,
+      nodeId: 'e2e-node-daemon',
+      projectPath,
       requestId: request.requestId,
       envelope,
     });
