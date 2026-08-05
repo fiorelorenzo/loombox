@@ -1,5 +1,5 @@
 ---
-"@loombox/providers-core": patch
+'@loombox/providers-core': patch
 ---
 
 Fix AcpClient discarding `session/new`'s config-option catalog (model/thinking/mode), the reason the composer's model and effort pickers never appeared (issue #705)
