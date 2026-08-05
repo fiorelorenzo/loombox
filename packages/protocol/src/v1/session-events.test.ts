@@ -10,7 +10,7 @@ import {
 } from './session-events';
 
 describe('sessionStatusEventV1', () => {
-  it('accepts every valid session status value, including "queued" (issue #252) and "starting" (issue #516)', () => {
+  it('accepts every valid session status value, including "queued" (issue #252), "starting" (issue #516), and "disconnected" (issue #702)', () => {
     for (const status of [
       'queued',
       'starting',
@@ -19,6 +19,7 @@ describe('sessionStatusEventV1', () => {
       'permission_required',
       'error',
       'exited',
+      'disconnected',
     ] as const) {
       const result = sessionStatusEventV1.safeParse({
         kind: 'session_status',

@@ -61,9 +61,9 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
  * computes and is what `@loombox/node` forwards here unchanged, just now
  * reaching the wire.
  *
- * `'queued'` and `'starting'` (issues #252, #516) are the two members with
- * no `AttentionStatus` counterpart, both synthesized by `@loombox/node`
- * rather than passed through from the agent process:
+ * `'queued'` and `'starting'` (issues #252, #516) are two of the three
+ * members with no `AttentionStatus` counterpart, both synthesized by
+ * `@loombox/node` rather than passed through from the agent process:
  *
  * - `'starting'` exists for the window between a session's worktree
  *   landing on disk and its agent process actually finishing `AcpClient.
@@ -85,14 +85,31 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
  *   for a session that hasn't actually been asked to do anything yet, which
  *   is the whole reason this is its own value rather than reusing
  *   `'starting'` for both.
+ * - `'disconnected'` (issue #702) is the wire counterpart of
+ *   `@loombox/node`'s own `SessionLifecycleState` value of the same name
+ *   (`session-manager.ts`'s doc comment): a session reloaded from a node's
+ *   on-disk `sessions.json` after a restart, whose agent process died with
+ *   the previous one. Deliberately NOT added to `AcpSessionStatus`
+ *   (`@loombox/providers-core`'s five-value union) even though it is a
+ *   session-status concept — that union is, by its own doc comment,
+ *   "exactly what `AgentSession` already computes," and there is no
+ *   `AgentSession` behind a disconnected session at all; `'queued'`/
+ *   `'starting'` set the precedent that a node-lifecycle state with no
+ *   agent behind it belongs here, protocol-side, not there. Pushed via
+ *   `@loombox/node`'s `sendSessionStatus` (usable with no bridge, exactly
+ *   like `'starting'`/an aborted-spawn `'error'` already are) on every
+ *   reconnect, for every session this node's `SessionManager` reports as
+ *   `'disconnected'` — so a client that was offline for the actual
+ *   transition still learns the true state the moment it (or its node)
+ *   reconnects, not just the client that happened to be subscribed live.
  *
- * Both are enum *widenings*: an older peer's zod validation on this field
- * simply rejects/drops a `session_status` envelope carrying `'queued'` or
- * `'starting'` (neither reaches a value that peer's own schema would have
- * accepted before), degrading to "no status update yet" rather than
- * crashing — acceptable because the very next transition (to
- * `'working'`/`'awaiting_input'`/`'error'`) is a value every peer, old or
- * new, already understands.
+ * All three are enum *widenings*: an older peer's zod validation on this
+ * field simply rejects/drops a `session_status` envelope carrying
+ * `'queued'`, `'starting'`, or `'disconnected'` (none reaches a value that
+ * peer's own schema would have accepted before), degrading to "no status
+ * update yet" rather than crashing — acceptable because the very next
+ * transition (to `'working'`/`'awaiting_input'`/`'error'`) is a value every
+ * peer, old or new, already understands.
  */
 export const sessionStatusV1 = z.enum([
   'queued',
@@ -102,6 +119,7 @@ export const sessionStatusV1 = z.enum([
   'permission_required',
   'error',
   'exited',
+  'disconnected',
 ]);
 export type SessionStatusV1 = z.infer<typeof sessionStatusV1>;
 

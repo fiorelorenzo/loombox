@@ -2583,6 +2583,188 @@ describe('NodeDaemon interactive PTY terminals (SPEC §7.5; issues #172/#173)', 
   });
 });
 
+/**
+ * Issue #702: Files and Terminal used to stop working PERMANENTLY the
+ * moment a node restarted, because `handleFsListRequest`/`handleTerminalOpen`
+ * guarded on `this.bridges.get(sessionId)` — populated only by
+ * `finishSessionCreation`, never rebuilt for a session reloaded from disk —
+ * and silently dropped the request when it came back empty. This suite
+ * proves the fix end to end: a REAL second `NodeDaemon` process
+ * (`createNode`, no injected `sessionManager`) built on the SAME
+ * `stateDir` a first one already wrote a session into, exactly
+ * `main.ts`'s real construction path and exactly what actually reloads
+ * `sessions.json` and marks the session `'disconnected'`
+ * (`SessionManager`'s own constructor — see `session-manager.ts`'s
+ * `SessionLifecycleState` doc comment) — never a test-only hook that
+ * pokes a status field directly, which would only prove this test agrees
+ * with itself, not that a real restart reaches the same state. No fake
+ * stands in for `NodeDaemon`, `SessionManager`, the relay, or the wire
+ * protocol anywhere below; only the ACP agent process itself is a fixture
+ * (`echoProvider`, `packages/providers/core`'s own hermetic test agent —
+ * standard across this whole file), which is never even running by the
+ * time these requests are sent.
+ */
+describe('NodeDaemon reattach after a restart (issue #702)', () => {
+  it(
+    'answers fs_list_request and terminal_open for real, and pushes session_status: disconnected, for a session reloaded with no live bridge after a restart — instead of dropping the request with no reply',
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-reattach-702';
+
+      // "Before the restart": a real node creates a session and writes it
+      // to `sessions.json` under `nodeStateDir` (no injected
+      // `sessionManager` — the default `new SessionManager({ store: new
+      // SessionStore({ stateDir }) })` every real node uses).
+      const beforeRestart = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-reattach-702',
+        deviceId: 'device-node-reattach-before',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+      });
+      const session = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+      await fsWriteFile(pathJoin(session.worktreePath, 'README.md'), '# hi');
+
+      // "The restart": the whole process this session's bridge/agent/PTYs
+      // lived in is gone. `close()` is the honest stand-in for that — it
+      // tears down every bridge/terminal/relay connection this instance
+      // held, exactly like a real process exit would, and (deliberately)
+      // never touches `sessions.json`, so the record `beforeRestart`
+      // already wrote survives on disk for the next process to find.
+      beforeRestart.close();
+
+      // "After the restart": same node identity, same stateDir, a FRESH
+      // `SessionManager` built from the SAME on-disk store — this is what
+      // reloads the session and marks it 'disconnected'.
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-reattach-702',
+        deviceId: 'device-node-reattach-after',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+        terminalSupervisor: hermeticTerminalSupervisor(),
+      });
+      await waitForConnected(node);
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-reattach-702',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+      // The relay's own persisted record answers this — `beforeRestart`'s
+      // original `announce()` is still there; the fix deliberately does
+      // NOT re-announce a bridge-less session (see `reannounceAll`'s doc
+      // comment), only its status.
+      await phone.waitFor((m) => m.type === 'session_announce');
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        sinceSeq: 0,
+      });
+
+      // Part 2: the one honest piece of state `SessionManager` already had
+      // (issue #515's `'disconnected'`) actually reaches the wire now,
+      // instead of dying in `NodeDaemon` — a real client can tell this
+      // session apart from a live one.
+      const disconnectedDeadline = Date.now() + 5000;
+      let sawDisconnected = false;
+      while (!sawDisconnected && Date.now() < disconnectedDeadline) {
+        for (const m of phone.messages) {
+          if (m.type !== 'session_update' || m.sessionId !== session.id) continue;
+          const decrypted = await phoneOpen<{ kind: string; status?: string }>(
+            session.id,
+            m.envelope,
+            key,
+          );
+          if (decrypted.kind === 'session_status' && decrypted.status === 'disconnected') {
+            sawDisconnected = true;
+            break;
+          }
+        }
+        if (!sawDisconnected) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(sawDisconnected).toBe(true);
+
+      // Part 1+3: fs_list_request gets a REAL answer — listing the
+      // session's actual worktree, not an `outcome: 'error'` placeholder —
+      // because listing a directory never needed the dead agent bridge in
+      // the first place (`resolveSessionRouting`). A short 2s timeout,
+      // not the default 10s: this must be fast, not merely eventually
+      // correct — the whole bug was a client waiting out its own 10s
+      // deadline for a reply that would never come.
+      const fsEnvelope = await phoneSeal(session.id, { path: '' }, key);
+      phone.send({
+        type: 'fs_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        requestId: 'req-reattach-fs',
+        envelope: fsEnvelope,
+      });
+      const fsResponse = (await phone.waitFor(
+        (m) =>
+          m.type === 'fs_list_response' &&
+          (m as { requestId?: string }).requestId === 'req-reattach-fs',
+        2000,
+      )) as { type: 'fs_list_response'; envelope: EncryptedEnvelope };
+      const fsPayload = await phoneOpen<{
+        outcome: string;
+        entries?: { name: string; kind: string }[];
+      }>(session.id, fsResponse.envelope, key);
+      expect(fsPayload.outcome).toBe('ok');
+      expect(fsPayload.entries?.map((entry) => entry.name)).toContain('README.md');
+
+      // terminal_open answers for real too — same reasoning, same fix.
+      const openEnvelope = await phoneSeal(session.id, { cols: 80, rows: 24 }, key);
+      phone.send({
+        type: 'terminal_open',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        terminalId: 'term-reattach',
+        requestId: 'req-reattach-term',
+        envelope: openEnvelope,
+      });
+      const openedMessage = (await phone.waitFor(
+        (m) =>
+          m.type === 'terminal_opened' &&
+          (m as { requestId?: string }).requestId === 'req-reattach-term',
+        2000,
+      )) as Extract<WireMessageV1, { type: 'terminal_opened' }>;
+      const openedPayload = await phoneOpen<{
+        outcome: string;
+        message?: string;
+        cwd?: string;
+      }>(session.id, openedMessage.envelope, key);
+      expect(openedPayload.outcome).toBe('ok');
+      expect(openedPayload.cwd).toBe(session.worktreePath);
+
+      // Close this test's own terminal explicitly before `afterEach` tears
+      // the node down, so `hermeticTerminalSupervisor`'s real PTY doesn't
+      // outlive the assertions above it.
+      phone.send({
+        type: 'terminal_close',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        terminalId: 'term-reattach',
+      });
+    },
+  );
+});
+
 describe('NodeDaemon MCP server resolution at session start (issues #187/#189)', () => {
   it("resolves a project's effective MCP server set (with a granted secret) and hands it to the ACP session", async () => {
     const amk = generateAmk();

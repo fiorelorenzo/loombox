@@ -15,6 +15,7 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
+  import type { SessionStatusV1 } from '@loombox/protocol';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import {
     RelayClient,
@@ -954,8 +955,42 @@
       ? rightSidebarDock.open
       : rightSidebarWideViewport && selectedSessionId !== undefined,
   );
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed.
-  const sendDisabled = $derived(draft.trim() === '' || hasBlockingAttachments(attachments));
+  /**
+   * The selected session's live status (issue #702), read out of the same
+   * `sessionStatuses` map every row badge already uses. Cast to the
+   * protocol's wider `SessionStatusV1`, not the `AcpSessionStatus` the map
+   * is declared with: `sessionStatuses` mirrors `client.statusFor(id)`
+   * (typed `AcpSessionStatus | undefined`, `@loombox/providers-core`'s
+   * five-value union), but the wire value it stores unchecked can also be
+   * `'queued'`/`'starting'`/`'disconnected'` — the exact tolerance
+   * `relay-client.ts`'s `parseSessionWireEvent` doc comment already
+   * documents ("the reducer's case 'session_status' already stores
+   * whichever string arrives unchecked either way"). Comparing against the
+   * literal `'disconnected'` below needs the wider type; `session-
+   * status.ts`'s Records only needed assignability, not a literal
+   * comparison, so they didn't.
+   */
+  const selectedSessionStatus = $derived(
+    selectedSessionId
+      ? (sessionStatuses.get(selectedSessionId) as SessionStatusV1 | undefined)
+      : undefined,
+  );
+  /**
+   * Whether the selected session survived a node restart with no agent
+   * behind it (`session-manager.ts`'s `SessionLifecycleState` doc
+   * comment). Files and the terminal still work on one of these (issue
+   * #702 part 3 — neither ever needed the agent), but a new prompt
+   * genuinely cannot be delivered (no agent process to hand it to, and
+   * `prompt_inject` has no reply channel to report that failure on), so
+   * the composer is disabled rather than silently swallowing a send that
+   * would otherwise sit unanswered for 10s exactly like the bug this
+   * issue fixed.
+   */
+  const selectedSessionDisconnected = $derived(selectedSessionStatus === 'disconnected');
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #702's: disabled for a disconnected session's dead composer.
+  const sendDisabled = $derived(
+    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionDisconnected,
+  );
 
   /**
    * A3-2 (issue #666): whether the selected session has a turn running right
@@ -1831,17 +1866,37 @@
     /** Sessions needing attention, counted over the project's FULL session list: a status summary, independent of the filter narrowing which rows actually render. */
     attentionCount: number;
     /** The worst live status among the project's FULL session list, or `undefined` for a project with no live status yet (including a project with zero sessions). */
-    worstStatus: AcpSessionStatus | undefined;
+    worstStatus: SessionStatusV1 | undefined;
     /** True when this group renders expanded: the filter force-expands every group it keeps (design spec v4 §3.2's "auto-expands every group that has a match"), regardless of {@link collapsedProjectKeys}. */
     expanded: boolean;
   }
 
-  /** Ranks a live session status worst-first, for a project group's single summary `StatusDot` (design spec v4 §3.2). Reuses `$lib/session-status.ts`'s own tone/label maps for the actual dot and its `aria-label`, so this ranking never invents wording of its own. */
-  const SESSION_STATUS_SEVERITY: Record<AcpSessionStatus, number> = {
-    error: 4,
-    permission_required: 3,
-    working: 2,
-    awaiting_input: 1,
+  /**
+   * Ranks a live session status worst-first, for a project group's single
+   * summary `StatusDot` (design spec v4 §3.2). Reuses `$lib/session-
+   * status.ts`'s own tone/label maps for the actual dot and its
+   * `aria-label`, so this ranking never invents wording of its own. Keyed
+   * by the protocol's `SessionStatusV1` (8 values), not the narrower
+   * `AcpSessionStatus` (5) — same reasoning as `session-status.ts`'s own
+   * doc comment: `'queued'`/`'starting'`/`'disconnected'` (issue #702) are
+   * real values `sessionStatuses` can hold, and a project group whose
+   * first-seen session happened to be one of those used to get stuck
+   * there (`SESSION_STATUS_SEVERITY[status]` came back `undefined` for
+   * them, so no later, genuinely worse status could ever out-rank it —
+   * `undefined > n` is always `false`). `'starting'` ranks beside
+   * `'working'` (both actively in flight); `'queued'` ranks below
+   * `'awaiting_input'` (waiting for a slot, not yet asking anything);
+   * `'disconnected'` ranks just above `'exited'` (passive, but — unlike
+   * `'exited'` — something a person may want to act on).
+   */
+  const SESSION_STATUS_SEVERITY: Record<SessionStatusV1, number> = {
+    error: 7,
+    permission_required: 6,
+    working: 5,
+    starting: 5,
+    awaiting_input: 3,
+    queued: 2,
+    disconnected: 1,
     exited: 0,
   };
 
@@ -1882,7 +1937,7 @@
       const sessionsForRow =
         filterActive && !nameMatches ? (matchedByKey.get(key) ?? []) : allSessions;
       let attentionCount = 0;
-      let worstStatus: AcpSessionStatus | undefined;
+      let worstStatus: SessionStatusV1 | undefined;
       for (const session of allSessions) {
         if (sessionsNeedingAttention.has(session.id)) attentionCount += 1;
         const status = sessionStatuses.get(session.id);
@@ -3359,7 +3414,10 @@
                           bind:value={draft}
                           oninput={handleComposerInput}
                           onkeydown={handleComposerKeydown}
-                          placeholder="Send a follow-up prompt…"
+                          disabled={selectedSessionDisconnected}
+                          placeholder={selectedSessionDisconnected
+                            ? "This session's agent isn't running — it disconnected when the node last restarted."
+                            : 'Send a follow-up prompt…'}
                           aria-label="Follow-up prompt"
                           aria-describedby="composer-hint"
                           rows="1"
