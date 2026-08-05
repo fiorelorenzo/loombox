@@ -640,21 +640,38 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       ['config_options'],
       1,
     );
+    // Three categories, in the order the agent sent them, mapped from the real
+    // ACP wire shape (`{id, name, category, type, currentValue, options}`) onto
+    // this codebase's `{category, current, choices}` — issue #705. The fixture
+    // used to hand back the internal shape directly, which is why it agreed
+    // with the bug: `thought_level` never appeared at all, and the ids were
+    // invented short names rather than the real provider-qualified ones.
     expect(initialCatalog!.options).toEqual([
-      {
-        category: 'model',
-        current: 'sonnet',
-        choices: [
-          { id: 'sonnet', name: 'Sonnet' },
-          { id: 'haiku', name: 'Haiku' },
-        ],
-      },
       {
         category: 'mode',
         current: 'default',
         choices: [
           { id: 'default', name: 'Default' },
           { id: 'plan', name: 'Plan' },
+        ],
+      },
+      {
+        category: 'model',
+        current: 'anthropic/claude-sonnet-5',
+        choices: [
+          { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5' },
+          { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' },
+        ],
+      },
+      {
+        // The agent's own `id` is 'thinking' while its `category` is
+        // 'thought_level'; the mapping keys on category, so this is the
+        // category that must land here.
+        category: 'thought_level',
+        current: 'auto',
+        choices: [
+          { id: 'off', name: 'Off' },
+          { id: 'auto', name: 'Auto' },
         ],
       },
     ]);
@@ -671,7 +688,9 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       1,
     );
     const fallbackOptions = fallback!.options as { category: string; current: string }[];
-    expect(fallbackOptions.find((o) => o.category === 'model')?.current).toBe('haiku');
+    expect(fallbackOptions.find((o) => o.category === 'model')?.current).toBe(
+      'anthropic/claude-haiku-4-5',
+    );
 
     // The relay never carried plaintext for any of the above.
     for (const message of phone.messages.filter(
