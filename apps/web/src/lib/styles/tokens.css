@@ -51,7 +51,7 @@
   /* transcript's role gutter reserves. Components read these instead   */
   /* of inventing their own magic widths.                               */
   /* ---------------------------------------------------------------- */
-  --measure: 90ch; /* long-form prose in the transcript */
+  --measure: 100ch; /* long-form prose in the transcript (v8 A1-1: was 90ch) */
   --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
   /* v7 turn delimitation (design spec `2026-08-04-cockpit-v7-decisions.md`
      §2, issue #667: B1-2 amended + B2-4) narrowed this from 4.75rem: the
