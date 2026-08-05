@@ -194,6 +194,13 @@ const messagesByType: Record<string, unknown> = {
     category: 'model',
     optionId: 'claude-sonnet',
   },
+  config_option_result: {
+    type: 'config_option_result',
+    protocolVersion: 1,
+    sessionId: 'sess-1',
+    category: 'model',
+    result: { outcome: 'ok' },
+  },
   blob_upload: {
     type: 'blob_upload',
     protocolVersion: 1,

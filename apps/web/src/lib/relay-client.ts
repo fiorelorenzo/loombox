@@ -49,6 +49,7 @@ import {
   safeParseWireMessageV1,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
+  type ConfigOptionResult,
   type ConnectedAccount,
   type ConnectedAccountDisconnectResponse,
   type ConnectedAccountList,
@@ -470,6 +471,23 @@ export interface AttentionInboxItem {
  */
 export interface PermissionStaleNotice {
   readonly requestId: string;
+  readonly message: string;
+  readonly at: number;
+}
+
+/**
+ * A `config_option` this client sent got `outcome: 'error'` back (SPEC
+ * §7.24; issue #718) — carries the agent's own rejection reason
+ * (`AcpClient.setConfigOption`'s issue #707 `error.data.details` folding,
+ * relayed verbatim through `node-daemon.ts`'s `config_option_result`), so a
+ * refusal is visible rather than dying in a console warning. One slot per
+ * session, overwritten by the latest attempt, same "latest wins, no queue"
+ * shape as {@link PermissionStaleNotice}. `category` lets a consumer
+ * showing several independent pickers (SPEC §7.24's model/mode/thinking
+ * bar) attribute the notice to the right one.
+ */
+export interface ConfigOptionErrorNotice {
+  readonly category: string;
   readonly message: string;
   readonly at: number;
 }
@@ -1046,6 +1064,13 @@ export class RelayClient {
   private readonly permissionQueues = new Map<string, Writable<PermissionQueueState>>();
   /** Backs {@link staleNoticeFor} (issue #131) — one slot per session, overwritten by the latest stale attempt/discard. */
   private readonly staleNotices = new Map<string, Writable<PermissionStaleNotice | undefined>>();
+  /** Backs {@link configOptionErrorFor} (issue #718) — one slot per session, overwritten by the latest rejected `config_option`, same shape as {@link staleNotices}. */
+  private readonly configOptionErrors = new Map<
+    string,
+    Writable<ConfigOptionErrorNotice | undefined>
+  >();
+  /** Categories with an outstanding `config_option` this client itself sent, per session (issue #718) — {@link handleConfigOptionResult}'s "is this reply to my own request" guard, the `category`-keyed counterpart of {@link pendingFsListRequests}'s `requestId`-keyed one (`config_option` carries no request id — see that schema's own doc comment for why category alone is the correlation key). */
+  private readonly pendingConfigOptions = new Map<string, Set<string>>();
   private readonly subscribed = new Set<string>();
   /** Backs {@link attentionInbox} — see that method's doc comment. */
   private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
@@ -2747,19 +2772,46 @@ export class RelayClient {
   }
 
   /**
-   * Picks a config option in the given category: updates the local list
-   * optimistically (replacing that category's `current`, in the same
-   * reduced `TranscriptState` `configOptionsFor` reads) and sends the
-   * `config_option` wire message so the owning node can act on it.
+   * Picks a config option in the given category: sends the `config_option`
+   * wire message so the owning node can act on it, and does NOT touch
+   * {@link configOptionsFor}'s local list ahead of any round trip (issue
+   * #718).
+   *
+   * This used to update `current` optimistically before the node could
+   * possibly agree — harmless while nothing ever answered `config_option`
+   * (`packages/node/src/node-daemon.ts` silently dropped it), but with a
+   * real agent now on the other end (issue #707's `AcpClient.
+   * setConfigOption`) that guess can be flatly wrong: an unsupported value
+   * or an unrecognized option is a real, common rejection, and there is no
+   * way to un-optimistically-apply a value without a moment where the UI
+   * shows a choice the agent never made. So this waits for the agent's own
+   * answer instead of guessing: on success the ordinary `config_options`
+   * push (unchanged, already wired since #705/#149) is what actually
+   * updates `current`, and on failure {@link handleConfigOptionResult}
+   * publishes a {@link ConfigOptionErrorNotice} instead of ever having
+   * applied — then had to revert — a wrong value. The round trip is a
+   * single local ACP call, not a network hop to a model provider, so the
+   * added latency is a beat, not a spinner-worthy wait.
+   *
+   * Tracked in {@link pendingConfigOptions} so {@link handleConfigOptionResult}
+   * can tell "this reply is to my own request" from a sibling device's own
+   * attempt for the same category, fanned out to every subscriber exactly
+   * like `fs_list_response` (`packages/protocol/src/v1/steering.ts`'s
+   * `configOptionResult` doc comment) — which is also why this calls
+   * {@link ensureSubscribed} itself (mirrors `openTerminal`'s identical
+   * belt-and-suspenders call): a caller that hasn't already subscribed via
+   * `configOptionsFor`/`transcriptFor` would otherwise never actually
+   * receive the reply this method exists to let land.
    */
   setConfigOption(sessionId: string, category: string, optionId: string): void {
-    const store = this.transcriptStoreFor(sessionId);
-    store.update((state) => ({
-      ...state,
-      configOptions: state.configOptions.map((option) =>
-        option.category === category ? { ...option, current: optionId } : option,
-      ),
-    }));
+    let pending = this.pendingConfigOptions.get(sessionId);
+    if (!pending) {
+      pending = new Set();
+      this.pendingConfigOptions.set(sessionId, pending);
+    }
+    pending.add(category);
+    this.ensureSubscribed(sessionId);
+
     this.send({
       type: 'config_option',
       protocolVersion: PROTOCOL_V1,
@@ -2767,6 +2819,19 @@ export class RelayClient {
       category,
       optionId,
     });
+  }
+
+  /**
+   * A rejected `config_option` this client itself sent, as a live notice
+   * (SPEC §7.24; issue #718) — the `config_option`/model-mode-thinking-bar
+   * counterpart of {@link staleNoticeFor}. Carries the agent's own reason
+   * ({@link ConfigOptionErrorNotice.message}), so a picker can show why its
+   * pick didn't take instead of just quietly not changing. Overwritten by
+   * the next rejection for this session, not accumulated — only the most
+   * recent one is ever relevant to show.
+   */
+  configOptionErrorFor(sessionId: string): Readable<ConfigOptionErrorNotice | undefined> {
+    return this.configOptionErrorStoreFor(sessionId);
   }
 
   /**
@@ -3742,6 +3807,51 @@ export class RelayClient {
     this.staleNoticeStoreFor(sessionId).set({ requestId, message, at: Date.now() });
   }
 
+  private configOptionErrorStoreFor(
+    sessionId: string,
+  ): Writable<ConfigOptionErrorNotice | undefined> {
+    let store = this.configOptionErrors.get(sessionId);
+    if (!store) {
+      store = writable<ConfigOptionErrorNotice | undefined>(undefined);
+      this.configOptionErrors.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /**
+   * The owning node's reply to one of this client's own `config_option`
+   * sends (SPEC §7.24; issue #718). Fanned out to every client subscribed
+   * to the session, not addressed to the requester alone
+   * (`packages/protocol/src/v1/steering.ts`'s `configOptionResult` doc
+   * comment) — `category` not being in {@link pendingConfigOptions} for
+   * this session means this reply is to a sibling device's own attempt
+   * (or one this client already resolved), same "not pending means it
+   * isn't mine" guard {@link handleFsListResponse} applies via `requestId`.
+   *
+   * `outcome: 'ok'` publishes nothing: `setConfigOption`'s own doc comment
+   * explains why there is no optimistic value here to reconcile — the
+   * ordinary `config_options` push is the actual source of truth for the
+   * new value, and it is either already in flight or already applied by
+   * the time this arrives. `outcome: 'error'` publishes a
+   * {@link ConfigOptionErrorNotice} carrying the agent's own reason,
+   * clearing this session's slot on a later success for the same category
+   * (`event.category === current?.category`) so a retry that works removes
+   * the stale notice rather than leaving it to linger.
+   */
+  private handleConfigOptionResult(message: ConfigOptionResult): void {
+    const pending = this.pendingConfigOptions.get(message.sessionId);
+    if (!pending?.has(message.category)) return;
+    pending.delete(message.category);
+
+    const store = this.configOptionErrorStoreFor(message.sessionId);
+    if (message.result.outcome === 'ok') {
+      const current = get(store);
+      if (current?.category === message.category) store.set(undefined);
+      return;
+    }
+    store.set({ category: message.category, message: message.result.message, at: Date.now() });
+  }
+
   /**
    * The cross-device half of issue #131's stale-discard rule. v1's relay
    * never broadcasts a `permission_response` to sibling clients (only to
@@ -3807,6 +3917,9 @@ export class RelayClient {
         return;
       case 'permission_request':
         this.handlePermissionRequest(message);
+        return;
+      case 'config_option_result':
+        this.handleConfigOptionResult(message);
         return;
       case 'fs_list_response':
         this.handleFsListResponse(message);

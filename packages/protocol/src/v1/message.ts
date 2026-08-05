@@ -26,7 +26,13 @@ import {
   sessionListV1,
   sessionResume,
 } from './sessions';
-import { configOption, permissionRequest, permissionResponse, promptInjectV1 } from './steering';
+import {
+  configOption,
+  configOptionResult,
+  permissionRequest,
+  permissionResponse,
+  promptInjectV1,
+} from './steering';
 import { targetAnnounce, targetList, targetListRequest, targetStatus } from './targets';
 import {
   terminalClose,
@@ -114,6 +120,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   permissionRequest,
   permissionResponse,
   configOption,
+  configOptionResult,
   blobUpload,
   blobRef,
   blobDownload,

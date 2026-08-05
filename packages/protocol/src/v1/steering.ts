@@ -65,3 +65,53 @@ export const configOption = z.object({
   optionId: z.string().min(1),
 });
 export type ConfigOption = z.infer<typeof configOption>;
+
+const configOptionOk = z.object({ outcome: z.literal('ok') });
+const configOptionError = z.object({
+  outcome: z.literal('error'),
+  message: z.string().min(1),
+});
+/** The owning node's outcome for one `config_option` request: `'ok'` once the agent's own `session/set_config_option` ack lands (the reconciled catalog itself rides the ordinary `config_options` session-lifecycle event, not duplicated here), or `'error'` with the agent's own rejection reason (issue #707's `error.data.details` folded into `AcpClient.setConfigOption`'s thrown `Error`) so a refusal is never silently dropped (issue #718). */
+export const configOptionSetResult = z.discriminatedUnion('outcome', [
+  configOptionOk,
+  configOptionError,
+]);
+export type ConfigOptionSetResult = z.infer<typeof configOptionSetResult>;
+
+/**
+ * The owning node's reply to a client's `config_option` (SPEC §7.24; issue
+ * #718). Unlike `permission_response`'s fire-and-forget: picking a config
+ * option is a real ACP round trip (`session/set_config_option`) the agent
+ * can reject (an unsupported value, an unknown option), and issue #718's
+ * whole point is that a rejection has to actually reach a client instead of
+ * dying in a node-side `console.warn` — the #702 failure mode this closes.
+ *
+ * Correlated to the request by `sessionId` + `category`, not a dedicated
+ * request id: `configOption` above has never carried one (issue #149's
+ * original design — picking a category's value is idempotent, no queue to
+ * track), and `category` is already the natural key every config-option
+ * store in this codebase groups on. A client with no pending request for
+ * that category (a sibling device's own attempt, or a reply that arrived
+ * after this client's own bookkeeping already cleared) simply ignores it —
+ * same filtering `fs_list_response`'s own doc comment describes for
+ * `requestId`.
+ *
+ * Fanned out to every client subscribed to the session exactly like
+ * `fs_list_response`/`terminal_opened` (`relay.ts`'s `fanOutDirect`), not
+ * routed to the requester alone: any subscriber's own catalog view can be
+ * stale until this arrives.
+ *
+ * Clear, not an encrypted envelope: `configOption`'s own `category`/
+ * `optionId` already travel in the clear (SPEC §8 does not treat a config-
+ * option choice as private the way a prompt or file path is), so this
+ * reply mirrors that rather than inventing an encryption boundary the
+ * request itself doesn't have.
+ */
+export const configOptionResult = z.object({
+  type: z.literal('config_option_result'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  sessionId: z.string().min(1),
+  category: z.string().min(1),
+  result: configOptionSetResult,
+});
+export type ConfigOptionResult = z.infer<typeof configOptionResult>;

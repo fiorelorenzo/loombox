@@ -1440,6 +1440,244 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
   });
 });
 
+/**
+ * Issue #718: the node used to drop `config_option` in `handleInbound`'s
+ * `default:` case, so the optimistic client-side update (before this issue,
+ * `RelayClient.setConfigOption`) was the only thing that ever happened —
+ * the agent never heard about it. These drive the real wire message
+ * through `NodeDaemon.handleInbound` -> `AgentSession.setConfigOption` ->
+ * `AcpClient.setConfigOption` (issue #707's real request/response shape)
+ * against `CONFIG_FIXTURE`, the same fixture #705/#707's own tests use —
+ * nothing here stands in for `NodeDaemon`, the wire protocol, or the ACP
+ * client; only the agent process itself is a fixture. See this file's
+ * `describe('NodeDaemon (protocol v1, E2E encrypted)')` config-options test
+ * above for the same fixture's initial-catalog/unprompted-fallback
+ * coverage — this describe block is what actually calls `setConfigOption`,
+ * a real ACP round trip.
+ */
+describe('NodeDaemon config_option (SPEC §7.24; issue #718)', () => {
+  it(
+    "sets the model and the thinking effort through a real config_option round trip — the exact wire message the old default: case silently dropped, replying config_option_result: ok and reflecting each new value in the agent's own config_options push (the 'read it back' proof)",
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-config-option-live';
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-config-option',
+        deviceId: 'device-node-config-option',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-config' });
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-config-option',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+      await phone.waitFor((m) => m.type === 'session_announce');
+      // The initial config_options snapshot is forwarded at session-
+      // creation time (`wireAgentSession`), before this phone subscribed —
+      // backfill it via resync, exactly like the config-wire test above
+      // this describe block does, so the pushes below are unambiguously
+      // the RESULT of this test's own sets, not the initial snapshot.
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        sinceSeq: 0,
+      });
+      await waitForDecryptedKinds(phone, session.id, key, ['config_options'], 1);
+
+      phone.send({
+        type: 'config_option',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        category: 'model',
+        optionId: 'anthropic/claude-haiku-4-5',
+      });
+      const modelResult = (await phone.waitFor(
+        (m) => m.type === 'config_option_result' && m.category === 'model',
+      )) as Extract<WireMessageV1, { type: 'config_option_result' }>;
+      expect(modelResult).toMatchObject({ sessionId: session.id, category: 'model' });
+      expect(modelResult.result).toEqual({ outcome: 'ok' });
+
+      const afterModel = await waitForDecryptedKinds(phone, session.id, key, ['config_options'], 2);
+      const modelOption = (afterModel[1]!.options as { category: string; current: string }[]).find(
+        (option) => option.category === 'model',
+      );
+      expect(modelOption?.current).toBe('anthropic/claude-haiku-4-5');
+
+      phone.send({
+        type: 'config_option',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        category: 'thought_level',
+        optionId: 'off',
+      });
+      const thinkingResult = (await phone.waitFor(
+        (m) => m.type === 'config_option_result' && m.category === 'thought_level',
+      )) as Extract<WireMessageV1, { type: 'config_option_result' }>;
+      expect(thinkingResult.result).toEqual({ outcome: 'ok' });
+
+      const afterThinking = await waitForDecryptedKinds(
+        phone,
+        session.id,
+        key,
+        ['config_options'],
+        3,
+      );
+      const thinkingOption = (
+        afterThinking[2]!.options as { category: string; current: string }[]
+      ).find((option) => option.category === 'thought_level');
+      expect(thinkingOption?.current).toBe('off');
+    },
+  );
+
+  it(
+    "a rejected config_option (an unsupported value the real ACP wire shape refuses) replies config_option_result: error carrying the agent's own rejection reason, and pushes no new catalog",
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-config-option-rejected';
+
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-config-option-reject',
+        deviceId: 'device-node-config-option-reject',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-config' });
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-config-option-reject',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+      await phone.waitFor((m) => m.type === 'session_announce');
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        sinceSeq: 0,
+      });
+      await waitForDecryptedKinds(phone, session.id, key, ['config_options'], 1);
+      const sessionUpdatesBefore = phone.count(
+        (m) => m.type === 'session_update' && m.sessionId === session.id,
+      );
+
+      phone.send({
+        type: 'config_option',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        category: 'model',
+        optionId: 'not-a-real-model',
+      });
+      const result = (await phone.waitFor((m) => m.type === 'config_option_result')) as Extract<
+        WireMessageV1,
+        { type: 'config_option_result' }
+      >;
+      expect(result.category).toBe('model');
+      expect(result.result.outcome).toBe('error');
+      if (result.result.outcome === 'error') {
+        expect(result.result.message).toMatch(/Unsupported value: not-a-real-model/);
+      }
+
+      // The rejection produced no new catalog (or any other session_update)
+      // push — waiting past the point a bug would have produced one is the
+      // only proof available here, since a correct implementation makes
+      // nothing happen (mirrors this file's own `waitForDecryptedKinds`-
+      // adjacent "prove absence" checks).
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 200);
+      await promise;
+      expect(phone.count((m) => m.type === 'session_update' && m.sessionId === session.id)).toBe(
+        sessionUpdatesBefore,
+      );
+    },
+  );
+
+  it("a config_option for a session reloaded 'disconnected' after a restart (issue #702's now-real state) replies config_option_result: error instead of being silently dropped", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config-option-disconnected';
+
+    const beforeRestart = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-config-option-disc',
+      deviceId: 'device-node-config-disc-before',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+    });
+    const session = await beforeRestart.createSession({ projectPath, provider: 'test-config' });
+    // "The restart": tears every bridge down, never touching the on-disk
+    // session record — mirrors the #702 reattach describe block's own
+    // `beforeRestart.close()` exactly.
+    beforeRestart.close();
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-config-option-disc',
+      deviceId: 'device-node-config-disc-after',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-config-disc',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'config_option',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      category: 'model',
+      optionId: 'anthropic/claude-haiku-4-5',
+    });
+    const result = (await phone.waitFor((m) => m.type === 'config_option_result', 2000)) as Extract<
+      WireMessageV1,
+      { type: 'config_option_result' }
+    >;
+    expect(result.category).toBe('model');
+    expect(result.result.outcome).toBe('error');
+    if (result.result.outcome === 'error') {
+      expect(result.result.message).toMatch(/no live agent|disconnected/i);
+    }
+  });
+});
+
 describe('NodeDaemon fs-list (read-only file-tree panel, SPEC §7.4; issue #171)', () => {
   it("lists a local session's project root, and a nested directory, over the encrypted fs_list_request/fs_list_response pair", async () => {
     const amk = generateAmk();

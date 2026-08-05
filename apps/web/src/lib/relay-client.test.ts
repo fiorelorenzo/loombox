@@ -1238,7 +1238,7 @@ describe('RelayClient', () => {
     expect(get(queue).byId.size).toBe(0);
   });
 
-  it('setConfigOption updates the local list optimistically and sends the clear config_option message', async () => {
+  it('setConfigOption sends the clear config_option message and does NOT guess the new value locally (issue #718: the agent can reject it, so only its own config_options push may apply one)', async () => {
     const amk = generateAmk();
     const accountId = 'acct-config';
 
@@ -1289,6 +1289,120 @@ describe('RelayClient', () => {
     expect(get(queued)).toEqual([
       expect.objectContaining({ id: promptId, sessionId: 'sess_never_connected', text: 'hello?' }),
     ]);
+  });
+});
+
+describe('RelayClient: config_option_result (SPEC §7.24; issue #718)', () => {
+  it("a rejected config_option publishes a ConfigOptionErrorNotice carrying the agent's own reason, and a later successful retry for the same category clears it", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config-result-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-config-result-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_config_result_error', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-config-result-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const errorNotice = client.configOptionErrorFor(session.id);
+    expect(get(errorNotice)).toBeUndefined();
+
+    client.setConfigOption(session.id, 'model', 'not-a-real-model');
+    await node.waitFor((m) => m.type === 'config_option');
+
+    node.send({
+      type: 'config_option_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      category: 'model',
+      result: { outcome: 'error', message: 'Unsupported value: not-a-real-model' },
+    });
+    await waitForStore(errorNotice, (value) => value !== undefined);
+
+    expect(get(errorNotice)).toMatchObject({
+      category: 'model',
+      message: 'Unsupported value: not-a-real-model',
+    });
+
+    // A later successful retry for the SAME category clears the stale
+    // notice rather than leaving it to linger.
+    client.setConfigOption(session.id, 'model', 'a-real-model');
+    await node.waitFor(
+      (m) => m.type === 'config_option' && (m as ConfigOption).optionId === 'a-real-model',
+    );
+    node.send({
+      type: 'config_option_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      category: 'model',
+      result: { outcome: 'ok' },
+    });
+    await waitForStore(errorNotice, (value) => value === undefined);
+  });
+
+  it("a client ignores a config_option_result for another device's own pending request on the same session (fanned out, not addressed) — neither publishing a notice nor clearing an unrelated one", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-config-result-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-config-result-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_config_result_sibling', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-config-result-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const errorNotice = client.configOptionErrorFor(session.id);
+
+    // This client never sent a config_option for 'thought_level' — a
+    // sibling device's own attempt, fanned out to every subscriber of the
+    // session exactly like fs_list_response.
+    node.send({
+      type: 'config_option_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      category: 'thought_level',
+      result: { outcome: 'error', message: 'Unsupported value: xhigh' },
+    });
+
+    // The correct behavior produces NO store change here, so there is no
+    // event to await instead — mirrors the identical real-timer wait
+    // `relay-client.test.ts`'s own fs_list_response sibling-device test
+    // uses for the same "prove a fanned-out foreign reply was ignored"
+    // shape, over the same real WebSocket/relay this suite drives.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+    expect(get(errorNotice)).toBeUndefined();
   });
 });
 
