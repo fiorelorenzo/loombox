@@ -4,8 +4,23 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AcpClient, mapConfigOptions, mapToTranscriptUpdate } from './client';
-import { createTranscriptState, reduceTranscript } from './transcript';
-import type { AcpUpdate } from './types';
+import {
+  createTranscriptState,
+  reduceTranscript,
+  type TranscriptMessageItem,
+  type TranscriptState,
+} from './transcript';
+import type { AcpMessageChunkKind, AcpUpdate } from './types';
+
+/** Narrows a `TranscriptState.items` entry to its message-item variant with a given chunk kind — plain equality can't narrow past the `TranscriptItem` union, so `.find` needs a real type predicate to make `.text` accessible afterwards. */
+function findMessageItem(
+  items: readonly TranscriptState['items'][number][],
+  kind: AcpMessageChunkKind,
+): TranscriptMessageItem | undefined {
+  return items.find(
+    (item): item is TranscriptMessageItem => item.type === 'message' && item.kind === kind,
+  );
+}
 
 const FIXTURE_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -15,10 +30,21 @@ const FIXTURE_PATH = path.join(
   'echo-acp-agent.mjs',
 );
 
+// Issue #660: the realistic-timing fixture, used specifically by the
+// growth-while-open test below — see that file's own doc comment for why
+// it exists alongside echo-acp-agent.mjs rather than replacing it outright.
+const STREAMING_FIXTURE_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'test',
+  'fixtures',
+  'streaming-acp-agent.mjs',
+);
+
 let activeClient: AcpClient | undefined;
 
-function makeClient(): AcpClient {
-  const client = new AcpClient({ command: process.execPath, args: [FIXTURE_PATH] });
+function makeClient(fixture = FIXTURE_PATH): AcpClient {
+  const client = new AcpClient({ command: process.execPath, args: [fixture] });
   activeClient = client;
   return client;
 }
@@ -50,6 +76,65 @@ describe('AcpClient', () => {
       { kind: 'agent_message_chunk', messageId: 'msg_agent_1', text: 'Hello world' },
     ]);
     expect(turnEnds).toEqual([{ messageId: 'msg_agent_1', stopReason: 'end_turn' }]);
+  });
+
+  it('grows the transcript while the turn is still open, not only once it closes (issue #660)', async () => {
+    const client = makeClient(STREAMING_FIXTURE_PATH);
+    // Every prior test in this file only ever inspects the FINAL state
+    // (the exact shape issue #660 calls out as the gap: "every test
+    // claiming to cover streaming really covers two chunks in one tick").
+    // Recording every intermediate `TranscriptState` snapshot as it
+    // naturally arrives — via the event listener itself, no polling — is
+    // what lets this test assert on the *mid-turn* shape instead.
+    const snapshots: Array<{ state: TranscriptState; t: number }> = [];
+    const t0 = Date.now();
+    client.on('transcript_update', (payload: { state: TranscriptState }) => {
+      snapshots.push({ state: payload.state, t: Date.now() - t0 });
+    });
+
+    await client.initialize();
+    const sessionId = await client.newSession('/tmp/loombox-test');
+    // `client.prompt()` itself only resolves once the agent's terminal
+    // `stopReason` response arrives — every `transcript_update` for this
+    // turn is necessarily recorded above (via the synchronous listener)
+    // strictly before this resolves, so `snapshots` already holds the
+    // full mid-turn history by the time control returns here.
+    await client.prompt(sessionId, 'go');
+
+    const thoughtLengths = snapshots.map(
+      (s) => findMessageItem(s.state.items, 'agent_thought_chunk')?.text.length ?? 0,
+    );
+    const messageLengths = snapshots.map(
+      (s) => findMessageItem(s.state.items, 'agent_message_chunk')?.text.length ?? 0,
+    );
+
+    // A batch-until-turn-end regression would collapse this to one
+    // snapshot per kind (0 -> final); the realistic fixture's 7 thought +
+    // 11 message chunks means a correctly-streaming pipeline observes far
+    // more distinct intermediate lengths than that.
+    expect(new Set(thoughtLengths).size).toBeGreaterThan(3);
+    expect(new Set(messageLengths).size).toBeGreaterThan(3);
+
+    // Both grow monotonically (the reducer only ever appends) and the
+    // thought item is fully settled before the message item starts, since
+    // the fixture streams thinking first, then the answer.
+    for (let i = 1; i < snapshots.length; i++) {
+      expect(thoughtLengths[i]!).toBeGreaterThanOrEqual(thoughtLengths[i - 1]!);
+      expect(messageLengths[i]!).toBeGreaterThanOrEqual(messageLengths[i - 1]!);
+    }
+
+    // Real, spread-out wall-clock arrival — not every snapshot landing in
+    // the same tick (echo-acp-agent.mjs's old zero-delay shape would fail
+    // this the same way it would fail the two checks above).
+    expect(snapshots.at(-1)!.t - snapshots[0]!.t).toBeGreaterThan(50);
+
+    const finalItems = snapshots.at(-1)!.state.items;
+    expect(findMessageItem(finalItems, 'agent_thought_chunk')).toMatchObject({
+      text: 'Thinking step by step about this request.',
+    });
+    expect(findMessageItem(finalItems, 'agent_message_chunk')).toMatchObject({
+      text: 'The answer unfolds gradually across several words to prove real streaming.',
+    });
   });
 
   it('emits exit when the underlying agent process terminates', async () => {

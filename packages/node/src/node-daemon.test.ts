@@ -74,6 +74,30 @@ function echoProvider(): AcpProvider {
   };
 }
 
+// Issue #660: the realistic-timing sibling of ECHO_FIXTURE — many chunks
+// (thinking, then answer) over real delay, not two chunks synchronously.
+// Used specifically by the growth-while-open test below; every other test
+// in this file keeps using ECHO_FIXTURE/echoProvider() for unrelated
+// session-lifecycle coverage.
+const STREAMING_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'streaming-acp-agent.mjs',
+);
+
+function streamingProvider(): AcpProvider {
+  return {
+    id: 'test-streaming',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [STREAMING_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
 // The same config-option fixture packages/providers/core's own #179/#180
 // tests exercise: advertises a two-category catalog at `initialize` and
 // pushes an unprompted `config_option_update` on the prompt text
@@ -586,6 +610,98 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     }
 
     expect(chunks.map((update) => update.text).join('')).toBe('Hello world');
+  });
+
+  it('streams a growing transcript across the full real relay/node pipeline while the turn is still open, not only once turn_ended arrives (issue #660)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-streaming-pipeline';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-streaming',
+      deviceId: 'device-node-streaming',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [streamingProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-streaming' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-streaming',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const t0 = Date.now();
+    const thoughtCounts = new Set<number>();
+    const messageCounts = new Set<number>();
+    const samplesByTime: number[] = [];
+
+    void node.promptSession(session.id, 'go');
+
+    // Samples the raw wire stream — before it's even decrypted into a
+    // specific kind count — while the turn is still open, matching this
+    // file's own `waitForDecryptedKinds` polling convention (real relay +
+    // real spawned process, no fake timer can stand in for that). Every
+    // other test in this file only ever inspects state after `turn_ended`;
+    // this samples repeatedly *during* the turn instead.
+    let turnEnded = false;
+    while (!turnEnded) {
+      const decryptedSoFar = await Promise.all(
+        phone.messages
+          .filter(
+            (m): m is SessionUpdateEnvelopeV1 =>
+              m.type === 'session_update' && m.sessionId === session.id,
+          )
+          .map((m) => phoneOpen<{ kind: string; text?: string }>(session.id, m.envelope, key)),
+      );
+      thoughtCounts.add(decryptedSoFar.filter((d) => d.kind === 'agent_thought_chunk').length);
+      messageCounts.add(decryptedSoFar.filter((d) => d.kind === 'agent_message_chunk').length);
+      samplesByTime.push(Date.now() - t0);
+      turnEnded = decryptedSoFar.some((d) => d.kind === 'turn_ended');
+      if (!turnEnded) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // A batch-until-turn-end regression collapses each of these to `{0}`
+    // (nothing decrypted until the very last poll, which then sees
+    // everything at once) — a genuinely streaming pipeline is sampled
+    // mid-growth multiple times before the loop's own final, complete pass.
+    expect(thoughtCounts.size).toBeGreaterThan(2);
+    expect(messageCounts.size).toBeGreaterThan(2);
+    expect(samplesByTime.at(-1)! - samplesByTime[0]!).toBeGreaterThan(50);
+
+    const chunks = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['agent_thought_chunk', 'agent_message_chunk'],
+      18,
+    );
+    // Each wire-level chunk carries only its own delta text (the reducer's
+    // accumulation into one coalesced item happens client-side, e.g.
+    // `providers/core`'s `reduceMessageChunk` — see that module's own doc
+    // comment) — join them in arrival order, exactly like every other
+    // `agent_message_chunk` assertion in this file already does.
+    const thoughtText = chunks
+      .filter((c) => c.kind === 'agent_thought_chunk')
+      .map((c) => c.text)
+      .join('');
+    const messageText = chunks
+      .filter((c) => c.kind === 'agent_message_chunk')
+      .map((c) => c.text)
+      .join('');
+    expect(thoughtText).toBe('Thinking step by step about this request.');
+    expect(messageText).toBe(
+      'The answer unfolds gradually across several words to prove real streaming.',
+    );
   });
 
   it('forwards the session-status snapshot, the config-option catalog, and an agent-initiated unprompted fallback as encrypted session_update events (SPEC §7.13/§7.24, §8; issues #126/#149)', async () => {

@@ -6096,3 +6096,114 @@ describe('RelayClient: auto-reconnect + heartbeat (issue #511)', () => {
     expect(get(client.status)).toBe('open');
   });
 });
+
+describe('RelayClient: resubscribe after reconnect keeps a session live (issue #660)', () => {
+  it("keeps decrypting a subscribed session's live session_update stream across an unexpected reconnect, not just up to the moment it drops", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resubscribe-reconnect';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-resubscribe',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resubscribe', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'live', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-resubscribe',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const transcript = client.transcriptFor(session.id);
+    // Same race-avoidance as the plain "decrypts and reduces a live
+    // session_update stream" test above: confirm the relay actually
+    // subscribed this connection (via transcriptFor's session_resume
+    // round trip) before the node sends anything.
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const firstEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'agent_message_chunk', turnId: 'turn-1', messageId: 'msg-1', text: 'Hello' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: firstEnvelope,
+    });
+    await waitForStore(transcript, (value) => {
+      const first = value.items[0];
+      return first?.type === 'message' && first.text === 'Hello';
+    });
+
+    // An unexpected drop, not client.close() — exactly `recordingSocketCtor`'s
+    // own doc comment: RelayClient cannot tell this apart from a real
+    // network blip (a slept laptop's tunnel dropping, issue #660's likely
+    // real-world trigger — see AGENTS.md's own documented "a slept laptop
+    // takes the tunnel down" gotcha for the exact same reverse-SSH path
+    // Lorenzo's report was driven over).
+    sockets[0]!.close();
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+
+    // The turn is still open on the node side; this second chunk streams
+    // in after the reconnect completed. Without resending session_resume
+    // on the new connection, the relay's fan-out subscription for this
+    // session died with the old connection and this chunk is silently
+    // never delivered — `waitForStore` below times out on today's code.
+    const secondEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'agent_message_chunk', turnId: 'turn-1', messageId: 'msg-1', text: ' world' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: secondEnvelope,
+    });
+
+    const state = await waitForStore(transcript, (value) => {
+      const first = value.items[0];
+      return first?.type === 'message' && first.text === 'Hello world';
+    });
+    expect(state.items).toEqual([
+      {
+        type: 'message',
+        id: 'turn-1::agent_message_chunk::msg-1',
+        kind: 'agent_message_chunk',
+        turnId: 'turn-1',
+        messageId: 'msg-1',
+        text: 'Hello world',
+      },
+    ]);
+
+    // The mechanism, not just the symptom: a fresh `session_resume` for
+    // this session actually went out on the reconnected socket.
+    expect(
+      sent.filter((m) => m.type === 'session_resume' && m.sessionId === session.id).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+});
