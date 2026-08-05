@@ -341,6 +341,8 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
     expect(options.find((o) => o.category === 'mode')).toEqual({
       category: 'mode',
       current: 'default',
+      id: 'mode',
+      type: 'select',
       choices: [
         { id: 'default', name: 'Default' },
         { id: 'plan', name: 'Plan' },
@@ -365,8 +367,73 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
       {
         category: 'reasoning_style_v3',
         current: 'balanced',
+        id: 'reasoning_style_v3',
+        type: 'select',
         choices: [{ id: 'balanced', name: 'Balanced' }],
       },
     ]);
+  });
+});
+
+/**
+ * `mapConfigOptions` of a real `session/set_config_option` response (issue
+ * #707), same recording convention as the suite above: spawning the real
+ * `omp acp` binary over stdio (`initialize` -> `session/new` ->
+ * `session/set_config_option`), nothing hand-written. The request in the
+ * recording (`test/fixtures/omp-acp-set-config-option-response.json`) is
+ * `{sessionId, configId: 'thinking', value: 'medium', type: 'select'}` —
+ * `configId` is the `thinking` entry's own wire `id`, NOT its `category`
+ * (`'thought_level'`); sending the category as `configId` is what the real
+ * binary rejects (`"Unknown ACP config option: thought_level"`, see the
+ * fixture-driven suite below). Built directly against pre-#707 `client.ts`
+ * (`git stash` of this issue's fix) to confirm it fails there: the old
+ * code read `result.options` (always `undefined` on a real response, whose
+ * field is `configOptions`), so `setAll` was called with `[]` and the
+ * whole catalogue silently vanished instead of reflecting the change.
+ */
+describe('mapConfigOptions: real omp acp session/set_config_option wire mapping (issue #707)', () => {
+  const RECORDED_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'test',
+    'fixtures',
+    'omp-acp-set-config-option-response.json',
+  );
+  interface RecordedConfigOption {
+    id: string;
+    name: string;
+    category: string;
+    type: string;
+    currentValue: string;
+    options: { value: string; name: string; description?: string }[];
+  }
+  const recorded = JSON.parse(readFileSync(RECORDED_PATH, 'utf8')) as {
+    setConfigOptionRequest: { configId: string; value: string; type: string };
+    setConfigOptionResult: { configOptions: RecordedConfigOption[] };
+  };
+
+  it("captured the real request as {configId, value, type}, configId sourced from the option's own id ('thinking'), not its category ('thought_level')", () => {
+    expect(recorded.setConfigOptionRequest).toEqual({
+      sessionId: expect.any(String),
+      configId: 'thinking',
+      value: 'medium',
+      type: 'select',
+    });
+  });
+
+  it('maps the real response (field `configOptions`, wire-shaped) onto the internal catalogue, reflecting the change and leaving untouched categories alone', () => {
+    const options = mapConfigOptions(recorded.setConfigOptionResult);
+
+    const thinking = options.find((o) => o.category === 'thought_level');
+    expect(thinking?.current).toBe('medium'); // the change this request made
+    expect(thinking?.id).toBe('thinking');
+    expect(thinking?.type).toBe('select');
+
+    // Wholesale-replaced, not per-category patched: the response carries
+    // every category, and the ones this request didn't touch survive
+    // unchanged.
+    expect(options.find((o) => o.category === 'mode')?.current).toBe('default');
+    expect(options.find((o) => o.category === 'model')?.current).toBe('anthropic/claude-opus-5');
+    expect(options).toHaveLength(3);
   });
 });

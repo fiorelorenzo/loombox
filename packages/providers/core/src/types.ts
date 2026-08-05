@@ -159,6 +159,24 @@ export interface AcpConfigOption {
   category: string;
   current: string | undefined;
   choices: AcpConfigOptionChoice[];
+  /**
+   * The wire's own `configId` (`SessionConfigOption.id`) and `type`
+   * (`'select' | 'boolean'`), needed to build a legitimate
+   * `session/set_config_option` request (issue #707): `category` is NOT
+   * interchangeable with the wire's `id` — a real agent's `thinking`
+   * option has `id: "thinking"` but `category: "thought_level"`, and
+   * sending `configId: "thought_level"` is rejected outright ("Unknown ACP
+   * config option: thought_level", verified against the real `omp acp`
+   * binary). `mapConfigOptions` (`client.ts`) is the only producer that
+   * populates these; every other place that builds an `AcpConfigOption` by
+   * hand (test fixtures across other packages, mostly) predates this and
+   * has no reason to carry it, which is why both stay optional here rather
+   * than widening the whole cross-package shape — `AcpClient.setConfigOption`
+   * throws when they're missing instead of guessing `configId` from
+   * `category`.
+   */
+  id?: string;
+  type?: string;
 }
 
 /**

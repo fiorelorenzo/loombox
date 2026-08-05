@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fixture ACP agent for the config-option state and capability-flag tests
-// (issues #179/#180/#705; SPEC.md §7.24 "Model, mode & reasoning effort",
-// §5.5 "Capability negotiation gates the UI"). Not a real agent.
+// (issues #179/#180/#705/#707; SPEC.md §7.24 "Model, mode & reasoning
+// effort", §5.5 "Capability negotiation gates the UI"). Not a real agent.
 //
 // `initialize` advertises a full capability set and, per a real `omp acp`
 // binary (verified directly, issue #705 — see
@@ -19,16 +19,20 @@
 // test can assert it lands in state flagged as unprompted; any other text
 // streams a plain two-chunk "Hello world" turn.
 //
-// `session/set_config_option`'s request/response shape is a SEPARATE,
-// still-open bug (verified against the real binary while working this
-// issue: it rejects `{category, choiceId}` and actually wants
-// `{configId, value, type}`, and its response field is `configOptions`
-// wire-shaped, not `options` internal-shaped — filed as its own follow-up,
-// out of scope for #705). This fixture still echoes the client's current
-// (unfixed) `{category, choiceId}` request / `{options}` internal-shaped
-// response expectation, off a separate in-memory catalog, purely so the
-// pre-existing round-trip test keeps exercising that real code path
-// end-to-end rather than silently going stale.
+// `session/set_config_option` mirrors the real binary too (issue #707,
+// verified directly against it — see
+// `test/fixtures/omp-acp-set-config-option-response.json`): the request is
+// `{sessionId, configId, value, type}`, `configId` matched against each
+// wire entry's own `id` (deliberately NOT `category` — the `thinking`
+// entry's `id` is `"thinking"` but its `category` is `"thought_level"`,
+// same distinction the real agent enforces), and a `configId`/`value` that
+// doesn't resolve to a real choice gets a JSON-RPC error back, same shape
+// as the real binary's own rejection (`-32603`/`"Unknown ACP config
+// option: ..."` or `"Unsupported value: ..."`), so a test can assert a
+// rejected set surfaces as a rejected promise rather than silently no-op.
+// A successful set mutates `wireConfigOptions` in place and echoes it back
+// under `configOptions` (never a per-category patch), exactly like the
+// recording.
 //
 // Plain Node ESM (no TypeScript, no deps): spawned directly as a child
 // process, not imported.
@@ -69,6 +73,14 @@ const THINKING_OPTIONS = [
   { value: 'off', name: 'Off' },
   { value: 'auto', name: 'Auto', description: 'Auto-detect per prompt' },
 ];
+// A category this client's own code has never hardcoded a name for, per
+// issue #179's passthrough guarantee — proves at the live-client level
+// (not just `mapConfigOptions`'s own unit test) that `setConfigOption`
+// doesn't need to special-case a category to act on it.
+const REASONING_STYLE_OPTIONS = [
+  { value: 'balanced', name: 'Balanced' },
+  { value: 'aggressive', name: 'Aggressive' },
+];
 
 /** @type {Array<{id: string, name: string, category: string, type: string, currentValue: string, options: {value: string, name: string, description?: string}[]}>} */
 let wireConfigOptions = [
@@ -96,6 +108,14 @@ let wireConfigOptions = [
     currentValue: 'auto',
     options: THINKING_OPTIONS,
   },
+  {
+    id: 'reasoning_style_v3',
+    name: 'Reasoning style',
+    category: 'reasoning_style_v3',
+    type: 'select',
+    currentValue: 'balanced',
+    options: REASONING_STYLE_OPTIONS,
+  },
 ];
 const wireModes = {
   availableModes: MODE_OPTIONS.map(({ value, name, description }) => ({
@@ -105,26 +125,6 @@ const wireModes = {
   })),
   currentModeId: 'default',
 };
-
-/** @type {Array<{category: string, current: string, choices: {id: string, name: string}[]}>} */
-let internalConfigOptions = [
-  {
-    category: 'model',
-    current: 'sonnet',
-    choices: [
-      { id: 'sonnet', name: 'Sonnet' },
-      { id: 'haiku', name: 'Haiku' },
-    ],
-  },
-  {
-    category: 'mode',
-    current: 'default',
-    choices: [
-      { id: 'default', name: 'Default' },
-      { id: 'plan', name: 'Plan' },
-    ],
-  },
-];
 
 rl.on('line', (line) => {
   const trimmed = line.trim();
@@ -179,11 +179,36 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/set_config_option') {
-    const { category, choiceId } = msg.params ?? {};
-    internalConfigOptions = internalConfigOptions.map((option) =>
-      option.category === category ? { ...option, current: choiceId } : option,
-    );
-    send({ jsonrpc: '2.0', id: msg.id, result: { options: internalConfigOptions } });
+    const { configId, value, type } = msg.params ?? {};
+    const option = wireConfigOptions.find((entry) => entry.id === configId);
+    const choice = option?.options.find((entry) => entry.value === value);
+    if (!option) {
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: 'Internal error',
+          data: { details: `Unknown ACP config option: ${String(configId)}` },
+        },
+      });
+      return;
+    }
+    if (option.type !== type || !choice) {
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: 'Internal error',
+          data: { details: `Unsupported value: ${String(value)}` },
+        },
+      });
+      return;
+    }
+    option.currentValue = value;
+    if (option.category === 'mode') wireModes.currentModeId = value;
+    send({ jsonrpc: '2.0', id: msg.id, result: { configOptions: wireConfigOptions } });
     return;
   }
 

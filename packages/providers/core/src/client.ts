@@ -236,6 +236,21 @@ function isIncomingRequest(msg: JsonRpcInbound): msg is JsonRpcRequestIn {
 }
 
 /**
+ * A rejected JSON-RPC response's `error.data` is `unknown` per the spec,
+ * but a real agent (verified against `omp acp`) always nests the
+ * human-actionable reason at `data.details` (e.g. `session/set_config_option`
+ * rejecting with `{code: -32603, message: 'Internal error', data: {details:
+ * 'Unknown ACP config option: thought_level'}}`) — `handleResponse` folds
+ * this into the rejected `Error`'s message so a caller isn't left with just
+ * the generic top-level `message` (issue #707).
+ */
+function extractErrorDetails(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object' || !('details' in data)) return undefined;
+  const { details } = data;
+  return typeof details === 'string' ? details : undefined;
+}
+
+/**
  * ACP's real wire shape carries a tool call's diff (if any) as one
  * `{type: 'diff', path, oldText, newText}` entry inside its `content`
  * array — there is no top-level `diff` field on `ToolCall`/
@@ -334,6 +349,18 @@ interface RawConfigCatalog {
  * used only when `configOptions` has no `'mode'` entry at all, so an
  * agent that advertises just the ACP-baseline `modes` field (without also
  * duplicating it into `configOptions`, unlike omp) still gets one.
+ *
+ * Also carries the wire's own `id`/`type` through onto `AcpConfigOption.id`/
+ * `.type` (issue #707): `AcpClient.setConfigOption` needs both to build a
+ * `session/set_config_option` request the agent actually accepts, and
+ * `category` cannot stand in for `id` (see `AcpConfigOption`'s own doc
+ * comment) — this is the one place that data is available to capture, so
+ * dropping it here would force `setConfigOption` to invent it later. The
+ * `modes`-derived `mode` entry gets `id: 'mode'`, `type: 'select'`
+ * synthesized: ACP's baseline mode axis has no per-option wire `id`/`type`
+ * of its own to copy, and `configId: 'mode'` is confirmed accepted against
+ * the real binary (this same recording's own `configOptions` entry for
+ * `mode` has `id === category === 'mode'`).
  */
 export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigOption[] {
   const options: AcpConfigOption[] = [];
@@ -342,6 +369,8 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
     options.push({
       category: option.category,
       current: option.currentValue,
+      id: typeof option.id === 'string' ? option.id : undefined,
+      type: typeof option.type === 'string' ? option.type : undefined,
       choices: (option.options ?? [])
         .filter(
           (choice): choice is RawConfigOptionChoice & { value: string; name: string } =>
@@ -360,6 +389,8 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
       options.push({
         category: 'mode',
         current: wire.modes.currentModeId,
+        id: 'mode',
+        type: 'select',
         choices: modeChoices.map((mode) => ({ id: mode.id, name: mode.name })),
       });
     }
@@ -632,17 +663,57 @@ export class AcpClient extends EventEmitter {
    * Sends a user-driven config-option change (`session/set_config_option`)
    * and applies the agent's full, wholesale-replaced option list to
    * `configOptions` once it acks — never a per-category patch.
+   *
+   * The real wire request is `{sessionId, configId, value, type}` (issue
+   * #707), not `{category, choiceId}` (a real agent 400s that with
+   * "Invalid params" — verified against the real `omp acp` binary). This
+   * method's own public parameter stays `category`, matching every
+   * existing caller and what `ConfigOptionStore` groups on, but `configId`
+   * and `type` are NOT the same thing as `category` and a caller cannot be
+   * asked to invent them: `configId` is the wire entry's own `id` (its
+   * `thinking` option has `id: "thinking"` but `category: "thought_level"`
+   * — sending `category` as `configId` is rejected outright, "Unknown ACP
+   * config option: thought_level"), and `type` is that entry's own
+   * `'select' | 'boolean'`. Both are sourced from the catalogue entry
+   * already seeded for this category — `mapConfigOptions` retains
+   * `AcpConfigOption.id`/`.type` for exactly this reason, a field this
+   * store used to drop. A category this session's catalogue has no entry
+   * for throws before any request is sent, rather than guessing; a
+   * category the catalogue *does* carry — however unrecognized/future its
+   * name — works unmodified (issue #179's passthrough guarantee: nothing
+   * here branches on a specific category value).
+   *
+   * The response's real field is `configOptions` (wire-shaped), not
+   * `options` (this client's internal shape) — the same class of bug
+   * #705 fixed for `session/new`/`config_option_update`; reuses that same
+   * `mapConfigOptions` rather than a second translation.
+   *
+   * Rejects (never swallows) if the agent rejects the change — e.g. an
+   * unsupported value — exactly like any other `sendRequest` failure, so a
+   * caller that awaits this finds out. No caller in this codebase invokes
+   * this method yet (see the PR this shipped in for the seam that leaves
+   * open, going into #711's consolidated control).
    */
   async setConfigOption(
     sessionId: string,
     category: string,
     choiceId: string,
   ): Promise<AcpConfigOption[]> {
-    const result = await this.sendRequest<{ options?: AcpConfigOption[] }>(
-      'session/set_config_option',
-      { sessionId, category, choiceId },
-    );
-    this.configOptionStore.setAll(sessionId, result.options ?? [], { unprompted: false });
+    const current = this.configOptionStore
+      .get(sessionId)
+      .find((option) => option.category === category);
+    if (!current?.id || !current.type) {
+      throw new Error(
+        `AcpClient.setConfigOption: no catalogue entry for category "${category}" on session "${sessionId}" carries a configId/type to build a real session/set_config_option request from — the agent must advertise this category (via session/new's configOptions) before a caller can act on it.`,
+      );
+    }
+    const result = await this.sendRequest<RawConfigCatalog>('session/set_config_option', {
+      sessionId,
+      configId: current.id,
+      value: choiceId,
+      type: current.type,
+    });
+    this.configOptionStore.setAll(sessionId, mapConfigOptions(result), { unprompted: false });
     return this.configOptionStore.get(sessionId);
   }
 
@@ -739,7 +810,20 @@ export class AcpClient extends EventEmitter {
     if (!pending) return;
     this.pending.delete(msg.id);
     if ('error' in msg) {
-      pending.reject(new Error(`AcpClient: ${msg.error.message} (code ${msg.error.code})`));
+      // A real agent's rejection carries the actionable reason in
+      // `error.data.details` (verified against the real `omp acp` binary
+      // — e.g. `session/set_config_option`'s "Unknown ACP config option: X"
+      // / "Unsupported ACP mode: Y" both arrive this way, not in
+      // `error.message`, which is just the generic JSON-RPC class of error
+      // like "Internal error"), so a caller that only reads `.message`
+      // on a rejected promise still finds out *why* rather than just
+      // *that* it failed (issue #707's "make the outcome honest").
+      const details = extractErrorDetails(msg.error.data);
+      pending.reject(
+        new Error(
+          `AcpClient: ${msg.error.message} (code ${msg.error.code})${details ? `: ${details}` : ''}`,
+        ),
+      );
     } else {
       pending.resolve(msg.result);
     }
