@@ -252,6 +252,131 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('file-tree-panel-wrapper')).toBeVisible();
   });
 
+  test('the Workbench toggle carries no label at any width — C1-3 kills it outright, not just below the width Terminal/Jump to… still reveal theirs at (v8 C1-3, issue #710)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.getByTestId('session-row-item').first().click();
+    const workbench = page.getByTestId('workbench-toggle');
+
+    // Suite default viewport is 1280x720 (>= the 1280px `.panel-word`
+    // breakpoint), where the terminal dock toggle still reveals its own
+    // text label — proving Workbench's absence below is the label being
+    // gone from the DOM outright, not a width this suite happens to run
+    // under.
+    await expect(page.getByTestId('terminal-dock-toggle')).toContainText('Terminal');
+    await expect(workbench).not.toContainText('Workbench');
+    await expect(workbench).toHaveAttribute('aria-label', 'Workbench');
+    await expect(workbench).toHaveAttribute('title', 'Workbench');
+
+    // C1-3's own pick was "in the same order", not "hidden until there's
+    // room" — a labelled button widening back in at 1920px would be
+    // exactly the option Lorenzo did NOT choose (C1-1/C1-2).
+    await page.setViewportSize({ width: 1920, height: 1000 });
+    await expect(workbench).not.toContainText('Workbench');
+  });
+
+  test("the Agent/Tracker switch's centre tracks the topbar's own centre, not the two flanking zones, with a very long project path and a very short one (v8 D1-1, issue #710)", async ({
+    page,
+    loombox,
+  }) => {
+    const longNode = new FakeNode(loombox.relay.url, {
+      deviceId: 'e2e-node-long-path',
+      devicePublicKey: randomBase64(),
+      authToken: loombox.token,
+    });
+    await longNode.ready;
+    await announceSession(longNode, {
+      amk: loombox.amk,
+      accountId: loombox.accountId,
+      sessionId: `sess_long_path_${Date.now()}`,
+      nodeId: 'e2e-node-long-path-daemon',
+      targetId: 'relay-eu-west-1-worker-03.internal.staging.example.corp',
+      provider: 'claude',
+      title: 'Migrate the relay worker fleet to the new staging cluster end to end',
+      projectPath:
+        '/workspace/loombox-relay-worker-eu-west-1-staging-cluster-very-long-project-name-for-real',
+    });
+
+    await gotoCockpit(page, loombox);
+
+    // The topbar's own bounding box IS the window's centre, minus its
+    // symmetric inline padding — measuring against it directly, rather
+    // than the viewport, is what actually proves the grid (not a
+    // coincidence of this suite's own symmetric chrome).
+    const centreDelta = async (): Promise<number> => {
+      const topbarBox = await page.locator('.topbar').boundingBox();
+      const switchBox = await page.getByTestId('topbar-view-switch').boundingBox();
+      if (!topbarBox || !switchBox) throw new Error('.topbar or the switch is not measurable');
+      const topbarCentre = topbarBox.x + topbarBox.width / 2;
+      const switchCentre = switchBox.x + switchBox.width / 2;
+      return Math.abs(switchCentre - topbarCentre);
+    };
+
+    const widths = [1024, 1152, 1280, 1440, 1920];
+
+    // The default fixture session first — title "E2E session", project
+    // "e2e-project", target "local": the short case.
+    await page.getByTestId('session-row-item').filter({ hasText: 'E2E session' }).click();
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await centreDelta()).toBeLessThanOrEqual(2);
+    }
+
+    // Then the long-title/long-project/long-target session — the exact
+    // case D1-1's own trade sentence names: bolting the switch onto the
+    // old `space-between` flex would drift the centre column here the
+    // moment the left zone's content changed width relative to the right
+    // zone's; the dedicated grid must not, because the two flanks are
+    // forced to equal width regardless of what either one holds.
+    await page.getByTestId('session-row-item').filter({ hasText: 'Migrate the relay' }).click();
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await centreDelta()).toBeLessThanOrEqual(2);
+    }
+
+    // And centred while showing this session's own Tracker board too, not
+    // just while showing Agent — the switch's own state must survive the
+    // view it switches TO.
+    await page.getByTestId('topbar-view-tracker').click();
+    await expect(page.getByTestId('topbar-view-tracker')).toHaveAttribute('aria-checked', 'true');
+    expect(await centreDelta()).toBeLessThanOrEqual(2);
+
+    longNode.close();
+  });
+
+  test('below --bp-desktop the Agent/Tracker switch drops out of the topbar entirely, and the sidebar stays the route into Tracker (v8 D1-1 narrow-window answer, issue #710)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.getByTestId('session-row-item').first().click();
+    await expect(page.getByTestId('topbar-view-switch')).toBeVisible();
+
+    // The defined narrow-window answer: below --bp-desktop (1024px) the
+    // switch drops out of the topbar rather than fight the truncating left
+    // zone or the rigid right one for width — it doesn't need a full-width
+    // bar of its own down here, because it is not this width's only route.
+    // The sidebar already becomes primary navigation at this exact
+    // breakpoint (`.tabbar`'s own media query), and its own
+    // `destination-tracker` row (demoted, not deleted — see that row's own
+    // doc comment) is already how every OTHER destination is reached here.
+    await page.setViewportSize({ width: 1023, height: 900 });
+    await expect(page.getByTestId('topbar-view-switch')).toBeHidden();
+
+    await page.getByTestId('tabbar-sessions').click();
+    await page.getByTestId('destination-tracker').click();
+    await expect(page.getByTestId('tracker-page')).toBeVisible();
+
+    // Back at --bp-desktop and above, the switch reappears and reflects
+    // Tracker as current — reaching Tracker through the sidebar's fallback
+    // route did not orphan the topbar switch's own state.
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await expect(page.getByTestId('topbar-view-switch')).toBeVisible();
+    await expect(page.getByTestId('topbar-view-tracker')).toHaveAttribute('aria-checked', 'true');
+  });
+
   test('a destination switches the main area and keeps the session selected', async ({
     page,
     loombox,
@@ -645,6 +770,11 @@ test.describe('cockpit shell', () => {
     // The sub-tabs are a `radiogroup`, not the old three-way `aria-pressed`
     // toggle strip: switching Files -> Config changes WHICH is checked, it
     // does not close and reopen the panel the way the old toggle group did.
+    // These sub-tabs living inside the right sidebar's own header, not the
+    // topbar, used to be incidental to issue #571 — it could have changed
+    // the moment #710 landed. It didn't: v8 C1-3 (issue #710) picked the
+    // option that keeps the Files/Config/Runner group here permanently, so
+    // this assertion is no longer contingent on a still-open decision.
     await config.click();
     await expect(config).toHaveAttribute('aria-checked', 'true');
     await expect(files).toHaveAttribute('aria-checked', 'false');
@@ -672,24 +802,30 @@ test.describe('cockpit shell', () => {
     await expect(sidebar).toBeVisible();
   });
 
-  test('the topbar controls show their words where there is room and keep their names where there is not', async ({
+  test('the topbar controls show their words where there is room and keep their names where there is not — except Workbench, which never gets one back (v8 C1-3, issue #710)', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
-    const workbenchWord = page.getByTestId('workbench-toggle').locator('.panel-word');
+    const workbench = page.getByTestId('workbench-toggle');
+    const terminalWord = page.getByTestId('terminal-dock-toggle').locator('.panel-word');
     const paletteWord = page.getByTestId('command-palette-toggle').locator('.panel-word');
 
     await page.setViewportSize({ width: 1440, height: 900 });
-    await expect(workbenchWord).toBeVisible();
+    await expect(terminalWord).toBeVisible();
     await expect(paletteWord).toBeVisible();
+    // Workbench carries no `.panel-word` at all anymore (v8 C1-3, issue
+    // #710) — not hidden by the same width rule Terminal/Jump to… still
+    // follow, gone from the markup outright, even at the widest viewport
+    // this suite ever runs.
+    await expect(workbench.locator('.panel-word')).toHaveCount(0);
 
     // Below `--bp-wide` the words go, and this is the half that matters: the
     // five glyphs this replaced had no word ANYWHERE, only a `title` a pointer
     // had to hover for. The accessible name is a prop on the button, not the
     // hidden span, so it survives the pixels going.
     await page.setViewportSize({ width: 1024, height: 900 });
-    await expect(workbenchWord).toBeHidden();
+    await expect(terminalWord).toBeHidden();
     await expect(paletteWord).toBeHidden();
     await expect(page.getByRole('button', { name: 'Workbench' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Jump to/ })).toBeVisible();
@@ -813,6 +949,12 @@ test.describe('cockpit shell', () => {
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
+    // Workbench opens/closes a right-sidebar PANEL rather than switching
+    // among topbar tabs — until v8 C1-3 (issue #710) that was one of three
+    // still-open options (C1-1/C1-2 would have promoted the Files/Config/
+    // Runner group into the topbar itself), so this test's whole premise
+    // was incidentally, not permanently, correct. C1-3 settled it: this
+    // panel/toggle shape is the permanent architecture now.
     await page.setViewportSize({ width: 1440, height: 900 });
     const canvas = page.locator('.canvas');
     const toggle = page.getByTestId('workbench-toggle');
@@ -860,6 +1002,11 @@ test.describe('cockpit shell', () => {
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
+    // Same permanence note as the reflow test above (v8 C1-3, issue #710):
+    // this panel surviving reload/viewport changes is only meaningful
+    // long-term because C1-3 keeps Workbench a right-sidebar panel toggle
+    // rather than a topbar tab group that would have made this whole test
+    // obsolete.
     await page.setViewportSize({ width: 1440, height: 900 });
     const sidebar = page.getByTestId('right-sidebar');
     const handle = page.getByTestId('right-sidebar-resize-handle');
