@@ -87,11 +87,13 @@
    * "Load" — `cpuPercent` stays on the wire only for a peer that predates
    * `loadPercent` and is deliberately never read here.
    */
-  import type {
-    DecommissionTargetResponse,
-    TargetHealth,
-    TargetListEntry,
-    TargetUpdateResponse,
+  import {
+    buildIdentityMismatch,
+    type BuildIdentityV1,
+    type DecommissionTargetResponse,
+    type TargetHealth,
+    type TargetListEntry,
+    type TargetUpdateResponse,
   } from '$lib/relay-client';
   import WovenLoader from './WovenLoader.svelte';
   import Badge from './ui/Badge.svelte';
@@ -134,9 +136,19 @@
     focusTarget?: FocusTarget;
     /** Enables the per-target Reconnect/Update/Remove/Edit actions (redesign v2 §3.3; issue #476) — omit to keep this view exactly as read-only as before. */
     client?: TargetActionsClient;
+    /**
+     * This account's relay's own build identity (issue #655), from
+     * `RelayClient.relayBuildIdentity` — "what is actually being served",
+     * the baseline every row's own `target.build` is compared against.
+     * `undefined` before the first handshake, or against a relay that
+     * predates #655 — either way no row is ever flagged off an unknown
+     * baseline (`buildIdentityMismatch`'s own contract).
+     */
+    relayBuildIdentity?: BuildIdentityV1;
   }
 
-  const { targets, loading, error, onRefresh, focusTarget, client }: Props = $props();
+  const { targets, loading, error, onRefresh, focusTarget, client, relayBuildIdentity }: Props =
+    $props();
 
   /** In-flight Update/Remove calls, keyed by {@link rowKey} — disables that row's own buttons and drives `Button`'s `loading` state without a page-wide spinner. `SvelteSet` (not a plain `Set` wrapped in `$state`, mirrors `FileTreePanel.svelte`'s own `expandedPaths`) so `.add`/`.delete` are reactive in place, no reassignment needed. */
   const busyKeys = new SvelteSet<string>();
@@ -258,6 +270,18 @@
     const platformArch = [health.platform, health.arch].filter(isNonEmpty).join('/');
     const parts = [health.hostname, platformArch].filter(isNonEmpty);
     return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
+
+  /**
+   * Whether `target.build` is a KNOWN-different build than this account's
+   * relay (issue #655's middle outcome: same protocol, different build —
+   * allowed, and surfaced right here on the node's own row, never a
+   * modal/log). Pure equality via `buildIdentityMismatch` — never version
+   * ordering — so `undefined` on either side (an older node, or before
+   * this client's own handshake has landed) never renders as "behind".
+   */
+  function isBehind(target: TargetListEntry): boolean {
+    return buildIdentityMismatch(relayBuildIdentity, target.build);
   }
 
   /** Terse relative age for the row header (e.g. "28s", "5m") — the dense row's own compact echo of {@link formatAbsoluteSampledAt}, which the expansion carries in full (v5 design spec §3 moves the absolute time behind the disclosure). */
@@ -394,6 +418,7 @@
         {@const key = rowKey(target)}
         {@const expanded = expandedKeys.has(key)}
         {@const identity = targetIdentity(target.health)}
+        {@const behind = isBehind(target)}
         <li class="target-row" data-testid="target-status-row">
           <div
             data-testid={`target-status-row-${key}`}
@@ -424,6 +449,19 @@
               {#if identity}
                 <span class="target-identity font-mono" data-testid={`target-identity-${key}`}
                   >{identity}</span
+                >
+              {/if}
+              {#if target.build}
+                <span class="target-build font-mono" data-testid={`target-build-${key}`}
+                  >v{target.build.version}</span
+                >
+              {/if}
+              {#if behind}
+                <Badge
+                  tone="warning"
+                  size="sm"
+                  class="behind-badge"
+                  dataTestId={`target-behind-${key}`}>Behind</Badge
                 >
               {/if}
               <span class="target-metrics">

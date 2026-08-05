@@ -3,6 +3,8 @@ import {
   PROTOCOL_V1,
   SUPPORTED_PROTOCOL_VERSIONS,
   baseMessageV1,
+  buildIdentityMismatch,
+  buildIdentityV1,
   initialize,
   initializeResult,
   negotiateVersion,
@@ -96,6 +98,74 @@ describe('initialize', () => {
   it('rejects the wrong protocolVersion literal', () => {
     expect(() => initialize.parse({ ...valid, protocolVersion: 0 })).toThrow();
   });
+
+  it('parses a valid initialize message with a buildIdentity attached (issue #655)', () => {
+    const withBuild = { ...valid, buildIdentity: { version: '0.5.1', commit: 'abc123' } };
+    expect(initialize.parse(withBuild)).toEqual(withBuild);
+  });
+
+  it('still parses a payload from a peer that predates buildIdentity — additive and optional', () => {
+    expect(initialize.parse(valid)).toEqual(valid);
+    expect(initialize.parse(valid).buildIdentity).toBeUndefined();
+  });
+});
+
+describe('buildIdentityV1', () => {
+  it('parses version alone (commit is independently optional)', () => {
+    expect(buildIdentityV1.parse({ version: '0.5.1' })).toEqual({ version: '0.5.1' });
+  });
+
+  it('parses version + commit', () => {
+    expect(buildIdentityV1.parse({ version: '0.5.1', commit: 'abc123' })).toEqual({
+      version: '0.5.1',
+      commit: 'abc123',
+    });
+  });
+
+  it('rejects a missing version', () => {
+    expect(() => buildIdentityV1.parse({ commit: 'abc123' })).toThrow();
+  });
+
+  it('rejects an empty version', () => {
+    expect(() => buildIdentityV1.parse({ version: '' })).toThrow();
+  });
+});
+
+describe('buildIdentityMismatch', () => {
+  it('is false for two identical identities (outcome 1: same protocol, same build, silent)', () => {
+    const identity = { version: '0.5.1', commit: 'abc123' };
+    expect(buildIdentityMismatch(identity, { ...identity })).toBe(false);
+  });
+
+  it('is true when commits differ, even with the same version (outcome 2: surfaced)', () => {
+    expect(
+      buildIdentityMismatch(
+        { version: '0.5.1', commit: 'abc123' },
+        { version: '0.5.1', commit: 'def456' },
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back to version when either side has no commit', () => {
+    expect(
+      buildIdentityMismatch({ version: '0.5.1' }, { version: '0.5.1', commit: 'def456' }),
+    ).toBe(false);
+    expect(buildIdentityMismatch({ version: '0.5.1' }, { version: '0.6.0' })).toBe(true);
+  });
+
+  it('is false when either side is absent — unknown never reads as behind', () => {
+    const identity = { version: '0.5.1', commit: 'abc123' };
+    expect(buildIdentityMismatch(undefined, identity)).toBe(false);
+    expect(buildIdentityMismatch(identity, undefined)).toBe(false);
+    expect(buildIdentityMismatch(undefined, undefined)).toBe(false);
+  });
+
+  it('never treats a version-only difference in isolation as ordering (equality only, no >/< semantics)', () => {
+    // '0.10.0' would sort before '0.9.0' lexically, and semver-after
+    // numerically — this function does neither, it only asks "identical?".
+    expect(buildIdentityMismatch({ version: '0.10.0' }, { version: '0.9.0' })).toBe(true);
+    expect(buildIdentityMismatch({ version: '0.9.0' }, { version: '0.10.0' })).toBe(true);
+  });
 });
 
 describe('initializeResult', () => {
@@ -123,5 +193,15 @@ describe('initializeResult', () => {
 
   it('rejects a non-array capabilities field', () => {
     expect(() => initializeResult.parse({ ...valid, capabilities: 'e2e' })).toThrow();
+  });
+
+  it('parses a valid initializeResult with a buildIdentity attached (issue #655) — the relay announcing its own build', () => {
+    const withBuild = { ...valid, buildIdentity: { version: '0.4.1', commit: 'def456' } };
+    expect(initializeResult.parse(withBuild)).toEqual(withBuild);
+  });
+
+  it('still parses a payload from a relay that predates buildIdentity — additive and optional', () => {
+    expect(initializeResult.parse(valid)).toEqual(valid);
+    expect(initializeResult.parse(valid).buildIdentity).toBeUndefined();
   });
 });

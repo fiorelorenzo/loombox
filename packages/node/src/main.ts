@@ -6,6 +6,7 @@ import { DEFAULT_PROVIDER_REQUIREMENTS } from '@loombox/supervisor';
 import { bootstrapAmkFromRecoveryCode, type AmkBootstrapper } from './amk-bootstrap';
 import { wireAmkEpochAdoption } from './amk-epoch';
 import { adoptWrappedAmkFromFile, type AdoptWrappedAmkFileOptions } from './amk-handoff-file';
+import { readNodeBuildIdentity } from './build-identity';
 import {
   ConfigError,
   loadNodeConfig,
@@ -219,11 +220,18 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     adoptWrappedAmkFile,
   );
 
+  // Issue #655: this node's own version + (when honestly recoverable)
+  // commit — see `build-identity.ts`'s own doc comment for the
+  // env-var/git-rev-parse resolution order. Resolved once at startup,
+  // exactly like `identity`/`amk` above, and sent on every `initialize`.
+  const buildIdentity = await readNodeBuildIdentity();
+
   const node = createNode({
     relayUrl: config.relayUrl,
     nodeId: config.nodeId,
     deviceId: config.deviceId,
     devicePublicKey: identity.publicKeyBase64,
+    buildIdentity,
     authToken,
     accountId,
     amk,

@@ -18,6 +18,7 @@ import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
 import type {
   AttentionInboxItem,
+  BuildIdentityV1,
   ClientSessionMeta,
   ConnectedAccount,
   ConnectionStatus,
@@ -152,6 +153,8 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     sessions: sessionsStore,
     connectedAccounts: makeStore(scenario.connectedAccounts ?? []),
     sessionDecryptFailures: makeStore(0),
+    /** Issue #655: `undefined` (no relay handshake identity opinion) is the correct default here — this file asserts on navigation/structure, never on the build-identity badge (covered in `TargetStatusView.test.ts`/`relay-client.test.ts`). */
+    relayBuildIdentity: makeStore<BuildIdentityV1 | undefined>(undefined),
     attentionInbox: () => attentionInboxStore,
     connect: vi.fn(() => statusStore.set('open')),
     close: vi.fn(),

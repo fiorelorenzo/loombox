@@ -49,6 +49,12 @@ WEB_BUNDLE="${2:?usage: deploy-prod.sh <tag> <web-bundle-dir>}"
 
 REPO_ROOT="$(pwd)"
 SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+# Issue #655: exported (not just set) so `docker compose build`/`up` below
+# — external processes, which only see the process ENVIRONMENT, never a
+# plain shell variable — can interpolate `${LOOMBOX_BUILD_COMMIT}` in
+# deploy/relay/docker-compose.yml. Same value as $SHA below, never a
+# second independently-computed one.
+export LOOMBOX_BUILD_COMMIT="$SHA"
 ACTOR="${GITHUB_ACTOR:-$(whoami)}"
 
 DEPLOY_DIR="${LOOMBOX_DEPLOY_DIR:-/opt/apps/loombox}"

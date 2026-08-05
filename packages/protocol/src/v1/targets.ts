@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PROTOCOL_V1 } from './handshake';
+import { buildIdentityV1, PROTOCOL_V1 } from './handshake';
 
 /** The two execution-target kinds v1 supports (SPEC §5.2): run on the node's own machine, or over SSH. */
 export const targetKind = z.enum(['local', 'ssh']);
@@ -136,6 +136,16 @@ export type TargetStatus = z.infer<typeof targetStatus>;
  * received `target_status` sample for this target, if any has arrived yet
  * (issue #269) — absent for a target that has never sent one (a node that
  * predates this feature, or hasn't completed its first sample tick).
+ *
+ * `build` (issue #655) is the OWNING NODE's `Initialize.buildIdentity`,
+ * mirrored here exactly like `reachable`: live-connection-derived, sourced
+ * from `registry.nodeConnectionsByNodeId` at request time rather than
+ * persisted in `TargetStore` — a node's build identity isn't a per-target
+ * property (every target a node announces shares one), so it lives at the
+ * same lifecycle as "does this nodeId currently have a live socket", not
+ * alongside the target's own routing record. Absent when the owning node
+ * has no live connection, or when it connected without ever sending one
+ * (an older node, or the relay's own predates-#655 case).
  */
 export const targetListEntry = z.object({
   nodeId: z.string().min(1),
@@ -146,6 +156,7 @@ export const targetListEntry = z.object({
   /** {@link targetDescriptor.providers} forwarded verbatim: what this target can actually spawn. The relay never invents or filters this - it is the node's own probe result, and a client picker reads it directly. */
   providers: z.array(z.string().min(1)),
   health: targetHealth.optional(),
+  build: buildIdentityV1.optional(),
 });
 export type TargetListEntry = z.infer<typeof targetListEntry>;
 

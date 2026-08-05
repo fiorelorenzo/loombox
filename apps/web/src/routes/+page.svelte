@@ -22,6 +22,7 @@
     bootstrapAmkFromRecoveryCode,
     type AttentionInboxItem,
     type BootstrapAmkResult,
+    type BuildIdentityV1,
     type ClientSessionMeta,
     type ConnectedAccount,
     type ConnectionStatus,
@@ -1166,6 +1167,8 @@
    * this (`non_reactive_update`) since the runes migration.
    */
   let client = $state<RelayClient | undefined>(undefined);
+  /** This account's relay's own build identity (issue #655), mirrored off `client.relayBuildIdentity` — see `TargetStatusView`'s own doc comment for what it drives. */
+  let relayBuildIdentity = $state<BuildIdentityV1 | undefined>(undefined);
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
   let unsubscribeConnectedAccounts: (() => void) | undefined;
@@ -1178,6 +1181,7 @@
   let unsubscribeAttentionInbox: (() => void) | undefined;
   let unsubscribeStaleNotice: (() => void) | undefined;
   let unsubscribeFileTree: (() => void) | undefined;
+  let unsubscribeRelayBuildIdentity: (() => void) | undefined;
 
   // #164: "tapping/clicking a notification opens directly to the relevant
   // session" — the service worker's `notificationclick` handler
@@ -1303,6 +1307,9 @@
         // data regardless of whether the Drawer is open.
         startTargetStatusPolling();
       }
+    });
+    unsubscribeRelayBuildIdentity = client.relayBuildIdentity.subscribe((value) => {
+      relayBuildIdentity = value;
     });
     unsubscribeSessions = client.sessions.subscribe((value) => {
       sessions = value;
@@ -1537,6 +1544,7 @@
     unsubscribeAttentionInbox?.();
     unsubscribeStaleNotice?.();
     unsubscribeFileTree?.();
+    unsubscribeRelayBuildIdentity?.();
     clearSessionStatusSubscriptions();
     client?.close();
     client = undefined;
@@ -3362,6 +3370,7 @@
                   error={targetStatusError}
                   focusTarget={targetStatusFocus}
                   onRefresh={refreshTargetStatus}
+                  {relayBuildIdentity}
                   onAddTarget={openAddTargetWizard}
                   onConnectNode={openAddTargetWizard}
                   {client}

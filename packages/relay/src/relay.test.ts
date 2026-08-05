@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
+  buildIdentityMismatch,
   type AmkEpochFetchResponse,
   type AmkEscrow,
   type BlobDownloadResponse,
   type BlobRef,
   type BlobUpload,
+  type BuildIdentityV1,
   type DeviceRegister,
   type DeviceRevoke,
   type DeviceRotate,
@@ -184,6 +186,8 @@ interface InitOptions {
   deviceId: string;
   authToken: string;
   devicePublicKey?: string;
+  /** Issue #655: this peer's own build identity, sent on `initialize` — omitted (the default) exercises the pre-#655 "no build identity at all" compat case every other test already relies on. */
+  buildIdentity?: BuildIdentityV1;
 }
 
 /** Connects, sends `initialize`, and returns the socket plus the negotiated `initialize_result`. */
@@ -199,6 +203,7 @@ async function initConnection(
     authToken: opts.authToken,
     deviceId: opts.deviceId,
     devicePublicKey: opts.devicePublicKey ?? fakeBase64(`${opts.deviceId}-pubkey`),
+    ...(opts.buildIdentity ? { buildIdentity: opts.buildIdentity } : {}),
   };
   send(socket, initialize);
   const result = (await nextMessage(socket)) as unknown as InitializeResult;
@@ -293,6 +298,54 @@ describe('relay v1', () => {
 
       const closeEvent = await waitForClose(socket);
       expect(closeEvent.code).toBe(4401);
+    });
+
+    it("echoes this relay's own buildIdentity in initialize_result when configured (issue #655)", async () => {
+      const relayBuildIdentity: BuildIdentityV1 = { version: '0.4.1', commit: 'relay-sha' };
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        buildIdentity: relayBuildIdentity,
+      });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'd1',
+        authToken: 't1',
+      });
+      expect(result.buildIdentity).toEqual(relayBuildIdentity);
+    });
+
+    it('omits buildIdentity from initialize_result when the relay is not configured with one (dev/hermetic default)', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+      });
+      expect(result.buildIdentity).toBeUndefined();
+    });
+
+    it('still connects a peer that sends no buildIdentity at all (issue #655: a pre-#655 node/client must keep working)', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        buildIdentity: { version: '0.4.1', commit: 'relay-sha' },
+      });
+      closers.push(close);
+
+      // `initConnection` omits `buildIdentity` unless explicitly given —
+      // exactly the pre-#655 peer shape.
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+      });
+      expect(result.type).toBe('initialize_result');
+      expect(result.negotiatedVersion).toBe(PROTOCOL_V1);
     });
   });
 
@@ -660,6 +713,151 @@ describe('relay v1', () => {
       const response = (await nextMessage(client)) as unknown as TargetList;
       expect(response.targets).toHaveLength(1);
       expect(response.targets[0]?.reachable).toBe(false);
+    });
+  });
+
+  describe('build identity on target_list (#655): "what version is each connected peer running", answered over the wire', () => {
+    it("carries the announcing node's buildIdentity through to the client, sourced from that node's own initialize", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const nodeBuildIdentity: BuildIdentityV1 = { version: '0.5.1', commit: 'node-sha' };
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+        buildIdentity: nodeBuildIdentity,
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Local' })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_build',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets[0]?.build).toEqual(nodeBuildIdentity);
+    });
+
+    it('omits build from a target_list entry when the owning node sent no buildIdentity — an older node still connects and lists', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+        // no buildIdentity — the pre-#655 shape.
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Local' })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_no_build',
+      } satisfies TargetListRequest);
+
+      const response = (await nextMessage(client)) as unknown as TargetList;
+      expect(response.targets[0]?.build).toBeUndefined();
+    });
+
+    it('drives two peers with deliberately different build identities and surfaces the mismatch — same protocol, different build, allowed AND surfaced (issue #655, the outcome that does not exist today)', async () => {
+      const relayBuildIdentity: BuildIdentityV1 = { version: '0.4.1', commit: 'relay-sha' };
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        buildIdentity: relayBuildIdentity,
+      });
+      closers.push(close);
+
+      // Peer A: built from the exact same commit the relay is serving.
+      const { socket: nodeSame, result: nodeSameResult } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-same-device',
+        authToken: 'acct_1',
+        buildIdentity: { ...relayBuildIdentity },
+      });
+      // Peer B: same protocolVersion (PROTOCOL_V1, unchanged), but a
+      // different commit — built a week and fifty PRs apart, #655's own
+      // incident. Both peers must be ALLOWED to connect (outcome 2 is never
+      // a refusal): asserted below via `result.type`/`negotiatedVersion`,
+      // never an `update_required`/close.
+      const { socket: nodeDrifted, result: nodeDriftedResult } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-drifted-device',
+        authToken: 'acct_1',
+        buildIdentity: { version: relayBuildIdentity.version, commit: 'drifted-sha' },
+      });
+      expect(nodeSameResult.type).toBe('initialize_result');
+      expect(nodeSameResult.negotiatedVersion).toBe(PROTOCOL_V1);
+      expect(nodeDriftedResult.type).toBe('initialize_result');
+      expect(nodeDriftedResult.negotiatedVersion).toBe(PROTOCOL_V1);
+
+      send(nodeSame, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_same',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Same build' })],
+      } satisfies TargetAnnounce);
+      send(nodeDrifted, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_drifted',
+        targets: [makeTarget({ id: 'local', kind: 'local', label: 'Drifted build' })],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client, result: clientResult } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // This is the client's own baseline for "what is actually being
+      // served" — `TargetStatusView`'s `relayBuildIdentity` prop comes from
+      // exactly this field on the real `RelayClient`.
+      expect(clientResult.buildIdentity).toEqual(relayBuildIdentity);
+
+      send(client, {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_mismatch',
+      } satisfies TargetListRequest);
+      const response = (await nextMessage(client)) as unknown as TargetList;
+
+      const sameEntry = response.targets.find((t) => t.nodeId === 'node_same');
+      const driftedEntry = response.targets.find((t) => t.nodeId === 'node_drifted');
+      expect(sameEntry?.reachable).toBe(true);
+      expect(driftedEntry?.reachable).toBe(true);
+
+      // Outcome 1: same protocol, same build — nothing to surface.
+      expect(buildIdentityMismatch(clientResult.buildIdentity, sameEntry?.build)).toBe(false);
+      // Outcome 2, the middle one, the one that doesn't exist before this
+      // change: same protocol, different build — allowed (both peers
+      // connected above) AND surfaced (this is true).
+      expect(buildIdentityMismatch(clientResult.buildIdentity, driftedEntry?.build)).toBe(true);
     });
   });
 

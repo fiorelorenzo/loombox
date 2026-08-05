@@ -9,6 +9,7 @@ import {
   migrateBetterAuth,
   type RelayAuth,
 } from './auth';
+import { readRelayBuildIdentity } from './build-identity';
 import { createRedisFanOutBackend, type FanOutBackend } from './fanout';
 import { runMigrations } from './migrate';
 import { resolveVapidKeys } from './push';
@@ -137,6 +138,15 @@ export async function start(): Promise<StartedRelayHandle> {
       : 'loombox relay: Web Push disabled (set VAPID_SUBJECT to enable, SPEC §7.11)',
   );
 
+  // Issue #655: this relay's own version + (when honestly recoverable)
+  // commit — see `build-identity.ts`'s own doc comment for the
+  // env-var/git-rev-parse resolution order. Resolved once at boot, exactly
+  // like `vapidKeys` above, and echoed back in every `initialize_result`.
+  const buildIdentity = await readRelayBuildIdentity();
+  console.log(
+    `loombox relay: build ${buildIdentity.version}${buildIdentity.commit ? `@${buildIdentity.commit.slice(0, 12)}` : ' (commit unknown)'}`,
+  );
+
   const { url, close } = await startRelay({
     host,
     port,
@@ -161,6 +171,7 @@ export async function start(): Promise<StartedRelayHandle> {
     // relay.loombox.dev). Falls back to `relay.ts`'s own DEFAULT_APP_URL
     // when unset.
     deviceAuth: process.env.LOOMBOX_APP_URL ? { appUrl: process.env.LOOMBOX_APP_URL } : undefined,
+    buildIdentity,
   });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,

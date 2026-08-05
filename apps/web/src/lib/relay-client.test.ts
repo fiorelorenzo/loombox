@@ -15,7 +15,9 @@ import { createTranscriptState, reduceTranscript } from '@loombox/providers-core
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
+  buildIdentityMismatch,
   type BlobDownloadResponse,
+  type BuildIdentityV1,
   type ConfigOption,
   type ConnectedAccount,
   type EncryptedEnvelope,
@@ -150,7 +152,16 @@ class FakeNode {
   private readonly socket: WebSocket;
   readonly ready: Promise<void>;
 
-  constructor(url: string, opts: { deviceId: string; devicePublicKey: string; authToken: string }) {
+  constructor(
+    url: string,
+    opts: {
+      deviceId: string;
+      devicePublicKey: string;
+      authToken: string;
+      /** Issue #655: this fake node's own build identity, sent on `initialize` — omitted exercises the pre-#655 "no build identity" shape every other `FakeNode` use already relies on. */
+      buildIdentity?: BuildIdentityV1;
+    },
+  ) {
     this.socket = new WebSocket(url);
     this.ready = new Promise((resolve, reject) => {
       let settled = false;
@@ -163,6 +174,7 @@ class FakeNode {
             authToken: opts.authToken,
             deviceId: opts.deviceId,
             devicePublicKey: opts.devicePublicKey,
+            ...(opts.buildIdentity ? { buildIdentity: opts.buildIdentity } : {}),
           }),
         );
       });
@@ -3674,6 +3686,118 @@ describe('RelayClient: listTargets (issue #383)', () => {
       healthy: true,
       sampledAt: 1_700_000_000_000,
     });
+  });
+});
+
+describe('RelayClient: build identity (issue #655)', () => {
+  let buildRelay: StartedRelay | undefined;
+
+  afterEach(async () => {
+    await buildRelay?.close();
+    buildRelay = undefined;
+  });
+
+  it("surfaces this relay's own buildIdentity, and flags a node whose buildIdentity differs — the middle outcome: allowed and surfaced, not silent and not refused", async () => {
+    const relayBuildIdentity: BuildIdentityV1 = { version: '0.4.1', commit: 'relay-sha' };
+    buildRelay = await startRelay({ buildIdentity: relayBuildIdentity });
+
+    const amk = generateAmk();
+    const accountId = 'acct-build-identity-1';
+
+    const nodeSame = new FakeNode(buildRelay.url, {
+      deviceId: 'node-same-device',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      buildIdentity: { ...relayBuildIdentity },
+    });
+    await nodeSame.ready;
+    nodeSame.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_same',
+      targets: [{ id: 'local', kind: 'local', label: 'Same build', providers: [] }],
+    });
+
+    const nodeDrifted = new FakeNode(buildRelay.url, {
+      deviceId: 'node-drifted-device',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      buildIdentity: { version: relayBuildIdentity.version, commit: 'drifted-sha' },
+    });
+    await nodeDrifted.ready;
+    nodeDrifted.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_drifted',
+      targets: [{ id: 'local', kind: 'local', label: 'Drifted build', providers: [] }],
+    });
+    // Give the relay a beat to record both announces before the client asks.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: buildRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-build-identity-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const relayBuild = await waitForStore(
+      client.relayBuildIdentity,
+      (value) => value !== undefined,
+    );
+    expect(relayBuild).toEqual(relayBuildIdentity);
+
+    const targets = await client.listTargets();
+    const sameEntry = targets.find((t) => t.nodeId === 'node_same');
+    const driftedEntry = targets.find((t) => t.nodeId === 'node_drifted');
+    expect(sameEntry?.reachable).toBe(true);
+    expect(driftedEntry?.reachable).toBe(true);
+
+    // Outcome 1: same protocol, same build — nothing to surface.
+    expect(buildIdentityMismatch(relayBuild, sameEntry?.build)).toBe(false);
+    // Outcome 2, the middle one that does not exist before this change:
+    // same protocol, different build — allowed (both nodes connected and
+    // are reachable above) AND surfaced.
+    expect(buildIdentityMismatch(relayBuild, driftedEntry?.build)).toBe(true);
+  });
+
+  it('a node with no buildIdentity at all still connects and lists, with build simply absent (pre-#655 compat)', async () => {
+    buildRelay = await startRelay({
+      buildIdentity: { version: '0.4.1', commit: 'relay-sha' },
+    });
+    const amk = generateAmk();
+    const accountId = 'acct-build-identity-2';
+
+    const legacyNode = new FakeNode(buildRelay.url, {
+      deviceId: 'legacy-node-device',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      // no buildIdentity — a peer that predates #655.
+    });
+    await legacyNode.ready;
+    legacyNode.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_legacy',
+      targets: [{ id: 'local', kind: 'local', label: 'Legacy', providers: [] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: buildRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-build-identity-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const targets = await client.listTargets();
+    const entry = targets.find((t) => t.nodeId === 'node_legacy');
+    expect(entry?.reachable).toBe(true);
+    expect(entry?.build).toBeUndefined();
   });
 });
 

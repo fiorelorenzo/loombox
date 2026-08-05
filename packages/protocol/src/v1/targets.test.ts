@@ -265,6 +265,15 @@ describe('targetListEntry', () => {
     expect(() => targetListEntry.parse(rest)).toThrow();
   });
 
+  it('parses a valid entry with a build identity attached (issue #655)', () => {
+    const withBuild = { ...valid, build: { version: '0.5.1', commit: 'abc123' } };
+    expect(targetListEntry.parse(withBuild)).toEqual(withBuild);
+  });
+
+  it('still parses an entry with no build identity — additive and optional (a node that predates #655, or is offline)', () => {
+    expect(targetListEntry.parse(valid).build).toBeUndefined();
+  });
+
   it('never carries anything beyond routing metadata (no path/secret fields survive parsing)', () => {
     const parsed = targetListEntry.parse({
       ...valid,
