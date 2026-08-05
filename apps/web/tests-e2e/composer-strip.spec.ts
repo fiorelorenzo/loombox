@@ -80,9 +80,11 @@ test.describe('composer strip', () => {
     // ...and under it, not above: this is what replaced the old toolbar.
     expect(rowBox?.y ?? 0).toBeGreaterThan(textBox?.y ?? 0);
 
-    // The agent answering, named in front of its own model picker.
+    // The agent answering, named in front of the consolidated model/
+    // thinking/mode trigger (cockpit v8 decision E1-2, issue #711) that
+    // replaced the always-visible pickers this row used to hold directly.
     await expect(page.getByTestId('config-agent')).toHaveText('Claude Code');
-    await expect(page.getByTestId('config-option-model')).toBeVisible();
+    await expect(page.getByTestId('config-trigger')).toBeVisible();
     // The context in use against its maximum, and the session's cost.
     const meter = page.getByTestId('context-meter');
     await expect(meter).toContainText('76k');
@@ -124,7 +126,11 @@ test.describe('composer strip', () => {
     const row = page.getByTestId('composer-controls');
     await expect(row).toBeVisible();
 
-    // The pickers fold behind the "···"; the figures a user watches do not.
+    // The pickers fold behind the "···" — since E1-2 (issue #711) that's
+    // one consolidated trigger, not a picker per category, but it still
+    // has to be one of the things that goes; the figures a user watches
+    // do not.
+    await expect(page.getByTestId('config-trigger')).toHaveCount(0);
     await expect(page.getByTestId('config-option-model')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'More composer options' })).toBeVisible();
     const meter = page.getByTestId('context-meter');

@@ -31,11 +31,46 @@ const options: AcpConfigOption[] = [
   },
 ];
 
-describe('ConfigBar: rendering the negotiated option set', () => {
-  it('renders model and thought_level as selectors, and mode as a segmented control, from the session options — not hardcoded', () => {
+async function openPopover(): Promise<void> {
+  await fireEvent.click(screen.getByTestId('config-trigger'));
+}
+
+describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #711)', () => {
+  it('reads the current model and effort, dot-joined, without opening anything', () => {
     render(ConfigBar, {
       props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
     });
+    expect(screen.getByTestId('config-trigger').textContent).toContain('Sonnet · Medium');
+    // Nothing else is in the DOM yet — the whole point of collapsing behind
+    // one trigger is that model/thinking/mode stay hidden until it opens.
+    expect(screen.queryByTestId('config-popover')).toBeNull();
+    expect(screen.queryByTestId('config-option-model')).toBeNull();
+    expect(screen.queryByTestId('config-option-mode')).toBeNull();
+  });
+
+  it('falls back to a category label when nothing is selected yet, rather than a blank trigger', () => {
+    const unset: AcpConfigOption[] = [
+      { category: 'model', current: undefined, choices: [{ id: 'opus', name: 'Opus' }] },
+    ];
+    render(ConfigBar, {
+      props: { options: unset, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    expect(screen.getByTestId('config-trigger').textContent).toContain('Model');
+  });
+
+  it('renders no trigger at all when the catalog is still empty (issue #705 not yet landed for this session)', () => {
+    render(ConfigBar, {
+      props: { options: [], usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    expect(screen.queryByTestId('config-trigger')).toBeNull();
+  });
+
+  it('opens one popover holding model, thinking and mode together on click', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    await openPopover();
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
     expect(screen.getByTestId('config-option-model')).toBeTruthy();
     expect(screen.getByTestId('config-option-thought_level')).toBeTruthy();
     expect(screen.getByTestId('config-option-mode')).toBeTruthy();
@@ -43,7 +78,7 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     expect(screen.getByRole('radio', { name: 'Plan' })).toBeTruthy();
   });
 
-  it('renders an unrecognized/future category generically rather than dropping it', () => {
+  it('renders an unrecognized/future category generically inside the popover rather than dropping it, and folds it into the trigger too', async () => {
     const withUnknown: AcpConfigOption[] = [
       ...options,
       { category: 'reasoning_budget', current: 'high', choices: [{ id: 'high', name: 'High' }] },
@@ -51,13 +86,23 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     render(ConfigBar, {
       props: { options: withUnknown, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
     });
+    // Not hardcoded to "exactly three categories": a fourth joins the
+    // trigger's own summary the same generic way the first two do.
+    expect(screen.getByTestId('config-trigger').textContent).toContain('Sonnet · Medium · High');
+
+    await openPopover();
     expect(screen.getByTestId('config-option-reasoning_budget')).toBeTruthy();
     expect(screen.getByText('Reasoning Budget')).toBeTruthy();
+    // ...alongside the other three, not instead of them.
+    expect(screen.getByTestId('config-option-model')).toBeTruthy();
+    expect(screen.getByTestId('config-option-mode')).toBeTruthy();
+    expect(screen.getByTestId('config-option-thought_level')).toBeTruthy();
   });
 
   it('a user change calls onChange with the category and chosen option id (Select control)', async () => {
     const onChange = vi.fn();
     render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
+    await openPopover();
     const trigger = within(screen.getByTestId('config-option-model')).getByRole('combobox');
     await fireEvent.click(trigger);
     await fireEvent.click(screen.getByRole('option', { name: 'Opus' }));
@@ -67,14 +112,16 @@ describe('ConfigBar: rendering the negotiated option set', () => {
   it('a user change calls onChange for the mode segmented control', async () => {
     const onChange = vi.fn();
     render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
+    await openPopover();
     await fireEvent.click(screen.getByRole('radio', { name: 'Plan' }));
     expect(onChange).toHaveBeenCalledWith('mode', 'plan');
   });
 
-  it('marks the current mode in the accessibility tree, not only with a class (issue #549)', () => {
+  it('marks the current mode in the accessibility tree, not only with a class (issue #549)', async () => {
     render(ConfigBar, {
       props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
     });
+    await openPopover();
     const group = screen.getByRole('radiogroup', { name: 'Mode' });
     const defaultRadio = within(group).getByRole('radio', { name: 'Default', checked: true });
     const planRadio = within(group).getByRole('radio', { name: 'Plan', checked: false });
@@ -89,12 +136,15 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     const { rerender } = render(ConfigBar, {
       props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
     });
+    await openPopover();
     expect(screen.getByRole('radio', { name: 'Default' }).tabIndex).toBe(0);
     expect(screen.getByRole('radio', { name: 'Plan' }).tabIndex).toBe(-1);
 
     // Simulates the round trip that follows a pick: the caller replaces
     // `options` wholesale (this component keeps no selection state of its
-    // own — see ConfigBar.svelte's header comment).
+    // own — see ConfigBar.svelte's header comment). The popover itself
+    // stays open across it — an unprompted config_option_update landing
+    // mid-interaction must not slam the panel shut.
     const planSelected: AcpConfigOption[] = options.map((option) =>
       option.category === 'mode' ? { ...option, current: 'plan' } : option,
     );
@@ -105,6 +155,7 @@ describe('ConfigBar: rendering the negotiated option set', () => {
       onChange: vi.fn(),
     });
 
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
     expect(screen.getByRole('radio', { name: 'Default' }).tabIndex).toBe(-1);
     expect(screen.getByRole('radio', { name: 'Plan' }).tabIndex).toBe(0);
   });
@@ -114,6 +165,7 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     const { rerender } = render(ConfigBar, {
       props: { options, usage: undefined, cumulativeCostUsd: 0, onChange },
     });
+    await openPopover();
     const defaultRadio = screen.getByRole('radio', { name: 'Default' });
 
     defaultRadio.focus();
@@ -146,6 +198,7 @@ describe('ConfigBar: rendering the negotiated option set', () => {
     const { rerender } = render(ConfigBar, {
       props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
     });
+    await openPopover();
     expect(screen.getByTestId('config-option-model').textContent).toContain('Sonnet');
 
     // Simulates an unprompted config_option_update: the whole option list is
@@ -162,6 +215,104 @@ describe('ConfigBar: rendering the negotiated option set', () => {
 
     expect(screen.queryByTestId('config-option-mode')).toBeNull();
     expect(screen.getByTestId('config-option-model').textContent).toContain('Haiku');
+  });
+});
+
+describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acceptance)', () => {
+  it('ArrowDown and Enter both open the popover from the trigger', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    const trigger = screen.getByTestId('config-trigger');
+
+    trigger.focus();
+    await fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
+
+    await fireEvent.keyDown(trigger, { key: 'Escape' });
+    expect(screen.queryByTestId('config-popover')).toBeNull();
+
+    await fireEvent.keyDown(trigger, { key: 'Enter' });
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
+  });
+
+  it('opening moves focus onto the first control inside, and Escape returns it to the trigger', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    const trigger = screen.getByTestId('config-trigger');
+    await openPopover();
+
+    // The first popover section is `model`'s own `Select` trigger.
+    const modelCombobox = within(screen.getByTestId('config-option-model')).getByRole('combobox');
+    await vi.waitFor(() => expect(document.activeElement).toBe(modelCombobox));
+
+    await fireEvent.keyDown(screen.getByTestId('config-popover'), { key: 'Escape' });
+    expect(screen.queryByTestId('config-popover')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('every control inside the popover is a real, reachable tab stop', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    await openPopover();
+
+    // One combobox per non-mode category (model, thought_level)...
+    const comboboxes = screen.getAllByRole('combobox');
+    expect(comboboxes).toHaveLength(2);
+    comboboxes.forEach((combobox) => expect(combobox.hasAttribute('disabled')).toBe(false));
+
+    // ...plus exactly one reachable (tabIndex 0) mode segment — the rest of
+    // the radiogroup is off the tab order by design (roving tabindex).
+    const radios = screen.getAllByRole('radio');
+    const reachable = radios.filter((radio) => radio.tabIndex === 0);
+    expect(reachable).toHaveLength(1);
+    expect(reachable[0]).toBe(screen.getByRole('radio', { name: 'Default' }));
+  });
+
+  it('Tab from the last control wraps to the first, and Shift+Tab from the first wraps to the last', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    await openPopover();
+    const panel = screen.getByTestId('config-popover');
+    const modelCombobox = within(screen.getByTestId('config-option-model')).getByRole('combobox');
+    const defaultRadio = screen.getByRole('radio', { name: 'Default' });
+
+    defaultRadio.focus();
+    await fireEvent.keyDown(panel, { key: 'Tab' });
+    expect(document.activeElement).toBe(modelCombobox);
+
+    modelCombobox.focus();
+    await fireEvent.keyDown(panel, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(defaultRadio);
+  });
+
+  it('a click outside the trigger/popover closes it', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    await openPopover();
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
+
+    await fireEvent.pointerDown(document.body);
+
+    expect(screen.queryByTestId('config-popover')).toBeNull();
+  });
+
+  it('clicking the trigger again while open closes it and returns focus to the trigger', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    const trigger = screen.getByTestId('config-trigger');
+    await openPopover();
+    expect(screen.getByTestId('config-popover')).toBeTruthy();
+
+    await fireEvent.click(trigger);
+
+    expect(screen.queryByTestId('config-popover')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });
 
@@ -273,7 +424,7 @@ describe('ConfigBar: context/cost meter', () => {
 });
 
 describe('ConfigBar: the agent answering', () => {
-  it('names the agent in front of the model picker, so the row says who is answering', () => {
+  it('names the agent in front of the trigger, so the row says who is answering', () => {
     render(ConfigBar, {
       props: {
         options,
@@ -284,16 +435,7 @@ describe('ConfigBar: the agent answering', () => {
       },
     });
     expect(screen.getByTestId('config-agent').textContent).toBe('Claude Code');
-    // The word the agent name replaced: the picker's value already reads as a
-    // model name, so a visible "Model" label spent a word saying nothing.
-    expect(screen.getByTestId('config-option-model').textContent).not.toContain('Model');
-    // ...while the control keeps that word in its accessible name (`Select`
-    // composes it with the current selection: "Model: Sonnet").
-    expect(
-      within(screen.getByTestId('config-option-model')).getByRole('combobox', {
-        name: 'Model: Sonnet',
-      }),
-    ).toBeTruthy();
+    expect(screen.getByTestId('config-trigger').textContent).toContain('Sonnet · Medium');
   });
 
   it('falls back to the raw provider id rather than dropping the fact', () => {
@@ -320,8 +462,7 @@ describe('ConfigBar: the agent answering', () => {
         compact: true,
       },
     });
-    expect(screen.queryByTestId('config-option-model')).toBeNull();
-    expect(screen.queryByTestId('config-option-mode')).toBeNull();
+    expect(screen.queryByTestId('config-trigger')).toBeNull();
     expect(screen.queryByTestId('config-agent')).toBeNull();
     // What a phone must NOT lose: the used count, the cost, and the track that
     // carries the ratio the dropped denominator used to spell out.
