@@ -62,7 +62,7 @@ export {
  * client/PWA derive/seal/open with the exact same implementation — see
  * `session-keys.ts`/`session-envelope.ts`'s doc comments.
  */
-export { deriveSessionKey } from './session-keys';
+export { deriveSessionKey, deriveProjectKey } from './session-keys';
 export { envelopeFromWire, envelopeToWire, openJson, sealJson } from './session-envelope';
 
 /**

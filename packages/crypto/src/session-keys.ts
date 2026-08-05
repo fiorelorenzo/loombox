@@ -31,3 +31,36 @@ export async function deriveSessionKey(
   const node = await deriveKeyTree(amk, ['session', accountId, sessionId]);
   return importAesGcmKey(node.key);
 }
+
+/**
+ * Derives one project's symmetric AES-256-GCM key from the account's Account
+ * Master Key via this package's HMAC-SHA512 key tree (SPEC §8, §16) — the
+ * second resource-key family, alongside {@link deriveSessionKey} above.
+ *
+ * Documented derivation path: `['project', accountId, projectPath]`, the
+ * shape `deriveSessionKey`'s own doc comment anticipates when it explains why
+ * the leading segment exists ("so it can never collide with another family
+ * derived from the same AMK").
+ *
+ * This family exists because some content is a property of a **project**, not
+ * of any one session (issue #697): a project's tracker records are the first
+ * such content. Sealing them to a session key made them unreadable whenever
+ * that session was not running, which is most of the time — and it is the
+ * wrong scope besides, since the records outlive every session that ever read
+ * them. `projectPath` is the same identity the node already keys its
+ * per-project state by (`TrackerModeStore`, `AccountPinStore`), so a project
+ * has exactly one key no matter which session, device or node reaches it.
+ *
+ * Note what this does NOT do: it does not make the relay able to read
+ * anything. Both a node and a client derive this locally from the AMK they
+ * already hold, so a project-scoped request is still opaque ciphertext in
+ * transit, exactly like a session-scoped one.
+ */
+export async function deriveProjectKey(
+  amk: Uint8Array,
+  accountId: string,
+  projectPath: string,
+): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
+  return importAesGcmKey(node.key);
+}

@@ -358,22 +358,55 @@ export function safeParseTrackerSnapshotResponsePayloadV1(
   return trackerSnapshotResponsePayloadV1.safeParse(data);
 }
 
-/** A client asks the owning node for its session's tracker snapshot (SPEC §7.10; issue #212). */
+/**
+ * A client asks a node for one of its **projects'** tracker snapshot
+ * (SPEC §7.10; issues #212, #697).
+ *
+ * Addressed by `nodeId` + `projectPath`, the same identity every other
+ * per-project message already uses (`tracker_mode_get_request`,
+ * `account_pin_get_request`) and the same one the node keys its own
+ * per-project state by. It was addressed by `sessionId` until #697, which
+ * made a project's tracker unreadable whenever no session happened to be
+ * running for it — the node answers a session-addressed request only while
+ * it holds a live `SessionBridge`, and a bridge exists only for a running
+ * agent. A tracker is a property of the project and outlives every session
+ * that ever reads it, so the session was never the right scope.
+ *
+ * `envelope` is sealed to the **project** key (`deriveProjectKey`,
+ * `['project', accountId, projectPath]`) rather than a session key, which is
+ * what makes a project-scoped read possible without weakening anything: both
+ * a node and a client derive it locally from the AMK they already hold, so
+ * the relay still sees only ciphertext.
+ *
+ * The old `targetId` member is gone with the same change. No tracker code
+ * ever read it — it came along from the `fs_list_request` shape this pair was
+ * modelled on, where the target genuinely picks which host answers.
+ */
 export const trackerSnapshotRequest = z.object({
   type: z.literal('tracker_snapshot_request'),
   protocolVersion: z.literal(PROTOCOL_V1),
-  sessionId: z.string().min(1),
-  targetId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
   requestId: z.string().min(1),
   envelope: encryptedEnvelope,
 });
 export type TrackerSnapshotRequest = z.infer<typeof trackerSnapshotRequest>;
 
-/** The owning node's reply. Fanned out to a session's subscribed clients exactly like `fs_list_response` — a requesting client filters on `requestId` to match its own pending request. */
+/**
+ * The addressed node's reply, returned to the requesting client (issue #697's
+ * `nodeId` addressing means exactly one node is asked, so there is one
+ * answerer and no fan-out to filter). `requestId` still correlates it.
+ *
+ * The node MUST send one for every request it receives, including one it
+ * cannot serve: the reply carries `trackerSnapshotErrorV1` for that. Before
+ * #697 an unanswerable request was dropped in silence and the client could
+ * only time out, which is the same failure #691 documents one layer up.
+ */
 export const trackerSnapshotResponse = z.object({
   type: z.literal('tracker_snapshot_response'),
   protocolVersion: z.literal(PROTOCOL_V1),
-  sessionId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
   requestId: z.string().min(1),
   envelope: encryptedEnvelope,
 });
@@ -481,22 +514,33 @@ export function safeParseTrackerWriteResponsePayloadV1(
   return trackerWriteResponsePayloadV1.safeParse(data);
 }
 
-/** A client asks the owning node to create/update a record or define a custom type against its session's bound project (SPEC §7.10; issue #212). */
+/**
+ * A client asks a node to create/update a record or define a custom type
+ * against one of its projects (SPEC §7.10; issues #212, #697).
+ *
+ * Addressed and sealed exactly like {@link trackerSnapshotRequest} — see its
+ * doc comment for why the project, not a session, is the scope. Keeping the
+ * two identical is deliberate: a read and a write that disagreed about which
+ * tracker they mean is the divergence `resolveTrackerDispatch` exists to
+ * prevent on the node side, and it would be reintroduced here if only one of
+ * them moved.
+ */
 export const trackerWriteRequest = z.object({
   type: z.literal('tracker_write_request'),
   protocolVersion: z.literal(PROTOCOL_V1),
-  sessionId: z.string().min(1),
-  targetId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
   requestId: z.string().min(1),
   envelope: encryptedEnvelope,
 });
 export type TrackerWriteRequest = z.infer<typeof trackerWriteRequest>;
 
-/** The owning node's reply. Fanned out to a session's subscribed clients exactly like `tracker_snapshot_response`. */
+/** The addressed node's reply, returned to the requesting client. Same contract as {@link trackerSnapshotResponse}, including that one is always sent — `trackerWriteErrorV1` carries a refusal. */
 export const trackerWriteResponse = z.object({
   type: z.literal('tracker_write_response'),
   protocolVersion: z.literal(PROTOCOL_V1),
-  sessionId: z.string().min(1),
+  nodeId: z.string().min(1),
+  projectPath: z.string().min(1),
   requestId: z.string().min(1),
   envelope: encryptedEnvelope,
 });
