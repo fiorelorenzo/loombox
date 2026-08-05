@@ -642,9 +642,11 @@
     white-space: nowrap;
   }
 
+  /* No `flex-shrink` here: `Icon`'s own `.icon` root rule already sets it,
+     and a class handed to a primitive cannot outrank the primitive's own
+     scoped root (issue #665, guarded by `primitive-override-scope.test.ts`). */
   :global(.config-trigger-chevron) {
     color: var(--color-text-secondary);
-    flex-shrink: 0;
     transition: transform var(--duration-fast) var(--ease-beat);
   }
 
