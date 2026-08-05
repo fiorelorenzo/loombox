@@ -17,6 +17,7 @@ import {
 import { startRelay, type StartedRelay } from '@loombox/relay';
 import { AgentSupervisor } from '@loombox/supervisor';
 import {
+  decryptEnvelope,
   deriveSessionKey,
   encryptEnvelope,
   envelopeToWire,
@@ -58,8 +59,51 @@ function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
 }
 
+function fromBase64(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, 'base64'));
+}
+
 function randomBase64(byteLength = 32): string {
   return toBase64(crypto.getRandomValues(new Uint8Array(byteLength)));
+}
+
+/**
+ * Waits until `phone` has seen a `session_update` for `sessionId` whose
+ * decrypted payload is `kind: 'turn_ended'` (issue #660: echo-acp-agent.mjs
+ * no longer streams its reply synchronously/zero-delay, so a turn now
+ * genuinely spans several real ticks — a caller that only waited for "any"
+ * `session_update` after prompting used to get away with it because every
+ * envelope for a turn landed in the same tick as the first one; now the
+ * turn can still be mid-flight when that first envelope arrives, so a test
+ * that needs the FULL turn settled before proceeding must wait for its
+ * actual `turn_ended` signal, not just "something arrived").
+ */
+async function waitForTurnEnded(
+  phone: TestPhone,
+  sessionId: string,
+  key: CryptoKey,
+  timeoutMs = 10000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const candidates = phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 => m.type === 'session_update' && m.sessionId === sessionId,
+    );
+    for (const message of candidates) {
+      const envelope = {
+        resourceId: message.envelope.resourceId,
+        iv: fromBase64(message.envelope.iv),
+        ciphertext: fromBase64(message.envelope.ciphertext),
+      };
+      const plaintext = await decryptEnvelope(sessionId, envelope, key);
+      const decrypted = JSON.parse(new TextDecoder().decode(plaintext)) as { kind?: string };
+      if (decrypted.kind === 'turn_ended') return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error('waitForTurnEnded: timed out waiting for turn_ended');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 /** A minimal encrypted-PWA-like client over the global WebSocket, speaking the v1 handshake — same shape node-daemon.test.ts's own `TestPhone` uses. */
@@ -302,9 +346,13 @@ describe('AMK epoch rotation end to end (SPEC §8, issue #116): a surviving node
       promptId: 'prompt-new-epoch',
       envelope: await sealPrompt(keyNew),
     });
-    await phoneNew.waitFor(
-      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
-    );
+    // Waits for the FULL turn to settle (issue #660: echo-acp-agent.mjs no
+    // longer streams its reply in one synchronous tick), not just "a"
+    // session_update — otherwise `updatesBeforeOldPrompt` below can
+    // snapshot a count that still grows on its own from this turn's own
+    // later chunks, which would fail the "no NEW update" assertion for a
+    // reason that has nothing to do with the old-epoch prompt under test.
+    await waitForTurnEnded(phoneNew, session.id, keyNew);
 
     // ...while a phone that only ever held the OLD (pre-revoke) AMK — what a
     // revoked device would still be stuck with — derives a *different* key

@@ -1352,6 +1352,13 @@ export class RelayClient {
           // snapshot, requested alongside the session list above so a
           // picker renders from the first paint of any fresh connection.
           this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
+          // Issue #660: a session already `ensureSubscribed` on a prior
+          // connection (or subscribed before this very first handshake
+          // finished) lost that relay-side subscription the moment its
+          // old connection died — resend now, on every fresh 'open', or
+          // its live updates silently stop (see this method's own doc
+          // comment for the full failure mode).
+          this.resubscribeSessionsOnReconnect();
           // Issue #155: a dropped connection mid-upload gets exactly one
           // automatic retry once the connection is back — harmless on the
           // very first connect too, since no attachment can be in a
@@ -3594,6 +3601,37 @@ export class RelayClient {
       promptId,
       envelope,
     });
+  }
+
+  /**
+   * A relay-side `session_resume` subscribes *this specific WebSocket
+   * connection* to a session's live `session_update` fan-out (SPEC §7.24;
+   * `relay.ts`'s `subscribeClientToSession` keys off the connection
+   * object, not the account/device) — so `this.subscribed` (which
+   * dedupes so a session already resumed on the CURRENT connection never
+   * sends a redundant `session_resume`) must never survive a reconnect's
+   * connection swap unresent. Two related gaps this fixes as one (issue
+   * #660): (1) a caller that subscribes (`transcriptFor`/`ensureSubscribed`)
+   * before the very first `attemptOpen()` has reached `'open'` at all has
+   * its `session_resume` silently dropped by `send()`'s "socket not open"
+   * guard, yet `subscribed` is already marked, so it was never retried;
+   * (2) after ANY later reconnect (network blip, laptop sleep, heartbeat
+   * timeout), the relay's fan-out subscription lived on the now-dead
+   * connection and is gone, but this client's own `subscribed` set still
+   * says "already resumed" and skips re-sending — so a session open
+   * across a reconnect silently stops receiving live updates and a user
+   * only sees its next turn complete in one replayed burst on next
+   * resync, which reads exactly like "streaming happened all at once at
+   * the end". Re-sending `session_resume` for every still-subscribed
+   * session on every successful handshake (first connect and reconnect
+   * alike) closes both gaps identically — `subscribeClientToSession` and
+   * this class's own `ensureSubscribed` dedupe guard are both idempotent,
+   * so a resend onto an already-live subscription is a harmless no-op.
+   */
+  private resubscribeSessionsOnReconnect(): void {
+    for (const sessionId of this.subscribed) {
+      this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+    }
   }
 
   private ensureSubscribed(sessionId: string): void {
