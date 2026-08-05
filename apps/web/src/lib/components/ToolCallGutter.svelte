@@ -38,20 +38,37 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
+    /* Metric-independent alignment, issue #703 (v2 of this fix — see the
+       PR discussion). A hand-tuned `padding-top` only ever matches ONE
+       font/size combination, and this column serves several:
+       `BashWidget`'s command is monospace at the ambient body size,
+       `GenericToolRow`/`TodoWidget`'s title is UI-sans at
+       `--text-small-size`, `EditWriteWidget`'s title is UI-sans too. Every
+       one of those, plus this gutter, inherits the SAME `line-height` from
+       `html` (`typography.css` sets it as an absolute `rem` value, not
+       relative to local `font-size`, so it does not re-scale per
+       consumer) — which is exactly what the `1lh` unit reads back on this
+       element. Reserving one line's worth of height and centering the
+       icon in it lines the icon's center up with the header text's own
+       line-box center for whichever font/size that text happens to use,
+       rather than a padding value tuned against one of them and left
+       approximate for the rest.
+
+       This still isn't pixel-perfect for every consumer — a real font's
+       ink sits asymmetrically within its line box (ascent usually outweighs
+       descent), so centering on the box itself leaves a small, consistent
+       residual rather than zero (measured 0-4px across every
+       `ToolCallGutter` consumer, both themes, in `tests-e2e/tool-call-
+       gutter-alignment.spec.ts`) — but that residual now comes from real
+       font metrics, not from a constant someone eyeballed against one row
+       and left the rest to drift on.
+
+       `lh`: Chromium 109+/Safari 16.4+, both comfortably below this app's
+       floor (Electron 43 ships Chromium 130+; the PWA targets evergreen
+       browsers). */
+    min-height: 1lh;
+    justify-content: center;
     gap: var(--space-3xs);
-    /* Optical nudge, issue #703: an SVG icon at `1em` sits flush to its own
-       box top (no font leading), while the header text next to it carries
-       real ascent metrics above its glyphs — so with zero top offset the
-       icon reads noticeably higher than the command it names. This value
-       is calibrated against the header text alone (measured on real
-       `BashWidget`/`GenericToolRow` rows, both themes): `ToolCard`'s own
-       `.tool-card-plain` used to carry a matching copy of this same
-       padding "to align with the icon", which instead cancelled the nudge
-       out (both sides sink together) and put the glyph visibly *below*
-       the command line — see that rule's own comment for why it was
-       removed rather than kept in sync.
-    */
-    padding-top: var(--space-sm);
     /* Same inner-edge alignment and reserved padding as `MessageItem`'s
        gutter, so the role column reads as one rule down the whole transcript
        rather than two columns that nearly line up. */
