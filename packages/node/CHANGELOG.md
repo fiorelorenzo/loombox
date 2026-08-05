@@ -1,5 +1,71 @@
 # @loombox/node
 
+## 0.6.0
+
+### Minor Changes
+
+- e6c44d0: Peers announce a build identity alongside the protocol version, and a build mismatch is now visible on a node's own row instead of staying invisible until someone SSHes in and reads process start times (issue #655)
+
+  On 2026-08-04 my resident node had been running since 29 July, across roughly fifty merged PRs including wire-level changes, and it connected to a freshly deployed relay without a word. That is the check working as designed and the design being too coarse: PROTOCOL_V1 has been 1 since the beginning and bumps only on a breaking wire change, so two peers built a week apart both announce it and shake hands happily while silently disagreeing about what several fields mean.
+
+  `initialize`/`initialize_result` now carry an optional `buildIdentity` (package.json version plus, when honestly recoverable, the commit): a node reads its own git HEAD at startup (it runs unbundled from a checkout via tsx, so this is free, no new build step), and the relay reads `LOOMBOX_BUILD_COMMIT` in production (passed through from the exact `$SHA` deploy-prod.sh already writes to DEPLOYED.json) or falls back to git rev-parse in dev. Both fields are additive and optional; a peer that predates this change still connects exactly as before.
+
+  The relay records each connected node's build identity and exposes it on `target_list` entries (`build`), mirroring how `reachable` already works: live-connection-derived, absent for an offline node or one that predates the field. `buildIdentityMismatch` in `@loombox/protocol` is a pure equality/absence check, never version parsing or ordering, matching this issue's own constraint that feature detection stays the protocol's job.
+
+  The client shows a node's version on its own row (`TargetStatusView`) and adds a quiet "Behind" badge when it differs from what the relay itself is serving (`RelayClient.relayBuildIdentity`, from the client's own `initialize_result`). Three outcomes: same protocol and build stays silent, same protocol with a different build connects and gets the badge, an incompatible protocol is still refused via the existing `update_required` path, unchanged.
+
+### Patch Changes
+
+- 6f90259: Files and the terminal used to stop working permanently after a node restart,
+  and blame the offline node for it. The eleven session handlers that guarded on
+  `if (!bridge) return` (`prompt_inject`, `fs_list_request`, `terminal_open`,
+  `terminal_input`, `terminal_resize`, `terminal_close`,
+  `test_runner_config_get/set/detect`, `run_start`, `run_cancel`) never actually
+  needed the live agent bridge except for `prompt_inject` — listing a directory,
+  opening a terminal, and running a saved command only ever touched the session
+  record and its target. Ten of the eleven now resolve that record straight from
+  `SessionManager`, so they keep working on a session reloaded `'disconnected'`
+  after a restart exactly as well as on a live one; `prompt_inject` still can't
+  reach an agent that no longer exists, and stays a logged no-op (no reply
+  channel exists for it to answer on).
+
+  Widens the wire's `session_status` vocabulary with `'disconnected'`
+  (protocol-side, alongside the existing `'queued'`/`'starting'`) and pushes it
+  on every reconnect for a node's own disconnected sessions, so the client can
+  finally tell a session apart from a live one: the session row shows a
+  "Disconnected" badge and the composer disables itself with an explanation,
+  instead of offering a prompt that can never be delivered.
+
+- 9b5f66a: Fix the node dropping the config_option wire message, so changing model or thinking effort never reached the agent (issue #718)
+
+  This is the last of three gaps in the same chain. #705 seeded the config-option catalogue from session/new so the pickers had something to show. #707 fixed AcpClient.setConfigOption to send and read the real ACP wire shape. Neither mattered on their own: RelayClient.setConfigOption sent a real config_option wire message, the relay routed it to the owning node correctly, and NodeDaemon.handleInbound hit its default case and dropped it. The comment said so outright. So the only thing that ever happened was the client's own optimistic guess at the new value, which the next real config_options push from the agent would silently revert.
+
+  NodeDaemon.handleInbound now handles config_option: it calls through to the session's live AgentSession.setConfigOption (a new method, delegating to AcpClient.setConfigOption), gated on the same lease check prompt_inject uses for an ssh: session. I confirmed the wire message's existing {category, optionId} shape needed no changes: #707 already resolves configId/type from the session's own catalogue entry.
+
+  A rejected set has to reach the user, not die in a console.warn. There was no wire shape to carry that, so I added one: config_option_result, a new node-to-client reply carrying outcome: 'ok' | 'error' plus the agent's own rejection message, correlated by category rather than a request id (config_option never had one, and category is the natural key every config-option store in this codebase already groups on). Fanned out to a session's subscribed clients exactly like fs_list_response.
+
+  I dropped the client's optimistic update rather than keep and reconcile it. With a real round trip, the agent's own config_options push is what actually updates the picker, so there is no local guess left to ever have to revert on a rejection. RelayClient now tracks which categories it has an outstanding config_option for, so it can tell its own pending request apart from a sibling device's, and publishes a ConfigOptionErrorNotice (mirrors the existing PermissionStaleNotice) when the agent refuses.
+
+  A config_option for a session with no live agent (reloaded 'disconnected' after a restart, a real state since #702) now answers honestly with config_option_result: error instead of being silently dropped.
+
+  Verified against a real omp acp binary through a real node: set the model, set the thinking effort, read both back off the agent's own config_options push, and confirmed a real rejection ("Unknown ACP model: ...") reaches config_option_result. Added a node-level test driving the real config_option wire message; reverted the handler and watched it fail with the exact old symptom before restoring the fix.
+
+- 6f5dbe0: Fixed a real bug behind issue #660 (agent text appearing in one burst instead of streaming): `RelayClient` never resent `session_resume` after a reconnect, so a session's live updates silently stopped arriving once its connection dropped and came back (a slept laptop, a network blip, a heartbeat timeout) until the whole page reloaded. Now every session still marked as subscribed gets resumed again on every fresh handshake, first connect or reconnect alike.
+
+  I also swapped the streaming test fixtures: `echo-acp-agent.mjs` used to send its two reply chunks synchronously, zero delay, which is exactly the shape that let a "batch and flush on turn end" regression pass every existing streaming test undetected. It now sends them with a real gap. I added a new `streaming-acp-agent.mjs` fixture that streams several thought chunks then several answer chunks over real time, and used it to write tests that assert the transcript grows while a turn is still open, not just that it's correct once the turn closes.
+
+- Updated dependencies [6f90259]
+- Updated dependencies [e6c44d0]
+- Updated dependencies [9b5f66a]
+- Updated dependencies [6f5dbe0]
+- Updated dependencies [3e2e5f4]
+- Updated dependencies [ff47e23]
+  - @loombox/protocol@0.6.0
+  - @loombox/supervisor@0.1.3
+  - @loombox/providers-core@0.3.1
+  - @loombox/crypto@0.0.7
+  - @loombox/shared@0.2.4
+
 ## 0.5.1
 
 ### Patch Changes

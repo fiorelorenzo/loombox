@@ -1,5 +1,118 @@
 # @loombox/web
 
+## 0.5.0
+
+### Minor Changes
+
+- e6c44d0: Peers announce a build identity alongside the protocol version, and a build mismatch is now visible on a node's own row instead of staying invisible until someone SSHes in and reads process start times (issue #655)
+
+  On 2026-08-04 my resident node had been running since 29 July, across roughly fifty merged PRs including wire-level changes, and it connected to a freshly deployed relay without a word. That is the check working as designed and the design being too coarse: PROTOCOL_V1 has been 1 since the beginning and bumps only on a breaking wire change, so two peers built a week apart both announce it and shake hands happily while silently disagreeing about what several fields mean.
+
+  `initialize`/`initialize_result` now carry an optional `buildIdentity` (package.json version plus, when honestly recoverable, the commit): a node reads its own git HEAD at startup (it runs unbundled from a checkout via tsx, so this is free, no new build step), and the relay reads `LOOMBOX_BUILD_COMMIT` in production (passed through from the exact `$SHA` deploy-prod.sh already writes to DEPLOYED.json) or falls back to git rev-parse in dev. Both fields are additive and optional; a peer that predates this change still connects exactly as before.
+
+  The relay records each connected node's build identity and exposes it on `target_list` entries (`build`), mirroring how `reachable` already works: live-connection-derived, absent for an offline node or one that predates the field. `buildIdentityMismatch` in `@loombox/protocol` is a pure equality/absence check, never version parsing or ordering, matching this issue's own constraint that feature detection stays the protocol's job.
+
+  The client shows a node's version on its own row (`TargetStatusView`) and adds a quiet "Behind" badge when it differs from what the relay itself is serving (`RelayClient.relayBuildIdentity`, from the client's own `initialize_result`). Three outcomes: same protocol and build stays silent, same protocol with a different build connects and gets the badge, an incompatible protocol is still refused via the existing `update_required` path, unchanged.
+
+- 717a8c0: Collapse `ConfigBar`'s model, thinking and mode pickers behind one consolidated trigger and popover (cockpit v8 decision E1-2, issue #711)
+
+  The three separate inline pickers used to sit directly in the composer row. They now collapse behind one trigger reading e.g. "Opus 5 · High" (every non-`mode` category's current selection, dot-joined) that opens a single popover holding all of them: one `Select` per non-`mode` category plus `mode`'s existing segmented control, unchanged. This is the trade Lorenzo picked explicitly - a second click, for the narrowest footprint of the layouts considered in `docs/design/ux-review-2026-08-05/section-e-model-effort.html` (option E1-2).
+
+  Presentation only, laid on top of whatever the session's `ConfigOptionStore` already carries (issue #705 is what actually populates it from a real agent). No hardcoded model list, thinking scale, or assumption that exactly two or three categories exist: the trigger's own text and the popover's own section list are both driven off `options` generically, so a synthetic fourth category (or a fifth, or a first if `model`/`thought_level` are ever renamed) renders as one more section and joins the trigger's summary the same way, rather than vanishing. `mode`'s separate `modes` ACP field is already folded into its own `configOptions` entry upstream (`client.ts`'s `mapConfigOptions`, issue #705), so exactly one mode picker ever renders here.
+
+  The popover follows `Select`'s own "anchored, no `Overlay` scrim" contract, extended to a compound panel: opening it moves focus onto its first real control (mirrors `Dialog`'s focus-on-open), Escape closes it and returns focus to the trigger, Tab traps and wraps within it (`Dialog`'s own `focusableElements`/keydown pattern, minus the `Overlay` backdrop), and a click outside closes it without stealing focus (mirrors `Select`'s own click-outside listener). Caught and fixed while building this: a naive focus-trap selector (`button:not([disabled])`) doesn't respect `mode`'s existing roving `tabindex="-1"` on its unselected segments, since a native `<button>` matches that selector regardless of its own `tabindex` value - an unselected mode segment was a real Tab stop until a second filter pass excludes anything explicitly marked `tabindex="-1"`.
+
+### Patch Changes
+
+- 6f90259: Files and the terminal used to stop working permanently after a node restart,
+  and blame the offline node for it. The eleven session handlers that guarded on
+  `if (!bridge) return` (`prompt_inject`, `fs_list_request`, `terminal_open`,
+  `terminal_input`, `terminal_resize`, `terminal_close`,
+  `test_runner_config_get/set/detect`, `run_start`, `run_cancel`) never actually
+  needed the live agent bridge except for `prompt_inject` — listing a directory,
+  opening a terminal, and running a saved command only ever touched the session
+  record and its target. Ten of the eleven now resolve that record straight from
+  `SessionManager`, so they keep working on a session reloaded `'disconnected'`
+  after a restart exactly as well as on a live one; `prompt_inject` still can't
+  reach an agent that no longer exists, and stays a logged no-op (no reply
+  channel exists for it to answer on).
+
+  Widens the wire's `session_status` vocabulary with `'disconnected'`
+  (protocol-side, alongside the existing `'queued'`/`'starting'`) and pushes it
+  on every reconnect for a node's own disconnected sessions, so the client can
+  finally tell a session apart from a live one: the session row shows a
+  "Disconnected" badge and the composer disables itself with an explanation,
+  instead of offering a prompt that can never be delivered.
+
+- 9b5f66a: Fix the node dropping the config_option wire message, so changing model or thinking effort never reached the agent (issue #718)
+
+  This is the last of three gaps in the same chain. #705 seeded the config-option catalogue from session/new so the pickers had something to show. #707 fixed AcpClient.setConfigOption to send and read the real ACP wire shape. Neither mattered on their own: RelayClient.setConfigOption sent a real config_option wire message, the relay routed it to the owning node correctly, and NodeDaemon.handleInbound hit its default case and dropped it. The comment said so outright. So the only thing that ever happened was the client's own optimistic guess at the new value, which the next real config_options push from the agent would silently revert.
+
+  NodeDaemon.handleInbound now handles config_option: it calls through to the session's live AgentSession.setConfigOption (a new method, delegating to AcpClient.setConfigOption), gated on the same lease check prompt_inject uses for an ssh: session. I confirmed the wire message's existing {category, optionId} shape needed no changes: #707 already resolves configId/type from the session's own catalogue entry.
+
+  A rejected set has to reach the user, not die in a console.warn. There was no wire shape to carry that, so I added one: config_option_result, a new node-to-client reply carrying outcome: 'ok' | 'error' plus the agent's own rejection message, correlated by category rather than a request id (config_option never had one, and category is the natural key every config-option store in this codebase already groups on). Fanned out to a session's subscribed clients exactly like fs_list_response.
+
+  I dropped the client's optimistic update rather than keep and reconcile it. With a real round trip, the agent's own config_options push is what actually updates the picker, so there is no local guess left to ever have to revert on a rejection. RelayClient now tracks which categories it has an outstanding config_option for, so it can tell its own pending request apart from a sibling device's, and publishes a ConfigOptionErrorNotice (mirrors the existing PermissionStaleNotice) when the agent refuses.
+
+  A config_option for a session with no live agent (reloaded 'disconnected' after a restart, a real state since #702) now answers honestly with config_option_result: error instead of being silently dropped.
+
+  Verified against a real omp acp binary through a real node: set the model, set the thinking effort, read both back off the agent's own config_options push, and confirmed a real rejection ("Unknown ACP model: ...") reaches config_option_result. Added a node-level test driving the real config_option wire message; reverted the handler and watched it fail with the exact old symptom before restoring the fix.
+
+- 39f6b36: Fixed the tool-call gutter icon sitting off the command's baseline in every
+  tool row (issue #703 — reported in the real desktop app: "le icone dei
+  comandi eseguiti di quando esegue un tool non sono allineate con il testo del
+  comando"). `ToolCard`'s plain variant (used by `BashWidget`,
+  `EditWriteWidget`, and the resting/collapsed state of `GenericToolRow` and
+  `TodoWidget`) carried its own `padding-top` copied from `ToolCallGutter`'s,
+  on the theory that matching the value would keep the two aligned — instead it
+  sank the header text by that same amount a second time, since the gutter's
+  own padding was already the one nudge needed (an SVG icon at `1em` has no
+  font leading, so it needs pushing down to land where the text's ascent
+  metrics put its first line). Removed the redundant copy from `ToolCard`.
+
+  Rather than replacing the gutter's own hand-tuned pixel offset with a
+  different hand-tuned pixel offset (which only ever matches the one font/size
+  it was measured against, and this column serves several — monospace
+  commands, UI-sans titles, two different type sizes), the gutter now reserves
+  one line of height (`1lh`) and centers the icon in it, so it tracks whatever
+  `line-height` the header text next to it actually uses instead of a constant
+  someone eyeballed against one row.
+
+- 6f5dbe0: Fixed a real bug behind issue #660 (agent text appearing in one burst instead of streaming): `RelayClient` never resent `session_resume` after a reconnect, so a session's live updates silently stopped arriving once its connection dropped and came back (a slept laptop, a network blip, a heartbeat timeout) until the whole page reloaded. Now every session still marked as subscribed gets resumed again on every fresh handshake, first connect or reconnect alike.
+
+  I also swapped the streaming test fixtures: `echo-acp-agent.mjs` used to send its two reply chunks synchronously, zero delay, which is exactly the shape that let a "batch and flush on turn end" regression pass every existing streaming test undetected. It now sends them with a real gap. I added a new `streaming-acp-agent.mjs` fixture that streams several thought chunks then several answer chunks over real time, and used it to write tests that assert the transcript grows while a turn is still open, not just that it's correct once the turn closes.
+
+- f842504: Thoughts and user turns get their v8 look (design spec `2026-08-05-cockpit-v8-decisions.md` §2, issue #709).
+
+  B1-1: dropped the thought's own card and italic. A thought is plain text now, a real size and colour step down from an answer (`--text-small-size`/`--color-text-secondary` instead of `opacity: 0.65; font-style: italic`), so type is the only thing marking where a thought starts or ends. The gutter column still paints nothing sighted, same as v7 left it; this isn't a licence to bring back a gutter accent bar.
+
+  B2-1: the expand/collapse choice is one preference now, not per-thought local state. `$lib/expand-thoughts.ts` stores a single boolean in `localStorage`, the same shape `$lib/accent.ts` already uses, read once on startup and applied to every thought in every session. It defaults to expanded, matching what Lorenzo actually asked for. The disclosure toggle moved above the thought and lost its "Show thought" text; it's icon-only now and carries its own `aria-label` ("Expand thought"/"Collapse thought") so the accessible name survives losing the visible text.
+
+  That preference collides with issue #660 on purpose: a thought that's actively producing text stays visible no matter what the resting preference says, so a streaming thought under a collapsed preference is never invisible until you open it and it all lands at once. Proved with a test that fails against the unfixed gate (reverted `displayExpanded`'s `|| thinking` and watched the streaming-visibility test go red before restoring it).
+
+  B3-3: the user turn's fill is `color-mix(in srgb, var(--color-accent) 8%, transparent)` instead of the flat `--color-surface-raised`, which measured three times starker in light than in dark. Verified in a real browser, both themes, against a real link and a real Send button, that 8% reads as a quiet fill rather than a clickable surface.
+
+- e96fdbd: Topbar gets its v8 shape (design spec `2026-08-05-cockpit-v8-decisions.md` §3, issue #710).
+
+  C1-3: the labelled `Workbench` button (`+page.svelte`'s topbar actions) is a plain icon toggle now, in the same position and order — no `.panel-word` at any viewport width, unlike `Terminal`/`Jump to…` beside it, which keep revealing theirs at `--bp-wide`. This deliberately does only half of what Lorenzo first asked: the Files/Config/Runner group stays inside the right sidebar's own header, exactly where it already was. `cockpit-shell.spec.ts:227`'s `workbench-toggle`/`aria-pressed` assertion still holds; the specs asserting the sub-tabs live in the panel now say so as a permanent contract, not an incidental one.
+
+  D1-1: the Agent/Tracker switch moves into the topbar, centred, tied to the currently selected session's own project (mirrors `selectSession`'s own project assignment so it can't show a stale project's board just because the sidebar's "open tracker for project" menu ran more recently). `.topbar` is a real `grid-template-columns: 1fr auto 1fr` now, not the old two-zone `space-between` flex — the two flanking columns are forced to equal width by the grid algorithm, which is what keeps the centre column's midpoint pinned to the topbar's own midpoint regardless of how long the left zone's project path/title gets or how many icons the right zone carries. Verified with `getBoundingClientRect`, not a screenshot: centre-to-centre delta stays ≤2px across five widths (1024–1920px) with both a short and a deliberately long title/project/target, and while showing that session's own Tracker board.
+
+  Narrow-window answer, decided and tested: below `--bp-desktop` (1024px) the switch drops out of the topbar entirely rather than fight the truncating left zone or the rigid right one for width. It doesn't get a full-width bar of its own down there, because it isn't that width's only route — the sidebar's own `destination-tracker` row (demoted, not deleted) is already primary navigation below that breakpoint for every other destination too.
+
+  Proved the four new/rewritten `cockpit-shell.spec.ts` assertions actually exercise the fix: reverted `+page.svelte`'s half of the diff (keeping the tests) and watched all four go red — the icon-only assertion found the label still present, the two D1-1 tests couldn't find `topbar-view-switch` at all — before restoring it.
+
+- 1df8a0e: Widened the transcript's reading measure from 90ch to 100ch (v8 decision A1-1). One token, `--measure` in `tokens.css`; the transcript column, the composer/toolbar strip beneath it, and the escrow/auth banner all read wider since they were already tied to the same value. `--measure-wide` (diffs, code, terminal, page shells) is untouched at 120ch and stays inert inside the transcript, same as before.
+- Updated dependencies [6f90259]
+- Updated dependencies [e6c44d0]
+- Updated dependencies [9b5f66a]
+- Updated dependencies [6f5dbe0]
+- Updated dependencies [3e2e5f4]
+- Updated dependencies [ff47e23]
+  - @loombox/protocol@0.6.0
+  - @loombox/providers-core@0.3.1
+  - @loombox/crypto@0.0.7
+
 ## 0.4.1
 
 ### Patch Changes
