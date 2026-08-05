@@ -134,6 +134,8 @@ export {
 
 export type {
   ConfigOption,
+  ConfigOptionResult,
+  ConfigOptionSetResult,
   PermissionDecision,
   PermissionRequest,
   PermissionResponse,
@@ -141,6 +143,8 @@ export type {
 } from './steering';
 export {
   configOption,
+  configOptionResult,
+  configOptionSetResult,
   permissionDecision,
   permissionRequest,
   permissionResponse,
@@ -600,6 +604,7 @@ import {
 } from './session-events';
 import {
   configOption,
+  configOptionResult,
   permissionDecision,
   permissionRequest,
   permissionResponse,
@@ -814,6 +819,7 @@ export const schemasV1 = {
   permissionRequest,
   permissionResponse,
   configOption,
+  configOptionResult,
   blobUpload,
   blobRef,
   fileEventPayloadV1,

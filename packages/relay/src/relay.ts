@@ -1337,6 +1337,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'config_option_result':
+        // The owning node's reply to a client's config_option (SPEC §7.24;
+        // issue #718) — fanned out to this session's subscribed clients
+        // exactly like fs_list_response above; the relay never opens
+        // anything here (this reply travels clear, not an envelope — see
+        // that schema's own doc comment) but still never targets the
+        // requester alone, matching every other session-scoped node reply.
+        // A client matches its own pending request by `category`; any
+        // other subscribed client simply has no pending request for it.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'terminal_opened':
       case 'terminal_output':
       case 'terminal_closed':

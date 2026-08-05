@@ -44,6 +44,8 @@ import {
   type AccountPinUnsetRequest,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
+  type ConfigOption,
+  type ConfigOptionSetResult,
   type ConnectedAccount,
   type ConnectedAccountDisconnectRequest,
   type ConnectedAccountList,
@@ -2518,10 +2520,13 @@ export class NodeDaemon extends EventEmitter {
       case 'account_pin_resolve_request':
         this.handleAccountPinResolveRequest(message);
         return;
+      case 'config_option':
+        this.handleConfigOption(message);
+        return;
       default:
-        // Every other v1 message type (permission_response, config_option,
-        // presence, blob_ref, ...) is out of this wave's scope; ignore
-        // rather than crash on a message this node doesn't yet act on.
+        // Every other v1 message type (permission_response, presence,
+        // blob_ref, ...) is out of this wave's scope; ignore rather than
+        // crash on a message this node doesn't yet act on.
         // `blob_download_response` also lands here and is likewise ignored
         // by this switch — it's consumed separately, by the `AttachmentResolver`'s
         // own listener on this same relay connection (`RelayBlobSource`,
@@ -2770,6 +2775,90 @@ export class NodeDaemon extends EventEmitter {
           `NodeDaemon: failed to handle prompt_inject for session ${message.sessionId}: ${detail}`,
         );
       });
+  }
+
+  /**
+   * A client picked a config option (model/mode/thinking effort) for one of
+   * this node's sessions (SPEC §7.24; issue #718) — the last of three gaps
+   * in the same chain (#705 seeded the catalogue, #707 fixed the wire shape
+   * `AcpClient.setConfigOption` sends/reads); this is the part that
+   * actually calls it. Mirrors `handlePromptInject` exactly in shape: does
+   * NOT go through {@link resolveSessionRouting}, because setting a config
+   * option is a real `session/set_config_option` round trip against the
+   * live agent (`bridge.agentSession.setConfigOption`), which by
+   * definition cannot happen without one — and, like a prompt, is gated on
+   * {@link assertStillLeaseholder} for an `ssh:` session (issue #82).
+   *
+   * Unlike `prompt_inject` though, `config_option` DOES have a reply
+   * channel ({@link sendConfigOptionResult}'s `config_option_result`,
+   * added by this same issue): a rejected/impossible set is answered
+   * honestly instead of silently dropped, closing the exact #702 failure
+   * mode (an action that looks like it worked but never reached the agent)
+   * this whole issue chain has been about.
+   *
+   * - `sessionId` isn't one of this node's sessions at all: ignored per
+   *   SPEC.md §12, same as every other handler here.
+   * - `sessionId` IS one of this node's sessions but has no live bridge
+   *   (reloaded `'disconnected'` after a restart, issue #702's now-real
+   *   state): answered with `outcome: 'error'` rather than dropped — there
+   *   is no agent to set anything on, and a client waiting on this pick
+   *   deserves to hear that rather than assume it silently worked.
+   * - Any other failure (lease lost, no catalogue entry for the category,
+   *   the agent rejecting the value) is caught uniformly and reported the
+   *   same way, carrying `error.message` — which, for a real agent
+   *   rejection, `AcpClient.setConfigOption` (issue #707) already folds the
+   *   agent's own `error.data.details` reason into.
+   *
+   * No optimistic local echo happens anywhere in this call: this node's
+   * own `config_options` push ({@link wireAgentSession}'s
+   * `configOptions.on('changed', ...)` listener, unchanged by this issue)
+   * is what actually updates a client's catalog once the agent acks, and
+   * only then — the client-side half of this fix (`RelayClient.
+   * setConfigOption`) deliberately does not guess the new value ahead of
+   * that, so there is no wrong value for a rejection to ever have to
+   * revert.
+   */
+  private handleConfigOption(message: ConfigOption): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) {
+      if (this.sessionManager.getSession(message.sessionId)) {
+        this.sendConfigOptionResult(message.sessionId, message.category, {
+          outcome: 'error',
+          message:
+            'This session has no live agent (disconnected since the last restart) — start a new session to change its model, mode, or thinking effort.',
+        });
+      }
+      // else: not one of this node's sessions at all; ignore per SPEC.md §12
+      return;
+    }
+
+    this.assertStillLeaseholder(bridge)
+      .then(() => bridge.agentSession.setConfigOption(message.category, message.optionId))
+      .then(() => {
+        this.sendConfigOptionResult(message.sessionId, message.category, { outcome: 'ok' });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendConfigOptionResult(message.sessionId, message.category, {
+          outcome: 'error',
+          message: detail,
+        });
+      });
+  }
+
+  /** Sends this session's `config_option_result` for one `category` (SPEC §7.24; issue #718) — clear, not an encrypted envelope, mirroring `configOption`'s own request (see that schema's doc comment for why). */
+  private sendConfigOptionResult(
+    sessionId: string,
+    category: string,
+    result: ConfigOptionSetResult,
+  ): void {
+    this.relay.send({
+      type: 'config_option_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      category,
+      result,
+    });
   }
 
   private async decryptPromptInject(message: PromptInjectV1): Promise<PromptPayload> {

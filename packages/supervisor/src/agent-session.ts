@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { AcpClient } from '@loombox/providers-core';
 import type {
   AcpChildProcess,
+  AcpConfigOption,
   AcpMcpServerConfig,
   AcpProvider,
   AcpSpawnConfig,
@@ -243,6 +244,28 @@ export class AgentSession extends EventEmitter {
     }
     this.setAttention('working');
     await this.client.prompt(this.id, text);
+  }
+
+  /**
+   * Sets a config option (model/mode/thinking effort) for this session
+   * (SPEC.md §7.24; issue #718) — delegates to `AcpClient.setConfigOption`,
+   * which resolves the wire's real `configId`/`type` from this session's
+   * own catalogue entry for `category` (issue #707) and rejects with the
+   * agent's own reason if it refuses the change. Throws on a replay-only
+   * session (`isLive === false`) exactly like `prompt()`: there is no child
+   * left to send it to, and a `config_option` for a session in that state
+   * is a real, reachable case (a client picking a model after a node
+   * restart reloaded the session as `'disconnected'`, issue #702) that
+   * `@loombox/node`'s caller must answer honestly rather than silently
+   * drop.
+   */
+  async setConfigOption(category: string, optionId: string): Promise<AcpConfigOption[]> {
+    if (!this.client) {
+      throw new Error(
+        `AgentSession: session "${this.sessionId}" has no live agent process (persisted/replay-only after a supervisor restart) — there is no agent to set "${category}" on.`,
+      );
+    }
+    return this.client.setConfigOption(this.id, category, optionId);
   }
 
   /** Every v0 update seen so far, oldest first, for a re-attaching caller to catch up (unchanged from v0; `@loombox/node` depends on this exact shape). */

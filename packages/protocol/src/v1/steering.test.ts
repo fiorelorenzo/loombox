@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   configOption,
+  configOptionResult,
   permissionDecision,
   permissionRequest,
   permissionResponse,
@@ -110,5 +111,40 @@ describe('configOption', () => {
   it('rejects a missing optionId', () => {
     const { optionId: _optionId, ...rest } = valid;
     expect(() => configOption.parse(rest)).toThrow();
+  });
+});
+
+describe('configOptionResult (issue #718)', () => {
+  const valid = {
+    type: 'config_option_result',
+    protocolVersion: 1,
+    sessionId: 'sess-1',
+    category: 'model',
+    result: { outcome: 'ok' as const },
+  };
+
+  it('parses a valid ok result', () => {
+    expect(configOptionResult.parse(valid)).toEqual(valid);
+  });
+
+  it('parses a valid error result carrying the agent\u2019s own rejection reason', () => {
+    const errorResult = {
+      ...valid,
+      result: { outcome: 'error' as const, message: 'Unsupported value: gpt-9000' },
+    };
+    expect(configOptionResult.parse(errorResult)).toEqual(errorResult);
+  });
+
+  it('rejects an error result with no message (the whole point is carrying the reason)', () => {
+    expect(() => configOptionResult.parse({ ...valid, result: { outcome: 'error' } })).toThrow();
+  });
+
+  it('rejects an outcome outside ok/error', () => {
+    expect(() => configOptionResult.parse({ ...valid, result: { outcome: 'pending' } })).toThrow();
+  });
+
+  it('rejects a missing category', () => {
+    const { category: _category, ...rest } = valid;
+    expect(() => configOptionResult.parse(rest)).toThrow();
   });
 });
