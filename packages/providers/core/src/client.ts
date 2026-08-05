@@ -120,14 +120,14 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
  *    notification, so this silently dropped every plan report.
  *  - `used`/`size`/`cost`: correct (fixed by #248/PR #622).
  *  - `options` (`config_option_update`): ACP's real field is
- *    `configOptions: SessionConfigOption[]`, and each option's shape
- *    (`id`/`name`/`type: 'select'|'boolean'`/...) is unrelated to this
- *    client's own `AcpConfigOption` (`category`/`current`/`choices`) — a
- *    materially larger divergence than a field rename, and a separate
- *    subsystem from the tool-call/plan transcript mapping this interface
- *    otherwise feeds (see `handleNotification`'s own comment: it "never
- *    touches the transcript reducer"). Left as-is: out of scope for
- *    #623's audit, flagged here for a follow-up issue.
+ *    `configOptions: SessionConfigOption[]`, wire-shaped the same as
+ *    `session/new`'s own `configOptions` (`id`/`name`/`category`/
+ *    `type: 'select'|'boolean'`/`currentValue`/`options: [{value, name,
+ *    description}]`), unrelated to this client's own `AcpConfigOption`
+ *    (`category`/`current`/`choices`). `mapConfigOptions` below is the one
+ *    place this translation happens for every source (`initialize`,
+ *    `session/new`, and this notification) — issue #705, closing the
+ *    follow-up this comment used to flag.
  */
 interface RawSessionUpdate {
   sessionUpdate?: string;
@@ -155,7 +155,7 @@ interface RawSessionUpdate {
   used?: number;
   size?: number;
   cost?: { amount?: number; currency?: string } | null;
-  options?: AcpConfigOption[];
+  configOptions?: RawConfigOption[];
 }
 
 interface SessionUpdateParams {
@@ -264,6 +264,108 @@ function extractDiff(content: unknown): AcpDiff | undefined {
     };
   }
   return undefined;
+}
+
+/**
+ * ACP's real config-option wire shape (`SessionConfigOption` at
+ * agentclientprotocol.com/protocol/v1/schema), carried by `initialize`'s
+ * result, `session/new`'s result, and a `config_option_update`
+ * notification alike: `{id, name, category, type, currentValue,
+ * options: [{value, name, description}]}`. Materially different from this
+ * client's own internal `AcpConfigOption` (`types.ts`: `{category,
+ * current, choices: [{id, name}]}`) — issue #705.
+ */
+interface RawConfigOptionChoice {
+  value?: string;
+  name?: string;
+  description?: string;
+}
+
+interface RawConfigOption {
+  id?: string;
+  name?: string;
+  category?: string;
+  type?: string;
+  currentValue?: string;
+  options?: RawConfigOptionChoice[];
+}
+
+/**
+ * ACP's separate `modes` sub-object, carried alongside `session/new`'s
+ * `configOptions` (`{availableModes: [{id, name, description}],
+ * currentModeId}`). `mapConfigOptions` below folds this into the SAME
+ * `mode`-category entry a real agent's `configOptions` array also carries
+ * — see that function's own doc comment for why.
+ */
+interface RawSessionModes {
+  availableModes?: { id?: string; name?: string; description?: string }[];
+  currentModeId?: string;
+}
+
+interface RawConfigCatalog {
+  configOptions?: RawConfigOption[];
+  modes?: RawSessionModes;
+}
+
+/**
+ * Maps ACP's real config-option wire shape onto this client's internal
+ * `AcpConfigOption` — the one place this translation happens, for every
+ * source that can carry it (`initialize`, `session/new`, and a
+ * `config_option_update` notification; issue #705). Exported for direct
+ * unit testing against a recorded real response, same convention as
+ * `mapToTranscriptUpdate` above.
+ *
+ * `category` (not `id`) is the mapping target for the internal
+ * `category` field: a real agent's `id` and `category` can legitimately
+ * differ (verified against a real `omp acp` binary — its `thinking`
+ * option's `id` is `"thinking"` but its `category` is `"thought_level"`,
+ * the axis `ConfigOptionStore`'s callers already group on), and `category`
+ * is the open, future-proof field `AcpConfigOption` deliberately leaves as
+ * a bare string rather than a closed union, so an entry whose `category`
+ * this client has never seen still survives untouched here too (issue
+ * #179's passthrough guarantee, preserved).
+ *
+ * `modes` (ACP's separate `{availableModes, currentModeId}` sub-object)
+ * describes the exact same selection as a `configOptions` entry whose
+ * `category` is `'mode'` — a real `omp acp` response sends both. Folding
+ * `modes` into that same entry (rather than appending a second one) is
+ * what keeps `ConfigOptionStore` — and therefore `ConfigBar` — from
+ * rendering two mode pickers for one underlying selection. `modes` is
+ * used only when `configOptions` has no `'mode'` entry at all, so an
+ * agent that advertises just the ACP-baseline `modes` field (without also
+ * duplicating it into `configOptions`, unlike omp) still gets one.
+ */
+export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigOption[] {
+  const options: AcpConfigOption[] = [];
+  for (const option of wire?.configOptions ?? []) {
+    if (typeof option.category !== 'string') continue;
+    options.push({
+      category: option.category,
+      current: option.currentValue,
+      choices: (option.options ?? [])
+        .filter(
+          (choice): choice is RawConfigOptionChoice & { value: string; name: string } =>
+            typeof choice.value === 'string' && typeof choice.name === 'string',
+        )
+        .map((choice) => ({ id: choice.value, name: choice.name })),
+    });
+  }
+
+  if (wire?.modes && !options.some((option) => option.category === 'mode')) {
+    const modeChoices = (wire.modes.availableModes ?? []).filter(
+      (mode): mode is { id: string; name: string; description?: string } =>
+        typeof mode.id === 'string' && typeof mode.name === 'string',
+    );
+    if (modeChoices.length > 0) {
+      options.push({
+        category: 'mode',
+        current: wire.modes.currentModeId,
+        choices: modeChoices.map((mode) => ({ id: mode.id, name: mode.name })),
+      });
+    }
+  }
+
+  return options;
 }
 
 /** Maps one wire `session/update` payload into the v1 transcript reducer's input shape; `undefined` for a kind this reducer doesn't cover (e.g. `config_option_update`, handled separately) or a malformed payload. Exported for direct unit testing of the wire-mapping logic (issue #248) without spinning up a fixture process for every edge case; not part of the package's public `index.ts`/`browser.ts` surface. */
@@ -394,9 +496,11 @@ export class AcpClient extends EventEmitter {
     );
   }
 
-  /** ACP `initialize`: protocol version + capability negotiation (SPEC.md §5.5). Caches `agentCapabilities`/`configOptions` for `getFeatureFlags()` and each new/resumed session's config-option seed. */
+  /** ACP `initialize`: protocol version + capability negotiation (SPEC.md §5.5). Caches `agentCapabilities`/`configOptions` for `getFeatureFlags()` and each new/resumed session's config-option seed; a real `initialize` never actually carries `configOptions` (issue #705 — `session/new` is where they arrive), so this is the fallback path, kept for an agent that does answer here. */
   async initialize(): Promise<AcpInitializeResult> {
-    const result = await this.sendRequest<AcpInitializeResult>('initialize', {
+    const result = await this.sendRequest<
+      Omit<AcpInitializeResult, 'configOptions'> & RawConfigCatalog
+    >('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
@@ -405,8 +509,14 @@ export class AcpClient extends EventEmitter {
       clientInfo: { name: 'loombox', version: '0.0.0' },
     });
     this.lastAgentCapabilities = result.agentCapabilities;
-    this.lastConfigCatalog = result.configOptions ?? [];
-    return result;
+    this.lastConfigCatalog = mapConfigOptions(result);
+    return {
+      protocolVersion: result.protocolVersion,
+      agentCapabilities: result.agentCapabilities,
+      agentInfo: result.agentInfo,
+      authMethods: result.authMethods,
+      configOptions: this.lastConfigCatalog,
+    };
   }
 
   /**
@@ -424,12 +534,21 @@ export class AcpClient extends EventEmitter {
     const mcpServers = opts.mcpServers ?? [];
     assertMcpServersResolved(mcpServers);
 
-    const result = await this.sendRequest<{ sessionId: string }>('session/new', {
+    const result = await this.sendRequest<{ sessionId: string } & RawConfigCatalog>('session/new', {
       cwd,
       mcpServers,
     });
     this.ensureSession(result.sessionId);
-    this.configOptionStore.setAll(result.sessionId, this.lastConfigCatalog, { unprompted: false });
+    // `session/new`'s own catalog is the source of truth (a real agent
+    // seeds it here, not at `initialize` — issue #705); `initialize`'s
+    // cached catalog is only the fallback for an agent that answers there
+    // instead, never a merge of the two.
+    const sessionCatalog = mapConfigOptions(result);
+    this.configOptionStore.setAll(
+      result.sessionId,
+      sessionCatalog.length > 0 ? sessionCatalog : this.lastConfigCatalog,
+      { unprompted: false },
+    );
     return result.sessionId;
   }
 
@@ -672,9 +791,15 @@ export class AcpClient extends EventEmitter {
     if (!kind || !sessionId || !update) return;
 
     // config_option_update is agent-pushed, unprompted config state (SPEC.md
-    // §7.24; issue #179) — it never touches the transcript reducer.
+    // §7.24; issue #179), wire-mapped the same way `initialize`/
+    // `session/new` are (issue #705) — it never touches the transcript
+    // reducer.
     if (kind === 'config_option_update') {
-      this.configOptionStore.setAll(sessionId, update.options ?? [], { unprompted: true });
+      this.configOptionStore.setAll(
+        sessionId,
+        mapConfigOptions({ configOptions: update.configOptions }),
+        { unprompted: true },
+      );
       return;
     }
 
