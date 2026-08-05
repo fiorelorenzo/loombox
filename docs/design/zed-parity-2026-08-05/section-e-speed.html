@@ -1,0 +1,607 @@
+<section class="item" id="e0">
+  <div class="item-head">
+    <span class="item-id">E0</span>
+    <h2>Where the latency goes, and what's actually measured</h2>
+  </div>
+  <p class="item-note">
+    Lorenzo's question was how close a PWA can get to Zed feeling "super reattivo e veloce". This
+    table lays out where each side's time actually goes, and every row is labelled by what kind of
+    claim it is: <b>published</b> is a number Zed states about itself, not verified against a running
+    loombox build here; <b>mechanism</b> is what this repo's code actually does, cited to a line;
+    <b>derived</b> is arithmetic run against loombox's own shipped constants, not a stopwatch on a
+    real burst. Nothing below was benchmarked end to end: no profiler was attached to either app for
+    this artifact. Read every "not measured" row as exactly that, an open question, not a claimed win
+    or loss.
+  </p>
+  <div class="stage">
+    <div class="lb-panel s-e0-table">
+      <div class="s-e0-row s-e0-head">
+        <span class="lb-caption">Stage</span>
+        <span class="lb-caption">Zed</span>
+        <span class="lb-caption">loombox today</span>
+        <span class="lb-caption">Basis</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Keystroke &rarr; pixel</b></span>
+        <span class="lb-small">&asymp;2ms, published</span>
+        <span class="lb-small">
+          not measured. Different substrate: DOM diff and layout per keystroke, not a GPU scene
+          graph, so there is no comparable number to report.
+        </span>
+        <span class="lb-badge">not measured</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Cold start</b></span>
+        <span class="lb-small">0.4 to 0.6s, published</span>
+        <span class="lb-small">not measured. No cold-start profile was taken for this artifact.</span>
+        <span class="lb-badge">not measured</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Rendering a long session</b></span>
+        <span class="lb-small">virtualized. Cost scales with the visible range only.</span>
+        <span class="lb-small">
+          every item stays mounted, keyed by <code>item.id</code>, forever. No windowing, no
+          <code>content-visibility</code> anywhere in the codebase (grepped
+          <code>apps/web/src</code>, zero hits). Cost scales with the whole session's history, not
+          what's on screen. <code>+page.svelte:3433-3439</code>
+        </span>
+        <span class="lb-badge accent">mechanism</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Streamed text hitting the screen</b></span>
+        <span class="lb-small">no pacing layer. A chunk paints the instant it arrives.</span>
+        <span class="lb-small">
+          paced: 32ms tick, 2-char floor, 35% of the outstanding backlog per tick
+          (<code>text-pacer.ts:37-39</code>). A 2,000-character block that already fully decrypted
+          and arrived in one <code>setTarget</code> call still needs about 16 ticks, roughly
+          512ms, to finish revealing, by that formula's own arithmetic
+          (<code>text-pacer.ts:112-125</code>). Only a live turn paces at all; replayed history
+          renders in full the instant it mounts (<code>MessageItem.svelte:22-31</code>).
+        </span>
+        <span class="lb-badge warn">derived</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Decrypting one envelope</b></span>
+        <span class="lb-small">n/a. Reads local files, no envelope layer.</span>
+        <span class="lb-small">
+          one <code>crypto.subtle.decrypt</code> (AES-256-GCM) per envelope, on the tab's main
+          thread, awaited independently. A burst of N envelopes is N sequential calls, never one
+          <code>Promise.all</code> (<code>relay-client.ts:4137-4138</code>,
+          <code>aead.ts:68-85</code>).
+        </span>
+        <span class="lb-badge accent">mechanism</span>
+      </div>
+      <div class="s-e0-row">
+        <span class="lb-small"><b>Reconnect after a drop</b></span>
+        <span class="lb-small">n/a. Nothing to reconnect to.</span>
+        <span class="lb-small">
+          sends one <code>session_resume</code> per already-subscribed session; never re-fetches
+          history (<code>relay-client.ts:3723-3725</code>).
+        </span>
+        <span class="lb-badge accent">mechanism</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>The transcript's DOM: keep everything mounted, or window it</h2>
+  </div>
+  <p class="item-note">
+    Today <code>&lt;ol class="items"&gt;</code> (<code>+page.svelte:3433-3437</code>) renders every
+    item in <code>transcript.items</code>, keyed by id, no cap:
+    <code>{#each transcript?.items ?? [] as item, itemIndex (item.id)}</code>
+    (<code>:3439</code>). Nothing in the app uses <code>content-visibility</code> or
+    <code>contain-intrinsic-size</code>, grepped the whole of <code>apps/web/src</code>, zero hits. A
+    session that has run for hours pays the DOM, layout and paint cost of every turn it ever had, on
+    a phone exactly as much as on a desktop. The behaviour that actually rides on this: while
+    following, an <code>$effect</code> re-reads <code>el.scrollHeight</code> and sets
+    <code>el.scrollTop = el.scrollHeight</code> every time the transcript changes
+    (<code>:2228-2234</code>), scrolling away drops <code>followingTranscript</code> past a 48px
+    slack (<code>:2202</code>, <code>:2208-2211</code>), and <code>jumpToLatest</code>
+    (<code>:2213-2215</code>) re-attaches. <code>scrollHeight</code> is only trustworthy if every
+    item's real height is already known, which today it always is, because every item is mounted.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">Every item mounted, no cap</span>
+      </div>
+      <p class="opt-why">
+        Simplest code: <code>scrollHeight</code> is exact because every item's real height is
+        already laid out, so scroll-to-bottom-while-streaming is one line,
+        <code>el.scrollTop = el.scrollHeight</code>, correct on the first try. Costs a DOM, layout
+        and paint bill that only grows across a session's life, paid in full even while scrolled
+        away reading something else.
+      </p>
+      <div class="stage flush s-e1-stage">
+        <p class="stage-label">Transcript viewport, today</p>
+        <div class="s-e1-mock">
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">assistant: turn 41&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">tool_call: bash -lc "pnpm test"</span>
+          </div>
+          <div class="s-e1-fold">
+            <span class="lb-caption">viewport ends here</span>
+            <span class="lb-spacer"></span>
+            <button type="button" class="lb-iconbtn" aria-label="Jump to latest">
+              <svg><use href="#i-chevron-down" /></svg>
+            </button>
+          </div>
+          <div class="s-e1-row s-e1-mounted">
+            <span class="lb-badge">mounted, painted</span>
+            <span class="lb-mono">turn 5&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-mounted">
+            <span class="lb-badge">mounted, painted</span>
+            <span class="lb-mono">turn 4&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-mounted">
+            <span class="lb-badge">mounted, painted</span>
+            <span class="lb-mono">turn 3&hellip;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-1</span>
+        <span class="opt-title">Keep, and accept it</span>
+      </div>
+      <p class="opt-why">
+        Zero engineering, zero regression risk. Scroll-to-bottom-while-streaming stays exactly
+        Today's one-liner, exactly as long as that stays fast enough. Buys nothing new; costs a
+        session that gets slower to scroll, type in and switch away from the longer it runs, worse
+        on a phone than a desktop.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-2</span>
+        <span class="opt-title">content-visibility: auto per item</span>
+      </div>
+      <p class="opt-why">
+        A handful of CSS lines per item: <code>content-visibility: auto</code> plus a
+        <code>contain-intrinsic-size</code> guess skip layout and paint for whatever's off-screen
+        while every item stays mounted, findable and anchorable. Scroll-to-bottom-while-streaming
+        stays the same one line, and <code>scrollHeight</code> stays exact for it in the case that
+        matters most: a new item appears at the bottom of a session you're already following, so
+        it's on-screen at least once and its real height gets remembered from then on. Costs an
+        approximate <code>scrollHeight</code> for the rest of the session, the part nobody has
+        scrolled to yet.
+      </p>
+      <div class="stage flush s-e1-stage">
+        <p class="stage-label">Transcript viewport, content-visibility: auto</p>
+        <div class="s-e1-mock">
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">assistant: turn 41&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">tool_call: bash -lc "pnpm test"</span>
+          </div>
+          <div class="s-e1-fold"><span class="lb-caption">viewport ends here</span></div>
+          <div class="s-e1-row s-e1-skipped">
+            <span class="lb-badge warn">laid out, not painted</span>
+            <span class="lb-mono">turn 5&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-skipped">
+            <span class="lb-badge warn">laid out, not painted</span>
+            <span class="lb-mono">turn 4&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-skipped">
+            <span class="lb-badge warn">laid out, not painted</span>
+            <span class="lb-mono">turn 3&hellip;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-3</span>
+        <span class="opt-title">Real windowing</span>
+      </div>
+      <p class="opt-why">
+        Mount only the visible range: the fastest of the four, since an unmounted item costs
+        nothing at all, not even a skipped-layout box. Scroll-to-bottom-while-streaming stops being
+        one line: the virtualizer's own estimated total height shifts every time an off-screen
+        item's real height finally gets measured, so "stay pinned to the bottom while streaming"
+        needs the same active anchoring every virtualization library ships a dedicated mode for. It
+        also breaks native browser find and any anchor link into one item, since no transcript item
+        even carries a DOM id today (grepped, no match) and windowing would leave that permanently
+        true. Read #203 and #263 before citing this against search specifically: the planned
+        transcript search is designed to run against the underlying event model, not the DOM, and
+        its own acceptance criteria already require matching virtualized-but-unmounted items, so
+        windowing does not cost that one feature, contrary to the obvious assumption.
+      </p>
+      <div class="stage flush s-e1-stage">
+        <p class="stage-label">Transcript viewport, real windowing</p>
+        <div class="s-e1-mock">
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">assistant: turn 41&hellip;</span>
+          </div>
+          <div class="s-e1-row s-e1-visible">
+            <span class="lb-badge accent">seen</span>
+            <span class="lb-mono">tool_call: bash -lc "pnpm test"</span>
+          </div>
+          <div class="s-e1-fold"><span class="lb-caption">viewport ends here</span></div>
+          <div class="s-e1-row s-e1-unmounted">
+            <span class="lb-caption">not mounted, 38 turns, estimated height</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-4</span>
+        <span class="opt-title">content-visibility now, windowing if measurement says so</span>
+      </div>
+      <p class="opt-why">
+        Ships E1-2's win today, keeps every cost E1-3 would add (native find, anchor links, the
+        harder scroll-to-bottom math) off the table until a real session proves content-visibility
+        isn't enough. Scroll-to-bottom-while-streaming behaves exactly like E1-2, above, unless and
+        until that measurement flips this to E1-3. Buys the cheap win now without pre-paying the
+        expensive one's implementation cost; costs a second pass later if the measurement ever comes
+        back negative, and nothing here supplies that measurement yet.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="e2">
+  <div class="item-head">
+    <span class="item-id">E2</span>
+    <h2>Paced reveal: protecting against a burst, or against nothing</h2>
+  </div>
+  <p class="item-note">
+    <code>TextPacer</code> reveals a live turn's text on a 32ms tick, at least 2 characters and up
+    to 35% of the outstanding backlog per tick (<code>text-pacer.ts:37-39</code>, the constants;
+    <code>:112-125</code>, the tick itself). It exists so a burst of chunks doesn't dump straight
+    into the DOM and thrash it, per that file's own doc comment. But by the same formula's own
+    arithmetic, a 2,000-character block that already fully decrypted and arrived in one
+    <code>setTarget</code> call still takes about 16 ticks, roughly 512ms, to finish revealing on
+    screen: derived here from the shipped constants, not measured against a real burst. That is the
+    same shape of lag a slow network would produce, except this one is self-inflicted by the render
+    layer, on an agent that answered instantly. Only a genuinely live turn paces at all; replayed
+    history always renders in full the instant it mounts (<code>MessageItem.svelte:22-31</code>).
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">32ms tick, 35% catch-up, no ceiling</span>
+      </div>
+      <p class="opt-why">
+        Protects every burst size the same way, including sizes nobody has measured landing on a
+        slow device. Costs exactly what the note above derives: a fast agent's answer visibly
+        retypes for half a second, which reads as loombox being the slow part, not the agent.
+      </p>
+      <div class="stage s-e2-stage">
+        <p class="stage-label">Same text, faked reveal. Illustrative timing, not to scale.</p>
+        <div class="s-e2-lane">
+          <span class="lb-caption">Paced (today)</span>
+          <div class="s-e2-track">
+            <div class="s-e2-fill s-e2-fill-paced">
+              A fast agent's whole answer already decrypted, still typing itself out on screen.
+            </div>
+          </div>
+        </div>
+        <div class="s-e2-lane">
+          <span class="lb-caption">Immediate</span>
+          <div class="s-e2-track">
+            <div class="s-e2-fill s-e2-fill-immediate">
+              A fast agent's whole answer already decrypted, still typing itself out on screen.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E2-1</span>
+        <span class="opt-title">Keep as is</span>
+      </div>
+      <p class="opt-why">
+        No change, no risk. Costs exactly Today's own note: a fast agent gets penalized by its own
+        client for being fast.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E2-2</span>
+        <span class="opt-title">Raise the ceiling, name a tail budget</span>
+      </div>
+      <p class="opt-why">
+        Keep the pacer, a real burst-thrash guard still exists, but raise how much of the backlog a
+        tick can clear, tuned so the tail is never more than a stated number of milliseconds behind
+        arrival, for example three ticks, 96ms. Buys back nearly all the perceived lag on a fast
+        agent while keeping the original protection for a genuinely pathological burst. Costs a
+        number to pick and defend: "never more than Nms" has to be checked against a real device,
+        not just asserted.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E2-3</span>
+        <span class="opt-title">A preference: paced or immediate</span>
+      </div>
+      <p class="opt-why">
+        Hands the trade to whoever is actually watching the screen. Buys a real off switch for
+        anyone who wants terminal-like immediacy. Costs a second code path to keep correct (the
+        <code>turn_ended</code> flush still has to work either way) and a setting nobody finds
+        until they go looking for it, the same discoverability problem B2's "one global switch"
+        argument already made.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E2-4</span>
+        <span class="opt-title">Adapt to the device: immediate on desktop, paced on phones</span>
+      </div>
+      <p class="opt-why">
+        The burst-thrash risk this guards against is more a low-power CPU problem than a desktop
+        one, so scope the protection to where it is actually needed. Buys a fast agent feeling
+        instant on the machine most able to show it. Costs a device-class heuristic that has to be
+        right: viewport width is a poor proxy for CPU class, a low-end tablet at desktop width would
+        get the wrong answer, and now there are two behaviours to explain and test instead of one.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="e3">
+  <div class="item-head">
+    <span class="item-id">E3</span>
+    <h2>Where decryption happens</h2>
+  </div>
+  <p class="item-note">
+    Every envelope this client decrypts goes through one <code>crypto.subtle.decrypt</code>
+    AES-256-GCM call, on the tab's main thread, one at a time. <code>handleSessionUpdate</code>
+    (<code>relay-client.ts:4137-4138</code>) is one of a dozen handlers shaped exactly the same way,
+    each awaiting its own <code>openJson</code> independently instead of collecting a burst first.
+    The chain is <code>openJson</code> to <code>decryptEnvelope</code> to
+    <code>aesGcmDecrypt</code> to <code>crypto.subtle.decrypt</code>
+    (<code>packages/crypto/src/aead.ts:68-85</code>). The account's raw AMK lives as
+    <code>private readonly amk: Uint8Array</code> on the <code>RelayClient</code> instance for the
+    life of the tab (<code>relay-client.ts:1034</code>); <code>getSessionKey</code> derives each
+    session's AES key from it once and caches the resulting <code>CryptoKey</code>
+    (<code>:4835-4842</code>), imported extractable, not non-extractable
+    (<code>aead.ts:20-36</code>'s <code>true</code> argument). So a burst's real cost today is N
+    serial <code>subtle.decrypt</code> calls on already-cached keys, not N key derivations.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">Serial, main thread, no batching</span>
+      </div>
+      <p class="opt-why">
+        Simplest code, one call-site shape reused a dozen times. Costs a burst of N envelopes being
+        N sequential awaits on the same thread that is also laying out, painting and running Svelte
+        effects.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E3-1</span>
+        <span class="opt-title">Keep</span>
+      </div>
+      <p class="opt-why">
+        No change. Costs exactly what Today names, and it gets worse as the burst gets bigger.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E3-2</span>
+        <span class="opt-title">Batch a burst into one Promise.all</span>
+      </div>
+      <p class="opt-why">
+        A small change: collect whatever has arrived on the socket in one microtask turn and
+        decrypt it concurrently with <code>Promise.all</code> instead of one call after another.
+        Buys most of the throughput win, since <code>subtle.decrypt</code> is already async and a
+        browser can run several GCM operations at once, without moving a single byte of key
+        material anywhere new. Costs staying on the main thread: a big enough burst can still
+        visibly compete with a paint frame, and the win only shows up when messages actually arrive
+        clustered, which a WebSocket does not guarantee.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E3-3</span>
+        <span class="opt-title">Move decryption into a Web Worker</span>
+      </div>
+      <p class="opt-why">
+        Frees the main thread entirely: decrypt runs on its own thread, UI work never waits behind
+        it. This is a real security question, not a pure performance one, so state it plainly.
+        SPEC §8's whole model is about which network peer holds plaintext, device versus relay; it
+        says nothing about isolation between two same-origin JS contexts inside one tab, and a
+        Worker does not create the kind of boundary that stops an attacker who already runs code in
+        this origin: same-origin script can already spawn its own worker or reach the one loombox
+        creates. What does change: the AMK-derived key material now lives in two live JS heaps
+        instead of one, whether the worker re-derives from a copied AMK or every derived session
+        <code>CryptoKey</code> crosses a <code>postMessage</code> to reach it, a second file joins
+        the small set of AMK-touching call sites an audit has to walk, and none of this even trades
+        on non-extractability, since <code>aead.ts</code> already imports these keys extractable
+        (<code>:20-36</code>). Buys the main thread back in full. Costs a second execution context
+        to carry the account's key material through and review, for a boundary that does not
+        actually stop the attacker SPEC §8 is worried about.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E3-4</span>
+        <span class="opt-title">Worker plus batching</span>
+      </div>
+      <p class="opt-why">
+        Both changes stacked: <code>Promise.all</code> inside the worker's own message handler.
+        Buys the full throughput win with the main thread fully clear. Costs both of the above at
+        once, the worker's audit surface from E3-3 and the burst-timing dependency from E3-2, for
+        the one option that actually earns "fastest" of the four.
+      </p>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* E0 - the latency table. Section-local grid; lb-panel/lb-caption/lb-small/lb-badge do the rest. */
+  .s-e0-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) minmax(170px, 1.1fr) minmax(320px, 2.6fr) auto;
+    gap: var(--space-md);
+    align-items: start;
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-e0-row:last-child {
+    border-bottom: 0;
+  }
+
+  .s-e0-head {
+    background: var(--color-fill-subtle);
+    align-items: center;
+  }
+
+  /* E1 - the mounted / skipped / unmounted transcript row states. */
+  .s-e1-mock {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-md);
+  }
+
+  .s-e1-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-raised);
+  }
+
+  .s-e1-row.s-e1-visible {
+    border-color: var(--color-border);
+  }
+
+  .s-e1-row.s-e1-mounted {
+    opacity: 0.55;
+  }
+
+  .s-e1-row.s-e1-skipped {
+    opacity: 0.45;
+    border-style: dashed;
+  }
+
+  .s-e1-row.s-e1-unmounted {
+    justify-content: center;
+    padding: var(--space-3xs) var(--space-sm);
+    border-style: dashed;
+    background: transparent;
+    opacity: 0.5;
+  }
+
+  .s-e1-fold {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-3xs) 0;
+    margin: var(--space-2xs) 0;
+    border-top: 1px dashed var(--color-border);
+  }
+
+  /* E2 - two lanes faking a paced reveal against an immediate one. Durations
+     below are a deliberate illustration (per _shell.css's own exception),
+     not measured timing; the derived ~512ms figure lives in the prose. */
+  .s-e2-stage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .s-e2-lane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-e2-track {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    line-height: var(--text-code-line);
+    color: var(--color-text-primary);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .s-e2-fill {
+    clip-path: inset(0 100% 0 0);
+  }
+
+  .s-e2-fill-paced {
+    animation: s-e2-reveal-paced 3.6s steps(48, end) infinite;
+  }
+
+  .s-e2-fill-immediate {
+    animation: s-e2-reveal-immediate 3.6s steps(1, end) infinite;
+  }
+
+  @keyframes s-e2-reveal-paced {
+    0%,
+    6% {
+      clip-path: inset(0 100% 0 0);
+    }
+    75%,
+    92% {
+      clip-path: inset(0 0 0 0);
+    }
+    100% {
+      clip-path: inset(0 100% 0 0);
+    }
+  }
+
+  @keyframes s-e2-reveal-immediate {
+    0%,
+    6% {
+      clip-path: inset(0 100% 0 0);
+    }
+    6.5%,
+    92% {
+      clip-path: inset(0 0 0 0);
+    }
+    100% {
+      clip-path: inset(0 100% 0 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .s-e2-fill {
+      animation: none;
+      clip-path: inset(0 0 0 0);
+    }
+  }
+</style>

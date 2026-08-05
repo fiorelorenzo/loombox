@@ -1,0 +1,797 @@
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>The ground and the direction of layering</h2>
+  </div>
+  <p class="item-note">
+    Today the dark theme runs rail <code>#08090b</code>, bg <code>#0a0c0f</code>, surface
+    <code>#0e1114</code>, surface-raised <code>#101418</code> (<code>deck.css:30-33</code>), all
+    within 6 hex points of each other and at essentially zero chroma. The chrome (the rail) is the
+    single darkest value in the set: chrome sits below the canvas, which sits below the cards.
+    Zed's One Dark ground inverts that and adds real color: window <code>#3b414d</code>, panels
+    <code>#2f343e</code>, editor <code>#282c33</code>, a blue-grey around hue 220&deg; with roughly
+    10% saturation. The editor, the content well, is the deepest point; the chrome floats above it.
+    That inversion plus the chroma is a large share of why Zed reads as a dedicated tool and
+    loombox reads as a dark website. Borders and shadows are a separate question (A3); this is only
+    about which surface is darkest and whether the palette has any hue in it.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title"
+          >Chrome darkest, canvas and cards near-black and near-zero chroma</span
+        >
+      </div>
+      <p class="opt-why">
+        Coherent and shipped, but the four values sit close enough together that the ladder barely
+        reads at a glance, and none of them carry any hue.
+      </p>
+      <div class="stage">
+        <p class="stage-label">rail #08090b &middot; bg #0a0c0f &middot; surface #0e1114 &middot; raised #101418</p>
+        <div
+          class="s-a1-cockpit"
+          style="--f-rail:#08090b;--f-bg:#0a0c0f;--f-surface:#0e1114;--f-raised:#101418;--f-border:rgba(255,255,255,.16);--f-text:#e6e9ec;--f-text2:#8b9299;"
+        >
+          <div class="s-a1-rail">
+            <svg><use href="#i-inbox" /></svg>
+            <svg><use href="#i-folder" /></svg>
+            <svg><use href="#i-tracker" /></svg>
+          </div>
+          <div class="s-a1-canvas">
+            <div class="s-a1-turn">Fix relay reconnect backoff</div>
+            <div class="s-a1-answer">Reproduced. The backoff timer never clears on a clean reconnect.</div>
+          </div>
+          <div class="s-a1-panel">
+            <span class="s-a1-panel-head">Files</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>deck.css</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>relay-client.ts</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-1</span><span class="opt-title"
+          >Keep near-black, flip which one is darkest</span
+        >
+      </div>
+      <p class="opt-why">
+        A one-line swap: canvas becomes the deepest value, chrome moves one step lighter. Cheapest
+        possible change, and honestly, close to invisible: the four values are 2-6 hex points
+        apart, so re-ordering them barely registers on screen. It answers the letter of "flip the
+        direction" without touching the real complaint, which is the missing chroma.
+      </p>
+      <div class="stage">
+        <p class="stage-label">rail #0a0c0f &middot; bg #08090b &middot; surface #0e1114 &middot; raised #101418</p>
+        <div
+          class="s-a1-cockpit"
+          style="--f-rail:#0a0c0f;--f-bg:#08090b;--f-surface:#0e1114;--f-raised:#101418;--f-border:rgba(255,255,255,.16);--f-text:#e6e9ec;--f-text2:#8b9299;"
+        >
+          <div class="s-a1-rail">
+            <svg><use href="#i-inbox" /></svg>
+            <svg><use href="#i-folder" /></svg>
+            <svg><use href="#i-tracker" /></svg>
+          </div>
+          <div class="s-a1-canvas">
+            <div class="s-a1-turn">Fix relay reconnect backoff</div>
+            <div class="s-a1-answer">Reproduced. The backoff timer never clears on a clean reconnect.</div>
+          </div>
+          <div class="s-a1-panel">
+            <span class="s-a1-panel-head">Files</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>deck.css</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>relay-client.ts</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-2</span><span class="opt-title"
+          >Blue-grey layered ground, content darkest, real chroma</span
+        >
+      </div>
+      <p class="opt-why">
+        Four new values in loombox's own register (not Zed's exact hex), roughly 7 L* apart,
+        content darkest, chrome lightest, with an actual hue instead of grey. This is the change
+        that would visibly move the "does this look like a dev tool" needle. Cost: every screenshot
+        in every doc goes stale at once, the four status colors (success/warning/danger/info) need
+        their contrast re-checked against a lighter, more saturated ground than the near-black one
+        they were tuned for, and the existing alpha-white hairlines will read differently sitting on
+        a mid-tone instead of near-black, which pulls A3 into scope whether or not A3 is picked
+        separately.
+      </p>
+      <div class="stage">
+        <p class="stage-label">rail #3d434f &middot; bg #262a31 &middot; surface #2e333c &middot; raised #363c46</p>
+        <div
+          class="s-a1-cockpit"
+          style="--f-rail:#3d434f;--f-bg:#262a31;--f-surface:#2e333c;--f-raised:#363c46;--f-border:rgba(255,255,255,.14);--f-text:#e6e9ec;--f-text2:#a8adb8;"
+        >
+          <div class="s-a1-rail">
+            <svg><use href="#i-inbox" /></svg>
+            <svg><use href="#i-folder" /></svg>
+            <svg><use href="#i-tracker" /></svg>
+          </div>
+          <div class="s-a1-canvas">
+            <div class="s-a1-turn">Fix relay reconnect backoff</div>
+            <div class="s-a1-answer">Reproduced. The backoff timer never clears on a clean reconnect.</div>
+          </div>
+          <div class="s-a1-panel">
+            <span class="s-a1-panel-head">Files</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>deck.css</span>
+            <span class="s-a1-panel-row"><svg><use href="#i-file" /></svg>relay-client.ts</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-3</span><span class="opt-title"
+          >Ship both as named dark themes: "Deep" and "Slate"</span
+        >
+      </div>
+      <p class="opt-why">
+        Appearance already carries six accent presets plus a custom hex
+        (<code>AppearanceSettings.svelte:46-48,128-131</code>) and a dark/light/auto toggle on top of
+        that. A second dark ground slots into the same picker: "Deep" keeps today's near-black
+        values, "Slate" is A1-2's blue-grey ladder, both still cross the six accents. Buys either
+        look with no forced default, at the cost of doubling the QA matrix (two grounds &times; six
+        accents &times; contrast minimums) and diluting the point of this whole exercise, which is
+        picking one obvious answer, not shipping two.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Appearance &rsaquo; Theme</p>
+        <div class="s-a1-theme-list">
+          <div class="s-a1-theme-row">
+            <span class="s-a1-theme-strip">
+              <span style="background:#08090b"></span><span style="background:#0a0c0f"></span
+              ><span style="background:#0e1114"></span><span style="background:#101418"></span>
+            </span>
+            <span class="lb-small">Deep</span>
+            <span class="lb-spacer"></span>
+            <svg style="width:1rem;height:1rem;color:var(--color-accent)"><use href="#i-check" /></svg>
+          </div>
+          <div class="s-a1-theme-row">
+            <span class="s-a1-theme-strip">
+              <span style="background:#262a31"></span><span style="background:#2e333c"></span
+              ><span style="background:#363c46"></span><span style="background:#3d434f"></span>
+            </span>
+            <span class="lb-small">Slate</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a2">
+  <div class="item-head">
+    <span class="item-id">A2</span>
+    <h2>Density</h2>
+  </div>
+  <p class="item-note">
+    <code>--nav-row-height: 2.5rem</code>, 40px, sizes the sidebar's primary destination rows
+    (Inbox, Nodes and targets, Tracker) via <code>.destination-row</code>
+    (<code>tokens.css:71</code>, <code>+page.svelte:4194-4199</code>); a per-session row in a
+    project group has no such fixed height, it is padding-driven. <code>--topbar-height: 3rem</code>,
+    48px (<code>tokens.css:92</code>). Body text is <code>0.95rem</code>, 15.2px, and this is not
+    just a chrome number: <code>html</code> sets its font-size to it directly
+    (<code>typography.css:39,89</code>) and a transcript paragraph inherits it with no override of
+    its own, only headings and code get their own scale step
+    (<code>typography.css:62,521</code>). Code/mono text is <code>0.85rem</code>, 13.6px
+    (<code>typography.css:62</code>). A default `Button` computes to roughly 39px tall (md) or 26px
+    (sm) from its padding and line-height (<code>Button.svelte:240-246</code>), and a whole set of
+    controls (Button, IconButton, Input, Select, Checkbox, the ConfigBar trigger, PermissionCard's
+    answer buttons, PlanCard's header, the theme swatches) already jump to a 44px floor under
+    <code>@media (pointer: coarse)</code>, an explicit touch-target contract
+    (<code>Button.svelte:328-337</code>, SPEC.md &sect;7.3, issue #133). Zed's chrome runs
+    &sim;13.2px text, 22px default buttons, and a 4px spacing grid with a Compact/Default/
+    Comfortable multiplier. Any tightening here has to say what happens to the one nav surface with
+    no coarse-pointer floor today, and to the one token that both chrome and prose currently share.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">One scale, no density concept</span>
+      </div>
+      <p class="opt-why">
+        40px nav rows, 48px topbar, 15.2px body doing double duty as chrome and prose. Comfortable,
+        and roomier at every width than Zed's chrome, on purpose or not.
+      </p>
+      <div class="stage">
+        <p class="stage-label">nav row 40px &middot; topbar 48px &middot; body 15.2px</p>
+        <div class="s-a2-demo">
+          <div class="s-a2-topbar" style="height:48px">
+            <span class="s-a2-title" style="font-size:0.95rem">Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-a2-row" style="height:40px">
+            <span class="lb-dot ok"></span>
+            <span class="s-a2-title" style="font-size:0.95rem">Inbox</span>
+          </div>
+          <div class="s-a2-row" style="height:40px">
+            <span class="lb-dot"></span>
+            <span class="s-a2-title" style="font-size:0.95rem">Tracker</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A2-1</span><span class="opt-title">One tightened default, no setting</span>
+      </div>
+      <p class="opt-why">
+        Nav row 40&rarr;30px, topbar 48&rarr;36px, buttons &sim;39/26&rarr;26/20px, body
+        15.2&rarr;14.4px, code 13.6&rarr;12.8px. One diff, nothing to explain in Settings. What
+        breaks: <code>.destination-row</code> has <b>no coarse-pointer floor today</b>, unlike
+        Button/IconButton/Input, so shrinking it by 10px shrinks a real tap target on the tablet
+        session sheet with nothing to catch it, and the touch-safety net this codebase already
+        built covers controls, not nav rows.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Today</p>
+        <div class="s-a2-demo">
+          <div class="s-a2-topbar" style="height:48px">
+            <span class="s-a2-title" style="font-size:0.95rem">Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-a2-row" style="height:40px">
+            <span class="lb-dot ok"></span>
+            <span class="s-a2-title" style="font-size:0.95rem">Inbox</span>
+          </div>
+          <div class="s-a2-row" style="height:40px">
+            <span class="lb-dot"></span>
+            <span class="s-a2-title" style="font-size:0.95rem">Tracker</span>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top:var(--space-md)">A2-1</p>
+        <div class="s-a2-demo">
+          <div class="s-a2-topbar" style="height:36px">
+            <span class="s-a2-title" style="font-size:0.8rem">Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot ok"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Inbox</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Tracker</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A2-2</span><span class="opt-title">A three-step density setting</span>
+      </div>
+      <p class="opt-why">
+        One <code>--density</code> multiplier (0.8&times; / 1&times; / 1.15&times;, the same
+        localStorage-preference shape <code>accent.ts</code> already uses) scales the spacing tokens
+        plus nav-row-height, topbar-height and button padding, defaulting to the tightened middle
+        step (A2-1's own numbers). Buys Compact for people who want more, Comfortable for the ones
+        who don't, at the cost of a third state to test and a real gap: fixed contracts like
+        IconButton's 44px touch floor (<code>IconButton.svelte:9-13</code>) are deliberately
+        <b>not</b> supposed to shrink with density, so the multiplier needs explicit exemptions, not
+        a blanket application.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Appearance &rsaquo; Density</p>
+        <div class="lb-pill-group" role="radiogroup" aria-label="Density" style="margin-bottom:var(--space-md)">
+          <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">Compact</button>
+          <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true" aria-pressed="true">Default</button>
+          <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">Comfortable</button>
+        </div>
+        <div class="s-a2-demo">
+          <div class="s-a2-topbar" style="height:36px">
+            <span class="s-a2-title" style="font-size:0.8rem">Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot ok"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Inbox</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Tracker</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A2-3</span><span class="opt-title">Chrome only, prose untouched</span>
+      </div>
+      <p class="opt-why">
+        Same chrome numbers as A2-1 (nav row 30px, topbar 36px, buttons 26/20px), but
+        <code>--text-body-size</code>/<code>--text-body-line</code> stay exactly as they are: prose
+        is not chrome. The catch is that today those aren't two tokens, they're one: a transcript
+        <code>&lt;p&gt;</code> inherits the root font-size directly with no override
+        (<code>typography.css:39,89</code>; only headings and code get their own step, e.g.
+        <code>typography.css:521</code>). "Leave prose alone" is not free here, it means re-pinning
+        the transcript root's font-size back to 15.2px explicitly and auditing every heading/table
+        step sized relative to it, one component at a time.
+      </p>
+      <div class="stage">
+        <p class="stage-label">chrome tightened</p>
+        <div class="s-a2-demo">
+          <div class="s-a2-topbar" style="height:36px">
+            <span class="s-a2-title" style="font-size:0.8rem">Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot ok"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Inbox</span>
+          </div>
+          <div class="s-a2-row" style="height:30px">
+            <span class="lb-dot"></span>
+            <span class="s-a2-title" style="font-size:0.8rem">Tracker</span>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top:var(--space-md)">transcript prose, pinned at today's 15.2px/23.2px</p>
+        <div class="lb-row" style="border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:var(--space-sm)">
+          <div class="lb-row-gutter"><span class="lb-caption">Agent</span></div>
+          <div class="lb-row-body">
+            <p style="margin:0;font-size:0.95rem;line-height:1.45rem">Reproduced. The backoff timer never clears on a clean reconnect.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a3">
+  <div class="item-head">
+    <span class="item-id">A3</span>
+    <h2>Borders, fills and elevation</h2>
+  </div>
+  <p class="item-note">
+    Two different mechanisms are already in play today, and they don't have the same gap to Zed.
+    Interactive state (hover/selected on a session row) is already a fill step, not a border change:
+    hover is <code>--color-fill-subtle</code> (6% white), selected is <code>--color-fill</code>
+    (12% white) (<code>+page.svelte:4523-4529</code>), and that part already matches Zed's own
+    idiom. The real gap is the elevation ladder: <code>Card.svelte</code> maps <code>flat</code> to
+    surface + a 9% white border and no shadow, <code>raised</code> to surface-raised + a 16% border
+    and <code>--shadow-sm</code>, <code>floating</code> to surface-raised + a 28% border and
+    <code>--shadow-lg</code> (<code>Card.svelte:60-75</code>). Borders are translucent everywhere,
+    and there's a three-tier shadow scale used well beyond overlays: the composer carries
+    <code>--shadow-md</code> (<code>+page.svelte:5360-5362</code>, settled by v7's A1-3, "the field
+    sits on <code>--color-surface-raised</code> with a soft shadow... do not spread the shadow to
+    other surfaces"), and <code>PermissionCard</code> carries <code>--shadow-lg</code>
+    (<code>PermissionCard.svelte:251-252</code>). Zed uses opaque border colors, a fill step for
+    hover/selected, and essentially no shadow outside a popover or a modal. Any option here that
+    touches shadows has to reckon with the composer's shadow being an already-settled pick, not an
+    open question.
+  </p>
+  <div class="options stack">
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A3-1</span><span class="opt-title">Keep the hairlines and the shadow ladder</span>
+      </div>
+      <p class="opt-why">
+        Zero migration risk, and it doesn't reopen v7's A1-3: the composer and PermissionCard keep
+        exactly the lift they were given on purpose. Cost: this is precisely the softness Lorenzo
+        pointed at when he said Zed reads more dev-oriented. Translucent borders and drop shadows
+        read as a web app being careful about elevation; opaque borders read as a tool being
+        precise about layout.
+      </p>
+      <div class="stage">
+        <p class="stage-label">hover &middot; selected &middot; card ladder, today's tokens</p>
+        <div class="lb-panel" style="margin-bottom:var(--space-md)">
+          <div class="lb-listrow">
+            <span class="lb-dot"></span><span class="lb-small">Fix relay reconnect backoff</span>
+          </div>
+          <div class="lb-listrow" style="background:var(--color-fill-subtle)">
+            <span class="lb-dot"></span><span class="lb-small">Add MCP preset for GitHub</span>
+            <span class="lb-caption" style="margin-left:auto">hover</span>
+          </div>
+          <div class="lb-listrow" style="background:var(--color-fill)">
+            <span class="lb-dot ok"></span><span class="lb-small">Investigate terminal garbage</span>
+            <span class="lb-caption" style="margin-left:auto">selected</span>
+          </div>
+        </div>
+        <div class="s-a3-cards">
+          <div class="s-a3-card" style="background:var(--color-surface);border-color:var(--color-border-subtle)">flat</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:var(--color-border);box-shadow:var(--shadow-sm)">raised</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:var(--color-border-strong);box-shadow:var(--shadow-lg)">floating</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A3-2</span><span class="opt-title">Opaque borders, fill states, shadows only for modal and popover</span>
+      </div>
+      <p class="opt-why">
+        As stated this <b>collides with v7's settled A1-3</b>: "the composer is the only always-docked
+        control surface, and it is allowed to be the only lifted one... do not harmonise it back
+        flat." A composer is neither a modal nor a popover, so "shadows only for modal and popover"
+        flattens it unless it's added as a third named exception. Say so if this is the pick, or
+        fold the composer's shadow in explicitly.
+      </p>
+      <div class="stage">
+        <p class="stage-label">hover &middot; selected &middot; card ladder, opaque borders</p>
+        <div class="lb-panel" style="margin-bottom:var(--space-md);border-color:#33383f">
+          <div class="lb-listrow" style="border-color:#2b3038">
+            <span class="lb-dot"></span><span class="lb-small">Fix relay reconnect backoff</span>
+          </div>
+          <div class="lb-listrow" style="border-color:#2b3038;background:#171b20">
+            <span class="lb-dot"></span><span class="lb-small">Add MCP preset for GitHub</span>
+            <span class="lb-caption" style="margin-left:auto">hover</span>
+          </div>
+          <div class="lb-listrow" style="background:#20262d">
+            <span class="lb-dot ok"></span><span class="lb-small">Investigate terminal garbage</span>
+            <span class="lb-caption" style="margin-left:auto">selected</span>
+          </div>
+        </div>
+        <div class="s-a3-cards">
+          <div class="s-a3-card" style="background:var(--color-surface);border-color:#33383f">flat</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#3f454e">raised</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#4a5058">floating<br /><span class="lb-caption">modal/popover only: +shadow</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A3-3</span><span class="opt-title">Hybrid: fill states and opaque borders, two named survivors keep a shadow</span>
+      </div>
+      <p class="opt-why">
+        Same opaque-border, fill-step treatment as A3-2 everywhere, including <code>Card</code>'s own
+        raised/floating tiers, which lose their shadow. Exactly two surfaces keep one, both
+        already-settled: the composer (<code>--shadow-md</code>) and <code>PermissionCard</code>
+        (<code>--shadow-lg</code>). Every other overlay (dialogs, popovers) leans on the opaque
+        border plus the <code>--color-overlay</code> scrim already dimming the page behind it,
+        which does the separation job a shadow would otherwise do. This is the option that gets
+        Zed's opaque-border look without reopening v7's A1-3.
+      </p>
+      <div class="stage">
+        <p class="stage-label">card ladder loses its shadow &middot; composer and permission card keep theirs</p>
+        <div class="s-a3-cards" style="margin-bottom:var(--space-md)">
+          <div class="s-a3-card" style="background:var(--color-surface);border-color:#33383f">flat</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#3f454e">raised</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#4a5058">floating</div>
+        </div>
+        <div class="s-a3-cards">
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#3f454e;box-shadow:var(--shadow-md)">composer</div>
+          <div class="s-a3-card" style="background:var(--color-surface-raised);border-color:#4a5058;box-shadow:var(--shadow-lg)">permission card</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a4">
+  <div class="item-head">
+    <span class="item-id">A4</span>
+    <h2>Where monospace is allowed</h2>
+  </div>
+  <p class="item-note">
+    The base rule is <code>code, kbd, pre, samp, .font-mono</code> go monospace, described in
+    <code>typography.css:101-112</code> as covering "agent output, code, and diffs." In practice it
+    already reaches further than that phrase suggests: project paths
+    (<code>ArchiveSessionDialog.svelte:108</code>, <code>NewSessionDialog.svelte:238</code>),
+    connected-account hostnames (<code>ConnectedAccountsList.svelte:144</code>), the terminal's
+    cwd/shell/status (<code>InteractiveTerminal.svelte:434-448</code>), diff paths
+    (<code>DiffViewer.svelte:111,114</code>), the file tree (<code>FileTreePanel.svelte:249</code>),
+    the context-usage meter's numbers (<code>ConfigBar.svelte:739</code>, tabular figures per the
+    doc comment at <code>typography.css:22-26</code>), and, already, the topbar's own project/target
+    breadcrumb (<code>+page.svelte:5031</code>). What's still sans: a tool call's own title, e.g.
+    "Read package.json", is a plain <code>&lt;span&gt;</code>
+    (<code>GenericToolRow.svelte:169,308</code>); only its key/value payload fallback goes mono
+    (<code>GenericToolRow.svelte:181,342</code>). A session row's target label and relative
+    timestamp are plain text too (<code>+page.svelte:4582-4588</code>, no <code>font-family</code>
+    rule). Zed is sans-in-chrome, mono-in-buffer by default, but a dev tool reads as a dev tool
+    partly because identifiers are set apart from prose everywhere, not just in the editor.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Mono for code, diffs, terminal, paths and one meter, sans for the rest</span>
+      </div>
+      <p class="opt-why">
+        Inconsistent in a specific way: the topbar breadcrumb is already mono, but a tool call's own
+        title and a session row's target/timestamp are not, so "is this an identifier" gets a
+        different answer depending which row you're looking at.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Today</p>
+        <div class="s-a4-slice">
+          <div class="s-a4-topbar">
+            <span class="s-a4-title">Fix relay reconnect backoff</span>
+            <span class="s-a4-mono lb-muted">loombox-web &middot; MacBook-Pro-Lorenzo</span>
+          </div>
+          <div class="s-a4-row">
+            <span class="lb-dot ok"></span>
+            <span class="s-a4-title">Add MCP preset for GitHub</span>
+            <span class="lb-muted" style="margin-left:auto">MacBook-Pro-Lorenzo &middot; 2m ago</span>
+          </div>
+          <div class="s-a4-tool">
+            <svg><use href="#i-edit" /></svg>
+            <span class="s-a4-title">Edit mcp-server-store.ts</span>
+            <span class="lb-badge ok" style="margin-left:auto">Done</span>
+          </div>
+          <p class="s-a4-prose">Updated <span class="s-a4-mono">apps/web/src/lib/mcp-server-store.ts</span> to persist the new preset.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A4-1</span><span class="opt-title">Extend mono to every structural identifier</span>
+      </div>
+      <p class="opt-why">
+        Precisely: project paths, branch names, target and node names, session ids, tool names,
+        file names in tool rows, and all numeric figures (counts, durations, token and cost
+        numbers) go mono, everywhere, including inside prose. Consistent, but "all numbers" reaches
+        further than Zed's own habit: Zed's token-usage ring is mono because it's a tabular ratio
+        that needs its digits to line up (the same reason <code>ConfigBar</code>'s meter is mono
+        today); a lone relative timestamp like "2m ago" has nothing to align against, so making it
+        mono buys the label a different typeface without buying it the reason that typeface exists.
+      </p>
+      <div class="stage">
+        <p class="stage-label">A4-1</p>
+        <div class="s-a4-slice">
+          <div class="s-a4-topbar">
+            <span class="s-a4-title">Fix relay reconnect backoff</span>
+            <span class="s-a4-mono lb-muted">loombox-web &middot; MacBook-Pro-Lorenzo</span>
+          </div>
+          <div class="s-a4-row">
+            <span class="lb-dot ok"></span>
+            <span class="s-a4-title">Add MCP preset for GitHub</span>
+            <span class="s-a4-mono lb-muted" style="margin-left:auto">MacBook-Pro-Lorenzo &middot; 2m ago</span>
+          </div>
+          <div class="s-a4-tool">
+            <svg><use href="#i-edit" /></svg>
+            <span class="s-a4-title s-a4-mono">Edit mcp-server-store.ts</span>
+            <span class="lb-badge ok" style="margin-left:auto">Done</span>
+          </div>
+          <p class="s-a4-prose">Updated <span class="s-a4-mono">apps/web/src/lib/mcp-server-store.ts</span> to persist the new preset.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A4-2</span><span class="opt-title">Same, minus file paths inside prose</span>
+      </div>
+      <p class="opt-why">
+        Identical to A4-1 on every structural row shown above; the difference lives entirely in
+        running Markdown text. A path mentioned mid-sentence stays in the paragraph's own sans font,
+        matching how a bare word already reads today: only an explicit
+        <code>`code`</code> span, a deliberate choice by whoever wrote the sentence, still renders
+        mono (<code>.lb-prose p &gt; code</code>). A long, slash-heavy path breaks the even rhythm
+        of a 1.45rem/23.2px prose line more than a short mono word would, and that's the one place
+        the identifier convention can cost more reading time than it buys.
+      </p>
+      <div class="stage">
+        <p class="stage-label">A4-2, topbar/row/tool identical to A4-1</p>
+        <div class="s-a4-slice">
+          <div class="s-a4-topbar">
+            <span class="s-a4-title">Fix relay reconnect backoff</span>
+            <span class="s-a4-mono lb-muted">loombox-web &middot; MacBook-Pro-Lorenzo</span>
+          </div>
+          <div class="s-a4-row">
+            <span class="lb-dot ok"></span>
+            <span class="s-a4-title">Add MCP preset for GitHub</span>
+            <span class="s-a4-mono lb-muted" style="margin-left:auto">MacBook-Pro-Lorenzo &middot; 2m ago</span>
+          </div>
+          <div class="s-a4-tool">
+            <svg><use href="#i-edit" /></svg>
+            <span class="s-a4-title s-a4-mono">Edit mcp-server-store.ts</span>
+            <span class="lb-badge ok" style="margin-left:auto">Done</span>
+          </div>
+          <p class="s-a4-prose">Updated apps/web/src/lib/mcp-server-store.ts to persist the new preset.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* A1: three-column cockpit fragment, colours pinned per option via
+     --f-* custom properties so the comparison holds regardless of the
+     artifact's own light/dark toggle. */
+  .s-a1-cockpit {
+    display: grid;
+    grid-template-columns: 2.75rem 1fr 9rem;
+    height: 11rem;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--f-border);
+  }
+
+  .s-a1-rail {
+    background: var(--f-rail);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-md);
+    padding-top: var(--space-md);
+  }
+
+  .s-a1-rail svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    color: var(--f-text2);
+  }
+
+  .s-a1-canvas {
+    background: var(--f-bg);
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .s-a1-turn {
+    align-self: flex-end;
+    max-width: 85%;
+    background: var(--f-raised);
+    border: 1px solid var(--f-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--text-small-size);
+    color: var(--f-text);
+  }
+
+  .s-a1-answer {
+    max-width: 90%;
+    font-size: var(--text-small-size);
+    color: var(--f-text);
+  }
+
+  .s-a1-panel {
+    background: var(--f-surface);
+    border-left: 1px solid var(--f-border);
+    padding: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-a1-panel-head {
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--f-text2);
+  }
+
+  .s-a1-panel-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--text-small-size);
+    color: var(--f-text);
+  }
+
+  .s-a1-panel-row svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    color: var(--f-text2);
+    flex: none;
+  }
+
+  .s-a1-theme-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-a1-theme-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-a1-theme-row:last-child {
+    border-bottom: 0;
+  }
+
+  .s-a1-theme-strip {
+    display: flex;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  .s-a1-theme-strip span {
+    width: 1.1rem;
+    height: 1.5rem;
+  }
+
+  /* A2: a nav/topbar demo whose heights and font-sizes are set inline
+     per instance: they are the exact measurement under discussion. */
+  .s-a2-demo {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .s-a2-topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0 var(--space-md);
+    background: var(--color-rail);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-a2-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0 var(--space-md);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-a2-row:last-child {
+    border-bottom: 0;
+  }
+
+  .s-a2-title {
+    font-weight: 600;
+    color: var(--color-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* A3: the elevation ladder, three cards side by side. */
+  .s-a3-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-sm);
+  }
+
+  .s-a3-card {
+    padding: var(--space-md);
+    border: 1px solid;
+    border-radius: var(--radius-lg);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    text-align: center;
+  }
+
+  /* A4: one cockpit slice, mono applied selectively per option. */
+  .s-a4-slice {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .s-a4-topbar,
+  .s-a4-row,
+  .s-a4-tool {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .s-a4-tool svg {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-secondary);
+    flex: none;
+  }
+
+  .s-a4-title {
+    font-weight: 500;
+    color: var(--color-text-primary);
+  }
+
+  .s-a4-prose {
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-a4-mono {
+    font-family: var(--font-mono);
+  }
+</style>

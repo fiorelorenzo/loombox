@@ -1,0 +1,1299 @@
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>Reviewing what the agent changed</h2>
+  </div>
+  <p class="item-note">
+    Today a diff renders once, inside the tool call that produced it: <code>EditWriteWidget.svelte:88-90</code>
+    mounts <code>DiffViewer</code> straight into that one call's own collapsible body, and
+    <code>DiffViewer.svelte:50-51</code> already computes <code>added</code>/<code>removed</code> line counts, but
+    only for that single file. Every tool call already carries a <code>turnId</code>
+    (<code>transcript.ts:38-45</code>), so the data to add up "what did this turn touch" is sitting right there in
+    the client's own state, nothing aggregates it into one place. Three edits in one turn are three separate cards
+    to open, each with its own stat line, and no answer anywhere to "3 files, how many lines total". This is the
+    thing in Lorenzo's screenshots: Zed's bar above the composer reads <code>Edits · 3 files · +95 −17</code>, with
+    <code>Reject All</code> / <code>Keep All</code> and a <code>Review Changes</code> view stacking every edited
+    file with per-hunk keep/reject.
+  </p>
+  <p class="item-note">
+    Be honest about why that is not a small gap. In Zed the editor owns the buffer, so "reject" is an in-memory
+    undo. In loombox the agent writes straight to a worktree on the node: issue #603 ("Wire GitCheckpointStore into
+    session lifecycle and the wire protocol", open) exists precisely because "no session owns a
+    <code>GitCheckpointStore</code>, and there is no way for a client to trigger a checkpoint or rollback" yet, and
+    it blocks issue #268 ("Checkpoint/rollback UI flow", open), whose own body says plainly it "needs this wiring to
+    have anything to call." A reject button with nothing to revert to is a lie on screen.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">Diffs live only inside the tool card that made them</span>
+      </div>
+      <p class="opt-why">
+        Three edits, three cards, three separate places to look, and nothing above the composer says what the turn
+        did as a whole.
+      </p>
+      <div class="stage flush">
+        <div class="s-c1-transcript">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c1-gicon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body">
+              <div class="s-c1-toolline">
+                <span class="s-c1-tooltitle">Edit packages/protocol/src/v1/transcript.ts</span>
+                <span class="lb-spacer"></span>
+                <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+                <span class="lb-dot ok md"></span>
+              </div>
+            </div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c1-gicon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body">
+              <div class="s-c1-toolline">
+                <span class="s-c1-tooltitle">Edit packages/providers/core/src/client.ts</span>
+                <span class="lb-spacer"></span>
+                <span class="s-c1-stat"><span class="s-c1-added">+31</span><span class="s-c1-removed">−5</span></span>
+                <span class="lb-dot ok md"></span>
+              </div>
+            </div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c1-gicon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body">
+              <div class="s-c1-toolline">
+                <span class="s-c1-tooltitle">Edit apps/web/src/lib/tool-widgets.ts</span>
+                <span class="lb-spacer"></span>
+                <span class="s-c1-stat"><span class="s-c1-added">+22</span><span class="s-c1-removed">−3</span></span>
+                <span class="lb-dot ok md"></span>
+              </div>
+            </div>
+          </div>
+          <p class="lb-caption s-c1-note">no bar, no total, above the composer</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-1</span>
+        <span class="opt-title">Keep diffs inside their tool cards</span>
+      </div>
+      <p class="opt-why">
+        Nothing new to build and nothing new to misread, since every diff sits exactly where the call that produced
+        it left it. Costs the one thing the screenshots actually asked for: no way to see everything a turn touched
+        without opening every card that touched something.
+      </p>
+      <div class="stage flush">
+        <div class="s-c1-transcript">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c1-gicon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body">
+              <div class="s-c1-toolline">
+                <span class="s-c1-tooltitle">Edit packages/protocol/src/v1/transcript.ts</span>
+                <span class="lb-spacer"></span>
+                <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+                <span class="lb-dot ok md"></span>
+              </div>
+            </div>
+          </div>
+          <p class="lb-caption s-c1-note">two more cards below this one, same shape, no aggregate anywhere</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-2</span>
+        <span class="opt-title">A read-only turn summary bar</span>
+      </div>
+      <p class="opt-why">
+        One bar above the composer, file count plus total lines, built entirely from data the client already holds
+        (each tool call's own <code>turnId</code> and <code>diff</code>, no new wire message). Expands to per-file
+        rows that jump to the diff already sitting in its own card. No keep, no reject, so it never has to answer
+        what happens on disk when you press one.
+      </p>
+      <div class="stage flush">
+        <p class="stage-label">Collapsed</p>
+        <div class="s-c1-bar">
+          <svg class="s-c1-bar-icon"><use href="#i-edit" /></svg>
+          <span class="s-c1-bar-label">Edits</span>
+          <span class="lb-small lb-muted">3 files</span>
+          <span class="s-c1-stat"><span class="s-c1-added">+95</span><span class="s-c1-removed">−17</span></span>
+          <span class="lb-spacer"></span>
+          <button class="lb-iconbtn" aria-label="Expand edits" aria-expanded="false">
+            <svg><use href="#i-chevron-down" /></svg>
+          </button>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-md)">Expanded</p>
+        <div class="s-c1-bar">
+          <svg class="s-c1-bar-icon"><use href="#i-edit" /></svg>
+          <span class="s-c1-bar-label">Edits</span>
+          <span class="lb-small lb-muted">3 files</span>
+          <span class="s-c1-stat"><span class="s-c1-added">+95</span><span class="s-c1-removed">−17</span></span>
+          <span class="lb-spacer"></span>
+          <button class="lb-iconbtn" aria-label="Collapse edits" aria-expanded="true">
+            <svg><use href="#i-chevron-down" /></svg>
+          </button>
+        </div>
+        <div class="s-c1-bar-files">
+          <button type="button" class="lb-listrow s-c1-filerow">
+            <svg><use href="#i-file" /></svg>
+            <span class="s-c1-filepath lb-mono">packages/protocol/src/v1/transcript.ts</span>
+            <span class="lb-spacer"></span>
+            <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+          </button>
+          <button type="button" class="lb-listrow s-c1-filerow">
+            <svg><use href="#i-file" /></svg>
+            <span class="s-c1-filepath lb-mono">packages/providers/core/src/client.ts</span>
+            <span class="lb-spacer"></span>
+            <span class="s-c1-stat"><span class="s-c1-added">+31</span><span class="s-c1-removed">−5</span></span>
+          </button>
+          <button type="button" class="lb-listrow s-c1-filerow">
+            <svg><use href="#i-file" /></svg>
+            <span class="s-c1-filepath lb-mono">apps/web/src/lib/tool-widgets.ts</span>
+            <span class="lb-spacer"></span>
+            <span class="s-c1-stat"><span class="s-c1-added">+22</span><span class="s-c1-removed">−3</span></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-3</span>
+        <span class="opt-title">Turn summary plus a stacked Review Changes surface</span>
+      </div>
+      <p class="opt-why">
+        Same read-only bar, plus a second surface that stacks every file the turn changed with its diff in place, so
+        reading the whole turn stops meaning scroll-and-remember across separate cards. Still nothing to click that
+        touches a file: this is a second reading of the same diffs, not a new capability over them.
+      </p>
+      <div class="stage flush">
+        <div class="s-c1-bar">
+          <svg class="s-c1-bar-icon"><use href="#i-edit" /></svg>
+          <span class="s-c1-bar-label">Edits</span>
+          <span class="lb-small lb-muted">3 files</span>
+          <span class="s-c1-stat"><span class="s-c1-added">+95</span><span class="s-c1-removed">−17</span></span>
+          <span class="lb-spacer"></span>
+          <button class="lb-btn lb-btn-sm lb-btn-ghost">Review Changes</button>
+        </div>
+        <div class="s-c1-review">
+          <div class="s-c1-review-head">
+            <span class="s-c1-review-title">Review Changes</span>
+            <span class="lb-caption">3 files</span>
+          </div>
+          <div class="s-c1-review-file">
+            <div class="s-c1-review-file-head">
+              <span class="lb-mono">packages/protocol/src/v1/transcript.ts</span>
+              <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+            </div>
+            <div class="s-c1-diff">
+              <div class="s-c1-diff-line s-c1-diff-removed">-  cost: number;</div>
+              <div class="s-c1-diff-line s-c1-diff-added">+  cost: { amount: number; currency: string } | null;</div>
+            </div>
+          </div>
+          <div class="s-c1-review-file">
+            <div class="s-c1-review-file-head">
+              <span class="lb-mono">packages/providers/core/src/client.ts</span>
+              <span class="s-c1-stat"><span class="s-c1-added">+31</span><span class="s-c1-removed">−5</span></span>
+            </div>
+            <div class="s-c1-diff">
+              <div class="s-c1-diff-line s-c1-diff-removed">-      costUsd: update.cost,</div>
+              <div class="s-c1-diff-line s-c1-diff-added">+      costUsd: update.cost?.currency === 'USD' ? update.cost.amount : undefined,</div>
+            </div>
+          </div>
+          <p class="lb-caption s-c1-note">+ 1 more file</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-4</span>
+        <span class="opt-title">Full keep or reject, per file and per hunk</span>
+      </div>
+      <p class="opt-why">
+        Depends on the git checkpoint work landing first: #603 (open) wires a <code>GitCheckpointStore</code> into a
+        running session and the wire protocol, #268 (open) is blocked on #603 and builds the confirmation UI for a
+        destructive rollback. Until #603 lands there is nothing on the node for a Reject button to call. Once it
+        does, this is what the screenshots show: <code>Reject All</code> / <code>Keep All</code> on the bar,
+        per-file and per-hunk buttons inside Review Changes.
+      </p>
+      <div class="stage flush">
+        <div class="s-c1-bar">
+          <svg class="s-c1-bar-icon"><use href="#i-edit" /></svg>
+          <span class="s-c1-bar-label">Edits</span>
+          <span class="lb-small lb-muted">3 files</span>
+          <span class="s-c1-stat"><span class="s-c1-added">+95</span><span class="s-c1-removed">−17</span></span>
+          <span class="lb-spacer"></span>
+          <button class="lb-btn lb-btn-sm lb-btn-danger">Reject All</button>
+          <button class="lb-btn lb-btn-sm lb-btn-primary">Keep All</button>
+        </div>
+        <div class="s-c1-bar-files">
+          <div class="lb-listrow s-c1-filerow">
+            <svg><use href="#i-file" /></svg>
+            <span class="s-c1-filepath lb-mono">packages/protocol/src/v1/transcript.ts</span>
+            <span class="lb-spacer"></span>
+            <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+            <button class="lb-iconbtn" aria-label="Reject file"><svg><use href="#i-x" /></svg></button>
+            <button class="lb-iconbtn" aria-label="Keep file"><svg><use href="#i-check" /></svg></button>
+          </div>
+        </div>
+        <div class="s-c1-review">
+          <div class="s-c1-review-head">
+            <span class="s-c1-review-title">Review Changes</span>
+            <span class="lb-caption">3 files</span>
+          </div>
+          <div class="s-c1-review-file">
+            <div class="s-c1-review-file-head">
+              <span class="lb-mono">packages/protocol/src/v1/transcript.ts</span>
+              <span class="s-c1-stat"><span class="s-c1-added">+42</span><span class="s-c1-removed">−9</span></span>
+            </div>
+            <div class="s-c1-diff">
+              <div class="s-c1-hunk">
+                <div class="s-c1-diff-line s-c1-diff-removed">-  cost: number;</div>
+                <div class="s-c1-diff-line s-c1-diff-added">+  cost: { amount: number; currency: string } | null;</div>
+                <div class="s-c1-hunk-actions">
+                  <button class="lb-iconbtn" aria-label="Reject hunk"><svg><use href="#i-x" /></svg></button>
+                  <button class="lb-iconbtn" aria-label="Keep hunk"><svg><use href="#i-check" /></svg></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c2">
+  <div class="item-head">
+    <span class="item-id">C2</span>
+    <h2>Getting context into the prompt</h2>
+  </div>
+  <p class="item-note">
+    Today's composer placeholder still promises exactly one thing: <code>Enter to send · Shift+Enter for a new line
+    · @ to reference a file</code> (<code>+page.svelte:3575-3576</code>). That promise is kept, and it is the whole
+    feature. <code>FileReferencePicker</code> is fully wired: imported at <code>+page.svelte:82</code>, mounted at
+    <code>:3903-3908</code>, opened by <code>handleComposerInput</code> the moment you type <code>@</code>
+    (<code>:1678-1690</code>), and a pick runs through <code>insertFileReference</code>
+    (<code>:1703-1713</code>), which splices a literal <code>@path</code> string into the draft text at the caret.
+    There is no chip, no pill, no removable token: it is characters in a textarea, indistinguishable from anything
+    else you typed, and the picker itself only searches files, never directories
+    (<code>FileReferencePicker.test.ts:60-61</code>, "excludes directories from the results, only files are @file
+    targets"). Drag-drop and paste-image do not exist on the composer at all today; the only attachment path is the
+    separate "Attach image" button (<code>+page.svelte:3579</code>), a file-picker dialog, not a picker result.
+  </p>
+  <p class="item-note">
+    Zed's picker covers files, symbols, past threads, rules and diagnostics, plus drag-drop and paste-image, each
+    rendered as a removable pill, and separately exposes agent-declared slash commands, including MCP prompts, as
+    <code>/name</code>. loombox does not: the ohmypi test provider's own doc comment says its prompting "emits
+    <code>available_commands_update</code>" (<code>packages/providers/ohmypi/src/provider.ts:22-26</code>), but that
+    string appears nowhere else in the repo. The wire client's own mapping function has no case for it:
+    <code>mapToTranscriptUpdate</code>'s <code>switch</code> (<code>client.ts:409-461</code>) lists every kind it
+    understands and falls through to <code>default: return undefined</code> for anything else, so an
+    <code>available_commands_update</code> from a real agent is silently dropped today, not queued for a future
+    feature, dropped.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">@file inserts plain text, files only</span>
+      </div>
+      <p class="opt-why">Typing <code>@</code> opens a file search; picking a result writes <code>@path</code> as ordinary characters into the draft, with nothing marking where the reference starts or ends.</p>
+      <div class="stage flush">
+        <div class="s-c2-composer">
+          <div class="s-c2-text">Can you check <span class="s-c2-mention-plain">@packages/node/src/relay-client.ts</span> for the reconnect bug before we ship</div>
+          <p class="lb-caption s-c2-hint">Enter to send · Shift+Enter for a new line · @ to reference a file</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C2-1</span>
+        <span class="opt-title">Keep it as plain-text @file only</span>
+      </div>
+      <p class="opt-why">
+        Nothing to build. Costs the ability to see, at a glance, which words in a long prompt are actually file
+        references versus prose that happens to mention a path, and there is no way to remove a reference except
+        editing text around it.
+      </p>
+      <div class="stage flush">
+        <div class="s-c2-composer">
+          <div class="s-c2-text">Look at <span class="s-c2-mention-plain">@apps/web/src/lib/tool-widgets.ts</span> and tell me why</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C2-2</span>
+        <span class="opt-title">Finish @-mentions: files and directories, as pills</span>
+      </div>
+      <p class="opt-why">
+        A picked file or directory becomes a removable pill above the field instead of inline text, and directories
+        join files in the search (<code>flattenLoadedFiles</code> already walks the whole loaded tree, it just gets
+        filtered to files only today). The prompt itself stays plain prose; the reference lives beside it, not
+        inside it.
+      </p>
+      <div class="stage flush">
+        <div class="s-c2-composer">
+          <div class="s-c2-pills">
+            <span class="s-c2-pill"><svg><use href="#i-file" /></svg>relay-client.ts<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+            <span class="s-c2-pill"><svg><use href="#i-folder" /></svg>packages/providers/core/src<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+          </div>
+          <div class="s-c2-text">Can you check the reconnect backoff logic against </div>
+          <div class="s-c2-popover">
+            <input class="lb-input" placeholder="Reference a file or directory…" readonly />
+            <ul class="s-c2-popover-list">
+              <li class="lb-listrow s-c2-popover-item active"><svg><use href="#i-file" /></svg>packages/node/src/relay-client.ts</li>
+              <li class="lb-listrow s-c2-popover-item"><svg><use href="#i-folder" /></svg>apps/web/src/lib</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C2-3</span>
+        <span class="opt-title">Plus past sessions and tracker items</span>
+      </div>
+      <p class="opt-why">
+        Same pill mechanism, two more sources: a past session (searched by title) and a tracker item (searched by
+        id or title). This is something Zed cannot do at all, since it has no built-in tracker; loombox's picker
+        gets to reach into data Zed's never will.
+      </p>
+      <div class="stage flush">
+        <div class="s-c2-composer">
+          <div class="s-c2-pills">
+            <span class="s-c2-pill"><svg><use href="#i-file" /></svg>relay-client.ts<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+            <span class="s-c2-pill"><svg><use href="#i-tracker" /></svg>LBX-142<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+          </div>
+          <div class="s-c2-text">Following up on this bug, does the same backoff logic apply to </div>
+          <div class="s-c2-popover">
+            <div class="lb-pill-group" role="tablist" aria-label="Reference kind">
+              <button class="lb-btn lb-btn-sm" role="tab" aria-selected="true">Files</button>
+              <button class="lb-btn lb-btn-sm" role="tab" aria-selected="false">Sessions</button>
+              <button class="lb-btn lb-btn-sm" role="tab" aria-selected="false">Tracker</button>
+            </div>
+            <ul class="s-c2-popover-list">
+              <li class="lb-listrow s-c2-popover-item active"><svg><use href="#i-file" /></svg>packages/node/src/relay-client.ts</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C2-4</span>
+        <span class="opt-title">Plus slash commands, driven by whatever the agent declares</span>
+      </div>
+      <p class="opt-why">
+        Depends on wiring <code>available_commands_update</code> into the reducer first, since today
+        <code>mapToTranscriptUpdate</code> drops it on the floor (<code>client.ts:409-461</code>). Once that lands,
+        typing <code>/</code> lists exactly what the connected agent declared, MCP prompts included, never a
+        hardcoded loombox command list.
+      </p>
+      <div class="stage flush">
+        <div class="s-c2-composer">
+          <div class="s-c2-pills">
+            <span class="s-c2-pill"><svg><use href="#i-file" /></svg>relay-client.ts<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+            <span class="s-c2-pill"><svg><use href="#i-folder" /></svg>packages/providers/core/src<button class="s-c2-pill-x" aria-label="Remove reference"><svg><use href="#i-x" /></svg></button></span>
+          </div>
+          <div class="s-c2-text"><span class="s-c2-slash">/plan</span> the reconnect fix against </div>
+          <div class="s-c2-popover">
+            <div class="lb-pill-group" role="tablist" aria-label="Reference kind">
+              <button class="lb-btn lb-btn-sm" role="tab" aria-selected="false">Files</button>
+              <button class="lb-btn lb-btn-sm" role="tab" aria-selected="true">Commands</button>
+            </div>
+            <ul class="s-c2-popover-list">
+              <li class="lb-listrow s-c2-popover-item active"><span class="lb-mono s-c2-slash-item">/plan</span><span class="lb-small lb-muted">Draft a plan before editing</span></li>
+              <li class="lb-listrow s-c2-popover-item"><span class="lb-mono s-c2-slash-item">/review</span><span class="lb-small lb-muted">MCP prompt from linear-server</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c3">
+  <div class="item-head">
+    <span class="item-id">C3</span>
+    <h2>The tool row: icon, duration, tokens</h2>
+  </div>
+  <p class="item-note">
+    v7 settled the one-line shape and is not being reopened here: a completed call rests as one line, command plus
+    outcome, disclosure closed (C1-1), and a failure force-expands (C2-1). What is open is what shares that one
+    line. loombox already has per-kind icon infrastructure, but only two tool kinds actually use it: the tier-1
+    bespoke table is <code>'edit-write' | 'bash' | 'todo' | 'generic'</code>
+    (<code>tool-widgets.ts:22</code>), and only <code>tool-edit</code> and <code>tool-bash</code> exist as distinct
+    glyphs (<code>icon-paths.ts:57-59</code> lists exactly <code>tool-bash</code>, <code>tool-edit</code>,
+    <code>tool-generic</code>). Every other ACP tool kind, read, search, fetch, delete, move
+    (<code>acp-wire-schema.ts:44-54</code>), falls through to <code>GenericToolRow</code>, which hardcodes
+    <code>icon="tool-generic"</code> regardless of the real kind (<code>GenericToolRow.svelte:163</code>): a search
+    call and a fetch call render the same wrench glyph. Status tone already exists per call
+    (<code>TOOL_CALL_STATUS_TONES</code>, <code>tool-widgets.ts:186-191</code>), so that part is free. Duration is
+    not: <code>TranscriptToolCallItem</code> carries <code>id</code>, <code>turnId</code>, <code>title</code>,
+    <code>toolKind</code>, <code>status</code>, <code>diff</code>, <code>rawInput</code>, <code>content</code>,
+    <code>parentToolCallId</code> (<code>transcript.ts:38-49</code>) and nothing that looks like a timestamp; ACP
+    itself never sends a start or end time for a tool call. Token attribution is also not there:
+    <code>usage_update</code> "is session-level (no per-tool attribution)" (<code>SPEC.md:1656</code>), a flat
+    <code>{used, size, cost}</code> with no link to any tool call at all.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">One line, two real icons, no timing, no cost</span>
+      </div>
+      <p class="opt-why">Edit and bash get their own glyph; search, read and fetch all render the same generic wrench.</p>
+      <div class="stage flush">
+        <div class="s-c3-run">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Edit src/relay-client.ts</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-terminal" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">pnpm vitest run relay-client.test.ts</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-drag" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Search for turnIdleMs</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-drag" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Read packages/protocol/src/v1/transcript.ts</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-drag" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Fetch agentclientprotocol.com/protocol/v1/schema</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+        </div>
+        <p class="lb-caption s-c1-note">search, read and fetch: same glyph, all three</p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C3-1</span>
+        <span class="opt-title">Keep the row as it is</span>
+      </div>
+      <p class="opt-why">Cheapest, and the one-line shape itself stays exactly what v7 settled. Costs the icon column meaning less than it could, and no sense of how long anything took.</p>
+      <div class="stage flush">
+        <div class="s-c3-run">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Edit src/relay-client.ts</span><span class="lb-spacer"></span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C3-2</span>
+        <span class="opt-title">A real per-kind icon, plus elapsed time</span>
+      </div>
+      <p class="opt-why">
+        Search, read and fetch each earn their own glyph instead of sharing the wrench, and the row gets a duration.
+        Duration has to be measured client-side, first tool-call sighting to last update, since ACP never sends a
+        timestamp: it is a stopwatch on our own clock, not the agent's.
+      </p>
+      <div class="stage flush">
+        <div class="s-c3-run">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Edit src/relay-client.ts</span><span class="lb-spacer"></span><span class="s-c3-duration lb-caption">1.2s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-terminal" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">pnpm vitest run relay-client.test.ts</span><span class="lb-spacer"></span><span class="s-c3-duration lb-caption">6.8s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-search" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Search for turnIdleMs</span><span class="lb-spacer"></span><span class="s-c3-duration lb-caption">0.4s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-file" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Read packages/protocol/src/v1/transcript.ts</span><span class="lb-spacer"></span><span class="s-c3-duration lb-caption">0.1s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-link" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Fetch agentclientprotocol.com/protocol/v1/schema</span><span class="lb-spacer"></span><span class="s-c3-duration lb-caption">2.1s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C3-3</span>
+        <span class="opt-title">Plus token or cost, where the agent reports it</span>
+      </div>
+      <p class="opt-why">
+        Same row, plus a token or cost figure when a call can honestly claim one. Since <code>usage_update</code>
+        carries no <code>toolCallId</code> at all (<code>SPEC.md:1656</code>), any per-call number is a client-side
+        attribution heuristic on top of a session-level total, not a real per-tool value the agent sent, and a call
+        with nothing to attribute shows nothing rather than a fabricated zero.
+      </p>
+      <div class="stage flush">
+        <div class="s-c3-run">
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Edit src/relay-client.ts</span><span class="lb-spacer"></span><span class="s-c3-tokens lb-caption">1.8k tok</span><span class="s-c3-duration lb-caption">1.2s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-terminal" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">pnpm vitest run relay-client.test.ts</span><span class="lb-spacer"></span><span class="s-c3-tokens lb-caption">0.6k tok</span><span class="s-c3-duration lb-caption">6.8s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-search" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Search for turnIdleMs</span><span class="lb-spacer"></span><span class="s-c3-tokens lb-caption lb-muted">&mdash;</span><span class="s-c3-duration lb-caption">0.4s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-file" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Read packages/protocol/src/v1/transcript.ts</span><span class="lb-spacer"></span><span class="s-c3-tokens lb-caption lb-muted">&mdash;</span><span class="s-c3-duration lb-caption">0.1s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-link" /></svg></div>
+            <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Fetch agentclientprotocol.com/protocol/v1/schema</span><span class="lb-spacer"></span><span class="s-c3-tokens lb-caption lb-muted">&mdash;</span><span class="s-c3-duration lb-caption">2.1s</span><span class="lb-dot ok md"></span><svg class="s-c3-chevron"><use href="#i-chevron-right" /></svg></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c4">
+  <div class="item-head">
+    <span class="item-id">C4</span>
+    <h2>Thinking display: one switch, or three states</h2>
+  </div>
+  <p class="item-note">
+    This extends a decision already shipped, it does not reopen it. v8 B2-1 (issue #709, closed) already replaced
+    the old per-instance <code>expanded</code> flag with one global preference: <code>expand-thoughts.ts</code>
+    holds a single <code>localStorage</code> boolean, default expanded (<code>DEFAULT_EXPAND_THOUGHTS = true</code>,
+    <code>:25</code>), read once at startup (<code>+layout.svelte:61</code>) and applied everywhere
+    (<code>MessageItem.svelte:254-255</code>). Issue #661 ("the thinking block forgets whether you opened it, on
+    every single turn") is still open in the tracker, but its own acceptance criteria read as already met by #709's
+    shipped code; the ticket appears to just be missing its close. Zed offers a finer version of the same idea:
+    three states instead of one boolean, <code>always_collapsed</code> / <code>always_expanded</code> /
+    <code>automatic</code> (expanded while streaming, collapsed once the answer starts).
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">One boolean, default expanded</span>
+      </div>
+      <p class="opt-why">Every thought in every session follows the same switch; a streaming thought stays visible regardless of the switch (the #660 override), and settles back to the preference the instant it finishes.</p>
+      <div class="stage">
+        <div class="lb-panel s-c4-pref">
+          <div class="lb-listrow">
+            <span class="lb-small">Always expand thoughts</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-sm" aria-pressed="true">On</button>
+          </div>
+        </div>
+        <div class="lb-row" style="margin-top: var(--space-md)">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-c4-head">
+              <button type="button" class="s-c4-toggle" aria-expanded="true" aria-label="Collapse thought"><svg><use href="#i-chevron-down" /></svg></button>
+              <span class="lb-caption s-c4-timer">Thinking 4s<span class="lb-caret"></span></span>
+            </div>
+            <p class="s-c4-text">Checking whether the reconnect backoff resets the attempt counter</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C4-1</span>
+        <span class="opt-title">Keep the boolean</span>
+      </div>
+      <p class="opt-why">Already shipped, already the cheapest of every option here. Costs the one thing Zed's three states buy: no way to say "collapse once it's done, but still show me it's working."</p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-c4-head">
+              <button type="button" class="s-c4-toggle" aria-expanded="false" aria-label="Expand thought"><svg><use href="#i-chevron-right" /></svg></button>
+              <span class="lb-caption s-c4-timer">Thought for 8s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C4-2</span>
+        <span class="opt-title">Three states, automatic as the default</span>
+      </div>
+      <p class="opt-why">
+        Same preference, three values instead of two: always collapsed, always expanded, and automatic, which is
+        expanded while a thought is producing text and collapses to one line the moment real content starts. The
+        #660 streaming override still applies underneath automatic, it just becomes the default's own behaviour
+        instead of an exception to a fixed choice.
+      </p>
+      <div class="stage">
+        <div class="lb-panel s-c4-pref">
+          <div class="lb-listrow">
+            <span class="lb-small">Thinking display</span>
+            <span class="lb-spacer"></span>
+            <div class="lb-pill-group" role="radiogroup" aria-label="Thinking display">
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">Collapsed</button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="false">Expanded</button>
+              <button class="lb-btn lb-btn-sm" role="radio" aria-checked="true">Automatic</button>
+            </div>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-md)">Streaming</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-c4-head">
+              <span class="lb-caption s-c4-timer">Thinking 4s<span class="lb-caret"></span></span>
+            </div>
+            <p class="s-c4-text">Checking whether the reconnect backoff resets the attempt counter</p>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-md)">Finished</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-c4-head">
+              <button type="button" class="s-c4-toggle" aria-expanded="false" aria-label="Expand thought"><svg><use href="#i-chevron-right" /></svg></button>
+              <span class="lb-caption s-c4-timer">Thought for 8s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C4-3</span>
+        <span class="opt-title">Three states, plus a per-session override</span>
+      </div>
+      <p class="opt-why">
+        Same three-state global preference, plus a small per-thread control that overrides it for this session only,
+        without writing to <code>localStorage</code>. Buys a real answer to "I usually want automatic, but for this
+        one debugging session I want to see everything." Costs a second place the setting lives, and a rule for
+        which one wins that has to be visible, not just remembered.
+      </p>
+      <div class="stage">
+        <div class="lb-inline" style="margin-bottom: var(--space-md)">
+          <span class="lb-badge accent">This session: Expanded</span>
+          <span class="lb-small lb-muted">overrides the global Automatic preference until you leave</span>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-c4-head">
+              <button type="button" class="s-c4-toggle" aria-expanded="true" aria-label="Collapse thought"><svg><use href="#i-chevron-down" /></svg></button>
+              <span class="lb-caption s-c4-timer">Thought for 8s</span>
+              <span class="lb-spacer"></span>
+              <button class="lb-iconbtn" aria-label="Session display options" title="Session display options"><svg><use href="#i-more" /></svg></button>
+            </div>
+            <p class="s-c4-text">Additive migration first, rollback stays safe either way.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c5">
+  <div class="item-head">
+    <span class="item-id">C5</span>
+    <h2>Following the agent: does the Files panel notice</h2>
+  </div>
+  <p class="item-note">
+    Zed's follow mode makes the editor jump to whatever file the agent touches, with an "agent is editing this file"
+    affordance. loombox's <code>FileTreePanel</code> has no equivalent hook: its <code>Props</code> take
+    <code>tree</code>, <code>onExpand</code>, and an optional file-click callback
+    (<code>FileTreePanel.svelte:69-72</code>), nothing about a currently-active path or an in-flight tool call. The
+    research digest lists "follow mode" plainly under what is missing (<code>_research.md:92-93</code>). This is a
+    pure display decision, no protocol or checkpoint work blocks it: every tool call already carries the path it
+    touched, in its <code>diff</code> or its <code>rawInput</code>.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">The Files panel does not know a turn is happening</span>
+      </div>
+      <p class="opt-why">The agent edits a file, the panel sits exactly as it was before the turn started, no signal that anything changed.</p>
+      <div class="stage flush">
+        <div class="s-c5-split">
+          <div class="s-c5-transcript">
+            <div class="lb-row">
+              <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+              <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Editing packages/node/src/relay-client.ts</span><span class="lb-spacer"></span><span class="lb-dot info md pulse"></span></div></div>
+            </div>
+          </div>
+          <div class="s-c5-panel">
+            <div class="lb-panel-head"><svg><use href="#i-folder" /></svg>Files</div>
+            <div class="lb-listrow s-c5-treerow"><svg><use href="#i-folder" /></svg>node</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent"><svg><use href="#i-folder" /></svg>src</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent2"><svg><use href="#i-file" /></svg>relay-client.ts</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent2"><svg><use href="#i-file" /></svg>session-manager.ts</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C5-1</span>
+        <span class="opt-title">Nothing</span>
+      </div>
+      <p class="opt-why">The Files panel stays a browsing tool, deliberately not a live view of the agent. Simplest, and correct if the panel and the transcript are meant to answer different questions.</p>
+      <div class="stage flush">
+        <div class="s-c5-panel">
+          <div class="lb-panel-head"><svg><use href="#i-folder" /></svg>Files</div>
+          <div class="lb-listrow s-c5-treerow"><svg><use href="#i-folder" /></svg>node</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C5-2</span>
+        <span class="opt-title">Highlight and reveal the file the current tool call touches</span>
+      </div>
+      <p class="opt-why">
+        While a tool call is in flight, the panel auto-expands to and highlights the file it names, using the same
+        path already sitting on the transcript item. Costs a live subscription from the panel to the current turn's
+        tool calls that does not exist today, and a rule for what happens if the agent touches five files in one
+        turn.
+      </p>
+      <div class="stage flush">
+        <div class="s-c5-split">
+          <div class="s-c5-transcript">
+            <div class="lb-row">
+              <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+              <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Editing packages/node/src/relay-client.ts</span><span class="lb-spacer"></span><span class="lb-dot info md pulse"></span></div></div>
+            </div>
+          </div>
+          <div class="s-c5-panel">
+            <div class="lb-panel-head"><svg><use href="#i-folder" /></svg>Files</div>
+            <div class="lb-listrow s-c5-treerow"><svg><use href="#i-folder" /></svg>node</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent"><svg><use href="#i-folder" /></svg>src</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent2 s-c5-active"><span class="lb-dot info"></span><svg><use href="#i-file" /></svg>relay-client.ts</div>
+            <div class="lb-listrow s-c5-treerow s-c5-indent2"><svg><use href="#i-file" /></svg>session-manager.ts</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C5-3</span>
+        <span class="opt-title">Plus open the file's diff automatically</span>
+      </div>
+      <p class="opt-why">
+        Same highlight, and the panel switches to showing the live diff for that file while the agent is still
+        writing it, not just its name in the tree. Closest to Zed's actual feel, and the most disruptive if you had
+        the panel open on something else: it now gets taken over by whatever the agent is doing.
+      </p>
+      <div class="stage flush">
+        <div class="s-c5-split">
+          <div class="s-c5-transcript">
+            <div class="lb-row">
+              <div class="lb-row-gutter"><svg class="s-c3-icon"><use href="#i-edit" /></svg></div>
+              <div class="lb-row-body"><div class="s-c3-line"><span class="s-c3-title">Editing packages/node/src/relay-client.ts</span><span class="lb-spacer"></span><span class="lb-dot info md pulse"></span></div></div>
+            </div>
+          </div>
+          <div class="s-c5-panel">
+            <div class="lb-panel-head"><svg><use href="#i-file" /></svg>relay-client.ts<span class="lb-badge accent" style="margin-left: auto">agent editing</span></div>
+            <div class="s-c1-diff">
+              <div class="s-c1-diff-line s-c1-diff-removed">-  const timer = setTimeout(retry, backoffMs);</div>
+              <div class="s-c1-diff-line s-c1-diff-added">+  const timer = setTimeout(retry, this.backoffMs);</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="c6">
+  <div class="item-head">
+    <span class="item-id">C6</span>
+    <h2>Going back: forking a session, or rewinding one</h2>
+  </div>
+  <p class="item-note">
+    Zed's checkpoints rewind the thread to a message. loombox has neither half of that today: no grep hit for a
+    fork, duplicate, or rewind of a session anywhere in <code>apps/web/src/lib</code> or
+    <code>apps/web/src/routes</code>, and the destructive half specifically needs the git checkpoint engine that is
+    filed but not wired, issue #603 ("Wire GitCheckpointStore into session lifecycle and the wire protocol", open)
+    and issue #268 ("Checkpoint/rollback UI flow", open, blocked on #603). What exists today at the turn level is
+    the hover-revealed copy icon at the end of every row, v7 B3, unchanged on purpose ("Today's hover-revealed icon
+    at the end of every row is what ships. Do not touch it."). A fork does not need #603 at all, since it creates a
+    new session rather than reverting an existing worktree; a real rewind does.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">No way back, past or forked</span>
+      </div>
+      <p class="opt-why">The only per-row hover action is copy. A wrong turn stays a wrong turn; the only way out is a new session from scratch.</p>
+      <div class="stage">
+        <div class="lb-row s-c6-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Split it into two migrations so the rollback stays safe either way.</p></div>
+          <div class="s-c6-hover"><button class="lb-iconbtn" aria-label="Copy"><svg><use href="#i-copy" /></svg></button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C6-1</span>
+        <span class="opt-title">Nothing</span>
+      </div>
+      <p class="opt-why">Keeps the transcript a straight line, which is simpler to reason about and to render. Costs every recovery from a bad turn a fresh session, context and all.</p>
+      <div class="stage">
+        <div class="lb-row s-c6-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C6-2</span>
+        <span class="opt-title">Fork a session from any turn, as a new session</span>
+      </div>
+      <p class="opt-why">
+        Copies the transcript up to that turn into a brand-new session and lets it diverge from there; the original
+        session and its worktree are untouched. No checkpoint engine needed, since nothing on disk is reverted, only
+        a new session record with copied history.
+      </p>
+      <div class="stage">
+        <div class="lb-row s-c6-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Split it into two migrations so the rollback stays safe either way.</p></div>
+          <div class="s-c6-hover">
+            <button class="lb-iconbtn" aria-label="Fork session from here" title="Fork session from here"><svg><use href="#i-link" /></svg></button>
+            <button class="lb-iconbtn" aria-label="Copy"><svg><use href="#i-copy" /></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C6-3</span>
+        <span class="opt-title">Real rewind, reverting the worktree with it</span>
+      </div>
+      <p class="opt-why">
+        Depends on #603 landing first: rewinding a turn has to revert whatever the agent wrote to the worktree since
+        that turn, and today there is no <code>GitCheckpointStore</code> wired to any session to revert against.
+        Once it exists, this is the literal match for Zed's checkpoint: the same session, the transcript and the
+        files on disk both roll back together, destructive, and confirmed before it runs.
+      </p>
+      <div class="stage">
+        <div class="lb-row s-c6-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Split it into two migrations so the rollback stays safe either way.</p></div>
+          <div class="s-c6-hover">
+            <button class="lb-iconbtn" aria-label="Rewind to here" title="Rewind to here"><svg><use href="#i-warn" /></svg></button>
+            <button class="lb-iconbtn" aria-label="Copy"><svg><use href="#i-copy" /></svg></button>
+          </div>
+        </div>
+        <div class="lb-inline" style="margin-top: var(--space-md)">
+          <span class="lb-badge warn">Destructive</span>
+          <span class="lb-small lb-muted">reverts 2 files, discards everything after this turn</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-c1-transcript {
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-c1-gicon,
+  .s-c3-icon {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-muted);
+  }
+
+  .s-c1-toolline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: var(--text-small-size);
+    padding: var(--space-2xs) 0;
+  }
+
+  .s-c1-tooltitle {
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+  }
+
+  .s-c1-stat {
+    display: inline-flex;
+    gap: var(--space-2xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+  }
+
+  .s-c1-added {
+    color: var(--color-success);
+  }
+
+  .s-c1-removed {
+    color: var(--color-danger);
+  }
+
+  .s-c1-note {
+    margin: var(--space-sm) 0 0;
+  }
+
+  .s-c1-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-lg);
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-raised);
+  }
+
+  .s-c1-bar-icon {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-text-secondary);
+  }
+
+  .s-c1-bar-label {
+    font-weight: 600;
+    font-size: var(--text-small-size);
+  }
+
+  .s-c1-bar-files {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-c1-filerow {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+
+  .s-c1-filepath {
+    font-size: var(--text-code-size);
+  }
+
+  .s-c1-review {
+    margin: var(--space-md);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .s-c1-review-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-fill-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-c1-review-title {
+    font-weight: 600;
+    font-size: var(--text-small-size);
+  }
+
+  .s-c1-review-file {
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-c1-review-file:last-of-type {
+    border-bottom: 0;
+  }
+
+  .s-c1-review-file-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-code-size);
+    background: var(--color-surface);
+  }
+
+  .s-c1-diff {
+    background: var(--color-bg);
+    padding: var(--space-2xs) 0;
+  }
+
+  .s-c1-hunk {
+    position: relative;
+  }
+
+  .s-c1-hunk-actions {
+    position: absolute;
+    top: var(--space-2xs);
+    right: var(--space-md);
+    display: flex;
+    gap: var(--space-3xs);
+  }
+
+  .s-c1-diff-line {
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    padding: var(--space-3xs) var(--space-md);
+    white-space: pre;
+  }
+
+  .s-c1-diff-added {
+    color: var(--color-success);
+    background: var(--color-success-subtle);
+  }
+
+  .s-c1-diff-removed {
+    color: var(--color-danger);
+    background: var(--color-danger-subtle);
+  }
+
+  .s-c2-composer {
+    padding: var(--space-md);
+  }
+
+  .s-c2-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    margin-bottom: var(--space-sm);
+  }
+
+  .s-c2-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-2xs) var(--space-3xs) var(--space-sm);
+    border-radius: var(--radius-full);
+    background: var(--color-fill);
+    font-size: var(--text-small-size);
+  }
+
+  .s-c2-pill svg {
+    width: 0.85rem;
+    height: 0.85rem;
+    color: var(--color-text-secondary);
+  }
+
+  .s-c2-pill-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    border-radius: var(--radius-full);
+    border: 0;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .s-c2-pill-x svg {
+    width: 0.65rem;
+    height: 0.65rem;
+  }
+
+  .s-c2-text {
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    color: var(--color-text-primary);
+  }
+
+  .s-c2-mention-plain {
+    color: var(--color-accent);
+  }
+
+  .s-c2-slash,
+  .s-c2-slash-item {
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+  }
+
+  .s-c2-hint {
+    margin-top: var(--space-sm);
+  }
+
+  .s-c2-popover {
+    margin-top: var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-md);
+    padding: var(--space-sm);
+  }
+
+  .s-c2-popover-list {
+    list-style: none;
+    margin: var(--space-sm) 0 0;
+    padding: 0;
+  }
+
+  .s-c2-popover-item {
+    gap: var(--space-sm);
+    font-size: var(--text-small-size);
+  }
+
+  .s-c2-popover-item.active {
+    background: var(--color-fill-subtle);
+  }
+
+  .s-c2-popover-item svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    color: var(--color-text-muted);
+  }
+
+  .s-c3-run {
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .s-c3-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) 0;
+  }
+
+  .s-c3-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+  }
+
+  .s-c3-duration,
+  .s-c3-tokens {
+    white-space: nowrap;
+  }
+
+  .s-c3-chevron {
+    width: 0.85rem;
+    height: 0.85rem;
+    color: var(--color-text-muted);
+  }
+
+  .s-c4-pref {
+    margin: var(--space-md);
+  }
+
+  .s-c4-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .s-c4-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .s-c4-toggle svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .s-c4-timer {
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .s-c4-text {
+    margin: var(--space-2xs) 0 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-c5-split {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+  }
+
+  .s-c5-transcript {
+    padding: var(--space-md);
+    border-right: 1px solid var(--color-border-subtle);
+  }
+
+  .s-c5-panel {
+    background: var(--color-surface);
+  }
+
+  .s-c5-treerow {
+    gap: var(--space-2xs);
+    font-size: var(--text-small-size);
+  }
+
+  .s-c5-treerow svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    color: var(--color-text-muted);
+  }
+
+  .s-c5-indent {
+    padding-left: var(--space-xl);
+  }
+
+  .s-c5-indent2 {
+    padding-left: var(--space-2xl);
+  }
+
+  .s-c5-active {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  .s-c5-active svg {
+    color: var(--color-accent);
+  }
+
+  .s-c6-row {
+    position: relative;
+  }
+
+  .s-c6-hover {
+    position: absolute;
+    top: var(--space-sm);
+    right: var(--space-sm);
+    display: flex;
+    gap: var(--space-3xs);
+  }
+</style>

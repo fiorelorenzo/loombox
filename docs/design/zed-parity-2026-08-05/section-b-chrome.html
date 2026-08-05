@@ -1,0 +1,646 @@
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>A status bar at the bottom</h2>
+  </div>
+  <p class="item-note">
+    Today the shell has no status bar at all: a resizable session sidebar (collapsible to an icon
+    rail, <code>+page.svelte:2700-2714</code>), the topbar, the canvas, an optional right-hand
+    workbench panel (<code>:3345</code>, <code>:3649-3658</code>) and, as a sibling of the whole
+    shell rather than a fourth column, the terminal dock (<code>:3778-3809</code>). Every signal
+    Zed would put in a status bar exists in loombox today, just scattered and mostly hidden: relay
+    connection is a chip that only renders when there is a notice to show
+    (<code>connectionNotice</code>, <code>:3222-3241</code>) — invisible the instant the connection
+    is healthy. Target/node health is a single boolean alert dot on the account avatar and the
+    Settings menu row (<code>hasUnhealthyTarget</code>, <code>:3047-3095</code>); the actual
+    per-target detail behind it (<code>targetHealthDots</code>, <code>:1803-1811</code>) never
+    reaches the cockpit. Build identity (#655) compares the relay's own version/commit against
+    every connected node and renders a <code>Behind</code> badge — but only on that node's own row
+    inside <code>TargetStatusView</code> on the Settings page
+    (<code>TargetStatusView.svelte:276-280</code>), never near a session. Session state is one of
+    eight real values (<code>error</code>, <code>permission_required</code>, <code>working</code>,
+    <code>starting</code>, <code>awaiting_input</code>, <code>queued</code>,
+    <code>disconnected</code>, <code>exited</code> — <code>+page.svelte:1956-1965</code>), shown as
+    a single <code>StatusDot</code> per row in the sidebar list (<code>:2563-2566</code>) and
+    nowhere for the one session actually open in the canvas. The context/cost meter lives inside
+    <code>ConfigBar</code>, itself inside the composer strip at the bottom of the canvas
+    (<code>ConfigBar.svelte:534-564</code>, mounted <code>+page.svelte:3593-3597</code>). A queued
+    session (the <code>'queued'</code> status above) gets the same invisible sidebar dot as
+    everything else.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">No status bar — every signal lives somewhere else, mostly hidden</span>
+      </div>
+      <p class="opt-why">
+        Nothing wrong with any one of these signals on its own, but there is no single place that
+        answers "is everything OK right now" without opening Settings, hovering a dot, or waiting
+        for a notice to appear.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Add a real status bar, and name what goes left and right</span>
+      </div>
+      <p class="opt-why">
+        <b>Left:</b> relay connection, target health, build identity's <code>Behind</code> badge —
+        the three things about the machine underneath the session. <b>Right:</b> this session's own
+        state, the context/cost meter (moved out of <code>ConfigBar</code>), a queued-session count.
+        The bar earns its permanent 24-ish px band by retiring the conditional topbar chip and the
+        avatar's boolean dot outright — one home instead of three half-homes. The cost is that a
+        status bar is chrome for the whole window in Zed, not just the session view: it has to
+        render (mostly quiet) on the inbox, settings and tracker pages too, or it stops being "the
+        instrument reads at a glance" and starts being "the session view has extra furniture."
+      </p>
+      <div class="stage flush">
+        <div class="s-statusbar-bar">
+          <div class="s-statusbar-group">
+            <span class="lb-dot ok" aria-hidden="true"></span>
+            <span class="lb-caption">Relay connected</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-dot warn" aria-hidden="true"></span>
+            <span class="lb-caption">ssh-staging overloaded</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-badge warn">Behind</span>
+          </div>
+          <div class="s-statusbar-group">
+            <span class="lb-dot accent pulse" aria-hidden="true"></span>
+            <span class="lb-caption">Working</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-mono lb-small">42.1k/200k</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-mono lb-small">$0.38</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-caption">1 queued</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Same bar, purely passive — state only, nothing to click</span>
+      </div>
+      <p class="opt-why">
+        Identical content to B1-1, minus every control: no <code>Retry</code>, no jump-to-queue
+        click. Reading the instrument never risks acting on it by accident. The real cost is that
+        today's connection chip already carries a <code>Retry</code> button when disconnected
+        (<code>:3237-3239</code>) — a passive bar can't keep it, so that action has to move
+        somewhere else (back into the topbar, or a toast), not disappear for free.
+      </p>
+      <div class="stage flush">
+        <div class="s-statusbar-bar">
+          <div class="s-statusbar-group">
+            <span class="lb-dot danger pulse" aria-hidden="true"></span>
+            <span class="lb-caption">Relay disconnected — reconnecting</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-dot ok" aria-hidden="true"></span>
+            <span class="lb-caption">ssh-staging OK</span>
+          </div>
+          <div class="s-statusbar-group">
+            <span class="lb-dot warn" aria-hidden="true"></span>
+            <span class="lb-caption">Awaiting you</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-mono lb-small">18.4k/200k</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-mono lb-small">$0.11</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-3</span><span class="opt-title">No status bar — a compact cluster in the topbar's right zone instead</span>
+      </div>
+      <p class="opt-why">
+        Extends today's already-conditional connection chip into a small always-on cluster sitting
+        beside <code>workbench-toggle</code>/<code>terminal-dock-toggle</code>/<code>Jump to…</code>
+        in <code>.topbar-actions</code> (<code>:3221-3308</code>). Cheapest of the three — no new
+        row, no new height token — but that zone is exactly what C1-3 kept clear so D1-1's centered
+        Agent/Tracker switch would have room ("with no permanent tab group in the right zone there
+        is more width to give", v8 §3). Cramming connection + health + a meter + a queue count back
+        in here undoes some of the width C1-3 paid for, and none of it helps the pages that aren't
+        a session — a status bar's whole-window signals have no home here at all.
+      </p>
+      <div class="stage flush">
+        <div class="s-statusbar-bar s-statusbar-crowd">
+          <span class="lb-caption s-statusbar-crowd-title">Fix relay reconnect backoff</span>
+          <div class="s-statusbar-group">
+            <span class="lb-dot ok" aria-hidden="true"></span>
+            <span class="lb-caption">42.1k/200k</span>
+            <span class="s-statusbar-sep" aria-hidden="true">·</span>
+            <span class="lb-caption">$0.38</span>
+            <button class="lb-iconbtn" title="Workbench"><svg><use href="#i-workbench" /></svg></button>
+            <button class="lb-iconbtn" title="Terminal"><svg><use href="#i-terminal" /></svg></button>
+            <button class="lb-iconbtn" title="Jump to…"><svg><use href="#i-search" /></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b2">
+  <div class="item-head">
+    <span class="item-id">B2</span>
+    <h2>Tabs over the canvas</h2>
+  </div>
+  <p class="item-note">
+    Today one canvas shows exactly one session's transcript
+    (<code>&lt;ol class="items"&gt;</code>, <code>+page.svelte:3433-3462</code>); there is no tab
+    strip anywhere over it. Files/Config/Runner is a <code>role="radiogroup"</code> inside the
+    right panel's own header (<code>:3667-3690</code>) — v8 C1-3 settled that this group stays
+    there and does not move to the topbar, and nothing here reopens it. There is also, today, no
+    way to actually open a file's content at all: clicking a file in the tree only inserts an
+    <code>@</code>-mention into the composer (<code>onSelectFile={insertFileReference}</code>,
+    <code>:3705-3709</code>) — the only place a file's content ever renders is inside whatever
+    edit/diff card the agent itself produces. Zed's centre pane is a real tab strip: files, diffs,
+    the agent thread, terminals, each its own tab, splittable. In Lorenzo's screenshots two file
+    tabs sit next to the agent thread: <code>README.md</code> and <code>Preview README.md</code>.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Single canvas, no tabs, no open-file view</span>
+      </div>
+      <p class="opt-why">
+        A file becomes visible only through whatever the agent chooses to show inside a diff card
+        — there is no way to just look at a file yourself, next to the thread, on your own terms.
+      </p>
+      <div class="stage flush">
+        <div class="s-canvashead">
+          <span class="lb-caption">Fix relay reconnect backoff</span>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          Clicking README.md in the file tree inserts <span class="lb-mono">@README.md</span> into
+          the composer. It does not open README.md anywhere.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-1</span><span class="opt-title">Keep single-canvas, on purpose</span>
+      </div>
+      <p class="opt-why">
+        Nothing to build, and on a phone there is nothing to lose either, since there was never a
+        strip to collapse. The cost stands exactly as described above: a file is only ever visible
+        through the agent's own diff card, never on demand, never side by side with the thread.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-2</span><span class="opt-title">A tab strip for opened files and diffs, transcript pinned leftmost and non-closable</span>
+      </div>
+      <p class="opt-why">
+        The session transcript keeps its permanent front-row seat; a file you open (from the tree,
+        from an <code>@</code>-mention, from a diff card's "open full file") gets a real tab next to
+        it, closable, with a dirty indicator when the agent's own edit touched it since you last
+        looked. Below the 768px tablet breakpoint (<code>TABLET_VIEWPORT_BREAKPOINT_PX</code>,
+        <code>viewport.ts:17</code>) a horizontal strip has nowhere to go: it would have to become
+        a single active tab plus a picker (a sheet, a dropdown), which is a different, unbuilt
+        design wearing this one's name.
+      </p>
+      <div class="stage flush">
+        <div class="s-tabstrip">
+          <div class="s-tab is-pinned" aria-current="false">
+            <svg class="s-tab-icon"><use href="#i-brain" /></svg>
+            <span>Fix relay reconnect backoff</span>
+          </div>
+          <div class="s-tab">
+            <svg class="s-tab-icon"><use href="#i-file" /></svg>
+            <span>README.md</span>
+            <span class="s-tab-dirty" title="Changed by the agent, not yet reviewed" aria-hidden="true"></span>
+          </div>
+          <div class="s-tab is-active" aria-current="true">
+            <svg class="s-tab-icon"><use href="#i-file" /></svg>
+            <span>Preview README.md</span>
+            <button class="s-tab-close" title="Close" aria-label="Close Preview README.md">
+              <svg><use href="#i-x" /></svg>
+            </button>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          The dot on README.md marks a file the agent's diff touched but you haven't opened yet;
+          hover swaps it for the same close ×.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-3</span><span class="opt-title">Full pane model — the transcript is just another tab, sessions can split</span>
+      </div>
+      <p class="opt-why">
+        Closest to Zed itself: no tab is special, a session can open beside another session or a
+        file in a split. Costs the most on a phone by a wide margin — a split assumes two panes
+        visible at once, which does not exist under 768px at all, so every split has to serialize
+        into full-screen panes with their own back-stack, and "the transcript is just another tab"
+        means a session can lose its own front-row seat on a phone unless a separate rule pins it
+        back, a rule B2-2's model never needed because it never let the transcript be one tab among
+        equals in the first place.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b3">
+  <div class="item-head">
+    <span class="item-id">B3</span>
+    <h2>What the topbar says about where you are</h2>
+  </div>
+  <p class="item-note">
+    Today the topbar's left zone shows the session's own title
+    (<code>&lt;h1 class="topbar-title"&gt;</code>, <code>:3152-3154</code>) plus a breadcrumb of
+    project and target (<code>projectDisplayName(selectedSession) · selectedSession.targetId</code>,
+    <code>:3155-3159</code>), inside a real three-column grid
+    (<code>grid-template-columns: 1fr auto 1fr</code>, <code>:4985-4995</code>) whose centre column
+    already carries the settled Agent/Tracker switch (v8 D1-1) — nothing here touches that switch.
+    Zed's title bar shows project, git branch, and a remote-host indicator when attached over SSH.
+    loombox has no live branch indicator anywhere: the only mentions of a session's branch are copy
+    inside dialogs describing the isolated-worktree mechanism
+    (<code>ArchiveSessionDialog.svelte:8-9,118</code>, <code>NewSessionDialog.svelte:132-134</code>),
+    never a chip you can see while working. Because loombox sessions always run against a target —
+    local or remote — "where" already matters more here than in Zed, where local is the unmarked
+    default.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Title + project · target, no branch</span>
+      </div>
+      <p class="opt-why">The target id already answers "where"; nothing marks "which branch."</p>
+      <div class="stage">
+        <div class="s-breadcrumb-bar">
+          <span class="s-breadcrumb-title">Fix relay reconnect backoff</span>
+          <span class="s-breadcrumb-trail">loombox-web <span aria-hidden="true">·</span> MacBook-Pro-Lorenzo</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-1</span><span class="opt-title">Keep, deliberately</span>
+      </div>
+      <p class="opt-why">
+        A target is already one string that names where a session runs; a separate local/remote
+        label would just restate that fact for every session, every time. The named cost: a
+        session's real git branch (every session either gets its own <code>loombox/session-&lt;id&gt;</code>
+        worktree branch or runs in-place) stays invisible unless you open that row's own archive
+        dialog or reach for a terminal.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-2</span><span class="opt-title">Add branch + target chip, a three-part breadcrumb</span>
+      </div>
+      <p class="opt-why">
+        <code>project / branch / target</code>, left-aligned, in front of the title. Costs width in
+        the exact column that already ellipsizes: <code>.topbar-breadcrumb</code> is
+        <code>overflow: hidden; text-overflow: ellipsis</code> on two segments today
+        (<code>:5024-5032</code>); a third segment loses even sooner on a long project path, with
+        nowhere yet to relieve it.
+      </p>
+      <div class="stage">
+        <div class="s-breadcrumb-bar">
+          <span class="s-breadcrumb-title">Fix relay reconnect backoff</span>
+          <span class="s-breadcrumb-trail">loombox-web <span aria-hidden="true">/</span> fix-relay-backoff <span aria-hidden="true">/</span> MacBook-Pro-Lorenzo</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-3</span><span class="opt-title">Branch stays left, target chip moves to the status bar</span>
+      </div>
+      <p class="opt-why">
+        Lighter than B3-2 in the topbar — <code>project / branch</code> only — because the target
+        moved down into B1's left zone instead. This option only exists if B1 lands a real status
+        bar (B1-1 or B1-2); if B1-3 wins, or B1 stays at Today, there is no status bar to send the
+        chip to, and this option collapses back into B3-2 with an extra segment nobody asked for.
+      </p>
+      <div class="stage">
+        <div class="s-breadcrumb-bar">
+          <span class="s-breadcrumb-title">Fix relay reconnect backoff</span>
+          <span class="s-breadcrumb-trail">loombox-web <span aria-hidden="true">/</span> fix-relay-backoff</span>
+        </div>
+        <p class="lb-caption" style="padding: 0 var(--space-lg) var(--space-sm)">
+          MacBook-Pro-Lorenzo now reads from the status bar, not here.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b4">
+  <div class="item-head">
+    <span class="item-id">B4</span>
+    <h2>The empty canvas</h2>
+  </div>
+  <p class="item-note">
+    Measured at 1728px on the running app: with no session selected, or a session with one turn,
+    roughly 70% of the canvas is empty space (<code>_research.md</code> §7.3). The "no session
+    selected" gate renders the shared <code>EmptyState</code> — a dimmed 14%-opacity
+    <code>BrandMark</code>, one sentence, an optional CTA
+    (<code>EmptyState.svelte:33-39,42-60</code>) — only for that one gate
+    (<code>+page.svelte:3390-3431</code>). A session with one or two turns gets no zero-state
+    treatment at all: it renders the exact same <code>&lt;ol class="items"&gt;</code> +
+    <code>.canvas-footer</code> path as any transcript (<code>:3433-3524</code>). <code>.items</code>
+    is <code>flex: 1</code> and top-aligned, not centered (<code>:5175-5187</code>), while
+    <code>.canvas-footer</code> stays pinned to the bottom via <code>flex-shrink: 0</code>
+    (<code>:5240-5248</code>) — so a short transcript just leaves the flex space between the last
+    turn and the composer blank. Zed fills the same space with thread history and a keyboard-hint
+    block.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Dimmed mark + one sentence, and only for "no session"</span>
+      </div>
+      <p class="opt-why">Teaches nothing about the project, the account's own history, or the app.</p>
+      <div class="stage">
+        <div class="s-zero-wrap">
+          <div class="s-zero-mark" aria-hidden="true"></div>
+          <p class="lb-muted lb-small" style="text-align: center; max-width: 20rem">
+            Pick a session on the left to follow its live transcript, or start a new one.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B4-1</span><span class="opt-title">Keep the current EmptyState, unchanged</span>
+      </div>
+      <p class="opt-why">
+        Cheapest possible pick — zero work — but it only ever covers the "no session selected"
+        gate. The more common case, a brand-new session with one or two turns (every session,
+        every time, for a while), keeps exactly the same blank flex space it has today.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B4-2</span><span class="opt-title">A real zero state: recent sessions, the last transcript's tail, the bindings that matter</span>
+      </div>
+      <p class="opt-why">
+        Recent sessions for this project reuse the sidebar's own <code>sessions</code>/
+        <code>projects</code> derivation — no new data source. The bindings are real, not
+        invented: <span class="lb-mono">⌘K</span> jump to (<code>isModShortcut(event,'k')</code>,
+        <code>:2247-2249</code>), <span class="lb-mono">⌘B</span> toggle the sessions sidebar
+        (<code>:2257-2259</code>), <span class="lb-mono">⌘.</span> stop the running turn
+        (<code>:2252-2254</code>), <span class="lb-mono">Esc</span> defer a permission (research
+        digest §6). The cost: this is now real surface with its own empty-of-that case — a brand
+        new project with no prior sessions has nothing "recent" to show, and it has to stay honest
+        when a session truly has zero turns yet, with no tail to preview.
+      </p>
+      <div class="stage flush">
+        <div class="s-richzero">
+          <div class="s-richzero-col">
+            <p class="lb-caption">Recent in loombox-web</p>
+            <div class="lb-listrow"><span class="lb-dot" aria-hidden="true"></span> Fix relay reconnect backoff</div>
+            <div class="lb-listrow"><span class="lb-dot ok" aria-hidden="true"></span> Add heartbeat capability flag</div>
+            <div class="lb-listrow"><span class="lb-dot" aria-hidden="true"></span> Terminal dock resize handle</div>
+          </div>
+          <div class="s-richzero-col">
+            <p class="lb-caption">Last turn</p>
+            <p class="lb-muted lb-small">"Done. The migration is additive, so a rollback stays safe."</p>
+            <p class="lb-caption" style="margin-top: var(--space-md)">Bindings</p>
+            <div class="s-richzero-bindings">
+              <span><span class="s-richzero-key">⌘K</span> Jump to</span>
+              <span><span class="s-richzero-key">⌘B</span> Toggle sidebar</span>
+              <span><span class="s-richzero-key">⌘.</span> Stop</span>
+              <span><span class="s-richzero-key">Esc</span> Defer permission</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B4-3</span><span class="opt-title">Collapse the canvas entirely, let the sidebar take the width</span>
+      </div>
+      <p class="opt-why">
+        No void to fill because there is no canvas column while nothing is selected — the sidebar
+        (<code>--sidebar-width: 17rem</code> today) simply takes the freed width. Stated plainly:
+        this is a layout-width change of the same shape A2 already covers, and A2 is deferred (v8
+        §0); this option must not be read as quietly resolving A2's own open finding about the
+        canvas not being centered when a panel opens — it only fires on the binary "session
+        selected or not." It also trades an abrupt width snap the instant you pick a session, for
+        removing the void while there is genuinely nothing to render.
+      </p>
+      <div class="stage flush">
+        <div class="s-collapse-row">
+          <div class="s-collapse-sidebar">
+            <div class="lb-listrow"><span class="lb-dot" aria-hidden="true"></span> Fix relay reconnect backoff</div>
+            <div class="lb-listrow"><span class="lb-dot ok" aria-hidden="true"></span> Add heartbeat capability flag</div>
+            <div class="lb-listrow"><span class="lb-dot" aria-hidden="true"></span> Terminal dock resize handle</div>
+          </div>
+        </div>
+        <p class="lb-caption" style="padding: var(--space-sm) var(--space-lg) 0">
+          No session selected: the canvas column is gone, not just empty.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* B1 — status bar mocks */
+  .s-statusbar-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--color-rail);
+    border-top: 1px solid var(--color-border-subtle);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-statusbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+  }
+
+  .s-statusbar-sep {
+    color: var(--color-text-muted);
+  }
+
+  .s-statusbar-crowd {
+    border-top: none;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .s-statusbar-crowd-title {
+    color: var(--color-text-primary);
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* B2 — tab strip mocks */
+  .s-canvashead {
+    display: flex;
+    align-items: center;
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-tabstrip {
+    display: flex;
+    align-items: stretch;
+    background: var(--color-rail);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-tab {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    border-right: 1px solid var(--color-border-subtle);
+    white-space: nowrap;
+  }
+
+  .s-tab.is-active {
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+  }
+
+  .s-tab.is-pinned {
+    color: var(--color-text-secondary);
+    font-style: normal;
+  }
+
+  .s-tab-icon {
+    width: 0.9em;
+    height: 0.9em;
+    flex-shrink: 0;
+  }
+
+  .s-tab-close {
+    display: inline-flex;
+    align-items: center;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+  }
+
+  .s-tab-close svg {
+    width: 0.85em;
+    height: 0.85em;
+  }
+
+  .s-tab-close:hover {
+    opacity: 1;
+  }
+
+  .s-tab-dirty {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--radius-full);
+    background: var(--color-accent);
+    flex-shrink: 0;
+  }
+
+  /* B3 — breadcrumb mocks */
+  .s-breadcrumb-bar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-md) var(--space-lg);
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .s-breadcrumb-title {
+    font-size: var(--text-body-size);
+    font-weight: 500;
+    color: var(--color-text-primary);
+  }
+
+  .s-breadcrumb-trail {
+    font-size: var(--text-small-size);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+  }
+
+  /* B4 — zero-state mocks */
+  .s-zero-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-2xl);
+  }
+
+  .s-zero-mark {
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--radius-lg);
+    background: var(--color-text-primary);
+    opacity: 0.14;
+  }
+
+  .s-richzero {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+    padding: var(--space-lg);
+  }
+
+  .s-richzero-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .s-richzero-bindings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .s-richzero-key {
+    display: inline-block;
+    min-width: 1.6rem;
+    margin-right: var(--space-xs);
+    padding: 0 var(--space-2xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-fill-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    text-align: center;
+  }
+
+  .s-collapse-row {
+    display: flex;
+  }
+
+  .s-collapse-sidebar {
+    width: 100%;
+    padding: var(--space-md);
+    background: var(--color-rail);
+  }
+</style>
