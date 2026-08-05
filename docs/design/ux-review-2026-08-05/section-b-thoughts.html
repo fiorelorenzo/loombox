@@ -1,0 +1,657 @@
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>Thoughts stop being cards</h2>
+  </div>
+  <blockquote class="item-quote">
+    toglierei la card per i pensieri e farei solo testo collassabile con un font più leggero
+    rispetto al testo delle risposte
+  </blockquote>
+  <p class="item-note">
+    Today a thought is a filled, rounded box: <code>.message-item.thought { background:
+    var(--color-surface); border-radius: var(--radius-md); padding-inline: var(--space-sm) }</code>
+    (<code>MessageItem.svelte:371-376</code>). The only "lighter" signal on top of that is
+    <code>opacity: 0.65; font-style: italic</code> on <code>.content</code>
+    (<code>:389-392</code>) — the type is the same size as the answer beneath it, just faded and
+    slanted. Shown below expanded, since the collapsed default and where the label sits are B2's
+    decision, not this one. One thing to weigh in B1-2: the gutter column isn't empty real estate —
+    it already carries the row's accessible role name (off-screen since v7, <code>:339-349</code>)
+    and, on a tool call, a live glyph (<code>ToolCallGutter.svelte</code>). A third meaning painted
+    into the same 76px risks reading as something it isn't.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Filled card, italic + dimmed text</span>
+      </div>
+      <p class="opt-why">A rounded, coloured box around every thought, and "lighter" means 65% opacity plus italics, not a real type change.</p>
+      <div class="stage">
+        <div class="lb-row s-thoughts-card">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-dim">
+              <span class="s-thoughts-timer">Thought for 12s</span>
+              <p class="s-thoughts-text">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Plain text, lighter and smaller — no container</span>
+      </div>
+      <p class="opt-why">Drops the card and the italic for a real size and colour step down from the answer; <b>nothing but the type itself</b> now marks where a thought starts or ends.</p>
+      <div class="stage">
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Same plain text, plus a quiet rule in the gutter</span>
+      </div>
+      <p class="opt-why">Marks the aside in the column the eye already scans first, in neutral grey — never the accent blue A1 already flagged as "dirt on the screen" — but <b>stacks a third meaning</b> onto a column that already carries role attribution and tool glyphs.</p>
+      <div class="stage">
+        <div class="lb-row s-thoughts-rule">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b2">
+  <div class="item-head">
+    <span class="item-id">B2</span>
+    <h2>The label moves above the thought, and the state is remembered</h2>
+  </div>
+  <blockquote class="item-quote">
+    di default espanso e poi ricorda la scelta il thought of possiamo metterlo sopra al pensiero
+    per risparmiare spazio orizzontale, vicino al tasto per collassare
+  </blockquote>
+  <p class="item-note">
+    Today <code>Thought for Ns</code> is a <code>&lt;span class="thinking-timer"&gt;</code> that
+    sits inline before the paragraph (<code>MessageItem.svelte:273</code>), so every thought's
+    text starts indented behind however wide that label is. It defaults collapsed —
+    <code>let expanded = $state(false)</code> (<code>:222</code>) — and that flag lives only on
+    the component instance: nothing reads or writes storage, so a reload resets every thought back
+    to collapsed, mid-conversation or not. The app already has a working pattern for "remember one
+    choice across reloads": <code>apps/web/src/lib/accent.ts</code> reads a single
+    <code>localStorage</code> key once at startup into a module-level store (<code>STORAGE_KEY =
+    'loombox:accent'</code>, <code>:30</code>) that every consumer subscribes to — copying that
+    shape is most of this ticket. What's actually open is scope: one preference, one per session,
+    or one per thought. That choice is the options below.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Collapsed by default, label indents the text, forgotten on reload</span>
+      </div>
+      <p class="opt-why">Two costs at once: it loads collapsed every time, and once opened the timer eats the first ~90px of every line instead of sitting beside the toggle.</p>
+      <div class="stage">
+        <p class="stage-label">On load</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <button type="button" class="s-thoughts-expand">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-right" /></svg>
+                Show thought
+              </button>
+            </div>
+          </div>
+        </div>
+        <p class="stage-label" style="margin-top: var(--space-md)">After tapping to expand</p>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline">
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+              <p class="s-thoughts-text s-thoughts-text-plain">
+                Checking whether the migration handles an empty table before touching the index
+                rebuild — it does, but only if the flag is passed explicitly.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-1</span><span class="opt-title">One global switch — every thought follows it</span>
+      </div>
+      <p class="opt-why">One boolean in <code>localStorage</code>, read once and applied everywhere, the same shape as <code>accent.ts</code>. <b>Matches his own phrasing — "la scelta" is singular — and is the cheapest of the three to build, explain and ship.</b></p>
+      <div class="stage">
+        <div class="lb-panel s-thoughts-pref-panel">
+          <div class="lb-listrow">
+            <span class="lb-small">Always expand thoughts</span>
+            <span class="lb-spacer"></span>
+            <button class="lb-btn lb-btn-sm" aria-pressed="true">On</button>
+          </div>
+        </div>
+        <div class="lb-row" style="margin-top: var(--space-md)">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 4s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              The rollback path only exists if the additive column ships first, so ordering the
+              migrations matters here.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>I split it into two migrations so the rollback stays safe either way.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-2</span><span class="opt-title">Remembered for this session only</span>
+      </div>
+      <p class="opt-why">Reads as intended right up until a reload or a new session, then quietly reverts to expanded. <b>Solves nothing the global switch doesn't, while adding a session-scoped store to maintain.</b></p>
+      <div class="stage">
+        <div class="lb-inline" style="margin-bottom: var(--space-md)">
+          <span class="lb-badge warn">Session-only</span>
+          <span class="lb-small lb-muted">forgotten the moment you reload or start a new session</span>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B2-3</span><span class="opt-title">Remembered per individual thought</span>
+      </div>
+      <p class="opt-why">The most literal reading of "remember the choice", keyed per thought in <code>localStorage</code>. Finest possible control, but <b>the key count only ever grows</b>, and two thoughts in one transcript rarely need different defaults.</p>
+      <div class="stage">
+        <div class="lb-inline" style="margin-bottom: var(--space-md)">
+          <span class="lb-badge">Per thought</span>
+          <span class="lb-small lb-muted">shown here: you collapsed the second one last time — only that one stays collapsed</span>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="true" aria-label="Collapse thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-down" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 12s</span>
+            </div>
+            <p class="s-thoughts-text s-thoughts-text-plain s-thoughts-text-full">
+              Checking whether the migration handles an empty table before touching the index
+              rebuild — it does, but only if the flag is passed explicitly.
+            </p>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>Done. The migration is additive, so a rollback stays safe.</p></div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"></div>
+          <div class="lb-row-body">
+            <div class="s-thoughts-inline s-thoughts-head-row">
+              <button type="button" class="s-thoughts-expand" aria-expanded="false" aria-label="Expand thought">
+                <svg class="s-thoughts-chevron"><use href="#i-chevron-right" /></svg>
+              </button>
+              <span class="s-thoughts-timer s-thoughts-timer-plain">Thought for 4s</span>
+            </div>
+          </div>
+        </div>
+        <div class="lb-row">
+          <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+          <div class="lb-row-body lb-prose"><p>I split it into two migrations so the rollback stays safe either way.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="b3">
+  <div class="item-head">
+    <span class="item-id">B3</span>
+    <h2>The user turn's contrast is wrong in both themes, in opposite directions</h2>
+  </div>
+  <blockquote class="item-quote">
+    vorrei anche rendere meno evidente la card dei messaggi dell'utente, c'è troppo stacco nel tema
+    chiaro, nel tema scuro invece non abbastanza
+  </blockquote>
+  <p class="item-note">
+    <code>.message-item.user { background: var(--color-surface-raised); border-radius:
+    var(--radius-md); padding-inline: var(--space-sm) }</code> (<code>MessageItem.svelte:357-362</code>)
+    is one rule for two themes whose palettes move by very different amounts:
+    <code>--color-surface-raised</code> is <code>#101418</code> on a <code>#0a0c0f</code> canvas in
+    dark, a CIE lightness step of <b>ΔL* ≈ 2.8</b> — almost nothing; in light it's
+    <code>#ffffff</code> on <code>#e3e7ef</code>, <b>ΔL* ≈ 8.4</b>, three times the step, the
+    starkest edge on the page. Both swatches below use the same real numbers, forced side by side
+    (the page's own dark/light toggle can only show one at a time).
+    <span class="lb-badge warn"
+      ><svg style="width: 0.7rem; height: 0.7rem; margin-right: 2px"><use href="#i-warn" /></svg>No
+      bar</span
+    >
+    v7 already settled the rest of this row in decision B1-2 (issue #667): "the user's own turn
+    keeps its one signal, a raised fill — no gutter accent bar anymore… exactly one signal per
+    role" (<code>:351-356</code>). None of the options below bring one back.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Same fill rule, opposite result per theme</span>
+      </div>
+      <p class="opt-why">One flat colour, unrelated to the canvas beneath it in either theme, so the two themes land on opposite sides of "just right" by construction.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 2.8, nearly invisible</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 8.4, starkest edge on the page</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-1</span><span class="opt-title">Retune the two fills to match</span>
+      </div>
+      <p class="opt-why">Hand-picks a fill for each theme that lands at the same ΔL* ≈ 5 step, so the edge reads equally quiet in both. <b>Fixes the asymmetry directly, but the exact values still need eyeballing on a real screen</b> — these are illustrative, not final.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 4.9</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-tuned"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 5.0</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-tuned"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-2</span><span class="opt-title">Drop the fill, hairline border in both</span>
+      </div>
+      <p class="opt-why">The card becomes an outline of <code>var(--color-border)</code> — a token that already differs correctly per theme, so nothing needs tuning by hand. <b>Cheapest and most consistent, but a 1px line reads flatter than a fill</b> and can wash out under a low-contrast display setting.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-outline"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-outline"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B3-3</span><span class="opt-title">Faint accent-tinted wash, keyed to theme</span>
+      </div>
+      <p class="opt-why"><code>color-mix(in srgb, var(--color-accent) 8%, transparent)</code> derives a whisper of the app's own "yours" colour from a token that's already identical in both themes, so one line of CSS lands at ΔL* ≈ 4.5 in dark and ≈ 2.4 in light with no per-theme tuning. <b>Ties the signal to the accent blue used for links and Send</b>, which could read as interactive when it isn't.</p>
+      <div class="stage">
+        <div class="s-thoughts-pair">
+          <div class="s-thoughts-force" data-force="dark">
+            <p class="s-thoughts-force-label">Dark — ΔL* ≈ 4.5</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-wash"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="s-thoughts-force" data-force="light">
+            <p class="s-thoughts-force-label">Light — ΔL* ≈ 2.4</p>
+            <div class="s-thoughts-force-body">
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+                <div class="lb-row-body lb-prose"><p>Sure — here's the updated query.</p></div>
+              </div>
+              <div class="lb-row">
+                <div class="lb-row-gutter"><span class="lb-caption">You</span></div>
+                <div class="lb-row-body s-thoughts-user is-wash"><p>Can you also handle the empty-result case?</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ---- B1: card vs plain text ------------------------------------- */
+
+  /* Faithful reproduction of `.message-item.thought` (MessageItem.svelte:371-376). */
+  .s-thoughts-card {
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  /* The gutter+content row's inner flex pairing of timer and text
+     (`.content`'s own layout, MessageItem.svelte:378-385). */
+  .s-thoughts-inline {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+  }
+
+  /* `.message-item.thought .content` (MessageItem.svelte:389-392) — today's
+     only "lighter" signal, applied to both the timer and the text. */
+  .s-thoughts-dim {
+    opacity: 0.65;
+    font-style: italic;
+  }
+
+  .s-thoughts-timer {
+    flex-shrink: 0;
+    font-size: var(--text-caption-size);
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-primary);
+  }
+
+  /* B1-1/B1-2/B2's option rows: a real type-scale step down instead of
+     opacity, and no italic. */
+  .s-thoughts-timer-plain {
+    color: var(--color-text-muted);
+    opacity: 1;
+  }
+
+  .s-thoughts-text {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .s-thoughts-text-plain {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+    line-height: var(--text-small-line);
+    font-style: normal;
+  }
+
+  /* B2's options: label sits above, so the paragraph is a full-width block
+     below it rather than a flex sibling squeezed beside the timer. */
+  .s-thoughts-text-full {
+    flex: initial;
+    margin-top: var(--space-2xs);
+  }
+
+  /* Quiet aside marker in the gutter (B1-2) — neutral, deliberately not the
+     accent blue A1 already flagged as reading like dirt on the screen. */
+  .s-thoughts-rule .lb-row-gutter {
+    box-shadow: inset -2px 0 0 0 var(--color-border-strong);
+  }
+
+  /* ---- B2: collapse control + expand affordance -------------------- */
+
+  .s-thoughts-expand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .s-thoughts-chevron {
+    width: 0.75em;
+    height: 0.75em;
+  }
+
+  .s-thoughts-head-row {
+    align-items: center;
+  }
+
+  .s-thoughts-pref-panel .lb-listrow {
+    border-bottom: 0;
+  }
+
+  /* ---- B3: forcing both themes to render at once -------------------- */
+
+  /* `:root[data-theme='light']` (_shell.css:56-76) can only ever match the
+     real document root, so it cannot be scoped to a subtree — there is no
+     way to show both themes at once without restating the handful of
+     colour variables a swatch actually reads. Values copied verbatim from
+     _shell.css:21-76; keep in sync if that palette moves. */
+  .s-thoughts-pair {
+    display: flex;
+    gap: var(--space-md);
+    align-items: stretch;
+  }
+
+  .s-thoughts-force {
+    flex: 1;
+    min-width: 0;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border-subtle);
+    overflow: hidden;
+  }
+
+  .s-thoughts-force[data-force='dark'] {
+    color-scheme: dark;
+    --color-bg: #0a0c0f;
+    --color-surface-raised: #101418;
+    --color-border: rgb(255 255 255 / 16%);
+    --color-border-subtle: rgb(255 255 255 / 9%);
+    --color-fill-subtle: rgb(255 255 255 / 6%);
+    --color-text-primary: #e6e9ec;
+    --color-text-secondary: #8b9299;
+    --color-text-muted: #5a6167;
+  }
+
+  .s-thoughts-force[data-force='light'] {
+    color-scheme: light;
+    --color-bg: #e3e7ef;
+    --color-surface-raised: #ffffff;
+    --color-border: rgb(15 23 35 / 28%);
+    --color-border-subtle: rgb(15 23 35 / 18%);
+    --color-fill-subtle: rgb(15 23 35 / 5%);
+    --color-text-primary: #10141a;
+    --color-text-secondary: #454b57;
+    --color-text-muted: #6b7280;
+  }
+
+  .s-thoughts-force-label {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    background: var(--color-fill-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .s-thoughts-force-body {
+    background: var(--color-bg);
+    color: var(--color-text-primary);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  /* Faithful `.message-item.user` (MessageItem.svelte:357-362) — reused
+     as-is for "Today" since forcing the theme already makes the swatch's
+     own `var(--color-surface-raised)` resolve correctly on both sides. */
+  .s-thoughts-user {
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-md);
+    padding-inline: var(--space-sm);
+    margin-inline: calc(var(--space-sm) * -1);
+  }
+
+  /* B3-1: hand-tuned per theme to the same ΔL* ≈ 5 step (CIE lightness,
+     computed off the real palette above) — illustrative, not final. */
+  .s-thoughts-force[data-force='dark'] .is-tuned {
+    background: #16181b;
+  }
+  .s-thoughts-force[data-force='light'] .is-tuned {
+    background: #f4f5f9;
+  }
+
+  /* B3-2: no fill at all, just the theme's own border token. */
+  .is-outline {
+    background: none;
+    border: 1px solid var(--color-border);
+  }
+
+  /* B3-3: a themed wash derived from the existing accent token — no new
+     colour, no per-theme branching. */
+  .is-wash {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+</style>

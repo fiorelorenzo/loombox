@@ -1,0 +1,388 @@
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>The measure: readable prose vs. wasted canvas</h2>
+  </div>
+  <blockquote class="item-quote">
+    mi sembra che ci sia un sacco di spazio orizzontale inutilizzato nel body principale
+  </blockquote>
+  <p class="item-note">
+    Real, and not an accident. <code>--measure: 90ch</code> (<code>tokens.css:54</code>) drives
+    <code>.items { max-width: var(--measure); margin-inline: auto }</code>
+    (<code>+page.svelte:4930</code>), and <code>.canvas-footer</code> mirrors it
+    (<code>:4994</code>) — the code's own comment says transcript prose used to run the full
+    1440–1920px canvas at ~150 characters a line (<code>:4924-4926</code>), and 90ch was the fix.
+    At his measured 1182px canvas that comes out to an 863px column, so roughly 320px sits empty
+    on the two sides combined. A wider <code>--measure-wide: 120ch</code> token already exists for
+    code, diffs and terminal output — <code>DiffViewer</code> and <code>PageLayout</code> both use
+    it (<code>DiffViewer.svelte:100</code>, <code>PageLayout.svelte:54</code>) — but inside the
+    transcript itself <code>.items</code> caps the whole <code>&lt;ol&gt;</code> at 90ch, narrower
+    than 120ch, so a diff nested in a tool-call row can never actually reach its own wider cap. The
+    wide measure is already written; it just can't fire where he's looking. In the mocks below the
+    accent block is the content column and the amber dashed patch is where it collides with
+    something else.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">One fixed measure — 90ch, everywhere</span>
+      </div>
+      <p class="opt-why">
+        Correct today, but only in isolation: a single 90ch cap has no way to know a code block or
+        a whole canvas isn't prose, so everything pays the readability tax whether it needs it or
+        not.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">His window, panel closed — 1182px canvas</p>
+          <div class="s-sp-bar">
+            <div class="s-sp-canvas"></div>
+            <div class="s-sp-col" style="left: 13.5%; width: 73.0%">863px</div>
+          </div>
+          <p class="lb-small s-sp-metrics">863px column, centred · ~160px empty on each side</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-1</span><span class="opt-title">Widen the one measure to 100ch</span></div>
+      <p class="opt-why">
+        One universal number stays the simplest rule to reason about, and it still respects the
+        readability ceiling the cap exists for — but it only buys back part of the emptiness at his
+        width and gets relatively worse again on anything wider, and it does nothing for code,
+        diffs or terminal rows, which stay exactly as narrow as prose for no reason.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">His window, panel closed — same 1182px canvas</p>
+          <div class="s-sp-bar">
+            <div class="s-sp-canvas"></div>
+            <div class="s-sp-col" style="left: 9.45%; width: 81.1%">959px</div>
+          </div>
+          <p class="lb-small s-sp-metrics">959px column (100ch) · ~112px empty on each side</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-2</span><span class="opt-title">Split the measure by content type</span></div>
+      <p class="opt-why">
+        <b>Recommended.</b> Prose keeps exactly the measure that's already correct; code, diffs,
+        tool rows and terminal output stop pretending to be prose and take the width they actually
+        need. Trades one uniform rhythm down the transcript for two, in exchange for a
+        <code>--measure-wide</code> token that's already declared in the codebase but currently
+        can't do anything — this is what makes it real.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-caption s-sp-label">Same transcript, two widths</p>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body">
+              <div class="s-sp-measure-box lb-prose" style="width: 73%">
+                <p>
+                  The rollback stays safe because the migration is additive — it doesn't touch any
+                  existing column, it only adds a new index and a new table, so reverting to the
+                  previous release loses nothing that was written in between.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="lb-row">
+            <div class="lb-row-gutter"><span class="lb-caption">Claude</span></div>
+            <div class="lb-row-body">
+              <div class="s-sp-measure-box" style="width: 100%; padding: 0">
+                <pre class="lb-console" style="margin: 0"><span class="dim">$</span> pnpm test apps/web/src/lib/tokens --reporter=verbose
+<span class="ok">✓</span> --measure caps transcript prose at 90ch (already correct)
+<span class="ok">✓</span> --measure-wide is declared for code, diffs and terminal rows
+<span class="err">✗</span> --measure-wide never actually applies inside .items (parent caps first)
+<span class="dim">2 passed, 1 failed (340ms)</span></pre>
+              </div>
+            </div>
+          </div>
+          <p class="lb-small s-sp-metrics">prose: 73% of the canvas (863px) · code: 100% (1182px)</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A1-3</span><span class="opt-title">Scale the measure with the viewport (clamp)</span></div>
+      <p class="opt-why">
+        Grows with the display instead of staying frozen at 90ch, so a wide monitor stops wasting
+        space by design rather than by luck. But <code>clamp(80ch, 60vw, 112ch)</code> reads
+        <code>vw</code> — the whole browser window — not the canvas actually available; it doesn't
+        know a side panel ate width, so with one open it can ask for more room than the canvas has
+        left, which is the overflow shown below.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">His window, panel closed — 1182px canvas</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 12.7%; width: 74.6%">882px</div>
+            </div>
+            <p class="lb-small s-sp-metrics">882px (60vw) · barely wider than today, floor/ceiling not reached yet</p>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">A 2560px display, panel closed — 2272px canvas</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 26.4%; width: 47.2%">1074px</div>
+            </div>
+            <p class="lb-small s-sp-metrics">capped at the 112ch ceiling — still short of the ~150-char line the fix targets</p>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">His window, panel open — canvas drops to 799px</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 19.6%; width: 54.3%"></div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 5.7%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">still demands 882px (60vw hasn't changed) in a 799px canvas — ~83px spill into the panel</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="a2">
+  <div class="item-head">
+    <span class="item-id">A2</span>
+    <h2>Column centring when a side panel opens</h2>
+  </div>
+  <blockquote class="item-quote">
+    mi da anche fastidio che quando i due pannelli laterali sono aperti il contenuto e l'input non
+    sono centrati
+  </blockquote>
+  <p class="item-note">
+    Measured over CDP at his 1470px window. Panel closed: canvas spans 288→1470 (1182px), column
+    447→1311 (863px) — centred inside the canvas, and <code>.canvas-footer</code> (input included)
+    shares the identical rule (<code>+page.svelte:4994</code>), so it moves with it. Panel open:
+    canvas shrinks to 288→1087 (799px, the 383px panel takes the rest), column 303→1072 (769px) —
+    still perfectly centred <em>inside the canvas</em>. Nothing here is uncentred by the code's own
+    arithmetic. What he's actually seeing: the canvas is flush against the left rail and only its
+    right edge moves, so opening one 383px panel drags the whole canvas — and everything centred in
+    it — 144px left, while shrinking the column by 94px, in the same frame. A shift and a resize at
+    once is what reads as "not centred," more than either alone would. In every mock below the
+    accent block is the content column and the amber dashed patch is where it collides with the
+    rail or the panel.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Centred in the canvas, wherever the canvas is</span>
+      </div>
+      <p class="opt-why">
+        Mathematically fair — always dead centre inside whatever the canvas currently is — but the
+        canvas itself isn't centred in the window, and it moves and narrows the instant a panel
+        opens, so "centred" stops feeling true exactly when it matters most.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel closed</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-col" style="left: 30.4%; width: 58.7%">863px</div>
+            </div>
+          </div>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 20.6%; width: 52.3%">769px</div>
+            </div>
+          </div>
+          <p class="lb-small s-sp-metrics">opening the panel moves the column 144px left and shrinks it by 94px, at once</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-1</span><span class="opt-title">Centre on the window, not the canvas</span></div>
+      <p class="opt-why">
+        Locks the column to the window's real midpoint, so it finally reads as centred to the eye
+        that's judging it against the whole screen. It no longer respects the canvas's own right
+        edge to get there, so with a panel open it can crowd into — and here, slightly under — that
+        panel.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, centred in the 1182px canvas.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — centred on the window's midpoint</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-mid" style="left: 50%"></div>
+              <div class="s-sp-col" style="left: 23.8%; width: 50.1%">769px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 2.3%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">column centred on the dashed window-midline instead of the canvas — right edge lands ~33px inside the panel</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-2</span><span class="opt-title">Keep canvas-centred, stop resizing the column</span></div>
+      <p class="opt-why">
+        Removes the narrowing half of the "shift and resize" complaint outright — the column is
+        always exactly 863px. His own measured panel-open canvas (799px) is already narrower than
+        that fixed width, so the column no longer fits centred and overflows both edges at once —
+        into the rail on the left as much as the panel on the right.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, centred in the 1182px canvas.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — width held at 863px, still canvas-centred</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col-over" style="left: 17.4%; width: 2.2%"></div>
+              <div class="s-sp-col" style="left: 19.6%; width: 54.3%">863px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 2.2%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">863px held fixed in a now-799px canvas — ~32px spills into the rail, ~32px into the panel; it no longer fits</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">A2-3</span><span class="opt-title">Anchor to a fixed offset from the left rail</span></div>
+      <p class="opt-why">
+        The most literal answer to "never moves": position and width both pinned to the closed-panel
+        geometry, so the panel is the only thing that ever moves. It has no way to yield when a
+        panel actually opens, so the collision is total rather than a few pixels — this only works
+        paired with a hard rule for what happens below the width where it no longer fits at all.
+      </p>
+      <div class="stage flush">
+        <div class="s-sp-pad">
+          <p class="lb-small">Panel closed: unchanged — 863px, starting 447px from the window's left edge.</p>
+          <div class="s-sp-group">
+            <p class="lb-caption s-sp-label">Panel open — position and width both pinned</p>
+            <div class="s-sp-bar">
+              <div class="s-sp-rail" style="width: 19.6%"><span class="lb-caption">rail</span></div>
+              <div class="s-sp-canvas"></div>
+              <div class="s-sp-panel" style="width: 26.0%"><span class="lb-caption">panel</span></div>
+              <div class="s-sp-col" style="left: 30.4%; width: 43.5%">863px</div>
+              <div class="s-sp-col-over" style="left: 73.9%; width: 15.2%"></div>
+            </div>
+            <p class="lb-small s-sp-metrics">pinned at the same 447px offset — the panel opens directly under its right ~223px</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-sp-pad {
+    padding: var(--space-md);
+  }
+
+  .s-sp-group + .s-sp-group {
+    margin-top: var(--space-md);
+  }
+
+  .s-sp-label {
+    margin: 0 0 var(--space-2xs);
+  }
+
+  .s-sp-metrics {
+    margin: var(--space-2xs) 0 0;
+  }
+
+  /* One "window" or "canvas": a proportional map, not a literal-px
+     reproduction — every left/width below is a percentage of this bar's
+     own container, computed from the measured geometry, so the relative
+     widths stay honest at any stage size. */
+  .s-sp-bar {
+    position: relative;
+    display: flex;
+    height: var(--space-3xl);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-bg);
+  }
+
+  .s-sp-rail,
+  .s-sp-panel {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .s-sp-rail {
+    background: var(--color-rail);
+  }
+
+  .s-sp-panel {
+    background: var(--color-surface-raised);
+    border-left: 1px solid var(--color-border);
+  }
+
+  .s-sp-canvas {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* The content column, drawn over the bar at the same percentage basis. */
+  .s-sp-col,
+  .s-sp-col-over {
+    position: absolute;
+    top: var(--space-2xs);
+    bottom: var(--space-2xs);
+    border-radius: var(--radius-sm);
+  }
+
+  .s-sp-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    white-space: nowrap;
+    background: var(--color-accent-subtle);
+    border: 1px solid var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    font-weight: 600;
+    color: var(--color-accent);
+  }
+
+  /* Where the column above collides with the rail or an open panel. */
+  .s-sp-col-over {
+    background: var(--color-warning-subtle);
+    border: 1px dashed var(--color-warning);
+  }
+
+  /* The window's true horizontal midpoint, for A2-1. */
+  .s-sp-mid {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--color-border-strong);
+  }
+
+  /* A dashed frame around a piece of mock content, sized to a measure
+     percentage, so the width difference is visible even before reading
+     a single word of the text inside it. */
+  .s-sp-measure-box {
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm) var(--space-md);
+  }
+</style>
