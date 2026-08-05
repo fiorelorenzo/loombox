@@ -305,6 +305,62 @@
   }
 
   /**
+   * The topbar's own Agent/Tracker `role="radiogroup"` root (issue #710,
+   * design spec v8 D1-1) — same roving-focus idiom as `workbenchTabsEl`
+   * above and `ConfigBar`'s `modeGroupEl`: arrow keys move the selection
+   * AND the focus together, one tab stop for the whole group.
+   */
+  let topbarViewGroupEl = $state<HTMLDivElement | undefined>(undefined);
+
+  /**
+   * Switches the centre zone to Tracker (issue #710/#697): re-derives
+   * `trackerProject` from the SELECTED session's own project rather than
+   * trusting whatever it was last set to, because {@link openTrackerForProject}
+   * can point it at an unrelated project via a project row's own "more
+   * actions" menu without touching `selectedSessionId` — this switch is
+   * "legato al progetto" (tied to the session), so it must not show a
+   * stale project's board just because that menu ran more recently than
+   * {@link selectSession} did.
+   */
+  function openSessionTracker(): void {
+    if (!selectedSession) return;
+    trackerProject = { nodeId: selectedSession.nodeId, projectPath: selectedSession.projectPath };
+    mainView = 'tracker';
+  }
+
+  /** Arrow-key roving focus for the topbar's Agent/Tracker `role="radiogroup"` (see `topbarViewGroupEl`'s doc comment) — same shape as `handleWorkbenchTabKeydown` above, over the two-entry `['session', 'tracker']` set instead of `WORKBENCH_TABS`. */
+  function handleTopbarViewKeydown(event: KeyboardEvent): void {
+    let delta: number;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        delta = 1;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        delta = -1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+
+    const views = ['session', 'tracker'] as const;
+    const currentIndex = views.indexOf(mainView === 'tracker' ? 'tracker' : 'session');
+    const nextIndex = (currentIndex + delta + views.length) % views.length;
+    const nextView = views[nextIndex];
+    if (nextView === 'tracker') {
+      openSessionTracker();
+    } else {
+      mainView = 'session';
+    }
+    tick().then(() => {
+      const radios = topbarViewGroupEl?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+      radios?.[nextIndex]?.focus();
+    });
+  }
+
+  /**
    * The right sidebar's own dock (design spec §3.2/§3.3, issue #571): the
    * shared `DockPanel` behaviour, the same one `sessionsDock` below runs on
    * (issue #570) — collapse, drag-resize and persistence come from there,
@@ -2722,7 +2778,16 @@
                  its own, so this row IS the only mobile path to it, and
                  it must close the sheet it lives inside on its way there
                  or the backdrop it leaves open blocks the destination
-                 page underneath (caught by `tracker-mobile.spec.ts`). -->
+                 page underneath (caught by `tracker-mobile.spec.ts`).
+                 Demoted, not deleted, now that the topbar carries its own
+                 Agent/Tracker switch (v8 D1-1, issue #710): this row stays
+                 for the two reasons that hold regardless of where that
+                 switch lives — it is still the only way into Tracker for a
+                 project with no session open (the switch itself only
+                 exists once a session is selected, same as `workbench-
+                 toggle`), and below `--bp-desktop` the switch drops out of
+                 the topbar entirely, so this sheet stays the only route
+                 there on narrow viewports too. -->
             <button
               type="button"
               class="destination-row"
@@ -3050,16 +3115,22 @@
       </aside>
 
       <div class="workspace">
-        <!-- Two zones, not three (spec §3.3): context on the left, controls
-             on the right. The brand and the account moved into the
-             sidebar; the always-green connection dot is gone, replaced by
-             a chip that only appears when there is something wrong and
-             something to do about it. Coherence v5 §2/§0.1: the topbar's
-             own title span is gone — a destination page carries its title
-             in `PageLayout`'s real `<h1>` now, so this left zone shows
-             ONLY the session breadcrumb, and only while a session is open
-             (§3.3's mainView === 'session' gate); the right zone (below)
-             still drops every session-scoped control while a page shows. -->
+        <!-- Three zones (v8 D1-1, issue #710): context on the left, the
+             Agent/Tracker switch centred, controls on the right. The brand
+             and the account moved into the sidebar; the always-green
+             connection dot is gone, replaced by a chip that only appears
+             when there is something wrong and something to do about it.
+             Coherence v5 §2/§0.1: the topbar's own title span is gone — a
+             destination page carries its title in `PageLayout`'s real
+             `<h1>` now, so the left zone shows ONLY the session breadcrumb,
+             and only while a session is open (§3.3's mainView === 'session'
+             gate); the right zone still drops every session-scoped control
+             while a page shows. `.topbar` is a real `grid-template-columns:
+             1fr auto 1fr` (not the old two-zone `space-between` flex) so
+             the centre column sits at the WINDOW's centre regardless of how
+             wide the left or right zone's own content is — the exact
+             failure D1-1's own trade sentence names for bolting a third
+             child onto the flex instead. -->
         <header class="topbar">
           <div class="topbar-context">
             {#if mainView === 'session'}
@@ -3083,6 +3154,61 @@
               {/if}
             {/if}
           </div>
+
+          <!-- The Agent/Tracker switch (v8 D1-1, issue #710): "il tracker
+               non ha senso che stia come voce principale nella sidebar...
+               metterei un button group con due voci agent e tracker verso
+               il centro in alto" — a button group tied to the SELECTED
+               session's own project, not a global destination, so it only
+               exists once a session is selected (same gate `workbench-
+               toggle`/`terminal-dock-toggle` below use), and it stays
+               visible while showing that session's own Tracker board so
+               there is a way back to Agent. No session selected: the whole
+               centre column is empty rather than a disabled control (the
+               sidebar's own `destination-tracker` row, demoted not
+               deleted, is still the only route into Tracker with no
+               session open — `:2711-2739`'s own doc comment). `role=
+               "radiogroup"`/`role="radio"` with a roving tabindex, the same
+               mutually-exclusive idiom `WORKBENCH_TABS` and `ConfigBar`'s
+               mode switch already use (issue #549's precedent), not
+               `aria-pressed`: exactly one of Agent/Tracker is always
+               current. -->
+          {#if selectedSessionId && (mainView === 'session' || mainView === 'tracker')}
+            <div
+              class="topbar-switch"
+              role="radiogroup"
+              aria-label="View"
+              data-testid="topbar-view-switch"
+              bind:this={topbarViewGroupEl}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                class={`topbar-view-choice ${mainView !== 'tracker' ? 'selected' : ''}`.trim()}
+                role="radio"
+                ariaChecked={mainView !== 'tracker'}
+                tabindex={mainView !== 'tracker' ? 0 : -1}
+                onclick={() => (mainView = 'session')}
+                onkeydown={handleTopbarViewKeydown}
+                dataTestId="topbar-view-agent"
+              >
+                Agent
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                class={`topbar-view-choice ${mainView === 'tracker' ? 'selected' : ''}`.trim()}
+                role="radio"
+                ariaChecked={mainView === 'tracker'}
+                tabindex={mainView === 'tracker' ? 0 : -1}
+                onclick={openSessionTracker}
+                onkeydown={handleTopbarViewKeydown}
+                dataTestId="topbar-view-tracker"
+              >
+                Tracker
+              </Button>
+            </div>
+          {/if}
 
           <div class="topbar-actions">
             {#if connectionNotice}
@@ -3115,7 +3241,16 @@
                    button opens/closes the panel, and the Files/Config
                    choice moved onto sub-tabs inside the panel's own header
                    (`WORKBENCH_TABS`), which is the only place that choice
-                   is offered now. -->
+                   is offered now. A plain icon toggle, no label, ever (v8
+                   C1-3, issue #710): Lorenzo asked for the Files/Config/
+                   Runner group to reach the topbar; the option he actually
+                   picked kills the "Workbench" word instead and leaves that
+                   group where it already was, inside the panel's own
+                   header below. This is what pays for D1-1's centre zone
+                   right beside it — do not reintroduce `.panel-word` here
+                   even at a wide viewport, and do not add the tab group to
+                   the topbar to "finish" what C1-3 deliberately leaves
+                   half-done. -->
               <Button
                 variant="ghost"
                 size="sm"
@@ -3127,7 +3262,6 @@
                 dataTestId="workbench-toggle"
               >
                 <Icon name="sidebar-panel" />
-                <span class="panel-word">Workbench</span>
               </Button>
               <!-- The terminal's own toggle (design spec §3.1/§3.2/§3.3,
                    issue #572): a fourth zone alongside the left sidebar,
@@ -4829,10 +4963,20 @@
     min-height: 0;
   }
 
+  /* A real three-column grid (v8 D1-1, issue #710), not the old two-zone
+     `space-between` flex: the centre column is `auto`-sized to whatever it
+     holds (nothing when it's empty), and the two `1fr` flanks are FORCED to
+     equal width by the grid algorithm — that equality is what keeps the
+     centre column's midpoint pinned to the topbar's own midpoint no matter
+     how long the left zone's project path/title gets, or how many icons
+     the right zone carries. A middle child bolted onto `space-between`
+     drifts the instant the two sides' content differs in width, which they
+     never reliably do once `.topbar-actions` carries even one button — the
+     exact failure D1-1's own trade sentence names. */
   .topbar {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-md);
     height: var(--topbar-height);
     flex-shrink: 0;
@@ -4842,6 +4986,7 @@
   }
 
   .topbar-context {
+    grid-column: 1;
     display: flex;
     align-items: baseline;
     gap: var(--space-sm);
@@ -4878,7 +5023,43 @@
     color: var(--color-text-muted);
   }
 
+  /* The grid's own centre column (`grid-column: 2`, `auto`-sized) — see
+     `.topbar`'s own doc comment for why that, not a flex child, is what
+     keeps this centred on the window rather than on whatever's left over
+     between the other two zones. `justify-self: center` matters only if a
+     future caller widens this column past its own content; harmless
+     today, since `auto` already sizes it exactly to its two buttons. */
+  .topbar-switch {
+    grid-column: 2;
+    justify-self: center;
+    display: inline-flex;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  /* `Button`'s own scope hides `.topbar-view-choice`/`.selected` from this
+     file's hash — reach in with `:global()`, the same pattern `ConfigBar`'s
+     `.mode-choice` and the right sidebar's `.right-sidebar-tab` already
+     use for their own segmented controls. */
+  :global(.topbar-view-choice) {
+    color: var(--color-text-secondary);
+    border-radius: 0;
+  }
+
+  :global(.topbar-view-choice:hover) {
+    text-decoration: none;
+    background: var(--color-fill-subtle);
+  }
+
+  :global(.topbar-view-choice.selected) {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
   .topbar-actions {
+    grid-column: 3;
+    justify-self: end;
     display: flex;
     align-items: center;
     gap: var(--space-2xs);
@@ -5560,6 +5741,19 @@
       color: var(--color-text-inverse);
       font-size: var(--text-caption-size);
       font-feature-settings: var(--font-feature-tabular);
+    }
+
+    /* Too narrow for three zones (v8 D1-1, issue #710) — the defined
+       narrow-window answer: the switch drops out of the topbar entirely
+       rather than let the centre column steal width from the truncating
+       left zone or the rigid right one. It does not need a full-width bar
+       of its own down here, because it is not this width's only route:
+       the sidebar/tabbar split already happens at this exact breakpoint
+       (`.tabbar` above), and the sidebar's own `destination-tracker` row
+       (demoted, not deleted — see that row's own doc comment) is already
+       primary navigation below `--bp-desktop`, session-scoped or not. */
+    .topbar-switch {
+      display: none;
     }
 
     .shell {
