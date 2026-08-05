@@ -774,6 +774,18 @@ interface SessionBridge {
   remoteChild?: RemoteAgentChildProcess;
 }
 
+/**
+ * The subset of a {@link SessionBridge} that a handler needing only the
+ * session record and which target it runs on actually touches — never
+ * `agentSession`, `sendQueue`, or any of the bridge's other live-agent
+ * bookkeeping. See {@link NodeDaemon.resolveSessionRouting}'s doc comment
+ * for exactly which handlers that is, and why (issue #702).
+ */
+interface SessionRouting {
+  session: Session;
+  targetId: string;
+}
+
 /** Maps a `GithubConnectService.connect` rejection to `github_connect_result`'s failure outcome — `GithubDeviceFlowError`'s own named `reason` (`'expired_token'` / `'access_denied'` / `'cancelled'`) passes straight through; anything else (no client id, `GithubIdentityError`, a network failure) becomes `'error'`. */
 function githubConnectFailureFromError(error: unknown): GithubConnectOutcome {
   if (error instanceof GithubDeviceFlowError) {
@@ -2121,14 +2133,18 @@ export class NodeDaemon extends EventEmitter {
    * `@loombox/protocol`'s `session-events.ts`) straight to the relay,
    * sealed under this session's derived key — the same envelope shape
    * `encryptAndSendUpdate` sends for a bridge that already exists, but
-   * usable before one does. Only needed for the two transitions that fall
+   * usable before one does. Needed for the three transitions that fall
    * outside a bridge's lifetime: `'starting'`, sent right after
-   * {@link announce} while the agent is still spawning, and an `'error'`
-   * reported when that spawn times out (issue #516) — every other status
-   * transition rides `wireAgentSession`'s `'attention'` listener once a
-   * bridge exists. The relay reassigns the authoritative `seq` on receipt
-   * (see `SessionBridge.seq`'s doc comment), so the placeholder `0` here
-   * never needs to agree with a bridge's own counter.
+   * {@link announce} while the agent is still spawning; an `'error'`
+   * reported when that spawn times out (issue #516); and `'disconnected'`
+   * (issue #702), re-sent on every reconnect (see {@link reannounceAll})
+   * for every session `SessionManager` reports in that state — a
+   * disconnected session never gets a bridge again on its own, so nothing
+   * else would ever push this one. Every other status transition rides
+   * `wireAgentSession`'s `'attention'` listener once a bridge exists. The
+   * relay reassigns the authoritative `seq` on receipt (see
+   * `SessionBridge.seq`'s doc comment), so the placeholder `0` here never
+   * needs to agree with a bridge's own counter.
    */
   private async sendSessionStatus(sessionId: string, status: SessionStatusV1): Promise<void> {
     const key = await this.getSessionKey(sessionId);
@@ -2214,6 +2230,25 @@ export class NodeDaemon extends EventEmitter {
       this.announce(bridge.session, bridge.targetId, bridge.title).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`NodeDaemon: failed to re-announce session ${bridge.session.id}: ${message}`);
+      });
+    }
+    // Issue #702: a session with no live bridge got no re-announce above
+    // — the relay's own record of it (from before this connection,
+    // possibly from before this node's last restart) is still accurate,
+    // only its status is stale. Re-push the one honest thing this node
+    // knows about it (`SessionManager`'s own `'disconnected'` reload
+    // logic — `session-manager.ts`'s `SessionLifecycleState` doc comment)
+    // so a client that wasn't watching live still learns the truth the
+    // moment it, or this node, reconnects — never for `'running'`/
+    // `'paused'` (a live bridge's own attention listener already covers
+    // those) or `'ended'` (already reported through the archive flow).
+    for (const session of this.sessionManager.listSessions()) {
+      if (session.state !== 'disconnected') continue;
+      this.sendSessionStatus(session.id, 'disconnected').catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to push disconnected status for session ${session.id}: ${message}`,
+        );
       });
     }
   }
@@ -2642,6 +2677,43 @@ export class NodeDaemon extends EventEmitter {
     this.stopLeaseHeartbeat(sessionId);
   }
 
+  /**
+   * Resolves the `session` record + `targetId` a handler needs to act on
+   * `sessionId`, independent of whether a live {@link SessionBridge}
+   * exists for it (issue #702). `fs_list_request`/`terminal_open`/
+   * `terminal_input`/`terminal_resize`/`terminal_close`/
+   * `test_runner_config_get`/`test_runner_config_set`/
+   * `test_runner_config_detect`/`run_start`/`run_cancel` never actually
+   * read `SessionBridge.agentSession` — only `bridge.session` and
+   * `bridge.targetId`, both plain fields of the `Session` record
+   * `SessionManager` keeps for every session this node owns, live agent or
+   * not. Falling back to that record when no bridge is live is exactly
+   * what makes those ten handlers keep working for a session reloaded
+   * `'disconnected'` after a restart (`session-manager.ts`'s
+   * `SessionLifecycleState` doc comment: the session is still real, only
+   * the agent process behind it is gone) — a contained re-attach for
+   * Files/Terminal/test-runner/run, since none of them ever touched the
+   * agent to begin with. `targetId` defaults to `'local'` there, mirroring
+   * `SessionManager.createSession`'s own default. Only `handlePromptInject`
+   * genuinely needs the live bridge (`bridge.agentSession.prompt()`) and
+   * does not go through this helper — reviving an agent conversation on
+   * demand is a real feature, not a contained fix; see that handler's own
+   * doc comment.
+   *
+   * Returns `undefined` only when `sessionId` isn't one of this node's
+   * sessions at all (never created here, or already archived/removed) —
+   * the one case actually worth ignoring per SPEC.md §12. The relay only
+   * ever routes a session-addressed message to that session's owning node,
+   * so this is a defensive check, not the common path.
+   */
+  private resolveSessionRouting(sessionId: string): SessionRouting | undefined {
+    const bridge = this.bridges.get(sessionId);
+    if (bridge) return { session: bridge.session, targetId: bridge.targetId };
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) return undefined;
+    return { session, targetId: session.targetId ?? 'local' };
+  }
+
   private sendSessionArchiveResponse(
     message: SessionArchiveRequest,
     result: SessionArchiveResult,
@@ -2655,10 +2727,39 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
-  /** A client injected a follow-up prompt (via the relay) into one of this node's sessions. */
+  /**
+   * A client injected a follow-up prompt (via the relay) into one of this
+   * node's sessions. Unlike every other handler in this file (issue #702),
+   * this one does NOT fall back to {@link resolveSessionRouting}: prompting
+   * needs a live `bridge.agentSession`, which by definition does not exist
+   * for a session with no live bridge, and reviving one on demand is a
+   * real feature (spawning the provider process, resuming the ACP
+   * session), not a contained data-plumbing fix — filed as issue #706.
+   * `prompt_inject` also carries no reply channel at all on the wire (no
+   * `outcome` field, unlike `terminal_opened`/`fs_list_response`), so
+   * there is nowhere to put a real answer even for the case that IS this
+   * node's business:
+   *
+   * - `sessionId` isn't one of this node's sessions at all: ignored per
+   *   SPEC.md §12, same as every other handler here.
+   * - `sessionId` IS one of this node's sessions but has no live bridge
+   *   (reloaded `'disconnected'` after a restart): logged so it is at
+   *   least visible in this node's own output, then dropped — inventing a
+   *   wire message here would be a protocol change of its own. Once part 2
+   *   of #702 reaches the client, the composer for a `disconnected`
+   *   session is disabled and this branch stops firing in practice.
+   */
   private handlePromptInject(message: PromptInjectV1): void {
     const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    if (!bridge) {
+      if (this.sessionManager.getSession(message.sessionId)) {
+        console.warn(
+          `NodeDaemon: dropped prompt_inject for session ${message.sessionId}: it has no live agent (disconnected since the last restart), and prompt_inject has no reply channel to report that on — see issue #706`,
+        );
+      }
+      // else: not one of this node's sessions at all; ignore per SPEC.md §12
+      return;
+    }
 
     this.assertStillLeaseholder(bridge)
       .then(() => this.decryptPromptInject(message))
@@ -2823,22 +2924,26 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * A client asked (via the relay) this node to list a directory inside one
-   * of its sessions' projects (SPEC §7.4; issue #171). Ignored if `sessionId`
-   * isn't one of this node's own bridges (mirrors `handlePromptInject`'s same
-   * guard). A decrypt failure is logged and dropped (there is no path to
-   * reply about); everything past that point — path-traversal refusal, a
+   * of its sessions' projects (SPEC §7.4; issue #171). Ignored if
+   * `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard). Listing a directory needs
+   * nothing but the session's `worktreePath` + `targetId` (issue #702) —
+   * never the live agent — so this keeps working for a session reloaded
+   * `'disconnected'` after a restart exactly as well as a live one. A
+   * decrypt failure is logged and dropped (there is no path to reply
+   * about); everything past that point — path-traversal refusal, a
    * missing/permission-denied directory, an `ssh:` transport failure — is
    * turned into an `outcome: 'error'` response instead of silently dropping,
    * per `@loombox/protocol`'s `fsListResponsePayloadV1` doc comment.
    */
   private handleFsListRequest(message: FsListRequest): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptFsListRequest(message)
-      .then((payload) => this.listDirectoryForBridge(bridge, payload.path))
+      .then((payload) => this.listDirectoryForBridge(routing, payload.path))
       .then((responsePayload) =>
-        this.sendFsListResponse(bridge.session.id, message.requestId, responsePayload),
+        this.sendFsListResponse(routing.session.id, message.requestId, responsePayload),
       )
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -2854,28 +2959,32 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Resolves `requestedPath` against `bridge`'s session root and lists it via
-   * that session's `ExecutionTarget` (local or `ssh:`, issue #69's shared
-   * seam — identical code path for both target kinds, per SPEC §7.4's "works
-   * over the same transport the session already uses"). Never throws: a
-   * path-traversal attempt or a filesystem failure both become an
-   * `outcome: 'error'` payload rather than an unhandled rejection, so
-   * {@link handleFsListRequest} always has a response to seal and send back.
+   * Resolves `requestedPath` against `routing`'s session root and lists it
+   * via that session's `ExecutionTarget` (local or `ssh:`, issue #69's
+   * shared seam — identical code path for both target kinds, per SPEC
+   * §7.4's "works over the same transport the session already uses").
+   * Takes a {@link SessionRouting}, not a `SessionBridge` (issue #702):
+   * only `session.worktreePath` and `targetId` are ever read, both of
+   * which {@link NodeDaemon.resolveSessionRouting} can supply for a
+   * session with no live bridge. Never throws: a path-traversal attempt or
+   * a filesystem failure both become an `outcome: 'error'` payload rather
+   * than an unhandled rejection, so {@link handleFsListRequest} always has
+   * a response to seal and send back.
    */
   private async listDirectoryForBridge(
-    bridge: SessionBridge,
+    routing: SessionRouting,
     requestedPath: string,
   ): Promise<FsListResponsePayloadV1> {
     let resolvedPath: string;
     try {
-      resolvedPath = resolveSessionRelativePath(bridge.session.worktreePath, requestedPath);
+      resolvedPath = resolveSessionRelativePath(routing.session.worktreePath, requestedPath);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return { outcome: 'error', path: requestedPath, message: detail };
     }
 
     try {
-      const target = await this.getExecutionTarget(bridge.targetId);
+      const target = await this.getExecutionTarget(routing.targetId);
       const entries = await target.readdirDetailed(resolvedPath);
       return {
         outcome: 'ok',
@@ -3934,22 +4043,26 @@ export class NodeDaemon extends EventEmitter {
   /**
    * A client asked (via the relay) this node to open a new interactive PTY
    * terminal on one of its sessions' targets (SPEC §7.5; issues #172/#173).
-   * Ignored if `sessionId` isn't one of this node's own bridges (mirrors
-   * `handleFsListRequest`'s same guard). Always replies with `terminal_opened`
-   * — `outcome: 'ok'` once the PTY is spawned and streaming, or
-   * `outcome: 'error'` for a decrypt failure, an unknown target, or a spawn
-   * failure — so the client never hangs waiting for a reply that never
-   * comes, per `@loombox/protocol`'s `terminalOpenResultPayloadV1` doc
-   * comment.
+   * Ignored if `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard, mirroring
+   * `handleFsListRequest`'s same one). Opening a terminal needs nothing but
+   * the session's `worktreePath` + `targetId` (issue #702) — never the live
+   * agent — so this keeps working for a session reloaded `'disconnected'`
+   * after a restart exactly as well as a live one. Always replies with
+   * `terminal_opened` — `outcome: 'ok'` once the PTY is spawned and
+   * streaming, or `outcome: 'error'` for a decrypt failure, an unknown
+   * target, or a spawn failure — so the client never hangs waiting for a
+   * reply that never comes, per `@loombox/protocol`'s
+   * `terminalOpenResultPayloadV1` doc comment.
    */
   private handleTerminalOpen(message: TerminalOpen): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptTerminalOpenPayload(message)
-      .then((payload) => this.openTerminalForBridge(bridge, message.terminalId, payload))
+      .then((payload) => this.openTerminalForBridge(routing, message.terminalId, payload))
       .then(({ cwd, shell }) =>
-        this.sendTerminalOpened(bridge.session.id, message.terminalId, message.requestId, {
+        this.sendTerminalOpened(routing.session.id, message.terminalId, message.requestId, {
           outcome: 'ok',
           cwd,
           shell,
@@ -3960,7 +4073,7 @@ export class NodeDaemon extends EventEmitter {
         console.warn(
           `NodeDaemon: failed to handle terminal_open for session ${message.sessionId} terminal ${message.terminalId}: ${detail}`,
         );
-        this.sendTerminalOpened(bridge.session.id, message.terminalId, message.requestId, {
+        this.sendTerminalOpened(routing.session.id, message.terminalId, message.requestId, {
           outcome: 'error',
           message: detail,
         }).catch(() => {
@@ -3975,46 +4088,53 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Spawns `terminalId`'s PTY on `bridge`'s target and wires its output/exit
-   * back to the relay (issue #172's "the same terminal works identically
-   * whether the target is `local` or `ssh:`"): a `local` target gets a real
-   * `node-pty` process (`TerminalSupervisor.open`) running this node's own
-   * shell; an `ssh:` target gets a `Client.shell()` channel on that target's
-   * already-pooled transport (`./ssh/ssh2-transport.ts`), adapted into the
-   * same `PtyLike` contract (`./ssh/ssh-pty-adapter.ts`) and adopted via
+   * Spawns `terminalId`'s PTY on `routing`'s target and wires its
+   * output/exit back to the relay (issue #172's "the same terminal works
+   * identically whether the target is `local` or `ssh:`"): a `local`
+   * target gets a real `node-pty` process (`TerminalSupervisor.open`)
+   * running this node's own shell; an `ssh:` target gets a `Client.shell()`
+   * channel on that target's already-pooled transport
+   * (`./ssh/ssh2-transport.ts`), adapted into the same `PtyLike` contract
+   * (`./ssh/ssh-pty-adapter.ts`) and adopted via
    * `TerminalSupervisor.openWithPty` — from here on both look identical to
-   * every caller. Both start in `bridge.session.worktreePath` — the session's
-   * project root/worktree — so a second terminal opened for the same session
-   * shares that same directory automatically (issue #173).
+   * every caller. Both start in `routing.session.worktreePath` — the
+   * session's project root/worktree — so a second terminal opened for the
+   * same session shares that same directory automatically (issue #173).
    *
    * Both are also wrapped in a `PolicyEnforcedPty` (SPEC §7.17; issue
-   * #256) bound to `bridge.session.projectPath`'s saved permission policy
+   * #256) bound to `routing.session.projectPath`'s saved permission policy
    * before being adopted — every terminal this node opens, local or
    * `ssh:`, is gated identically. See `policy-enforced-pty.ts`'s own doc
    * comment for exactly how a denied line is stopped and what is (and is
    * not) covered.
    *
+   * Takes a {@link SessionRouting}, not a `SessionBridge` (issue #702):
+   * only `session.worktreePath`/`session.projectPath`/`session.id` and
+   * `targetId` are ever read, all of which
+   * {@link NodeDaemon.resolveSessionRouting} can supply for a session with
+   * no live bridge — spawning a terminal never touches the agent.
+   *
    * Returns the real `cwd`/`shell` this PTY actually started with
    * (issue #669: `terminalOpenOkV1`'s own fields) — `cwd` is always
-   * `bridge.session.worktreePath` itself (known regardless of target
+   * `routing.session.worktreePath` itself (known regardless of target
    * kind); `shell` only for `local`, where the spawned binary is known
    * ahead of time — an `ssh:` login shell is never named until it starts
    * (see the `cd`-first-line comment below), so it stays `undefined`
    * rather than a guess.
    */
   private async openTerminalForBridge(
-    bridge: SessionBridge,
+    routing: SessionRouting,
     terminalId: string,
     payload: TerminalOpenPayloadV1,
   ): Promise<{ cwd: string; shell?: string }> {
-    const target = this.targets.find((candidate) => candidate.id === bridge.targetId);
+    const target = this.targets.find((candidate) => candidate.id === routing.targetId);
     if (!target) {
-      throw new Error(`NodeDaemon: no target with id "${bridge.targetId}"`);
+      throw new Error(`NodeDaemon: no target with id "${routing.targetId}"`);
     }
 
-    const policy = this.permissionPolicyStore.get(bridge.session.projectPath);
+    const policy = this.permissionPolicyStore.get(routing.session.projectPath);
     const gate = (pty: PtyLike): PtyLike =>
-      new PolicyEnforcedPty({ inner: pty, projectPath: bridge.session.projectPath, policy });
+      new PolicyEnforcedPty({ inner: pty, projectPath: routing.session.projectPath, policy });
 
     let session: TerminalSession;
     let shell: string | undefined;
@@ -4023,16 +4143,16 @@ export class NodeDaemon extends EventEmitter {
       const pty = defaultPtySpawn({
         terminalId,
         file: shell,
-        cwd: bridge.session.worktreePath,
+        cwd: routing.session.worktreePath,
         cols: payload.cols,
         rows: payload.rows,
       });
       session = this.terminalSupervisor.openWithPty(terminalId, gate(pty));
     } else {
-      const transport = await this.getSshTransport(bridge.targetId);
+      const transport = await this.getSshTransport(routing.targetId);
       if (!supportsShellChannel(transport)) {
         throw new Error(
-          `NodeDaemon: ssh target "${bridge.targetId}" transport does not support shell channels`,
+          `NodeDaemon: ssh target "${routing.targetId}" transport does not support shell channels`,
         );
       }
       const channel = await transport.openShellChannel({ cols: payload.cols, rows: payload.rows });
@@ -4046,12 +4166,12 @@ export class NodeDaemon extends EventEmitter {
       // this same limitation). No `shell` value returned below either, for
       // the same reason: the remote login shell's binary is never named on
       // this path.
-      channel.write(`cd ${shQuote(bridge.session.worktreePath)} && clear\n`);
+      channel.write(`cd ${shQuote(routing.session.worktreePath)} && clear\n`);
       session = this.terminalSupervisor.openWithPty(terminalId, gate(shellChannelToPty(channel)));
     }
 
-    this.wireTerminalSession(bridge.session.id, session);
-    return { cwd: bridge.session.worktreePath, shell };
+    this.wireTerminalSession(routing.session.id, session);
+    return { cwd: routing.session.worktreePath, shell };
   }
 
   /**
@@ -4145,10 +4265,21 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
-  /** A client streamed one chunk of typed input to an open terminal's stdin (SPEC §7.5). Ignored if `sessionId` isn't one of this node's own bridges. */
+  /**
+   * A client streamed one chunk of typed input to an open terminal's
+   * stdin (SPEC §7.5). Ignored if `sessionId` isn't one of this node's
+   * sessions at all ({@link resolveSessionRouting}'s guard). No live
+   * bridge is otherwise required — `terminalSupervisor.write` addresses
+   * the PTY directly by `terminalId`, unrelated to the agent — but a
+   * session reloaded `'disconnected'` after a restart can never actually
+   * have an open terminal to write to either (this node's own restart
+   * killed every PTY it held), so `write` here is a safe no-op for that
+   * case, same as an already-unknown `terminalId`
+   * (`TerminalSupervisor.write`'s own no-op contract).
+   */
   private handleTerminalInput(message: TerminalInput): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptTerminalDataPayload(message)
       .then((payload) => {
@@ -4167,10 +4298,10 @@ export class NodeDaemon extends EventEmitter {
     return openJson<TerminalDataPayloadV1>(message.sessionId, message.envelope, key);
   }
 
-  /** A client asked to renegotiate an open terminal's PTY window size (SPEC §7.5). Ignored if `sessionId` isn't one of this node's own bridges. */
+  /** A client asked to renegotiate an open terminal's PTY window size (SPEC §7.5). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — see `handleTerminalInput`'s doc comment for why no live bridge is otherwise needed here either. */
   private handleTerminalResize(message: TerminalResize): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptTerminalResizePayload(message)
       .then((payload) => {
@@ -4197,24 +4328,26 @@ export class NodeDaemon extends EventEmitter {
    * {@link clientInitiatedTerminalCloses}'s doc comment) so the
    * `TerminalSession.onExit` this triggers reports `reason: 'closed_by_client'`
    * rather than `'exited'` in the `terminal_closed` this sends. Ignored if
-   * `sessionId` isn't one of this node's own bridges; a silent no-op if
-   * `terminalId` is already closed or unknown (`TerminalSupervisor.close`'s
-   * own no-op contract).
+   * `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard); a silent no-op if `terminalId`
+   * is already closed or unknown (`TerminalSupervisor.close`'s own no-op
+   * contract) — which is exactly what this always is for a session with no
+   * live bridge, per `handleTerminalInput`'s doc comment.
    */
   private handleTerminalClose(message: TerminalClose): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.clientInitiatedTerminalCloses.add(message.terminalId);
     this.terminalSupervisor.close(message.terminalId);
   }
 
-  /** A client asked for a session's project's saved test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's own bridges. */
+  /** A client asked for a session's project's saved test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only `projectPath` (issue #702), never the live agent, so this keeps working for a `'disconnected'` session exactly like a live one. */
   private handleTestRunnerConfigGet(message: TestRunnerConfigGet): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
-    const commands = this.testRunnerConfigStore.get(bridge.session.projectPath);
+    const commands = this.testRunnerConfigStore.get(routing.session.projectPath);
     this.sendTestRunnerConfigResult(message.sessionId, message.requestId, { commands }).catch(
       (error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -4225,15 +4358,15 @@ export class NodeDaemon extends EventEmitter {
     );
   }
 
-  /** A client asked to save (merge over) a session's project's test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's own bridges. Replies with the same `test_runner_config_result` `handleTestRunnerConfigGet` does, carrying the merged result, so "save" and "read the current value" are one client-side code path. */
+  /** A client asked to save (merge over) a session's project's test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — see `handleTestRunnerConfigGet`'s doc comment for why no live bridge is otherwise needed here either. Replies with the same `test_runner_config_result` `handleTestRunnerConfigGet` does, carrying the merged result, so "save" and "read the current value" are one client-side code path. */
   private handleTestRunnerConfigSet(message: TestRunnerConfigSet): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptTestRunnerConfigSet(message)
       .then((payload) => {
         const commands = this.testRunnerConfigStore.save(
-          bridge.session.projectPath,
+          routing.session.projectPath,
           payload.commands,
         );
         return this.sendTestRunnerConfigResult(message.sessionId, message.requestId, { commands });
@@ -4278,14 +4411,17 @@ export class NodeDaemon extends EventEmitter {
    * reply is a suggestion the client must submit back via
    * `test_runner_config_set` to actually save (issue #245's "shown for
    * confirmation before being saved, not silently applied"). Ignored if
-   * `sessionId` isn't one of this node's own bridges.
+   * `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard) — needs only `projectPath` +
+   * `targetId` (issue #702), never the live agent, so this keeps working
+   * for a `'disconnected'` session exactly like a live one.
    */
   private handleTestRunnerConfigDetect(message: TestRunnerConfigDetect): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
-    this.getExecutionTarget(bridge.targetId, bridge.session.projectPath)
-      .then((target) => detectTestRunnerCommands(target, bridge.session.projectPath))
+    this.getExecutionTarget(routing.targetId, routing.session.projectPath)
+      .then((target) => detectTestRunnerCommands(target, routing.session.projectPath))
       .then((suggestions) =>
         this.sendTestRunnerConfigDetected(message.sessionId, message.requestId, { suggestions }),
       )
@@ -4324,20 +4460,23 @@ export class NodeDaemon extends EventEmitter {
    * doc comment. A permission-policy denial or a real "command not found"
    * both happen only *after* `outcome: 'ok'`, reported later via
    * `run_exit` — see `executeRun`. Ignored if `sessionId` isn't one of
-   * this node's own bridges.
+   * this node's sessions at all ({@link resolveSessionRouting}'s guard) —
+   * running a saved command needs only `projectPath` + `targetId` (issue
+   * #702), never the live agent, so this keeps working for a
+   * `'disconnected'` session exactly like a live one.
    */
   private handleRunStart(message: RunStart): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     this.decryptRunStartPayload(message)
       .then(async (payload) => {
-        const commands = this.testRunnerConfigStore.get(bridge.session.projectPath);
+        const commands = this.testRunnerConfigStore.get(routing.session.projectPath);
         const command = commands[payload.kind];
         if (!command) {
           throw new Error(`no ${payload.kind} command configured for this project`);
         }
-        await this.sendRunStarted(bridge.session.id, message.runId, message.requestId, {
+        await this.sendRunStarted(routing.session.id, message.runId, message.requestId, {
           outcome: 'ok',
         });
         // Fire-and-forget: the run's own lifecycle (streamed output, then
@@ -4345,7 +4484,7 @@ export class NodeDaemon extends EventEmitter {
         // through run_output/run_exit inside executeRun, never through
         // this promise chain — which only ever answers "is there
         // something to run at all".
-        this.executeRun(bridge, message.runId, command).catch((error: unknown) => {
+        this.executeRun(routing, message.runId, command).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error);
           console.warn(
             `NodeDaemon: run ${message.runId} for session ${message.sessionId} failed unexpectedly: ${detail}`,
@@ -4357,7 +4496,7 @@ export class NodeDaemon extends EventEmitter {
         console.warn(
           `NodeDaemon: failed to handle run_start for session ${message.sessionId} run ${message.runId}: ${detail}`,
         );
-        this.sendRunStarted(bridge.session.id, message.runId, message.requestId, {
+        this.sendRunStarted(routing.session.id, message.runId, message.requestId, {
           outcome: 'error',
           message: detail,
         }).catch(() => {
@@ -4372,7 +4511,7 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Actually runs `command` for `runId` on `bridge`'s target and streams
+   * Actually runs `command` for `runId` on `routing`'s target and streams
    * the result (SPEC §7.15; issue #244) — called only once `handleRunStart`
    * already knows a command exists; this is where the permission-policy
    * check (`evaluateCommandLine`, the same entry point
@@ -4380,11 +4519,16 @@ export class NodeDaemon extends EventEmitter {
    * spawn (`./test-runner-process.ts`'s `startLocalRun`/`startSshRun`)
    * happen. Registers the run in {@link activeRuns} so
    * `handleRunCancel`/`close()` can reach it, and always removes it again
-   * the instant `run_exit` is sent, whatever the outcome.
+   * the instant `run_exit` is sent, whatever the outcome. Takes a
+   * {@link SessionRouting}, not a `SessionBridge` (issue #702): only
+   * `session.id`/`session.projectPath` and `targetId` are ever read, all
+   * of which {@link NodeDaemon.resolveSessionRouting} can supply for a
+   * session with no live bridge — running a saved command never touches
+   * the agent.
    */
-  private async executeRun(bridge: SessionBridge, runId: string, command: string): Promise<void> {
+  private async executeRun(routing: SessionRouting, runId: string, command: string): Promise<void> {
     if (!isSafeRunId(runId)) {
-      await this.sendRunExit(bridge.session.id, runId, {
+      await this.sendRunExit(routing.session.id, runId, {
         outcome: 'could_not_start',
         exitCode: null,
         reason: 'invalid run id',
@@ -4392,23 +4536,23 @@ export class NodeDaemon extends EventEmitter {
       return;
     }
 
-    const target = this.targets.find((candidate) => candidate.id === bridge.targetId);
+    const target = this.targets.find((candidate) => candidate.id === routing.targetId);
     if (!target) {
-      await this.sendRunExit(bridge.session.id, runId, {
+      await this.sendRunExit(routing.session.id, runId, {
         outcome: 'could_not_start',
         exitCode: null,
-        reason: `no target with id "${bridge.targetId}"`,
+        reason: `no target with id "${routing.targetId}"`,
       });
       return;
     }
 
-    const policy = this.permissionPolicyStore.get(bridge.session.projectPath);
+    const policy = this.permissionPolicyStore.get(routing.session.projectPath);
     const decision = evaluateCommandLine(policy, command, {
       resolveRealBasename: target.kind === 'local' ? resolveRealBasename : undefined,
     });
     if (!decision.allowed) {
       const violation: PolicyViolation = {
-        projectPath: bridge.session.projectPath,
+        projectPath: routing.session.projectPath,
         surface: 'exec',
         dimension: decision.dimension,
         rule: decision.rule,
@@ -4417,7 +4561,7 @@ export class NodeDaemon extends EventEmitter {
         timestamp: new Date().toISOString(),
       };
       logPolicyViolation(violation);
-      await this.sendRunExit(bridge.session.id, runId, {
+      await this.sendRunExit(routing.session.id, runId, {
         outcome: 'could_not_start',
         exitCode: null,
         reason: `policy denied: ${violation.dimension} deny rule "${violation.rule}" matched "${violation.matched}"`,
@@ -4426,26 +4570,26 @@ export class NodeDaemon extends EventEmitter {
     }
 
     const onOutput = (chunk: Uint8Array): void => {
-      this.queueRunOutput(bridge.session.id, runId, chunk);
+      this.queueRunOutput(routing.session.id, runId, chunk);
     };
     const onExit = (result: RunExitResult): void => {
       this.activeRuns.delete(runId);
-      this.sendRunExit(bridge.session.id, runId, result).catch((error: unknown) => {
+      this.sendRunExit(routing.session.id, runId, result).catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
-          `NodeDaemon: failed to send run_exit for session ${bridge.session.id} run ${runId}: ${detail}`,
+          `NodeDaemon: failed to send run_exit for session ${routing.session.id} run ${runId}: ${detail}`,
         );
       });
     };
 
     if (target.kind === 'local') {
       const handle = startLocalRun({ command, onOutput, onExit });
-      this.activeRuns.set(runId, { sessionId: bridge.session.id, cancel: handle.cancel });
+      this.activeRuns.set(runId, { sessionId: routing.session.id, cancel: handle.cancel });
     } else {
-      const transport = await this.getSshTransport(bridge.targetId);
-      const runner = await this.getRemoteRunner(bridge.targetId);
+      const transport = await this.getSshTransport(routing.targetId);
+      const runner = await this.getRemoteRunner(routing.targetId);
       const handle = await startSshRun({ runner, transport, runId, command, onOutput, onExit });
-      this.activeRuns.set(runId, { sessionId: bridge.session.id, cancel: handle.cancel });
+      this.activeRuns.set(runId, { sessionId: routing.session.id, cancel: handle.cancel });
     }
   }
 
@@ -4505,10 +4649,21 @@ export class NodeDaemon extends EventEmitter {
     this.relay.send({ type: 'run_exit', protocolVersion: PROTOCOL_V1, sessionId, runId, envelope });
   }
 
-  /** A client asked to cancel an in-flight run (SPEC §7.15; issue #244) — a silent no-op if `runId` is already exited or unknown, mirroring `handleTerminalClose`'s identical guard. Ignored if `sessionId` isn't one of this node's own bridges. The run's own `run_exit` (with `cancelled: true`) is sent from inside `executeRun`'s `onExit`, once the underlying process is confirmed gone — never from here directly. */
+  /**
+   * A client asked to cancel an in-flight run (SPEC §7.15; issue #244) — a
+   * silent no-op if `runId` is already exited or unknown, mirroring
+   * `handleTerminalClose`'s identical guard. Ignored if `sessionId` isn't
+   * one of this node's sessions at all ({@link resolveSessionRouting}'s
+   * guard); a session with no live bridge can never have an active run to
+   * begin with (`executeRun` requires one, per `handleRunStart`), so this
+   * is always the "already unknown" no-op for that case too. The run's own
+   * `run_exit` (with `cancelled: true`) is sent from inside `executeRun`'s
+   * `onExit`, once the underlying process is confirmed gone — never from
+   * here directly.
+   */
   private handleRunCancel(message: RunCancel): void {
-    const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) return; // not one of this node's sessions; ignore per SPEC.md §12
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
     const active = this.activeRuns.get(message.runId);
     if (!active) return;
