@@ -1,0 +1,386 @@
+<section class="item" id="d1">
+  <div class="item-head">
+    <span class="item-id">D1</span>
+    <h2>Bringing your own ACP agent</h2>
+  </div>
+  <p class="item-note">
+    Today the agent catalogue is a fixed, source-defined registry:
+    <code>RESERVED_PROVIDER_IDS</code> names <code>claude</code>, <code>codex</code>,
+    <code>ohmypi</code>, <code>gemini</code>, <code>generic</code>
+    (<code>provider-registry.ts:11</code>), and only <code>claude</code>, <code>codex</code> and
+    the test/<code>ohmypi</code> modules actually ship an adapter — <code>gemini</code> is a
+    reserved id with no module yet. A session picks its provider once, at creation
+    (<code>node-daemon.ts:1264</code>, <code>provider: options.provider ?? 'claude'</code>), and
+    there is no code path anywhere in <code>node-daemon.ts</code> that changes a running session's
+    provider afterward. Adding a new agent today means writing an
+    <code>AcpProviderModule</code> and shipping it in a loombox release — never something a user
+    does from the app. Zed's <code>agent_servers</code> setting is the opposite: any ACP binary by
+    <code>command</code> + <code>args</code> + <code>env</code>, plus a <code>default_mode</code>
+    and <code>default_config_options</code>, and Claude/Codex/Gemini are just entries of that same
+    shape, not special-cased. The catch is that loombox's binary does not run in the browser tab —
+    it runs on a <strong>node</strong>, which may itself be an <code>ssh:</code> target reached
+    over a pooled transport (<code>target.ts:6-15</code>). "Add a custom agent" is therefore a
+    remote-code-execution decision wearing a settings form, not a form validation problem.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Fixed registry, baked into the release</span></div>
+      <p class="opt-why">
+        Only loombox's own commits can add a provider. Nobody, compromised or not, can point a
+        session at an arbitrary binary — <b>the safest possible answer, at the cost of the whole
+        feature</b>: no Gemini today, no in-house agent, no "point this at my own ACP wrapper"
+        without a release.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-1</span><span class="opt-title">Custom agents live in the node's own config, read-only in the client</span></div>
+      <p class="opt-why">
+        Whoever administers a node (SSH access to it, or physical access if it's local) edits a
+        config file next to <code>mcp-servers.json</code>; the client only lists and selects what
+        that node already declared. <b>The client can never introduce a binary the node operator
+        didn't already choose</b> — a compromised browser tab can pick among entries, not invent
+        one. Costs a hop: adding an agent means touching the node, not the session you're in, and
+        two nodes with different registries now show different pickers with no shared source of
+        truth.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-2</span><span class="opt-title">Custom agents defined client-side per project, pushed over the wire, node holds an allowlist</span></div>
+      <p class="opt-why">
+        Matches Zed's ergonomics — define it once in the project, use it everywhere the project
+        opens — but the node still has the last word: it only launches a
+        <code>command</code>/<code>args</code>/<code>env</code> tuple that matches an entry an
+        operator put on its own allowlist first. <b>A compromised client can still only pick from
+        what the node already agreed to run</b>, same guarantee as D1-1, but the definition itself
+        now lives with the project instead of the machine, so it follows the project across nodes.
+        The allowlist has to be edited node-side regardless, so this doesn't remove the operator
+        step, it just moves what travels over the wire.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D1-3</span><span class="opt-title">D1-2 plus a curated agent registry we maintain</span></div>
+      <p class="opt-why">
+        On top of D1-2's client-defined-plus-node-allowlist shape, loombox ships and updates a
+        catalogue of known-good agents (the way the six MCP quick-add presets already work,
+        <code>mcp-presets.ts:56-119</code>) so picking "Gemini CLI" is one click instead of typing
+        a command line. <b>Convenience only</b> — trust still rests entirely on the node's
+        allowlist from D1-2, this option changes nothing about who can execute what. The cost is
+        upkeep: a curated list needs someone to keep it accurate as vendor CLIs change their own
+        invocation.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d2">
+  <div class="item-head">
+    <span class="item-id">D2</span>
+    <h2>Where an MCP server actually runs</h2>
+  </div>
+  <p class="item-note">
+    MCP server config is stored in two places today that never talk to each other. The client
+    keeps a per-project list in <code>localStorage</code>
+    (<code>mcp-server-store.ts:44</code>, key <code>loombox:mcp-servers:${projectPath}</code>),
+    editable from the Config tab's quick-add/custom-server form
+    (<code>+page.svelte:842-845</code>, <code>McpServerConfigPanel.svelte</code>). The node keeps
+    its own project/global record in <code>mcp-servers.json</code>
+    (<code>mcp-config-store.ts:130-132</code>, issue #187, closed) plus a per-(server, secret)
+    grant ACL that never auto-grants (<code>mcp-secret-grants.ts:6-11</code>, issue #189, closed).
+    Neither store launches anything: per issue #627 (open), <code>NodeDaemon.resolveMcpServers</code>
+    only resolves a declared, secret-granted server list into the
+    <code>AcpMcpServerConfig[]</code> that <code>AcpClient.newSession</code> hands to the agent —
+    the agent itself is what speaks MCP to a <code>stdio</code>/<code>http</code> server, loombox
+    never runs one. The one server loombox needs to run itself, the native tracker's
+    <code>tracker_*</code> tools built in issue #211 (closed), has nowhere to run from — that's
+    exactly what #627 is blocked on. Zed's stdio servers carry a <code>remote: bool</code>, and
+    Zed's own SSH remoting is broken for it (their issue #34402) because it assumes the same
+    binary at the same path on both ends. loombox already has the transport a
+    <code>stdio</code> server needs on the far end — the <code>ssh:</code> execution target
+    (<code>target.ts:6-15</code>) — which #627 and any future placement decision can build on
+    directly.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Nothing runs — config exists, launch doesn't</span></div>
+      <p class="opt-why">
+        A filesystem MCP server pointed at a worktree cannot be added meaningfully yet: the config
+        record can be created and secret-granted, but no process is ever spawned for it and no
+        tool reaches the agent. <b>#627 blocks every option below</b> — it is the first piece of
+        plumbing regardless of which placement wins.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-1</span><span class="opt-title">Node-local only — every server runs beside the node process</span></div>
+      <p class="opt-why">
+        Simplest to build: one launch path, one place secrets resolve
+        (<code>resolveMcpServerConfigs</code> already only ever runs node-side,
+        <code>mcp-secret-grants.ts:20-25</code>). A filesystem server pointed at an <code>ssh:</code>
+        target's worktree would be reading a directory that <b>doesn't exist on the node's own
+        disk</b> — it would have to reach the worktree over the same SSH transport a second time,
+        or be pointed at the wrong filesystem entirely. This option is honest that it doesn't solve
+        the SSH case; it just doesn't pretend to.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-2</span><span class="opt-title">On the execution target — an <code>ssh:</code> server runs on that host</span></div>
+      <p class="opt-why">
+        A filesystem server pointed at an <code>ssh:</code> worktree runs next to the files it
+        reads, over the deploy-and-detach machinery <code>target.ts:9-11</code> already documents
+        for the agent binary itself. <b>Solves exactly the case Zed's own SSH story can't</b> —
+        loombox isn't assuming the same binary path on both ends, it's placing the server where
+        the transport already lands things. Secret material still resolves node-side and is
+        injected at launch, never sent to the relay (<code>mcp-secret-grants.ts:20-25</code>), so
+        this changes where the process runs, not where the secret sits. Costs a second thing that
+        can be absent on a remote host: the MCP server binary itself, on top of the agent CLI.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-3</span><span class="opt-title">Both, chosen per server, default follows the target</span></div>
+      <p class="opt-why">
+        A filesystem server defaults to D2-2's placement automatically because it needs the
+        worktree; an API-key-only server (Context7, say — already in the preset catalogue,
+        <code>mcp-presets.ts:26-28</code>) has no reason to run anywhere but the node and can stay
+        at D2-1's default. <b>Gets the common case right without a decision the user has to make</b>,
+        but it's the most code: two launch paths, plus the logic that infers which one a given
+        server needs.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D2-4</span><span class="opt-title">http/sse servers first, stdio later</span></div>
+      <p class="opt-why">
+        Sidesteps placement for the first release: an http/sse server has no process for loombox
+        to run anywhere, it's just a URL <code>AcpClient.newSession</code> hands the agent, so
+        there's nothing to place. <b>Ships fastest, but a filesystem-pointed server is exactly the
+        stdio case this defers</b> — the one MCP server type most obviously useful against a
+        worktree is the one this option doesn't touch.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d3">
+  <div class="item-head">
+    <span class="item-id">D3</span>
+    <h2>Tool policy</h2>
+  </div>
+  <p class="item-note">
+    Today there is exactly one policy surface, and it lives at request time. Every tool call an
+    agent wants to make arrives as an ACP <code>session/request_permission</code>, queued FIFO
+    per session (<code>permission-queue-state.ts:3-19</code>), only the head is actionable
+    (<code>isPermissionRequestActionable</code>, <code>permission-queue-state.ts:96-109</code>).
+    Each is answered with one of four option kinds ACP itself
+    defines — <code>allow_once</code>, <code>allow_always</code>, <code>reject_once</code>,
+    <code>reject_always</code> (<code>types.ts:120-121</code>), rendered as flat buttons in
+    <code>PermissionCard.svelte:193-218</code>. Separately, node-side only, a per-project
+    <code>PermissionPolicy</code> of command and network globs exists — deny always wins over
+    allow, empty policy means allow-all (<code>permission-policy.ts:27-53</code>) — enforced at
+    the point a command actually spawns or a terminal line is submitted, not at ACP's own
+    permission request. It has <b>no user interface anywhere</b>: nothing under
+    <code>apps/web/src</code> references <code>PermissionPolicy</code> at all, so today it can
+    only be hand-edited as JSON on the node. Zed keeps two separate concepts: <em>profiles</em>
+    (<code>agent.profiles</code>) decide which tools exist for a thread at all — Write / Ask /
+    Minimal, a bool per tool, plus per-MCP-server tool toggles — and <em>tool permissions</em>
+    (<code>agent.tool_permissions</code>) decide the approval mode per tool, confirm/allow/deny,
+    with <code>always_allow</code>/<code>always_deny</code> regex lists addressing MCP tools as
+    <code>mcp:&lt;server&gt;:&lt;tool&gt;</code>. Whatever ships here has to answer to the fact
+    that <b>the agent, not loombox, owns its own tool list</b> — loombox can gate or auto-answer
+    a request, it cannot add a tool the agent didn't declare.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Request-time only, plus an invisible glob policy</span></div>
+      <p class="opt-why">
+        <code>allow_always</code> already exists and already works — the agent stops asking for
+        that exact tool/target combination for the rest of the session, entirely inside ACP's own
+        protocol, no loombox state involved. The glob policy sits underneath it, unrelated and
+        unreachable: a deny there blocks the process before ACP even gets a chance to ask, so an
+        operator who wants "never run <code>rm -rf</code>, ever" today has to write JSON by hand.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-1</span><span class="opt-title">Keep request-time only</span></div>
+      <p class="opt-why">
+        No new UI, no new state to reconcile with <code>allow_always</code>. <b>Leaves the glob
+        policy exactly as invisible as it is today</b> — an operator who wants a standing rule
+        still edits JSON on the node, and there is still no way to say "this session may never
+        touch the network at all" without hoping every permission prompt gets answered correctly.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-2</span><span class="opt-title">Surface the existing glob policy in the UI, no profiles</span></div>
+      <p class="opt-why">
+        Cheapest real improvement: a settings surface for the command/network allow/deny lists
+        that already exist and already enforce (<code>permission-policy.ts:27-53</code>) — no new
+        backend concept, just a form over data that's been sitting unreachable since #256.
+        <b>Doesn't touch <code>allow_always</code> at all</b> — it stays exactly as it works today,
+        a separate, faster-acting layer underneath. The two can conflict silently: a session-level
+        <code>allow_always</code> means nothing if the node-level policy denies the command first,
+        and this option ships no UI that explains why an "always allowed" tool still gets blocked.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-3</span><span class="opt-title">Profiles that gate which tools a session may use, on top of request-time approval</span></div>
+      <p class="opt-why">
+        Adds Zed's other half without touching the one that already works: a profile trims the
+        tool list a session is even allowed to invoke — Write/Ask/Minimal or loombox's own
+        equivalent — and every tool that survives the trim still goes through the existing FIFO
+        queue with its existing <code>allow_always</code>. <b>A profile can only narrow, never
+        substitute for, the glob policy</b> — a profile that permits Bash says nothing about which
+        commands that Bash may run, so this still leaves the glob policy invisible unless D3-2's
+        surface ships alongside it. Needs a place to declare per-MCP-server tool toggles once D2
+        lands and there's an actual list of tools to toggle.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D3-4</span><span class="opt-title">Both — profiles plus rules, matching Zed exactly</span></div>
+      <p class="opt-why">
+        Profiles gate existence, the glob policy (surfaced, per D3-2) gates approval mode, request-time
+        <code>allow_always</code> stays the fast path for a one-off "stop asking me this." <b>Closest
+        to Zed's own mental model</b>, which means the most surface to design and explain: three
+        systems (profile, policy, per-request always) that all shape the same "can this tool run"
+        question, and a user has to understand which one answered no before they can fix it.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d4">
+  <div class="item-head">
+    <span class="item-id">D4</span>
+    <h2>Remembering the model, the effort and the mode</h2>
+  </div>
+  <p class="item-note">
+    <code>ConfigOptionStore</code> keeps exactly one option list per live session, keyed by
+    session id, and drops it the moment the session closes (<code>config-options.ts:26-59</code>,
+    <code>clear()</code>) — there is no persistence layer anywhere between sessions. The catalogue
+    itself now round-trips end to end (issues #705, #718, PR #724, all closed/merged 2026-08-05):
+    <code>session/new</code>'s options are read instead of discarded, a pick is sent through
+    <code>config_option</code> to a real <code>AgentSession.setConfigOption</code>, and the
+    agent's own <code>config_options</code> push — not an optimistic local guess — is the only
+    thing that updates <code>ConfigBar</code> now. But that fix is scoped to one session's live
+    round trip; it changes nothing about what the <em>next</em> session starts with.
+    <code>ConfigBar.svelte:15-20</code> says it plainly: "there is no internal 'currently selected'
+    state duplicated here" — it renders whatever the agent just sent, every time, from zero. Zed
+    stores <code>default_config_options</code> per agent in settings, so a fresh thread with the
+    same agent starts where the last one left off.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">Every session starts at the agent's own defaults</span></div>
+      <p class="opt-why">
+        Zero state to get stale or leak between projects. Picking Opus and high effort five times
+        in a row for five different sessions means five re-picks — <b>the entire cost this
+        decision exists to remove.</b>
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D4-1</span><span class="opt-title">Keep — no persistence</span></div>
+      <p class="opt-why">
+        Ships nothing, changes nothing. Only defensible if the answer to this whole decision is
+        "not yet" — worth saying plainly rather than defaulting into it by not deciding.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D4-2</span><span class="opt-title">Remember the last used values, per agent, per account</span></div>
+      <p class="opt-why">
+        Matches Zed's own shape most directly — one stored triple (model, effort, mode) per
+        provider id, read back the next time that agent starts a session, written the way
+        <code>accent.ts</code> already writes a single account-scoped preference (the same pattern
+        v8's B2-1 picked for the thought-collapse toggle). <b>Wrong the moment two projects
+        genuinely want different defaults</b> for the same agent — a docs-only repo and a
+        production service both get whatever effort was last picked in either one.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D4-3</span><span class="opt-title">Per project as well, project wins over account</span></div>
+      <p class="opt-why">
+        Fixes D4-2's cross-project bleed: a project-scoped override (paired with the project's own
+        MCP config already stored this way, <code>mcp-server-store.ts:44</code>) beats the
+        account-wide last-used value when both exist. <b>Two places to look when a default seems
+        wrong</b> — "why is this session on low effort" now has two possible answers instead of
+        one, and whichever surface ships this has to show which one is currently winning.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D4-4</span><span class="opt-title">Session templates — target, agent, model, effort, mode, starting prompt</span></div>
+      <p class="opt-why">
+        <b>This is issue #259</b> (open, "Session templates/presets"), not a smaller version of
+        it — #259 already specifies target, provider, MCP set and starting prompt as one saved,
+        nameable unit, created/edited/deleted from the UI, project-scoped or global by choice.
+        Model/effort/mode are two fields short of what #259 already asks for. Picking this option
+        is really picking to build #259 and let config-option memory be one more field on the
+        template rather than its own feature — the cost is that a template is a deliberate save
+        action, not an automatic "remember what I did last."
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="d5">
+  <div class="item-head">
+    <span class="item-id">D5</span>
+    <h2>How much of MCP we consume</h2>
+  </div>
+  <p class="item-note">
+    loombox's own MCP participation stops at declaration. A client-added server (or, once #627
+    ships, a node-hosted one) becomes an <code>AcpMcpServerConfig</code> entry
+    (<code>resolveMcpServerConfigs</code>, <code>mcp-secret-grants.ts:134-152</code>) handed to
+    <code>AcpClient.newSession</code> — from there it's the agent binary itself (Claude Code,
+    Codex) that speaks the MCP protocol, lists that server's tools, and decides what to do with
+    its prompts or resources. loombox never lists a server's tools itself, never turns a prompt
+    into a slash command, never shows a resource as attachable context — there is no code path
+    where loombox is the MCP <em>client</em>, only the thing that tells the agent where to
+    connect. Zed's own client does all three: tools ✅, prompts ✅ as slash commands, resources ⚠
+    listed but not attachable, sampling/elicitation/roots ❌/❌/⚠. Building any of this in loombox
+    means loombox itself becoming an MCP client for the first time, not extending something
+    partial.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head"><span class="opt-tag">Today</span><span class="opt-title">None — the agent is the only MCP client that exists</span></div>
+      <p class="opt-why">
+        Whatever tools/prompts/resources a session gets come entirely from what the agent binary
+        itself supports and chooses to surface in its own transcript output. loombox has no
+        visibility into any of it beyond what the agent already reports as a tool call.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D5-1</span><span class="opt-title">Tools only</span></div>
+      <p class="opt-why">
+        loombox lists a server's declared tools (config already carries enough to attempt a
+        connection and call <code>tools/list</code>) purely for visibility — "this server exposes
+        3 tools" in the MCP settings row — without changing how a tool call reaches the agent.
+        <b>The smallest real step, and the one every other option needs as a foundation</b>: you
+        can't surface a prompt as a slash command without already knowing how to talk to the
+        server that offers it.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D5-2</span><span class="opt-title">Tools plus prompts as slash commands</span></div>
+      <p class="opt-why">
+        Matches Zed's own scope exactly, and pairs with a composer slash-command system if one
+        ships (a client-side affordance, independent of any agent's own support for it — an MCP
+        prompt becomes a loombox UI action, not an agent feature). <b>Needs a real composer
+        integration point that doesn't exist yet</b> — this is new client surface, not a settings
+        row.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head"><span class="opt-tag">D5-3</span><span class="opt-title">Tools, prompts and resources as attachable context</span></div>
+      <p class="opt-why">
+        Goes past Zed: a resource becomes something a user can attach to a turn the way a file
+        already can. <b>The least verifiable of the three for a first release</b> — resources are
+        the part of MCP loombox has zero code touching today, in either direction, so "attach a
+        resource" means building fetch, caching and an attachment-pill UI for a data shape nobody
+        in this codebase has parsed yet.
+      </p>
+    </div>
+  </div>
+  <p class="item-note">
+    Ranked by what a first release can actually verify end to end: <b>D5-1</b> is checkable the
+    moment a server connects — a tool count either matches <code>tools/list</code> or it doesn't.
+    <b>D5-2</b> is checkable once a slash command exists to type — the prompt either fires or it
+    doesn't. <b>D5-3</b> has no existing loombox surface to verify against at all; it would be the
+    first thing built and the first thing tested, not an increment on something already working.
+  </p>
+</section>

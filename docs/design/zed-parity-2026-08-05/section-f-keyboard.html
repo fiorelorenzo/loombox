@@ -1,0 +1,564 @@
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>An action registry</h2>
+  </div>
+  <p class="item-note">
+    Today the palette opens on <code>Mod+K</code> (<code>keyboard.ts:23-25</code>, wired in
+    <code>+page.svelte:2247-2251</code>), searching sessions plus a hand-built actions array
+    (<code>+page.svelte:1742-1763</code>) merged into one fuzzy list
+    (<code>CommandPalette.svelte:74-89</code>, matched by <code>fuzzy.ts:11-45</code>). Measured
+    live: two actions at rest, "Open attention inbox" and "Open nodes and targets"
+    (<code>+page.svelte:1752-1761</code>). That count is correct for a session with no turn
+    running. A third action, "Stop current turn", is pushed only while the selected session's
+    turn is active (<code>+page.svelte:1744-1751</code>), and it is the only one of the three
+    that carries a shortcut, <code>Mod+.</code>. So the live measurement is right at rest and one
+    action short mid-turn. A row shows its shortcut, right-aligned, only when the action object
+    sets one (<code>CommandPalette.svelte:179-182</code>), and the same string repeats in the
+    footer hint bar (<code>:195-197</code>). Nothing else in the app reads this array: no menu
+    item, no settings row, no other keyboard entry point. Two more real bindings sit outside the
+    palette entirely and are invisible to it: <code>Mod+B</code> toggles the sessions column
+    (<code>+page.svelte:2257-2260</code>), and the three dock resize handles read arrow keys
+    directly while focused (<code>dock-panel.svelte.ts:209-217</code>). Zed's discovery model
+    runs the other way: a fuzzy-matched registry of every capability, the binding shown inline
+    next to it (research digest §6).
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">Two hardcoded actions plus a conditional third</span>
+      </div>
+      <p class="opt-why">
+        The array in <code>+page.svelte</code> <b>is</b> the registry. It has three possible
+        entries, one of them conditional, and nothing enforces that a topbar button, a dock
+        toggle, or a future menu item stays in sync with what it lists.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Measured live, session at rest</p>
+        <div class="lb-panel">
+          <div class="lb-panel-head">Jump to a session or run an action…</div>
+          <div class="lb-listrow">
+            <span>Open attention inbox</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no binding</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Open nodes and targets</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no binding</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F1-1</span>
+        <span class="opt-title">Keep the array, grow it by hand</span>
+      </div>
+      <p class="opt-why">
+        Costs nothing to ship today; every new capability is one more object literal in the same
+        function. It is exactly how the array got to three entries already, and exactly why
+        "Stop current turn" is the only one with a shortcut label: whoever added it remembered,
+        the two before it didn't have to. Nothing catches the drift, because there is nothing to
+        check the array against.
+      </p>
+      <div class="stage">
+        <p class="stage-label">A year of ad hoc additions, illustrative</p>
+        <div class="lb-panel">
+          <div class="lb-panel-head">Jump to a session or run an action…</div>
+          <div class="lb-listrow">
+            <span>Open attention inbox</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no binding</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Stop current turn</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+.</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Toggle sessions column</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no binding</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Rename project</span>
+            <span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+R</span>
+          </div>
+        </div>
+        <p class="lb-small lb-muted" style="margin: var(--space-sm) 0 0">
+          "Toggle sessions column" already works today at <code>Mod+B</code>
+          (<code>+page.svelte:2257-2260</code>); it just never got added to this array, so the one
+          surface meant to advertise it doesn't know it exists.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F1-2</span>
+        <span class="opt-title">A real action registry</span>
+      </div>
+      <p class="opt-why">
+        One declaration per capability, an id, a label, a handler, an optional binding, that the
+        palette and every future command surface read from instead of owning its own list. Buys
+        one source of truth and a binding that is finally visible next to the action that owns
+        it. Costs a real refactor: today's topbar buttons and dock toggles each call their own
+        handler directly and would need to become thin callers into the registry instead of the
+        registry mirroring them.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Twelve entries, every binding visible</p>
+        <div class="lb-panel">
+          <div class="lb-panel-head">Jump to a session or run an action…</div>
+          <div class="lb-listrow">
+            <span>New session</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+N</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Next session</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+]</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Previous session</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+[</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Stop current turn</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+.</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Toggle sessions sidebar</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+B</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Toggle workbench panel</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Alt+B</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Toggle terminal dock</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+J</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Cycle model / effort</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+M</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Open attention inbox</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+A</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Open nodes and targets</span><span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no binding</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Open settings</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+,</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Focus composer</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+I</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F1-3</span>
+        <span class="opt-title">Registry plus context</span>
+      </div>
+      <p class="opt-why">
+        Same registry, and each entry also declares when it can run, so the palette hides or dims
+        whatever would no-op if picked right now: "Stop current turn" only while a turn is
+        active, "Next session" / "Previous session" only with more than one session open. Closest
+        to Zed's own model, and the more honest surface, since a row that does nothing when
+        picked is worse than a row that isn't there. Costs the most: every action needs its
+        availability expressed as a predicate, not just its effect, and that predicate has to
+        keep tracking whatever state it reads as that state's own shape changes.
+      </p>
+      <div class="stage">
+        <p class="stage-label">Same twelve, two now unavailable</p>
+        <div class="lb-panel">
+          <div class="lb-panel-head">Jump to a session or run an action…</div>
+          <div class="lb-listrow">
+            <span>New session</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+N</span>
+          </div>
+          <div class="lb-listrow s-f1-dim">
+            <span>Next session</span><span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">only one session open</span>
+          </div>
+          <div class="lb-listrow s-f1-dim">
+            <span>Previous session</span><span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">only one session open</span>
+          </div>
+          <div class="lb-listrow s-f1-dim">
+            <span>Stop current turn</span><span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">no turn active</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Toggle sessions sidebar</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+B</span>
+          </div>
+          <div class="lb-listrow">
+            <span>Open attention inbox</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+A</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f2">
+  <div class="item-head">
+    <span class="item-id">F2</span>
+    <h2>Which bindings we adopt</h2>
+  </div>
+  <p class="item-note">
+    Zed's own muscle-memory anchors, from the research digest: <code>Mod+P</code> file finder,
+    <code>Mod+Shift+P</code> palette, <code>Mod+B</code> / <code>Mod+J</code> /
+    <code>Mod+Alt+B</code> for its three docks, <code>Mod+,</code> settings, and, confirmed
+    separately, <code>Mod+Shift+]</code> / <code>Mod+Shift+[</code> for next and previous tab. VS
+    Code on macOS agrees with almost all of that: same palette key, same quick-open key, same
+    settings key, and the same <code>Mod+J</code> for its own terminal panel, not
+    <code>Ctrl+`</code>, that is the Windows and Linux default. The one place the two genuinely
+    diverge in this list is next and previous tab: VS Code's Mac default is
+    <code>Mod+Alt+Right</code> / <code>Mod+Alt+Left</code>, not the bracket chord, because
+    <code>Mod+Shift+[</code> hits a documented macOS key-dispatch bug in VS Code's own issue
+    tracker. Three loombox bindings are already spoken for and every option below keeps them:
+    <code>Mod+K</code> opens the palette (<code>+page.svelte:2247-2251</code>), <code>Mod+.</code>
+    stops the turn (<code>:2252-2256</code>), <code>Mod+B</code> toggles the sessions column
+    (<code>:2257-2260</code>). The inbox's <code>j</code> / <code>k</code> and its digit answer
+    are E3-1, settled in the v7 decisions and not reopened here
+    (<code>AttentionInbox.svelte:334-361</code>): unmodified keys, no chord, nothing below
+    touches them. "Cycle model / effort" below reaches the one consolidated control E1-2 already
+    settled in v8, it does not propose a new one. A browser tab, not just the OS, owns a real
+    slice of the keyboard: <code>Mod+N</code>, <code>Mod+T</code>, <code>Mod+W</code> and
+    <code>Ctrl+Tab</code> cannot be stopped with <code>preventDefault()</code> in a normal tab,
+    only inside the Electron shell; DevTools chords (<code>Mod+Shift+I/J/C</code>,
+    <code>F12</code>) are reserved on most browsers too. Rows below are marked where a key is
+    confirmed reserved or genuinely needs a per-browser check; an unmarked row is not a guarantee,
+    it is the set of keys with no known conflict.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">Nine real bindings, no more</span>
+      </div>
+      <p class="opt-why">
+        Everything a keyboard can already do in loombox, and nothing else. New session, next and
+        previous session, cycling the model, opening settings and focusing the composer are all
+        mouse-only.
+      </p>
+      <div class="stage">
+        <div class="lb-panel">
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+K</span><span class="lb-spacer"></span>
+            <span>Open the palette</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+.</span><span class="lb-spacer"></span>
+            <span>Stop current turn</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+B</span><span class="lb-spacer"></span>
+            <span>Toggle sessions sidebar</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Enter</span><span class="lb-spacer"></span>
+            <span>Send the prompt</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Shift+Enter</span><span class="lb-spacer"></span>
+            <span>Newline in composer</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Escape</span><span class="lb-spacer"></span>
+            <span>Close palette / defer focused permission</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">j&nbsp;/&nbsp;k</span><span class="lb-spacer"></span>
+            <span>Move focused row, attention inbox</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">1–9</span><span class="lb-spacer"></span>
+            <span>Answer the focused permission</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">←&nbsp;/&nbsp;→</span><span class="lb-spacer"></span>
+            <span>Move selection, Agent/Tracker and Workbench tabs</span>
+          </div>
+        </div>
+        <p class="lb-small lb-muted" style="margin: var(--space-sm) 0 0">
+          <code>keyboard.ts:23-32</code>, <code>+page.svelte:2237-2261</code>,
+          <code>+page.svelte:1628-1631</code>, <code>+page.svelte:2075-2083</code>,
+          <code>AttentionInbox.svelte:334-361</code>, <code>PermissionCard.svelte:107-115</code>.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F2-1</span>
+        <span class="opt-title">Keep today's handful</span>
+      </div>
+      <p class="opt-why">
+        The nine bindings above, unchanged. Zero collision risk, because nothing new is claimed,
+        and zero discoverability gained. This is F1's "add by hand" problem again from the
+        keyboard side: a hand-grown registry and a hand-grown keymap drift the same way, toward
+        whatever the last person remembered to bind.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F2-2</span>
+        <span class="opt-title">The full set, Zed keys where a Zed key exists</span>
+      </div>
+      <p class="opt-why">
+        Every developer who has touched Zed already carries these. Nine of the eighteen rows
+        below already exist in loombox with the exact same key, unmarked. The two new risk rows
+        are real, not theoretical: <code>Mod+P</code> for jump-to-session sits on top of the
+        system print dialog, and <code>Mod+N</code> for new session sits on top of "new window",
+        which no <code>preventDefault()</code> reaches in a plain browser tab. Cost: those two
+        need either an accepted collision or an Electron-only accelerator the web build cannot
+        offer, which means web and desktop diverge on exactly two keys.
+      </p>
+      <div class="stage">
+        <div class="lb-panel">
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+P</span><span class="lb-spacer"></span>
+            <span>Command palette (actions)</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+P</span><span class="lb-spacer"></span>
+            <span>Jump to session</span><span class="lb-badge warn">verify: print dialog</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+N</span><span class="lb-spacer"></span>
+            <span>New session</span><span class="lb-badge danger">browser owns this</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+B</span><span class="lb-spacer"></span>
+            <span>Toggle sessions sidebar</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Alt+B</span><span class="lb-spacer"></span>
+            <span>Toggle workbench panel</span
+            ><span class="lb-badge warn">verify: Windows Alt menu</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+J</span><span class="lb-spacer"></span>
+            <span>Toggle terminal dock</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+]</span><span class="lb-spacer"></span>
+            <span>Next session</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+[</span><span class="lb-spacer"></span>
+            <span>Previous session</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+I</span><span class="lb-spacer"></span>
+            <span>Focus composer</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Enter</span><span class="lb-spacer"></span>
+            <span>Send</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Shift+Enter</span><span class="lb-spacer"></span>
+            <span>Newline in composer</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+.</span><span class="lb-spacer"></span>
+            <span>Stop the turn</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">1–9</span><span class="lb-spacer"></span>
+            <span>Answer the focused permission</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+M</span><span class="lb-spacer"></span>
+            <span>Cycle model / effort</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+A</span><span class="lb-spacer"></span>
+            <span>Open inbox</span><span class="lb-badge warn">verify: Firefox add-ons</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+,</span><span class="lb-spacer"></span>
+            <span>Open settings</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Escape</span><span class="lb-spacer"></span>
+            <span>Close palette / dismiss overlay</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">j&nbsp;/&nbsp;k</span><span class="lb-spacer"></span>
+            <span>Move focus row, attention inbox</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F2-3</span>
+        <span class="opt-title">The full set, VS Code keys where the two differ</span>
+      </div>
+      <p class="opt-why">
+        Same eighteen rows, same two risk keys. Toggle terminal, quick open and settings already
+        agree between the two editors on macOS, so "VS Code-compatible" changes exactly one thing
+        in this list: next and previous session move to <code>Mod+Alt+Right</code> /
+        <code>Mod+Alt+Left</code>. That is a worse pick for loombox specifically: on Windows and
+        Linux that same chord is the tab's own back and forward history navigation, so the one
+        row where VS Code disagrees with Zed is the one row where matching VS Code costs a real
+        browser feature on two platforms out of three. If "more people arrive from VS Code" is
+        the reason to take this option, it buys familiarity on eleven shared rows and pays for it
+        on this one.
+      </p>
+      <div class="stage">
+        <div class="lb-panel">
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Shift+]</span><span class="lb-spacer"></span>
+            <span class="lb-muted lb-small">unchanged from F2-2</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Alt+Right</span><span class="lb-spacer"></span>
+            <span>Next session</span
+            ><span class="lb-badge danger">browser owns this on Win/Linux</span>
+          </div>
+          <div class="lb-listrow">
+            <span class="lb-mono">Mod+Alt+Left</span><span class="lb-spacer"></span>
+            <span>Previous session</span
+            ><span class="lb-badge danger">browser owns this on Win/Linux</span>
+          </div>
+        </div>
+        <p class="lb-small lb-muted" style="margin: var(--space-sm) 0 0">
+          Every other row is identical to F2-2's table above.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="item" id="f3">
+  <div class="item-head">
+    <span class="item-id">F3</span>
+    <h2>Customisable keymap</h2>
+  </div>
+  <p class="item-note">
+    No user-facing remap surface exists anywhere in loombox today. Every binding cited in F1 and
+    F2 is compiled into <code>keyboard.ts</code>, <code>+page.svelte</code>,
+    <code>AttentionInbox.svelte</code>, <code>PermissionCard.svelte</code> and
+    <code>dock-panel.svelte.ts</code>; nothing in <code>apps/web/src/lib/components</code> so much
+    as mentions a keymap or a remap outside comments describing this same fixed set. Zed's own
+    keymap is user-editable JSON matched by context predicates (research digest §6, e.g.
+    <code>Editor && vim_mode == normal</code>) and reachable from its own palette. Changing any
+    loombox binding today means editing source and shipping a release.
+  </p>
+  <div class="options">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span>
+        <span class="opt-title">No remap surface at all</span>
+      </div>
+      <p class="opt-why">
+        Whatever F2 picks is what everyone gets, forever, until the next release. No escape hatch
+        for the one person whose window manager already owns a chord F2 wants.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F3-1</span>
+        <span class="opt-title">Fixed bindings, on purpose</span>
+      </div>
+      <p class="opt-why">
+        Identical to today. Costs nothing to maintain, literally nothing changes. The price is
+        paid by whoever has a real collision: a screen reader chord, an OS shortcut, a browser
+        extension already sitting on the same key, with no way to move off it short of asking for
+        a code change.
+      </p>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F3-2</span>
+        <span class="opt-title">A small remap surface, loombox actions only</span>
+      </div>
+      <p class="opt-why">
+        A short list in Settings, one row per loombox-specific action from F1's registry (new
+        session, next/previous session, cycle model, open inbox, and the like), not the
+        browser-standard ones a user is unlikely to want to move. Costs a capture-and-validate
+        control: read the pressed chord, check it against the rest of the live registry for a
+        collision, reject or confirm, store the result per account the same shape
+        <code>accent.ts</code> already uses for a boolean preference. Bounded scope keeps the
+        collision check small, since it only ever checks loombox's own set, never the browser's.
+      </p>
+      <div class="stage">
+        <div class="lb-panel">
+          <div class="lb-panel-head">Keyboard</div>
+          <div class="lb-listrow">
+            <span>New session</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+N</span>
+            <button class="lb-btn lb-btn-sm" type="button">Record</button>
+          </div>
+          <div class="lb-listrow">
+            <span>Cycle model / effort</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+M</span>
+            <button class="lb-btn lb-btn-sm" type="button">Record</button>
+          </div>
+          <div class="lb-listrow">
+            <span>Open inbox</span><span class="lb-spacer"></span>
+            <span class="lb-mono lb-small">Mod+Shift+A</span>
+            <button class="lb-btn lb-btn-sm" type="button">Record</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">F3-3</span>
+        <span class="opt-title">A full user keymap, synced</span>
+      </div>
+      <p class="opt-why">
+        Matches Zed: every action remappable, context predicates possible, stored per account like
+        the rest of loombox's synced state. Two real questions this option has to answer, not
+        gloss over: what happens on a phone, where there is no physical keyboard to record a chord
+        against, so the whole feature has nothing to attach to on the mobile web client; and what
+        happens when a synced binding is free on one device and reserved on another, a chord open
+        on desktop Chrome and taken on mobile Safari, which the JSON format has no field for today.
+        Cost: parsing and validating arbitrary user JSON against a live registry, a hard rule that
+        action ids never get renamed once this ships (F1's registry would have to promise that),
+        and a merge story for the same account editing its keymap from two open tabs at once.
+      </p>
+      <div class="stage">
+        <pre class="lb-console"><span class="dim">// keymap.json, per account, synced</span>
+{
+  <span class="ok">"stop-turn"</span>: <span class="ok">"mod-."</span>,
+  <span class="ok">"next-session"</span>: <span class="ok">"mod-shift-]"</span>,
+  <span class="ok">"open-inbox"</span>: {
+    <span class="dim">"binding"</span>: <span class="ok">"mod-shift-a"</span>,
+    <span class="dim">"context"</span>: <span class="ok">"!Composer"</span>
+  }
+}</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .s-f1-dim {
+    opacity: 0.5;
+  }
+</style>
