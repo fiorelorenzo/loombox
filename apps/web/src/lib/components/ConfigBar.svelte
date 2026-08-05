@@ -121,6 +121,50 @@
    * consumer (issue #250's inbox surfacing) shares the same number, plus a
    * `.sr-only` span carrying it to assistive tech (the track itself stays
    * `aria-hidden`, unreachable without hovering `title`).
+   *
+   * One consolidated control (cockpit v8 decision E1-2, issue #711): model,
+   * thinking and mode used to sit inline as three-plus separate controls in
+   * the row; they now collapse behind one trigger reading e.g. "Opus 5 ·
+   * High" that opens a single popover holding all three. The trade Lorenzo
+   * accepted is explicit — a second click, for the narrowest footprint of
+   * the layouts considered (`docs/design/ux-review-2026-08-05/
+   * section-e-model-effort.html`, option E1-2) — so this is presentation
+   * only, laid on top of whatever `options` already carries; it does not
+   * change which categories exist or what their choices are. The trigger's
+   * own text is every non-`mode` category's current selection, dot-joined
+   * in the order `options` lists them (today that's `model` then
+   * `thought_level`, i.e. "effort" — never a hardcoded pair: a third
+   * non-`mode` category, present or future, just extends the join instead
+   * of vanishing, same as it already renders as one more generic section
+   * inside the popover below). `mode` stays out of the trigger text (it
+   * drives permission behavior, not a value you'd summarize the same way)
+   * but still opens in the same popover, as its existing segmented control,
+   * unchanged.
+   *
+   * `modes` — ACP's separate `{availableModes, currentModeId}` field a real
+   * `omp acp` binary sends alongside a `configOptions` entry whose category
+   * is already `'mode'` — is not this component's problem: `client.ts`'s
+   * `mapConfigOptions` (issue #705) folds it into that same entry before
+   * `options` ever reaches here, so exactly one `mode` category ever
+   * arrives and exactly one mode picker ever renders. If two ever showed up
+   * here it would mean that fold broke, not something to deduplicate in
+   * this file.
+   *
+   * The popover itself is `Select`'s own "anchored popover, no `Overlay`
+   * scrim" contract (see that component's file doc comment) extended to a
+   * compound panel: `Select` keeps focus on its trigger the whole time
+   * (`aria-activedescendant` over a single listbox), which works only
+   * because it hosts one widget. This popover hosts three unrelated widgets
+   * (one `Select` per non-`mode` category, plus the `mode` radiogroup), so
+   * focus genuinely has to move inside it for every control to be
+   * keyboard-reachable — it borrows `Dialog`'s own Tab-trap
+   * (`focusableElements`/`handlePanelKeydown`) instead, minus `Dialog`'s
+   * `Overlay` backdrop and minus its focus-trap's modality: clicking outside
+   * closes it exactly like `Select`'s own click-outside (a plain `window`
+   * `pointerdown` listener, not a click-swallowing scrim), and it opens
+   * upward when the trigger sits too close to the viewport's bottom edge
+   * for the same reason `Select` already does — this bar lives directly
+   * above the composer.
    */
   import { tick } from 'svelte';
   import {
@@ -131,6 +175,7 @@
   import { PROVIDER_LABELS } from '$lib/providers';
   import Button from './ui/Button.svelte';
   import Select from './ui/Select.svelte';
+  import Icon from './icons/Icon.svelte';
 
   interface Props {
     options: AcpConfigOption[];
@@ -153,7 +198,17 @@
   }: Props = $props();
 
   const modeOption = $derived(options.find((option) => option.category === 'mode'));
-  const otherOptions = $derived(options.filter((option) => option.category !== 'mode'));
+  /** Every category besides `mode` — what the trigger summarizes and the popover lists as its own `Select` section (see the file doc comment's "One consolidated control" paragraph). */
+  const pickerOptions = $derived(options.filter((option) => option.category !== 'mode'));
+
+  /** The trigger root, for the click-outside listener (`handleWindowPointerDown`) to test containment against, same convention as `Select`'s own `rootEl`. */
+  let triggerRootEl = $state<HTMLDivElement | undefined>(undefined);
+  let triggerEl = $state<HTMLButtonElement | undefined>(undefined);
+  /** The popover panel, for `focusableElements()` (the Tab-trap) and the initial focus-on-open effect below. */
+  let panelEl = $state<HTMLDivElement | undefined>(undefined);
+  let popoverOpen = $state(false);
+  /** Flips the popover above the trigger instead of below — see `Select.svelte`'s identical `openUpward`, and this file's own doc comment for why this bar specifically needs it. */
+  let openUpward = $state(false);
 
   /** The radiogroup root, for moving focus onto the newly-selected segment when an arrow key changes it (see `handleModeKeydown`). */
   let modeGroupEl = $state<HTMLDivElement | undefined>(undefined);
@@ -164,6 +219,32 @@
   const agentName = $derived(
     providerId ? (PROVIDER_LABELS[providerId]?.name ?? providerId) : undefined,
   );
+
+  function categoryLabel(category: string): string {
+    return category
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  /** The value a category currently shows, for both the trigger text and (implicitly, via `Select`) the popover — falls back to the category's own label when nothing is selected yet, rather than an empty string. */
+  function currentChoiceLabel(option: AcpConfigOption): string {
+    return (
+      option.choices.find((choice) => choice.id === option.current)?.name ??
+      categoryLabel(option.category)
+    );
+  }
+
+  /** "Opus 5 · High": every non-`mode` category's current value, dot-joined in `options`' own order. Falls back to `mode`'s own value when there is no other category at all, so a trigger still reads as something rather than nothing. */
+  const triggerParts = $derived(
+    pickerOptions.length > 0
+      ? pickerOptions.map(currentChoiceLabel)
+      : modeOption
+        ? [currentChoiceLabel(modeOption)]
+        : [],
+  );
+  const triggerText = $derived(triggerParts.join(' · '));
+  const hasOptions = $derived(pickerOptions.length > 0 || modeOption !== undefined);
 
   // §7.9/§16: `usage.tokensUsed`/`usage.contextWindow` are ALREADY the
   // parent-only, subagent-free numbers by the time they reach this
@@ -207,18 +288,115 @@
       : `$${cumulativeCostUsd.toFixed(2)} spent this session`,
   );
 
-  function categoryLabel(category: string): string {
-    return category
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }
-
   /** Token counts abbreviated to the unit a context window is discussed in ("76k / 200k"), so the pair stays readable at caption size in a row that also holds controls. */
   function formatTokens(count: number): string {
     if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
     if (count >= 1_000) return `${Math.round(count / 1_000)}k`;
     return `${count}`;
+  }
+
+  // The rough pixel height the popover budgets for (a handful of sections,
+  // each a `Select` trigger or a row of mode segments) — same rough-budget
+  // convention as `Select.svelte`'s own `LISTBOX_BUDGET_PX`, not a
+  // layout-critical measurement.
+  const POPOVER_BUDGET_PX = 320;
+
+  const FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]';
+
+  /** Every real tab stop inside the open popover — one trigger button per `Select` (its own listbox stays `aria-activedescendant`-only, never a tab stop, per that component's own ARIA pattern) plus `mode`'s single roving-tabindex-0 segment. The `tabindex="-1"` filter has to run as a second pass, not folded into `FOCUSABLE_SELECTOR` itself: `mode`'s unselected segments are plain `<button>`s, which `button:not([disabled])` alone already matches regardless of their own `tabindex` — a `:not([tabindex="-1"])` suffix only ever reached the selector's last, unrelated `[tabindex]` branch. Used both for the initial focus-on-open and the Tab-trap below. */
+  function focusableElements(): HTMLElement[] {
+    if (!panelEl) return [];
+    return Array.from(panelEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+      (element) => element.getAttribute('tabindex') !== '-1',
+    );
+  }
+
+  // Focus-on-open (mirrors `Dialog.svelte`'s identical effect): moves focus
+  // onto the popover's first real control the moment it opens, so "every
+  // control inside is reachable without a mouse" doesn't depend on a user
+  // discovering they have to Tab in from the trigger first.
+  $effect(() => {
+    if (popoverOpen) focusableElements()[0]?.focus();
+  });
+
+  function openPopover(): void {
+    if (!hasOptions) return;
+    if (triggerEl && typeof window !== 'undefined') {
+      const rect = triggerEl.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      openUpward = spaceBelow < POPOVER_BUDGET_PX && rect.top > spaceBelow;
+    }
+    popoverOpen = true;
+  }
+
+  function closePopover(): void {
+    popoverOpen = false;
+  }
+
+  function handleTriggerClick(): void {
+    if (popoverOpen) {
+      closePopover();
+      triggerEl?.focus();
+    } else {
+      openPopover();
+    }
+  }
+
+  function handleTriggerKeydown(event: KeyboardEvent): void {
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'Enter':
+      case ' ':
+        if (popoverOpen) return;
+        event.preventDefault();
+        openPopover();
+        break;
+      case 'Escape':
+        if (!popoverOpen) return;
+        event.preventDefault();
+        closePopover();
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Escape backs all the way out (closes the popover, returns focus to the trigger) and doubles as the Tab-trap while the popover is open — the same pairing `Dialog.svelte`'s `handleKeydown`/`focusableElements` use, minus `Overlay` (see the file doc comment for why this popover isn't `Overlay`-backed). */
+  function handlePanelKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePopover();
+      triggerEl?.focus();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = focusableElements();
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  // Mirrors `Select.svelte`'s own `handleWindowPointerDown` exactly: a
+  // `window` `pointerdown` listener that no-ops for anything inside this
+  // component's own trigger/popover root, closing without stealing focus
+  // (the click itself is never swallowed — no preventDefault/
+  // stopPropagation — so whatever was actually clicked still reacts).
+  function handleWindowPointerDown(event: PointerEvent): void {
+    if (!popoverOpen) return;
+    const target = event.target;
+    if (triggerRootEl && target instanceof Node && triggerRootEl.contains(target)) return;
+    closePopover();
   }
 
   /**
@@ -268,53 +446,87 @@
   }
 </script>
 
+<svelte:window onpointerdown={handleWindowPointerDown} />
+
 <div class="config-bar" data-testid="config-bar">
   {#if !compact}
     {#if agentName}
       <span class="agent" data-testid="config-agent">{agentName}</span>
     {/if}
 
-    {#each otherOptions as option (option.category)}
-      <div class="control" data-testid={`config-option-${option.category}`}>
-        <!-- The model picker's own value already reads as a model name, so it
-             takes the agent name above as its visible neighbour instead of a
-             label repeating the category. Every other category keeps its word:
-             a bare "High" would not say what it measures. -->
-        {#if option.category !== 'model'}
-          <span class="label">{categoryLabel(option.category)}</span>
-        {/if}
-        <Select
-          value={option.current ?? ''}
-          options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
-          onChange={(optionId) => onChange(option.category, optionId)}
-          label={categoryLabel(option.category)}
-          size="sm"
-        />
-      </div>
-    {/each}
-
-    {#if modeOption}
-      <div
-        class="control mode"
-        role="radiogroup"
-        aria-label="Mode"
-        data-testid="config-option-mode"
-        bind:this={modeGroupEl}
-      >
-        {#each modeOption.choices as choice (choice.id)}
-          <Button
-            variant="ghost"
-            size="sm"
-            class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
-            role="radio"
-            ariaChecked={modeOption.current === choice.id}
-            tabindex={modeOption.current === choice.id ? 0 : -1}
-            onclick={() => onChange('mode', choice.id)}
-            onkeydown={handleModeKeydown}
+    {#if hasOptions}
+      <div class="control config-trigger-root" bind:this={triggerRootEl}>
+        <button
+          type="button"
+          class="config-trigger"
+          class:config-trigger-expanded={popoverOpen}
+          bind:this={triggerEl}
+          aria-haspopup="dialog"
+          aria-expanded={popoverOpen}
+          aria-controls="config-popover"
+          aria-label={`Model, thinking and mode: ${triggerText}`}
+          onclick={handleTriggerClick}
+          onkeydown={handleTriggerKeydown}
+          data-testid="config-trigger"
+        >
+          <span class="config-trigger-value">{triggerText}</span>
+          <Icon name="chevron-down" class="config-trigger-chevron" />
+        </button>
+        {#if popoverOpen}
+          <div
+            class="config-popover"
+            class:config-popover-up={openUpward}
+            role="dialog"
+            aria-modal="false"
+            aria-label="Model, thinking and mode"
+            id="config-popover"
+            bind:this={panelEl}
+            onkeydown={handlePanelKeydown}
+            tabindex="-1"
+            data-testid="config-popover"
           >
-            {choice.name}
-          </Button>
-        {/each}
+            {#each pickerOptions as option (option.category)}
+              <div class="config-popover-section" data-testid={`config-option-${option.category}`}>
+                <span class="label">{categoryLabel(option.category)}</span>
+                <Select
+                  value={option.current ?? ''}
+                  options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
+                  onChange={(optionId) => onChange(option.category, optionId)}
+                  label={categoryLabel(option.category)}
+                  size="sm"
+                />
+              </div>
+            {/each}
+
+            {#if modeOption}
+              <div class="config-popover-section">
+                <span class="label">Mode</span>
+                <div
+                  class="control mode"
+                  role="radiogroup"
+                  aria-label="Mode"
+                  data-testid="config-option-mode"
+                  bind:this={modeGroupEl}
+                >
+                  {#each modeOption.choices as choice (choice.id)}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
+                      role="radio"
+                      ariaChecked={modeOption.current === choice.id}
+                      tabindex={modeOption.current === choice.id ? 0 : -1}
+                      onclick={() => onChange('mode', choice.id)}
+                      onkeydown={handleModeKeydown}
+                    >
+                      {choice.name}
+                    </Button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -386,6 +598,101 @@
   .agent {
     color: var(--color-text-secondary);
     white-space: nowrap;
+  }
+
+  /* Anchors the popover the same way `Select.svelte`'s own `.ui-select` root
+     does — a `position: relative` box the popover floats against. */
+  .config-trigger-root {
+    position: relative;
+  }
+
+  .config-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    max-width: 14rem;
+    padding: var(--space-2xs) var(--space-md);
+    background: var(--color-surface);
+    color: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-beat),
+      background-color var(--duration-fast) var(--ease-beat);
+  }
+
+  .config-trigger:hover {
+    border-color: var(--color-border-strong);
+  }
+
+  .config-trigger:focus-visible {
+    outline: var(--focus-ring-width) solid var(--color-focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  /* A long model name (e.g. "Claude 3.5 Haiku (Legacy, Extended Vision)")
+     truncates rather than pushing Send off the row — same discipline as
+     `.config-bar`'s own doc comment above, one control earlier. */
+  .config-trigger-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global(.config-trigger-chevron) {
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  /* `Icon`'s own `class` prop lands inside its own component scope, so
+     `:global()` under this local ancestor class reaches it — same pattern
+     as `Select.svelte`'s identical `.ui-select-trigger-expanded` rule. */
+  .config-trigger-expanded :global(.config-trigger-chevron) {
+    transform: rotate(180deg);
+  }
+
+  /* Anchored, no scrim — `Select.svelte`'s own contract, extended to a
+     compound panel (see the file doc comment). Floated at `--z-sticky`,
+     same layer `Select`'s own listbox uses. */
+  .config-popover {
+    position: absolute;
+    z-index: var(--z-sticky);
+    top: calc(100% + var(--space-2xs));
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    width: max-content;
+    min-width: 14rem;
+    max-height: 20rem;
+    overflow-y: auto;
+    padding: var(--space-md);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+  }
+
+  .config-popover:focus-visible {
+    /* Focus lands on the first real control inside (see the file doc
+       comment's focus-on-open effect), never on this panel itself — an
+       outline here would be a second, redundant focus indicator. */
+    outline: none;
+  }
+
+  .config-popover-up {
+    top: auto;
+    bottom: calc(100% + var(--space-2xs));
+  }
+
+  .config-popover-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
   }
 
   .mode {
@@ -498,6 +805,10 @@
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same
      coarse-pointer convention `Button`/`IconButton` already use. */
   @media (pointer: coarse) {
+    .config-trigger {
+      min-height: 2.75rem;
+    }
+
     :global(.mode-choice) {
       min-height: 2.75rem;
     }
