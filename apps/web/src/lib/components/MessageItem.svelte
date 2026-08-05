@@ -1,9 +1,12 @@
 <script lang="ts">
   /**
    * A message/thought transcript item (SPEC.md §7.24's append-by-id reducer
-   * output). Thoughts render muted and collapsed by default, expandable on
-   * tap, height-capped once expanded so one very long thought never blows
-   * out the transcript layout (§7.24 "Thinking/reasoning"). While `thinking`
+   * output). A thought renders as plain text, smaller and quieter than an
+   * answer — no card, no italic (design spec
+   * `2026-08-05-cockpit-v8-decisions.md` §2, decision B1-1, issue #709) —
+   * expandable on tap, height-capped once expanded so one very long
+   * thought never blows out the transcript layout (§7.24
+   * "Thinking/reasoning"). While `thinking`
    * is true (the caller derives this per turn via `$lib/thinking.ts`'s
    * `isThoughtStillThinking`, since that needs the whole transcript's
    * `items`/`turnActive`, not just this one item) a live ticking "Thinking
@@ -47,14 +50,17 @@
    * decisions.md` §2, issue #667 — B1-2 amended + B2-4, superseding the v6
    * §3.4 glyph-plus-word scheme this doc comment used to describe): one
    * signal per role, and nothing sighted paints in the gutter at all
-   * anymore. `user` gets `--color-surface-raised`; `agent` gets no fill
-   * and runs straight into the page background; neither carries a gutter
-   * accent bar — Lorenzo's amendment on B1-2 explicitly dropped the bar
-   * the option was drawn with ("only the different background... do not
-   * reintroduce a second mark to help"). `thought` is out of scope for
-   * both decisions and keeps its own pre-v7 quiet `--color-surface`
-   * surface (finding T3) as part of its separate collapsed-disclosure
-   * treatment.
+   * anymore. `user` gets an accent-tinted wash (v8 §2 decision B3-3, issue
+   * #709 — `color-mix(in srgb, var(--color-accent) 8%, transparent)`,
+   * fill only, no bar, replacing the old flat `--color-surface-raised`
+   * that read three times starker in light than in dark); `agent` gets no
+   * fill and runs straight into the page background; neither carries a
+   * gutter accent bar — Lorenzo's amendment on B1-2 explicitly dropped the
+   * bar the option was drawn with ("only the different background... do
+   * not reintroduce a second mark to help"). `thought` dropped its own
+   * v6-era `--color-surface` card in v8 §2's B1-1 (issue #709): the type
+   * itself — size and colour — is the only thing that still marks where a
+   * thought starts or ends.
    *
    * The gutter keeps its job as the shared alignment device — every
    * sibling row shape (`ToolCallGutter`, `PlanCard`, `QueuedPromptBar`,
@@ -70,15 +76,32 @@
    * the gutter for them to suppress.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
-   * #468): the "Show thought" disclosure affordance draws its chevron from
-   * the shared `Icon` component (`collapse-chevron` — the same glyph the
-   * sessions rail uses for its own expand/collapse toggle) instead of
-   * relying on text alone; decorative (`aria-hidden`, no `label`), since the
-   * button's own visible text already carries the accessible name.
+   * #468): the thought disclosure toggle draws its chevron from the
+   * shared `Icon` component (`collapse-chevron` — the same glyph the
+   * sessions rail uses for its own expand/collapse toggle), rotated by
+   * `aria-expanded` the same way `GenericToolRow`'s own disclosure does.
+   * v8 §2's B2-1 (issue #709) turned the toggle icon-only — the label
+   * moved above the thought and the button no longer carries visible text
+   * — so the icon stays decorative (`aria-hidden`) while the button
+   * itself carries the accessible name via `aria-label`, same convention
+   * as every other icon-only control in this app.
+   *
+   * B2-1 also turned `expanded` from local, per-instance state into one
+   * global preference (`$lib/expand-thoughts.ts`'s `expandThoughtsStore`,
+   * shaped like `$lib/accent.ts`'s own store): a single `localStorage`
+   * boolean, read once and applied to every thought in every session,
+   * defaulting to expanded (Lorenzo's own ask — "di default espanso").
+   * `displayExpanded` below ORs that preference with `thinking`: a thought
+   * that is currently producing text stays visible regardless of the
+   * resting preference, closing the collapsed-container collision this
+   * decision calls out by name with issue #660 (a thought streaming into
+   * a collapsed container is why #660's own fake stayed green for
+   * months — see this file's tests for the reverted-fix proof).
    */
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
   import { itemCopyText } from '$lib/copy';
+  import { expandThoughtsStore } from '$lib/expand-thoughts';
   import {
     highlightMarkdownToHtml,
     renderMarkdownToHtml,
@@ -211,15 +234,25 @@
 
   // "You" for the user; the provider's own name for both an agent message
   // and its thought — a thought is still the same speaker, just an aside,
-  // and its content already reads as a thought via the timer/italic body
-  // below, so the accessible label doesn't need a third value to say so
-  // again. This no longer paints as a visible word (v6 §3.4) — it backs
-  // the `.sr-only` label below instead.
+  // and its content already reads as a thought via the timer and its own
+  // smaller/quieter type (B1-1), so the accessible label doesn't need a
+  // third value to say so again. This no longer paints as a visible word
+  // (v6 §3.4) — it backs the `.sr-only` label below instead.
   const accessibleLabel = $derived(
     role === 'user' ? 'You' : (providerId && PROVIDER_LABELS[providerId]?.role) || 'Agent',
   );
 
-  let expanded = $state(false);
+  // B2-1 (design spec `2026-08-05-cockpit-v8-decisions.md` §2, issue #709):
+  // one global boolean, applied to every thought — replaces the old
+  // per-instance `let expanded = $state(false)`. `thinking` overrides it
+  // one-directionally: a thought that is *currently producing text* must
+  // stay visible no matter what the resting preference says (the #660
+  // collision this decision calls out by name — a thought streaming into
+  // a collapsed container is why #660's fake stayed green for months).
+  // The instant `thinking` flips false this collapses right back to
+  // whatever the shared preference is, same as every other thought.
+  const expandThoughtsPreference = expandThoughtsStore.expanded;
+  const displayExpanded = $derived($expandThoughtsPreference || thinking);
 
   // The ticking header (issue #136): `elapsedSeconds` only ever advances
   // while `thinking` is true; it freezes at whatever it last reached the
@@ -267,20 +300,28 @@
           class="md-open-fence"
           data-testid="md-open-fence"><code>{rendered.openFence.code}</code></pre>{/if}{/snippet}
     {#if role === 'thought'}
-      {#if thinking}
-        <WovenLoader size="sm" variant="working" label="Agent thinking" />
-      {/if}
-      <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
-      {#if !expanded}
-        <button type="button" class="expand" onclick={() => (expanded = true)}>
-          <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
-          Show thought
-        </button>
-      {:else}
-        <div class="text thought-body md-body" data-testid="thought-body">
-          {@render markdownBody()}
+      <div class="thought-wrap">
+        <div class="thought-head">
+          <button
+            type="button"
+            class="expand"
+            aria-expanded={displayExpanded}
+            aria-label={displayExpanded ? 'Collapse thought' : 'Expand thought'}
+            onclick={() => expandThoughtsStore.toggle()}
+          >
+            <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
+          </button>
+          {#if thinking}
+            <WovenLoader size="sm" variant="working" label="Agent thinking" />
+          {/if}
+          <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
         </div>
-      {/if}
+        {#if displayExpanded}
+          <div class="text thought-body md-body" data-testid="thought-body">
+            {@render markdownBody()}
+          </div>
+        {/if}
+      </div>
     {:else}
       <div class="text md-body" data-testid="message-text">
         {@render markdownBody()}
@@ -349,13 +390,26 @@
   }
 
   /* v7 turn delimitation (design spec §2, issue #667 — B1-2 amended): the
-     user's own turn keeps its one signal, a raised fill — no gutter accent
-     bar anymore, on this row or any other. "Exactly one signal per role,"
-     per Lorenzo's amendment on the option as drawn (which paired the fill
+     user's own turn keeps its one signal, a fill — no gutter accent bar
+     anymore, on this row or any other. "Exactly one signal per role," per
+     Lorenzo's amendment on the option as drawn (which paired the fill
      with a bar): the different background carries the whole distinction
-     alone. */
+     alone.
+
+     v8 §2's B3-3 (issue #709) replaced the flat `--color-surface-raised`
+     fill with a wash derived from the accent token itself: one rule for
+     both themes instead of a hand-tuned pair, because `--color-accent` is
+     already identical across dark/light while `--color-surface-raised`
+     measured ΔL* ≈ 2.8 in dark and ≈ 8.4 in light against the same rule —
+     three times starker in light, the starkest edge on the page. 8% lands
+     at ΔL* ≈ 4.5 dark / ≈ 2.4 light with no per-theme tuning. The named
+     risk was tying the signal to the same blue links and Send use for
+     "interactive" — verified at 8% against a real Markdown-rendered link
+     and a real `ui/Button` "Send" in both themes, over CDP in a real
+     Chromium, reading as a quiet fill rather than a control (screenshots,
+     not just the numbers above). */
   .message-item.user {
-    background: var(--color-surface-raised);
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
     border-radius: var(--radius-md);
     padding-inline: var(--space-sm);
     margin-inline: calc(var(--space-sm) * -1);
@@ -364,16 +418,14 @@
   /* The agent's own signal is absence (v7 §2's own framing): no fill at
      all, so a long answer runs straight into the page background — the
      pre-v6 behaviour, restored on purpose; `.agent` carries no rule of its
-     own here anymore. `.thought` keeps the pre-v7 `--color-surface` quiet
-     surface (design spec v6 §3.4, finding T3) as its own out-of-scope
-     collapsed-disclosure treatment (further dimmed by `.content`'s own
-     opacity/italic below). */
-  .message-item.thought {
-    background: var(--color-surface);
-    border-radius: var(--radius-md);
-    padding-inline: var(--space-sm);
-    margin-inline: calc(var(--space-sm) * -1);
-  }
+     own here anymore.
+
+     `.thought` dropped its own pre-v8 `--color-surface` card outright (v8
+     §2's B1-1, issue #709): no fill, no radius, no inset padding — the
+     gutter column stays the one alignment device, per that decision's own
+     text, and is not a licence to reintroduce a gutter accent bar v7
+     already removed. `.thought-body` below carries the whole
+     distinction now, through type alone. */
 
   .content {
     flex: 1;
@@ -384,11 +436,36 @@
     padding: var(--space-sm) 0;
   }
 
-  /* Thoughts stay a single quiet row — muted and italic, never a pill
-     boxed on its own (redesign v3 design spec §3.4 "Thoughts"). */
-  .message-item.thought .content {
-    opacity: 0.65;
-    font-style: italic;
+  /* B1-1 (issue #709): "nothing but the type itself now marks where a
+     thought starts or ends" — a real size and colour step down from the
+     answer's own ambient `--text-body-size`/`--color-text-primary`,
+     replacing the old `opacity: 0.65; font-style: italic` that dimmed the
+     whole row (including the toggle and the timer) without actually
+     changing the type. Scoped to `.thought-body` alone, not the head row:
+     the timer already carries its own distinct caption treatment below. */
+  .message-item.thought .thought-body {
+    font-size: var(--text-small-size);
+    line-height: var(--text-small-line);
+    color: var(--color-text-secondary);
+  }
+
+  /* B2-1's "label moves above the thought" (issue #709): a column, not
+     the old single inline row that let the timer eat the first ~90px of
+     every wrapped line. `.thought-head` holds the toggle, the live
+     "thinking" motif, and the timer; `.thought-body` (when shown) sits
+     below it at the column's full width. */
+  .thought-wrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .thought-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
   }
 
   .text {
@@ -578,12 +655,15 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Icon-only now (B2-1, issue #709 — the label moved above the thought
+     and out of this button), so it no longer stretches to fill the row
+     or left-aligns text; the accessible name lives entirely in the
+     button's own `aria-label`. */
   .expand {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
-    flex: 1;
-    text-align: left;
+    justify-content: center;
+    flex-shrink: 0;
     background: none;
     border: none;
     color: inherit;
@@ -601,6 +681,17 @@
   .expand:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
+  }
+
+  /* Points at the thought when collapsed, down when open — the same
+     `aria-expanded`-driven rotation `GenericToolRow`'s own disclosure
+     chevron uses, not a second bespoke pattern. */
+  :global(.expand-icon) {
+    transition: transform var(--duration-fast) var(--ease-beat);
+  }
+
+  .expand[aria-expanded='false'] :global(.expand-icon) {
+    transform: rotate(-90deg);
   }
 
   .copy-row {
@@ -636,9 +727,10 @@
 
      Nothing else here is mobile-specific anymore: v7 dropped the gutter
      accent bar everywhere, not just below this breakpoint, so there is no
-     bar-reset override left to write — every role's own surface cue (the
-     user's raised fill, the thought's quiet one) is still there on a phone
-     regardless. */
+     bar-reset override left to write — the user's own accent-tinted wash
+     (v8 §2's B3-3) is still there on a phone regardless; the thought
+     carries no surface cue at all anymore post-v8 (B1-1), only its own
+     smaller/quieter type, which needs no breakpoint override either. */
   @media (max-width: 479px) {
     .message-item {
       flex-direction: column;

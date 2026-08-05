@@ -9,6 +9,7 @@
   import '$lib/styles/motion.css';
   import { themeStore } from '$lib/theme';
   import { accentStore } from '$lib/accent';
+  import { expandThoughtsStore } from '$lib/expand-thoughts';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -47,9 +48,17 @@
   // own `init()` must run first (it's what gives that store its real,
   // possibly-persisted starting value rather than the module's static
   // default).
+  //
+  // The "expand thoughts" preference (design spec
+  // `2026-08-05-cockpit-v8-decisions.md` §2, decision B2-1, issue #709) has
+  // no such ordering dependency — it's a plain persisted boolean, not
+  // theme-derived — but it starts here too, for the same reason: every
+  // `MessageItem` needs its real, possibly-persisted value before it first
+  // renders a thought, not the module's static default.
   onMount(() => {
     themeStore.init();
     accentStore.init();
+    expandThoughtsStore.init();
   });
 </script>
 
