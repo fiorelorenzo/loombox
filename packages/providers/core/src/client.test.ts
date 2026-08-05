@@ -1,8 +1,9 @@
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AcpClient, mapToTranscriptUpdate } from './client';
+import { AcpClient, mapConfigOptions, mapToTranscriptUpdate } from './client';
 import { createTranscriptState, reduceTranscript } from './transcript';
 import type { AcpUpdate } from './types';
 
@@ -241,5 +242,131 @@ describe('reducer end-to-end: a real ACP tool_call reaches its bespoke widget, n
       toolKind: 'edit',
       diff: { path: '/repo/src/config.json', oldText: '{}', newText: '{"debug":true}' },
     });
+  });
+});
+
+/**
+ * `mapConfigOptions` wire-mapping tests (issue #705), same convention as
+ * `mapToTranscriptUpdate`'s tests above: driven directly off a captured
+ * real response rather than a fixture we invented, since a fixture that
+ * mirrors our own assumption is exactly what let this sit unnoticed. The
+ * recording (`test/fixtures/omp-acp-session-new-response.json`) was taken
+ * by spawning the real `omp acp` binary installed on this box and sending
+ * it a plain `initialize` followed by `session/new` over stdio — nothing
+ * hand-written. It carries no credentials: a model catalog, a mode list,
+ * and a thinking-effort list, all public capability metadata.
+ */
+describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)', () => {
+  const RECORDED_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'test',
+    'fixtures',
+    'omp-acp-session-new-response.json',
+  );
+  interface RecordedConfigOption {
+    id: string;
+    name: string;
+    category: string;
+    type: string;
+    currentValue: string;
+    options: { value: string; name: string; description?: string }[];
+  }
+  const recorded = JSON.parse(readFileSync(RECORDED_PATH, 'utf8')) as {
+    initResult: { configOptions?: RecordedConfigOption[] };
+    sessionNewResult: {
+      configOptions: RecordedConfigOption[];
+      modes: {
+        availableModes: { id: string; name: string; description?: string }[];
+        currentModeId: string;
+      };
+    };
+  };
+
+  it('a real omp acp initialize response carries no configOptions at all: mapConfigOptions of it is empty (session/new is where they arrive, not initialize)', () => {
+    expect(recorded.initResult.configOptions).toBeUndefined();
+    expect(mapConfigOptions(recorded.initResult)).toEqual([]);
+  });
+
+  it("maps a real session/new response's three-category catalog (model/mode/thinking) onto the internal AcpConfigOption shape, category-keyed rather than id-keyed", () => {
+    const options = mapConfigOptions(recorded.sessionNewResult);
+
+    const mode = options.find((o) => o.category === 'mode');
+    expect(mode?.current).toBe('default');
+    expect(mode?.choices).toEqual([
+      { id: 'default', name: 'Default' },
+      { id: 'plan', name: 'Plan' },
+    ]);
+
+    const model = options.find((o) => o.category === 'model');
+    expect(model?.current).toBe('anthropic/claude-opus-5');
+    expect(model?.choices).toHaveLength(26);
+    expect(model?.choices[0]).toEqual({
+      id: 'anthropic/claude-3-5-sonnet-20240620',
+      name: 'Claude Sonnet 3.5',
+    });
+
+    // The wire entry's own `id` is "thinking", but its `category` is
+    // "thought_level" — proof `category`, not `id`, is the mapping target
+    // for the internal `category` field (a real agent's two legitimately
+    // differ; ConfigOptionStore groups on `category`).
+    const thinking = options.find((o) => o.category === 'thought_level');
+    expect(thinking).toBeDefined();
+    expect(options.find((o) => o.category === 'thinking')).toBeUndefined();
+    expect(thinking?.current).toBe('high');
+    expect(thinking?.choices).toEqual([
+      { id: 'off', name: 'Off' },
+      { id: 'auto', name: 'Auto' },
+      { id: 'low', name: 'low' },
+      { id: 'medium', name: 'medium' },
+      { id: 'high', name: 'high' },
+      { id: 'xhigh', name: 'xhigh' },
+      { id: 'max', name: 'max' },
+    ]);
+
+    expect(options).toHaveLength(3);
+  });
+
+  it("does not duplicate the 'mode' category from the real response's separate modes object: configOptions already has one", () => {
+    const options = mapConfigOptions(recorded.sessionNewResult);
+    expect(options.filter((o) => o.category === 'mode')).toHaveLength(1);
+  });
+
+  it("falls back to the modes object to synthesize a 'mode' category when configOptions has none at all", () => {
+    const withoutModeCategory = {
+      configOptions: recorded.sessionNewResult.configOptions.filter((o) => o.category !== 'mode'),
+      modes: recorded.sessionNewResult.modes,
+    };
+    const options = mapConfigOptions(withoutModeCategory);
+    expect(options.find((o) => o.category === 'mode')).toEqual({
+      category: 'mode',
+      current: 'default',
+      choices: [
+        { id: 'default', name: 'Default' },
+        { id: 'plan', name: 'Plan' },
+      ],
+    });
+  });
+
+  it('preserves an unrecognized/future category rather than dropping it (issue #179 passthrough, carried through the wire mapping)', () => {
+    const options = mapConfigOptions({
+      configOptions: [
+        {
+          id: 'reasoning_style_v3',
+          name: 'Reasoning style',
+          category: 'reasoning_style_v3',
+          type: 'select',
+          currentValue: 'balanced',
+          options: [{ value: 'balanced', name: 'Balanced' }],
+        },
+      ],
+    });
+    expect(options).toEqual([
+      {
+        category: 'reasoning_style_v3',
+        current: 'balanced',
+        choices: [{ id: 'balanced', name: 'Balanced' }],
+      },
+    ]);
   });
 });
