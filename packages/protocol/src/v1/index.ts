@@ -102,6 +102,23 @@ export {
 } from './sessions';
 
 export type {
+  McpHttpServerConfigV1,
+  McpServerConfigV1,
+  McpServerVarDeclV1,
+  McpSseServerConfigV1,
+  McpStdioServerConfigV1,
+} from './mcp-servers';
+export {
+  mcpHttpServerConfigV1,
+  mcpServerConfigV1,
+  mcpServerVarDeclV1,
+  mcpSseServerConfigV1,
+  mcpStdioServerConfigV1,
+  parseMcpServerConfigV1,
+  safeParseMcpServerConfigV1,
+} from './mcp-servers';
+
+export type {
   SessionArchiveRequest,
   SessionArchiveResponse,
   SessionArchiveResult,
@@ -123,6 +140,9 @@ export type {
   AvailableCommandsUpdateEventV1,
   ConfigOptionsEventV1,
   ConfigOptionUpdateEventV1,
+  McpServerFailureCategoryV1,
+  McpServerStatusEntryV1,
+  McpServerStatusEventV1,
   SessionLifecycleEventV1,
   SessionStatusEventV1,
   SessionStatusV1,
@@ -137,6 +157,9 @@ export {
   availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  mcpServerFailureCategoryV1,
+  mcpServerStatusEntryV1,
+  mcpServerStatusEventV1,
   parseSessionLifecycleEventV1,
   safeParseSessionLifecycleEventV1,
   sessionLifecycleEventV1,
@@ -600,6 +623,13 @@ import {
   sessionWithPrivateEnvelope,
 } from './sessions';
 import {
+  mcpHttpServerConfigV1,
+  mcpServerConfigV1,
+  mcpServerVarDeclV1,
+  mcpSseServerConfigV1,
+  mcpStdioServerConfigV1,
+} from './mcp-servers';
+import {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionArchiveResult,
@@ -613,6 +643,9 @@ import {
   availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  mcpServerFailureCategoryV1,
+  mcpServerStatusEntryV1,
+  mcpServerStatusEventV1,
   sessionLifecycleEventV1,
   sessionStatusEventV1,
   sessionStatusV1,
@@ -821,6 +854,11 @@ export const schemasV1 = {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionArchiveResult,
+  mcpServerVarDeclV1,
+  mcpStdioServerConfigV1,
+  mcpHttpServerConfigV1,
+  mcpSseServerConfigV1,
+  mcpServerConfigV1,
   sessionUpdateEnvelopeV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,
@@ -834,6 +872,9 @@ export const schemasV1 = {
   turnStartedEventV1,
   turnEndedEventV1,
   sessionLifecycleEventV1,
+  mcpServerFailureCategoryV1,
+  mcpServerStatusEntryV1,
+  mcpServerStatusEventV1,
   promptInjectV1,
   permissionDecision,
   permissionRequest,

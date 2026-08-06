@@ -602,6 +602,65 @@ describe('reduceSessionEvent: turn_started / turn_ended', () => {
   });
 });
 
+describe('reduceSessionEvent: mcp_server_status', () => {
+  it('starts undefined — no push means no opinion, distinct from an empty list', () => {
+    expect(createTranscriptState().mcpServerStatuses).toBeUndefined();
+  });
+
+  it('records a failed server by name, category and reason', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_status',
+      servers: [
+        { name: 'missing-bin', ok: false, category: 'missing_binary', reason: 'not found' },
+      ],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerStatuses).toEqual([
+      { name: 'missing-bin', ok: false, category: 'missing_binary', reason: 'not found' },
+    ]);
+  });
+
+  it('a later push replaces the list wholesale, never accumulating across pushes', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_status',
+      servers: [{ name: 'a', ok: false, category: 'handshake_failed', reason: 'r1' }],
+      updatedAt: 't1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'mcp_server_status',
+      servers: [{ name: 'b', ok: false, category: 'missing_binary', reason: 'r2' }],
+      updatedAt: 't2',
+    });
+    expect(state.mcpServerStatuses).toEqual([
+      { name: 'b', ok: false, category: 'missing_binary', reason: 'r2' },
+    ]);
+  });
+
+  it('an all-servers-ok push is a genuinely valid empty failure list, not "no push yet"', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_status',
+      servers: [],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerStatuses).toEqual([]);
+  });
+
+  it('does not mutate the server entry objects passed in (defensive clone)', () => {
+    const entry = {
+      name: 'a',
+      ok: false as const,
+      category: 'handshake_failed' as const,
+      reason: 'r',
+    };
+    reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_status',
+      servers: [entry],
+      updatedAt: 't1',
+    });
+    expect(entry).toEqual({ name: 'a', ok: false, category: 'handshake_failed', reason: 'r' });
+  });
+});
+
 describe('reduceSessionEvent: delegates every AcpTranscriptUpdate kind unchanged to reduceTranscript', () => {
   it('agent_message_chunk still reduces into a transcript item', () => {
     const state = reduceSessionEvent(createTranscriptState(), {

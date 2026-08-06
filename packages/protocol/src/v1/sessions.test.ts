@@ -178,4 +178,52 @@ describe('sessionPrivateMetaV1', () => {
     expect(safeParseSessionPrivateMetaV1({ projectPath: '/p' }).success).toBe(false);
     expect(safeParseSessionPrivateMetaV1({ title: 't' }).success).toBe(false);
   });
+
+  it('omitting mcpServerConfigs behaves like an older client that predates it (issue #750)', () => {
+    const parsed = parseSessionPrivateMetaV1({ title: 't', projectPath: '/p' });
+    expect(parsed.mcpServerConfigs).toBeUndefined();
+  });
+
+  it('carries a client-declared stdio server, secret-reference var and all, never a secret value', () => {
+    const parsed = parseSessionPrivateMetaV1({
+      title: 't',
+      projectPath: '/p',
+      mcpServerConfigs: [
+        {
+          name: 'filesystem',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-filesystem'],
+          env: [{ name: 'GITHUB_TOKEN', secret: 'github-token' }],
+        },
+      ],
+    });
+    expect(parsed.mcpServerConfigs).toEqual([
+      {
+        name: 'filesystem',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem'],
+        env: [{ name: 'GITHUB_TOKEN', secret: 'github-token' }],
+      },
+    ]);
+  });
+
+  it('rejects a var decl carrying both a literal value and a secret name', () => {
+    expect(
+      safeParseSessionPrivateMetaV1({
+        title: 't',
+        projectPath: '/p',
+        mcpServerConfigs: [
+          {
+            name: 'x',
+            transport: 'stdio',
+            command: 'x',
+            args: [],
+            env: [{ name: 'A', value: 'literal', secret: 'also-a-secret' }],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
 });

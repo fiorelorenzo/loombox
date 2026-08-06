@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { encryptedEnvelope } from './envelope';
 import { PROTOCOL_V1 } from './handshake';
+import { mcpServerConfigV1 } from './mcp-servers';
 
 /**
  * The session-metadata boundary Lorenzo approved (`docs/v1-plan.md`,
@@ -55,6 +56,22 @@ export const sessionPrivateMetaV1 = z.object({
    * it. Only meaningful when the folder is a git repo (SPEC §6).
    */
   worktree: z.boolean().optional(),
+  /**
+   * This client's per-project, currently-enabled MCP server declarations
+   * (issue #750, D2-2) — `apps/web`'s `mcp-server-store.ts`'s `localStorage`
+   * list at the moment this session was created, forwarded so
+   * `NodeDaemon.resolveMcpServers` can merge it with this node's own
+   * `McpConfigStore` (global + project) into one effective, deduplicated
+   * server list, instead of the node's file store and the client's
+   * `localStorage` store each answering "which servers does this project
+   * have" on their own. Omitted (an older client, or a project with no
+   * client-declared servers) behaves exactly like an empty array: only
+   * this node's own store is consulted, unchanged from before this field
+   * existed. Never carries a secret *value* — only a secret *name*
+   * reference (`McpServerVarDeclV1`'s `{ secret }` variant); those still
+   * resolve exclusively node-side (SPEC §7.17).
+   */
+  mcpServerConfigs: z.array(mcpServerConfigV1).optional(),
 });
 export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
 
