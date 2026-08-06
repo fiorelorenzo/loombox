@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
@@ -21,6 +22,7 @@
   import {
     RelayClient,
     bootstrapAmkFromRecoveryCode,
+    buildIdentityMismatch,
     type AttentionInboxItem,
     type BootstrapAmkResult,
     type BuildIdentityV1,
@@ -53,6 +55,7 @@
   } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
+  import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -63,9 +66,17 @@
   import {
     SESSION_STATUS_LABELS,
     SESSION_STATUS_TONES,
-    SESSION_STATUS_UNKNOWN_LABEL,
+    sessionStatusLabelWithReason,
   } from '$lib/session-status';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
+  import {
+    fileMention,
+    mentionKey,
+    resolveMentionsForSend,
+    type MentionRef,
+    type SessionMention,
+    type TrackerMention,
+  } from '$lib/mentions';
   import {
     createLocalStorageNotificationPreferencesStorage,
     defaultNotificationPreferences,
@@ -105,12 +116,12 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
-  import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
+  import MentionPicker from '$lib/components/MentionPicker.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
   import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
@@ -132,9 +143,14 @@
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
+  import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
+  import StatusBar, { type TargetHealthDotState } from '$lib/components/StatusBar.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
-  import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
+  import TranscriptTimeline, {
+    type TranscriptJumpTarget,
+  } from '$lib/components/TranscriptTimeline.svelte';
+  import TurnEditsBar from '$lib/components/TurnEditsBar.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -703,6 +719,9 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
+  /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
+  let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
+  let reviewChangesOpen = $state(false);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
@@ -869,12 +888,22 @@
   // sidebar's "Config" tab (`activeWorkbenchTab`); mounts the MCP-server
   // quick-add panel (#188) and the plugin/extension panel (#191). See
   // `ProjectConfigPanel.svelte`.
-  let filePickerOpen = $state(false);
-  // The index in `draft` where the triggering '@' sits, so a picked file
-  // reference replaces exactly the '@partial-query' text the user typed,
+  let mentionPickerOpen = $state(false);
+  // The index in `draft` where the triggering '@' sits, so a picked
+  // mention replaces exactly the '@partial-query' text the user typed,
   // rather than being appended blindly. `undefined` means "no active
   // trigger" (the picker was opened some other way, or was never opened).
   let atTriggerStart = $state<number | undefined>(undefined);
+  /**
+   * The composer's removable `@`-mention pills (issue #742, decisions doc
+   * C2-3) — a separate list, never characters spliced into `draft`, so
+   * editing the surrounding prose can never corrupt or silently drop one.
+   * Persists across a session switch the same way `draft` itself already
+   * does (v1 has no per-session composer state beyond what the node
+   * tracks, e.g. `attachments`); cleared only on send and on full
+   * disconnect.
+   */
+  let mentions = $state<MentionRef[]>([]);
   let slashPickerOpen = $state(false);
   // The index in `draft` where the triggering '/' sits — see
   // `atTriggerStart` just above, same contract, scoped to the `/`-command
@@ -1040,6 +1069,10 @@
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
   );
+  /** Issue #740's turn summary bar / Review Changes surface: the latest turn's aggregated edits, or `undefined` when it touched no files — see `TurnEditsBar`'s own doc comment for why this reads the full, unwindowed `transcript.items` rather than anything `TranscriptTimeline` mounts. */
+  const turnEditsSummary = $derived(
+    transcript ? latestTurnDiffSummary(transcript.items) : undefined,
+  );
   // Issue #366: the project config surface is scoped to the selected
   // session's `projectPath` (v1 has no separate project entity yet, same
   // "project" notion `NotificationPreferences`'s `projectPaths` below uses).
@@ -1140,9 +1173,11 @@
         return undefined;
     }
   });
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to.
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to. Issue #742 widens the empty-draft check: a composer holding only mention pills (no typed prose) is still a real send, exactly like an attachments-only send already would be if `hasBlockingAttachments` let it through.
   const sendDisabled = $derived(
-    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionAgentless,
+    (draft.trim() === '' && mentions.length === 0) ||
+      hasBlockingAttachments(attachments) ||
+      selectedSessionAgentless,
   );
 
   /**
@@ -1193,6 +1228,13 @@
 
   /** The selected session itself — the header's breadcrumb needs its project/target, not just its title. */
   const selectedSession = $derived(sessions.find((session) => session.id === selectedSessionId));
+
+  /** The `@` mention picker's Sessions/Tracker tabs scope to the selected session's own project (issue #742) — `undefined` disables both tabs rather than searching across every project this account can see. */
+  const mentionProjectContext = $derived(
+    selectedSession
+      ? { nodeId: selectedSession.nodeId, projectPath: selectedSession.projectPath }
+      : undefined,
+  );
 
   /** Every category's current source (issue #753, D4-3 — `ConfigBar`'s own acceptance: "shows the source of the current value"), recomputed off `configOptions` and the two remembered maps `selectSession`/`rememberConfigOptionValues`/the pin actions keep current. */
   const configOptionSources: Record<string, ConfigOptionSource> = $derived(
@@ -1454,12 +1496,12 @@
     unsubscribeStaleNotice = client.staleNoticeFor(id).subscribe((value) => (staleNotice = value));
     // SPEC §7.4/issue #171: lazily loads the root directory the moment this
     // session is selected; deeper directories only load on an explicit
-    // expand (file-tree panel click) or the @file picker's own bounded
-    // opportunistic walk (`FileReferencePicker.svelte`).
+    // expand (file-tree panel click) or the @ mention picker's own bounded
+    // opportunistic walk (`MentionPicker.svelte`).
     unsubscribeFileTree = client.fileTreeFor(id).subscribe((value) => (fileTree = value));
   }
 
-  /** Wired to both `FileTreePanel`'s and `FileReferencePicker`'s `onExpand` (SPEC §7.4; issue #171). */
+  /** Wired to both `FileTreePanel`'s and `MentionPicker`'s `onExpand` (SPEC §7.4; issue #171). */
   function expandDirectory(path: string): void {
     if (!client || !selectedSessionId) return;
     client.expandDirectory(selectedSessionId, path);
@@ -1807,7 +1849,8 @@
     staleNotice = undefined;
     paletteOpen = false;
     fileTree = new Map();
-    filePickerOpen = false;
+    mentionPickerOpen = false;
+    mentions = [];
     atTriggerStart = undefined;
     slashPickerOpen = false;
     slashTriggerStart = undefined;
@@ -1865,11 +1908,12 @@
 
   function submitPrompt(event: Event): void {
     event.preventDefault();
-    const text = draft.trim();
-    if (!client || !selectedSessionId || text === '' || sendDisabled) return;
+    if (!client || !selectedSessionId || sendDisabled) return;
     const attachmentIds = attachments.map((a) => a.id);
-    client.sendPrompt(selectedSessionId, text, attachmentIds);
+    const { text, liveMentions } = resolveMentionsForSend(draft.trim(), mentions, isMentionLive);
+    client.sendPrompt(selectedSessionId, text, attachmentIds, liveMentions);
     draft = '';
+    mentions = [];
   }
 
   /** Warp Deck composer convention (redesign brief §4 "Inputs", issue #439): Enter sends, Shift+Enter inserts a newline — the same auto-growing `<textarea>` behavior `NewSessionDialog`'s starting-prompt field already brings to parity with. Composition (IME) `Enter` keystrokes confirm the candidate instead of submitting mid-composition. */
@@ -1914,14 +1958,14 @@
   }
 
   /**
-   * Detects an `@`-trigger in the composer as the user types (SPEC §7.25
-   * "@file references"; issue #160): whenever the text immediately before
-   * the caret ends with `@` followed by a run of non-whitespace (no space
-   * yet typed after the `@`), the picker opens/stays open, scoped to that
-   * partial query; typing a space, deleting back past the `@`, or moving
-   * the caret elsewhere closes it. `atTriggerStart` records where the `@`
-   * itself sits so {@link insertFileReference} replaces exactly the
-   * `@partial-query` text rather than guessing.
+   * Detects an `@`-trigger in the composer as the user types (issue #742,
+   * decisions doc C2-3): whenever the text immediately before the caret
+   * ends with `@` followed by a run of non-whitespace (no space yet typed
+   * after the `@`), the picker opens/stays open, scoped to that partial
+   * query; typing a space, deleting back past the `@`, or moving the caret
+   * elsewhere closes it. `atTriggerStart` records where the `@` itself
+   * sits so {@link addMention} deletes exactly the `@partial-query` text
+   * rather than guessing.
    */
   function handleComposerInput(event: Event): void {
     const input = event.currentTarget as HTMLTextAreaElement;
@@ -1931,9 +1975,9 @@
     const match = /(?:^|\s)@(\S*)$/.exec(beforeCaret);
     if (match) {
       atTriggerStart = beforeCaret.length - match[1].length - 1;
-      filePickerOpen = true;
+      mentionPickerOpen = true;
     } else {
-      filePickerOpen = false;
+      mentionPickerOpen = false;
       atTriggerStart = undefined;
     }
 
@@ -1987,31 +2031,61 @@
   }
 
   /**
-   * Inserts a `@path` reference into the composer (SPEC §7.25; issue #160)
-   * — the actual `ResourceLink`/`EmbeddedResource` hand-off to the agent is
-   * the provider adapter's job at prompt-build time (out of this wave's
-   * `apps/web`-only scope); here it is plain text in the draft, exactly
-   * like every other word the user types, since it costs nothing beyond the
-   * reference itself (no upload/encryption round trip). Replaces the
-   * triggering `@partial-query` text when opened via `@`-typing; otherwise
-   * (e.g. picked directly from the file-tree panel) appends it at the end.
+   * A session/tracker mention this composer can no longer confirm is still
+   * current (issue #742's degrade-to-text acceptance) — checked lazily, at
+   * send time, against whichever live store this client already holds:
+   * `sessions` for a session mention, `RelayClient.trackerSnapshotFor`'s
+   * already-warm store (the mention picker itself triggered its load when
+   * the mention was picked) for a tracker one. A file/directory mention
+   * never reaches this function at all — see `resolveMentionsForSend`'s own
+   * doc comment for why.
    */
-  function insertFileReference(path: string): void {
+  function isMentionLive(mention: SessionMention | TrackerMention): boolean {
+    if (!client) return false;
+    if (mention.kind === 'session') {
+      return sessions.some((session) => session.id === mention.sessionId);
+    }
+    const snapshot = get(client.trackerSnapshotFor(mention.nodeId, mention.projectPath));
+    return snapshot.records.some((record) => record.id === mention.recordId);
+  }
+
+  /**
+   * Attaches `mention` as a removable pill (issue #742) — never inserted as
+   * text; `mentions` (rendered above the textarea) is the only place it
+   * lives. When opened via `@`-typing, the triggering `@partial-query` span
+   * is deleted from `draft` (it was only ever a search query, not
+   * something to keep); picked another way (e.g. `FileTreePanel`'s own row
+   * click), `draft` is untouched. A duplicate pick (same `mentionKey`) is a
+   * no-op rather than a second pill.
+   */
+  function addMention(mention: MentionRef): void {
     if (atTriggerStart !== undefined) {
       const before = draft.slice(0, atTriggerStart);
       const afterTrigger = draft.slice(atTriggerStart);
       const afterQuery = /^@\S*/.exec(afterTrigger)?.[0] ?? '@';
       const rest = draft.slice(atTriggerStart + afterQuery.length).replace(/^\s+/, '');
-      draft = `${before}@${path} ${rest}`;
-    } else {
-      const needsSpace = draft !== '' && !draft.endsWith(' ');
-      draft = `${draft}${needsSpace ? ' ' : ''}@${path} `;
+      draft = `${before}${rest}`;
     }
-    closeFilePicker();
+    if (!mentions.some((existing) => mentionKey(existing) === mentionKey(mention))) {
+      mentions = [...mentions, mention];
+    }
+    closeMentionPicker();
   }
 
-  function closeFilePicker(): void {
-    filePickerOpen = false;
+  function removeMention(mention: MentionRef): void {
+    mentions = mentions.filter((existing) => mentionKey(existing) !== mentionKey(mention));
+  }
+
+  /** Pill icon per mention kind (issue #742) — matches `MentionPicker.svelte`'s own per-source glyphs. */
+  const MENTION_ICON_BY_KIND: Record<MentionRef['kind'], IconName> = {
+    file: 'file',
+    directory: 'folder',
+    session: 'sessions',
+    tracker: 'tracker',
+  };
+
+  function closeMentionPicker(): void {
+    mentionPickerOpen = false;
     atTriggerStart = undefined;
   }
 
@@ -2021,6 +2095,19 @@
       selectedSessionId,
       !(planCollapsedBySession.get(selectedSessionId) ?? false),
     );
+  }
+
+  /** Issue #740: a `TurnEditsBar` per-file row click — brings that file's own diff card into the (possibly windowed-out) transcript and scrolls to it. Never mutates anything on disk; see `TranscriptJumpTarget`'s own doc comment for the token-bump reason. */
+  function jumpToTranscriptItem(toolCallId: string): void {
+    transcriptJumpTarget = { id: toolCallId, token: (transcriptJumpTarget?.token ?? 0) + 1 };
+  }
+
+  function openReviewChanges(): void {
+    reviewChangesOpen = true;
+  }
+
+  function closeReviewChanges(): void {
+    reviewChangesOpen = false;
   }
 
   function resolvePermission(requestId: string, option: AcpPermissionOption): void {
@@ -2108,9 +2195,8 @@
     Array.from(new Set(sessions.map((session) => session.projectPath))).sort(),
   );
 
-  /** Compact per-target health, for the header's always-visible StatusDot cluster (redesign brief §1/§6) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the header dots and the Drawer's "targets" tab detail never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). */
+  /** Per-target health for the status bar's own summary (issue #736; before it, the header's `StatusDot` cluster this doc comment used to describe) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the two never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). `TargetHealthDotState` itself is `StatusBar.svelte`'s own exported type, not redeclared here — the one place a `TargetListEntry` becomes this vocabulary. */
   const TARGET_OVERLOAD_PERCENT = 90;
-  type TargetHealthDotState = 'healthy' | 'overloaded' | 'unreachable' | 'no-data';
   function classifyTargetHealth(target: TargetListEntry): TargetHealthDotState {
     if (!target.reachable) return 'unreachable';
     if (!target.health) return 'no-data';
@@ -2139,8 +2225,16 @@
       state: classifyTargetHealth(target),
     })),
   );
-  const hasUnhealthyTarget = $derived(
-    targetHealthDots.some((dot) => dot.state === 'unreachable' || dot.state === 'overloaded'),
+  /** The status bar's Behind badge (issue #736): every currently-listed target whose build identity doesn't match this relay's own — `TargetStatusView`'s per-row `isBehind`/`buildIdentityMismatch` check, aggregated across the account instead of per row. */
+  const targetsBehindCount = $derived(
+    targetStatusEntries.filter((target) => buildIdentityMismatch(relayBuildIdentity, target.build))
+      .length,
+  );
+  /** How many OTHER sessions across the account are currently `'queued'` (issue #730's "waiting for a concurrency slot"), for the status bar's own right-zone segment (issue #736) — read straight off the same live `sessionStatuses` map every row's own badge already uses, not a separate subscription. */
+  const queuedSessionCount = $derived(
+    (Array.from(sessionStatuses.values()) as (SessionStatusV1 | undefined)[]).filter(
+      (value) => value === 'queued',
+    ).length,
   );
 
   /**
@@ -2295,23 +2389,6 @@
     disconnected: 1,
     exited: 0,
   };
-
-  /**
-   * The row/selvage badge's status text (issue #730): the plain
-   * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
-   * for `'error'` with a `reason` the node sent (`RelayClient.
-   * statusReasonFor` — a spawn that failed or timed out), where the
-   * reason is appended so a hover/hold on the row's own tooltip or the
-   * dot's accessible name reads WHY, not just that it failed.
-   */
-  function sessionStatusLabelWithReason(
-    status: SessionStatusV1 | undefined,
-    reason: string | undefined,
-  ): string {
-    if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
-    const label = SESSION_STATUS_LABELS[status];
-    return status === 'error' && reason ? `${label}: ${reason}` : label;
-  }
 
   /**
    * The project tree (design spec v4 §3.2), replacing v3's target-based
@@ -3124,9 +3201,10 @@
              transcript is one click. Nodes & targets is no longer one of
              these rows — issue #568 folded it into Settings, reachable from
              the account menu below, so Inbox is the sole row left; the
-             health dot that used to live here moved onto the account
-             trigger and the Settings menu entry instead (see
-             `hasUnhealthyTarget` below). -->
+             health dot that used to live here (and, until issue #736, on
+             the account trigger and the Settings menu entry too) is the
+             status bar's own target-health segment now, retired outright
+             rather than duplicated. -->
         <nav
           class="sidebar-destinations"
           aria-label="Primary destinations"
@@ -3413,21 +3491,12 @@
               <button
                 type="button"
                 role="menuitem"
-                class="settings-menu-item"
                 onclick={() => {
                   closeSidebarMenus();
                   mainView = 'settings';
                 }}
               >
-                <span>Settings</span>
-                {#if hasUnhealthyTarget}
-                  <span
-                    class="menu-item-alert-dot"
-                    data-testid="settings-menu-health-badge"
-                    aria-hidden="true"
-                  ></span>
-                  <span class="sr-only">Some targets need attention</span>
-                {/if}
+                Settings
               </button>
               <!-- Not `danger`: signing out ends a session on this device and
                    nothing else. The red belonged to the surfaces that destroy
@@ -3456,19 +3525,7 @@
             }}
             data-testid="account-menu-toggle"
           >
-            <span class="account-avatar" aria-hidden="true">
-              {accountInitial}
-              {#if hasUnhealthyTarget}
-                <span
-                  class="account-avatar-alert"
-                  data-testid="account-health-badge"
-                  aria-hidden="true"
-                ></span>
-              {/if}
-            </span>
-            {#if hasUnhealthyTarget}
-              <span class="sr-only">Some targets need attention</span>
-            {/if}
+            <span class="account-avatar" aria-hidden="true">{accountInitial}</span>
             <span class="account-name">{accountShortLabel}</span>
             <Icon name="more" class="account-chevron" />
           </button>
@@ -3599,28 +3656,6 @@
           {/if}
 
           <div class="topbar-actions">
-            {#if connectionNotice}
-              <span
-                class="connection-chip"
-                data-tone={connectionNotice.tone}
-                data-testid="connection-status-chip"
-                role="status"
-              >
-                <StatusDot
-                  tone={connectionNotice.tone}
-                  pulse={status === 'connecting' || status === 'closed'}
-                  label={connectionNotice.label}
-                  size="sm"
-                />
-                {connectionNotice.label}
-                {#if connectionNotice.retry}
-                  <button type="button" onclick={retryConnection} data-testid="connection-retry">
-                    Retry
-                  </button>
-                {/if}
-              </span>
-            {/if}
-
             {#if selectedSessionId && mainView === 'session'}
               <!-- One toggle for the right sidebar itself (design spec §3.3,
                    issue #571): the Files/Terminal/Config three-button group
@@ -3843,6 +3878,7 @@
               turnActive={transcript?.turnActive ?? false}
               providerId={selectedSession?.provider}
               {permissionHead}
+              jumpTarget={transcriptJumpTarget}
               onFork={narrowViewport ? undefined : forkSessionFromTurn}
               {forkingTurnId}
             />
@@ -3889,6 +3925,20 @@
                 narrow={narrowViewport}
               />
 
+              <!-- Issue #740, settled pick C1-3: the turn summary bar sits
+                   here, in `.canvas-footer`, directly above the composer —
+                   not inside `TranscriptTimeline` (issue #755 windows that
+                   list to the visible range plus overscan, and this bar's
+                   totals need every diff-carrying tool call in the turn
+                   whether or not it's currently mounted) and not inside the
+                   composer's own A1-3 lift or the terminal dock (v7 D1-2) —
+                   neither settled surface is re-homed by this work. -->
+              <TurnEditsBar
+                summary={turnEditsSummary}
+                onJumpToFile={jumpToTranscriptItem}
+                onReviewChanges={openReviewChanges}
+              />
+
               <form class="composer" onsubmit={submitPrompt}>
                 <!-- Design spec v6 §3.4 (issue #575): the composer is the
                      last entry in the timeline, not a chat box bolted to the
@@ -3926,6 +3976,28 @@
                   >
                     {#snippet field({ pickFiles })}
                       <div class="composer-field">
+                        <!-- Removable @-mention pills (issue #742, decisions
+                             doc C2-3): a separate row above the textarea,
+                             never characters inside it — the reference
+                             lives beside the prose, not inside it. -->
+                        {#if mentions.length > 0}
+                          <ul class="mention-pills" data-testid="mention-pill-list">
+                            {#each mentions as mention (mentionKey(mention))}
+                              <li class="mention-pill" data-testid="mention-pill">
+                                <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
+                                <span class="mention-pill-label">{mention.resourceLink.name}</span>
+                                <IconButton
+                                  label={`Remove ${mention.resourceLink.name}`}
+                                  size="sm"
+                                  dataTestId="mention-pill-remove"
+                                  onclick={() => removeMention(mention)}
+                                >
+                                  <Icon name="close" size="12px" />
+                                </IconButton>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
                         <textarea
                           bind:this={composerTextarea}
                           bind:value={draft}
@@ -3945,7 +4017,7 @@
                              at it. -->
                         <p class="composer-hint sr-only" id="composer-hint">
                           <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
-                          line · <kbd>@</kbd> to reference a file
+                          line · <kbd>@</kbd> to reference a file, directory, session, or tracker item
                         </p>
                         <div class="composer-controls" data-testid="composer-controls">
                           <IconButton label="Attach image" onclick={pickFiles}>
@@ -3964,8 +4036,6 @@
                           {/if}
                           <ConfigBar
                             options={configOptions}
-                            usage={transcript?.usage}
-                            cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
                             onChange={changeConfigOption}
                             providerId={selectedSession?.provider}
                             compact={!configControlsVisible}
@@ -4081,7 +4151,7 @@
                 <FileTreePanel
                   tree={fileTree}
                   onExpand={expandDirectory}
-                  onSelectFile={insertFileReference}
+                  onSelectFile={(path) => addMention(fileMention(path))}
                 />
               </div>
             {/if}
@@ -4214,6 +4284,29 @@
       </div>
     {/if}
 
+    <!-- The permanent status bar (Zed-parity decision B1-1, issue #736): a
+         flex sibling of `.shell`/`.terminal-dock`, same convention as both
+         (see `.terminal-dock`'s own CSS doc comment) — but unlike them,
+         never gated on `selectedSessionId`/`mainView`. It is chrome for
+         the WHOLE window (inbox, settings, tracker, a session, or none of
+         those yet selected), not session-view furniture, so it is the one
+         `main.cockpit` child with no `{#if}` around it at all. -->
+    <StatusBar
+      connectionStatus={status}
+      onRetryConnection={retryConnection}
+      {targetHealthDots}
+      {targetsBehindCount}
+      onOpenNodes={openTargetStatus}
+      hasSelectedSession={selectedSessionId !== undefined}
+      {selectedSessionStatus}
+      selectedSessionStatusReason={selectedSessionId
+        ? sessionStatusReasons.get(selectedSessionId)
+        : undefined}
+      {queuedSessionCount}
+      usage={transcript?.usage}
+      cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+    />
+
     <!-- Below `--bp-desktop` the sidebar becomes a sheet and this bar is the
          primary navigation. It deliberately sits ABOVE the sheet's own
          backdrop so the tab that opened the sheet can also close it — the v2
@@ -4276,13 +4369,19 @@
   onClose={() => (paletteOpen = false)}
 />
 
-<FileReferencePicker
-  open={filePickerOpen}
-  tree={fileTree}
-  onExpand={expandDirectory}
-  onSelect={insertFileReference}
-  onClose={closeFilePicker}
-/>
+{#if client}
+  <MentionPicker
+    open={mentionPickerOpen}
+    tree={fileTree}
+    onExpand={expandDirectory}
+    {sessions}
+    currentSessionId={selectedSessionId}
+    projectContext={mentionProjectContext}
+    {client}
+    onSelect={addMention}
+    onClose={closeMentionPicker}
+  />
+{/if}
 
 <SlashCommandPicker
   open={slashPickerOpen}
@@ -4321,6 +4420,12 @@
 />
 
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
+
+<ReviewChangesDialog
+  open={reviewChangesOpen}
+  summary={turnEditsSummary}
+  onClose={closeReviewChanges}
+/>
 
 <style>
   /* The pre-cockpit screens (checking session / sign-in / onboarding) own
@@ -4765,26 +4870,6 @@
 
   .popover-menu button.danger {
     color: var(--color-danger);
-  }
-
-  /* The Settings menu item's own alert dot (issue #568's account-menu-
-     trigger route for `hasUnhealthyTarget`, replacing the sidebar row's
-     dot the old Nodes destination carried). Every other `.popover-menu`
-     button is a plain text label, so this class alone gets the flex
-     treatment needed to push the dot to the trailing edge. */
-  .settings-menu-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .menu-item-alert-dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: var(--radius-full);
-    background: var(--color-warning);
-    flex-shrink: 0;
   }
 
   /* ------------------------------------------------------------------ */
@@ -5267,7 +5352,6 @@
   }
 
   .account-avatar {
-    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -5279,23 +5363,6 @@
     color: var(--color-accent);
     font-size: var(--text-small-size);
     font-weight: 600;
-  }
-
-  /* The account trigger's own health signal (issue #568): an unhealthy
-     target used to light a dot on the sidebar's Nodes row; now that Nodes
-     is two levels deep inside Settings, this is the "still discoverable
-     without opening Settings" surface the issue asks for, mirroring the
-     old sidebar Nodes row's dot (size/color; issue #568 removed that row
-     along with its own `.destination-badge-dot` class). */
-  .account-avatar-alert {
-    position: absolute;
-    bottom: -1px;
-    right: -1px;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-full);
-    background: var(--color-warning);
-    border: 1.5px solid var(--color-surface);
   }
 
   .account-name {
@@ -5479,44 +5546,6 @@
   .panel-word {
     display: none;
     margin-left: var(--space-2xs);
-  }
-
-  /* Rendered only when the connection is NOT healthy (spec §3.3): the v2
-     header spent its highest-attention pixels on a permanently green,
-     unlabelled dot that said nothing and offered nothing. */
-  .connection-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    padding: var(--space-3xs) var(--space-xs);
-    margin-right: var(--space-2xs);
-    border-radius: var(--radius-full);
-    font-size: var(--text-caption-size);
-  }
-
-  .connection-chip[data-tone='warning'] {
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-  }
-
-  .connection-chip[data-tone='danger'] {
-    background: var(--color-danger-subtle);
-    color: var(--color-danger);
-  }
-
-  .connection-chip[data-tone='neutral'] {
-    background: var(--color-fill-subtle);
-    color: var(--color-text-muted);
-  }
-
-  .connection-chip button {
-    border: none;
-    background: transparent;
-    color: inherit;
-    padding: 0 var(--space-2xs);
-    font: inherit;
-    text-decoration: underline;
-    cursor: pointer;
   }
 
   /* Same measure and centring as `.items` below, so a banner does not run
@@ -5723,6 +5752,38 @@
   .composer-field textarea:focus,
   .composer-field textarea:focus-visible {
     outline: none;
+  }
+
+  /* The removable @-mention pill row (issue #742) — sits above the textarea,
+     inside the same `.composer-field` box, wrapping onto its own line(s)
+     rather than pushing the field wider. */
+  .mention-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .mention-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .mention-pill-label {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
   }
 
   /* The one strip the composer has: attach, the pickers, the context/cost

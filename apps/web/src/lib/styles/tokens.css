@@ -90,6 +90,13 @@
      rather than covering the controls that open it, and a literal `3rem`
      repeated there drifts from the one rule that actually sets the height. */
   --topbar-height: 3rem;
+  /* The permanent status bar's own height (Zed-parity decision B1-1,
+     issue #736 — "about 24px"), the same reason `--tabbar-height`/
+     `--topbar-height` above are tokens: the mobile tabbar's own fixed
+     `bottom` offset (`+page.svelte`'s `.status-bar` media query) has to
+     dock above this bar rather than under it, and a literal repeated
+     there drifts from the one rule that actually sets the height. */
+  --statusbar-height: 1.5rem;
   /* `Overlay`'s backdrop top edge — a per-caller hook, not a scale value:
      declared here so the token-hygiene test below has a definition to
      resolve, and so the default (a full-viewport scrim) is stated in the

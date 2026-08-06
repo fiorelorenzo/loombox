@@ -180,6 +180,28 @@ export class TranscriptWindow {
     this.#heights.set(id, height);
   }
 
+  /**
+   * Forces `range` to include `items[index]` regardless of the current
+   * scroll position (issue #740: a turn-review "jump to this file's diff"
+   * click, or any future caller that needs to bring an arbitrary,
+   * possibly-unmounted item into the window). Detaches from `pinToTail` —
+   * jumping to an arbitrary row and immediately snapping back to the tail
+   * would undo the jump on the very next tick — and sets `scrollTop` to
+   * that item's own top offset. `range`'s `TRANSCRIPT_OVERSCAN_ITEMS`
+   * margin on both sides is what actually guarantees inclusion here: at
+   * `scrollTop === offsets[index]` the item sits exactly on the viewport's
+   * top edge, a zero-`viewportPx` caller (a container that hasn't reported
+   * real geometry yet, e.g. a fresh jsdom render) would otherwise compute a
+   * `[start, end]` that lands one item short of `index` — the overscan
+   * absorbs that off-by-one the same way it already absorbs a real
+   * scroll's rounding. Silently does nothing for an out-of-range index.
+   */
+  focusIndex(index: number): void {
+    if (index < 0 || index >= this.items.length) return;
+    this.pinToTail = false;
+    this.scrollTop = this.#offsets[index] ?? 0;
+  }
+
   /** Drops every measured height (issue #755: a session switch is a different transcript, and unbounded retention across an entire day of switching sessions costs real memory for no benefit — a freshly re-opened session re-measures its own rows in a frame or two anyway). */
   reset(): void {
     this.#heights.clear();

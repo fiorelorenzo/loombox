@@ -621,15 +621,20 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('session-filter')).toBeVisible();
   });
 
-  test('the header shows no connection chip while the relay connection is healthy', async ({
+  test('the retired topbar connection chip is gone outright; the permanent status bar reads the connection instead (issue #736)', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
     await expect(page.getByTestId('composer-input')).toBeVisible();
     // v2 spent the header's highest-attention corner on a permanently green
-    // dot. A healthy connection is now silent.
+    // dot; the conditional chip that replaced it (issue #428/#568) is
+    // itself retired now, not merely hidden — issue #736's status bar is
+    // the one place connection health reads, on every page, always.
     await expect(page.getByTestId('connection-status-chip')).toHaveCount(0);
+    const connection = page.getByTestId('status-bar-connection');
+    await expect(connection).toBeVisible();
+    await expect(connection).toContainText('Connected');
   });
 
   test('a session row spends a dot only on a status worth showing, and reserves its slot either way', async ({
