@@ -34,3 +34,4 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - svelte-check@4.7.3
   - vite@8.1.5
+  - '@agentclientprotocol/codex-acp@1.1.10'

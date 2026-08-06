@@ -21,6 +21,19 @@
 //    "Bash" title) with no permission round trip, proving a tool call
 //    completes and classifies correctly with zero bespoke handling from
 //    core.
+//  - text "describe-image" (issue #158; SPEC.md §7.25's inline base64
+//    image hand-off) inspects the FULL `prompt` content array (not just
+//    `prompt[0].text`) for a `type: 'image'` block and echoes its
+//    `mimeType` and base64 payload length back as a message chunk — the
+//    only way a test can prove the exact block this fixture received over
+//    the real JSON-RPC wire, not just what the client-side builder
+//    produced in isolation.
+//  - text "reject-image" replies to `session/prompt` with a JSON-RPC
+//    error instead of a result — standing in for a real Codex agent
+//    declining an attached image (oversize, unsupported content, or any
+//    other agent-side refusal), so a test can prove that rejection
+//    surfaces to the caller through the ordinary JSON-RPC error path
+//    rather than needing bespoke handling.
 //  - anything else streams a plain two-chunk "Hello world" turn, like
 //    echo-acp-agent.
 //
@@ -208,6 +221,38 @@ rl.on('line', (line) => {
         },
       });
       send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
+
+    if (text === 'describe-image') {
+      const imageBlock = msg.params?.prompt?.find((block) => block?.type === 'image');
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'm-image',
+            content: {
+              type: 'text',
+              text: imageBlock
+                ? `received image: ${imageBlock.mimeType} ${String(imageBlock.data?.length ?? 0)}b64`
+                : 'received image: none',
+            },
+          },
+        },
+      });
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
+
+    if (text === 'reject-image') {
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: { code: -32602, message: 'codex-like-acp-agent: declined attached image' },
+      });
       return;
     }
 
