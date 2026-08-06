@@ -284,9 +284,22 @@
   /* Pure layout, never real content — kept out of assistive tech and
      (like every unmounted row) out of native browser find; see this
      file's own doc comment for why that's an accepted consequence rather
-     than a bug here. */
+     than a bug here.
+
+     `flex-shrink: 0` is load-bearing, not decoration (issue #755's own
+     Playwright regression: a detached reader's `scrollHeight` silently
+     stopped growing as new tail content streamed in). `.items` is itself
+     height-constrained (`flex: 1` inside `.canvas`), and every `<li>`'s
+     flex-shrink defaults to 1 — a real row resists shrinking because its
+     rendered content has a non-trivial min-content floor, but an empty
+     spacer has none, so the flex algorithm was squeezing THIS element's
+     explicit `height` down to whatever slack remained instead of letting
+     `.items` genuinely overflow, capping `scrollHeight` at `clientHeight`
+     regardless of how tall the windowing engine's own `leadPx`/`tailPx`
+     said it should be. */
   .items-spacer {
     list-style: none;
+    flex-shrink: 0;
   }
 
   /* C3-2 (v7 decisions §3, issue #668): consecutive tool calls read as one
