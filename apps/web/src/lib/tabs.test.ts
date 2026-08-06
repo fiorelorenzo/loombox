@@ -222,3 +222,69 @@ describe('CanvasTabsState.reset', () => {
     expect(tabs.isDirty('src/foo.ts')).toBe(false);
   });
 });
+
+describe('CanvasTabsState: the working-tree diff tab (issue #206)', () => {
+  it('openDiff() on a fresh session appends a closable diff tab, starts loading, and activates it', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    expect(tabs.tabs).toEqual([
+      { kind: 'transcript', id: 'transcript' },
+      { kind: 'diff', id: 'diff' },
+    ]);
+    expect(tabs.activeId).toBe('diff');
+    expect(tabs.activeTab).toEqual({ kind: 'diff', id: 'diff' });
+    expect(tabs.diffViewer).toEqual({ status: 'loading' });
+  });
+
+  it('openDiff() called again activates the existing tab instead of duplicating it', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setDiffViewer({ status: 'loaded', files: [] });
+    tabs.activate('transcript', []);
+
+    tabs.openDiff([]);
+    expect(tabs.tabs).toHaveLength(2);
+    expect(tabs.activeId).toBe('diff');
+    // Re-opening an already-open diff tab does not reset its viewer back to loading.
+    expect(tabs.diffViewer).toEqual({ status: 'loaded', files: [] });
+  });
+
+  it('the diff tab and a file tab coexist independently, each keeping its own viewer state', () => {
+    const tabs = new CanvasTabsState();
+    tabs.open('src/foo.ts', []);
+    tabs.openDiff([]);
+    expect(tabs.tabs.map((t) => t.id)).toEqual(['transcript', 'src/foo.ts', 'diff']);
+    expect(tabs.has('src/foo.ts')).toBe(true);
+  });
+
+  it('close() on the diff tab drops it, clears its viewer, and falls back to the transcript tab when it was active', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setDiffViewer({ status: 'loaded', files: [] });
+
+    tabs.close('diff');
+    expect(tabs.tabs).toEqual([{ kind: 'transcript', id: 'transcript' }]);
+    expect(tabs.activeId).toBe('transcript');
+    expect(tabs.diffViewer).toBeUndefined();
+  });
+
+  it('close() on the diff tab while a file tab is active leaves that file tab untouched', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.open('src/foo.ts', []);
+
+    tabs.close('diff');
+    expect(tabs.tabs.map((t) => t.id)).toEqual(['transcript', 'src/foo.ts']);
+    expect(tabs.activeId).toBe('src/foo.ts');
+  });
+
+  it('reset() drops the diff tab and its viewer along with everything else', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setDiffViewer({ status: 'error', message: 'boom' });
+
+    tabs.reset();
+    expect(tabs.tabs).toEqual([{ kind: 'transcript', id: 'transcript' }]);
+    expect(tabs.diffViewer).toBeUndefined();
+  });
+});

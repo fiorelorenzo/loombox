@@ -26,8 +26,8 @@
    * transcript) stays inline too so closing never requires opening the
    * picker first.
    */
-  import { Icon } from './icons';
-  import type { CanvasTab } from '$lib/tabs.svelte';
+  import { Icon, type IconName } from './icons';
+  import type { CanvasTab, DiffCanvasTab, FileCanvasTab } from '$lib/tabs.svelte';
   import Dialog from './ui/Dialog.svelte';
   import IconButton from './ui/IconButton.svelte';
 
@@ -54,7 +54,20 @@
   }: Props = $props();
 
   function tabLabel(tab: CanvasTab): string {
-    return tab.kind === 'transcript' ? 'Session' : tab.name;
+    if (tab.kind === 'transcript') return 'Session';
+    if (tab.kind === 'diff') return 'Working tree';
+    return tab.name;
+  }
+
+  function tabIcon(tab: CanvasTab): IconName {
+    if (tab.kind === 'transcript') return 'sessions';
+    if (tab.kind === 'diff') return 'tool-edit';
+    return 'file';
+  }
+
+  /** Every non-transcript tab is closable (a file tab, or the singleton diff tab) — this label is the close button's own accessible name for whichever one it is. */
+  function closeLabel(tab: FileCanvasTab | DiffCanvasTab): string {
+    return tab.kind === 'diff' ? 'Close working tree diff' : `Close ${tab.name}`;
   }
 
   const activeTab = $derived(tabs.find((tab) => tab.id === activeId) ?? tabs[0]);
@@ -84,7 +97,7 @@
         onclick={openPicker}
         data-testid="canvas-tab-strip-picker-trigger"
       >
-        <Icon name={activeTab.kind === 'transcript' ? 'sessions' : 'file'} size="14px" />
+        <Icon name={tabIcon(activeTab)} size="14px" />
         <span class="canvas-tab-label">{tabLabel(activeTab)}</span>
         {#if activeTab.kind === 'file' && isDirty(activeTab.path)}
           <span class="canvas-tab-dirty-dot" data-testid="canvas-tab-dirty-dot" aria-hidden="true"
@@ -92,9 +105,9 @@
         {/if}
         <Icon name="chevron-down" size="12px" />
       </button>
-      {#if activeTab.kind === 'file'}
+      {#if activeTab.kind !== 'transcript'}
         <IconButton
-          label={`Close ${activeTab.name}`}
+          label={closeLabel(activeTab)}
           size="sm"
           onclick={() => onClose(activeTab.id)}
           dataTestId="canvas-tab-strip-close-active"
@@ -118,7 +131,7 @@
               onclick={() => pick(tab.id)}
               data-testid="canvas-tab-picker-item"
             >
-              <Icon name={tab.kind === 'transcript' ? 'sessions' : 'file'} size="14px" />
+              <Icon name={tabIcon(tab)} size="14px" />
               <span class="canvas-tab-label">{tabLabel(tab)}</span>
               {#if tab.kind === 'file' && isDirty(tab.path)}
                 <span
@@ -159,16 +172,16 @@
           onclick={() => onActivate(tab.id)}
           data-testid="canvas-tab-activate"
         >
-          <Icon name={tab.kind === 'transcript' ? 'sessions' : 'file'} size="14px" />
+          <Icon name={tabIcon(tab)} size="14px" />
           <span class="canvas-tab-label">{tabLabel(tab)}</span>
           {#if tab.kind === 'file' && isDirty(tab.path)}
             <span class="canvas-tab-dirty-dot" data-testid="canvas-tab-dirty-dot" aria-hidden="true"
             ></span>
           {/if}
         </button>
-        {#if tab.kind === 'file'}
+        {#if tab.kind !== 'transcript'}
           <IconButton
-            label={`Close ${tab.name}`}
+            label={closeLabel(tab)}
             size="sm"
             onclick={() => onClose(tab.id)}
             dataTestId="canvas-tab-close"

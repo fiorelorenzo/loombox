@@ -1423,13 +1423,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       case 'mcp_prompt_get_response':
       case 'fs_read_response':
+      case 'git_diff_response':
         // The owning node's reply to a client's mcp_prompt_get_request
-        // (Zed-parity D5-2; issue #754) or fs_read_request (issue #737's
-        // read-only file viewer) — fanned out to this session's
+        // (Zed-parity D5-2; issue #754), fs_read_request (issue #737's
+        // read-only file viewer), or git_diff_request (issue #206's
+        // working-tree diff viewer) — fanned out to this session's
         // subscribed clients exactly like fs_list_response above; the
         // relay never opens the envelope, so it never learns which
-        // server/prompt/rendered text or file content, only that
-        // something was read (SPEC §8's metadata boundary). A requesting
+        // server/prompt/rendered text, file content, or changed-file diff,
+        // only that something was read (SPEC §8's metadata boundary). A requesting
         // client matches its own pending request by `requestId`; any
         // other subscribed client simply has no pending request with
         // that id.
@@ -2252,19 +2254,22 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'checkpoint_list':
       case 'checkpoint_restore_preview':
       case 'checkpoint_restore':
+      case 'git_diff_request':
       case 'pr_open_preview_request':
       case 'pr_open_request':
         // A client taking/listing/previewing/rolling back a session's
-        // checkpoints (SPEC §7.20; issue #603), or previewing/confirming
-        // opening a pull request from a session's own branch (SPEC §7.14;
-        // issue #238) — routed to the owning node exactly like
-        // permission_policy_get/_set above. The relay only ever sees
-        // sessionId/requestId plus, for checkpoint_create/pr_open_request,
-        // an opaque `EncryptedEnvelope`; checkpoint_restore_preview/
-        // _restore carry only an opaque checkpointId and (for _restore) a
-        // plain confirm boolean — no checkpoint label, commit, file
-        // content, PR title, body, branch name, or PR URL ever reaches the
-        // relay in the clear.
+        // checkpoints (SPEC §7.20; issue #603), the session's own current
+        // working-tree diff (SPEC §7.4; issue #206's diff viewer), or
+        // previewing/confirming opening a pull request from a session's
+        // own branch (SPEC §7.14; issue #238) — routed to the owning node
+        // exactly like permission_policy_get/_set above. The relay only
+        // ever sees sessionId/requestId plus, for checkpoint_create/
+        // pr_open_request, an opaque `EncryptedEnvelope`; checkpoint_
+        // restore_preview/_restore carry only an opaque checkpointId and
+        // (for _restore) a plain confirm boolean; git_diff_request carries
+        // no envelope at all (asking carries no content) — no checkpoint
+        // label, commit, diff content, PR title, body, branch name, or PR
+        // URL ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'session_rewind_preview':

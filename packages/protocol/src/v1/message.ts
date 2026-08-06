@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
+import { gitDiffRequest, gitDiffResponse } from './git-diff';
 import { mcpPromptGetRequest, mcpPromptGetResponse } from './mcp-prompts';
 import {
   amkEpochFetchRequest,
@@ -263,6 +264,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   prOpenPreviewResult,
   prOpenRequest,
   prOpenResult,
+  gitDiffRequest,
+  gitDiffResponse,
   ping,
   pong,
 ]);
