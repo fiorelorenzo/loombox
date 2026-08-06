@@ -1,0 +1,55 @@
+<section class="item" id="d1">
+  <div class="item-head">
+    <span class="item-id">D1</span>
+    <h2>Who performs the install, and from where</h2>
+  </div>
+  <p class="item-note">
+    The epic's shape is "setup happens from the GUI, as part of connecting". For an ssh target that
+    works, because the acting node drives the remote over ssh. For a <b>local</b> node it needs
+    something already running on that machine, and the only candidate is the desktop app. That is
+    fine on your Mac and impossible on this devbox, which has no GUI at all and is exactly the
+    machine that keeps losing its node. Whatever we build, the mechanism underneath is the same
+    plan/execute pair; this decides which front doors exist.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Neither: a human writes a unit file</span>
+      </div>
+      <p class="opt-why">Which is what I did tonight, and why we are here.</p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-1</span><span class="opt-title">Desktop app only, as part of importing a local project</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> exactly the epic's ask, nothing typed, one flow. <b>Costs:</b> a headless
+        server can never install a node, so the devbox stays hand-managed forever and every
+        server-side node in the future needs a Mac or a desktop session to exist.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-2</span><span class="opt-title">A CLI as the mechanism, the GUI as the front door that calls it</span>
+      </div>
+      <p class="opt-why">
+        <code>loombox-node install | status | uninstall</code>, with the desktop app driving the
+        same code in-process during project import. <b>Buys:</b> one implementation, two entry
+        points, and a headless box is a first-class citizen: the devbox, prodbox, any VPS. It also
+        gives us a way to test the whole flow in CI without a GUI. <b>Costs:</b> a CLI surface to
+        design and keep documented, and the packaging question from A1 has to be answered for it to
+        be installable at all.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-3</span><span class="opt-title">CLI first, GUI wiring as a follow-up issue</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the fastest route to a supervised node on the machines that are broken now, and
+        the GUI lands on top of something already proven. <b>Costs:</b> for a while the product
+        story is still "run this command", which is what we are trying to stop saying.
+      </p>
+    </div>
+  </div>
+</section>

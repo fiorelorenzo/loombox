@@ -1,0 +1,88 @@
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>What the service actually runs</h2>
+  </div>
+  <p class="item-note">
+    This is the decision that blocks all three platforms at once, and the reason "install a
+    supervised node" has never landed. No package in this repo emits JavaScript: every
+    <code>build</code> script is <code>tsc --noEmit</code>, there is no <code>dist/</code>, no
+    <code>bin</code> entry, no publishable CLI. The node runs one way only, as
+    <code>tsx src/main.ts</code> from inside the monorepo. Meanwhile the systemd unit we generate
+    for an ssh target points its <code>ExecStart</code> at
+    <code>$HOME/.loombox/supervisor/supervisor-bin</code>, a signed artifact that
+    <b>nothing in this codebase produces</b>: <code>supervisor-artifact.ts</code> declares the
+    <code>SupervisorArtifactSource</code> interface, no implementation exists, and
+    <code>apps/desktop/.../provision-target-bridge.ts</code> says so in its own doc comment while
+    <code>resolveProvisionTargetDeps</code> returns <code>undefined</code> forever. Two native
+    dependencies decide how hard each option below is: <code>node-pty</code> (terminals) and
+    <code>@napi-rs/keyring</code> (secrets at rest).
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Nothing to install, so nothing installs</span>
+      </div>
+      <p class="opt-why">
+        The ssh path can generate a perfect unit and has no bytes to point it at. The devbox node I
+        fixed tonight points at <code>node_modules/tsx/dist/cli.mjs</code> inside my working
+        checkout, which is honest for my machine and shippable to nobody.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-1</span><span class="opt-title">Run the checkout in place, with tsx</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> works today, zero new infrastructure, and it is exactly what my devbox unit
+        already proves. Fine for a developer who has the repo anyway.
+        <b>Costs:</b> the service is welded to a working tree. A <code>git pull</code>, a rebase, a
+        half-finished branch: the next restart runs whatever is on disk, which is precisely the
+        drift #653 was opened about. It also cannot be the answer for a user who never clones the
+        repo, so it is not a step towards the product, it is a step beside it.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-2</span
+        ><span class="opt-title">A versioned JS bundle in <code>~/.loombox/versions/&lt;version&gt;/</code>, with a <code>current</code> symlink</span>
+      </div>
+      <p class="opt-why">
+        One esbuild bundle per release, plus the two native modules as prebuilt binaries beside it;
+        the unit points at <code>~/.loombox/versions/current/node.mjs</code> through the system
+        Node. <b>Buys:</b> updates become the thing #656 asks for and prod already does for the web
+        bundle: unpack the new version next to the old one, flip a symlink, restart, roll back by
+        flipping it back. Nothing is ever half-updated, and the running node no longer depends on a
+        checkout. <b>Costs:</b> a real build+publish pipeline (bundle, per-platform native modules,
+        signing, a place to download from), and the node needs a Node runtime present. That last one
+        is already true for the ssh path, which has a <code>runtime_bootstrap</code> step that
+        installs Node when missing.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-3</span><span class="opt-title">One signed single-file binary per platform</span>
+      </div>
+      <p class="opt-why">
+        Node SEA or <code>bun build --compile</code>, shipped as a GitHub release asset, verified
+        against a pinned key exactly like <code>supervisor-artifact.ts</code> already describes.
+        <b>Buys:</b> the best install story by far, no runtime prerequisite, and the artifact story
+        the existing code was written for. <b>Costs:</b> the two native modules are the whole
+        problem, and a 3 platforms x 2 architectures matrix has to be built and signed on every
+        release before anyone can install anything. Slowest to first working install.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-4</span><span class="opt-title">A1-1 now for developers, A1-2 as the product path</span>
+      </div>
+      <p class="opt-why">
+        Ship the local backend against a checkout first, so Linux and macOS survival land this week
+        and the seam gets designed against two real platforms; keep the artifact shape (A1-2) as the
+        next issue, with the backend already asking "where is the executable" through one function
+        so switching is a one-line change. <b>Costs:</b> two install shapes exist for a while, and
+        the discipline to actually finish the second one.
+      </p>
+    </div>
+  </div>
+</section>

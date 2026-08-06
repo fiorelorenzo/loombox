@@ -1,0 +1,1390 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>loombox node lifecycle, 2026-08-06</title>
+    <style>
+/*
+ * Shared shell + mock primitives for the 2026-08-04 UX proposal artifact.
+ *
+ * RULES FOR SECTION AUTHORS
+ * -------------------------
+ * 1. Compose from the primitives below. They are faithful reproductions of the
+ *    real app's Deck tokens and components. Do NOT restate a token's value.
+ * 2. A section may add CSS ONLY for structure that does not exist here, and
+ *    every such rule MUST be prefixed with the section id (e.g. `.s-composer-*`).
+ *    Never redefine a `.lb-*` class.
+ * 3. Every colour, space, radius and duration comes from a `var(--...)`. A raw
+ *    hex or px in a section is a bug, with two exceptions: mock content
+ *    dimensions (a fake avatar's size) and deliberate illustrations of a
+ *    measurement being discussed.
+ * 4. Both themes must work. Test with the toggle, do not assume dark.
+ */
+
+/* ---------------------------------------------------------------- */
+/* The real palette (apps/web/src/lib/styles/deck.css)                */
+/* ---------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+  --color-bg: #0a0c0f;
+  --color-surface: #0e1114;
+  --color-surface-raised: #101418;
+  --color-rail: #08090b;
+  --color-overlay: rgb(5 6 8 / 72%);
+  --color-border-subtle: rgb(255 255 255 / 9%);
+  --color-border: rgb(255 255 255 / 16%);
+  --color-border-strong: rgb(255 255 255 / 28%);
+  --color-fill-subtle: rgb(255 255 255 / 6%);
+  --color-fill: rgb(255 255 255 / 12%);
+  --color-text-primary: #e6e9ec;
+  --color-text-secondary: #8b9299;
+  --color-text-muted: #5a6167;
+  --color-text-inverse: #0a0c0f;
+  --color-accent: #3b9df7;
+  --color-accent-hover: #3690e3;
+  --color-accent-active: #3387d4;
+  --color-accent-subtle: rgb(59 157 247 / 16%);
+  --color-accent-contrast: #0a0a0a;
+  --color-success: #34d399;
+  --color-success-subtle: rgb(52 211 153 / 16%);
+  --color-warning: #f5b942;
+  --color-warning-subtle: rgb(245 185 66 / 16%);
+  --color-danger: #f26565;
+  --color-danger-subtle: rgb(242 101 101 / 16%);
+  --color-info: #5aa2e0;
+  --color-info-subtle: rgb(90 162 224 / 16%);
+  --color-focus-ring: var(--color-border-strong);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 55%);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #e3e7ef;
+  --color-surface: #fafbfd;
+  --color-surface-raised: #ffffff;
+  --color-rail: #c7ced9;
+  --color-overlay: rgb(10 14 20 / 40%);
+  --color-border-subtle: rgb(15 23 35 / 18%);
+  --color-border: rgb(15 23 35 / 28%);
+  --color-border-strong: rgb(15 23 35 / 38%);
+  --color-fill-subtle: rgb(15 23 35 / 5%);
+  --color-fill: rgb(15 23 35 / 10%);
+  --color-text-primary: #10141a;
+  --color-text-secondary: #454b57;
+  --color-text-muted: #6b7280;
+  --color-text-inverse: #fafbfd;
+  --color-accent-contrast: #ffffff;
+  --shadow-sm: 0 1px 2px rgb(10 14 20 / 12%);
+  --shadow-md: 0 4px 10px rgb(10 14 20 / 16%);
+  --shadow-lg: 0 10px 24px rgb(10 14 20 / 22%);
+}
+
+/* ---------------------------------------------------------------- */
+/* The real structural scale (apps/web/src/lib/styles/tokens.css)     */
+/* ---------------------------------------------------------------- */
+:root {
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.375rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 3rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 999px;
+
+  --measure: 90ch;
+  --measure-wide: 120ch;
+  --gutter: 4.75rem;
+  --sidebar-width: 17rem;
+  --nav-row-height: 2.5rem;
+  --nav-icon-size: 1.25rem;
+  --status-dot-size-sm: 0.55rem;
+  --status-dot-size-md: 0.85rem;
+  --topbar-height: 3rem;
+
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 360ms;
+  --duration-weave: 640ms;
+  --ease-beat: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-shuttle: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-tension: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* typography.css */
+  --font-ui: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-display-size: 1.75rem;
+  --text-display-line: 2.15rem;
+  --text-display-weight: 650;
+  --text-title-size: 1.125rem;
+  --text-title-line: 1.5rem;
+  --text-title-weight: 600;
+  --text-body-size: 0.95rem;
+  --text-body-line: 1.45rem;
+  --text-body-weight: 400;
+  --text-small-size: 0.8rem;
+  --text-small-line: 1.15rem;
+  --text-small-weight: 400;
+  --text-caption-size: 0.7rem;
+  --text-caption-line: 1rem;
+  --text-caption-weight: 500;
+  --text-caption-tracking: 0.08em;
+  --text-code-size: 0.85rem;
+  --text-code-line: 1.4rem;
+  --text-code-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-weave: 0ms;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Artifact chrome (NOT part of the app — the review page itself)     */
+/* ---------------------------------------------------------------- */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+}
+
+.doc {
+  max-width: 1460px;
+  margin: 0 auto;
+  padding: var(--space-2xl) var(--space-xl) var(--space-3xl);
+}
+
+.doc-head {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-lg);
+  margin-bottom: var(--space-2xl);
+}
+
+.doc-head h1 {
+  font-size: var(--text-display-size);
+  line-height: var(--text-display-line);
+  font-weight: var(--text-display-weight);
+  margin: 0 0 var(--space-sm);
+}
+
+.doc-head p {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-sm);
+  max-width: 78ch;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-xl);
+  background: var(--color-rail);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.toolbar strong {
+  font-size: var(--text-small-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-right: auto;
+}
+
+/* A reviewed item: the question, then its options side by side. */
+.item {
+  margin: 0 0 var(--space-3xl);
+  scroll-margin-top: 4rem;
+}
+
+.item-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+.item-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-small-size);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.item-head h2 {
+  font-size: var(--text-title-size);
+  line-height: var(--text-title-line);
+  font-weight: var(--text-title-weight);
+  margin: 0;
+}
+
+.item-quote {
+  border-left: 2px solid var(--color-border-strong);
+  padding-left: var(--space-md);
+  margin: 0 0 var(--space-md);
+  color: var(--color-text-secondary);
+  font-style: italic;
+  max-width: 78ch;
+}
+
+.item-note {
+  margin: 0 0 var(--space-lg);
+  color: var(--color-text-secondary);
+  max-width: 78ch;
+}
+
+.item-note code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+  color: var(--color-text-primary);
+}
+
+.options {
+  display: grid;
+  gap: var(--space-lg);
+  /* Two up, not three. A mock of a prose layout is unjudgeable in a 360px
+     column: the text wraps every four words and every option looks equally
+     cramped, which hides exactly the difference being asked about. The
+     `Narrow` toggle in the toolbar is how a phone width gets checked, on
+     purpose and one decision at a time. */
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  align-items: start;
+}
+
+.options.stack {
+  grid-template-columns: 1fr;
+}
+
+.opt {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.opt.is-current {
+  border-style: dashed;
+  border-color: var(--color-danger);
+}
+
+.opt-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-fill-subtle);
+}
+
+.opt-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.opt.is-current .opt-tag {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.opt-title {
+  font-weight: 600;
+  font-size: var(--text-small-size);
+}
+
+.opt-why {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md) 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-small-size);
+  line-height: 1.4;
+}
+
+.opt-why b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+/* The frame a mock is rendered inside: it stands in for the app canvas. */
+.stage {
+  margin: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-subtle);
+  flex: 1;
+}
+
+.stage.flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.stage-label {
+  font-size: var(--text-caption-size);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-sm);
+}
+
+/* ---------------------------------------------------------------- */
+/* App primitives — faithful mocks. USE THESE, do not reinvent.       */
+/* ---------------------------------------------------------------- */
+
+/* Button (apps/web/src/lib/components/ui/Button.svelte) */
+.lb-btn {
+  font: inherit;
+  font-size: var(--text-small-size);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    border-color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-btn:hover {
+  background: var(--color-fill);
+}
+
+.lb-btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+}
+
+.lb-btn-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.lb-btn-danger {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.lb-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.lb-btn-ghost:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-btn[disabled],
+.lb-btn.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lb-btn-sm {
+  padding: var(--space-3xs) var(--space-sm);
+  font-size: var(--text-caption-size);
+}
+
+/* IconButton */
+.lb-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-beat),
+    color var(--duration-fast) var(--ease-beat);
+}
+
+.lb-iconbtn:hover {
+  background: var(--color-fill-subtle);
+  color: var(--color-text-primary);
+}
+
+.lb-iconbtn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.lb-iconbtn.lb-lg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.lb-iconbtn.lb-lg svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/*
+ * A labelled button carrying an icon (the real topbar's `Workbench`/`Terminal`
+ * buttons are exactly this). Without it an inline `<svg>` falls back to the
+ * 300x150 default and swallows the mock, which is what happened the first time
+ * this artifact was assembled.
+ */
+.lb-btn svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.lb-btn.lb-btn-sm svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* StatusDot */
+.lb-dot {
+  display: inline-block;
+  width: var(--status-dot-size-sm);
+  height: var(--status-dot-size-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  flex: none;
+}
+
+.lb-dot.md {
+  width: var(--status-dot-size-md);
+  height: var(--status-dot-size-md);
+}
+
+.lb-dot.ok {
+  background: var(--color-success);
+}
+.lb-dot.warn {
+  background: var(--color-warning);
+}
+.lb-dot.danger {
+  background: var(--color-danger);
+}
+.lb-dot.info {
+  background: var(--color-info);
+}
+.lb-dot.accent {
+  background: var(--color-accent);
+}
+
+.lb-dot.pulse {
+  animation: lb-pulse 1.6s var(--ease-beat) infinite;
+}
+
+@keyframes lb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Badge */
+.lb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-subtle);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.lb-badge.ok {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.lb-badge.warn {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.lb-badge.danger {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.lb-badge.accent {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+/* Typography helpers */
+.lb-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+}
+
+.lb-caption {
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.lb-small {
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line);
+  color: var(--color-text-secondary);
+}
+
+.lb-muted {
+  color: var(--color-text-muted);
+}
+
+.lb-secondary {
+  color: var(--color-text-secondary);
+}
+
+/* The transcript timeline: a fixed gutter column plus content.
+   This is the app's one alignment device and every transcript mock
+   must keep rows aligned to it. */
+.lb-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.lb-row-gutter {
+  flex: 0 0 var(--gutter);
+  width: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3xs);
+  padding-top: var(--space-sm);
+  padding-right: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.lb-row-gutter .lb-caption {
+  text-align: right;
+}
+
+.lb-row-body {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-sm) 0;
+}
+
+.lb-row-body > :first-child {
+  margin-top: 0;
+}
+
+.lb-row-body > :last-child {
+  margin-bottom: 0;
+}
+
+.lb-row-body p {
+  margin: 0 0 var(--space-sm);
+}
+
+/* Prose rendered from agent Markdown */
+.lb-prose pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  margin: 0 0 var(--space-sm);
+}
+
+.lb-prose code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+}
+
+.lb-prose p > code,
+.lb-prose li > code {
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.lb-prose ul,
+.lb-prose ol {
+  margin: 0 0 var(--space-sm);
+  padding-left: var(--space-lg);
+}
+
+.lb-prose li {
+  margin-bottom: var(--space-2xs);
+}
+
+/* Console output (TerminalOutput.svelte) */
+.lb-console {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-size);
+  line-height: var(--text-code-line);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.lb-console .ok {
+  color: var(--color-success);
+}
+.lb-console .err {
+  color: var(--color-danger);
+}
+.lb-console .dim {
+  color: var(--color-text-muted);
+}
+
+/* A generic panel/list row */
+.lb-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.lb-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--text-small-size);
+  font-weight: 600;
+}
+
+.lb-listrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.lb-listrow:last-child {
+  border-bottom: 0;
+}
+
+.lb-listrow:hover {
+  background: var(--color-fill-subtle);
+}
+
+/* Text input / textarea */
+.lb-input {
+  font: inherit;
+  font-size: var(--text-body-size);
+  width: 100%;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+}
+
+.lb-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.lb-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+.lb-field:focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+}
+
+/* Spinner, standing in for WovenLoader */
+.lb-spin {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-fill);
+  border-top-color: var(--color-accent);
+  animation: lb-spin 700ms linear infinite;
+  flex: none;
+}
+
+@keyframes lb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A caret that marks live streaming text */
+.lb-caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+  animation: lb-blink 1s steps(2, start) infinite;
+}
+
+@keyframes lb-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.lb-hr {
+  height: 1px;
+  background: var(--color-border-subtle);
+  border: 0;
+  margin: var(--space-md) 0;
+}
+
+/* Utility layout */
+.lb-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.lb-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.lb-inline.tight {
+  gap: var(--space-2xs);
+}
+
+.lb-spacer {
+  flex: 1;
+}
+
+.lb-pill-group {
+  display: inline-flex;
+  padding: var(--space-3xs);
+  gap: var(--space-3xs);
+  background: var(--color-fill-subtle);
+  border-radius: var(--radius-md);
+}
+
+.lb-pill-group .lb-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.lb-pill-group .lb-btn[aria-pressed='true'] {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+
+      .navlink {
+        font-size: var(--text-small-size);
+        color: var(--color-text-secondary);
+        text-decoration: none;
+        padding: var(--space-2xs) var(--space-sm);
+        border-radius: var(--radius-md);
+      }
+      .navlink:hover {
+        background: var(--color-fill-subtle);
+        color: var(--color-text-primary);
+      }
+      .sec {
+        margin-bottom: var(--space-3xl);
+        scroll-margin-top: 4rem;
+      }
+      .sec-title {
+        display: flex;
+        align-items: center;
+        gap: var(--space-md);
+        font-size: var(--text-display-size);
+        line-height: var(--text-display-line);
+        font-weight: var(--text-display-weight);
+        margin: 0 0 var(--space-xl);
+        padding-bottom: var(--space-sm);
+        border-bottom: 1px solid var(--color-border);
+      }
+      .sec-letter {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.25rem;
+        height: 2.25rem;
+        border-radius: var(--radius-md);
+        background: var(--color-accent-subtle);
+        color: var(--color-accent);
+        font-family: var(--font-mono);
+        font-size: var(--text-title-size);
+      }
+      .howto {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        background: var(--color-surface);
+        padding: var(--space-lg);
+        margin-bottom: var(--space-2xl);
+      }
+      .howto h3 {
+        margin: 0 0 var(--space-sm);
+        font-size: var(--text-title-size);
+      }
+      .howto ol {
+        margin: 0;
+        padding-left: var(--space-lg);
+        color: var(--color-text-secondary);
+      }
+      .howto li {
+        margin-bottom: var(--space-2xs);
+      }
+      .howto code,
+      .item-note code,
+      .opt-why code {
+        font-family: var(--font-mono);
+        font-size: var(--text-code-size);
+        background: var(--color-fill-subtle);
+        border-radius: var(--radius-sm);
+        padding: 0 var(--space-2xs);
+        color: var(--color-text-primary);
+      }
+      /* This artifact is prose, not rebuilt UI: one readable column of cards. */
+      .options.stack {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <strong>node lifecycle</strong>
+      <a class="navlink" href="#sec-a">What runs</a>
+        <a class="navlink" href="#sec-b">Platform order</a>
+        <a class="navlink" href="#sec-c">Secrets</a>
+        <a class="navlink" href="#sec-d">Who installs</a>
+        <a class="navlink" href="#sec-e">Uninstall</a>
+        <a class="navlink" href="#sec-f">Found tonight</a>
+      <button class="lb-btn lb-btn-sm" id="theme">Light</button>
+    </div>
+
+    <div class="doc">
+      <div class="doc-head">
+        <h1>Making the node survive, 6 August 2026</h1>
+        <p>
+          Your devbox node is a supervised service again as of tonight (F1), but that is a unit file
+          I wrote by hand on one machine. Turning it into the product is epic #653, and five
+          decisions there are yours. A1 is the one that blocks the other four.
+        </p>
+        <p>
+          The red dashed card is what the code does today, checked against the source, not
+          remembered. Every option says what it buys and what it costs.
+        </p>
+      </div>
+
+      <div class="howto">
+        <h3>How to answer</h3>
+        <ol>
+          <li>Each decision has an id like <code>A1</code>.</li>
+          <li>Pick one option per decision, by id: <code>A1-2</code>.</li>
+          <li>If nothing fits, say so on that decision and what is missing.</li>
+          <li>Reply with just the list, for example <code>A1-4, B1-2, C1-1, D1-2, E1-1</code>.</li>
+        </ol>
+      </div>
+
+      
+
+
+    <div class="sec" id="sec-a">
+      <h2 class="sec-title"><span class="sec-letter">A</span> What runs</h2>
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>What the service actually runs</h2>
+  </div>
+  <p class="item-note">
+    This is the decision that blocks all three platforms at once, and the reason "install a
+    supervised node" has never landed. No package in this repo emits JavaScript: every
+    <code>build</code> script is <code>tsc --noEmit</code>, there is no <code>dist/</code>, no
+    <code>bin</code> entry, no publishable CLI. The node runs one way only, as
+    <code>tsx src/main.ts</code> from inside the monorepo. Meanwhile the systemd unit we generate
+    for an ssh target points its <code>ExecStart</code> at
+    <code>$HOME/.loombox/supervisor/supervisor-bin</code>, a signed artifact that
+    <b>nothing in this codebase produces</b>: <code>supervisor-artifact.ts</code> declares the
+    <code>SupervisorArtifactSource</code> interface, no implementation exists, and
+    <code>apps/desktop/.../provision-target-bridge.ts</code> says so in its own doc comment while
+    <code>resolveProvisionTargetDeps</code> returns <code>undefined</code> forever. Two native
+    dependencies decide how hard each option below is: <code>node-pty</code> (terminals) and
+    <code>@napi-rs/keyring</code> (secrets at rest).
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Nothing to install, so nothing installs</span>
+      </div>
+      <p class="opt-why">
+        The ssh path can generate a perfect unit and has no bytes to point it at. The devbox node I
+        fixed tonight points at <code>node_modules/tsx/dist/cli.mjs</code> inside my working
+        checkout, which is honest for my machine and shippable to nobody.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-1</span><span class="opt-title">Run the checkout in place, with tsx</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> works today, zero new infrastructure, and it is exactly what my devbox unit
+        already proves. Fine for a developer who has the repo anyway.
+        <b>Costs:</b> the service is welded to a working tree. A <code>git pull</code>, a rebase, a
+        half-finished branch: the next restart runs whatever is on disk, which is precisely the
+        drift #653 was opened about. It also cannot be the answer for a user who never clones the
+        repo, so it is not a step towards the product, it is a step beside it.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-2</span
+        ><span class="opt-title">A versioned JS bundle in <code>~/.loombox/versions/&lt;version&gt;/</code>, with a <code>current</code> symlink</span>
+      </div>
+      <p class="opt-why">
+        One esbuild bundle per release, plus the two native modules as prebuilt binaries beside it;
+        the unit points at <code>~/.loombox/versions/current/node.mjs</code> through the system
+        Node. <b>Buys:</b> updates become the thing #656 asks for and prod already does for the web
+        bundle: unpack the new version next to the old one, flip a symlink, restart, roll back by
+        flipping it back. Nothing is ever half-updated, and the running node no longer depends on a
+        checkout. <b>Costs:</b> a real build+publish pipeline (bundle, per-platform native modules,
+        signing, a place to download from), and the node needs a Node runtime present. That last one
+        is already true for the ssh path, which has a <code>runtime_bootstrap</code> step that
+        installs Node when missing.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-3</span><span class="opt-title">One signed single-file binary per platform</span>
+      </div>
+      <p class="opt-why">
+        Node SEA or <code>bun build --compile</code>, shipped as a GitHub release asset, verified
+        against a pinned key exactly like <code>supervisor-artifact.ts</code> already describes.
+        <b>Buys:</b> the best install story by far, no runtime prerequisite, and the artifact story
+        the existing code was written for. <b>Costs:</b> the two native modules are the whole
+        problem, and a 3 platforms x 2 architectures matrix has to be built and signed on every
+        release before anyone can install anything. Slowest to first working install.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-4</span><span class="opt-title">A1-1 now for developers, A1-2 as the product path</span>
+      </div>
+      <p class="opt-why">
+        Ship the local backend against a checkout first, so Linux and macOS survival land this week
+        and the seam gets designed against two real platforms; keep the artifact shape (A1-2) as the
+        next issue, with the backend already asking "where is the executable" through one function
+        so switching is a one-line change. <b>Costs:</b> two install shapes exist for a while, and
+        the discipline to actually finish the second one.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+
+    <div class="sec" id="sec-b">
+      <h2 class="sec-title"><span class="sec-letter">B</span> Platform order</h2>
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>Which platform gets the local backend first</h2>
+  </div>
+  <p class="item-note">
+    The epic fixed the order on 4 August: ssh remote and macOS local (#654) first, then Linux local
+    (#658), then Windows (#659), so the shared seam is designed against two real implementations
+    rather than guessed from one. Since then two things changed. The case that actually keeps
+    biting is Linux (my devbox node has died twice), and I can verify a Linux backend end to end
+    from here, while macOS needs the Mac in the loop for every run. Worth knowing before choosing:
+    <b>launchd is already written</b> (<code>launchd/launchd-provisioning.ts</code>, plist
+    generation, plan/execute, 301 lines of tests) and <b>called by nothing</b>, and
+    <b>systemd is already written</b> and called only through an ssh transport, while
+    <code>LocalProcessTransport</code> already implements that same transport interface against the
+    local machine. Neither platform needs its mechanism invented; both need it reached.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">macOS first, per the epic</span>
+      </div>
+      <p class="opt-why">
+        #658 says in its own body that it is blocked on #654, which introduces the seam. Nothing has
+        started on either.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Keep the order: macOS local first</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the plan stays the plan, and the seam is designed against the platform whose
+        vocabulary is furthest from systemd's, which is a real argument. <b>Costs:</b> every
+        verification round trips through the Mac, and the machine that is actually broken stays
+        broken longest.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Invert: Linux local first, macOS immediately after</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the first backend is the one I can prove here, including the parts that only
+        show up on a real machine (linger, PATH under a service manager, reboot). The seam still
+        gets two implementations before it is called done, because launchd follows straight after
+        with its generator already written. <b>Costs:</b> the seam's first draft is shaped by
+        systemd, and launchd has to push back on it a few days later. Mitigated by the fact that
+        the launchd code already exists, so its vocabulary is known now, not discovered later.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-3</span><span class="opt-title">One pass: the seam plus both backends together</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the interface is written against systemd and launchd simultaneously, which is
+        what the epic wanted from the ordering in the first place, and there is no window where one
+        platform is supervised and the other is not. <b>Costs:</b> a bigger change to review, and
+        the macOS half cannot be verified without Mac time in the same sitting.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+
+    <div class="sec" id="sec-c">
+      <h2 class="sec-title"><span class="sec-letter">C</span> Secrets</h2>
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>Where the node's secrets live once it is a service</h2>
+  </div>
+  <p class="item-note">
+    A resident node needs a relay URL, a node id, something that proves who it is, and a way to get
+    the account master key. Today the ssh path writes all of them as <code>Environment=</code> lines
+    inside the unit file, which means <code>systemctl cat loombox-node</code> prints the recovery
+    code, and so does any backup of <code>~/.config</code>. My devbox unit already deviates: it uses
+    <code>EnvironmentFile=</code> pointing at a 0600 file. The zero-touch ssh flow has a third
+    shape it already uses for the AMK: a one-shot wrapped handoff file the node consumes and
+    deletes on first boot. Note this interacts with #815: the device identity itself is currently
+    kept in a kernel keyring that a reboot wipes.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Secrets inline in the unit file</span>
+      </div>
+      <p class="opt-why">
+        Readable with one command, copied by every config backup, and shown in full whenever anyone
+        pastes a unit into a chat to debug it.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-1</span><span class="opt-title">A 0600 environment file the unit references</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the unit becomes shareable and diffable, the secret sits behind file
+        permissions, and it works identically for systemd and launchd. Same discipline as
+        <code>identity.json</code>. <b>Costs:</b> a long-lived recovery code still sits on disk in
+        plaintext, which is exactly what the recovery code is not supposed to be.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-2</span><span class="opt-title">One-shot handoff: a device token plus a wrapped AMK, consumed and deleted</span>
+      </div>
+      <p class="opt-why">
+        What zero-touch ssh provisioning already does (<code>LOOMBOX_WRAPPED_AMK_FILE</code>, deleted
+        after the node unwraps it with its own device key). <b>Buys:</b> no durable secret at rest:
+        after first boot the machine holds a device token and a keypair, not the recovery code, and
+        the token can be revoked from the account without touching the machine. <b>Costs:</b> it
+        only works if the device identity is genuinely durable, so #815 has to be fixed first or
+        this silently degrades into "re-pair on every reboot".
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-3</span><span class="opt-title">Everything in the OS keyring, nothing in the unit</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> one storage story for every secret the node holds. <b>Costs:</b> on a headless
+        Linux box the "OS keyring" is a kernel keyring that does not survive a reboot (#815), so
+        this is the option that looks strongest and is currently the weakest here. Viable only after
+        the keyring backend is made to prove it is durable.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+
+    <div class="sec" id="sec-d">
+      <h2 class="sec-title"><span class="sec-letter">D</span> Who installs</h2>
+<section class="item" id="d1">
+  <div class="item-head">
+    <span class="item-id">D1</span>
+    <h2>Who performs the install, and from where</h2>
+  </div>
+  <p class="item-note">
+    The epic's shape is "setup happens from the GUI, as part of connecting". For an ssh target that
+    works, because the acting node drives the remote over ssh. For a <b>local</b> node it needs
+    something already running on that machine, and the only candidate is the desktop app. That is
+    fine on your Mac and impossible on this devbox, which has no GUI at all and is exactly the
+    machine that keeps losing its node. Whatever we build, the mechanism underneath is the same
+    plan/execute pair; this decides which front doors exist.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">Neither: a human writes a unit file</span>
+      </div>
+      <p class="opt-why">Which is what I did tonight, and why we are here.</p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-1</span><span class="opt-title">Desktop app only, as part of importing a local project</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> exactly the epic's ask, nothing typed, one flow. <b>Costs:</b> a headless
+        server can never install a node, so the devbox stays hand-managed forever and every
+        server-side node in the future needs a Mac or a desktop session to exist.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-2</span><span class="opt-title">A CLI as the mechanism, the GUI as the front door that calls it</span>
+      </div>
+      <p class="opt-why">
+        <code>loombox-node install | status | uninstall</code>, with the desktop app driving the
+        same code in-process during project import. <b>Buys:</b> one implementation, two entry
+        points, and a headless box is a first-class citizen: the devbox, prodbox, any VPS. It also
+        gives us a way to test the whole flow in CI without a GUI. <b>Costs:</b> a CLI surface to
+        design and keep documented, and the packaging question from A1 has to be answered for it to
+        be installable at all.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">D1-3</span><span class="opt-title">CLI first, GUI wiring as a follow-up issue</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the fastest route to a supervised node on the machines that are broken now, and
+        the GUI lands on top of something already proven. <b>Costs:</b> for a while the product
+        story is still "run this command", which is what we are trying to stop saying.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+
+    <div class="sec" id="sec-e">
+      <h2 class="sec-title"><span class="sec-letter">E</span> Uninstall</h2>
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>What uninstall removes by default (#814)</h2>
+  </div>
+  <p class="item-note">
+    You asked for this tonight and it is now filed as #814. The decision worth taking up front is
+    what the default does, because it is the one people click without reading. The footprint on
+    Linux is: the unit and its wants symlink, linger, <code>~/.loombox/node/</code> (identity,
+    device token, sessions, mcp secrets, permission policies, agent profiles, spend caps, connected
+    accounts), the keyring entry, <code>~/.loombox/supervisor/</code>, and
+    <code>~/.loombox/remote-sessions/</code> on every ssh target this node ever drove, plus the
+    device registration on the relay, which no local <code>rm -rf</code> can reach.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">No uninstall exists locally; the ssh one keeps files by default</span>
+      </div>
+      <p class="opt-why">
+        <code>decommission.ts</code> stops and disables the unit and revokes the target, and only
+        deletes files when the caller opts in. Nothing equivalent exists for a local node.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-1</span><span class="opt-title">Default removes the service, keeps the data, always revokes the device</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the safe default. Reinstalling later adopts the existing identity and session
+        history instead of starting a new device. <b>Costs:</b> a machine you meant to wipe still
+        holds session transcripts and secrets until you run the second, explicit step.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-2</span><span class="opt-title">No default: the flow always asks, service or everything</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> nobody deletes transcripts by accident and nobody leaves secrets behind by
+        accident. <b>Costs:</b> a question every time, including in the scripted and CI paths, which
+        then need a flag anyway.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-3</span><span class="opt-title">Default removes everything, with a keep-data flag</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> "uninstall" means the machine is clean, which is what the word implies and what
+        you asked for tonight. <b>Costs:</b> irreversible by definition; a mis-click destroys local
+        session history that exists nowhere else, since the relay only holds ciphertext it cannot
+        read.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+
+    <div class="sec" id="sec-f">
+      <h2 class="sec-title"><span class="sec-letter">F</span> Found tonight</h2>
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>What I found and did tonight, no decision needed</h2>
+  </div>
+  <p class="item-note">
+    Everything here is either already filed or already done; it is context for the decisions above.
+  </p>
+  <div class="options stack">
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Done</span><span class="opt-title">Your devbox node is a supervised service again</span>
+      </div>
+      <p class="opt-why">
+        A hand-written <code>systemd --user</code> unit: <code>EnvironmentFile</code> at 0600 for
+        relay/node-id/recovery code, mise shims on <code>PATH</code> (without them the node cannot
+        find the agent binaries it spawns), <code>Restart=always</code>,
+        <code>KillMode=process</code> so stopping the node does not kill the agents it started, and
+        linger enabled so it comes up at boot without a login. Proven, not assumed:
+        <code>kill -9</code> on the main pid, back up and reconnected to prod five seconds later.
+        This is a patch on one machine, and it is the thing the decisions above replace.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">#815</span><span class="opt-title">The node's identity does not actually survive a reboot</span>
+      </div>
+      <p class="opt-why">
+        It lives in a kernel keyring (<code>/proc/keys</code> shows it, 354 bytes, and the
+        persistent keyring expires after three days), while
+        <code>identity.json</code> from 25 July sits on disk being ignored, because
+        <code>load()</code> never reads the file once an OS backend answers. So the node comes back
+        as a different device. I restored the old identity by hand tonight. Filed P1.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">#814</span><span class="opt-title">Nothing uninstalls what setup installs</span>
+      </div>
+      <p class="opt-why">Your ask from tonight, filed with the full footprint list. E1 above is its one open decision.</p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Note</span><span class="opt-title">launchd is dead code, and a doc comment is lying</span>
+      </div>
+      <p class="opt-why">
+        <code>launchd-provisioning.ts</code> is complete and tested and imported by nothing outside
+        its own tests, so #654 is not "write launchd", it is "reach it".
+        <code>keyring.ts</code>'s doc comment states that on this devbox the OS keyring always
+        throws and the file fallback always wins. That was true when written and is false now, which
+        is exactly why #815 went unnoticed. Fixing the comment is part of #815.
+      </p>
+    </div>
+  </div>
+</section>
+
+    </div>
+    </div>
+
+    <script>
+      const root = document.documentElement;
+      const themeBtn = document.getElementById('theme');
+      themeBtn.addEventListener('click', () => {
+        const light = root.getAttribute('data-theme') === 'light';
+        root.setAttribute('data-theme', light ? 'dark' : 'light');
+        themeBtn.textContent = light ? 'Light' : 'Dark';
+      });
+    </script>
+  </body>
+</html>

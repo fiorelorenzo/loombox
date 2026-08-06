@@ -1,0 +1,64 @@
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>Which platform gets the local backend first</h2>
+  </div>
+  <p class="item-note">
+    The epic fixed the order on 4 August: ssh remote and macOS local (#654) first, then Linux local
+    (#658), then Windows (#659), so the shared seam is designed against two real implementations
+    rather than guessed from one. Since then two things changed. The case that actually keeps
+    biting is Linux (my devbox node has died twice), and I can verify a Linux backend end to end
+    from here, while macOS needs the Mac in the loop for every run. Worth knowing before choosing:
+    <b>launchd is already written</b> (<code>launchd/launchd-provisioning.ts</code>, plist
+    generation, plan/execute, 301 lines of tests) and <b>called by nothing</b>, and
+    <b>systemd is already written</b> and called only through an ssh transport, while
+    <code>LocalProcessTransport</code> already implements that same transport interface against the
+    local machine. Neither platform needs its mechanism invented; both need it reached.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">macOS first, per the epic</span>
+      </div>
+      <p class="opt-why">
+        #658 says in its own body that it is blocked on #654, which introduces the seam. Nothing has
+        started on either.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Keep the order: macOS local first</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the plan stays the plan, and the seam is designed against the platform whose
+        vocabulary is furthest from systemd's, which is a real argument. <b>Costs:</b> every
+        verification round trips through the Mac, and the machine that is actually broken stays
+        broken longest.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Invert: Linux local first, macOS immediately after</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the first backend is the one I can prove here, including the parts that only
+        show up on a real machine (linger, PATH under a service manager, reboot). The seam still
+        gets two implementations before it is called done, because launchd follows straight after
+        with its generator already written. <b>Costs:</b> the seam's first draft is shaped by
+        systemd, and launchd has to push back on it a few days later. Mitigated by the fact that
+        the launchd code already exists, so its vocabulary is known now, not discovered later.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-3</span><span class="opt-title">One pass: the seam plus both backends together</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the interface is written against systemd and launchd simultaneously, which is
+        what the epic wanted from the ordering in the first place, and there is no window where one
+        platform is supervised and the other is not. <b>Costs:</b> a bigger change to review, and
+        the macOS half cannot be verified without Mac time in the same sitting.
+      </p>
+    </div>
+  </div>
+</section>
