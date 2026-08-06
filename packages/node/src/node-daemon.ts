@@ -205,6 +205,7 @@ import {
   type Session,
 } from './session-manager';
 import { cutTranscriptAtTurn } from './session-fork';
+import { resolveSessionBranch } from './session-branch';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -2725,12 +2726,35 @@ export class NodeDaemon extends EventEmitter {
    * `local` session's `'starting'` status the moment its worktree lands,
    * well before `AgentSupervisor.start()` (and therefore any `AgentSession`
    * to put in a bridge) has even been called (issue #516).
+   *
+   * Also resolves and includes `branch` (issue #738's B3-3: "the node
+   * pushes it with the session's own state" — this method, the one place
+   * a session's own state already goes out, rather than a separate
+   * client-initiated request). `resolveSessionBranch` itself never throws,
+   * but the `getExecutionTarget` call feeding it can (an `ssh:` target
+   * decommissioned out from under a still-open session, in particular) —
+   * caught right here so a branch this node genuinely cannot resolve right
+   * now degrades to "omitted" rather than ever blocking the title/
+   * projectPath announce every session's own visibility depends on. Called
+   * again on every reconnect (`reannounceAll`), which is this field's own
+   * refresh point for an in-place session whose branch changed on disk
+   * while nothing else about the session did — see `resolveSessionBranch`'s
+   * own doc comment for why that, not a live filesystem watch, is the
+   * deliberate answer here.
    */
   private async announce(session: Session, targetId: string, title: string): Promise<void> {
     const key = await this.getSessionKey(session.id);
+    let branch: string | undefined;
+    try {
+      branch = await resolveSessionBranch(await this.getExecutionTarget(targetId), session);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`NodeDaemon: failed to resolve branch for session ${session.id}: ${message}`);
+    }
     const privateMeta: SessionPrivateMetaV1 = {
       title,
       projectPath: session.projectPath,
+      ...(branch === undefined ? {} : { branch }),
     };
     const privateEnvelope = await sealJson(session.id, privateMeta, key);
     const meta: SessionMetaPublic = {

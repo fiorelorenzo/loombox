@@ -3656,14 +3656,30 @@
                 <h1 class="topbar-title" data-testid="cockpit-session-title">
                   {selectedSession.title}
                 </h1>
+                <!-- B3-3 (Zed-parity, issue #738): `project / branch`, not
+                     `project · target` — the target chip moved down into
+                     `StatusBar`'s left zone (`selectedSessionTargetLabel`
+                     below) so it renders exactly once instead of being
+                     duplicated here. `selectedSession.branch` is node-
+                     computed (`SessionPrivateMetaV1.branch`,
+                     `@loombox/protocol`), `undefined` for a project that
+                     isn't a git repository at all (SPEC §6) — the segment
+                     simply omits rather than showing an empty trail. The
+                     `title` carries the full project path AND branch so a
+                     long name this span's own `text-overflow: ellipsis`
+                     truncates still has a real answer on hover. -->
                 <span
                   class="topbar-breadcrumb font-mono"
                   data-testid="topbar-breadcrumb"
-                  title={selectedSession.projectPath}
+                  title={selectedSession.branch
+                    ? `${selectedSession.projectPath} / ${selectedSession.branch}`
+                    : selectedSession.projectPath}
                 >
                   {projectDisplayName(selectedSession)}
-                  <span aria-hidden="true">·</span>
-                  {selectedSession.targetId}
+                  {#if selectedSession.branch}
+                    <span aria-hidden="true">/</span>
+                    {selectedSession.branch}
+                  {/if}
                 </span>
               {:else}
                 <h1 class="topbar-title topbar-title-muted">No session selected</h1>
@@ -4378,6 +4394,7 @@
     <StatusBar
       connectionStatus={status}
       onRetryConnection={retryConnection}
+      selectedSessionTargetLabel={selectedSession ? sessionTargetLabel(selectedSession) : undefined}
       {targetHealthDots}
       {targetsBehindCount}
       onOpenNodes={openTargetStatus}

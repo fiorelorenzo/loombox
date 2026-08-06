@@ -153,6 +153,20 @@ test.describe('composer strip', () => {
       .evaluate((el) => el.scrollWidth > el.clientWidth + 1);
     expect(statusBarOverflows).toBe(false);
 
+    // The selected session's own target chip is the segment this bar
+    // drops to make that budget (issue #738's own StatusBar.svelte doc
+    // comment: the least useful LEFT-zone segment at phone width) — but
+    // the identical label stays reachable one tab away, on the sessions
+    // sheet's own row for this session, so nothing becomes truly
+    // undiscoverable, only un-glanceable while composing.
+    await expect(page.getByTestId('status-bar-session-target')).toBeHidden();
+    await page.getByTestId('tabbar-sessions').click();
+    const sessionActivity = page.getByTestId('session-activity').first();
+    await expect(sessionActivity).toBeVisible();
+    await expect(sessionActivity).toContainText('local');
+    await page.getByTestId('tabbar-sessions').click();
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+
     const overlaps = await row.evaluate((el) => {
       const kids = [...el.children].map((child) => ({
         name: child.tagName.toLowerCase() + '.' + String(child.className).split(' ')[0],

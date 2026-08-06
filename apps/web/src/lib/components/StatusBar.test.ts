@@ -13,6 +13,7 @@ afterEach(() => cleanup());
 function baseProps(): {
   connectionStatus: ConnectionStatus;
   onRetryConnection: () => void;
+  selectedSessionTargetLabel: string | undefined;
   targetHealthDots: { key: string; label: string; state: TargetHealthDotState }[];
   targetsBehindCount: number;
   onOpenNodes: () => void;
@@ -26,6 +27,7 @@ function baseProps(): {
   return {
     connectionStatus: 'open',
     onRetryConnection: vi.fn(),
+    selectedSessionTargetLabel: undefined,
     targetHealthDots: [],
     targetsBehindCount: 0,
     onOpenNodes: vi.fn(),
@@ -88,6 +90,22 @@ describe('StatusBar: relay connection (left zone, issue #736)', () => {
   it('renders no Retry control while the connection is healthy or still connecting', () => {
     render(StatusBar, { props: { ...baseProps(), connectionStatus: 'open' } });
     expect(screen.queryByTestId('status-bar-connection-retry')).toBeNull();
+  });
+});
+
+describe("StatusBar: selected session's own target (left zone, issue #738, B3-3)", () => {
+  it('renders nothing when no session is selected', () => {
+    render(StatusBar, { props: { ...baseProps(), selectedSessionTargetLabel: undefined } });
+    expect(screen.queryByTestId('status-bar-session-target')).toBeNull();
+  });
+
+  it("renders the selected session's own target label, in mono (issue #735's structural-identifier rule)", () => {
+    render(StatusBar, {
+      props: { ...baseProps(), selectedSessionTargetLabel: 'MacBook-Pro-Lorenzo' },
+    });
+    const segment = screen.getByTestId('status-bar-session-target');
+    expect(segment.textContent).toContain('MacBook-Pro-Lorenzo');
+    expect(segment.innerHTML).toContain('font-mono');
   });
 });
 
