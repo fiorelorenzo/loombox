@@ -65,6 +65,24 @@
     type NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
   import {
+    createLocalStorageConfigOptionDefaultsStorage,
+    rememberConfigOptionValues,
+    rememberedConfigOptionsFor,
+    type ConfigOptionDefaultsStorage,
+    type RememberedConfigOptionValues,
+  } from '$lib/config-option-defaults';
+  import {
+    clearConfigOptionOverride,
+    configOptionOverridesFor,
+    createLocalStorageConfigOptionOverrideStorage,
+    setConfigOptionOverride,
+  } from '$lib/config-option-overrides';
+  import {
+    resolveConfigOptionDefaults,
+    resolveConfigOptionSources,
+    type ConfigOptionSource,
+  } from '$lib/config-option-resolution';
+  import {
     createProjectStore,
     projectKey,
     projectNameFromPath,
@@ -85,7 +103,6 @@
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
-  import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
   import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
@@ -108,7 +125,7 @@
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
-  import ToolCallRow from '$lib/components/ToolCallRow.svelte';
+  import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -139,6 +156,11 @@
   // `routes/page.test.ts`, where `window`/`localStorage` don't exist.
   let authStore: AuthStore | undefined;
   let amkStorage: ReturnType<typeof createLocalStorageAmkStorage> | undefined;
+  // Account-wide remembered config-option values (issue #753, D4-2/D4-3) —
+  // same "only ever constructed client-side" reasoning as `amkStorage`
+  // above: `localStorage` doesn't exist during `routes/page.test.ts`'s SSR
+  // render.
+  let configOptionDefaultsStorage: ConfigOptionDefaultsStorage | undefined;
   // This browser's own stable device id (issue #163's presence check needs
   // the push subscription and the live WS connection to agree on one id —
   // see `device-id-store.ts`'s doc comment), loaded once in `onMount` below.
@@ -672,28 +694,21 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
-  /**
-   * The transcript's scroll container, and whether it is currently following
-   * the newest output (issue #508).
-   *
-   * It never did. `.items` scrolls, but nothing ever moved `scrollTop`, so a
-   * live session streamed its newest tool calls and messages in *below the
-   * fold* and left the list pinned at the very first frame — measured at
-   * `scrollTop: 0` with 140px of unseen content on the audit transcript.
-   * What you saw at the boundary was a diff sliced through the middle of its
-   * glyphs with no scrollbar and no bottom border, which is why #508 was
-   * filed as a rendering fault: the cut was real, "there is more below" was
-   * the part never communicated.
-   *
-   * Following is conditional on purpose. Yanking the view back down while
-   * someone is reading earlier output is the other half of this bug, so
-   * scrolling up detaches, {@link jumpToLatest} (and switching session)
-   * re-attaches, and the button only exists while detached.
-   */
-  let transcriptList = $state<HTMLElement | undefined>(undefined);
-  let followingTranscript = $state(true);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
+  /**
+   * The selected session's own agent's remembered account-wide values and
+   * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
+   * `selectSession` on every session switch, by `rememberConfigOptionValues`
+   * every time `configOptions` itself changes, and by
+   * `pinConfigOptionToProject`/`unpinConfigOptionFromProject` on a pin
+   * action. `$state`, not read live off `localStorage` inside a `$derived`,
+   * because a `localStorage` write is not itself a Svelte reactivity
+   * source — see this file's own `configOptionSources` derived below,
+   * which reacts to `configOptions` AND these two together.
+   */
+  let configOptionAccountDefaults = $state<RememberedConfigOptionValues>({});
+  let configOptionProjectOverrides = $state<RememberedConfigOptionValues>({});
   let attachments = $state<ComposerAttachment[]>([]);
   let queuedPrompts = $state<QueuedPrompt[]>([]);
   let draft = $state('');
@@ -1098,6 +1113,15 @@
   /** The selected session itself — the header's breadcrumb needs its project/target, not just its title. */
   const selectedSession = $derived(sessions.find((session) => session.id === selectedSessionId));
 
+  /** Every category's current source (issue #753, D4-3 — `ConfigBar`'s own acceptance: "shows the source of the current value"), recomputed off `configOptions` and the two remembered maps `selectSession`/`rememberConfigOptionValues`/the pin actions keep current. */
+  const configOptionSources: Record<string, ConfigOptionSource> = $derived(
+    resolveConfigOptionSources(
+      configOptions,
+      configOptionProjectOverrides,
+      configOptionAccountDefaults,
+    ),
+  );
+
   /**
    * What the sidebar's account row calls the signed-in person (spec §3.1 /
    * defect A2): their name, else their email, else — only when the identity
@@ -1210,6 +1234,96 @@
     pendingPushActionFromUrl = undefined;
   }
 
+  /**
+   * `sessionId -> {provider, projectPath}` for a session `handleSessionCreated`
+   * just reported (issue #753), consumed by `handleConfigOptionsUpdate`
+   * below the moment that session's first real (non-empty) catalog
+   * arrives — the ONE signal that tells it "apply this session's
+   * remembered defaults now", and, until `sessions` itself catches up
+   * (the exact same gap `handleSessionCreated`'s own doc comment already
+   * calls out), a `provider`/`projectPath` fallback. Never cleaned up
+   * beyond that one consume — a leftover entry for a long-closed session
+   * is inert.
+   */
+  let recentSessionCreationHints: Record<string, { provider: string; projectPath: string }> = {};
+
+  /**
+   * `sessionId -> categories` awaiting the ack of a `changeConfigOption`
+   * call this device just made (issue #753) — the ONE signal
+   * `handleConfigOptionsUpdate` uses to tell a genuine user pick apart
+   * from every other reason `configOptions` can change: a brand-new
+   * session's raw, untouched catalog; this session's own remembered
+   * defaults being applied (`applyRememberedConfigOptions`, driven by
+   * `recentSessionCreationHints` above); or an unprompted agent-initiated
+   * change. Only a category in this set gets remembered as the agent's
+   * new account-wide "last used" once its push lands, and it is cleared
+   * unconditionally at that point — even a push that leaves `current`
+   * exactly where it already was (the agent rejected the pick, issue
+   * #718) still resolves it, so a refusal never leaves a category
+   * "pending" forever waiting for a value that will never arrive. Without
+   * this, a session that just had a PROJECT override applied would
+   * immediately re-remember that same value as the ACCOUNT'S last used
+   * the moment the ack landed — exactly the cross-project bleed D4-3
+   * exists to prevent, just one layer removed.
+   */
+  let pendingUserConfigOptionChanges: Record<string, SvelteSet<string>> = {};
+
+  /**
+   * The live config-option catalog changed for the selected session
+   * (issue #753, D4-2/D4-3). `configOptions` itself is always replaced
+   * wholesale (unchanged behavior). Two things happen on top, in order:
+   *
+   * 1. If `recentSessionCreationHints` still has an entry for
+   *    `sessionId` — this is that brand-new session's FIRST real catalog
+   *    — consume it and call `applyRememberedConfigOptions`, which may
+   *    issue `setConfigOption` for whichever categories resolve to
+   *    something other than the agent's own current selection. This
+   *    never itself counts as a "last used" pick (see
+   *    `pendingUserConfigOptionChanges`'s own doc comment).
+   * 2. Any category named in `pendingUserConfigOptionChanges` for this
+   *    session — a real `changeConfigOption` call awaiting its ack — is
+   *    remembered as this agent's new account-wide "last used"
+   *    (`rememberConfigOptionValues`) and cleared from the pending set.
+   *
+   * Either way, `configOptionAccountDefaults`/`configOptionProjectOverrides`
+   * are refreshed from storage so `configOptionSources` (`ConfigBar`'s own
+   * source badge) always matches, even on a push that wrote nothing. A
+   * still-empty catalog (a session that hasn't heard from its agent yet)
+   * does none of this.
+   */
+  function handleConfigOptionsUpdate(sessionId: string, value: AcpConfigOption[]): void {
+    configOptions = value;
+    if (value.length === 0) return;
+    const session = sessions.find((entry) => entry.id === sessionId);
+    const hint = recentSessionCreationHints[sessionId];
+    const provider = session?.provider ?? hint?.provider;
+    const projectPath = session?.projectPath ?? hint?.projectPath;
+    if (!provider) return;
+
+    if (hint) {
+      delete recentSessionCreationHints[sessionId];
+      applyRememberedConfigOptions(sessionId, provider, projectPath, value);
+    }
+
+    const pendingCategories = pendingUserConfigOptionChanges[sessionId];
+    if (pendingCategories && pendingCategories.size > 0 && configOptionDefaultsStorage) {
+      const changed = value.filter((option) => pendingCategories.has(option.category));
+      if (changed.length > 0)
+        rememberConfigOptionValues(configOptionDefaultsStorage, provider, changed);
+      pendingCategories.clear();
+    }
+
+    configOptionAccountDefaults = configOptionDefaultsStorage
+      ? rememberedConfigOptionsFor(configOptionDefaultsStorage, provider)
+      : {};
+    configOptionProjectOverrides = projectPath
+      ? configOptionOverridesFor(
+          createLocalStorageConfigOptionOverrideStorage(projectPath),
+          provider,
+        )
+      : {};
+  }
+
   function selectSession(id: string): void {
     selectedSessionId = id;
     const session = sessions.find((entry) => entry.id === id);
@@ -1230,11 +1344,10 @@
     unsubscribeStaleNotice?.();
     unsubscribeFileTree?.();
     transcript = undefined;
-    // Opening a session shows its newest output, never wherever the previous
-    // one happened to be scrolled to (issue #508).
-    followingTranscript = true;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    configOptionAccountDefaults = {};
+    configOptionProjectOverrides = {};
     attachments = [];
     queuedPrompts = [];
     staleNotice = undefined;
@@ -1248,7 +1361,7 @@
     });
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
-      .subscribe((value) => (configOptions = value));
+      .subscribe((value) => handleConfigOptionsUpdate(id, value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -1526,8 +1639,54 @@
     }
   }
 
-  /** `NewSessionDialog`'s success callback (issue #385): opening it is just the same `selectSession` any other session click uses. Issue #761 removed `RelayClient.createSession`'s wait for the node's own `session_announce` (it only ever existed to safely time the since-removed starting prompt), so unlike before, the session is not guaranteed to be in `sessions` yet when this fires — `selectSession` doesn't need that: it subscribes regardless and shows the session's live status the moment the announce actually arrives. Making that brief pre-announce window read honestly instead of "Awaiting you" is issue #730's remaining half. */
-  function handleSessionCreated(sessionId: string): void {
+  /**
+   * A brand-new session's remembered config-option defaults (issue #753,
+   * D4-2/D4-3): project override beats account beats the agent's own
+   * default. Called exactly once, by `handleConfigOptionsUpdate`, the
+   * moment this session's real catalog (`catalog`) first arrives — never
+   * a subscription of its own (an earlier version of this function was;
+   * see `handleConfigOptionsUpdate`'s own doc comment for why folding it
+   * in was the fix, not just a simplification: two independent
+   * subscriptions to the same session both trying to be the one that
+   * decides what counts as a "last used" pick raced each other). A
+   * category whose resolved value already equals the agent's own current
+   * selection is skipped — no redundant round trip — and
+   * `resolveConfigOptionDefaults` has already dropped anything stale
+   * (issue #718: never send a value the agent doesn't offer).
+   */
+  function applyRememberedConfigOptions(
+    sessionId: string,
+    provider: string,
+    projectPath: string | undefined,
+    catalog: AcpConfigOption[],
+  ): void {
+    if (!client) return;
+    const projectOverrides = projectPath
+      ? configOptionOverridesFor(
+          createLocalStorageConfigOptionOverrideStorage(projectPath),
+          provider,
+        )
+      : {};
+    const accountDefaults = configOptionDefaultsStorage
+      ? rememberedConfigOptionsFor(configOptionDefaultsStorage, provider)
+      : {};
+    for (const resolution of resolveConfigOptionDefaults(
+      catalog,
+      projectOverrides,
+      accountDefaults,
+    )) {
+      if (resolution.source === 'default' || resolution.optionId === undefined) continue;
+      const option = catalog.find((entry) => entry.category === resolution.category);
+      if (option && option.current !== resolution.optionId) {
+        client.setConfigOption(sessionId, resolution.category, resolution.optionId);
+      }
+    }
+  }
+
+  /** `NewSessionDialog`'s success callback (issue #385): opening it is just the same `selectSession` any other session click uses. Issue #761 removed `RelayClient.createSession`'s wait for the node's own `session_announce` (it only ever existed to safely time the since-removed starting prompt), so unlike before, the session is not guaranteed to be in `sessions` yet when this fires — `selectSession` doesn't need that: it subscribes regardless and shows the session's live status the moment the announce actually arrives. Making that brief pre-announce window read honestly instead of "Awaiting you" is issue #730's remaining half. `provider` (issue #753) is `NewSessionDialog`'s own selection, recorded into `recentSessionCreationHints` here (alongside the project path this dialog was opened for) rather than looked up from `sessions` — the exact same "not guaranteed to be there yet" gap; `handleConfigOptionsUpdate` is what actually applies the remembered defaults once the real catalog arrives. */
+  function handleSessionCreated(sessionId: string, provider: string): void {
+    const projectPath = newSessionProject?.path;
+    if (projectPath) recentSessionCreationHints[sessionId] = { provider, projectPath };
     selectSession(sessionId);
   }
 
@@ -2193,46 +2352,6 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /**
-   * How far off the bottom still counts as "following" (issue #508). A
-   * couple of lines of slack, because sub-pixel rounding and a growing last
-   * item routinely leave `scrollTop` a hair short of the exact bottom, and
-   * detaching on that would make the button flicker on every streamed chunk.
-   */
-  const FOLLOW_TRANSCRIPT_SLACK_PX = 48;
-
-  function distanceFromTranscriptBottom(el: HTMLElement): number {
-    return el.scrollHeight - el.scrollTop - el.clientHeight;
-  }
-
-  function onTranscriptScroll(event: Event): void {
-    const el = event.currentTarget as HTMLElement;
-    followingTranscript = distanceFromTranscriptBottom(el) <= FOLLOW_TRANSCRIPT_SLACK_PX;
-  }
-
-  function jumpToLatest(): void {
-    followingTranscript = true;
-    transcriptList?.scrollTo({ top: transcriptList.scrollHeight, behavior: 'smooth' });
-  }
-
-  /**
-   * Follows the newest output while attached (issue #508).
-   *
-   * Keyed on `transcript` itself rather than on `items.length`: the reducer
-   * returns a fresh state object for every update, and a streaming text
-   * chunk grows the *last existing* item rather than appending a new one, so
-   * a length-keyed effect would sit still through exactly the case that
-   * needs it most. Runs after the DOM is updated, which is what makes
-   * reading the just-grown `scrollHeight` correct.
-   */
-  $effect(() => {
-    void transcript;
-    if (!followingTranscript) return;
-    const el = transcriptList;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  });
-
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
@@ -2281,9 +2400,31 @@
     client.sendPrompt(sessionId, text);
   }
 
+  /** `ConfigBar`'s value pickers (a genuine user pick, unlike `applyRememberedConfigOptions`'s automatic one) — flags `category` as pending in `pendingUserConfigOptionChanges` so `handleConfigOptionsUpdate` remembers whatever value its ack actually lands with as this agent's new account-wide "last used" (issue #753, D4-2), whether or not it's the value requested here (the agent's own ack, never an optimistic local guess, is still the only source of truth — see `RelayClient.setConfigOption`'s own doc comment). */
   function changeConfigOption(category: string, optionId: string): void {
     if (!client || !selectedSessionId) return;
+    const pending = pendingUserConfigOptionChanges[selectedSessionId] ?? new SvelteSet<string>();
+    pending.add(category);
+    pendingUserConfigOptionChanges[selectedSessionId] = pending;
     client.setConfigOption(selectedSessionId, category, optionId);
+  }
+
+  /** `ConfigBar`'s "pin to project" action (issue #753, D4-3): pins `category`'s CURRENT choice as the selected session's project's override for its agent — a plain client-local write, no wire round trip at all (unlike `changeConfigOption`, nothing here needs the agent's own ack; the value is already live). Refreshes `configOptionProjectOverrides` immediately so the badge/pin state reflects it without waiting on the next `configOptions` push. A no-op if the category has no current selection yet. */
+  function pinConfigOptionToProject(category: string): void {
+    if (!selectedSession) return;
+    const option = configOptions.find((entry) => entry.category === category);
+    if (!option || option.current === undefined) return;
+    const storage = createLocalStorageConfigOptionOverrideStorage(selectedSession.projectPath);
+    setConfigOptionOverride(storage, selectedSession.provider, category, option.current);
+    configOptionProjectOverrides = configOptionOverridesFor(storage, selectedSession.provider);
+  }
+
+  /** The inverse of {@link pinConfigOptionToProject} — clears `category`'s project override, falling back to the account default or the agent's own. */
+  function unpinConfigOptionFromProject(category: string): void {
+    if (!selectedSession) return;
+    const storage = createLocalStorageConfigOptionOverrideStorage(selectedSession.projectPath);
+    clearConfigOptionOverride(storage, selectedSession.provider, category);
+    configOptionProjectOverrides = configOptionOverridesFor(storage, selectedSession.provider);
   }
 
   async function exportTranscript(): Promise<void> {
@@ -2301,6 +2442,7 @@
     });
 
     amkStorage = createLocalStorageAmkStorage();
+    configOptionDefaultsStorage = createLocalStorageConfigOptionDefaultsStorage();
     deviceIdStorage = createLocalStorageDeviceIdStorage();
     deviceId = loadOrCreateDeviceId(deviceIdStorage);
 
@@ -3430,48 +3572,14 @@
               {/snippet}
             </EmptyState>
           {:else}
-            <ol
-              class="items"
-              bind:this={transcriptList}
-              onscroll={onTranscriptScroll}
-              data-testid="transcript-items"
-            >
-              {#each transcript?.items ?? [] as item, itemIndex (item.id)}
-                <li
-                  class:tool-call-compact={item.type === 'tool_call' &&
-                    transcript?.items?.[itemIndex - 1]?.type === 'tool_call'}
-                >
-                  {#if item.type === 'message'}
-                    <MessageItem
-                      {item}
-                      thinking={item.kind === 'agent_thought_chunk' && transcript
-                        ? isThoughtStillThinking(transcript, item.turnId)
-                        : false}
-                      turnActive={transcript?.turnActive ?? false}
-                      providerId={selectedSession?.provider}
-                    />
-                  {:else}
-                    <ToolCallRow
-                      {item}
-                      awaitingPermission={permissionHead !== undefined &&
-                        permissionHead.toolCall.id === item.id}
-                    />
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-
-            {#if !followingTranscript}
-              <button
-                type="button"
-                class="jump-latest"
-                onclick={jumpToLatest}
-                data-testid="transcript-jump-latest"
-              >
-                <Icon name="chevron-down" size="100%" />
-                Jump to latest
-              </button>
-            {/if}
+            <TranscriptTimeline
+              sessionKey={selectedSessionId}
+              items={transcript?.items ?? []}
+              {transcript}
+              turnActive={transcript?.turnActive ?? false}
+              providerId={selectedSession?.provider}
+              {permissionHead}
+            />
 
             <div class="canvas-footer">
               <!-- A3-2 (issue #666): the turn's own live line, not a
@@ -3597,6 +3705,9 @@
                             onChange={changeConfigOption}
                             providerId={selectedSession?.provider}
                             compact={!configControlsVisible}
+                            sources={configOptionSources}
+                            onPinToProject={pinConfigOptionToProject}
+                            onUnpinFromProject={unpinConfigOptionFromProject}
                           />
                           <div class="composer-actions">
                             <!-- A3-2 (issue #666): one button in one slot —
@@ -5166,67 +5277,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  /* A readable measure (spec §3.4 / defect C3): transcript prose used to
-     run the full 1440-1920px canvas, ~150 characters a line. Code, diffs
-     and terminal output opt into `--measure-wide` from their own
-     components. */
-  .items {
-    flex: 1;
-    width: 100%;
-    max-width: var(--measure);
-    margin-inline: auto;
-    overflow-y: auto;
-    list-style: none;
-    padding: 0;
-    margin-block: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  /* C3-2 (v7 decisions §3, issue #668): consecutive tool calls read as one
-     compact list, not N separately-spaced turns — this `<li>` sits
-     directly under another tool-call `<li>` (see the loop's own
-     `class:tool-call-compact`), so it pulls up against `.items`' own
-     `--space-sm` flex gap, leaving a tight `--space-3xs` list rhythm
-     instead. The first call in a run (or a lone one) keeps the full gap,
-     same as any other turn boundary. */
-  .items li.tool-call-compact {
-    margin-top: calc(var(--space-3xs) - var(--space-sm));
-  }
-
-  /* The "there is more below" affordance #508 asked for. Sits between the
-     scrolling transcript and the pinned footer, so it reads as the edge of
-     the scroll region rather than as another transcript item, and it exists
-     only while detached — a permanent control here would be one more thing
-     to ignore. */
-  .jump-latest {
-    align-self: center;
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    margin-top: calc(var(--space-sm) * -1);
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-full);
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-sm);
-    color: var(--color-text-secondary);
-    font-size: var(--text-caption-size);
-    cursor: pointer;
-  }
-
-  .jump-latest :global(svg) {
-    width: 0.85em;
-    height: 0.85em;
-  }
-
-  .jump-latest:hover {
-    color: var(--color-text-primary);
-    border-color: var(--color-border-strong);
   }
 
   /* Everything below the transcript - the live plan, queued prompts, the

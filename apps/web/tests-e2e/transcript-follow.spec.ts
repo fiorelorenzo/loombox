@@ -12,6 +12,17 @@ import { expect, sendSessionUpdate, test } from './fixtures';
  *
  * Browser-driven on purpose: the defect is a scroll position, and jsdom has
  * no layout, so a component test here would pass against the broken build.
+ *
+ * Issue #755 (real transcript windowing) reused this exact mechanism —
+ * `TranscriptTimeline.svelte`'s pin effect still reads the browser's own
+ * `scrollHeight`, just re-run on a measured-height change too, not only a
+ * new `items` reference — and its pixel-level anchor math has its own
+ * dedicated jsdom test (`TranscriptTimeline.test.ts`, stubbed geometry).
+ * What changed here: the second test below no longer waits for the newest
+ * item to be *attached* while scrolled away — under windowing that item is
+ * legitimately unmounted (a hidden tail spacer stands in for it) rather
+ * than a bug, so the synchronization gate is the windowed spacer's own
+ * `scrollHeight` growth instead.
  */
 
 /** Enough tool calls to overflow the transcript viewport at 900px tall. */
@@ -81,13 +92,24 @@ test.describe('transcript follow', () => {
 
     // Reading earlier output is not interrupted by the agent still working.
     const before = await items.evaluate((el) => el.scrollTop);
+    const heightBeforeUpdate = await items.evaluate((el) => el.scrollHeight);
     await sendSessionUpdate(loombox.node, loombox.session, {
       kind: 'agent_message_chunk',
       turnId: 'turn-1',
       messageId: 'msg-while-detached',
       text: 'Still working on it.',
     });
-    await expect(items.getByText('Still working on it.')).toBeAttached();
+    // The newest item is legitimately NOT attached here (issue #755): it's
+    // scrolled well out of the rendered window, standing in behind a
+    // spacer. `scrollHeight` still grows to account for it (the spacer is
+    // sized from the windowing engine's own total, not just the mounted
+    // rows), so waiting for that growth off the pre-update baseline is the
+    // windowing-safe version of "the update actually reached the client"
+    // this gate needs before the `scrollTop` comparison below means
+    // anything.
+    await expect
+      .poll(() => items.evaluate((el) => el.scrollHeight))
+      .toBeGreaterThan(heightBeforeUpdate);
     expect(await items.evaluate((el) => el.scrollTop)).toBe(before);
 
     await jump.click();

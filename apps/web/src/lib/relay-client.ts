@@ -1,22 +1,13 @@
-import type { webcrypto } from 'node:crypto';
 import { derived, get, writable, type Readable, type Writable } from 'svelte/store';
 import {
-  deriveKeyTree,
-  deriveProjectKey,
-  deriveSessionKey,
-  encryptEnvelope,
-  envelopeToWire,
   exportPublicKeyRaw,
   generateEcdhKeyPair,
-  importAesGcmKey,
-  openJson,
   packWrappedAmkForWire,
-  sealJson,
   unpackWrappedAmkFromWire,
   unwrapAmkWithRecoveryCode,
-  wrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
+import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
   acpTranscriptUpdateSchema,
@@ -178,8 +169,6 @@ export type {
   GithubConnectOutcome,
   JiraConnectOutcome,
 } from '@loombox/protocol';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
@@ -550,15 +539,21 @@ export interface RelayClientOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
   relayUrl: string;
   /**
-   * This account's Account Master Key (SPEC §8, §16): every session key this
-   * client derives (`@loombox/crypto`'s `deriveSessionKey`) comes from this
-   * one 256-bit secret via its key tree — the exact same derivation the node
-   * uses, so this client decrypts precisely what the node encrypted.
+   * This account's Account Master Key (SPEC §8, §16): every session/
+   * project/target key this client derives comes from this one 256-bit
+   * secret via its key tree — the exact same derivation the node uses, so
+   * this client decrypts precisely what the node encrypted.
    * `RelayClient` itself stays storage-agnostic and just takes the bytes; a
    * caller generates/persists it on-device via `amk-store.ts`'s
    * `loadOrCreateAmk` (single-device custody, this wave) rather than typing
    * it in by hand. Multi-device recovery-code escrow/QR pairing (#113/#114/
    * #115) is a later wave, layered on top without changing this option.
+   *
+   * Handed once to `envelope-crypto-client.ts`'s `createEnvelopeCrypto`
+   * (issue #756) — the constructor keeps no `this.amk` field of its own;
+   * every derived key and AEAD open/seal for session traffic happens inside
+   * that worker/engine, not on this class. See that module's doc comment
+   * for exactly what crosses the worker boundary and why.
    */
   amk: Uint8Array;
   /**
@@ -595,6 +590,13 @@ export interface RelayClientOptions {
   devicePublicKey?: string;
   /** WebSocket constructor override; defaults to the global `WebSocket`. Tests inject a fake. */
   webSocketImpl?: WebSocketConstructor;
+  /**
+   * Overrides the default `EnvelopeCrypto` (worker-backed in a real
+   * browser/Electron, in-process in Node/vitest — see
+   * `envelope-crypto-client.ts`'s `createEnvelopeCrypto`). Tests inject a
+   * fake to assert on request/response shape without a real `Worker`.
+   */
+  envelopeCrypto?: EnvelopeCrypto;
   /**
    * Persistence for the offline/mid-turn composer outbox (SPEC §7.3, §7.24;
    * issues #128/#130). Defaults to `createDefaultOutboxStorage(accountId)`
@@ -657,32 +659,6 @@ function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   const unique = hasRandomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
   return `${prefix}_${unique}`;
-}
-
-/**
- * Derives one target's symmetric key from the account's AMK (SPEC §7.25's
- * directory picker; issue #474) — the crypto boundary `browseDirectory`/
- * `handleTargetFsListResponse` seal/open under, NOT `deriveSessionKey`'s
- * session-derived key, since there is no session yet when browsing a
- * target. Path: `['target', accountId, targetId]`, namespaced under its own
- * `'target'` segment exactly like `deriveSessionKey`'s `'session'` segment
- * (`packages/crypto/src/session-keys.ts`'s doc comment), so it can never
- * collide with a session key even for the same account.
- *
- * Lives here rather than in `@loombox/crypto` (unlike `deriveSessionKey`)
- * because this issue's scope doesn't touch that package — duplicated
- * verbatim in `packages/node/src/node-daemon.ts`'s own `deriveTargetKey` so
- * both sides derive the identical key from the same already-exported
- * `deriveKeyTree`/`importAesGcmKey` primitives (see that copy's doc comment
- * for the same reasoning).
- */
-async function deriveTargetKey(
-  amk: Uint8Array,
-  accountId: string,
-  targetId: string,
-): Promise<CryptoKey> {
-  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
-  return importAesGcmKey(node.key);
 }
 
 /**
@@ -881,24 +857,6 @@ export async function bootstrapAmkFromRecoveryCode(
 }
 
 /**
- * Seals raw attachment bytes (not JSON, unlike `sealJson`) under the
- * session key, bound to `attachmentResourceId(sessionId, ref)` — the exact
- * AAD the relay's blob store keys by and `@loombox/node`'s
- * `AttachmentResolver` decrypts against (see `attachments.ts`'s doc
- * comment), so this client's upload and the node's later download+decrypt
- * agree on the binding without this package depending on `@loombox/node`.
- */
-async function sealAttachmentEnvelope(
-  sessionId: string,
-  ref: string,
-  bytes: Uint8Array,
-  key: CryptoKey,
-): Promise<EncryptedEnvelope> {
-  const envelope = await encryptEnvelope(attachmentResourceId(sessionId, ref), bytes, key);
-  return envelopeToWire(envelope);
-}
-
-/**
  * `URL.createObjectURL` for the instant local attachment preview (SPEC
  * §7.25). Guarded rather than assumed: real browsers and Node 22 (the
  * hermetic tests below) both have it, but nothing here should throw for an
@@ -1038,7 +996,8 @@ export class RelayClient {
   readonly relayBuildIdentity: Readable<BuildIdentityV1 | undefined>;
 
   private readonly options: RelayClientOptions;
-  private readonly amk: Uint8Array;
+  /** Owns all AMK-derived key material and every session-traffic AEAD open/seal (issue #756) — see `envelope-crypto-client.ts`'s `EnvelopeCrypto`. This class keeps no raw AMK of its own. */
+  private readonly envelopeCrypto: EnvelopeCrypto;
   private readonly accountId: string;
   private readonly authToken: string;
   private readonly deviceId: string;
@@ -1105,11 +1064,6 @@ export class RelayClient {
   private inboxTrackingActive = false;
   /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
   private readonly inboxTrackedSessions = new Set<string>();
-  private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
-  /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per client instance, same caching shape as {@link sessionKeys}. */
-  private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
-  /** Backs {@link getProjectKey} (issue #697) — a project's key is derived once per client instance, same caching shape as {@link sessionKeys}/{@link targetKeys}. Keyed by `projectPath` alone, not `nodeId`+`projectPath`: `deriveProjectKey`'s own derivation path (`['project', accountId, projectPath]`) has no `nodeId` component, matching the project being the resource, not any one node that happens to serve it. */
-  private readonly projectKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1191,7 +1145,7 @@ export class RelayClient {
    * user navigates to, rather than a reactive stream), but unlike
    * `target_list`, `target_fs_list_response` DOES carry a sealed envelope
    * (SPEC §8's boundary: a directory listing is private metadata), so the
-   * entry also carries `targetId` for {@link getTargetKey}'s decrypt.
+   * entry also carries `targetId` for the eventual reply's `'target'`-keyed decrypt (`this.envelopeCrypto.open('target', targetId, ...)`).
    */
   private readonly pendingTargetFsListRequests = new Map<
     string,
@@ -1309,7 +1263,8 @@ export class RelayClient {
 
   constructor(options: RelayClientOptions) {
     this.options = options;
-    this.amk = options.amk;
+    this.envelopeCrypto =
+      options.envelopeCrypto ?? createEnvelopeCrypto(options.amk, options.accountId);
     this.accountId = options.accountId;
     this.authToken = options.authToken ?? options.accountId;
     this.deviceId = options.deviceId ?? generateId('device');
@@ -2300,7 +2255,7 @@ export class RelayClient {
    * one-shot promise query exactly like {@link listTargets}/
    * {@link provisionTarget}: the picker calls it again for every path the
    * user navigates to. Sealed under a per-target key derived from the AMK
-   * (`getTargetKey`), NOT the session-derived key `fileTreeFor`/
+   * (`this.envelopeCrypto`'s `'target'` key family), NOT the session-derived key `fileTreeFor`/
    * `expandDirectory` use — there is no session yet to derive from (mirrors
    * `@loombox/protocol`'s `target-fs.ts` doc comment). Requires an open
    * connection and rejects on a timeout, mirroring `listTargets`'s "loud
@@ -2334,8 +2289,8 @@ export class RelayClient {
         },
       });
       const payload: TargetFsListRequestPayloadV1 = { path };
-      this.getTargetKey(targetId)
-        .then((key) => sealJson(targetId, payload, key))
+      this.envelopeCrypto
+        .seal('target', targetId, targetId, payload)
         .then((envelope) => {
           this.send({
             type: 'target_fs_list_request',
@@ -2549,8 +2504,8 @@ export class RelayClient {
         },
       });
       const payload: TestRunnerConfigSetPayloadV1 = { commands };
-      this.getSessionKey(sessionId)
-        .then((key) => sealJson(sessionId, payload, key))
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
         .then((envelope) => {
           this.send({
             type: 'test_runner_config_set',
@@ -2628,7 +2583,7 @@ export class RelayClient {
     if (!this.isSocketOpen()) {
       throw new Error('RelayClient.escrowAmk: not connected to the relay');
     }
-    const wrapped = await wrapAmkWithRecoveryCode(this.amk, recoveryCode, this.accountId);
+    const wrapped = await this.envelopeCrypto.wrapAmkForEscrow(recoveryCode);
     this.send({
       type: 'amk_escrow',
       protocolVersion: PROTOCOL_V1,
@@ -2680,8 +2635,12 @@ export class RelayClient {
       // `JSON.stringify` would drop an explicit `undefined` anyway.
       ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
     };
-    const key = await this.getSessionKey(sessionId);
-    const privateEnvelope = await sealJson(sessionId, privateMeta, key);
+    const privateEnvelope = await this.envelopeCrypto.seal(
+      'session',
+      sessionId,
+      sessionId,
+      privateMeta,
+    );
     this.send({
       type: 'session_create',
       protocolVersion: PROTOCOL_V1,
@@ -3224,11 +3183,9 @@ export class RelayClient {
   /** Streams one chunk of typed input to `terminalId`'s stdin (SPEC §7.5) — the composer/xterm.js keystroke path. Fire-and-forget: a failure is logged, not thrown, since a live keystroke stream has no natural place to surface a rejected promise. */
   sendTerminalInput(sessionId: string, terminalId: string, data: Uint8Array | string): void {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    this.getSessionKey(sessionId)
-      .then((key) => {
-        const payload: TerminalDataPayloadV1 = { data: bytesToBase64(bytes) };
-        return sealJson(sessionId, payload, key);
-      })
+    const payload: TerminalDataPayloadV1 = { data: bytesToBase64(bytes) };
+    this.envelopeCrypto
+      .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
         this.send({
           type: 'terminal_input',
@@ -3247,11 +3204,9 @@ export class RelayClient {
 
   /** Renegotiates `terminalId`'s PTY window size (SPEC §7.5) — xterm.js's own resize event drives this. Fire-and-forget, same as {@link sendTerminalInput}. */
   resizeTerminal(sessionId: string, terminalId: string, cols: number, rows: number): void {
-    this.getSessionKey(sessionId)
-      .then((key) => {
-        const payload: TerminalResizePayloadV1 = { cols, rows };
-        return sealJson(sessionId, payload, key);
-      })
+    const payload: TerminalResizePayloadV1 = { cols, rows };
+    this.envelopeCrypto
+      .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
         this.send({
           type: 'terminal_resize',
@@ -3503,8 +3458,12 @@ export class RelayClient {
       if (!this.socket || this.socket.readyState !== WS_OPEN) {
         throw new Error('not connected to the relay');
       }
-      const key = await this.getSessionKey(sessionId);
-      const envelope = await sealAttachmentEnvelope(sessionId, id, cached.bytes, key);
+      const envelope = await this.envelopeCrypto.sealBytes(
+        'session',
+        sessionId,
+        attachmentResourceId(sessionId, id),
+        cached.bytes,
+      );
       this.send({
         type: 'blob_upload',
         protocolVersion: PROTOCOL_V1,
@@ -3818,9 +3777,8 @@ export class RelayClient {
     text: string,
     attachments: PromptAttachmentRef[],
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: PromptPayload = attachments.length > 0 ? { text, attachments } : { text };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'prompt_inject',
       protocolVersion: PROTOCOL_V1,
@@ -4275,8 +4233,8 @@ export class RelayClient {
   }
 
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((raw) => parseSessionWireEvent(raw))
       .then((event) => {
         this.applyUpdate(message.sessionId, event);
@@ -4308,8 +4266,8 @@ export class RelayClient {
    * matching `PermissionQueue.enqueue`'s contract (`permission-queue.ts`).
    */
   private handlePermissionRequest(message: PermissionRequest): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((raw): PermissionRequestPayload => acpPermissionRequestPayloadSchema.parse(raw))
       .then((payload) => {
         const store = this.permissionQueueStoreFor(message.sessionId);
@@ -4344,8 +4302,13 @@ export class RelayClient {
     if (!pending) return;
     this.pendingFsListRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<FsListResponsePayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<FsListResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         if (payload.outcome === 'ok') {
           this.setFileTreeLoaded(message.sessionId, payload.path, payload.entries);
@@ -4375,8 +4338,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTrackerSnapshotRequests.delete(message.requestId);
 
-    this.getProjectKey(pending.projectPath)
-      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
       .then((raw) => trackerSnapshotResponsePayloadV1.parse(raw))
       .then((payload) => {
         if (payload.outcome === 'ok') {
@@ -4408,8 +4371,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTrackerWriteRequests.delete(message.requestId);
 
-    this.getProjectKey(pending.projectPath)
-      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
       .then((raw) => trackerWriteResponsePayloadV1.parse(raw))
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
@@ -4496,8 +4459,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTestRunnerConfigRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) =>
         pending.resolve(parseTestRunnerConfigResultPayloadV1(decrypted).commands),
       )
@@ -4518,8 +4481,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTestRunnerConfigDetectRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) =>
         pending.resolve(parseTestRunnerConfigDetectedPayloadV1(decrypted).suggestions),
       )
@@ -4534,15 +4497,18 @@ export class RelayClient {
    * client subscribed to a session), this answers a single client's own
    * request — the same "requestId not pending means it isn't mine" guard as
    * {@link handleTargetList}. Decrypts under the request's own per-target key
-   * (`getTargetKey`), not the session key `handleFsListResponse` uses.
+   * (`this.envelopeCrypto`'s `'target'` key family), not the session key `handleFsListResponse` uses.
    */
   private handleTargetFsListResponse(message: TargetFsListResponse): void {
     const pending = this.pendingTargetFsListRequests.get(message.requestId);
     if (!pending) return;
     this.pendingTargetFsListRequests.delete(message.requestId);
-    this.getTargetKey(pending.targetId)
-      .then((key) =>
-        openJson<TargetFsListResponsePayloadV1>(pending.targetId, message.envelope, key),
+    this.envelopeCrypto
+      .open<TargetFsListResponsePayloadV1>(
+        'target',
+        pending.targetId,
+        pending.targetId,
+        message.envelope,
       )
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
@@ -4607,9 +4573,8 @@ export class RelayClient {
     if (!targetId) {
       throw new Error(`RelayClient: unknown session ${sessionId}`);
     }
-    const key = await this.getSessionKey(sessionId);
     const payload: FsListRequestPayloadV1 = { path };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('fs');
     this.pendingFsListRequests.set(requestId, { sessionId, path });
     this.send({
@@ -4628,9 +4593,8 @@ export class RelayClient {
     projectPath: string,
     includeArchived?: boolean,
   ): Promise<void> {
-    const key = await this.getProjectKey(projectPath);
     const payload: TrackerSnapshotRequestPayloadV1 = { includeArchived };
-    const envelope = await sealJson(projectPath, payload, key);
+    const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackersnap');
     this.pendingTrackerSnapshotRequests.set(requestId, { projectPath });
     this.send({
@@ -4665,8 +4629,7 @@ export class RelayClient {
         new Error('RelayClient: cannot write tracker record, no open connection'),
       );
     }
-    const key = await this.getProjectKey(projectPath);
-    const envelope = await sealJson(projectPath, payload, key);
+    const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackerwrite');
     return new Promise<TrackerWriteResponsePayloadV1>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -4708,9 +4671,12 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTerminalOpens.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) =>
-        openJson<TerminalOpenResultPayloadV1>(message.sessionId, message.envelope, key),
+    this.envelopeCrypto
+      .open<TerminalOpenResultPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
       )
       .then((payload) => {
         if (payload.outcome === 'ok') {
@@ -4739,8 +4705,13 @@ export class RelayClient {
 
   /** One chunk of an open terminal's output (SPEC §7.5) — decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`, never buffered by this class itself (see `TerminalClientState`'s doc comment). */
   private handleTerminalOutput(message: TerminalOutputMessage): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<TerminalDataPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<TerminalDataPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         const listeners = this.terminalOutputListeners.get(
           `${message.sessionId}:${message.terminalId}`,
@@ -4758,8 +4729,13 @@ export class RelayClient {
 
   /** A terminal closed — either this client asked to (SPEC §7.5's `closed_by_client`) or its shell exited on its own. */
   private handleTerminalClosed(message: TerminalClosed): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<TerminalClosedPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<TerminalClosedPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         this.setTerminalState(message.sessionId, message.terminalId, {
           terminalId: message.terminalId,
@@ -4784,9 +4760,8 @@ export class RelayClient {
     cols: number,
     rows: number,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: TerminalOpenPayloadV1 = { cols, rows };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'terminal_open',
       protocolVersion: PROTOCOL_V1,
@@ -4829,8 +4804,13 @@ export class RelayClient {
     const kind = get(current).get(message.runId)?.kind;
     if (!kind) return; // the local starting state was already overwritten/removed somehow
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunStartedResultPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunStartedResultPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         if (payload.outcome === 'ok') {
           this.setRunState(message.sessionId, message.runId, {
@@ -4859,8 +4839,8 @@ export class RelayClient {
 
   /** One chunk of a run's output (SPEC §7.15) — decrypted and fanned out to every listener {@link onRunOutput} registered for this exact `sessionId`/`runId`, never buffered by this class itself (see `RunClientState`'s doc comment). */
   private handleRunOutput(message: RunOutputMessage): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunOutputPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunOutputPayloadV1>('session', message.sessionId, message.sessionId, message.envelope)
       .then((payload) => {
         const listeners = this.runOutputListeners.get(`${message.sessionId}:${message.runId}`);
         if (!listeners) return;
@@ -4880,8 +4860,8 @@ export class RelayClient {
     const kind = get(current).get(message.runId)?.kind;
     if (!kind) return;
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunExitPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunExitPayloadV1>('session', message.sessionId, message.sessionId, message.envelope)
       .then((payload) => {
         this.setRunState(message.sessionId, message.runId, {
           runId: message.runId,
@@ -4908,9 +4888,8 @@ export class RelayClient {
     requestId: string,
     kind: TestRunnerKindV1,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: RunStartPayloadV1 = { kind };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'run_start',
       protocolVersion: PROTOCOL_V1,
@@ -5016,38 +4995,13 @@ export class RelayClient {
     session: SessionMetaPublic,
     privateEnvelope: EncryptedEnvelope,
   ): Promise<ClientSessionMeta> {
-    const key = await this.getSessionKey(session.id);
-    const privateMeta = await openJson<SessionPrivateMeta>(session.id, privateEnvelope, key);
+    const privateMeta = await this.envelopeCrypto.open<SessionPrivateMeta>(
+      'session',
+      session.id,
+      session.id,
+      privateEnvelope,
+    );
     return { ...session, ...privateMeta };
-  }
-
-  private getSessionKey(sessionId: string): Promise<CryptoKey> {
-    let key = this.sessionKeys.get(sessionId);
-    if (!key) {
-      key = deriveSessionKey(this.amk, this.accountId, sessionId);
-      this.sessionKeys.set(sessionId, key);
-    }
-    return key;
-  }
-
-  /** Same caching shape as {@link getSessionKey}, for {@link targetKeys} (issue #474's directory picker). */
-  private getTargetKey(targetId: string): Promise<CryptoKey> {
-    let key = this.targetKeys.get(targetId);
-    if (!key) {
-      key = deriveTargetKey(this.amk, this.accountId, targetId);
-      this.targetKeys.set(targetId, key);
-    }
-    return key;
-  }
-
-  /** Same caching shape as {@link getSessionKey}/{@link getTargetKey}, for {@link projectKeys} (issue #697's project-addressed tracker records). */
-  private getProjectKey(projectPath: string): Promise<CryptoKey> {
-    let key = this.projectKeys.get(projectPath);
-    if (!key) {
-      key = deriveProjectKey(this.amk, this.accountId, projectPath);
-      this.projectKeys.set(projectPath, key);
-    }
-    return key;
   }
 
   private send(message: WireMessageV1): void {

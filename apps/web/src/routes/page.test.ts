@@ -9,6 +9,7 @@ import {
   reduceTranscript,
 } from '@loombox/providers-core/browser';
 import type {
+  AcpConfigOption,
   AcpSessionStatus,
   PermissionQueueState,
   TranscriptState,
@@ -16,6 +17,16 @@ import type {
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
+import {
+  createLocalStorageConfigOptionDefaultsStorage,
+  rememberConfigOptionValues,
+  rememberedConfigOptionsFor,
+} from '$lib/config-option-defaults';
+import {
+  configOptionOverridesFor,
+  createLocalStorageConfigOptionOverrideStorage,
+  setConfigOptionOverride,
+} from '$lib/config-option-overrides';
 import type {
   AttentionInboxItem,
   BuildIdentityV1,
@@ -76,8 +87,14 @@ import Page from './+page.svelte';
 import { AuthStore } from '$lib/auth-store';
 import { RelayClient } from '$lib/relay-client';
 
+/** The minimal store shape `makeStore` returns (`subscribe`/`set` only, no need for the full Svelte `writable` API) — named so a Map or field that holds one (e.g. `createFakeClient`'s `configOptionsFor` cache below) can reference it directly instead of `ReturnType<typeof makeStore<T>>`. */
+interface TestStore<T> {
+  subscribe(run: (value: T) => void): () => void;
+  set(next: T): void;
+}
+
 /** A minimal store (`subscribe`/`set` only, no need for the full Svelte `writable` API), built fresh per fake client/auth-store instance so tests never share state. */
-function makeStore<T>(initial: T) {
+function makeStore<T>(initial: T): TestStore<T> {
   let value = initial;
   const subscribers = new Set<(value: T) => void>();
   return {
@@ -134,6 +151,8 @@ interface FakeClientScenario {
   permissionQueues?: Record<string, PermissionQueueState>;
   /** Seeds `attentionInbox()`'s store (issue #167's wiring tests below) — the store itself is memoized on the fake client instance (mirrors `sessions`/`status`), so a test can grab it via `client.attentionInbox()` and `.set()` a new snapshot to simulate the real `RelayClient`'s own live recompute, without re-implementing that recompute here (already covered end to end in `relay-client.test.ts`). */
   attentionInboxItems?: AttentionInboxItem[];
+  /** Per-session initial config-option catalog, keyed by session id (issue #753's D4-2/D4-3 tests below) — unlike every other per-session store here, `configOptionsFor` memoizes per id (see that method's own comment) so a test can grab the same store back via `client.configOptionsFor(id)` and `.set()` a later catalog push, simulating the agent's own `session/new`/`config_option` round trip. */
+  configOptions?: Record<string, AcpConfigOption[]>;
 }
 
 /**
@@ -142,12 +161,19 @@ interface FakeClientScenario {
  * of `client\.` call sites. Per-session stores (`transcriptFor` etc.) are
  * built fresh on every call rather than cached, which is fine here: this
  * file only asserts on structure/navigation, never on a specific
- * per-session store identity surviving a re-subscribe.
+ * per-session store identity surviving a re-subscribe. `configOptionsFor`
+ * is the one exception (issue #753): `+page.svelte` itself now subscribes
+ * to it twice for a brand-new session (`selectSession`'s own live
+ * subscription and `applyRememberedConfigOptions`'s one-shot), and a real
+ * `RelayClient` hands both the SAME underlying store — a fresh store per
+ * call here would mean `.set()`ing one in a test never reaches the
+ * other's subscriber.
  */
 function createFakeClient(scenario: FakeClientScenario = {}) {
   const statusStore = makeStore<ConnectionStatus>('idle');
   const sessionsStore = makeStore<ClientSessionMeta[]>(scenario.sessions ?? []);
   const attentionInboxStore = makeStore<AttentionInboxItem[]>(scenario.attentionInboxItems ?? []);
+  const configOptionsStores = new Map<string, TestStore<AcpConfigOption[]>>();
   return {
     status: statusStore,
     sessions: sessionsStore,
@@ -183,7 +209,14 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       makeStore<PermissionQueueState>(
         scenario.permissionQueues?.[id] ?? createPermissionQueueState(),
       ),
-    configOptionsFor: () => makeStore([]),
+    configOptionsFor: (id: string) => {
+      let store = configOptionsStores.get(id);
+      if (!store) {
+        store = makeStore<AcpConfigOption[]>(scenario.configOptions?.[id] ?? []);
+        configOptionsStores.set(id, store);
+      }
+      return store;
+    },
     attachmentsFor: () => makeStore([]),
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
@@ -754,6 +787,162 @@ describe('new session: real per-target providers (forms + real providers design 
     await fireEvent.click(await screen.findByTestId('project-new-session-row'));
 
     expect(screen.getByText(/no agent cli/i).textContent).toContain("Ada's MacBook");
+  });
+});
+
+describe('new session: remembered config-option defaults (issue #753, D4-2/D4-3)', () => {
+  const CATALOG: AcpConfigOption[] = [
+    {
+      category: 'model',
+      current: 'sonnet',
+      choices: [
+        { id: 'sonnet', name: 'Sonnet' },
+        { id: 'opus', name: 'Opus' },
+        { id: 'haiku', name: 'Haiku' },
+      ],
+    },
+  ];
+
+  const LOCAL_TARGET: TargetListEntry = {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  };
+
+  async function createSessionAndSubmit(): Promise<void> {
+    await fireEvent.click(await screen.findByTestId('project-new-session-row'));
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+  }
+
+  it("applies the account-remembered value once this brand-new session's real catalog arrives (D4-2), and the ConfigBar attributes it to Account", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'opus' },
+    ]);
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await vi.waitFor(() =>
+      expect(client.setConfigOption).toHaveBeenCalledWith('new-session-id', 'model', 'opus'),
+    );
+
+    // `RelayClient.setConfigOption` never applies optimistically (issue
+    // #718) — the agent's own ack is what actually moves `current`.
+    client.configOptionsFor('new-session-id').set([{ ...CATALOG[0], current: 'opus' }]);
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    expect(screen.getByTestId('config-source-model').textContent).toContain('Account');
+  });
+
+  it("a project override wins over the account's remembered value for the same category (D4-3 core rule)", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'opus' },
+    ]);
+    setConfigOptionOverride(
+      createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox'),
+      'claude',
+      'model',
+      'haiku',
+    );
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await vi.waitFor(() =>
+      expect(client.setConfigOption).toHaveBeenCalledWith('new-session-id', 'model', 'haiku'),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalledWith('new-session-id', 'model', 'opus');
+
+    client.configOptionsFor('new-session-id').set([{ ...CATALOG[0], current: 'haiku' }]);
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    expect(screen.getByTestId('config-source-model').textContent).toContain('Project');
+  });
+
+  it("a stale remembered value (not among the agent's real choices) is dropped silently — never sent — and the agent's own default stands (issue #718's failure mode)", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'retired-model' },
+    ]);
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    // 'retired-model' is nowhere among this catalog's real choices.
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('config-source-model').textContent).toContain('Agent default'),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("pinning a value from the ConfigBar writes this project's override for the session's agent, without any wire round trip", async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      configOptions: { sess_1: CATALOG },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await fireEvent.click(screen.getByTestId('config-pin-model'));
+
+    const overrideStorage = createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox');
+    await vi.waitFor(() =>
+      expect(configOptionOverridesFor(overrideStorage, 'claude')).toEqual({ model: 'sonnet' }),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("unpinning a project-overridden value from the ConfigBar clears it, falling back to the account default or the agent's own", async () => {
+    setConfigOptionOverride(
+      createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox'),
+      'claude',
+      'model',
+      'sonnet',
+    );
+    mountCockpit({ sessions: [makeSession()], configOptions: { sess_1: CATALOG } });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('config-source-model').textContent).toContain('Project'),
+    );
+    await fireEvent.click(screen.getByTestId('config-pin-model'));
+
+    const overrideStorage = createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox');
+    await vi.waitFor(() => expect(configOptionOverridesFor(overrideStorage, 'claude')).toEqual({}));
+  });
+
+  it("picking a new value from the ConfigBar's own Select remembers its ack as the account's new last-used value for this agent (D4-2) — without polluting it from an automatic remembered-default application (the bug this design specifically avoids)", async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      configOptions: { sess_1: CATALOG },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    const trigger = within(screen.getByTestId('config-option-model')).getByRole('combobox');
+    await fireEvent.click(trigger);
+    await fireEvent.click(screen.getByRole('option', { name: 'Opus' }));
+
+    expect(client.setConfigOption).toHaveBeenCalledWith('sess_1', 'model', 'opus');
+    // RelayClient.setConfigOption never applies optimistically (issue
+    // #718) — nothing is remembered yet until the agent's own ack lands.
+    const accountStorage = createLocalStorageConfigOptionDefaultsStorage();
+    expect(rememberedConfigOptionsFor(accountStorage, 'claude')).toEqual({});
+
+    client.configOptionsFor('sess_1').set([{ ...CATALOG[0], current: 'opus' }]);
+
+    await vi.waitFor(() =>
+      expect(rememberedConfigOptionsFor(accountStorage, 'claude')).toEqual({ model: 'opus' }),
+    );
   });
 });
 
