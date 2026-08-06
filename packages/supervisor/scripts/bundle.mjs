@@ -26,4 +26,6 @@ const result = await bundlePackage({
   external: ['node-pty'],
 });
 
-console.log(`bundled @loombox/supervisor ${result.version} -> ${path.relative(pkgDir, result.outfile)}`);
+console.log(
+  `bundled @loombox/supervisor ${result.version} -> ${path.relative(pkgDir, result.outfile)}`,
+);

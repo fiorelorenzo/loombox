@@ -21,14 +21,35 @@ function hasNonEmptyStringVersion(value: unknown): value is { version: string } 
   );
 }
 
-/** `packages/node/package.json`'s own `version` — already the release's source of truth for "what version is this node", read once rather than invented a second time. */
+/**
+ * `package.json`'s own `version` — already the release's source of truth
+ * for "what version is this node", read once rather than invented a second
+ * time. Tried at two locations, in order: co-located with this module
+ * itself first (issue #817's bundled layout —
+ * `bundlePackage`/`copyNativeModule` in `scripts/lib/` writes a trimmed
+ * `<version>/node.mjs` + `<version>/package.json` side by side, flat, no
+ * `src/`), then one directory up (today's dev-checkout layout, where this
+ * module runs as `packages/node/src/build-identity.ts` and the package's
+ * `package.json` is its parent's sibling). Never both at once — a bundle
+ * ships its own trimmed `package.json`, so checking there first is what
+ * makes this correct at `~/.loombox/versions/<version>/`, which has no
+ * `src/` and no directory above it that means anything to this node.
+ */
 function readOwnVersion(): string {
-  const raw = readFileSync(join(moduleDir, '..', 'package.json'), 'utf8');
-  const parsed: unknown = JSON.parse(raw);
-  if (!hasNonEmptyStringVersion(parsed)) {
-    throw new Error('build-identity: packages/node/package.json has no valid "version" field');
+  const candidates = [join(moduleDir, 'package.json'), join(moduleDir, '..', 'package.json')];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(candidate, 'utf8'));
+      if (hasNonEmptyStringVersion(parsed)) return parsed.version;
+      lastError = new Error(`${candidate} has no valid "version" field`);
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return parsed.version;
+  throw new Error(
+    `build-identity: no package.json with a valid "version" field found at ${candidates.join(' or ')} (${String(lastError)})`,
+  );
 }
 
 async function defaultGitRevParse(): Promise<string> {
@@ -74,8 +95,19 @@ export async function readNodeBuildIdentity(
   options: ReadBuildIdentityOptions = {},
 ): Promise<BuildIdentityV1> {
   const version = readOwnVersion();
-  const env = options.env ?? process.env;
-  const fromEnv = env.LOOMBOX_BUILD_COMMIT?.trim();
+  // Written as a literal `process.env.LOOMBOX_BUILD_COMMIT` reference (not
+  // routed through an intermediate `env` variable) specifically so
+  // esbuild's `define` can replace it with a baked-in string literal at
+  // bundle time (issue #817's `bundlePackage({ bakeBuildCommit: true })`,
+  // see `scripts/lib/bundle-package.mjs`) — `define` only rewrites
+  // expressions that are textually `process.env.KEY`; reading the same
+  // value off a variable alias (`const env = ...; env.LOOMBOX_BUILD_COMMIT`)
+  // is invisible to it, so a bundle built that way would silently keep
+  // doing a real (always-empty, no checkout present) environment lookup at
+  // runtime instead of reporting the commit it was built from.
+  const fromEnv = (
+    options.env ? options.env.LOOMBOX_BUILD_COMMIT : process.env.LOOMBOX_BUILD_COMMIT
+  )?.trim();
   if (fromEnv) return { version, commit: fromEnv };
 
   const gitRevParse = options.gitRevParse ?? defaultGitRevParse;

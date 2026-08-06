@@ -92,6 +92,35 @@ export async function bundlePackage(options) {
     external,
     define,
     metafile: true,
+    // esbuild's own CJS-interop shim (`__require`, injected because a
+    // bundled CJS dependency like `ssh2` still calls `require('net')`
+    // internally) delegates to a real global `require` when one exists,
+    // and otherwise just throws "Dynamic require of ... is not supported"
+    // — verified empirically: a plain `format: 'esm'` bundle of this
+    // package crashes at startup exactly that way the moment `ssh2` (a CJS
+    // dependency, not itself bundle-package's concern to change) runs, the
+    // instant it's copied out to a directory with no monorepo behind it
+    // (this bundle's own module-resolution safety net, `NODE_PATH`/local
+    // `node_modules` next to a dev checkout's `require`, isn't there
+    // either). Node's ESM loader has no global `require`, `__dirname`, or
+    // `__filename` at all (`ssh2/lib/agent.js` also references `__dirname`
+    // directly, to locate its Windows `pagent.exe` helper — hit this
+    // empirically too, right after fixing `require`), so this banner
+    // defines all three via `createRequire`/`fileURLToPath`, resolved
+    // against the bundle's own file — exactly where issue #817's
+    // `copyNativeModule` co-locates `node_modules/` for the two native
+    // deps that stay genuinely external.
+    banner: {
+      js: [
+        "import { createRequire as __loomboxCreateRequire } from 'node:module';",
+        "import { fileURLToPath as __loomboxFileURLToPath } from 'node:url';",
+        "import { dirname as __loomboxDirname } from 'node:path';",
+        'const require = __loomboxCreateRequire(import.meta.url);',
+        'const __filename = __loomboxFileURLToPath(import.meta.url);',
+        'const __dirname = __loomboxDirname(__filename);',
+        '',
+      ].join('\n'),
+    },
   });
 
   // Trimmed package.json, co-located with the bundle: `build-identity.ts`'s
