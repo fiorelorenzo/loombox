@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
-import { fsListRequest, fsListResponse } from './fs';
+import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import {
   amkEpochFetchRequest,
   amkEpochFetchResponse,
@@ -150,6 +150,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   blobDownloadResponse,
   fsListRequest,
   fsListResponse,
+  fsReadRequest,
+  fsReadResponse,
   targetFsListRequest,
   targetFsListResponse,
   customAgentProbeRequest,

@@ -33,9 +33,11 @@
     /** Same source as the bar that opened this — `undefined` while `open` is only possible for one render tick around a session switch; the dialog renders an empty body rather than throwing. */
     summary: TurnDiffSummary | undefined;
     onClose: () => void;
+    /** Opens a file in the canvas tab strip (issue #737) — forwarded to each stacked `DiffViewer`'s own `onOpen`. Omitted renders no "Open" affordance on any card here. */
+    onOpenFile?: (path: string) => void;
   }
 
-  const { open, summary, onClose }: Props = $props();
+  const { open, summary, onClose, onOpenFile }: Props = $props();
 </script>
 
 {#snippet body()}
@@ -43,7 +45,12 @@
     {#if summary}
       {#each summary.files as file (file.toolCallId)}
         <div class="review-file" data-testid="review-changes-file">
-          <DiffViewer path={file.path} oldText={file.oldText} newText={file.newText} />
+          <DiffViewer
+            path={file.path}
+            oldText={file.oldText}
+            newText={file.newText}
+            onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
+          />
         </div>
       {/each}
     {/if}

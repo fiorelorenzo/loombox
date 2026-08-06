@@ -2054,6 +2054,225 @@ describe('NodeDaemon fs-list (read-only file-tree panel, SPEC §7.4; issue #171)
   });
 });
 
+describe('NodeDaemon fs-read (read-only file viewer, issue #737)', () => {
+  it("reads a local session's file content over the encrypted fs_read_request/fs_read_response pair", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-read-1',
+      deviceId: 'device-node-fs-read-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    await fsMkdir(pathJoin(session.worktreePath, 'src'));
+    await fsWriteFile(pathJoin(session.worktreePath, 'src', 'index.ts'), 'export {};\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-read-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(session.id, { path: 'src/index.ts' }, key);
+    assertOpaque(requestEnvelope, ['export {};', session.worktreePath]);
+    phone.send({
+      type: 'fs_read_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-read',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_read_response' && (m as { requestId?: string }).requestId === 'req-read',
+    )) as { type: 'fs_read_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['export {};', session.worktreePath]);
+    const payload = await phoneOpen<{
+      outcome: string;
+      path?: string;
+      content?: string;
+      truncated?: boolean;
+    }>(session.id, response.envelope, key);
+    expect(payload).toEqual({
+      outcome: 'ok',
+      path: 'src/index.ts',
+      content: 'export {};\n',
+      truncated: false,
+    });
+  });
+
+  it('refuses a path that escapes the session project root, replying with an error outcome instead of leaking data or hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-traversal';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-read-2',
+      deviceId: 'device-node-fs-read-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-read-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    for (const evilPath of ['../../../etc/passwd', '/etc/passwd']) {
+      const envelope = await phoneSeal(session.id, { path: evilPath }, key);
+      const requestId = `req-evil-${evilPath}`;
+      phone.send({
+        type: 'fs_read_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        requestId,
+        envelope,
+      });
+      const response = (await phone.waitFor(
+        (m) =>
+          m.type === 'fs_read_response' && (m as { requestId?: string }).requestId === requestId,
+      )) as { type: 'fs_read_response'; envelope: EncryptedEnvelope };
+      const payload = await phoneOpen<{ outcome: string; message?: string }>(
+        session.id,
+        response.envelope,
+        key,
+      );
+      expect(payload.outcome).toBe('error');
+    }
+  });
+
+  it('replies with an error outcome for a binary file instead of forwarding raw bytes as garbled text', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-binary';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-read-3',
+      deviceId: 'device-node-fs-read-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'logo.png'), Buffer.from([0x89, 0, 0x4e]));
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-read-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const envelope = await phoneSeal(session.id, { path: 'logo.png' }, key);
+    phone.send({
+      type: 'fs_read_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-binary',
+      envelope,
+    });
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_read_response' && (m as { requestId?: string }).requestId === 'req-binary',
+    )) as { type: 'fs_read_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('error');
+    expect(payload.message).toMatch(/binary/i);
+  });
+
+  it("truncates a file past the viewer's byte cap and reports truncated: true rather than silently cutting it off", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-truncate';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-read-4',
+      deviceId: 'device-node-fs-read-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const huge = 'x'.repeat(1_000_010);
+    await fsWriteFile(pathJoin(session.worktreePath, 'huge.txt'), huge);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-read-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const envelope = await phoneSeal(session.id, { path: 'huge.txt' }, key);
+    phone.send({
+      type: 'fs_read_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-huge',
+      envelope,
+    });
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_read_response' && (m as { requestId?: string }).requestId === 'req-huge',
+    )) as { type: 'fs_read_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; content?: string; truncated?: boolean }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('ok');
+    expect(payload.truncated).toBe(true);
+    expect(payload.content).toHaveLength(1_000_000);
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();

@@ -3,10 +3,16 @@ import {
   fsEntryV1,
   fsListRequest,
   fsListResponse,
+  fsReadRequest,
+  fsReadResponse,
   parseFsListRequestPayloadV1,
   parseFsListResponsePayloadV1,
+  parseFsReadRequestPayloadV1,
+  parseFsReadResponsePayloadV1,
   safeParseFsListRequestPayloadV1,
   safeParseFsListResponsePayloadV1,
+  safeParseFsReadRequestPayloadV1,
+  safeParseFsReadResponsePayloadV1,
 } from './fs';
 
 const envelope = {
@@ -143,5 +149,94 @@ describe('fsListRequest / fsListResponse (the top-level wire messages)', () => {
     if (result.success) {
       expect('path' in result.data).toBe(false);
     }
+  });
+});
+
+describe('fsReadRequestPayloadV1', () => {
+  it('accepts a relative file path', () => {
+    expect(parseFsReadRequestPayloadV1({ path: 'src/foo.ts' })).toEqual({ path: 'src/foo.ts' });
+  });
+
+  it('safeParse never throws on garbage input', () => {
+    expect(safeParseFsReadRequestPayloadV1(null).success).toBe(false);
+    expect(safeParseFsReadRequestPayloadV1({ path: 42 }).success).toBe(false);
+  });
+});
+
+describe('fsReadResponsePayloadV1', () => {
+  it('parses the ok outcome with content and truncated', () => {
+    const result = parseFsReadResponsePayloadV1({
+      outcome: 'ok',
+      path: 'src/foo.ts',
+      content: 'export {};\n',
+      truncated: false,
+    });
+    expect(result).toEqual({
+      outcome: 'ok',
+      path: 'src/foo.ts',
+      content: 'export {};\n',
+      truncated: false,
+    });
+  });
+
+  it('parses the error outcome', () => {
+    const result = parseFsReadResponsePayloadV1({
+      outcome: 'error',
+      path: 'src/missing.ts',
+      message: 'not found',
+    });
+    expect(result).toEqual({ outcome: 'error', path: 'src/missing.ts', message: 'not found' });
+  });
+
+  it('rejects an outcome outside the two known variants', () => {
+    expect(safeParseFsReadResponsePayloadV1({ outcome: 'pending', path: '' }).success).toBe(false);
+  });
+
+  it('rejects ok without content or truncated', () => {
+    expect(
+      safeParseFsReadResponsePayloadV1({ outcome: 'ok', path: '', content: 'x' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('fsReadRequest / fsReadResponse (the top-level wire messages)', () => {
+  it('fsReadRequest carries only clear routing metadata plus the opaque envelope — never a path field', () => {
+    const message = {
+      type: 'fs_read_request' as const,
+      protocolVersion: 1 as const,
+      sessionId: 'session-1',
+      targetId: 'local',
+      requestId: 'req-1',
+      envelope,
+    };
+    const result = fsReadRequest.safeParse(message);
+    expect(result.success).toBe(true);
+    expect(Object.keys(message).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+  });
+
+  it('rejects a request missing requestId/targetId/sessionId', () => {
+    expect(
+      fsReadRequest.safeParse({
+        type: 'fs_read_request',
+        protocolVersion: 1,
+        sessionId: '',
+        targetId: 'local',
+        requestId: 'req-1',
+        envelope,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('fsReadResponse carries only sessionId/requestId plus the opaque envelope', () => {
+    const result = fsReadResponse.safeParse({
+      type: 'fs_read_response',
+      protocolVersion: 1,
+      sessionId: 'session-1',
+      requestId: 'req-1',
+      envelope,
+    });
+    expect(result.success).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TurnDiffSummary } from '$lib/transcript/turn-review';
 import ReviewChangesDialog from './ReviewChangesDialog.svelte';
@@ -49,6 +49,24 @@ describe('ReviewChangesDialog', () => {
       props: { open: true, summary: twoFileSummary, onClose: vi.fn() },
     });
     expect(screen.getByText('2 files')).toBeTruthy();
+  });
+});
+
+describe('ReviewChangesDialog: open affordance (issue #737)', () => {
+  it('wires each stacked diff card\u2019s "Open" button to onOpenFile with that file\u2019s own path', async () => {
+    const onOpenFile = vi.fn();
+    render(ReviewChangesDialog, {
+      props: { open: true, summary: twoFileSummary, onClose: vi.fn(), onOpenFile },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Open a.ts' }));
+    expect(onOpenFile).toHaveBeenCalledWith('a.ts');
+  });
+
+  it('renders no "Open" affordance when onOpenFile is omitted', () => {
+    render(ReviewChangesDialog, {
+      props: { open: true, summary: twoFileSummary, onClose: vi.fn() },
+    });
+    expect(screen.queryAllByTestId('diff-viewer-open')).toHaveLength(0);
   });
 });
 
