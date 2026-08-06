@@ -33,10 +33,12 @@ export {
   ancestorChainForToolCall,
   CONTEXT_NEAR_LIMIT_THRESHOLD,
   createTranscriptState,
+  reduceResyncGap,
   reduceSessionEvent,
   reduceTranscript,
 } from './transcript';
 export type {
+  TranscriptGapItem,
   TranscriptItem,
   TranscriptMessageItem,
   TranscriptState,

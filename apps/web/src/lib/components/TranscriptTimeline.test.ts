@@ -4,6 +4,7 @@ import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTranscriptState,
+  type TranscriptGapItem,
   type TranscriptItem,
   type TranscriptState,
   type TranscriptToolCallItem,
@@ -218,6 +219,22 @@ describe('TranscriptTimeline: session switch resets the window (issue #755)', ()
     await rerender(propsFor(toolCalls(3), 'sess_2'));
 
     expect(screen.queryByTestId('transcript-jump-latest')).toBeNull();
+  });
+});
+
+describe('TranscriptTimeline: resync gap row (issue #729)', () => {
+  it('renders a resync gap item as its own visible row, distinct from message/tool-call rows', () => {
+    const gap: TranscriptGapItem = { type: 'gap', id: 'gap::3::5', fromSeq: 3, toSeq: 5 };
+    const items: TranscriptItem[] = [toolCallItem('tc0'), gap, toolCallItem('tc1')];
+    renderTimeline(items);
+
+    const gapRow = screen.getByTestId('transcript-gap');
+    expect(gapRow.textContent).toContain('History gap');
+    expect(gapRow.textContent).toContain('3');
+    expect(gapRow.textContent).toContain('5');
+    // Still exactly one row per item — the gap did not replace or merge
+    // with a neighboring tool-call row.
+    expect(screen.getAllByTestId('transcript-row')).toHaveLength(3);
   });
 });
 

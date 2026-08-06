@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ancestorChainForToolCall,
   createTranscriptState,
+  reduceResyncGap,
   reduceSessionEvent,
   reduceTranscript,
 } from './transcript';
@@ -895,6 +896,54 @@ describe('reduceSessionEvent: delegates every AcpTranscriptUpdate kind unchanged
     });
     state = reduceSessionEvent(state, { kind: 'turn_started', turnId: 'turn:1' });
     expect(state.plan).toEqual([{ content: 'x', status: 'pending' }]);
+  });
+});
+
+describe('reduceResyncGap (issue #729)', () => {
+  it('appends a gap item, taking its place after existing history', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'agent_message_chunk',
+      turnId: 't1',
+      messageId: 'm1',
+      text: 'before',
+    });
+    state = reduceResyncGap(state, { fromSeq: 3, toSeq: 5 });
+    expect(state.items).toEqual([
+      {
+        type: 'message',
+        id: 't1::agent_message_chunk::m1',
+        kind: 'agent_message_chunk',
+        turnId: 't1',
+        messageId: 'm1',
+        text: 'before',
+      },
+      { type: 'gap', id: 'gap::3::5', fromSeq: 3, toSeq: 5 },
+    ]);
+  });
+
+  it('a duplicate marker for the identical range is idempotent — one gap row, not two', () => {
+    let state = createTranscriptState();
+    state = reduceResyncGap(state, { fromSeq: 3, toSeq: 5 });
+    state = reduceResyncGap(state, { fromSeq: 3, toSeq: 5 });
+    expect(state.items).toHaveLength(1);
+  });
+
+  it('a different evicted range is its own distinct gap row', () => {
+    let state = createTranscriptState();
+    state = reduceResyncGap(state, { fromSeq: 3, toSeq: 5 });
+    state = reduceResyncGap(state, { fromSeq: 9, toSeq: 12 });
+    expect(state.items).toEqual([
+      { type: 'gap', id: 'gap::3::5', fromSeq: 3, toSeq: 5 },
+      { type: 'gap', id: 'gap::9::12', fromSeq: 9, toSeq: 12 },
+    ]);
+  });
+
+  it('never mutates the input state, same contract as every other reducer here', () => {
+    const state = createTranscriptState();
+    const next = reduceResyncGap(state, { fromSeq: 1, toSeq: 2 });
+    expect(state.items).toEqual([]);
+    expect(next.items).toHaveLength(1);
   });
 });
 

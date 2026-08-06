@@ -69,6 +69,13 @@ describe('itemCopyText', () => {
     expect(text).toContain('--- src/foo.ts');
     expect(text).toContain('b');
   });
+
+  it('renders a resync gap item with its dropped range (issue #729)', () => {
+    const text = itemCopyText({ type: 'gap', id: 'gap::3::5', fromSeq: 3, toSeq: 5 });
+    expect(text).toContain('History gap');
+    expect(text).toContain('3');
+    expect(text).toContain('5');
+  });
 });
 
 describe('exportTranscriptText', () => {

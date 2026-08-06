@@ -27,7 +27,13 @@ import {
   type SessionMetaPublic,
   type WireMessageV1,
 } from '@loombox/protocol';
-import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '@loombox/relay';
+import {
+  createInMemoryRelayStore,
+  createRelayAuth,
+  startRelay,
+  type RelayAuth,
+  type StartedRelay,
+} from '@loombox/relay';
 
 import {
   RelayClient,
@@ -38,6 +44,7 @@ import {
   type WebSocketLike,
 } from './relay-client';
 import { AuthStore, createInMemoryAuthStorage } from './auth-store';
+import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import { createInMemoryAmkStorage, loadOrCreateAmk } from './amk-store';
 import {
   MAX_ATTACHMENTS_PER_PROMPT,
@@ -560,6 +567,43 @@ function recordingSocketCtor(
           return;
       }
     }
+  };
+}
+
+/**
+ * Wraps a real `EnvelopeCrypto` so every `open()` call takes at least
+ * `delayMs` to resolve — used only to widen the live/resync-replay overlap
+ * window deterministically (issue #729's dedupe proof) instead of racing
+ * real network/CPU timing, which would make the proof flaky by
+ * construction. `onOpenStart`, if given, fires synchronously the instant
+ * `open()` is CALLED (before the delay) — lets a test await "the client
+ * has synchronously reached this decrypt call" deterministically, rather
+ * than guessing a wall-clock margin for "the wire frame must have arrived
+ * by now". Every other operation (`seal`, `sealBytes`, ...) forwards
+ * straight through, unchanged and undelayed. Explicit per-method
+ * forwarding, deliberately NOT `{ ...real, open: ... }`: `real` is a class
+ * instance (`EnvelopeCryptoClientBase`), whose methods live on the
+ * prototype, not as the instance's own enumerable properties — a spread
+ * would silently drop every one of them (`seal`/`sealBytes`/
+ * `wrapAmkForEscrow`/`dispose` would all be `undefined`).
+ */
+function delayedOpenEnvelopeCrypto(
+  real: EnvelopeCrypto,
+  delayMs: number,
+  onOpenStart?: () => void,
+): EnvelopeCrypto {
+  return {
+    open: <T>(...args: Parameters<EnvelopeCrypto['open']>) => {
+      onOpenStart?.();
+      return new Promise<void>((resolve) => setTimeout(resolve, delayMs)).then(() =>
+        real.open<T>(...args),
+      );
+    },
+    seal: (...args: Parameters<EnvelopeCrypto['seal']>) => real.seal(...args),
+    sealBytes: (...args: Parameters<EnvelopeCrypto['sealBytes']>) => real.sealBytes(...args),
+    wrapAmkForEscrow: (...args: Parameters<EnvelopeCrypto['wrapAmkForEscrow']>) =>
+      real.wrapAmkForEscrow(...args),
+    dispose: () => real.dispose(),
   };
 }
 
@@ -7030,5 +7074,398 @@ describe('RelayClient: resubscribe after reconnect keeps a session live (issue #
     expect(
       sent.filter((m) => m.type === 'session_resume' && m.sessionId === session.id).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('RelayClient: resync on reconnect (issue #729)', () => {
+  it('recovers a session_update the node emitted while this client was disconnected, once the socket reconnects — never delivered live, only through resync', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resync-reconnect';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-resync-reconnect',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resync_reconnect', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'resync on reconnect', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-resync-reconnect',
+      // Wide enough that the node's update below (sent right after the
+      // drop) is safely buffered in the relay's ring well before this
+      // client's own automatic reconnect fires — this test is about
+      // resync recovering something that was NEVER live-delivered, not
+      // about winning a race against a fast reconnect.
+      initialBackoffMs: 250,
+      maxBackoffMs: 300,
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const transcript = client.transcriptFor(session.id);
+    // Same race-avoidance every other test in this file uses: confirm the
+    // relay actually subscribed this connection before dropping it.
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    // An unexpected drop, not client.close() — this connection is gone,
+    // and nothing is live-subscribed to receive what happens next.
+    sockets[0]!.close();
+
+    const envelope = await nodeSeal(
+      session.id,
+      {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-1',
+        messageId: 'msg-1',
+        text: 'missed while offline',
+      },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope,
+    });
+
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const state = await waitForStore(transcript, (value) => {
+      const first = value.items[0];
+      return first?.type === 'message' && first.text === 'missed while offline';
+    });
+    expect(state.items).toHaveLength(1);
+
+    // The mechanism, not just the symptom: a resync_request actually went
+    // out on the reconnected socket, not just another session_resume.
+    expect(sent.some((m) => m.type === 'resync_request' && m.sessionId === session.id)).toBe(true);
+  });
+});
+
+describe('RelayClient: live/replay dedupe by seq (issue #729)', () => {
+  it('a session_update this connection already started decrypting live, and the identical ring entry a reconnect resync also replays, is applied exactly once — proven by deliberately racing two decrypts of the same seq via a slowed EnvelopeCrypto, against a real relay', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resync-dedupe';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-resync-dedupe',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resync_dedupe', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'dedupe', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    let openStarts = 0;
+    // Every decrypt now takes >= 300ms (`delayedOpenEnvelopeCrypto`): long
+    // enough that the reconnect below (30ms backoff, a same-host WS round
+    // trip) completes and its `resync_request` lands WHILE the very first
+    // live delivery's own decrypt is still pending — the exact overlap
+    // the mechanism defends against, forced deterministically instead of
+    // raced against real timing. `openStarts` lets the test await "the
+    // client has synchronously reached this decrypt call" instead of
+    // guessing a wall-clock margin for wire delivery.
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-resync-dedupe',
+      initialBackoffMs: 30,
+      maxBackoffMs: 40,
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+      envelopeCrypto: delayedOpenEnvelopeCrypto(createEnvelopeCrypto(amk, accountId), 300, () => {
+        openStarts += 1;
+      }),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const transcript = client.transcriptFor(session.id);
+    // Same race-avoidance every other test in this file uses — waiting
+    // out the (now-slowed) private-meta decrypt this triggers doubles as
+    // proof the relay actually subscribed this connection.
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    const chunkA = await nodeSeal(
+      session.id,
+      { kind: 'agent_message_chunk', turnId: 't1', messageId: 'm1', text: 'Hello' },
+      key,
+    );
+    // Fanned live to the currently-open connection, and buffered into the
+    // relay's resync ring in the same stroke — this ONE ring entry is
+    // what both this live delivery AND the reconnect's resync reply
+    // (below) will each independently hand to `handleSessionUpdate`. The
+    // relay assigns the real `seq` itself (`store.ts`'s own per-session
+    // counter, `relay.test.ts`'s resync test relies on the identical
+    // behavior) — the placeholder here is never what ends up on the wire.
+    const openStartsBeforeLiveChunkA = openStarts;
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 0,
+      envelope: chunkA,
+    });
+    // Deterministic proof the live delivery's decrypt genuinely started
+    // (passed `handleSessionUpdate`'s early dedupe check and called
+    // `envelopeCrypto.open()`) BEFORE the socket drops below — not a
+    // wall-clock guess that the wire frame "probably" arrived in time.
+    await waitForCondition(() => openStarts > openStartsBeforeLiveChunkA);
+
+    // An unexpected drop — the live delivery's decrypt above is
+    // confirmed in flight and keeps running in the background through
+    // the whole reconnect below (a pending promise is never cancelled by
+    // its socket closing).
+    sockets[0]!.close();
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+
+    // A genuinely new update, delivered live on the reconnected
+    // connection — proves dedupe never over-suppresses real content
+    // alongside the duplicate it is correctly rejecting.
+    const chunkB = await nodeSeal(
+      session.id,
+      { kind: 'agent_message_chunk', turnId: 't1', messageId: 'm2', text: ' world' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 0,
+      envelope: chunkB,
+    });
+
+    await waitForStore(
+      transcript,
+      (value) =>
+        value.items.some((item) => item.type === 'message' && item.text === 'Hello') &&
+        value.items.some((item) => item.type === 'message' && item.text === ' world'),
+    );
+
+    // A little extra margin: the duplicate (resync-replayed) decrypt for
+    // chunkA started around reconnect time, roughly the same real moment
+    // as chunkB's own live delivery above, so by the time both expected
+    // items have landed, the duplicate has very likely already resolved
+    // too — this closes the small remaining gap. If dedupe were broken,
+    // this is exactly where 'Hello' would double to 'HelloHello'.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const finalState = get(transcript);
+    expect(finalState.items).toHaveLength(2);
+    expect(
+      finalState.items.find((item) => item.type === 'message' && item.messageId === 'm1'),
+    ).toMatchObject({ text: 'Hello' });
+    expect(
+      finalState.items.find((item) => item.type === 'message' && item.messageId === 'm2'),
+    ).toMatchObject({ text: ' world' });
+
+    // The mechanism, not just the symptom: a resync_request genuinely
+    // went out on the reconnected socket.
+    expect(sent.some((m) => m.type === 'resync_request' && m.sessionId === session.id)).toBe(true);
+  });
+});
+
+describe('RelayClient: reloading the page recovers existing history (issue #729)', () => {
+  it('a fresh client instance, subscribing to a session for the first time, sees the transcript and status a node already pushed before this client ever connected — the reload case', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-resync-reload';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-resync-reload',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resync_reload', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'reload', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // History built up entirely before any client ever subscribes — the
+    // "left it running, closed the tab, came back later" shape a real
+    // page reload hits: a message, a completed tool call, and a status
+    // push, none of which any client instance has ever seen.
+    const messageEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'agent_message_chunk', turnId: 't1', messageId: 'm1', text: 'Done already' },
+      key,
+    );
+    const toolEnvelope = await nodeSeal(
+      session.id,
+      {
+        kind: 'tool_call',
+        id: 'tc1',
+        title: 'Edit src/foo.ts',
+        toolKind: 'edit',
+        status: 'completed',
+      },
+      key,
+    );
+    const statusEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'session_status', status: 'awaiting_input', updatedAt: new Date().toISOString() },
+      key,
+    );
+    for (const envelope of [messageEnvelope, toolEnvelope, statusEnvelope]) {
+      node.send({
+        type: 'session_update',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        seq: 0,
+        envelope,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // The reload: a brand-new RelayClient for the same account — this
+    // instance has never subscribed to this session before, exactly like
+    // a fresh page load.
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-after-reload',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const transcript = client.transcriptFor(session.id);
+    const status = client.statusFor(session.id);
+
+    const state = await waitForStore(transcript, (value) => value.items.length >= 2);
+    expect(state.items.find((item) => item.type === 'message')).toMatchObject({
+      text: 'Done already',
+    });
+    expect(state.items.find((item) => item.type === 'tool_call')).toMatchObject({
+      id: 'tc1',
+      status: 'completed',
+    });
+    await waitForStore(status, (value) => value === 'awaiting_input');
+  });
+});
+
+describe('RelayClient: dropped-range resync_marker surfaces as a visible transcript gap (issue #729)', () => {
+  let smallRingRelay: StartedRelay | undefined;
+
+  afterEach(async () => {
+    await smallRingRelay?.close();
+    smallRingRelay = undefined;
+  });
+
+  it('a resync that lands behind an evicted range renders a gap item, then resumes with the still-buffered history after it', async () => {
+    smallRingRelay = await startRelay({ store: createInMemoryRelayStore({ ringBufferSize: 3 }) });
+
+    const amk = generateAmk();
+    const accountId = 'acct-resync-gap';
+
+    node = new FakeNode(smallRingRelay.url, {
+      deviceId: 'node-resync-gap',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_resync_gap', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'gap', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Five updates through a 3-entry ring: the first two are evicted
+    // before any client ever subscribes — mirrors `relay.test.ts`'s own
+    // "resync replay after a simulated drop" test, one layer up the
+    // stack.
+    const envelopes = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        nodeSeal(
+          session.id,
+          {
+            kind: 'agent_message_chunk',
+            turnId: 't1',
+            messageId: `m${i + 1}`,
+            text: `chunk-${i + 1}`,
+          },
+          key,
+        ),
+      ),
+    );
+    for (let i = 0; i < envelopes.length; i++) {
+      node.send({
+        type: 'session_update',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        seq: i + 1,
+        envelope: envelopes[i]!,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    client = new RelayClient({
+      relayUrl: smallRingRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-resync-gap',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const transcript = client.transcriptFor(session.id);
+
+    const gapState = await waitForStore(transcript, (value) =>
+      value.items.some((item) => item.type === 'gap'),
+    );
+    expect(gapState.items.find((item) => item.type === 'gap')).toMatchObject({
+      type: 'gap',
+      fromSeq: 1,
+      toSeq: 2,
+    });
+
+    // The gap is a visible marker, not a silent skip: the still-buffered
+    // history after it (seq 3-5) still arrives and renders too, in order,
+    // right after the gap.
+    const settled = await waitForStore(transcript, (value) =>
+      value.items.some((item) => item.type === 'message' && item.text === 'chunk-5'),
+    );
+    expect(settled.items.map((item) => (item.type === 'message' ? item.text : item.type))).toEqual([
+      'gap',
+      'chunk-3',
+      'chunk-4',
+      'chunk-5',
+    ]);
   });
 });

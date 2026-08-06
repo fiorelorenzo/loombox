@@ -140,20 +140,27 @@
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133) — the same
      44px-ish coarse-pointer enlargement every pre-migration copy of this
-     switch already carried. */
+     switch already carried. `px`, not `rem` (A2-1, issue #734): `rem`
+     resolves against `html`'s font-size, which IS `--text-body-size` —
+     see that token's own note in `typography.css` and `--touch-target-
+     min`'s in `tokens.css`. `24px`/`4px`/`20px` below are literal rather
+     than reading `--touch-target-min` throughout because the track's
+     HEIGHT, the thumb inset and the slide distance are this switch's own
+     proportions, not the shared 44px floor itself — only the track WIDTH
+     is that floor. */
   @media (pointer: coarse) {
     .ui-checkbox-track {
-      width: 2.75rem;
-      height: 1.5rem;
+      width: var(--touch-target-min);
+      height: 24px;
     }
 
     .ui-checkbox-track-fill::before {
-      width: calc(1.5rem - 4px);
-      height: calc(1.5rem - 4px);
+      width: calc(24px - 4px);
+      height: calc(24px - 4px);
     }
 
     .ui-checkbox-track input:checked + .ui-checkbox-track-fill::before {
-      transform: translateX(calc(2.75rem - 1.5rem));
+      transform: translateX(calc(var(--touch-target-min) - 24px));
     }
   }
 </style>
