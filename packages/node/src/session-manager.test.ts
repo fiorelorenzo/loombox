@@ -616,6 +616,39 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setSpendCapUsd (SPEC §7.16; issue #251)', () => {
+    it('a fresh session starts with no cap of its own', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      expect(session.spendCapUsd).toBeUndefined();
+    });
+
+    it('sets a cap, mutating the record in place', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      const updated = manager.setSpendCapUsd(session.id, 25);
+      expect(updated.spendCapUsd).toBe(25);
+      expect(updated).toBe(session);
+    });
+
+    it('clears a cap via undefined', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      manager.setSpendCapUsd(session.id, 25);
+      manager.setSpendCapUsd(session.id, undefined);
+      expect(session.spendCapUsd).toBeUndefined();
+    });
+
+    it('rejects a zero, negative, or non-finite cap — a $0 cap is not a real limit', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      expect(() => manager.setSpendCapUsd(session.id, 0)).toThrow();
+      expect(() => manager.setSpendCapUsd(session.id, -5)).toThrow();
+      expect(() => manager.setSpendCapUsd(session.id, Infinity)).toThrow();
+      expect(session.spendCapUsd).toBeUndefined(); // unchanged by every rejected attempt
+    });
+
+    it('rejects an unknown session id', () => {
+      expect(() => manager.setSpendCapUsd('does-not-exist', 25)).toThrow(/no session/i);
+    });
+  });
+
   describe('persistence (issue #515)', () => {
     let stateDir: string;
 
@@ -675,6 +708,17 @@ describe('SessionManager', () => {
 
       const second = new SessionManager({ store: new SessionStore({ stateDir }) });
       expect(second.getSession(created.id)?.state).toBe('ended');
+    });
+
+    it('a session cap set via setSpendCapUsd survives a restart (SPEC §7.16; issue #251)', async () => {
+      const first = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await first.createSession({ projectPath: repoPath, provider: 'claude' });
+      first.setSpendCapUsd(created.id, 15);
+
+      const second = new SessionManager({ store: new SessionStore({ stateDir }) });
+      // Reload marks it 'disconnected' (issue #515), but the cap itself is
+      // just a plain field on the record — untouched by that rewrite.
+      expect(second.getSession(created.id)?.spendCapUsd).toBe(15);
     });
   });
 });

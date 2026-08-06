@@ -57,6 +57,7 @@ const ALL_SESSION_STATUSES: SessionStatusV1[] = [
   'error',
   'exited',
   'disconnected',
+  'paused',
 ];
 
 describe('StatusBar: relay connection (left zone, issue #736)', () => {

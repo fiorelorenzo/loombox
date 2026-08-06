@@ -2518,10 +2518,15 @@
    * `'working'` (both actively in flight); `'queued'` ranks below
    * `'awaiting_input'` (waiting for a slot, not yet asking anything);
    * `'disconnected'` ranks just above `'exited'` (passive, but — unlike
-   * `'exited'` — something a person may want to act on).
+   * `'exited'` — something a person may want to act on). `'paused'`
+   * (SPEC §7.16's spend caps, issue #251) ranks just below `'error'`: a
+   * session fully blocked on an explicit cap decision is not merely
+   * "in progress" like `'permission_required'`, but hasn't actually
+   * failed either.
    */
   const SESSION_STATUS_SEVERITY: Record<SessionStatusV1, number> = {
-    error: 7,
+    error: 8,
+    paused: 7,
     permission_required: 6,
     working: 5,
     starting: 5,

@@ -29,7 +29,16 @@ import { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
  * matching what `StatusDot` already expected callers to do.
  */
 
-/** Maps `SessionStatusV1` onto the shared `StatusDot` tone vocabulary. */
+/**
+ * Maps `SessionStatusV1` onto the shared `StatusDot` tone vocabulary.
+ * `'paused'` (SPEC §7.16's spend caps, issue #251) shares `'warning'`
+ * with `'permission_required'` — both are "needs a decision" states, not
+ * failures — but the two are never actually confusable in practice: a
+ * `'paused'` session always carries a `reason` (see
+ * `sessionStatusLabelWithReason` below), so its label/tooltip/aria-name
+ * reads "Paused: Spend cap reached ..." rather than the bare tone alone
+ * having to carry the distinction.
+ */
 export const SESSION_STATUS_TONES: Record<SessionStatusV1, StatusTone> = {
   queued: 'neutral',
   starting: 'info',
@@ -39,6 +48,7 @@ export const SESSION_STATUS_TONES: Record<SessionStatusV1, StatusTone> = {
   error: 'danger',
   exited: 'neutral',
   disconnected: 'neutral',
+  paused: 'warning',
 };
 
 /** Short, human status wording — what a badge, a tooltip or an `aria-label` shows. */
@@ -51,6 +61,7 @@ export const SESSION_STATUS_LABELS: Record<SessionStatusV1, string> = {
   error: 'Error',
   exited: 'Exited',
   disconnected: 'Disconnected',
+  paused: 'Paused',
 };
 
 /** The wording for a session the node has not reported a status for yet. */
@@ -74,5 +85,5 @@ export function sessionStatusLabelWithReason(
 ): string {
   if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
   const label = SESSION_STATUS_LABELS[status];
-  return status === 'error' && reason ? `${label}: ${reason}` : label;
+  return (status === 'error' || status === 'paused') && reason ? `${label}: ${reason}` : label;
 }

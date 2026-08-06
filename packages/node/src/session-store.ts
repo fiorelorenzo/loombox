@@ -77,6 +77,16 @@ function validateSession(raw: unknown, context: string): Session {
   if (record.targetId !== undefined && typeof record.targetId !== 'string') {
     throw new SessionStoreError(`${context}: "targetId" must be a string when present`);
   }
+  if (
+    record.spendCapUsd !== undefined &&
+    (typeof record.spendCapUsd !== 'number' ||
+      !Number.isFinite(record.spendCapUsd) ||
+      record.spendCapUsd <= 0)
+  ) {
+    throw new SessionStoreError(
+      `${context}: "spendCapUsd" must be a positive, finite number when present`,
+    );
+  }
   return {
     id: record.id,
     projectPath: record.projectPath,
@@ -88,6 +98,7 @@ function validateSession(raw: unknown, context: string): Session {
     state: record.state,
     nodeId: record.nodeId,
     targetId: record.targetId,
+    spendCapUsd: record.spendCapUsd,
   };
 }
 

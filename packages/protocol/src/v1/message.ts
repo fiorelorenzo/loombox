@@ -86,6 +86,7 @@ import {
   agentProfileSessionResult,
   agentProfileSessionSet,
 } from './agent-profile';
+import { spendCapGet, spendCapResult, spendCapSet, sessionSpendCapResume } from './spend-cap';
 import {
   accountPinGetRequest,
   accountPinResolveRequest,
@@ -227,6 +228,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   agentProfileSessionGet,
   agentProfileSessionSet,
   agentProfileSessionResult,
+  spendCapGet,
+  spendCapSet,
+  spendCapResult,
+  sessionSpendCapResume,
   ping,
   pong,
 ]);

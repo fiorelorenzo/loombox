@@ -1466,6 +1466,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'spend_cap_result':
+        // The owning node's reply to a client's spend_cap_get/_set (SPEC
+        // §7.16; issue #251) — fanned out exactly like
+        // permission_policy_result above; the relay never opens the
+        // envelope, so it never sees a project's or session's actual
+        // dollar-figure cap (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'permission_policy_violation':
         // The owning node reporting a live policy denial (SPEC §7.17;
         // issue #751) — fanned out exactly like terminal_output; the
@@ -2197,6 +2205,23 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // sees sessionId/requestId plus (for _set) an opaque
         // `EncryptedEnvelope`; no glob pattern ever reaches the relay in
         // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'spend_cap_get':
+      case 'spend_cap_set':
+        // A client reading/saving a session's project or session spend
+        // cap (SPEC §7.16; issue #251) — routed to the owning node
+        // exactly like permission_policy_get/_set above. The relay only
+        // ever sees sessionId/requestId plus (for _set) an opaque
+        // `EncryptedEnvelope`; no dollar figure ever reaches the relay in
+        // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'session_spend_cap_resume':
+        // A client explicitly resuming a session paused on a spend cap
+        // (SPEC §7.16; issue #251) — envelope-less (resuming carries no
+        // content, mirrors run_cancel), routed to the owning node the
+        // same way.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'agent_profile_list_get':
