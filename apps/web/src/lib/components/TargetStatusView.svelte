@@ -468,21 +468,21 @@
                 {#if target.health}
                   {@const health = target.health}
                   <span class="metric" data-testid="metric-load">
-                    <span class="metric-label">Load</span><span class="metric-value"
+                    <span class="metric-label">Load</span><span class="metric-value font-mono"
                       >{formatPercent(health.loadPercent)}</span
                     >
                   </span>
                   <span class="metric" data-testid="metric-mem">
-                    <span class="metric-label">RAM</span><span class="metric-value"
+                    <span class="metric-label">RAM</span><span class="metric-value font-mono"
                       >{formatPercent(health.memPercent)}</span
                     >
                   </span>
                   <span class="metric" data-testid="metric-disk">
-                    <span class="metric-label">Disk</span><span class="metric-value"
+                    <span class="metric-label">Disk</span><span class="metric-value font-mono"
                       >{formatPercent(health.diskPercent)}</span
                     >
                   </span>
-                  <span class="target-age">{formatRelativeAge(health)}</span>
+                  <span class="target-age font-mono">{formatRelativeAge(health)}</span>
                 {:else}
                   <span class="no-data">No data yet</span>
                 {/if}
@@ -504,7 +504,7 @@
                           style={`--thread-draw-progress: ${Math.min(100, health.loadPercent ?? 0)}%`}
                         ></div>
                       </div>
-                      <span class="meter-value">{formatPercent(health.loadPercent)}</span>
+                      <span class="meter-value font-mono">{formatPercent(health.loadPercent)}</span>
                     </div>
                     <div class="meter-row">
                       <span class="meter-label">RAM</span>
@@ -515,7 +515,7 @@
                           style={`--thread-draw-progress: ${Math.min(100, health.memPercent)}%`}
                         ></div>
                       </div>
-                      <span class="meter-value"
+                      <span class="meter-value font-mono"
                         >{formatPercent(health.memPercent)} ({formatBytes(health.memUsedBytes)} / {formatBytes(
                           health.memTotalBytes,
                         )})</span
@@ -530,7 +530,7 @@
                           style={`--thread-draw-progress: ${Math.min(100, health.diskPercent)}%`}
                         ></div>
                       </div>
-                      <span class="meter-value"
+                      <span class="meter-value font-mono"
                         >{formatPercent(health.diskPercent)} ({formatBytes(health.diskUsedBytes)} / {formatBytes(
                           health.diskTotalBytes,
                         )})</span
@@ -538,10 +538,11 @@
                     </div>
                   </div>
                   <p class="sampled-at" data-testid="target-sampled-at">
-                    Sampled {formatAbsoluteSampledAt(health)}
+                    Sampled <span class="font-mono">{formatAbsoluteSampledAt(health)}</span>
                   </p>
                   <p class="overload-note">
-                    Flags overloaded at {OVERLOAD_PERCENT}% load, memory, or disk.
+                    Flags overloaded at <span class="font-mono">{OVERLOAD_PERCENT}%</span> load, memory,
+                    or disk.
                   </p>
                 {:else}
                   <p class="no-data">No data yet.</p>

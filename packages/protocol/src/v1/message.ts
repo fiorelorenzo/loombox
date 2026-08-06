@@ -53,7 +53,12 @@ import {
   targetUpdateRequest,
   targetUpdateResponse,
 } from './target-lifecycle';
-import { sessionArchiveRequest, sessionArchiveResponse } from './session-lifecycle';
+import {
+  sessionArchiveRequest,
+  sessionArchiveResponse,
+  sessionForkRequest,
+  sessionForkResponse,
+} from './session-lifecycle';
 import {
   connectedAccountAnnounce,
   connectedAccountList,
@@ -66,6 +71,12 @@ import {
   testRunnerConfigResult,
   testRunnerConfigSet,
 } from './test-runner-config';
+import {
+  permissionPolicyGet,
+  permissionPolicyResult,
+  permissionPolicySet,
+  permissionPolicyViolation,
+} from './permission-policy';
 import {
   accountPinGetRequest,
   accountPinResolveRequest,
@@ -116,6 +127,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   sessionListV1,
   sessionArchiveRequest,
   sessionArchiveResponse,
+  sessionForkRequest,
+  sessionForkResponse,
   sessionUpdateEnvelopeV1,
   promptInjectV1,
   permissionRequest,
@@ -190,6 +203,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   runOutput,
   runExit,
   runCancel,
+  permissionPolicyGet,
+  permissionPolicySet,
+  permissionPolicyResult,
+  permissionPolicyViolation,
   ping,
   pong,
 ]);

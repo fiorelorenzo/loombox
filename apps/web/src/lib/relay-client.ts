@@ -1,22 +1,13 @@
-import type { webcrypto } from 'node:crypto';
 import { derived, get, writable, type Readable, type Writable } from 'svelte/store';
 import {
-  deriveKeyTree,
-  deriveProjectKey,
-  deriveSessionKey,
-  encryptEnvelope,
-  envelopeToWire,
   exportPublicKeyRaw,
   generateEcdhKeyPair,
-  importAesGcmKey,
-  openJson,
   packWrappedAmkForWire,
-  sealJson,
   unpackWrappedAmkFromWire,
   unwrapAmkWithRecoveryCode,
-  wrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
+import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
   acpTranscriptUpdateSchema,
@@ -45,6 +36,8 @@ import {
   buildIdentityMismatch,
   initializeResult,
   newDeviceBootstrapResponse,
+  parsePermissionPolicyResultPayloadV1,
+  parsePermissionPolicyViolationPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   safeParseSessionLifecycleEventV1,
@@ -76,6 +69,7 @@ import {
   type ProvisionTargetResult,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
@@ -105,6 +99,11 @@ import {
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
   type TestRunnerCommandsV1,
+  type PermissionPolicyResult,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolation,
+  type PermissionPolicySetPayloadV1,
+  type PermissionPolicyViolationPayloadV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
@@ -136,6 +135,11 @@ export type {
   TargetHealth,
   TargetListEntry,
 } from '@loombox/protocol';
+export type {
+  PermissionPolicyV1,
+  PermissionRuleSetV1,
+  ToolRefusalReasonV1,
+} from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
   ProvisionProgress,
@@ -166,8 +170,6 @@ export type {
   GithubConnectOutcome,
   JiraConnectOutcome,
 } from '@loombox/protocol';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 /**
  * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
@@ -443,7 +445,7 @@ export interface AttentionInboxItem {
   readonly permission?: PendingPermissionRequest;
   /** Set only for a `'session_outcome'` item: which live status this reflects. */
   readonly outcome?: 'exited' | 'error';
-  /** Set only for a `'session_outcome'` item, when the session's last settled turn carried one (`TranscriptState.lastStopReason`, SPEC §7.24) — extra context for why it stopped. */
+  /** Set for a `'session_outcome'` item when there's extra context for why it stopped: the session's last settled turn's own reason (`TranscriptState.lastStopReason`, SPEC §7.24), or — for one whose agent never got that far — the spawn failure/timeout the node reported instead (`TranscriptState.statusReason`, issue #730). At most one of those two is ever actually set for a given session. */
   readonly stopReason?: string;
   /**
    * Set for a `'permission'` or `'awaiting_input'` item: the agent's most
@@ -538,15 +540,21 @@ export interface RelayClientOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
   relayUrl: string;
   /**
-   * This account's Account Master Key (SPEC §8, §16): every session key this
-   * client derives (`@loombox/crypto`'s `deriveSessionKey`) comes from this
-   * one 256-bit secret via its key tree — the exact same derivation the node
-   * uses, so this client decrypts precisely what the node encrypted.
+   * This account's Account Master Key (SPEC §8, §16): every session/
+   * project/target key this client derives comes from this one 256-bit
+   * secret via its key tree — the exact same derivation the node uses, so
+   * this client decrypts precisely what the node encrypted.
    * `RelayClient` itself stays storage-agnostic and just takes the bytes; a
    * caller generates/persists it on-device via `amk-store.ts`'s
    * `loadOrCreateAmk` (single-device custody, this wave) rather than typing
    * it in by hand. Multi-device recovery-code escrow/QR pairing (#113/#114/
    * #115) is a later wave, layered on top without changing this option.
+   *
+   * Handed once to `envelope-crypto-client.ts`'s `createEnvelopeCrypto`
+   * (issue #756) — the constructor keeps no `this.amk` field of its own;
+   * every derived key and AEAD open/seal for session traffic happens inside
+   * that worker/engine, not on this class. See that module's doc comment
+   * for exactly what crosses the worker boundary and why.
    */
   amk: Uint8Array;
   /**
@@ -583,6 +591,13 @@ export interface RelayClientOptions {
   devicePublicKey?: string;
   /** WebSocket constructor override; defaults to the global `WebSocket`. Tests inject a fake. */
   webSocketImpl?: WebSocketConstructor;
+  /**
+   * Overrides the default `EnvelopeCrypto` (worker-backed in a real
+   * browser/Electron, in-process in Node/vitest — see
+   * `envelope-crypto-client.ts`'s `createEnvelopeCrypto`). Tests inject a
+   * fake to assert on request/response shape without a real `Worker`.
+   */
+  envelopeCrypto?: EnvelopeCrypto;
   /**
    * Persistence for the offline/mid-turn composer outbox (SPEC §7.3, §7.24;
    * issues #128/#130). Defaults to `createDefaultOutboxStorage(accountId)`
@@ -630,6 +645,20 @@ export interface RelayClientOptions {
    * anything. Defaults to 30s; tests override it to a few ms to stay fast.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * How often (ms) to retry `session_resume` for a session this client
+   * has never successfully subscribed to yet, until the relay's own
+   * `session_announce` reply confirms it landed (issue #730). Needed
+   * because a `session_resume` for a session the relay doesn't have a
+   * record for yet — the announce-vs-subscribe race a freshly created
+   * session's own {@link RelayClient.createSession} lands in — is
+   * dropped with no ack at all (`packages/relay/src/relay.ts`'s
+   * `session_resume` case), so a single fire-and-forget send can lose
+   * the subscription permanently. See {@link RelayClient.ensureSubscribed}'s
+   * doc comment for the full mechanism. Defaults to 300ms; tests override
+   * it to a few ms to stay fast.
+   */
+  sessionResumeRetryMs?: number;
 }
 
 /** Default for {@link RelayClientOptions.turnIdleMs}. */
@@ -640,37 +669,15 @@ const DEFAULT_INITIAL_BACKOFF_MS = 250;
 const DEFAULT_MAX_BACKOFF_MS = 10_000;
 /** Default for {@link RelayClientOptions.heartbeatIntervalMs}. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+/** Default for {@link RelayClientOptions.sessionResumeRetryMs}. */
+const DEFAULT_SESSION_RESUME_RETRY_MS = 300;
+/** Hard cap on {@link RelayClient.retrySessionResume}'s retry count (issue #730) — bounds how long this client keeps re-sending `session_resume` for a session that never gets announced (an unknown target, a bad decrypt, or a missing MCP grant on `handleSessionCreate` — none of which have a wire-level failure notice yet, see that doc comment) instead of retrying forever. At the default interval this is ~9s, comfortably past a real worktree-creation delay. */
+const SESSION_RESUME_MAX_ATTEMPTS = 30;
 
 function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   const unique = hasRandomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
   return `${prefix}_${unique}`;
-}
-
-/**
- * Derives one target's symmetric key from the account's AMK (SPEC §7.25's
- * directory picker; issue #474) — the crypto boundary `browseDirectory`/
- * `handleTargetFsListResponse` seal/open under, NOT `deriveSessionKey`'s
- * session-derived key, since there is no session yet when browsing a
- * target. Path: `['target', accountId, targetId]`, namespaced under its own
- * `'target'` segment exactly like `deriveSessionKey`'s `'session'` segment
- * (`packages/crypto/src/session-keys.ts`'s doc comment), so it can never
- * collide with a session key even for the same account.
- *
- * Lives here rather than in `@loombox/crypto` (unlike `deriveSessionKey`)
- * because this issue's scope doesn't touch that package — duplicated
- * verbatim in `packages/node/src/node-daemon.ts`'s own `deriveTargetKey` so
- * both sides derive the identical key from the same already-exported
- * `deriveKeyTree`/`importAesGcmKey` primitives (see that copy's doc comment
- * for the same reasoning).
- */
-async function deriveTargetKey(
-  amk: Uint8Array,
-  accountId: string,
-  targetId: string,
-): Promise<CryptoKey> {
-  const node = await deriveKeyTree(amk, ['target', accountId, targetId]);
-  return importAesGcmKey(node.key);
 }
 
 /**
@@ -869,24 +876,6 @@ export async function bootstrapAmkFromRecoveryCode(
 }
 
 /**
- * Seals raw attachment bytes (not JSON, unlike `sealJson`) under the
- * session key, bound to `attachmentResourceId(sessionId, ref)` — the exact
- * AAD the relay's blob store keys by and `@loombox/node`'s
- * `AttachmentResolver` decrypts against (see `attachments.ts`'s doc
- * comment), so this client's upload and the node's later download+decrypt
- * agree on the binding without this package depending on `@loombox/node`.
- */
-async function sealAttachmentEnvelope(
-  sessionId: string,
-  ref: string,
-  bytes: Uint8Array,
-  key: CryptoKey,
-): Promise<EncryptedEnvelope> {
-  const envelope = await encryptEnvelope(attachmentResourceId(sessionId, ref), bytes, key);
-  return envelopeToWire(envelope);
-}
-
-/**
  * `URL.createObjectURL` for the instant local attachment preview (SPEC
  * §7.25). Guarded rather than assumed: real browsers and Node 22 (the
  * hermetic tests below) both have it, but nothing here should throw for an
@@ -1026,7 +1015,8 @@ export class RelayClient {
   readonly relayBuildIdentity: Readable<BuildIdentityV1 | undefined>;
 
   private readonly options: RelayClientOptions;
-  private readonly amk: Uint8Array;
+  /** Owns all AMK-derived key material and every session-traffic AEAD open/seal (issue #756) — see `envelope-crypto-client.ts`'s `EnvelopeCrypto`. This class keeps no raw AMK of its own. */
+  private readonly envelopeCrypto: EnvelopeCrypto;
   private readonly accountId: string;
   private readonly authToken: string;
   private readonly deviceId: string;
@@ -1087,17 +1077,16 @@ export class RelayClient {
   /** Categories with an outstanding `config_option` this client itself sent, per session (issue #718) — {@link handleConfigOptionResult}'s "is this reply to my own request" guard, the `category`-keyed counterpart of {@link pendingFsListRequests}'s `requestId`-keyed one (`config_option` carries no request id — see that schema's own doc comment for why category alone is the correlation key). */
   private readonly pendingConfigOptions = new Map<string, Set<string>>();
   private readonly subscribed = new Set<string>();
+  /** Backs {@link retrySessionResume}'s pending retry timer, one per session currently mid-retry (issue #730) — cleared the moment `handleSessionAnnounce` acks the subscribe, or on {@link close}. */
+  private readonly pendingSessionResumeRetries = new Map<string, TimerHandle>();
+  /** Sessions that have already had their one-time post-subscribe `resync_request(sinceSeq: 0)` sent (issue #730) — see {@link acknowledgeSessionResume}'s doc comment for why this fires at most once per session, ever, per client instance. */
+  private readonly sessionResyncedOnSubscribe = new Set<string>();
   /** Backs {@link attentionInbox} — see that method's doc comment. */
   private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
   /** True once {@link attentionInbox} has been called at least once (it is lazily activated, like every other per-session subscription in this class). */
   private inboxTrackingActive = false;
   /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
   private readonly inboxTrackedSessions = new Set<string>();
-  private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
-  /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per client instance, same caching shape as {@link sessionKeys}. */
-  private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
-  /** Backs {@link getProjectKey} (issue #697) — a project's key is derived once per client instance, same caching shape as {@link sessionKeys}/{@link targetKeys}. Keyed by `projectPath` alone, not `nodeId`+`projectPath`: `deriveProjectKey`'s own derivation path (`['project', accountId, projectPath]`) has no `nodeId` component, matching the project being the resource, not any one node that happens to serve it. */
-  private readonly projectKeys = new Map<string, Promise<CryptoKey>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1179,7 +1168,7 @@ export class RelayClient {
    * user navigates to, rather than a reactive stream), but unlike
    * `target_list`, `target_fs_list_response` DOES carry a sealed envelope
    * (SPEC §8's boundary: a directory listing is private metadata), so the
-   * entry also carries `targetId` for {@link getTargetKey}'s decrypt.
+   * entry also carries `targetId` for the eventual reply's `'target'`-keyed decrypt (`this.envelopeCrypto.open('target', targetId, ...)`).
    */
   private readonly pendingTargetFsListRequests = new Map<
     string,
@@ -1204,6 +1193,21 @@ export class RelayClient {
   private readonly pendingTestRunnerConfigDetectRequests = new Map<
     string,
     { resolve: (suggestions: TestRunnerCommandsV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link getPermissionPolicy}/{@link setPermissionPolicy}
+   * call it belongs to (SPEC §7.17; issue #751). Both resolve to the same
+   * `permission_policy_result` reply, mirrors {@link pendingTestRunnerConfigRequests}
+   * immediately above.
+   */
+  private readonly pendingPermissionPolicyRequests = new Map<
+    string,
+    { resolve: (policy: PermissionPolicyV1) => void; reject: (error: Error) => void }
+  >();
+  /** sessionId -> every listener registered via {@link onPermissionPolicyViolation}, fired with each decrypted `permission_policy_violation` as it arrives (SPEC §7.17; issue #751) — mirrors {@link terminalOutputListeners}, keyed by session alone since a violation isn't scoped to one terminal/run. */
+  private readonly permissionPolicyViolationListeners = new Map<
+    string,
+    Set<(violation: PermissionPolicyViolationPayloadV1) => void>
   >();
   /**
    * requestId -> the pending {@link discoverSshHosts} call it belongs to
@@ -1256,6 +1260,20 @@ export class RelayClient {
     string,
     { resolve: () => void; reject: (error: Error) => void }
   >();
+  /**
+   * requestId -> the pending {@link forkSession} call it belongs to
+   * (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue
+   * #746). Same account-wide broadcast shape `session_archive_response`
+   * carries (`packages/relay/src/relay.ts`), but a fork's outcome needs no
+   * store-wide side effect on `'ok'` — the new session already reaches
+   * every device the ordinary way, via `session_announce` — so unlike
+   * {@link pendingArchiveRequests} this map's own resolve/reject is the
+   * entire job of {@link handleSessionForkResponse}.
+   */
+  private readonly pendingForkRequests = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
   /** A session's pending "turn considered active" idle timer, present only while that session is within `turnIdleMs` of its last known activity (issue #128's mid-turn-queueing heuristic). */
   private readonly turnTimers = new Map<string, TimerHandle>();
   private socket: WebSocketLike | undefined;
@@ -1279,10 +1297,13 @@ export class RelayClient {
   private readonly heartbeatIntervalMs: number;
   private heartbeatTimer: TimerHandle | undefined;
   private pendingPingNonce: string | undefined;
+  /** See `RelayClientOptions.sessionResumeRetryMs`'s doc comment (issue #730). */
+  private readonly sessionResumeRetryMs: number;
 
   constructor(options: RelayClientOptions) {
     this.options = options;
-    this.amk = options.amk;
+    this.envelopeCrypto =
+      options.envelopeCrypto ?? createEnvelopeCrypto(options.amk, options.accountId);
     this.accountId = options.accountId;
     this.authToken = options.authToken ?? options.accountId;
     this.deviceId = options.deviceId ?? generateId('device');
@@ -1293,6 +1314,7 @@ export class RelayClient {
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.backoffMs = this.initialBackoffMs;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.sessionResumeRetryMs = options.sessionResumeRetryMs ?? DEFAULT_SESSION_RESUME_RETRY_MS;
 
     const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
     if (!ctor) {
@@ -1510,8 +1532,15 @@ export class RelayClient {
       this.reconnectTimer = undefined;
     }
     this.stopHeartbeat();
+    this.clearPendingSessionResumeRetries();
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  /** Cancels every still-pending {@link retrySessionResume} timer (issue #730) — called on {@link close} so a discarded client never keeps retrying into a socket nobody reads from again. */
+  private clearPendingSessionResumeRetries(): void {
+    for (const timer of this.pendingSessionResumeRetries.values()) clearTimeout(timer);
+    this.pendingSessionResumeRetries.clear();
   }
 
   /** Starts (or restarts) the heartbeat ping/pong-deadline cycle — see `RelayClientOptions.heartbeatIntervalMs`'s doc comment. Only ever called once a relay has proven it supports it. */
@@ -2273,7 +2302,7 @@ export class RelayClient {
    * one-shot promise query exactly like {@link listTargets}/
    * {@link provisionTarget}: the picker calls it again for every path the
    * user navigates to. Sealed under a per-target key derived from the AMK
-   * (`getTargetKey`), NOT the session-derived key `fileTreeFor`/
+   * (`this.envelopeCrypto`'s `'target'` key family), NOT the session-derived key `fileTreeFor`/
    * `expandDirectory` use — there is no session yet to derive from (mirrors
    * `@loombox/protocol`'s `target-fs.ts` doc comment). Requires an open
    * connection and rejects on a timeout, mirroring `listTargets`'s "loud
@@ -2307,8 +2336,8 @@ export class RelayClient {
         },
       });
       const payload: TargetFsListRequestPayloadV1 = { path };
-      this.getTargetKey(targetId)
-        .then((key) => sealJson(targetId, payload, key))
+      this.envelopeCrypto
+        .seal('target', targetId, targetId, payload)
         .then((envelope) => {
           this.send({
             type: 'target_fs_list_request',
@@ -2325,6 +2354,124 @@ export class RelayClient {
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
+  }
+
+  /**
+   * Reads `sessionId`'s project's saved permission policy from the owning
+   * node (SPEC §7.17; issue #751) — the allow-all default for a project
+   * with nothing saved yet. No envelope on the request, same reasoning as
+   * {@link getTestRunnerConfig}. Requires an open connection and rejects
+   * on a timeout, mirroring {@link getTestRunnerConfig}'s own contract.
+   */
+  getPermissionPolicy(sessionId: string, timeoutMs = 5000): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (policy) => {
+          clearTimeout(timer);
+          resolve(policy);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch, mirrors
+   * `PermissionPolicyStore.save()`'s own contract) `sessionId`'s
+   * project's permission policy (SPEC §7.17; issue #751). Resolves with
+   * the saved result (the same `permission_policy_result` reply
+   * {@link getPermissionPolicy} gets), so a caller's UI can show the saved
+   * state without a separate follow-up read. Validating an individual
+   * glob rule (non-blank, per issue #751's "an invalid glob is rejected
+   * at entry") is the caller's job (`PermissionPolicyPanel.svelte`'s own
+   * form) — this method sends whatever `PermissionPolicyV1` it is given.
+   */
+  setPermissionPolicy(
+    sessionId: string,
+    policy: PermissionPolicyV1,
+    timeoutMs = 5000,
+  ): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: PermissionPolicySetPayloadV1 = { policy };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'permission_policy_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingPermissionPolicyRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Registers `listener` to be called with each decrypted
+   * `permission_policy_violation` this session receives (SPEC §7.17;
+   * issue #751, D3-4's own "the UI must say which of the three layers
+   * refused it") — mirrors {@link onTerminalOutput}. Returns an
+   * unsubscribe function; call it once the caller stops rendering
+   * `sessionId`'s violations (e.g. `PermissionPolicyPanel` unmounting).
+   */
+  onPermissionPolicyViolation(
+    sessionId: string,
+    listener: (violation: PermissionPolicyViolationPayloadV1) => void,
+  ): () => void {
+    let listeners = this.permissionPolicyViolationListeners.get(sessionId);
+    if (!listeners) {
+      listeners = new Set();
+      this.permissionPolicyViolationListeners.set(sessionId, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
   }
 
   /**
@@ -2404,8 +2551,8 @@ export class RelayClient {
         },
       });
       const payload: TestRunnerConfigSetPayloadV1 = { commands };
-      this.getSessionKey(sessionId)
-        .then((key) => sealJson(sessionId, payload, key))
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
         .then((envelope) => {
           this.send({
             type: 'test_runner_config_set',
@@ -2483,7 +2630,7 @@ export class RelayClient {
     if (!this.isSocketOpen()) {
       throw new Error('RelayClient.escrowAmk: not connected to the relay');
     }
-    const wrapped = await wrapAmkWithRecoveryCode(this.amk, recoveryCode, this.accountId);
+    const wrapped = await this.envelopeCrypto.wrapAmkForEscrow(recoveryCode);
     this.send({
       type: 'amk_escrow',
       protocolVersion: PROTOCOL_V1,
@@ -2535,8 +2682,12 @@ export class RelayClient {
       // `JSON.stringify` would drop an explicit `undefined` anyway.
       ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
     };
-    const key = await this.getSessionKey(sessionId);
-    const privateEnvelope = await sealJson(sessionId, privateMeta, key);
+    const privateEnvelope = await this.envelopeCrypto.seal(
+      'session',
+      sessionId,
+      sessionId,
+      privateMeta,
+    );
     this.send({
       type: 'session_create',
       protocolVersion: PROTOCOL_V1,
@@ -2544,6 +2695,81 @@ export class RelayClient {
       targetId: options.targetId,
       provider: options.provider,
       privateEnvelope,
+    });
+
+    return sessionId;
+  }
+
+  /**
+   * Forks `sourceSessionId` from `forkFromTurnId` (inclusive) into a
+   * brand-new session (design spec `2026-08-05-zed-parity-decisions.md`
+   * §3's C6-2; issue #746) — the transcript row/turn action's own call
+   * site. `title`/`projectPath`/`targetId`/`provider` are read straight
+   * off `sourceSessionId`'s own already-known {@link ClientSessionMeta}
+   * (this client already decrypted it to render the source session at
+   * all), so a caller only ever names the source and the turn to diverge
+   * from — never re-supplies data it never had reason to duplicate.
+   *
+   * Unlike {@link createSession} (fire-and-forget, no ack), this awaits
+   * `session_fork_response`: forking has real, foreseeable refusal cases
+   * — the source has no active agent, or the requested turn was never
+   * produced — that must reach the caller as a visible reason, never a
+   * silently-dropped request the caller only learns failed by its own
+   * timeout guess.
+   */
+  async forkSession(
+    sourceSessionId: string,
+    forkFromTurnId: string,
+    options: { title?: string } = {},
+    timeoutMs = 30_000,
+  ): Promise<string> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient.forkSession: not connected to the relay');
+    }
+    const source = get(this.sessionsStore).find((session) => session.id === sourceSessionId);
+    if (!source) {
+      throw new Error(`RelayClient.forkSession: unknown source session "${sourceSessionId}"`);
+    }
+
+    const sessionId = generateId('session');
+    const privateMeta: SessionPrivateMeta = {
+      title: options.title?.trim() || `${source.title} (fork)`,
+      projectPath: source.projectPath,
+      forkFromTurnId,
+    };
+    const privateEnvelope = await this.envelopeCrypto.seal(
+      'session',
+      sessionId,
+      sessionId,
+      privateMeta,
+    );
+
+    const requestId = generateId('fork');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingForkRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_fork_response'));
+      }, timeoutMs);
+      this.pendingForkRequests.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        sessionId,
+        sourceSessionId,
+        targetId: source.targetId,
+        provider: source.provider,
+        privateEnvelope,
+      });
     });
 
     return sessionId;
@@ -2571,6 +2797,21 @@ export class RelayClient {
     const store = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(store, (state) => state.status);
+  }
+
+  /**
+   * The reason behind {@link statusFor}'s current value, when it has one
+   * (issue #730) — only ever set alongside `'error'` (a spawn that failed
+   * or timed out, in words a user can read; see `@loombox/node`'s
+   * `sendSessionStatus` doc comment), `undefined` for every other status
+   * and before any status has arrived at all. A second `derived` over the
+   * exact same store {@link statusFor} already subscribes (see this
+   * class's own doc comment), not a heavier separate subscription.
+   */
+  statusReasonFor(sessionId: string): Readable<string | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.statusReason);
   }
 
   /**
@@ -3079,11 +3320,9 @@ export class RelayClient {
   /** Streams one chunk of typed input to `terminalId`'s stdin (SPEC §7.5) — the composer/xterm.js keystroke path. Fire-and-forget: a failure is logged, not thrown, since a live keystroke stream has no natural place to surface a rejected promise. */
   sendTerminalInput(sessionId: string, terminalId: string, data: Uint8Array | string): void {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    this.getSessionKey(sessionId)
-      .then((key) => {
-        const payload: TerminalDataPayloadV1 = { data: bytesToBase64(bytes) };
-        return sealJson(sessionId, payload, key);
-      })
+    const payload: TerminalDataPayloadV1 = { data: bytesToBase64(bytes) };
+    this.envelopeCrypto
+      .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
         this.send({
           type: 'terminal_input',
@@ -3102,11 +3341,9 @@ export class RelayClient {
 
   /** Renegotiates `terminalId`'s PTY window size (SPEC §7.5) — xterm.js's own resize event drives this. Fire-and-forget, same as {@link sendTerminalInput}. */
   resizeTerminal(sessionId: string, terminalId: string, cols: number, rows: number): void {
-    this.getSessionKey(sessionId)
-      .then((key) => {
-        const payload: TerminalResizePayloadV1 = { cols, rows };
-        return sealJson(sessionId, payload, key);
-      })
+    const payload: TerminalResizePayloadV1 = { cols, rows };
+    this.envelopeCrypto
+      .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
         this.send({
           type: 'terminal_resize',
@@ -3358,8 +3595,12 @@ export class RelayClient {
       if (!this.socket || this.socket.readyState !== WS_OPEN) {
         throw new Error('not connected to the relay');
       }
-      const key = await this.getSessionKey(sessionId);
-      const envelope = await sealAttachmentEnvelope(sessionId, id, cached.bytes, key);
+      const envelope = await this.envelopeCrypto.sealBytes(
+        'session',
+        sessionId,
+        attachmentResourceId(sessionId, id),
+        cached.bytes,
+      );
       this.send({
         type: 'blob_upload',
         protocolVersion: PROTOCOL_V1,
@@ -3673,9 +3914,8 @@ export class RelayClient {
     text: string,
     attachments: PromptAttachmentRef[],
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: PromptPayload = attachments.length > 0 ? { text, attachments } : { text };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'prompt_inject',
       protocolVersion: PROTOCOL_V1,
@@ -3719,7 +3959,93 @@ export class RelayClient {
   private ensureSubscribed(sessionId: string): void {
     if (this.subscribed.has(sessionId)) return;
     this.subscribed.add(sessionId);
+    this.retrySessionResume(sessionId, 0);
+  }
+
+  /**
+   * Sends `session_resume` for `sessionId` and, unless this is already its
+   * `SESSION_RESUME_MAX_ATTEMPTS`th attempt, arms a `sessionResumeRetryMs`
+   * timer to try again — cancelled the moment {@link acknowledgeSessionResume}
+   * observes the relay's own `session_announce` reply (issue #730).
+   *
+   * Exists because a `session_resume` for a session the relay has no
+   * record for yet is dropped with no ack at all
+   * (`packages/relay/src/relay.ts`'s `session_resume` case: `if (!record
+   * || ...) { app.log.warn(...); return; }`) — and a freshly created
+   * session's very first subscribe lands in exactly that window:
+   * `RelayClient.createSession` sends `session_create` and returns the id
+   * it generated locally the instant that's on the wire (issue #761/#763),
+   * so `selectSession`'s own `ensureSubscribed` call can easily win the
+   * race against the owning node's slower `session_announce` round trip.
+   * A single fire-and-forget `session_resume` in that state subscribes to
+   * nothing and never retries (`subscribed` is already marked) — the
+   * session then sits on `undefined` status forever, which is #730's
+   * "the client either does not receive them or does not use them" (it's
+   * the former): the node's own `'starting'`/`'queued'`/`'error'` pushes
+   * (`node-daemon.ts`'s `createSessionInternal`/`launchLocalSession`) go
+   * out to a relay fan-out this connection was never registered for.
+   *
+   * Deliberately scoped to a session's FIRST subscribe only —
+   * {@link resubscribeSessionsOnReconnect} (an already-subscribed session
+   * surviving a reconnect) is untouched, no retry, exactly as before.
+   * General reconnect-time resync (tracked `sinceSeq`, `resync_marker`
+   * surfacing, live/replay dedup) is issue #729's, not this one's.
+   */
+  private retrySessionResume(sessionId: string, attempt: number): void {
     this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+    if (attempt >= SESSION_RESUME_MAX_ATTEMPTS) {
+      console.warn(
+        `RelayClient: gave up waiting for session ${sessionId} to be announced after ${attempt} attempts (issue #730) — the owning node may never have announced it at all (see handleSessionCreate's doc comment for the unnotified failure modes this can't distinguish from "just slow")`,
+      );
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.pendingSessionResumeRetries.delete(sessionId);
+      this.retrySessionResume(sessionId, attempt + 1);
+    }, this.sessionResumeRetryMs);
+    this.pendingSessionResumeRetries.set(sessionId, timer);
+  }
+
+  /**
+   * `session_announce` reaches this client in exactly one way — the
+   * direct reply `relay.ts`'s `session_resume` case sends back, which it
+   * only does AFTER `subscribeClientToSession` — so receiving one here is
+   * this connection's ack that a `session_resume` it sent actually
+   * subscribed it (issue #730). Cancels {@link retrySessionResume}'s
+   * pending timer for this session, and — the first time only, ever, per
+   * session, per client instance, guarded by
+   * {@link sessionResyncedOnSubscribe} — asks the relay to replay
+   * whatever this session's resync ring already buffered
+   * (`resync_request` with `sinceSeq: 0`).
+   *
+   * That backfill closes the OTHER half of the same race
+   * {@link retrySessionResume} closes: even once subscribed, this
+   * connection only receives fan-out from that moment forward
+   * (`session_resume` itself replays nothing — `relay.ts:1668-1685`), so
+   * a `'starting'`/`'queued'`/`'error'` status the node already pushed
+   * (right after its own `announce`, the identical race from the node's
+   * side) would otherwise never arrive at all. `resync_request` and a
+   * live `session_update` share one wire shape and one client-side
+   * handler (`handleSessionUpdate`), so replaying needs no separate code
+   * path here.
+   *
+   * NOT #729's general resync: no `sinceSeq` tracking across reconnects,
+   * no `resync_marker` surfacing, no live/replay dedup — this fires once
+   * per session, right after its first-ever successful subscribe, when
+   * there is provably nothing yet applied locally to duplicate. A
+   * `session_announce` received again later (this same first subscribe's
+   * retry catching up after the ack already arrived, or a later
+   * reconnect's `resubscribeSessionsOnReconnect`) is a no-op here.
+   */
+  private acknowledgeSessionResume(sessionId: string): void {
+    const timer = this.pendingSessionResumeRetries.get(sessionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.pendingSessionResumeRetries.delete(sessionId);
+    }
+    if (!this.subscribed.has(sessionId) || this.sessionResyncedOnSubscribe.has(sessionId)) return;
+    this.sessionResyncedOnSubscribe.add(sessionId);
+    this.send({ type: 'resync_request', protocolVersion: PROTOCOL_V1, sessionId, sinceSeq: 0 });
   }
 
   /**
@@ -3785,7 +4111,15 @@ export class RelayClient {
           nodeId: session.nodeId,
           waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
           outcome: transcript.status,
-          stopReason: transcript.lastStopReason,
+          // `lastStopReason` is set by a real `turn_ended` (SPEC §7.24) —
+          // never fired for a session whose agent never got as far as a
+          // turn at all. `statusReason` (issue #730) is the OTHER source
+          // of "why did this stop": the node's own spawn-failure/timeout
+          // message. At most one is ever set for a given session (a turn
+          // that ran far enough to end implies the agent started fine),
+          // so falling back rather than picking one is never a real
+          // choice between two live values.
+          stopReason: transcript.lastStopReason ?? transcript.statusReason,
         });
       }
     }
@@ -3929,6 +4263,9 @@ export class RelayClient {
       case 'session_archive_response':
         this.handleSessionArchiveResponse(message);
         return;
+      case 'session_fork_response':
+        this.handleSessionForkResponse(message);
+        return;
       case 'session_update':
         this.handleSessionUpdate(message);
         return;
@@ -3964,6 +4301,12 @@ export class RelayClient {
         return;
       case 'run_exit':
         this.handleRunExit(message);
+        return;
+      case 'permission_policy_result':
+        this.handlePermissionPolicyResult(message);
+        return;
+      case 'permission_policy_violation':
+        this.handlePermissionPolicyViolation(message);
         return;
       case 'test_runner_config_result':
         this.handleTestRunnerConfigResult(message);
@@ -4078,6 +4421,10 @@ export class RelayClient {
   }
 
   private handleSessionAnnounce(message: SessionAnnounceV1): void {
+    // Independent of whether the private meta below decrypts cleanly:
+    // the subscribe itself already succeeded the moment this arrived at
+    // all (issue #730 — see `acknowledgeSessionResume`'s doc comment).
+    this.acknowledgeSessionResume(message.session.id);
     this.decryptSessionMeta(message.session, message.privateEnvelope)
       .then((session) => {
         this.sessionsStore.update((sessions) => {
@@ -4123,9 +4470,21 @@ export class RelayClient {
     }
   }
 
+  /** No `sessionsStore` side effect on `'ok'` unlike {@link handleSessionArchiveResponse}: the fork's new session reaches every device the ordinary way, via `session_announce`. This response only ever settles {@link pendingForkRequests}' own promise. */
+  private handleSessionForkResponse(message: SessionForkResponse): void {
+    const pending = this.pendingForkRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingForkRequests.delete(message.requestId);
+    if (message.result.outcome === 'ok') {
+      pending.resolve();
+    } else {
+      pending.reject(new Error(message.result.message));
+    }
+  }
+
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((raw) => parseSessionWireEvent(raw))
       .then((event) => {
         this.applyUpdate(message.sessionId, event);
@@ -4157,8 +4516,8 @@ export class RelayClient {
    * matching `PermissionQueue.enqueue`'s contract (`permission-queue.ts`).
    */
   private handlePermissionRequest(message: PermissionRequest): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((raw): PermissionRequestPayload => acpPermissionRequestPayloadSchema.parse(raw))
       .then((payload) => {
         const store = this.permissionQueueStoreFor(message.sessionId);
@@ -4193,8 +4552,13 @@ export class RelayClient {
     if (!pending) return;
     this.pendingFsListRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<FsListResponsePayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<FsListResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         if (payload.outcome === 'ok') {
           this.setFileTreeLoaded(message.sessionId, payload.path, payload.entries);
@@ -4224,8 +4588,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTrackerSnapshotRequests.delete(message.requestId);
 
-    this.getProjectKey(pending.projectPath)
-      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
       .then((raw) => trackerSnapshotResponsePayloadV1.parse(raw))
       .then((payload) => {
         if (payload.outcome === 'ok') {
@@ -4257,8 +4621,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTrackerWriteRequests.delete(message.requestId);
 
-    this.getProjectKey(pending.projectPath)
-      .then((key) => openJson<unknown>(pending.projectPath, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
       .then((raw) => trackerWriteResponsePayloadV1.parse(raw))
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
@@ -4284,6 +4648,54 @@ export class RelayClient {
 
   /**
    * The owning node's reply to one of this client's own
+   * {@link getPermissionPolicy}/{@link setPermissionPolicy} calls (SPEC
+   * §7.17; issue #751). `permission_policy_result` is fanned out to
+   * every client subscribed to the session (mirrors `fs_list_response`),
+   * so the same "requestId not pending means it isn't mine" guard as
+   * {@link handleFsListResponse} applies. Validated (not just cast — issue
+   * #593's own boundary discipline), same as `handleTestRunnerConfigResult`.
+   */
+  private handlePermissionPolicyResult(message: PermissionPolicyResult): void {
+    const pending = this.pendingPermissionPolicyRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPermissionPolicyRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePermissionPolicyResultPayloadV1(decrypted).policy))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * One live policy denial (SPEC §7.17; issue #751, D3-4's own "the UI
+   * must say which of the three layers refused it") — decrypted and
+   * fanned out to every listener {@link onPermissionPolicyViolation}
+   * registered for this exact `sessionId`, mirroring
+   * {@link handleTerminalOutput}. Never buffered by this class itself: a
+   * caller mounting after this fired simply never sees it, exactly like
+   * `terminalOutputListeners`' own contract (`TerminalClientState`'s doc
+   * comment).
+   */
+  private handlePermissionPolicyViolation(message: PermissionPolicyViolation): void {
+    const listeners = this.permissionPolicyViolationListeners.get(message.sessionId);
+    if (!listeners || listeners.size === 0) return;
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        const violation = parsePermissionPolicyViolationPayloadV1(decrypted);
+        for (const listener of listeners) listener(violation);
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`RelayClient: failed to decrypt permission_policy_violation: ${detail}`);
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
    * {@link getTestRunnerConfig}/{@link setTestRunnerConfig} calls (SPEC
    * §7.15; issue #245). `test_runner_config_result` is fanned out to
    * every client subscribed to the session (mirrors `fs_list_response`),
@@ -4297,8 +4709,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTestRunnerConfigRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) =>
         pending.resolve(parseTestRunnerConfigResultPayloadV1(decrypted).commands),
       )
@@ -4319,8 +4731,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTestRunnerConfigDetectRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) =>
         pending.resolve(parseTestRunnerConfigDetectedPayloadV1(decrypted).suggestions),
       )
@@ -4335,15 +4747,18 @@ export class RelayClient {
    * client subscribed to a session), this answers a single client's own
    * request — the same "requestId not pending means it isn't mine" guard as
    * {@link handleTargetList}. Decrypts under the request's own per-target key
-   * (`getTargetKey`), not the session key `handleFsListResponse` uses.
+   * (`this.envelopeCrypto`'s `'target'` key family), not the session key `handleFsListResponse` uses.
    */
   private handleTargetFsListResponse(message: TargetFsListResponse): void {
     const pending = this.pendingTargetFsListRequests.get(message.requestId);
     if (!pending) return;
     this.pendingTargetFsListRequests.delete(message.requestId);
-    this.getTargetKey(pending.targetId)
-      .then((key) =>
-        openJson<TargetFsListResponsePayloadV1>(pending.targetId, message.envelope, key),
+    this.envelopeCrypto
+      .open<TargetFsListResponsePayloadV1>(
+        'target',
+        pending.targetId,
+        pending.targetId,
+        message.envelope,
       )
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
@@ -4408,9 +4823,8 @@ export class RelayClient {
     if (!targetId) {
       throw new Error(`RelayClient: unknown session ${sessionId}`);
     }
-    const key = await this.getSessionKey(sessionId);
     const payload: FsListRequestPayloadV1 = { path };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('fs');
     this.pendingFsListRequests.set(requestId, { sessionId, path });
     this.send({
@@ -4429,9 +4843,8 @@ export class RelayClient {
     projectPath: string,
     includeArchived?: boolean,
   ): Promise<void> {
-    const key = await this.getProjectKey(projectPath);
     const payload: TrackerSnapshotRequestPayloadV1 = { includeArchived };
-    const envelope = await sealJson(projectPath, payload, key);
+    const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackersnap');
     this.pendingTrackerSnapshotRequests.set(requestId, { projectPath });
     this.send({
@@ -4466,8 +4879,7 @@ export class RelayClient {
         new Error('RelayClient: cannot write tracker record, no open connection'),
       );
     }
-    const key = await this.getProjectKey(projectPath);
-    const envelope = await sealJson(projectPath, payload, key);
+    const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackerwrite');
     return new Promise<TrackerWriteResponsePayloadV1>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -4509,9 +4921,12 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTerminalOpens.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) =>
-        openJson<TerminalOpenResultPayloadV1>(message.sessionId, message.envelope, key),
+    this.envelopeCrypto
+      .open<TerminalOpenResultPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
       )
       .then((payload) => {
         if (payload.outcome === 'ok') {
@@ -4540,8 +4955,13 @@ export class RelayClient {
 
   /** One chunk of an open terminal's output (SPEC §7.5) — decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`, never buffered by this class itself (see `TerminalClientState`'s doc comment). */
   private handleTerminalOutput(message: TerminalOutputMessage): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<TerminalDataPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<TerminalDataPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         const listeners = this.terminalOutputListeners.get(
           `${message.sessionId}:${message.terminalId}`,
@@ -4559,8 +4979,13 @@ export class RelayClient {
 
   /** A terminal closed — either this client asked to (SPEC §7.5's `closed_by_client`) or its shell exited on its own. */
   private handleTerminalClosed(message: TerminalClosed): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<TerminalClosedPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<TerminalClosedPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         this.setTerminalState(message.sessionId, message.terminalId, {
           terminalId: message.terminalId,
@@ -4585,9 +5010,8 @@ export class RelayClient {
     cols: number,
     rows: number,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: TerminalOpenPayloadV1 = { cols, rows };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'terminal_open',
       protocolVersion: PROTOCOL_V1,
@@ -4630,8 +5054,13 @@ export class RelayClient {
     const kind = get(current).get(message.runId)?.kind;
     if (!kind) return; // the local starting state was already overwritten/removed somehow
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunStartedResultPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunStartedResultPayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
       .then((payload) => {
         if (payload.outcome === 'ok') {
           this.setRunState(message.sessionId, message.runId, {
@@ -4660,8 +5089,8 @@ export class RelayClient {
 
   /** One chunk of a run's output (SPEC §7.15) — decrypted and fanned out to every listener {@link onRunOutput} registered for this exact `sessionId`/`runId`, never buffered by this class itself (see `RunClientState`'s doc comment). */
   private handleRunOutput(message: RunOutputMessage): void {
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunOutputPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunOutputPayloadV1>('session', message.sessionId, message.sessionId, message.envelope)
       .then((payload) => {
         const listeners = this.runOutputListeners.get(`${message.sessionId}:${message.runId}`);
         if (!listeners) return;
@@ -4681,8 +5110,8 @@ export class RelayClient {
     const kind = get(current).get(message.runId)?.kind;
     if (!kind) return;
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<RunExitPayloadV1>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<RunExitPayloadV1>('session', message.sessionId, message.sessionId, message.envelope)
       .then((payload) => {
         this.setRunState(message.sessionId, message.runId, {
           runId: message.runId,
@@ -4709,9 +5138,8 @@ export class RelayClient {
     requestId: string,
     kind: TestRunnerKindV1,
   ): Promise<void> {
-    const key = await this.getSessionKey(sessionId);
     const payload: RunStartPayloadV1 = { kind };
-    const envelope = await sealJson(sessionId, payload, key);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'run_start',
       protocolVersion: PROTOCOL_V1,
@@ -4817,38 +5245,13 @@ export class RelayClient {
     session: SessionMetaPublic,
     privateEnvelope: EncryptedEnvelope,
   ): Promise<ClientSessionMeta> {
-    const key = await this.getSessionKey(session.id);
-    const privateMeta = await openJson<SessionPrivateMeta>(session.id, privateEnvelope, key);
+    const privateMeta = await this.envelopeCrypto.open<SessionPrivateMeta>(
+      'session',
+      session.id,
+      session.id,
+      privateEnvelope,
+    );
     return { ...session, ...privateMeta };
-  }
-
-  private getSessionKey(sessionId: string): Promise<CryptoKey> {
-    let key = this.sessionKeys.get(sessionId);
-    if (!key) {
-      key = deriveSessionKey(this.amk, this.accountId, sessionId);
-      this.sessionKeys.set(sessionId, key);
-    }
-    return key;
-  }
-
-  /** Same caching shape as {@link getSessionKey}, for {@link targetKeys} (issue #474's directory picker). */
-  private getTargetKey(targetId: string): Promise<CryptoKey> {
-    let key = this.targetKeys.get(targetId);
-    if (!key) {
-      key = deriveTargetKey(this.amk, this.accountId, targetId);
-      this.targetKeys.set(targetId, key);
-    }
-    return key;
-  }
-
-  /** Same caching shape as {@link getSessionKey}/{@link getTargetKey}, for {@link projectKeys} (issue #697's project-addressed tracker records). */
-  private getProjectKey(projectPath: string): Promise<CryptoKey> {
-    let key = this.projectKeys.get(projectPath);
-    if (!key) {
-      key = deriveProjectKey(this.amk, this.accountId, projectPath);
-      this.projectKeys.set(projectPath, key);
-    }
-    return key;
   }
 
   private send(message: WireMessageV1): void {

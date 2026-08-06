@@ -1,0 +1,11 @@
+---
+'@loombox/web': patch
+---
+
+Typing `/` in the composer lists exactly what the connected agent declared (Zed-parity C2-4, `docs/superpowers/specs/2026-08-05-zed-parity-decisions.md` §3; issue #743).
+
+Backed entirely by issue #741's plumbing (`RelayClient.commandsFor(sessionId)`, itself a thin `derived` over `TranscriptState.commands`) — there is no hardcoded loombox command list anywhere in this change, and none was added: `+page.svelte` mirrors `commands` off that store exactly the way it already mirrors `configOptions`, and `SlashCommandPicker.svelte` (new, modeled directly on `FileReferencePicker.svelte`'s `@file` picker — same `Dialog`, same hand-rolled `fuzzyFilter`, same arrow-key/Enter/Esc handling) renders whatever that list currently holds, nothing else. An agent that has declared no commands renders zero rows and no placeholder, and `handleComposerInput`'s new `/`-trigger branch never even opens the picker in that case: typing `/` truly does nothing.
+
+`/` only triggers at the very start of the composer (a whole-message convention, unlike `@file` which can appear mid-sentence) — `handleComposerInput` gained a second, independent branch alongside the existing `@`-trigger one, guarded on `commands.length > 0`. Selecting a row inserts `/name ` (plain text, replacing the triggering `/partial-query`) and closes the picker; the argument itself is whatever the user types next and is sent as an ordinary prompt on submit, exactly like every other composer message — no loombox schema parses or validates it. A declared `input.hint` (e.g. `<plan|scan|status>`) renders next to the row as on-screen guidance only, never inserted as literal text. Because `commands` is a live store subscription, a mid-session `available_commands_update` (the agent pushing a new catalogue) is reflected immediately, with no reload and no re-subscription.
+
+Verified: `SlashCommandPicker.test.ts` (component-level: empty catalog renders no rows/no placeholder, fuzzy filter, click/Enter/Esc, a `commands` prop replacement re-renders without remounting) plus a new `composer:` describe block in `page.test.ts` (the real `/`-trigger regex, mid-sentence non-trigger, keyboard-only open/filter/select/insert/send, Esc leaves the draft untouched, and a `commandsFor(id).set(...)` mid-session push reflected on reopen).

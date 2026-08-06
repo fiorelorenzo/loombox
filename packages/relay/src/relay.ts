@@ -19,6 +19,7 @@ import {
   type ResyncMarker,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
   type TargetList,
@@ -1361,6 +1362,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         return;
       }
+      case 'session_fork_response': {
+        // #746 (design spec `2026-08-05-zed-parity-decisions.md` §3's
+        // C6-2): the owning node's reply to a client's
+        // session_fork_request, matched back by requestId. Broadcast
+        // account-wide exactly like session_archive_response above — the
+        // new session itself (on outcome 'ok') already reached every
+        // device the ordinary way via session_announce, this only settles
+        // whichever device's pending fork promise is waiting on
+        // requestId.
+        for (const client of registry.clients) {
+          if (client.accountId === connection.accountId) sendDirect(client, message);
+        }
+        return;
+      }
       case 'permission_request':
         fanOutDirect(message.sessionId, message);
         // #163: presence-aware push — a tool call awaiting approval is one
@@ -1433,6 +1448,21 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // fs_list_response above; the relay never opens either envelope,
         // so it never sees a configured or suggested command string
         // (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'permission_policy_result':
+        // The owning node's reply to a client's permission_policy_get/_set
+        // (SPEC §7.17; issue #751) — fanned out exactly like
+        // test_runner_config_result above; the relay never opens the
+        // envelope, so it never sees a project's actual glob rules
+        // (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'permission_policy_violation':
+        // The owning node reporting a live policy denial (SPEC §7.17;
+        // issue #751) — fanned out exactly like terminal_output; the
+        // relay never opens the envelope, so it never sees which rule or
+        // command was involved.
         fanOutDirect(message.sessionId, message);
         return;
       case 'run_started':
@@ -1795,6 +1825,36 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(nodeConnection, message);
         return;
       }
+      case 'session_fork_request': {
+        // #746: routed by targetId exactly like session_create above — the
+        // forked session doesn't exist as a SessionRecord yet, so there is
+        // nothing to route by sessionId. Unlike session_create's own
+        // silent drop on a bad target, a fork's own request/response
+        // contract exists specifically to surface a refusal (SPEC C6-2's
+        // "never half-creates"), so an unroutable target replies with an
+        // explicit error instead of leaving the requester to learn it only
+        // from its own pending-request timeout — the same reasoning
+        // session_archive_request's unknown-session branch already applies.
+        const nodeId = store.targets.findNodeForTarget(message.targetId);
+        const nodeConnection = nodeId ? registry.nodeConnectionsByNodeId.get(nodeId) : undefined;
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { targetId: message.targetId },
+            'relay: session_fork_request for unknown/foreign target',
+          );
+          const errorResponse: SessionForkResponse = {
+            type: 'session_fork_response',
+            protocolVersion: PROTOCOL_V1,
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            result: { outcome: 'error', message: `unknown target ${message.targetId}` },
+          };
+          sendDirect(connection, errorResponse);
+          return;
+        }
+        sendDirect(nodeConnection, message);
+        return;
+      }
       case 'provision_target_request': {
         // #410: the same account-scoped connection lookup as session_create
         // above, just addressed directly by nodeId — there is no existing
@@ -2061,6 +2121,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // the owning node exactly like terminal_open above. The relay only
         // ever sees sessionId/requestId plus (for _set) an opaque
         // `EncryptedEnvelope`; no command string ever reaches the relay in
+        // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'permission_policy_get':
+      case 'permission_policy_set':
+        // A client reading/saving a session's project's permission policy
+        // (SPEC §7.17; issue #751) — routed to the owning node exactly
+        // like test_runner_config_get/_set above. The relay only ever
+        // sees sessionId/requestId plus (for _set) an opaque
+        // `EncryptedEnvelope`; no glob pattern ever reaches the relay in
         // the clear.
         await routeToOwningNode(message.sessionId, message);
         return;

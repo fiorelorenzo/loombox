@@ -111,7 +111,8 @@
     /** `project`'s own target, named for a human where possible — used only to name it in the zero-providers message below. Mirrors `+page.svelte`'s own `sessionTargetLabel` label-with-id-fallback idiom. */
     targetLabel: string;
     onClose: () => void;
-    onCreated: (sessionId: string) => void;
+    /** The provider id (agent) the session was actually created with — the caller uses this to resolve which agent's remembered config-option defaults/overrides apply (issue #753, D4-2/D4-3); it is not surfaced back any other way once the dialog closes. */
+    onCreated: (sessionId: string, provider: string) => void;
   }
 
   const { open, project, client, providers, targetLabel, onClose, onCreated }: Props = $props();
@@ -191,7 +192,7 @@
         ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
       });
-      onCreated(sessionId);
+      onCreated(sessionId, selectedProvider);
       onClose();
     } catch (error) {
       // Same wire-identifier leak issue #505 fixed in `DirectoryPicker` and

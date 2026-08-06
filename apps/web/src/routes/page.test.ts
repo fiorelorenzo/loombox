@@ -9,13 +9,26 @@ import {
   reduceTranscript,
 } from '@loombox/providers-core/browser';
 import type {
+  AcpAvailableCommand,
+  AcpConfigOption,
   AcpSessionStatus,
   PermissionQueueState,
   TranscriptState,
 } from '@loombox/providers-core/browser';
+import type { SessionStatusV1 } from '@loombox/protocol';
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
+import {
+  createLocalStorageConfigOptionDefaultsStorage,
+  rememberConfigOptionValues,
+  rememberedConfigOptionsFor,
+} from '$lib/config-option-defaults';
+import {
+  configOptionOverridesFor,
+  createLocalStorageConfigOptionOverrideStorage,
+  setConfigOptionOverride,
+} from '$lib/config-option-overrides';
 import type {
   AttentionInboxItem,
   BuildIdentityV1,
@@ -76,8 +89,14 @@ import Page from './+page.svelte';
 import { AuthStore } from '$lib/auth-store';
 import { RelayClient } from '$lib/relay-client';
 
+/** The minimal store shape `makeStore` returns (`subscribe`/`set` only, no need for the full Svelte `writable` API) — named so a Map or field that holds one (e.g. `createFakeClient`'s `configOptionsFor` cache below) can reference it directly instead of `ReturnType<typeof makeStore<T>>`. */
+interface TestStore<T> {
+  subscribe(run: (value: T) => void): () => void;
+  set(next: T): void;
+}
+
 /** A minimal store (`subscribe`/`set` only, no need for the full Svelte `writable` API), built fresh per fake client/auth-store instance so tests never share state. */
-function makeStore<T>(initial: T) {
+function makeStore<T>(initial: T): TestStore<T> {
   let value = initial;
   const subscribers = new Set<(value: T) => void>();
   return {
@@ -127,13 +146,28 @@ interface FakeClientScenario {
   sessions?: ClientSessionMeta[];
   targets?: TargetListEntry[];
   connectedAccounts?: ConnectedAccount[];
-  sessionStatuses?: Record<string, AcpSessionStatus>;
+  /**
+   * Typed with the protocol's wider `SessionStatusV1`, not
+   * `@loombox/providers-core`'s five-value `AcpSessionStatus`, for the exact
+   * reason `+page.svelte`'s own `selectedSessionStatus` documents: the map
+   * mirrors `client.statusFor(id)` but the wire value it stores unchecked can
+   * also be `'queued'`/`'starting'`/`'disconnected'` (issues #252, #516, #702),
+   * and issue #730's own states are two of those. A scenario has to be able to
+   * express what the node really sends.
+   */
+  sessionStatuses?: Record<string, SessionStatusV1>;
+  /** Parallels `sessionStatuses` (issue #730) — the reason behind a scenario session's 'error' status, when it has one. */
+  sessionStatusReasons?: Record<string, string>;
   /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
   transcripts?: Record<string, TranscriptState>;
   /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
   permissionQueues?: Record<string, PermissionQueueState>;
   /** Seeds `attentionInbox()`'s store (issue #167's wiring tests below) — the store itself is memoized on the fake client instance (mirrors `sessions`/`status`), so a test can grab it via `client.attentionInbox()` and `.set()` a new snapshot to simulate the real `RelayClient`'s own live recompute, without re-implementing that recompute here (already covered end to end in `relay-client.test.ts`). */
   attentionInboxItems?: AttentionInboxItem[];
+  /** Per-session initial config-option catalog, keyed by session id (issue #753's D4-2/D4-3 tests below) — unlike every other per-session store here, `configOptionsFor` memoizes per id (see that method's own comment) so a test can grab the same store back via `client.configOptionsFor(id)` and `.set()` a later catalog push, simulating the agent's own `session/new`/`config_option` round trip. */
+  configOptions?: Record<string, AcpConfigOption[]>;
+  /** Per-session initial agent-declared `/`-command catalog, keyed by session id (issue #743) — memoized per id exactly like `configOptionsFor`/`configOptions` above, so a test can grab the same store back via `client.commandsFor(id)` and `.set()` a later catalog push to simulate a mid-session `available_commands_update`. */
+  commands?: Record<string, AcpAvailableCommand[]>;
 }
 
 /**
@@ -142,12 +176,20 @@ interface FakeClientScenario {
  * of `client\.` call sites. Per-session stores (`transcriptFor` etc.) are
  * built fresh on every call rather than cached, which is fine here: this
  * file only asserts on structure/navigation, never on a specific
- * per-session store identity surviving a re-subscribe.
+ * per-session store identity surviving a re-subscribe. `configOptionsFor`
+ * is the one exception (issue #753): `+page.svelte` itself now subscribes
+ * to it twice for a brand-new session (`selectSession`'s own live
+ * subscription and `applyRememberedConfigOptions`'s one-shot), and a real
+ * `RelayClient` hands both the SAME underlying store — a fresh store per
+ * call here would mean `.set()`ing one in a test never reaches the
+ * other's subscriber.
  */
 function createFakeClient(scenario: FakeClientScenario = {}) {
   const statusStore = makeStore<ConnectionStatus>('idle');
   const sessionsStore = makeStore<ClientSessionMeta[]>(scenario.sessions ?? []);
   const attentionInboxStore = makeStore<AttentionInboxItem[]>(scenario.attentionInboxItems ?? []);
+  const configOptionsStores = new Map<string, TestStore<AcpConfigOption[]>>();
+  const commandsStores = new Map<string, TestStore<AcpAvailableCommand[]>>();
   return {
     status: statusStore,
     sessions: sessionsStore,
@@ -176,19 +218,49 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     interruptTurn: vi.fn(),
     setConfigOption: vi.fn(),
     statusFor: (id: string) =>
-      makeStore<AcpSessionStatus | undefined>(scenario.sessionStatuses?.[id]),
+      // The seam the app itself lives with: `statusFor` is declared over the
+      // narrower five-value union while the wire really pushes eight, so the
+      // scenario's wider value is cast here exactly the way `+page.svelte`
+      // casts it back out again.
+      makeStore<AcpSessionStatus | undefined>(
+        scenario.sessionStatuses?.[id] as AcpSessionStatus | undefined,
+      ),
+    statusReasonFor: (id: string) =>
+      makeStore<string | undefined>(scenario.sessionStatusReasons?.[id]),
     transcriptFor: (id: string) =>
       makeStore<TranscriptState | undefined>(scenario.transcripts?.[id]),
     permissionQueueFor: (id: string) =>
       makeStore<PermissionQueueState>(
         scenario.permissionQueues?.[id] ?? createPermissionQueueState(),
       ),
-    configOptionsFor: () => makeStore([]),
+    configOptionsFor: (id: string) => {
+      let store = configOptionsStores.get(id);
+      if (!store) {
+        store = makeStore<AcpConfigOption[]>(scenario.configOptions?.[id] ?? []);
+        configOptionsStores.set(id, store);
+      }
+      return store;
+    },
+    commandsFor: (id: string) => {
+      let store = commandsStores.get(id);
+      if (!store) {
+        store = makeStore<AcpAvailableCommand[]>(scenario.commands?.[id] ?? []);
+        commandsStores.set(id, store);
+      }
+      return store;
+    },
     attachmentsFor: () => makeStore([]),
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
     getTestRunnerConfig: vi.fn().mockResolvedValue({}),
+    getPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    setPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    onPermissionPolicyViolation: vi.fn(() => () => {}),
     runsFor: () => makeStore(new Map()),
     startRun: vi.fn(() => 'run-fake'),
     cancelRun: vi.fn(),
@@ -696,6 +768,109 @@ describe('cockpit shell: attention inbox wiring (issue #167)', () => {
   });
 });
 
+describe('a session with no live agent behind it (issue #730)', () => {
+  it('a session whose agent spawn failed disables the composer with the reason, shows a transcript notice, and never claims Awaiting You in the row', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      sessionStatuses: { sess_1: 'error' },
+      sessionStatusReasons: { sess_1: 'agent spawn did not complete within 120000ms' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          status: 'error',
+          statusUpdatedAt: 't1',
+          statusReason: 'agent spawn did not complete within 120000ms',
+        },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent failed to start: agent spawn did not complete within 120000ms",
+    );
+
+    const notice = await screen.findByTestId('session-agentless-notice');
+    expect(
+      within(notice).getByText(
+        "This session's agent failed to start: agent spawn did not complete within 120000ms",
+      ),
+    ).toBeTruthy();
+
+    // The row's dot and native tooltip carry the reason (issue #730's
+    // "shows an error, with the reason, in the row") — the same slots
+    // #702's disconnected reading already used, not a new visible
+    // element, and the row's dot is never the neutral "nothing to say"
+    // one a truly awaiting-input session would get.
+    const row = screen.getByTestId('session-row-item');
+    const dot = within(row).getByTestId('ui-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe(
+      'Error: agent spawn did not complete within 120000ms',
+    );
+    expect(dot.getAttribute('data-tone')).toBe('danger');
+    expect(row.querySelector('.session')?.getAttribute('title')).toContain(
+      'agent spawn did not complete within 120000ms',
+    );
+  });
+
+  it('a starting session disables the composer with a starting reason, shows a starting notice, and never appears in the attention inbox', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Fresh session' })],
+      sessionStatuses: { sess_1: 'starting' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          // Same seam as `sessionStatuses` above: the reducer stores whatever
+          // the wire sent, and the wire sends eight states, not five.
+          status: 'starting' as AcpSessionStatus,
+          statusUpdatedAt: 't1',
+        },
+      },
+      // No attentionInboxItems seeded: the real RelayClient never produces
+      // one for 'starting' either (RelayClient.attentionInbox's own live-
+      // status gate) — this scenario confirms +page.svelte doesn't invent
+      // one of its own from the status alone.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent is still starting…",
+    );
+    expect(await screen.findByTestId('session-agentless-notice')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-count')).toBeNull();
+    expect(screen.queryByTestId('session-attention-dot')).toBeNull();
+  });
+
+  it('a session with no status yet (e.g. right after a reload) keeps the composer usable, unlike a positively-known bad state — absence of information is not proof there is nothing to send to', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Reopened after reload' })],
+      // No sessionStatuses/transcripts entry at all: `undefined`, exactly
+      // what a perfectly healthy session whose true status aged out of
+      // the relay's resync ring looks like right after a reload.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe('Send a follow-up prompt…');
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+
+  it("a working session's composer stays usable and shows no notice (sanity: the gate does not over-fire on a live status)", async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Live session' })],
+      sessionStatuses: { sess_1: 'awaiting_input' },
+      transcripts: {
+        sess_1: { ...createTranscriptState(), status: 'awaiting_input', statusUpdatedAt: 't1' },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+});
+
 describe('new session: real per-target providers (forms + real providers design spec §2/§3)', () => {
   it("keys the dialog's available providers by the project's own (nodeId, targetId) — not just the first target in the list — and shows the sole one as a context-line fact", async () => {
     mountCockpit({
@@ -747,6 +922,162 @@ describe('new session: real per-target providers (forms + real providers design 
     await fireEvent.click(await screen.findByTestId('project-new-session-row'));
 
     expect(screen.getByText(/no agent cli/i).textContent).toContain("Ada's MacBook");
+  });
+});
+
+describe('new session: remembered config-option defaults (issue #753, D4-2/D4-3)', () => {
+  const CATALOG: AcpConfigOption[] = [
+    {
+      category: 'model',
+      current: 'sonnet',
+      choices: [
+        { id: 'sonnet', name: 'Sonnet' },
+        { id: 'opus', name: 'Opus' },
+        { id: 'haiku', name: 'Haiku' },
+      ],
+    },
+  ];
+
+  const LOCAL_TARGET: TargetListEntry = {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  };
+
+  async function createSessionAndSubmit(): Promise<void> {
+    await fireEvent.click(await screen.findByTestId('project-new-session-row'));
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+  }
+
+  it("applies the account-remembered value once this brand-new session's real catalog arrives (D4-2), and the ConfigBar attributes it to Account", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'opus' },
+    ]);
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await vi.waitFor(() =>
+      expect(client.setConfigOption).toHaveBeenCalledWith('new-session-id', 'model', 'opus'),
+    );
+
+    // `RelayClient.setConfigOption` never applies optimistically (issue
+    // #718) — the agent's own ack is what actually moves `current`.
+    client.configOptionsFor('new-session-id').set([{ ...CATALOG[0], current: 'opus' }]);
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    expect(screen.getByTestId('config-source-model').textContent).toContain('Account');
+  });
+
+  it("a project override wins over the account's remembered value for the same category (D4-3 core rule)", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'opus' },
+    ]);
+    setConfigOptionOverride(
+      createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox'),
+      'claude',
+      'model',
+      'haiku',
+    );
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await vi.waitFor(() =>
+      expect(client.setConfigOption).toHaveBeenCalledWith('new-session-id', 'model', 'haiku'),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalledWith('new-session-id', 'model', 'opus');
+
+    client.configOptionsFor('new-session-id').set([{ ...CATALOG[0], current: 'haiku' }]);
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    expect(screen.getByTestId('config-source-model').textContent).toContain('Project');
+  });
+
+  it("a stale remembered value (not among the agent's real choices) is dropped silently — never sent — and the agent's own default stands (issue #718's failure mode)", async () => {
+    rememberConfigOptionValues(createLocalStorageConfigOptionDefaultsStorage(), 'claude', [
+      { category: 'model', current: 'retired-model' },
+    ]);
+    const { client } = mountCockpit({ sessions: [makeSession()], targets: [LOCAL_TARGET] });
+
+    await createSessionAndSubmit();
+    await vi.waitFor(() => expect(client.createSession).toHaveBeenCalled());
+    // 'retired-model' is nowhere among this catalog's real choices.
+    client.configOptionsFor('new-session-id').set(CATALOG);
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('config-source-model').textContent).toContain('Agent default'),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("pinning a value from the ConfigBar writes this project's override for the session's agent, without any wire round trip", async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      configOptions: { sess_1: CATALOG },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await fireEvent.click(screen.getByTestId('config-pin-model'));
+
+    const overrideStorage = createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox');
+    await vi.waitFor(() =>
+      expect(configOptionOverridesFor(overrideStorage, 'claude')).toEqual({ model: 'sonnet' }),
+    );
+    expect(client.setConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("unpinning a project-overridden value from the ConfigBar clears it, falling back to the account default or the agent's own", async () => {
+    setConfigOptionOverride(
+      createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox'),
+      'claude',
+      'model',
+      'sonnet',
+    );
+    mountCockpit({ sessions: [makeSession()], configOptions: { sess_1: CATALOG } });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('config-source-model').textContent).toContain('Project'),
+    );
+    await fireEvent.click(screen.getByTestId('config-pin-model'));
+
+    const overrideStorage = createLocalStorageConfigOptionOverrideStorage('/home/dev/loombox');
+    await vi.waitFor(() => expect(configOptionOverridesFor(overrideStorage, 'claude')).toEqual({}));
+  });
+
+  it("picking a new value from the ConfigBar's own Select remembers its ack as the account's new last-used value for this agent (D4-2) — without polluting it from an automatic remembered-default application (the bug this design specifically avoids)", async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession()],
+      configOptions: { sess_1: CATALOG },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(await screen.findByTestId('config-trigger'));
+    const trigger = within(screen.getByTestId('config-option-model')).getByRole('combobox');
+    await fireEvent.click(trigger);
+    await fireEvent.click(screen.getByRole('option', { name: 'Opus' }));
+
+    expect(client.setConfigOption).toHaveBeenCalledWith('sess_1', 'model', 'opus');
+    // RelayClient.setConfigOption never applies optimistically (issue
+    // #718) — nothing is remembered yet until the agent's own ack lands.
+    const accountStorage = createLocalStorageConfigOptionDefaultsStorage();
+    expect(rememberedConfigOptionsFor(accountStorage, 'claude')).toEqual({});
+
+    client.configOptionsFor('sess_1').set([{ ...CATALOG[0], current: 'opus' }]);
+
+    await vi.waitFor(() =>
+      expect(rememberedConfigOptionsFor(accountStorage, 'claude')).toEqual({ model: 'opus' }),
+    );
   });
 });
 
@@ -1014,5 +1345,233 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
     await fireEvent.click(within(secondRow as HTMLElement).getByTestId('session-row-more'));
 
     expect(screen.queryByTestId('session-export-link')).toBeNull();
+  });
+});
+
+describe('structural identifiers render in the shared mono face (#735)', () => {
+  it("the topbar breadcrumb (project path + target) and the session row's own target are mono", async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const breadcrumb = screen.getByTestId('topbar-breadcrumb');
+    expect(breadcrumb.className).toContain('font-mono');
+    expect(breadcrumb.textContent).toContain('local');
+
+    const sessionMeta = screen.getByTestId('session-activity');
+    expect(sessionMeta.className).toContain('font-mono');
+    expect(sessionMeta.textContent).toContain('local');
+  });
+});
+
+// ---------------------------------------------------------------------
+// F1-3 (Zed-parity, issue #758): the command palette is a pure view over
+// `actionRegistry` (`$lib/action-registry.ts`), and `handleGlobalKeydown`
+// dispatches shortcuts through that same registry. `action-registry.
+// test.ts` covers the registry module itself in isolation; these tests
+// exercise the real wiring end to end — a real fake-client-backed
+// cockpit, real `keydown` events on `window` — so a regression in how
+// `+page.svelte` builds `actionContext`/`actionHandlers` from live state
+// fails here even if the pure module's own tests still pass.
+// ---------------------------------------------------------------------
+
+describe('command palette: a view over the action registry (issue #758)', () => {
+  async function openPalette(): Promise<void> {
+    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    await screen.findByTestId('dialog');
+  }
+
+  it('"Stop current turn" is hidden at rest (no active turn)', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Stop current turn')).toBeNull();
+  });
+
+  it('"Stop current turn" appears, with its Mod+. binding shown, once the selected session\'s turn is active', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    const row = screen.getByText('Stop current turn').closest('button');
+    expect(row?.textContent).toContain('Mod+.');
+  });
+
+  it('"Next session"/"Previous session" are hidden with only one session', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Next session')).toBeNull();
+    expect(screen.queryByText('Previous session')).toBeNull();
+  });
+
+  it('"Next session"/"Previous session" appear with more than one session, and actually cycle the selection when picked', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.getByText('Next session')).toBeTruthy();
+    expect(screen.getByText('Previous session')).toBeTruthy();
+
+    await fireEvent.click(screen.getByText('Next session'));
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+  });
+
+  it('Mod+B still toggles the sessions column, unchanged (no regression)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    const column = await screen.findByTestId('sessions-column');
+    expect(column.className).not.toContain('collapsed');
+
+    await fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    expect(column.className).toContain('collapsed');
+  });
+
+  it('Mod+. still interrupts an active turn (no regression)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).toHaveBeenCalledWith('sess_1');
+  });
+
+  it('Mod+. does nothing when no turn is active — the deliberate tightening this migration ships (see action-registry.ts\'s "stop-turn" doc comment)', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).not.toHaveBeenCalled();
+  });
+
+  it('a chord bound to no registered action does nothing — nothing outside the registry can wire a new global shortcut', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('composer: `/`-command picker, driven by what the agent declared (Zed-parity C2-4; issue #743)', () => {
+  const MODEL_COMMAND: AcpAvailableCommand = {
+    name: 'model',
+    description: 'Show current model selection',
+    input: undefined,
+  };
+  const SECURITY_COMMAND: AcpAvailableCommand = {
+    name: 'security',
+    description: 'Run a security scan',
+    input: { hint: '<plan|scan|status>' },
+  };
+
+  it('never opens for an agent that has declared no commands at all — `/` does nothing, no hardcoded loombox list, no placeholder', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    expect(screen.queryByTestId('dialog')).toBeNull();
+    expect(screen.queryByTestId('slash-command-picker-item')).toBeNull();
+  });
+
+  it('typing `/` at the start of an empty composer opens the picker listing exactly the agent-declared catalog', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND, SECURITY_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    const items = await screen.findAllByTestId('slash-command-picker-item');
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining('/model'),
+      expect.stringContaining('/security'),
+    ]);
+  });
+
+  it('keyboard-only: `/` opens it, typing filters, ArrowDown moves selection, Enter inserts the command form the agent declared into the composer and sends it as an ordinary prompt on submit — no mouse anywhere', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND, SECURITY_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    const searchInput = await screen.findByTestId('slash-command-picker-input');
+    await fireEvent.input(searchInput, { target: { value: 'sec' } });
+    await fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    // Selecting inserts `/name ` — the argument itself (e.g. `scan`) is
+    // whatever the user types next, never a loombox-parsed value; the
+    // agent's own `input.hint` (`<plan|scan|status>`) is picker-only
+    // guidance, never inserted as literal text (issue #743).
+    await vi.waitFor(() => expect(composer.value).toBe('/security '));
+
+    await fireEvent.input(composer, { target: { value: '/security scan' } });
+    await fireEvent.keyDown(composer, { key: 'Enter' });
+    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', []);
+  });
+
+  it('Esc dismisses the picker without touching the composer text', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    const searchInput = await screen.findByTestId('slash-command-picker-input');
+    await fireEvent.keyDown(searchInput, { key: 'Escape' });
+
+    expect(composer.value).toBe('/');
+  });
+
+  it('a mid-session catalogue update is reflected without a reload: reopening the picker after `commandsFor` pushes a new list shows the new one, not the stale one (issue #743 acceptance)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    expect(
+      (await screen.findAllByTestId('slash-command-picker-item')).map((i) => i.textContent),
+    ).toEqual([expect.stringContaining('/model')]);
+    await fireEvent.keyDown(await screen.findByTestId('slash-command-picker-input'), {
+      key: 'Escape',
+    });
+
+    client.commandsFor('sess_1').set([SECURITY_COMMAND]);
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    const items = await screen.findAllByTestId('slash-command-picker-item');
+    expect(items.map((i) => i.textContent)).toEqual([expect.stringContaining('/security')]);
+  });
+
+  it('does not trigger mid-message — `/` is only a composer-start convention, never embedded like `@file`', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: 'see the /model docs' } });
+
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 });

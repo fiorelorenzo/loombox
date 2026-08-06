@@ -109,6 +109,19 @@ describe('AttentionInbox: rendering (issue #167)', () => {
     expect(within(rows[1]).getByText('Needs approval: Run tests')).toBeTruthy();
   });
 
+  it('renders the project path and node id in the shared mono identifier face (#735)', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, permissionItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(within(rows[0]).getByText('/proj-b · node-b').className).toContain('font-mono');
+  });
+
   it('renders a permission item with its actionable PermissionCard (issue #168), but no card for an awaiting_input item', () => {
     render(AttentionInbox, {
       props: {
