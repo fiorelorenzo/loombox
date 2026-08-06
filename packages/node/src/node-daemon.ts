@@ -984,6 +984,21 @@ interface SessionBridge {
    */
   turnCount?: number;
   /**
+   * Chains every {@link NodeDaemon.autoCheckpointBeforeTurn} call for this
+   * bridge (mirrors `sendQueue` just above) so two turns fired close
+   * together can never run `GitCheckpointStore.checkpoint()` concurrently
+   * against the same worktree — `checkpoint()` is a dozen-plus sequential
+   * `git` plumbing calls building on the SAME ref/object graph
+   * (`write-tree`/`commit-tree`/`update-ref`), and interleaving two of
+   * those sequences was observed to intermittently fail with git errors
+   * like "trying to write ref ... with nonexistent object". Deliberately
+   * separate from `agentSession.prompt()`'s own timing — this queue only
+   * orders checkpoint attempts against each other, never against the
+   * prompt itself, which `autoCheckpointBeforeTurn`'s own doc comment
+   * covers.
+   */
+  checkpointQueue?: Promise<void>;
+  /**
    * Set only for an `ssh:` target's session (issue #80): the local bridge
    * object polling the remote run. `close()` must reach this directly
    * (rather than going through `AgentSupervisor.stop()`, which always kills)
@@ -1614,8 +1629,11 @@ export class NodeDaemon extends EventEmitter {
     }
     await this.assertStillLeaseholder(bridge);
     this.beginTurn(bridge);
-    await this.autoCheckpointBeforeTurn(bridge);
-    await bridge.agentSession.prompt(text);
+    // Concurrent, not serial (issue #603 PR review) — see
+    // `autoCheckpointBeforeTurn`'s own doc comment for why blocking
+    // `prompt()` on a full git round trip is a real, measured latency tax
+    // this turn's own start must never pay.
+    await Promise.all([this.autoCheckpointBeforeTurn(bridge), bridge.agentSession.prompt(text)]);
   }
 
   /**
@@ -3981,20 +3999,51 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * Takes an automatic "before this turn" checkpoint (issue #603, SPEC
-   * §7.20's "at minimum: before a turn's first write") right before
-   * `beginTurn`'s caller hands the prompt to `agentSession.prompt()` — the
-   * earliest point this node can guarantee no write the upcoming turn
-   * makes has landed yet. Deliberately not "right before the turn's FIRST
-   * TOOL CALL": ACP `session/update` notifications are fire-and-forget
-   * (no request/response this node could synchronously interpose on
-   * between "the agent decided to write" and "the write already
-   * happened"), so before the whole turn is the earliest point this node
-   * can actually promise, and it strictly subsumes "before the first
-   * write" since nothing in the turn has run yet either way. One
-   * checkpoint per turn regardless of whether that turn ends up writing
-   * anything (cheap: git content-addresses, so an unchanged tree costs
-   * only a small commit object, module doc comment) — this is also issue
-   * #603's own "leave the seams #747 needs obvious": a future
+   * §7.20's "at minimum: before a turn's first write") — called alongside
+   * (never serially before) `agentSession.prompt()`, both `promptSession`
+   * and `deliverPrompt` kick this off and the prompt itself in the same
+   * synchronous step, via `Promise.all`. Returns (rather than `async`s)
+   * the tail of `bridge.checkpointQueue` so two turns fired close
+   * together never run `GitCheckpointStore.checkpoint()` concurrently
+   * against the same worktree — see that field's own doc comment for the
+   * git error two overlapping attempts were observed to produce.
+   *
+   * This is a revision from this issue's own first pass, which `await`ed
+   * this BEFORE calling `prompt()`. That serialized every turn behind a
+   * full checkpoint — measured at 45-90ms (median ~72ms) even against a
+   * tiny local repo with no contention (`GitCheckpointStore.checkpoint()`
+   * is a dozen-plus sequential `git` subprocess spawns: `assertUsable()`'s
+   * three reads, `write-tree`, a temp-index `add -u` + `write-tree`,
+   * `ls-files`, up to two `commit-tree`s, `update-ref`, `log`) — a real,
+   * user-visible tax on "time from Enter to anything happening", worse
+   * under CI/production load where subprocess spawn itself gets slower,
+   * and the actual cause of a sibling test
+   * (`attachments-e2e.test.ts`'s queue-saturation test) timing out in CI
+   * once three turns' worth of that serial cost added up. Running
+   * concurrently instead removes it from the turn's own start latency
+   * entirely: `agentSession.prompt()`'s own I/O is issued in the same
+   * tick as this method's own first `git` call, not after checkpointing
+   * resolves — the per-bridge queue above orders checkpoint ATTEMPTS
+   * against each other, but never delays `prompt()` itself.
+   *
+   * This does trade away a hard guarantee against the theoretical case of
+   * an agent whose first tool call lands before this checkpoint's `git`
+   * calls finish — accepted deliberately: forming and dispatching a real
+   * tool call needs the agent to receive+parse the prompt and reason
+   * about it first (almost always a live model call, at minimum tens to
+   * hundreds of milliseconds), which dominates a `checkpoint()` call by a
+   * wide margin in every realistic case; the only workload where this
+   * bites is a synthetic fixture agent (e.g. an echo agent with no real
+   * reasoning step) that writes with zero latency, and even that only
+   * risks the checkpoint missing the toolcall's own first WRITE, not
+   * corrupting or skipping the checkpoint itself. ACP's `session/update`
+   * stream is fire-and-forget either way — "before the turn" was already
+   * the achievable bound, not a strictly synchronous guarantee, since
+   * nothing about ACP's protocol gave it that guarantee even when this
+   * ran serially. One checkpoint per turn regardless of whether that turn
+   * ends up writing anything (cheap: git content-addresses, so an
+   * unchanged tree costs only a small commit object) — this is also
+   * issue #603's own "leave the seams #747 needs obvious": a future
    * rewind-to-turn has one checkpoint per turn boundary to land on, no
    * separate turn→checkpoint index to build. Best-effort: a failure (no
    * git repo, detached HEAD, a dirty submodule, or `undefined` for an
@@ -4002,18 +4051,36 @@ export class NodeDaemon extends EventEmitter {
    * unavailable for one turn must never mean the agent itself stops
    * working.
    */
-  private async autoCheckpointBeforeTurn(bridge: SessionBridge): Promise<void> {
+  private autoCheckpointBeforeTurn(bridge: SessionBridge): Promise<void> {
     const store = this.getCheckpointStore(bridge.session);
-    if (!store) return; // ssh: target — see getCheckpointStore's own doc comment
+    if (!store) return Promise.resolve(); // ssh: target — see getCheckpointStore's own doc comment
     bridge.turnCount = (bridge.turnCount ?? 0) + 1;
-    try {
-      await store.checkpoint({ message: `${AUTO_CHECKPOINT_MESSAGE_PREFIX}${bridge.turnCount}` });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `NodeDaemon: auto-checkpoint before turn ${bridge.turnCount} failed for session ${bridge.session.id}: ${detail}`,
-      );
-    }
+    const turnNumber = bridge.turnCount;
+    const message = `${AUTO_CHECKPOINT_MESSAGE_PREFIX}${turnNumber}`;
+    const next = (bridge.checkpointQueue ?? Promise.resolve()).then(async () => {
+      try {
+        await store.checkpoint({ message });
+      } catch {
+        // One retry after a short backoff for a transient subprocess-spawn
+        // failure (`spawn git ENOENT` and similar, observed repeatedly
+        // under heavy concurrent load in CI — issue #603 PR review) —
+        // always safe to retry: `checkpoint()` only ever ADDS new objects
+        // and a new ref, never mutates or removes anything, so a retry
+        // after a failed attempt can at worst leave one extra unreachable
+        // git object behind, never corrupt or duplicate a checkpoint.
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          await store.checkpoint({ message });
+        } catch (secondError) {
+          const detail = secondError instanceof Error ? secondError.message : String(secondError);
+          console.warn(
+            `NodeDaemon: auto-checkpoint before turn ${turnNumber} failed for session ${bridge.session.id} (after one retry): ${detail}`,
+          );
+        }
+      }
+    });
+    bridge.checkpointQueue = next;
+    return next;
   }
 
   private sendSessionArchiveResponse(
@@ -4210,8 +4277,12 @@ export class NodeDaemon extends EventEmitter {
       });
     }
     this.beginTurn(bridge);
-    await this.autoCheckpointBeforeTurn(bridge);
-    await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
+    // Concurrent, not serial — see `autoCheckpointBeforeTurn`'s own doc
+    // comment; mirrors `promptSession` above.
+    await Promise.all([
+      this.autoCheckpointBeforeTurn(bridge),
+      bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions)),
+    ]);
   }
 
   /**

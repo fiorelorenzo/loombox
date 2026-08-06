@@ -536,158 +536,154 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
 });
 
 describe('the file event is decoupled from the session_update bounded queue (SPEC §7.16, issue #154)', () => {
-  it(
-    'a saturated session_update queue does not gate/delay the file event, and attachment bytes never enter the session_update fan-out',
-    { retry: 0, timeout: 20000 },
-    async () => {
-      // A deliberately tiny bound so an ordinary turn's own burst of
-      // session_update messages (two transcript chunks plus status/turn_ended
-      // events) reliably overflows it and produces a real resync_marker —
-      // concrete evidence this session's queue actually experienced
-      // drop-oldest backpressure, not just a theoretical bound.
-      await relay.close();
-      relay = await startRelay({ maxClientQueueDepth: 2 });
+  it('a saturated session_update queue does not gate/delay the file event, and attachment bytes never enter the session_update fan-out', async () => {
+    // A deliberately tiny bound so an ordinary turn's own burst of
+    // session_update messages (two transcript chunks plus status/turn_ended
+    // events) reliably overflows it and produces a real resync_marker —
+    // concrete evidence this session's queue actually experienced
+    // drop-oldest backpressure, not just a theoretical bound.
+    await relay.close();
+    relay = await startRelay({ maxClientQueueDepth: 2 });
 
-      const amk = generateAmk();
-      const accountId = 'acct-file-event-decoupled';
-      const blobSource = new FakeBlobSource();
+    const amk = generateAmk();
+    const accountId = 'acct-file-event-decoupled';
+    const blobSource = new FakeBlobSource();
 
-      node = createNode({
-        stateDir: nodeStateDir,
-        relayUrl: relay.url,
-        nodeId: 'node-file-event-decoupled',
-        deviceId: 'device-node-file-event-decoupled',
-        devicePublicKey: randomBase64(),
-        authToken: accountId,
-        accountId,
-        amk,
-        blobSource,
-        supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
-      });
+    node = createNode({
+      stateDir: nodeStateDir,
+      relayUrl: relay.url,
+      nodeId: 'node-file-event-decoupled',
+      deviceId: 'device-node-file-event-decoupled',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      blobSource,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
 
-      const session = await node.createSession({ projectPath, provider: 'test-echo' });
-      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
 
-      // A "multi-megabyte blob" stand-in, scaled down for test speed — large
-      // enough that if it ever leaked into a session_update envelope's
-      // plaintext, the scan below would catch it. (`getRandomValues` itself
-      // caps out at 65,536 bytes per call, hence the chunked fill.)
-      const attachmentBytes = new Uint8Array(200_000);
-      for (let offset = 0; offset < attachmentBytes.length; offset += 65_536) {
-        crypto.getRandomValues(attachmentBytes.subarray(offset, offset + 65_536));
-      }
-      blobSource.seed(
-        session.id,
-        'ref-big',
-        await phoneSealAttachment(session.id, 'ref-big', attachmentBytes, key),
-      );
+    // A "multi-megabyte blob" stand-in, scaled down for test speed — large
+    // enough that if it ever leaked into a session_update envelope's
+    // plaintext, the scan below would catch it. (`getRandomValues` itself
+    // caps out at 65,536 bytes per call, hence the chunked fill.)
+    const attachmentBytes = new Uint8Array(200_000);
+    for (let offset = 0; offset < attachmentBytes.length; offset += 65_536) {
+      crypto.getRandomValues(attachmentBytes.subarray(offset, offset + 65_536));
+    }
+    blobSource.seed(
+      session.id,
+      'ref-big',
+      await phoneSealAttachment(session.id, 'ref-big', attachmentBytes, key),
+    );
 
-      phone = new TestPhone(relay.url, {
-        deviceId: 'device-phone-file-event-decoupled',
-        devicePublicKey: randomBase64(),
-        authToken: accountId,
-      });
-      // A local, non-`undefined`-typed alias: the module-level `let phone`
-      // can't be narrowed inside the `vi.waitFor` closure below.
-      const activePhone = phone;
-      await activePhone.ready;
-      activePhone.send({
-        type: 'session_resume',
-        protocolVersion: PROTOCOL_V1,
-        sessionId: session.id,
-      });
-      await activePhone.waitFor((m) => m.type === 'session_announce');
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-file-event-decoupled',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    // A local, non-`undefined`-typed alias: the module-level `let phone`
+    // can't be narrowed inside the `vi.waitFor` closure below.
+    const activePhone = phone;
+    await activePhone.ready;
+    activePhone.send({
+      type: 'session_resume',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+    });
+    await activePhone.waitFor((m) => m.type === 'session_announce');
 
-      // Saturate this session's bounded client queue with a couple of
-      // ordinary (attachment-less) turns first, so a genuine drop-oldest
-      // overflow (a resync_marker) has already happened for this exact
-      // session/client before the attachment turn ever runs.
-      for (let i = 0; i < 2; i++) {
-        const primerEnvelope = await phoneSeal(session.id, { text: `priming turn ${i}` }, key);
-        activePhone.send({
-          type: 'prompt_inject',
-          protocolVersion: PROTOCOL_V1,
-          sessionId: session.id,
-          promptId: `prompt-primer-${i}`,
-          envelope: primerEnvelope,
-        });
-        // Give each primer turn's burst a moment to land (and overflow the
-        // depth-2 queue) before the next one fires.
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-      // Waits for the marker itself to actually arrive, driven off
-      // `TestPhone`'s own message-arrival poll (the same idiom every other
-      // wait in this file already uses), instead of guessing a fixed 300ms
-      // was long enough after the loop above — that blind sleep-then-assert
-      // shape was the same "wall-clock deadline as primary synchronisation"
-      // bug as issue #793's PTY test: reported flaking under full-suite
-      // parallel load, since a slower run could still be short of real
-      // backpressure at the 300ms mark. `waitFor` throws (failing the test
-      // for a real reason) if no resync_marker shows up within its own
-      // 5000ms bound.
-      await activePhone.waitFor((m) => m.type === 'resync_marker'); // real backpressure genuinely happened for this session/client
-
-      // Now the attachment turn. `deliverPrompt` resolves the attachment and
-      // awaits `sendFileEvent` *before* ever calling `beginTurn`/`prompt()`
-      // (see that method's doc comment), so on the node→relay connection the
-      // `blob_ref` frame is always sent strictly before any session_update
-      // this turn produces even exists to be sent.
-      const sessionUpdateCountBeforeAttachmentTurn = activePhone.count(
-        (m) => m.type === 'session_update',
-      );
-      const attachmentEnvelope = await phoneSeal(
-        session.id,
-        { text: 'here is a big file', attachments: [{ ref: 'ref-big', mimeType: 'image/png' }] },
-        key,
-      );
+    // Saturate this session's bounded client queue with a couple of
+    // ordinary (attachment-less) turns first, so a genuine drop-oldest
+    // overflow (a resync_marker) has already happened for this exact
+    // session/client before the attachment turn ever runs.
+    for (let i = 0; i < 2; i++) {
+      const primerEnvelope = await phoneSeal(session.id, { text: `priming turn ${i}` }, key);
       activePhone.send({
         type: 'prompt_inject',
         protocolVersion: PROTOCOL_V1,
         sessionId: session.id,
-        promptId: 'prompt-big-attachment',
-        envelope: attachmentEnvelope,
+        promptId: `prompt-primer-${i}`,
+        envelope: primerEnvelope,
       });
+      // Give each primer turn's burst a moment to land (and overflow the
+      // depth-2 queue) before the next one fires.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    // Waits for the marker itself to actually arrive, driven off
+    // `TestPhone`'s own message-arrival poll (the same idiom every other
+    // wait in this file already uses), instead of guessing a fixed 300ms
+    // was long enough after the loop above — that blind sleep-then-assert
+    // shape was the same "wall-clock deadline as primary synchronisation"
+    // bug as issue #793's PTY test: reported flaking under full-suite
+    // parallel load, since a slower run could still be short of real
+    // backpressure at the 300ms mark. `waitFor` throws (failing the test
+    // for a real reason) if no resync_marker shows up within its own
+    // 5000ms bound.
+    await activePhone.waitFor((m) => m.type === 'resync_marker'); // real backpressure genuinely happened for this session/client
 
-      const blobRefMsg = (await activePhone.waitFor(
-        (m) => m.type === 'blob_ref',
-      )) as unknown as BlobRef;
-      expect(blobRefMsg.sessionId).toBe(session.id);
-      expect(blobRefMsg.ref).toBe('ref-big');
-      // Structurally a different animal from a bounded-queue item
-      // (`OutboxItem` is always `SessionUpdateEnvelopeV1 | ResyncMarker`, both
-      // of which carry seq-range fields): `blob_ref` has no `seq`/`fromSeq`/
-      // `toSeq` at all, confirming it never rides that queue.
-      expect(blobRefMsg).not.toHaveProperty('seq');
-      expect(blobRefMsg).not.toHaveProperty('fromSeq');
+    // Now the attachment turn. `deliverPrompt` resolves the attachment and
+    // awaits `sendFileEvent` *before* ever calling `beginTurn`/`prompt()`
+    // (see that method's doc comment), so on the node→relay connection the
+    // `blob_ref` frame is always sent strictly before any session_update
+    // this turn produces even exists to be sent.
+    const sessionUpdateCountBeforeAttachmentTurn = activePhone.count(
+      (m) => m.type === 'session_update',
+    );
+    const attachmentEnvelope = await phoneSeal(
+      session.id,
+      { text: 'here is a big file', attachments: [{ ref: 'ref-big', mimeType: 'image/png' }] },
+      key,
+    );
+    activePhone.send({
+      type: 'prompt_inject',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: 'prompt-big-attachment',
+      envelope: attachmentEnvelope,
+    });
 
-      // Metadata only — matches `FileEventPayloadV1` exactly, no byte field.
-      const fileEvent = await openJson<FileEventPayloadV1>(session.id, blobRefMsg.envelope, key);
-      expect(fileEvent).toEqual({ ref: 'ref-big', mimeType: 'image/png' });
+    const blobRefMsg = (await activePhone.waitFor(
+      (m) => m.type === 'blob_ref',
+    )) as unknown as BlobRef;
+    expect(blobRefMsg.sessionId).toBe(session.id);
+    expect(blobRefMsg.ref).toBe('ref-big');
+    // Structurally a different animal from a bounded-queue item
+    // (`OutboxItem` is always `SessionUpdateEnvelopeV1 | ResyncMarker`, both
+    // of which carry seq-range fields): `blob_ref` has no `seq`/`fromSeq`/
+    // `toSeq` at all, confirming it never rides that queue.
+    expect(blobRefMsg).not.toHaveProperty('seq');
+    expect(blobRefMsg).not.toHaveProperty('fromSeq');
 
-      // The turn still completes normally afterward — the file event never
-      // blocked/starved the agent's own prompt delivery either.
-      await vi.waitFor(() =>
-        expect(activePhone.count((m) => m.type === 'session_update')).toBeGreaterThan(
-          sessionUpdateCountBeforeAttachmentTurn,
-        ),
-      );
+    // Metadata only — matches `FileEventPayloadV1` exactly, no byte field.
+    const fileEvent = await openJson<FileEventPayloadV1>(session.id, blobRefMsg.envelope, key);
+    expect(fileEvent).toEqual({ ref: 'ref-big', mimeType: 'image/png' });
 
-      // The core byte-boundary guarantee: scan every session_update this
-      // client ever received (this session's whole transcript stream,
-      // decrypted) and confirm the attachment's actual bytes never appear
-      // anywhere in it — the bytes traveled only via `blob_upload`/
-      // `blob_download`, never through the live session_update fan-out.
-      const attachmentBase64 = Buffer.from(attachmentBytes).toString('base64');
-      const sessionUpdates = activePhone.messages.filter(
-        (m) => m.type === 'session_update',
-      ) as unknown as SessionUpdateEnvelopeV1[];
-      expect(sessionUpdates.length).toBeGreaterThan(0);
-      for (const update of sessionUpdates) {
-        const decrypted = await openJson<unknown>(session.id, update.envelope, key);
-        const serialized = JSON.stringify(decrypted);
-        expect(serialized).not.toContain(attachmentBase64);
-        expect(serialized.length).toBeLessThan(attachmentBase64.length);
-      }
-    },
-  );
+    // The turn still completes normally afterward — the file event never
+    // blocked/starved the agent's own prompt delivery either.
+    await vi.waitFor(() =>
+      expect(activePhone.count((m) => m.type === 'session_update')).toBeGreaterThan(
+        sessionUpdateCountBeforeAttachmentTurn,
+      ),
+    );
+
+    // The core byte-boundary guarantee: scan every session_update this
+    // client ever received (this session's whole transcript stream,
+    // decrypted) and confirm the attachment's actual bytes never appear
+    // anywhere in it — the bytes traveled only via `blob_upload`/
+    // `blob_download`, never through the live session_update fan-out.
+    const attachmentBase64 = Buffer.from(attachmentBytes).toString('base64');
+    const sessionUpdates = activePhone.messages.filter(
+      (m) => m.type === 'session_update',
+    ) as unknown as SessionUpdateEnvelopeV1[];
+    expect(sessionUpdates.length).toBeGreaterThan(0);
+    for (const update of sessionUpdates) {
+      const decrypted = await openJson<unknown>(session.id, update.envelope, key);
+      const serialized = JSON.stringify(decrypted);
+      expect(serialized).not.toContain(attachmentBase64);
+      expect(serialized.length).toBeLessThan(attachmentBase64.length);
+    }
+  });
 });

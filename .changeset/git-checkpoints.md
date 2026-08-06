@@ -2,6 +2,7 @@
 '@loombox/protocol': minor
 '@loombox/node': minor
 '@loombox/relay': patch
+'@loombox/supervisor': patch
 ---
 
 Wire `@loombox/supervisor`'s `GitCheckpointStore` (issue #266) into a running session and the wire protocol (issue #603). `NodeDaemon` now takes an automatic checkpoint right before every turn's prompt reaches the agent — before the whole turn, not just its first tool call, since ACP `session/update` notifications are fire-and-forget and there is no request/response boundary this node could synchronously interpose on between "the agent decided to write" and "the write already happened"; before the turn is the earliest point this node can actually guarantee, and it strictly subsumes "before the first write". Best-effort: a checkpoint failure is logged and never blocks the turn itself.
@@ -11,3 +12,5 @@ Four new v1 wire messages (`checkpoint_create`/`_list`/`_restore_preview`/`_rest
 Every checkpoint/preview carries `isWorkInPlace` (`Session.branch === ''`): the engine treats an isolated worktree and an in-place session identically, but only an in-place session's worktree is the user's actual project folder, so this is the signal a client needs to warn accordingly rather than guessing. An `ssh:`-target session gets a clear `errorType: 'unsupported_target'` instead of a confusing failure: the engine spawns `git` as a local child process, so a remote session's `worktreePath` is not reachable from this node at all. A session's checkpoint refs are deleted (`GitCheckpointStore.deleteAllCheckpoints()`) whenever `SessionManager.removeSession` forgets it, so hidden refs never accumulate in the user's repo.
 
 This is the blocker both #268 (the rollback confirmation UI) and #747 (rewind) were waiting on. Neither is built yet: #268 still needs the client list/create/confirm UI over this wire surface, and #747 still needs to map a turn to the checkpoint taken before it (this wiring already takes one checkpoint per turn boundary, labeled `auto: before turn <n>`, for exactly that) and its own transcript-truncation half.
+
+The automatic per-turn checkpoint runs concurrently with `agentSession.prompt()` (never serially before it — a per-bridge queue still orders successive checkpoint attempts against each other so they never race the same worktree) and `GitCheckpointStore.checkpoint()` itself now issues its independent `git` reads in parallel and one call fewer, plus a single retry on a transient subprocess-spawn failure: measured at 45-90ms serial per checkpoint against a real repo with zero contention before this revision, which was directly gating a sibling test's own 5s wait under CI load. Checkpointing is not on the turn's start latency at all anymore.

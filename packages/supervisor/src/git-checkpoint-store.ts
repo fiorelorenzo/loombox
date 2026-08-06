@@ -397,8 +397,6 @@ export class GitCheckpointStore {
   async checkpoint(options: { message?: string; id?: string } = {}): Promise<GitCheckpoint> {
     await this.assertUsable();
 
-    const baseCommit = await this.git(['rev-parse', 'HEAD']);
-    const baseTree = await this.git(['rev-parse', `${baseCommit}^{tree}`]);
     // A monotonic, nanosecond-resolution prefix so checkpoints sort by
     // creation order via a plain lexicographic `--sort=refname` — git commit
     // timestamps only have 1-second resolution, which is not enough to
@@ -408,23 +406,35 @@ export class GitCheckpointStore {
       options.id ??
       `${process.hrtime.bigint().toString().padStart(20, '0')}-${randomUUID().slice(0, 8)}`;
 
-    // The real index, completely untouched — exactly what's currently staged.
-    const indexTree = await this.git(['write-tree']);
-
-    // A throwaway copy of the real index with unstaged modifications/
-    // deletions of already-tracked files staged into it (`add -u` never
-    // touches new untracked files) — the combined staged+unstaged content,
-    // matching what `git stash create` builds internally.
-    const workingTree = await this.withTempIndex(async (tempIndexPath) => {
-      await this.copyRealIndexInto(tempIndexPath);
-      await this.git(['add', '-u'], { GIT_INDEX_FILE: tempIndexPath });
-      return this.git(['write-tree'], { GIT_INDEX_FILE: tempIndexPath });
-    });
-
-    // Untracked-and-not-ignored files — git's own notion (module doc comment).
-    const untrackedFiles = (await this.git(['ls-files', '--others', '--exclude-standard']))
-      .split('\n')
-      .filter((line) => line.length > 0);
+    // Four independent reads over the worktree's CURRENT state — none
+    // depends on any other's result, so they run concurrently rather than
+    // as four separate sequential `git` round trips (issue #603: this
+    // store's own latency became directly user-visible once a session
+    // started calling this before every turn). Safe to run together:
+    // `write-tree` (both the real and the temp-index one) only ever
+    // WRITES new objects into git's content-addressed object database,
+    // never a ref or the working tree, and git's object writes are safe
+    // under concurrent writers — the same property that lets any git
+    // tooling touch one repo at once at all.
+    const [baseRefs, indexTree, workingTree, untrackedFiles] = await Promise.all([
+      this.git(['rev-parse', 'HEAD', 'HEAD^{tree}']),
+      // The real index, completely untouched — exactly what's currently staged.
+      this.git(['write-tree']),
+      // A throwaway copy of the real index with unstaged modifications/
+      // deletions of already-tracked files staged into it (`add -u` never
+      // touches new untracked files) — the combined staged+unstaged
+      // content, matching what `git stash create` builds internally.
+      this.withTempIndex(async (tempIndexPath) => {
+        await this.copyRealIndexInto(tempIndexPath);
+        await this.git(['add', '-u'], { GIT_INDEX_FILE: tempIndexPath });
+        return this.git(['write-tree'], { GIT_INDEX_FILE: tempIndexPath });
+      }),
+      // Untracked-and-not-ignored files — git's own notion (module doc comment).
+      this.git(['ls-files', '--others', '--exclude-standard']).then((raw) =>
+        raw.split('\n').filter((line) => line.length > 0),
+      ),
+    ]);
+    const [baseCommit, baseTree] = baseRefs.split('\n');
 
     let untrackedCommit: string | undefined;
     if (untrackedFiles.length > 0) {
@@ -451,15 +461,21 @@ export class GitCheckpointStore {
       CHECKPOINT_GIT_IDENTITY,
     );
 
+    // Captured right before the ref actually lands rather than round-tripped
+    // back from `git log` afterward (one fewer `git` call; no caller reads
+    // this back for exact cross-checking against the commit's own
+    // committer date, which `commit-tree` — given no explicit
+    // `GIT_COMMITTER_DATE` in `CHECKPOINT_GIT_IDENTITY` — defaults to "now"
+    // at that same call anyway, only at git's own one-second resolution
+    // instead of this millisecond one).
+    const createdAt = Date.now();
     await this.git(['update-ref', this.refPath(id), checkpointCommit]);
-
-    const createdAtIso = await this.git(['log', '-1', '--format=%cI', checkpointCommit]);
 
     return {
       id,
       sessionId: this.sessionId,
       message,
-      createdAt: Date.parse(createdAtIso),
+      createdAt,
       commit: checkpointCommit,
       baseCommit,
       hasStagedChanges: indexTree !== baseTree,
