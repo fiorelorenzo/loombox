@@ -110,11 +110,18 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
  *    already carries the tool's display-ready results and nothing
  *    consumes `rawOutput` today, so it's intentionally left off this
  *    interface rather than plumbed through unused.
- *  - `parentToolCallId`: NOT an ACP wire field at all — SPEC.md §5.5/
- *    §7.24 documents it as a value a provider's `enrich()` hook promotes
- *    from a vendor `_meta` field (e.g. Claude Code's
- *    `_meta.claudeCode.parentToolUseId`); always `undefined` straight off
- *    the wire until v2's promotion lands (issue #184). Not a bug.
+ *  - `parentToolCallId`: this interface's own field never carries a real
+ *    wire value — no real provider sends a bare, top-level
+ *    `parentToolCallId` on `session/update`. It's declared here only so
+ *    `mapToTranscriptUpdate` passes an (always-`undefined`-off-the-wire)
+ *    slot through to `AcpTranscriptUpdate`, which a provider's `enrich()`
+ *    hook then fills from its own vendor `_meta` shape — Claude Code's is
+ *    `_meta.claudeCode.parentToolUseId` (issue #200; verified with a live
+ *    run against the real npx bridge; `@loombox/providers-claude`'s
+ *    `claudeProviderModule.enrich()` does the promotion). Not a bug: this
+ *    mapping function deliberately never reads `_meta` itself — SPEC.md
+ *    §5.5's whole point is that vendor `_meta` promotion is a provider
+ *    adapter's job, not core's.
  *  - `entries` (plan): correct; ACP's `PlanEntry` `content`/`priority`/
  *    `status` fields also match this client's own `AcpPlanEntry` verbatim.
  *  - the `plan` vs `plan_update` notification **discriminant** itself was
@@ -196,6 +203,26 @@ interface SessionState {
 
 /** The ACP protocol version this client negotiates (ACP v1 baseline, SPEC.md §16). */
 const PROTOCOL_VERSION = 1;
+
+/**
+ * Advertised in `initialize`'s `clientCapabilities._meta` (issue #199/#200:
+ * verified with a live run against the real `@agentclientprotocol/
+ * claude-agent-acp` npx bridge — its own README: "Clients that can render
+ * nested transcripts can opt in with `clientCapabilities._meta["subagent-
+ * transcript"] = true`. The agent then forwards subagent text, thinking,
+ * and tool calls, relating nested updates to the launching Agent/Task call
+ * through `_meta.claudeCode.parentToolUseId`."). Nested TOOL CALLS were
+ * observed forwarding regardless of this flag in that same live run — only
+ * the subagent's own message/thinking stream is gated on it (silently
+ * dropped otherwise) — but it costs nothing to always advertise: an agent
+ * that doesn't recognize a `_meta` key ignores it (verified live against
+ * both a real `omp acp` binary, which never even echoes it back, and the
+ * Claude bridge, which does). `@loombox/providers-claude`'s
+ * `claudeProviderModule.enrich()` is the piece that actually promotes
+ * `_meta.claudeCode.parentToolUseId` once it arrives — this constant only
+ * controls whether it's given the chance to arrive at all.
+ */
+const SUBAGENT_TRANSCRIPT_CAPABILITY_KEY = 'subagent-transcript';
 
 /** Options accepted by `AcpClient.newSession` (issue #190). */
 export interface NewSessionOptions {
@@ -598,6 +625,7 @@ export class AcpClient extends EventEmitter {
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
         terminal: false,
+        _meta: { [SUBAGENT_TRANSCRIPT_CAPABILITY_KEY]: true },
       },
       clientInfo: { name: 'loombox', version: '0.0.0' },
     });

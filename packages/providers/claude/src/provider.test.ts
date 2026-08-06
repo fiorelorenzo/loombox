@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { claudeProvider, claudeProviderModule } from './provider';
+import { claudeParentToolCallId, claudeProvider, claudeProviderModule } from './provider';
 
 // The real `claude` binary (what claudeProvider.spawnConfig() actually
 // launches) can't be exercised headlessly in this dev environment, so this
@@ -97,5 +97,74 @@ describe('claudeProvider', () => {
     expect(turnEnded).toBe(true);
     expect(updates.length).toBeGreaterThan(0);
     expect(updates.at(-1)?.text).toBe('Hello world');
+  });
+});
+
+describe('claudeParentToolCallId (issue #199/#200)', () => {
+  it('reads _meta.claudeCode.parentToolUseId off a raw wire update', () => {
+    const raw = { _meta: { claudeCode: { parentToolUseId: 'toolu_root' } } };
+    expect(claudeParentToolCallId(raw)).toBe('toolu_root');
+  });
+
+  it('returns undefined for a raw update with no _meta at all', () => {
+    expect(claudeParentToolCallId({ sessionUpdate: 'tool_call' })).toBeUndefined();
+  });
+
+  it('returns undefined for _meta from a different vendor namespace (e.g. Codex)', () => {
+    expect(
+      claudeParentToolCallId({ _meta: { codex: { subagent: { threadId: 't1' } } } }),
+    ).toBeUndefined();
+  });
+
+  it('never throws on a malformed/non-object raw payload', () => {
+    expect(claudeParentToolCallId(undefined)).toBeUndefined();
+    expect(claudeParentToolCallId(null)).toBeUndefined();
+    expect(claudeParentToolCallId('a string')).toBeUndefined();
+    expect(claudeParentToolCallId(42)).toBeUndefined();
+    expect(claudeParentToolCallId({ _meta: null })).toBeUndefined();
+    expect(claudeParentToolCallId({ _meta: { claudeCode: null } })).toBeUndefined();
+    expect(
+      claudeParentToolCallId({ _meta: { claudeCode: { parentToolUseId: 42 } } }),
+    ).toBeUndefined();
+    expect(
+      claudeParentToolCallId({ _meta: { claudeCode: { parentToolUseId: '' } } }),
+    ).toBeUndefined();
+  });
+});
+
+describe('claudeProviderModule.enrich (issue #200)', () => {
+  it('leaves a message-chunk update untouched — no parentToolCallId field exists on that shape', () => {
+    const update = {
+      kind: 'agent_message_chunk',
+      turnId: 't1',
+      messageId: 'm1',
+      text: 'hi',
+    } as const;
+    const raw = { _meta: { claudeCode: { parentToolUseId: 'toolu_root' } } };
+    expect(claudeProviderModule.enrich!(update, raw)).toBe(update);
+  });
+
+  it('never clobbers a parentToolCallId the update already carries', () => {
+    const update = {
+      kind: 'tool_call' as const,
+      id: 'tc1',
+      parentToolCallId: 'already-set',
+    };
+    const raw = { _meta: { claudeCode: { parentToolUseId: 'toolu_root' } } };
+    expect(claudeProviderModule.enrich!(update, raw)).toBe(update);
+  });
+
+  it('promotes parentToolCallId from raw _meta onto a bare tool_call update', () => {
+    const update = { kind: 'tool_call' as const, id: 'tc1' };
+    const raw = { _meta: { claudeCode: { parentToolUseId: 'toolu_root' } } };
+    expect(claudeProviderModule.enrich!(update, raw)).toEqual({
+      ...update,
+      parentToolCallId: 'toolu_root',
+    });
+  });
+
+  it('passes a tool_call update through unchanged when raw carries no Claude _meta', () => {
+    const update = { kind: 'tool_call' as const, id: 'tc1' };
+    expect(claudeProviderModule.enrich!(update, undefined)).toBe(update);
   });
 });

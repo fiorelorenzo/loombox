@@ -23,10 +23,12 @@ import {
   type AcpAvailableCommand,
   type AcpMcpServerPromptsEntry,
   type AcpConfigOption,
+  type AcpMcpServerStatusEntry,
   type AcpPermissionOption,
   type AcpSessionStatus,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
+  type McpServerConfig,
   type PendingPermissionRequest,
   type PermissionQueueState,
   type TranscriptItem,
@@ -1033,6 +1035,27 @@ export interface CreateSessionOptions {
    * like any other session error).
    */
   customAgent?: CustomAgentRecordV1;
+  /**
+   * This client's own per-project, currently-enabled MCP server
+   * declarations (issue #750, D2-2; #794) — `apps/web`'s
+   * `mcp-server-store.ts`'s `localStorage` list for `projectPath`, at the
+   * moment of creation, in the plain `McpServerConfig[]` shape
+   * `effectiveMcpServerConfigs` returns. Travels inside the SAME private
+   * envelope as `title`/`projectPath`/`customAgent` — never in the clear
+   * — and never carries a secret *value*, only a secret *name* reference
+   * (`McpServerVarDecl`'s `{ secret }` arm); resolving that into a value
+   * stays exclusively node-side (SPEC §7.17), unchanged and unweakened by
+   * this field's existence.
+   *
+   * The owning node's `NodeDaemon.resolveMcpServers` merges this list
+   * with its OWN `McpConfigStore` (global + project) — its own record
+   * always wins a same-name collision — into the one effective server set
+   * the session's agent actually receives (`mergeMcpServerConfigLists`'s
+   * own doc comment). Omitted or `[]` (an older client, or a project with
+   * nothing declared) behaves exactly like before this field existed:
+   * only the node's own store is consulted.
+   */
+  mcpServerConfigs?: McpServerConfig[];
 }
 
 /**
@@ -3365,6 +3388,14 @@ export class RelayClient {
       // all, not an explicit `undefined`, so an older node's schema (which
       // predates this field) parses the envelope unchanged.
       ...(options.customAgent === undefined ? {} : { customAgent: options.customAgent }),
+      // Same omit-rather-than-undefined discipline (issue #750/#794): an
+      // empty/omitted list is behaviorally identical to omitting the key
+      // entirely (`sessionPrivateMetaV1.mcpServerConfigs`'s own doc
+      // comment), so this keeps the common "nothing declared" envelope
+      // exactly as small as it was before this field existed.
+      ...(options.mcpServerConfigs === undefined || options.mcpServerConfigs.length === 0
+        ? {}
+        : { mcpServerConfigs: options.mcpServerConfigs }),
     };
     const privateEnvelope = await this.envelopeCrypto.seal(
       'session',
@@ -3711,6 +3742,26 @@ export class RelayClient {
     const transcript = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(transcript, (state) => state.commands);
+  }
+
+  /**
+   * The session's latest `mcp_server_status` push (issue #750, D2-2's
+   * report/disable lifecycle; issue #794's own client-side surface),
+   * always the full set the node last reported — only the servers that
+   * failed to start, replaced wholesale on every push, never merged
+   * across pushes (`reduceSessionEvent`'s own `mcp_server_status` case).
+   * Backed by the same reduced `TranscriptState` `transcriptFor` exposes
+   * (its `mcpServerStatuses` field), not a separate parallel store,
+   * exactly like `configOptionsFor`/`commandsFor` above. `undefined`
+   * until the first push arrives — a session with no MCP servers
+   * configured at all stays silent forever, same as the node never
+   * sending the event in that case; `[]` is the real, meaningful "every
+   * configured server started fine" push.
+   */
+  mcpServerStatusesFor(sessionId: string): Readable<AcpMcpServerStatusEntry[] | undefined> {
+    const transcript = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(transcript, (state) => state.mcpServerStatuses);
   }
 
   /**

@@ -5,7 +5,12 @@ import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '$lib/projects';
 import { addCustomAgent, createInMemoryCustomAgentStorage } from '$lib/custom-agent-store';
-import { AGENT_CATALOGUE } from '@loombox/providers-core/browser';
+import {
+  addMcpServerConfig,
+  createInMemoryMcpServerConfigStorage,
+  setMcpServerEnabled,
+} from '$lib/mcp-server-store';
+import { AGENT_CATALOGUE, parseMcpServerConfig } from '@loombox/providers-core/browser';
 import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svelte';
 
 afterEach(() => cleanup());
@@ -183,6 +188,73 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       title: undefined,
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the Config panel's currently-enabled MCP server list into createSession's mcpServerConfigs, excluding a disabled one (issue #750, D2-2; #794)", async () => {
+    const client = fakeClient();
+    const onCreated = vi.fn();
+    const mcpStorage = createInMemoryMcpServerConfigStorage();
+    const enabledConfig = parseMcpServerConfig({
+      name: 'filesystem',
+      transport: 'stdio',
+      command: '/usr/local/bin/mcp-filesystem',
+      args: [],
+      env: [],
+    });
+    const disabledConfig = parseMcpServerConfig({
+      name: 'disabled-one',
+      transport: 'stdio',
+      command: '/usr/local/bin/disabled-one',
+      args: [],
+      env: [],
+    });
+    addMcpServerConfig(mcpStorage, enabledConfig);
+    addMcpServerConfig(mcpStorage, disabledConfig);
+    setMcpServerEnabled(mcpStorage, disabledConfig.name, false);
+
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated,
+        onClose: vi.fn(),
+        mcpStorage,
+      },
+    });
+
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(client.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpServerConfigs: [enabledConfig] }),
+    );
+  });
+
+  it('omits mcpServerConfigs entirely when the Config panel has nothing enabled for this project, rather than sending an empty array (issue #794)', async () => {
+    const client = fakeClient();
+    const onCreated = vi.fn();
+
+    render(NewSessionDialog, {
+      props: {
+        open: true,
+        project: PROJECT,
+        client,
+        providers: PROVIDERS,
+        targetLabel: TARGET_LABEL,
+        onCreated,
+        onClose: vi.fn(),
+        mcpStorage: createInMemoryMcpServerConfigStorage(),
+      },
+    });
+
+    await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const call = vi.mocked(client.createSession).mock.calls[0]?.[0];
+    expect(call && 'mcpServerConfigs' in call).toBe(false);
   });
 
   it('surfaces a createSession failure without closing the dialog', async () => {

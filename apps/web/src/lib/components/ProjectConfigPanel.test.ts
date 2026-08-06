@@ -84,4 +84,19 @@ describe('ProjectConfigPanel (issue #366)', () => {
 
     expect(calls).toEqual([[secretPreset.config.name, 'github-personal-access-token']]);
   });
+
+  it("forwards mcpServerStatuses through to McpServerConfigPanel's own Server status section (issue #750, D2-2; #794)", () => {
+    render(ProjectConfigPanel, {
+      props: {
+        projectPath: '/tmp/project',
+        mcpStorage: createInMemoryMcpServerConfigStorage(),
+        pluginStorage: createInMemoryPluginConfigStorage(),
+        mcpServerStatuses: [
+          { name: 'bad-binary', ok: false, category: 'missing_binary', reason: 'not found' },
+        ],
+      },
+    });
+
+    expect(screen.getByTestId('mcp-status-bad-binary')).toBeTruthy();
+  });
 });

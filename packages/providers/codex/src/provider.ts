@@ -36,11 +36,37 @@ const CODEX_ACP_ARGS = ['-y', '@agentclientprotocol/codex-acp'];
 /**
  * The Codex provider adapter (SPEC.md §5.5, issue #186's Codex half):
  * supplies the spawn config to launch Codex in ACP mode, registered under id
- * `'codex'`. `enrich()` is a no-op: Codex has no confirmed vendor `_meta`
- * parent-link signal yet (SPEC.md §7.24: "Codex until an equivalent signal
- * is confirmed" degrades to a flat list automatically), unlike Claude's
- * `_meta.claudeCode.parentToolUseId` promotion (itself still v2-scoped and
- * also a no-op today).
+ * `'codex'`. `enrich()` is a no-op.
+ *
+ * **Spike finding (issue #199), source-verified against the published
+ * `@agentclientprotocol/codex-acp` (main branch source, matching the
+ * `0.146.1`-era npm release — no live run: this devbox has no `codex` CLI
+ * or credentials, only the bridge package itself, which wraps `codex` and
+ * refuses to run without it):** Codex does NOT have a Claude-shaped
+ * `parentToolUseId`-equivalent. A spawned subagent surfaces as ONE
+ * summarizing tool call (`spawnAgent`, wire type `collabAgentToolCall`)
+ * carrying `_meta.codex.collaboration.{senderThreadId,receiverThreadIds}`,
+ * further updated in place by `subAgentActivity` events ("Start subagent
+ * X" / "Interact with subagent X" / "Interrupt subagent X" —
+ * `CodexToolCallMapper.ts`'s `createSubAgentActivityUpdate`) carrying
+ * `_meta.codex.subagent.{threadId,path,activity}` — REUSING the same
+ * `toolCallId` as the spawn call, never a new one. The subagent's own
+ * individual tool calls (the Bash/Edit/etc. it actually runs) are never
+ * forwarded as separate ACP `tool_call` events at all — there is nothing
+ * to attribute a `parentToolCallId` to. Both `_meta` shapes key on a
+ * THREAD id, not a tool-call id, so a client-side promotion would need a
+ * different mechanism than Claude's straight `_meta` field read: matching
+ * a `subAgentActivity`'s `threadId` back to whichever `spawnAgent` call's
+ * `receiverThreadIds` contains it — and even then there'd be exactly one
+ * child row per subagent (the activity marker), never that subagent's own
+ * nested tree. What Codex would need to ship for real per-tool-call
+ * nesting: forward the subagent's own tool calls as distinct ACP
+ * `tool_call`/`tool_call_update` events, each carrying a link back to the
+ * spawning `toolCallId` (mirroring Claude's `_meta.claudeCode.
+ * parentToolUseId`) — today's thread-scoped summary is not that. Until
+ * then this stays flat, exactly as SPEC.md §7.24 already called out
+ * ("Codex until an equivalent signal is confirmed" degrades to a flat
+ * list) — now confirmed, not just assumed.
  *
  * This is the v0 `AcpProvider` shape (single-arg `enrich`), kept for parity
  * with `@loombox/providers-claude`'s `claudeProvider` in case a future
@@ -69,8 +95,11 @@ export const codexProvider: AcpProvider = {
  * under the same `'codex'` id against `ProviderRegistry`, driving the fuller
  * `AcpTranscriptUpdate` surface (`tool_call`/`plan_update`/`usage_update`,
  * not just message chunks). `enrich()` is a deliberate pass-through/no-op
- * body — see `codexProvider`'s doc comment for why — but it is fully typed
- * and wired against the registry's real `enrich(update, raw)` contract now.
+ * body — see `codexProvider`'s doc comment for the source-verified reason
+ * (issue #199/#200) — but it is fully typed and wired against the
+ * registry's real `enrich(update, raw)` contract now, so a future Codex
+ * bridge release that adds real per-tool-call parent linkage needs only
+ * this one function body filled in, not a registry or call-site change.
  *
  * `requiredCommand` is `'codex'`, not `'npx'`: `CODEX_ACP_COMMAND` above is
  * the launcher, but the vendor CLI the npx-resolved bridge wraps — and the

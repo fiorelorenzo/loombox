@@ -11,6 +11,7 @@ import {
 import type {
   AcpAvailableCommand,
   AcpConfigOption,
+  AcpMcpServerStatusEntry,
   AcpSessionStatus,
   PermissionQueueState,
   TranscriptState,
@@ -277,6 +278,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       }
       return store;
     },
+    mcpServerStatusesFor: () => makeStore<AcpMcpServerStatusEntry[] | undefined>(undefined),
     mcpPromptCommandsFor: (id: string) => {
       let store = mcpPromptCommandsStores.get(id);
       if (!store) {

@@ -120,4 +120,78 @@ describe('McpServerConfigPanel (issue #188)', () => {
       expect(control?.querySelector('input, button, textarea, select, [role]')).not.toBeNull();
     }
   });
+
+  describe('mcp_server_status rendering (issue #750, D2-2; #794)', () => {
+    it('renders no "Server status" section at all when nothing has failed', () => {
+      render(McpServerConfigPanel, {
+        props: { projectPath: '/tmp/project', storage: createInMemoryMcpServerConfigStorage() },
+      });
+      expect(screen.queryByTestId('mcp-status-list')).toBeNull();
+    });
+
+    it('renders a failing server by name, category, and reason', () => {
+      render(McpServerConfigPanel, {
+        props: {
+          projectPath: '/tmp/project',
+          storage: createInMemoryMcpServerConfigStorage(),
+          mcpServerStatuses: [
+            {
+              name: 'bad-binary',
+              ok: false,
+              category: 'missing_binary',
+              reason: 'Executable not found: this-binary-does-not-exist',
+            },
+          ],
+        },
+      });
+
+      const row = screen.getByTestId('mcp-status-bad-binary');
+      expect(row.textContent).toContain('bad-binary');
+      expect(row.textContent).toContain('Executable not found: this-binary-does-not-exist');
+      expect(screen.getByTestId('mcp-status-badge-bad-binary').textContent?.trim()).toBe(
+        'Missing binary',
+      );
+    });
+
+    it('renders an auto-disabled server distinctly from a plain failure', () => {
+      render(McpServerConfigPanel, {
+        props: {
+          projectPath: '/tmp/project',
+          storage: createInMemoryMcpServerConfigStorage(),
+          mcpServerStatuses: [
+            { name: 'retrying', ok: false, category: 'handshake_failed', reason: 'bad handshake' },
+            {
+              name: 'given-up',
+              ok: false,
+              category: 'handshake_failed',
+              reason: 'bad handshake',
+              disabled: true,
+            },
+          ],
+        },
+      });
+
+      expect(screen.getByTestId('mcp-status-badge-retrying').textContent?.trim()).toBe(
+        'Handshake failed',
+      );
+      expect(screen.getByTestId('mcp-status-badge-given-up').textContent?.trim()).toBe(
+        'Auto-disabled',
+      );
+    });
+
+    it('never renders a status row for a server this device never declared as an entry in "Configured servers" itself — status is its own independent section', () => {
+      render(McpServerConfigPanel, {
+        props: {
+          projectPath: '/tmp/project',
+          storage: createInMemoryMcpServerConfigStorage(),
+          mcpServerStatuses: [
+            { name: 'node-only-server', ok: false, category: 'secret_missing', reason: 'no grant' },
+          ],
+        },
+      });
+
+      expect(screen.getByTestId('mcp-status-node-only-server')).toBeTruthy();
+      expect(screen.queryByTestId('mcp-server-node-only-server')).toBeNull();
+    });
+  });
 });
