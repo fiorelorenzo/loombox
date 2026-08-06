@@ -28,22 +28,28 @@ export interface FlatFileEntry extends FsEntryV1 {
 }
 
 /**
- * Every FILE (not directory) entry across every directory the tree currently
- * has loaded, flattened with full relative paths — the `@file` picker's
- * search corpus (SPEC §7.25; issue #160). Deliberately scoped to what's
- * already loaded rather than eagerly walking the whole project: SPEC §7.4's
- * lazy-expand contract already governs how much of the tree is known at any
- * point, and the picker searches exactly that, growing as the user (or the
- * picker itself, see `FileReferencePicker.svelte`) expands more of it.
+ * Every entry (file AND directory) across every directory the tree
+ * currently has loaded, flattened with full relative paths — the `@`
+ * mention picker's Files-tab search corpus (issue #742; supersedes the
+ * files-only `@file` picker issue #160 shipped). Deliberately scoped to
+ * what's already loaded rather than eagerly walking the whole project:
+ * SPEC §7.4's lazy-expand contract already governs how much of the tree is
+ * known at any point, and the picker searches exactly that, growing as the
+ * user (or the picker itself, see `MentionPicker.svelte`) expands more of
+ * it.
  */
-export function flattenLoadedFiles(tree: Map<string, FileTreeDirectoryState>): FlatFileEntry[] {
+export function flattenLoadedEntries(tree: Map<string, FileTreeDirectoryState>): FlatFileEntry[] {
   const rows: FlatFileEntry[] = [];
   for (const dir of tree.values()) {
     if (dir.status !== 'loaded') continue;
     for (const entry of dir.entries) {
-      if (entry.kind !== 'file') continue;
       rows.push({ ...entry, path: joinTreePath(dir.path, entry.name) });
     }
   }
   return rows;
+}
+
+/** Every FILE (not directory) entry, the `flattenLoadedEntries` subset a files-only caller wants — {@link flattenLoadedEntries}'s own doc comment covers the shared "loaded only" scoping. */
+export function flattenLoadedFiles(tree: Map<string, FileTreeDirectoryState>): FlatFileEntry[] {
+  return flattenLoadedEntries(tree).filter((entry) => entry.kind === 'file');
 }
