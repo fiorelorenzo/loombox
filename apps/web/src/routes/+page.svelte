@@ -5,6 +5,7 @@
   import type { TransitionConfig } from 'svelte/transition';
   import { env as publicEnv } from '$env/dynamic/public';
   import type {
+    AcpAvailableCommand,
     AcpConfigOption,
     AcpPermissionOption,
     AcpSessionStatus,
@@ -131,6 +132,7 @@
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
+  import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
   import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
@@ -702,6 +704,8 @@
   let transcript = $state<TranscriptState | undefined>(undefined);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
+  /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
+  let commands = $state<AcpAvailableCommand[]>([]);
   /**
    * The selected session's own agent's remembered account-wide values and
    * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
@@ -870,6 +874,13 @@
   // rather than being appended blindly. `undefined` means "no active
   // trigger" (the picker was opened some other way, or was never opened).
   let atTriggerStart = $state<number | undefined>(undefined);
+  let slashPickerOpen = $state(false);
+  // The index in `draft` where the triggering '/' sits — see
+  // `atTriggerStart` just above, same contract, scoped to the `/`-command
+  // picker (issue #743). Only ever set when `/` is the very first
+  // character of the composer (slash commands are a whole-message
+  // convention, never embedded mid-sentence like `@file`).
+  let slashTriggerStart = $state<number | undefined>(undefined);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -1267,6 +1278,7 @@
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
+  let unsubscribeCommands: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
@@ -1406,6 +1418,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
@@ -1413,6 +1426,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
     configOptionAccountDefaults = {};
     configOptionProjectOverrides = {};
     attachments = [];
@@ -1429,6 +1443,7 @@
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
       .subscribe((value) => handleConfigOptionsUpdate(id, value));
+    unsubscribeCommands = client.commandsFor(id).subscribe((value) => (commands = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -1765,6 +1780,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
@@ -1781,6 +1797,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
     attachments = [];
     queuedPrompts = [];
     attentionInboxItems = [];
@@ -1789,6 +1806,8 @@
     fileTree = new Map();
     filePickerOpen = false;
     atTriggerStart = undefined;
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
     configControlsExpanded = false;
     newSessionOpen = false;
     newSessionProject = undefined;
@@ -1914,6 +1933,54 @@
       filePickerOpen = false;
       atTriggerStart = undefined;
     }
+
+    // Detects a `/`-command trigger (Zed-parity C2-4; issue #743): unlike
+    // `@file`, a slash command is a whole-message convention, not
+    // something embedded mid-sentence, so this only fires when `/` sits at
+    // the very start of the composer (nothing but `/` plus a run of
+    // non-whitespace before the caret). Never a hardcoded loombox command
+    // list — `commands` is exactly what the connected agent declared
+    // (`RelayClient.commandsFor`, issue #741), so an agent that has
+    // declared none leaves this branch permanently closed: `/` does
+    // nothing.
+    const slashMatch = /^\/(\S*)$/.exec(beforeCaret);
+    if (slashMatch && commands.length > 0) {
+      slashTriggerStart = 0;
+      slashPickerOpen = true;
+    } else {
+      slashPickerOpen = false;
+      slashTriggerStart = undefined;
+    }
+  }
+
+  /**
+   * Inserts `/name ` into the composer for the selected declared command
+   * (Zed-parity C2-4; issue #743) — `/name` plus a trailing space, ready
+   * for the user's own argument text, exactly the same "plain text in the
+   * draft, sent as an ordinary prompt on submit" shape
+   * {@link insertFileReference} already uses for `@path`. No loombox
+   * schema parses or validates the argument: `command.input?.hint` is
+   * rendered by `SlashCommandPicker` purely as on-screen guidance, never
+   * inserted as literal text, since the actual argument is whatever the
+   * agent itself expects the user to type next. Always replaces the
+   * triggering `/partial-query` text at `slashTriggerStart` — this picker
+   * only ever opens via `/`-typing (unlike the `@file` picker, there is no
+   * other entry point), so `slashTriggerStart` is always defined here.
+   */
+  function insertSlashCommand(command: AcpAvailableCommand): void {
+    if (slashTriggerStart !== undefined) {
+      const before = draft.slice(0, slashTriggerStart);
+      const afterTrigger = draft.slice(slashTriggerStart);
+      const afterQuery = /^\/\S*/.exec(afterTrigger)?.[0] ?? '/';
+      const rest = draft.slice(slashTriggerStart + afterQuery.length).replace(/^\s+/, '');
+      draft = `${before}/${command.name} ${rest}`;
+    }
+    closeSlashPicker();
+  }
+
+  function closeSlashPicker(): void {
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
   }
 
   /**
@@ -2733,7 +2800,7 @@
         <ErrorNotice message={authError} />
       {/if}
       {#snippet footer()}
-        <span class="account">{session.accountId}</span>
+        <span class="account font-mono">{session.accountId}</span>
         <span class="status" data-status={status}>
           {#if status === 'connecting'}
             <WovenLoader label="Connecting to the relay" />
@@ -2816,7 +2883,7 @@
                  (the group header now carries it) and picks up the
                  relative activity time that used to sit in its own grid
                  column on the right. -->
-            <span class="session-meta" data-testid="session-activity">
+            <span class="session-meta font-mono" data-testid="session-activity">
               {sessionTargetLabel(session)}
               <span aria-hidden="true">·</span>
               {formatSessionActivity(session.createdAt)}
@@ -3386,7 +3453,11 @@
                 <h1 class="topbar-title" data-testid="cockpit-session-title">
                   {selectedSession.title}
                 </h1>
-                <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                <span
+                  class="topbar-breadcrumb font-mono"
+                  data-testid="topbar-breadcrumb"
+                  title={selectedSession.projectPath}
+                >
                   {projectDisplayName(selectedSession)}
                   <span aria-hidden="true">·</span>
                   {selectedSession.targetId}
@@ -4130,6 +4201,13 @@
   onClose={closeFilePicker}
 />
 
+<SlashCommandPicker
+  open={slashPickerOpen}
+  {commands}
+  onSelect={insertSlashCommand}
+  onClose={closeSlashPicker}
+/>
+
 {#if newSessionProject}
   <NewSessionDialog
     open={newSessionOpen}
@@ -4249,7 +4327,6 @@
   }
 
   .account {
-    font-family: var(--font-mono);
     font-size: var(--text-small-size);
     opacity: 0.8;
   }
@@ -5250,7 +5327,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-small-size);
-    font-family: var(--font-mono);
     color: var(--color-text-muted);
   }
 

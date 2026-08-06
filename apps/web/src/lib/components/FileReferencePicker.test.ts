@@ -57,6 +57,21 @@ describe('FileReferencePicker (SPEC §7.25 "@file references"; issue #160)', () 
     expect(items.map((i) => i.textContent?.trim()).sort()).toEqual(['README.md', 'src/index.ts']);
   });
 
+  it('renders each file path — a file name — in the shared mono identifier face (#735)', () => {
+    const { container } = render(FileReferencePicker, {
+      props: {
+        open: true,
+        tree: twoFileTree,
+        onExpand: vi.fn(),
+        onSelect: vi.fn(),
+        onClose: vi.fn(),
+      },
+    });
+    for (const path of container.querySelectorAll('.path')) {
+      expect(path.className).toContain('font-mono');
+    }
+  });
+
   it('excludes directories from the results — only files are @file targets', () => {
     render(FileReferencePicker, {
       props: {

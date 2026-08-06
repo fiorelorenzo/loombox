@@ -9,7 +9,13 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AcpProvider } from '@loombox/providers-core';
-import { PROTOCOL_V1, type EncryptedEnvelope, type WireMessageV1 } from '@loombox/protocol';
+import {
+  PROTOCOL_V1,
+  type EncryptedEnvelope,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolationPayloadV1,
+  type WireMessageV1,
+} from '@loombox/protocol';
 import { startRelay, type StartedRelay } from '@loombox/relay';
 import { AgentSupervisor, defaultPtySpawn, TerminalSupervisor } from '@loombox/supervisor';
 import {
@@ -427,4 +433,160 @@ describe('NodeDaemon permission policy — real terminal, real bash, real relay 
       },
     );
   });
+});
+
+describe('permission_policy_get/set wire round trip (issue #751)', () => {
+  it(
+    'get returns the allow-all default for a project with nothing saved',
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const { sessionId, key } = await openTerminalOverTheWire({});
+
+      phone!.send({
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId: 'req-policy-get-1',
+      });
+      const message = (await phone!.waitFor(
+        (m) =>
+          m.type === 'permission_policy_result' &&
+          (m as { requestId?: string }).requestId === 'req-policy-get-1',
+      )) as { envelope: EncryptedEnvelope };
+      const payload = await phoneOpen<{ policy: PermissionPolicyV1 }>(
+        sessionId,
+        message.envelope,
+        key,
+      );
+      expect(payload.policy).toEqual({
+        command: { allow: [], deny: [] },
+        network: { allow: [], deny: [] },
+      });
+    },
+  );
+
+  it(
+    'set saves the full policy (never a partial patch) and replies with it; a follow-up get reads the same value back',
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const { sessionId, key } = await openTerminalOverTheWire({});
+      const newPolicy: PermissionPolicyV1 = {
+        command: { allow: [], deny: ['rm -rf *'] },
+        network: { allow: ['*.internal'], deny: [] },
+      };
+
+      const setEnvelope = await phoneSeal(sessionId, { policy: newPolicy }, key);
+      phone!.send({
+        type: 'permission_policy_set',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId: 'req-policy-set-1',
+        envelope: setEnvelope,
+      });
+      const setResult = (await phone!.waitFor(
+        (m) =>
+          m.type === 'permission_policy_result' &&
+          (m as { requestId?: string }).requestId === 'req-policy-set-1',
+      )) as { envelope: EncryptedEnvelope };
+      const saved = await phoneOpen<{ policy: PermissionPolicyV1 }>(
+        sessionId,
+        setResult.envelope,
+        key,
+      );
+      expect(saved.policy).toEqual(newPolicy);
+
+      phone!.send({
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId: 'req-policy-get-2',
+      });
+      const getResult = (await phone!.waitFor(
+        (m) =>
+          m.type === 'permission_policy_result' &&
+          (m as { requestId?: string }).requestId === 'req-policy-get-2',
+      )) as { envelope: EncryptedEnvelope };
+      const readBack = await phoneOpen<{ policy: PermissionPolicyV1 }>(
+        sessionId,
+        getResult.envelope,
+        key,
+      );
+      expect(readBack.policy).toEqual(newPolicy);
+    },
+  );
+});
+
+describe('a rule added over the wire takes effect on the very next tool call, no node restart (issue #751 acceptance)', () => {
+  it(
+    'a deny rule saved via permission_policy_set blocks the very next terminal command on the SAME already-running node',
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const marker = path.join(projectPath, 'marker');
+      // No policy saved at all — starts allow-all, exactly like today.
+      const { sessionId, key, terminalId } = await openTerminalOverTheWire({});
+
+      // Prove the command would run before any policy exists.
+      await typeIntoTerminal(sessionId, terminalId, key, 'echo before-policy\n');
+      await waitForTerminalOutputContains(phone!, sessionId, terminalId, key, 'before-policy');
+
+      const policy: PermissionPolicyV1 = {
+        command: { allow: [], deny: ['touch *'] },
+        network: { allow: [], deny: [] },
+      };
+      const setEnvelope = await phoneSeal(sessionId, { policy }, key);
+      phone!.send({
+        type: 'permission_policy_set',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId: 'req-policy-live-1',
+        envelope: setEnvelope,
+      });
+      await phone!.waitFor(
+        (m) =>
+          m.type === 'permission_policy_result' &&
+          (m as { requestId?: string }).requestId === 'req-policy-live-1',
+      );
+
+      await typeIntoTerminal(sessionId, terminalId, key, `touch ${marker}\n`);
+      await waitForTerminalOutputContains(
+        phone!,
+        sessionId,
+        terminalId,
+        key,
+        'blocked by permission policy',
+      );
+      expect(existsSync(marker)).toBe(false);
+    },
+  );
+});
+
+describe('permission_policy_violation names the deny rule to the client (D3-4 attribution, issue #751)', () => {
+  it(
+    'a terminal denial fires a structured permission_policy_violation alongside the existing ANSI banner',
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const { sessionId, key, terminalId } = await openTerminalOverTheWire({
+        policy: { command: { allow: [], deny: ['touch *'] }, network: { allow: [], deny: [] } },
+      });
+
+      await typeIntoTerminal(sessionId, terminalId, key, 'touch /tmp/loombox-should-not-exist\n');
+
+      const violationMessage = (await phone!.waitFor(
+        (m) => m.type === 'permission_policy_violation',
+      )) as { envelope: EncryptedEnvelope };
+      const payload = await phoneOpen<PermissionPolicyViolationPayloadV1>(
+        sessionId,
+        violationMessage.envelope,
+        key,
+      );
+
+      expect(payload.reason).toEqual({
+        kind: 'permission_policy',
+        dimension: 'command',
+        rule: 'touch *',
+        matched: 'touch /tmp/loombox-should-not-exist',
+      });
+      expect(payload.surface).toBe('terminal');
+    },
+  );
 });

@@ -158,7 +158,7 @@
             <span class="entry-icon" aria-hidden="true">
               <Icon name="file" size="100%" />
             </span>
-            <span class="path">{entry.path}</span>
+            <span class="path font-mono">{entry.path}</span>
           </button>
         </li>
       {/each}

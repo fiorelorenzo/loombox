@@ -66,7 +66,7 @@
 <div class="edit-write-widget" data-testid="edit-write-widget">
   <ToolCallGutter icon="tool-edit" />
   {#snippet headerContent()}
-    <span class="title">{item.title ?? 'Edit'}</span>
+    <span class="title font-mono">{item.title ?? 'Edit'}</span>
     <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
     <ToolCallStatus status={item.status} />
   {/snippet}

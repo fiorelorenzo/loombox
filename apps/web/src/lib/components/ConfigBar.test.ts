@@ -339,6 +339,15 @@ describe('ConfigBar: context/cost meter', () => {
     );
   });
 
+  it('renders the token counts and the cost — numeric figures — in the shared mono identifier face (#735)', () => {
+    const { container } = render(ConfigBar, {
+      props: { options: [], usage: usageAt(50_000), cumulativeCostUsd: 1.23, onChange: vi.fn() },
+    });
+    expect(container.querySelector('.meter-primary')?.className).toContain('font-mono');
+    expect(container.querySelector('.meter-max')?.className).toContain('font-mono');
+    expect(container.querySelector('.meter-cost')?.className).toContain('font-mono');
+  });
+
   it('fills the track to the percentage used', () => {
     render(ConfigBar, {
       props: { options: [], usage: usageAt(50_000), cumulativeCostUsd: 0, onChange: vi.fn() },

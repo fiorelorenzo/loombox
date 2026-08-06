@@ -101,7 +101,24 @@ body {
 /* Every monospace transcript/terminal/diff surface in apps/web (SPEC §4:
    "agent output, code, and diffs") opts in via `.font-mono` alongside the
    bare element selectors, since several of those surfaces render inside a
-   <div>/<span>, not a <pre>/<code>. */
+   <div>/<span>, not a <pre>/<code>.
+
+   A4-1 (issue #735, `docs/superpowers/specs/2026-08-05-zed-parity-
+   decisions.md`): the same class also carries every structural
+   identifier, everywhere it renders, including inline inside prose —
+   project paths, branch names, target/node names, session/account ids,
+   tool names, file names in tool rows, and all numeric figures (counts,
+   durations, token and cost numbers). One rule, not a second class: an
+   identifier's visual treatment is identical to a code surface's — swap
+   the face, keep the tabular figures — so the enumeration lives as the
+   reviewable surface (`/style-reference`'s "Structural identifiers"
+   section) instead of a parallel CSS taxonomy with nothing to
+   differentiate. The pick's own caveat travels with it: a lone relative
+   timestamp, or a single number inside an otherwise plain sentence, has
+   no neighboring column to align against, so the tabular-figure benefit
+   is moot and the font swap can read as a glitch rather than an
+   alignment aid — applied anyway, since that is the decision; the worst
+   offenders are named in #735's PR body. */
 code,
 kbd,
 pre,

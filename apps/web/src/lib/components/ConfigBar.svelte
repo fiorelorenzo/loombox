@@ -674,10 +674,10 @@
       >
         <span class="track-fill" style:width={`${contextPercent}%`}></span>
       </span>
-      <span class="meter-primary">{formatTokens(contextTokens.used)}</span>
+      <span class="meter-primary font-mono">{formatTokens(contextTokens.used)}</span>
       {#if !compact}
         <span class="meter-sep" aria-hidden="true">/</span>
-        <span class="meter-max">{formatTokens(contextTokens.max)}</span>
+        <span class="meter-max font-mono">{formatTokens(contextTokens.max)}</span>
       {/if}
       <span class="meter-sep" aria-hidden="true">·</span>
       {#if isNearLimit}
@@ -686,7 +686,7 @@
         >
       {/if}
     {/if}
-    <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
+    <span class="meter-cost font-mono">${cumulativeCostUsd.toFixed(2)}</span>
   </div>
 </div>
 

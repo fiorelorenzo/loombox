@@ -76,7 +76,9 @@
       {#snippet headerContent()}
         <span class="title">Todo list</span>
         {#if !expanded}
-          <span class="inline-summary">{doneCount}/{todos.length} done</span>
+          <span class="inline-summary"
+            ><span class="font-mono">{doneCount}/{todos.length}</span> done</span
+          >
         {/if}
         <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
         <ToolCallStatus status={item.status} />

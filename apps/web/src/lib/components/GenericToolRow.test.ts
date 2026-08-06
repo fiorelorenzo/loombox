@@ -37,6 +37,11 @@ describe('GenericToolRow', () => {
     expect(screen.queryByText('in_progress')).toBeNull();
   });
 
+  it('renders the tool title in the shared mono identifier face (#735)', () => {
+    const { container } = render(GenericToolRow, { props: { item } });
+    expect(container.querySelector('.title')?.className).toContain('font-mono');
+  });
+
   it('renders rawInput as a key/value fallback preview when there is no content yet, never a JSON blob', () => {
     const { container } = render(GenericToolRow, { props: { item } });
     expect(screen.getByText('pattern')).toBeTruthy();

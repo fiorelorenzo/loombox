@@ -400,7 +400,7 @@
               dataTestId="attention-inbox-open"
             >
               <strong>{item.sessionTitle}</strong>
-              <small>{item.projectPath} · {item.nodeId}</small>
+              <small class="font-mono">{item.projectPath} · {item.nodeId}</small>
             </Button>
             <!-- $lib/markdown's own sanitised output (rehype-sanitize), the same pipeline MessageItem renders the transcript through — never raw agent text. -->
             <div class="message md-body" data-testid="attention-inbox-need">

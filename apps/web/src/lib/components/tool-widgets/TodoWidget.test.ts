@@ -42,9 +42,14 @@ describe('TodoWidget', () => {
 
 describe('TodoWidget: resting state and its one override (v7 decisions §3, issue #668)', () => {
   it('C1-1 — a completed call rests collapsed to one line: title plus a done/total progress summary, checklist behind the disclosure', () => {
-    render(TodoWidget, { props: { item: todoItem() } });
-    expect(screen.getByText('0/1 done')).toBeTruthy();
+    const { container } = render(TodoWidget, { props: { item: todoItem() } });
+    expect(container.querySelector('.inline-summary')?.textContent).toBe('0/1 done');
     expect(screen.queryByText('ship it')).toBeNull();
+  });
+
+  it('renders the done/total count — a numeric figure — in the shared mono identifier face (#735)', () => {
+    const { container } = render(TodoWidget, { props: { item: todoItem() } });
+    expect(container.querySelector('.inline-summary .font-mono')?.textContent).toBe('0/1');
   });
 
   it('the collapsed rest state draws no border/background — only the expanded checklist keeps the card', () => {
