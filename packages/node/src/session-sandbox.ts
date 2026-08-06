@@ -47,6 +47,27 @@ import {
  * would need the sandbox primitive to run remotely, over the SSH
  * transport, which is out of scope here; the `ssh:` path keeps working
  * exactly as it already does, unsandboxed, same as before this issue.
+ *
+ * **A real, verified, network-dependency cost for an `npx`-launched
+ * provider (claude/codex), not a failure.** `npm`'s cache directory
+ * defaults to somewhere under `$HOME` (`npm config get cache`, verified
+ * against the real config on this project's own dev box:
+ * `/home/dev/.npm`) — a path this module never bind-mounts, so it does
+ * not exist inside the sandbox. That does NOT make `npx` fail: `bwrap`'s
+ * unbound root is a writable `tmpfs` by default, so `mkdir -p
+ * $HOME/.npm` (verified live) succeeds fine, `npx` populates a FRESH,
+ * EMPTY cache there every single sandboxed invocation, downloading the
+ * ACP bridge package over the network each time (`--share-net` is on),
+ * and the whole thing evaporates the moment the sandboxed process exits.
+ * Verified end to end against the real `claude`/`omp` CLIs on this box —
+ * both completed a real ACP `initialize`/`session/new`/prompt turn this
+ * way. The real cost: every sandboxed `npx`-launched session needs
+ * network reachability to the npm registry and pays a package-install
+ * cost a normal, unsandboxed `npx` invocation would usually skip via its
+ * persistent cache. A shared, writable cache mount (this module's own
+ * `extraReadOnlyMounts`/`extraReadWriteMounts` already support adding
+ * one) is the fix; nothing wires one up yet — filed as its own follow-up
+ * rather than solved here.
  */
 export interface ResolveSessionSandboxOptions {
   /** The session's own worktree (`Session.worktreePath`) — the sole directory the sandboxed agent process can write to. */

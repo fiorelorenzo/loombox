@@ -612,6 +612,57 @@ describe('start: bearer token resolution (issue #387)', () => {
   });
 });
 
+describe('start: LOOMBOX_SANDBOX kill switch (SPEC §7.17, issue #257)', () => {
+  let relay: StartedRelay;
+  let stateDir: string;
+
+  beforeEach(async () => {
+    relay = await startRelay();
+    stateDir = await mkdtemp(join(tmpdir(), 'loombox-node-main-sandbox-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+    await relay.close();
+  });
+
+  it('logs a loud, unmissable warning at startup when LOOMBOX_SANDBOX=off actually turns sandboxing off', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const started = await start({
+        env: { ...envFor(relay.url, stateDir, generateAmk()), LOOMBOX_SANDBOX: 'off' },
+        argv: [],
+        resolveAccountId: stubResolveAccountId,
+      });
+      await started.node.whenConnected();
+      await started.stop();
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/SANDBOX DISABLED/));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/LOOMBOX_SANDBOX=off/));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/UNCONFINED/));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('never logs the sandbox-disabled warning when LOOMBOX_SANDBOX is left at its default (on)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const started = await start({
+        env: envFor(relay.url, stateDir, generateAmk()),
+        argv: [],
+        resolveAccountId: stubResolveAccountId,
+      });
+      await started.node.whenConnected();
+      await started.stop();
+
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringMatching(/SANDBOX DISABLED/));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
 describe('installGracefulShutdown (issue #63)', () => {
   // `process` is one shared global EventEmitter for the whole test worker;
   // each `installGracefulShutdown` call below registers `process.once()`
