@@ -1507,7 +1507,6 @@ describe('relay v1', () => {
     });
   });
 
-
   describe('fs_read_request/fs_read_response (issue #737) — routed and fanned out exactly like fs_list_request/fs_list_response, always blind', () => {
     it('routes a client fs_read_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
       const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
@@ -1618,7 +1617,6 @@ describe('relay v1', () => {
       );
     });
   });
-
 
   describe("target_fs_list_request/target_fs_list_response (SPEC §7.25; issue #474) — the directory picker's target-scoped sibling of fs_list, routed directly by nodeId like provision_target_request", () => {
     it("routes target_fs_list_request to the node identified by nodeId, scoped to the requester's account, byte-for-byte, never inspecting the envelope", async () => {
