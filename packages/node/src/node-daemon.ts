@@ -9,6 +9,7 @@ import {
   fetchMcpServerPrompts,
   mergeMcpServerConfigLists,
   parseMcpServerConfig,
+  ProjectEnvVarMissingError,
   type AcpMcpServerConfig,
   type AcpPermissionOption,
   type AcpProvider,
@@ -21,6 +22,7 @@ import {
   type ConfigOptionChangeEvent,
   type McpServerConfig,
   type McpServerPromptsResult,
+  type ProjectEnvVarDecl,
 } from '@loombox/providers-core';
 import {
   AgentSupervisor,
@@ -148,6 +150,12 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type PrOpenFailureCategory,
+  type PrOpenPreviewRequest,
+  type PrOpenPreviewResultPayloadV1,
+  type PrOpenRequest,
+  type PrOpenRequestPayloadV1,
+  type PrOpenResultPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -189,6 +197,7 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
+import { NodeProjectEnvManager } from './project-env-secrets';
 import {
   evaluateCommandLine,
   logPolicyViolation,
@@ -221,6 +230,7 @@ import {
 } from './session-manager';
 import { cutTranscriptAtTurn } from './session-fork';
 import { resolveSessionBranch } from './session-branch';
+import { openPr, previewPrOpen, PrOpenError } from './pr-open';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -530,6 +540,17 @@ export interface NodeDaemonOptions {
    */
   mcpSecretManager?: NodeMcpSecretManager;
   /**
+   * This node's per-secret direct-agent-env-injection grant ACL (SPEC
+   * §7.17, §8; issue #258), used at session start to resolve a project's
+   * declared env-var list (`SessionPrivateMetaV1.projectEnvDecls`) into
+   * the plain env `AgentSupervisor.start()` merges into the spawned
+   * agent process — reuses `mcpSecretManager`'s own secret-value storage
+   * rather than a second one (see `NodeProjectEnvManager`'s doc
+   * comment). Injectable for tests; defaults to a fresh
+   * `NodeProjectEnvManager({ stateDir, secrets: this.mcpSecretManager })`.
+   */
+  projectEnvManager?: NodeProjectEnvManager;
+  /**
    * This node's per-project permission policy store (SPEC §7.17; issue
    * #256): allow/deny command and network-destination glob rules, checked
    * at `getExecutionTarget()` (when called with a `projectPath`) and at
@@ -681,6 +702,17 @@ export interface CreateNodeSessionOptions {
    * resolution path in `resolveMcpServers`.
    */
   mcpServerConfigs?: McpServerConfig[];
+  /**
+   * This project's declared env-var injection for the spawned agent
+   * process itself (SPEC §7.17, §8; issue #258) — mirrors
+   * `mcpServerConfigs`'s own doc comment: the direct-API counterpart to
+   * `session_create`'s `SessionPrivateMetaV1.projectEnvDecls`, sharing
+   * the one resolution path in `NodeProjectEnvManager.resolveForSession`.
+   * A missing/ungranted referenced secret fails session creation outright
+   * (see `createSessionInternal`'s own doc comment) rather than starting
+   * an agent quietly missing a credential it declared it needed.
+   */
+  projectEnvDecls?: ProjectEnvVarDecl[];
 }
 
 /**
@@ -1215,6 +1247,8 @@ export class NodeDaemon extends EventEmitter {
   /** SPEC §7.7/§7.17; issues #187/#189 — see `NodeDaemonOptions.mcpConfigStore`/`mcpSecretManager`'s doc comments. */
   private readonly mcpConfigStore: McpConfigStore;
   private readonly mcpSecretManager: NodeMcpSecretManager;
+  /** SPEC §7.17, §8; issue #258 — see `NodeDaemonOptions.projectEnvManager`'s doc comment. */
+  private readonly projectEnvManager: NodeProjectEnvManager;
   /** Per-process (never persisted) consecutive-failure streak for an MCP server that failed to start, keyed by `${projectPath}\u0000${serverName}` — see {@link recordMcpServerOutcome}'s own doc comment (issue #750, D2-2's "disable" lifecycle action). */
   private readonly mcpFailureStreaks = new Map<string, number>();
   /** Consecutive start failures before {@link recordMcpServerOutcome} auto-disables an MCP server (issue #750, D2-2). */
@@ -1382,6 +1416,9 @@ export class NodeDaemon extends EventEmitter {
       options.mcpConfigStore ?? new McpConfigStore({ stateDir: options.stateDir });
     this.mcpSecretManager =
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
+    this.projectEnvManager =
+      options.projectEnvManager ??
+      new NodeProjectEnvManager({ stateDir: options.stateDir, secrets: this.mcpSecretManager });
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
@@ -1541,6 +1578,7 @@ export class NodeDaemon extends EventEmitter {
       profileId: options.profileId,
       customAgent: options.customAgent,
       mcpServerConfigs: options.mcpServerConfigs,
+      projectEnvDecls: options.projectEnvDecls,
     });
   }
 
@@ -1645,10 +1683,28 @@ export class NodeDaemon extends EventEmitter {
     customAgent?: CustomAgentRecordV1;
     /** The client's own per-project `localStorage` MCP server declarations (issue #750, D2-2), merged into resolution alongside this node's own `McpConfigStore` — see {@link resolveMcpServers}'s doc comment. Omitted/`[]` behaves exactly like before this option existed. */
     mcpServerConfigs?: readonly McpServerConfig[];
+    /** This project's declared env-var injection for the spawned agent process itself (SPEC §7.17, §8; issue #258) — see {@link CreateNodeSessionOptions.projectEnvDecls}'s doc comment. Omitted/`[]` behaves exactly like before this option existed. */
+    projectEnvDecls?: readonly ProjectEnvVarDecl[];
   }): Promise<Session> {
     const target = this.targets.find((candidate) => candidate.id === opts.targetId);
     if (!target) {
       throw new Error(`NodeDaemon: no target with id "${opts.targetId}"`);
+    }
+
+    // Direct agent-env injection (issue #258) is scoped to `local` targets
+    // for now: the "Depends on" sandboxing issue (#257) this feature's own
+    // issue names is still open, and unlike `mcpServerConfigs` there is no
+    // existing mechanism at all for threading extra env into the remote
+    // shell command `launchReservedSshSession` builds. Refusing loudly here
+    // — before any worktree, lease, or child — is the honest choice over
+    // silently starting an `ssh:` agent quietly missing a credential it
+    // declared it needed (this issue's own explicit acceptance bar).
+    if (target.kind === 'ssh' && (opts.projectEnvDecls?.length ?? 0) > 0) {
+      throw new Error(
+        `NodeDaemon: project env-var injection (issue #258) is not yet supported for ssh: ` +
+          `targets (target "${opts.targetId}") — remove the project's declared env vars, or ` +
+          `use a local target, until ssh: support lands.`,
+      );
     }
 
     const sessionId = opts.sessionId ?? randomUUID();
@@ -1656,33 +1712,43 @@ export class NodeDaemon extends EventEmitter {
     // Resolved before any worktree/lease/child is touched, and before this
     // session can even be queued (issues #187/#189's "fails clearly on an
     // ungranted/missing secret... before any session opens"): a session
-    // that would fail on a missing MCP secret grant fails right here, not
-    // after this node created a worktree, acquired an ssh: lease, or made
-    // some other queued session wait behind a request that was always
-    // going to fail. An unknown/deleted `profileId` degrades quietly to
-    // `undefined` (unrestricted) here — see `./agent-profile.ts`'s doc
-    // comment — rather than failing session creation over a stale id. A
-    // resulting `McpServerSecretMissingError` never gets a bridge, or
-    // even a `Session`, to hang a normal `sendSessionStatus` off of —
-    // `reportMcpPreflightFailure` announces a minimal phantom session
-    // record itself, purely so this failure is visible at all (issue
-    // #750, D2-2's "a revoked secret grant... produce a distinct,
-    // visible reason"); the worktree/lease cost this comment describes
-    // avoiding is still avoided — only a `session_announce` plus a
-    // `session_status: 'error'`/`mcp_server_status` pair go out.
+    // that would fail on a missing MCP secret grant, or a missing/ungranted
+    // project env-var secret (issue #258), fails right here, not after
+    // this node created a worktree, acquired an ssh: lease, or made some
+    // other queued session wait behind a request that was always going to
+    // fail. An unknown/deleted `profileId` degrades quietly to `undefined`
+    // (unrestricted) here — see `./agent-profile.ts`'s doc comment —
+    // rather than failing session creation over a stale id. A resulting
+    // `McpServerSecretMissingError`/`ProjectEnvVarMissingError` never gets
+    // a bridge, or even a `Session`, to hang a normal `sendSessionStatus`
+    // off of — `reportMcpPreflightFailure`/`reportProjectEnvPreflightFailure`
+    // announce a minimal phantom session record themselves, purely so this
+    // failure is visible at all (issue #750, D2-2's "a revoked secret
+    // grant... produce a distinct, visible reason"); the worktree/lease
+    // cost this comment describes avoiding is still avoided — only a
+    // `session_announce` plus a `session_status: 'error'` (and, for the MCP
+    // case, an `mcp_server_status`) go out.
     let mcpServers: AcpMcpServerConfig[];
+    let projectEnv: Record<string, string>;
     try {
       const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
       mcpServers = filterMcpServersForProfile(
         await this.resolveMcpServers(opts.projectPath, opts.mcpServerConfigs ?? []),
         profile,
       );
+      projectEnv = await this.projectEnvManager.resolveForSession(
+        opts.projectPath,
+        opts.projectEnvDecls ?? [],
+      );
     } catch (error) {
       if (error instanceof McpServerSecretMissingError) {
         await this.reportMcpPreflightFailure(sessionId, opts, error);
+      } else if (error instanceof ProjectEnvVarMissingError) {
+        await this.reportProjectEnvPreflightFailure(sessionId, opts, error);
       }
       throw error;
     }
+
     // Recorded before any launch path below, so `evaluateProfileForSession`
     // (the resolver `launchLocalSession`/`launchReservedSshSession` pass
     // into `AgentSession.spawn()`) already has an answer the moment this
@@ -1708,7 +1774,7 @@ export class NodeDaemon extends EventEmitter {
     await this.announce(session, opts.targetId, opts.title);
 
     if (this.concurrencyGate.tryAcquire(target.id)) {
-      return this.launchLocalSession(session, opts, mcpServers);
+      return this.launchLocalSession(session, opts, mcpServers, projectEnv);
     }
 
     // Over the cap (SPEC §7.16, issue #252): queue rather than launch.
@@ -1718,7 +1784,7 @@ export class NodeDaemon extends EventEmitter {
     // fire-and-forget `.catch`).
     await this.sendSessionStatus(session.id, 'queued');
     this.concurrencyGate.enqueue(target.id, session.id, () => {
-      this.launchLocalSession(session, opts, mcpServers).catch((error: unknown) => {
+      this.launchLocalSession(session, opts, mcpServers, projectEnv).catch((error: unknown) => {
         console.warn(
           `NodeDaemon: queued session ${session.id} failed to start after dequeuing: ${
             error instanceof Error ? error.message : String(error)
@@ -1759,6 +1825,8 @@ export class NodeDaemon extends EventEmitter {
       customAgent?: CustomAgentRecordV1;
     },
     mcpServers: AcpMcpServerConfig[],
+    /** This project's already-resolved env (issue #258) — see {@link CreateNodeSessionOptions.projectEnvDecls}'s doc comment. `{}` behaves exactly like before this parameter existed. */
+    env: Record<string, string>,
     seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
     await this.sendSessionStatus(session.id, 'starting');
@@ -1775,6 +1843,7 @@ export class NodeDaemon extends EventEmitter {
             workspacePath: session.worktreePath,
             providerId,
             mcpServers: servers,
+            env,
             evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
           }),
       );
@@ -3221,6 +3290,58 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * The `ProjectEnvVarMissingError` counterpart to
+   * {@link reportMcpPreflightFailure} (issue #258): makes a missing or
+   * ungranted project env-var secret's pre-flight failure visible the
+   * same way — a minimal `session_announce` (this session never gets a
+   * worktree/lease/agent) followed by `session_status: 'error'` naming
+   * the env var and the secret it needs (`error.message`, set by
+   * `ProjectEnvVarMissingError`'s own constructor). No `mcp_server_status`
+   * companion event here: unlike MCP's per-server list, a project's env
+   * vars have exactly one consumer (the agent process itself), so the
+   * plain session-status reason is the whole story — there is no "which
+   * of several servers" to also name. Both sends are best-effort: a
+   * failure to report is logged, not thrown, so the original
+   * `ProjectEnvVarMissingError` is always what the caller (and
+   * `handleSessionCreate`'s own `.catch`) sees.
+   */
+  private async reportProjectEnvPreflightFailure(
+    sessionId: string,
+    opts: { targetId: string; provider: string; title: string; projectPath: string },
+    error: ProjectEnvVarMissingError,
+  ): Promise<void> {
+    try {
+      const key = await this.getSessionKey(sessionId);
+      const privateEnvelope = await sealJson(
+        sessionId,
+        { title: opts.title, projectPath: opts.projectPath },
+        key,
+      );
+      const meta: SessionMetaPublic = {
+        id: sessionId,
+        nodeId: this.nodeId,
+        targetId: opts.targetId,
+        accountId: this.accountId,
+        provider: opts.provider,
+        createdAt: Date.now(),
+      };
+      this.relay.send({
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope,
+      });
+      await this.sendSessionStatus(sessionId, 'error', error.message);
+    } catch (reportError: unknown) {
+      console.warn(
+        `NodeDaemon: failed to report session ${sessionId}'s project env-var failure to the relay: ${
+          reportError instanceof Error ? reportError.message : String(reportError)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Records one MCP server's start-attempt outcome for `projectPath`
    * (issue #750, D2-2's "lifecycle... disable, decided explicitly"): a
    * success resets its streak to zero (an intermittent failure that then
@@ -3643,6 +3764,12 @@ export class NodeDaemon extends EventEmitter {
       case 'test_runner_config_detect':
         this.handleTestRunnerConfigDetect(message);
         return;
+      case 'pr_open_preview_request':
+        this.handlePrOpenPreviewRequest(message);
+        return;
+      case 'pr_open_request':
+        this.handlePrOpenRequest(message);
+        return;
       case 'run_start':
         this.handleRunStart(message);
         return;
@@ -3740,6 +3867,15 @@ export class NodeDaemon extends EventEmitter {
           // single malformed entry degrades rather than failing the
           // whole session.
           mcpServerConfigs: parseClientDeclaredMcpServers(privateMeta.mcpServerConfigs),
+          // issue #258: the client's own per-project declared env-var
+          // injection — `sessionPrivateMetaV1.projectEnvDecls`'s own doc
+          // comment. `ProjectEnvVarDeclV1` and `ProjectEnvVarDecl` are the
+          // identical `{name,value}|{name,secret}` union (see
+          // `@loombox/protocol`'s `project-env.ts` doc comment for why
+          // that's deliberate), so the already-zod-validated wire list
+          // needs no further re-parse here, unlike `mcpServerConfigs`'s
+          // richer domain-level shape.
+          projectEnvDecls: privateMeta.projectEnvDecls,
         }),
       )
       .catch((error: unknown) => {
@@ -3877,11 +4013,14 @@ export class NodeDaemon extends EventEmitter {
       );
     }
 
-    // A fork request carries no `mcpServerConfigs` of its own (issue #750
-    // predates #746's fork wire shape) — only this node's own McpConfigStore
-    // applies; a future fork-time client declaration would thread through
-    // here identically to `createSessionInternal`'s own `opts.mcpServerConfigs`.
+    // A fork request carries no `mcpServerConfigs`/`projectEnvDecls` of its
+    // own (issue #750 predates #746's fork wire shape; issue #258 postdates
+    // it) — only this node's own McpConfigStore/NodeProjectEnvManager
+    // records apply; a future fork-time client declaration would thread
+    // through here identically to `createSessionInternal`'s own
+    // `opts.mcpServerConfigs`/`opts.projectEnvDecls`.
     const mcpServers = await this.resolveMcpServers(opts.projectPath, []);
+    const projectEnv = await this.projectEnvManager.resolveForSession(opts.projectPath, []);
 
     let session: Session;
     try {
@@ -3902,22 +4041,32 @@ export class NodeDaemon extends EventEmitter {
 
     const launchOpts = { provider: opts.provider, targetId: opts.targetId, title: opts.title };
     if (this.concurrencyGate.tryAcquire(target.id)) {
-      return this.launchLocalSession(session, launchOpts, mcpServers, seedTranscriptUpdates);
+      return this.launchLocalSession(
+        session,
+        launchOpts,
+        mcpServers,
+        projectEnv,
+        seedTranscriptUpdates,
+      );
     }
 
     // Over the cap (SPEC §7.16, issue #252): queue rather than launch,
     // exactly like `createSessionInternal`'s own overflow path.
     await this.sendSessionStatus(session.id, 'queued');
     this.concurrencyGate.enqueue(target.id, session.id, () => {
-      this.launchLocalSession(session, launchOpts, mcpServers, seedTranscriptUpdates).catch(
-        (error: unknown) => {
-          console.warn(
-            `NodeDaemon: forked session ${session.id} failed to start after dequeuing: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        },
-      );
+      this.launchLocalSession(
+        session,
+        launchOpts,
+        mcpServers,
+        projectEnv,
+        seedTranscriptUpdates,
+      ).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: forked session ${session.id} failed to start after dequeuing: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     });
     return session;
   }
@@ -6615,6 +6764,125 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'test_runner_config_detected',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** Maps a `pr-open.ts` rejection to `{ category, reason }` for `pr_open_preview_result`/`pr_open_result`'s own `outcome: 'failure'` shape — `PrOpenError`'s own named `category` passes straight through; anything else (an unexpected throw this module didn't anticipate) becomes `'create_failed'` with the raw message, so a caller here never has to handle a third, uncategorized shape. */
+  private prOpenFailureFrom(error: unknown): { category: PrOpenFailureCategory; reason: string } {
+    if (error instanceof PrOpenError) return { category: error.category, reason: error.message };
+    return {
+      category: 'create_failed',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  /**
+   * A client asked this node what opening a pull request from a session's
+   * own branch would do (SPEC §7.14; issue #238) — never pushes, never
+   * calls `gh pr create`, only checks `gh` availability/auth on the
+   * session's own target, resolves its branch (`resolveSessionBranch`,
+   * issue #738) and the repo's default base branch, and counts commits
+   * ahead, via `pr-open.ts`'s `previewPrOpen`. No envelope on the
+   * request, same reasoning as `test_runner_config_detect`. Ignored if
+   * `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard).
+   */
+  private handlePrOpenPreviewRequest(message: PrOpenPreviewRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.getExecutionTarget(routing.targetId, routing.session.projectPath)
+      .then((target) => previewPrOpen(target, routing.session))
+      .then(
+        (preview) => ({
+          outcome: 'ok' as const,
+          branch: preview.branch,
+          base: preview.base,
+          commitCount: preview.commitCount,
+        }),
+        (error: unknown) => ({ outcome: 'failure' as const, ...this.prOpenFailureFrom(error) }),
+      )
+      .then((result) =>
+        this.sendPrOpenPreviewResult(message.sessionId, message.requestId, { result }),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send pr_open_preview_result for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async sendPrOpenPreviewResult(
+    sessionId: string,
+    requestId: string,
+    payload: PrOpenPreviewResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'pr_open_preview_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client confirmed opening a pull request from a session's own branch
+   * (SPEC §7.14; issue #238) — sent only after the client already showed
+   * the operator a `pr_open_preview_result` and the operator typed a
+   * title/body and explicitly confirmed; this is the one message in the
+   * whole feature with a real side effect on the operator's actual
+   * repository (`pr-open.ts`'s `openPr`: pushes the branch, then `gh pr
+   * create`). `openPr` re-verifies the same preview fresh right before
+   * acting rather than trusting this client's now-possibly-stale one.
+   * Title/body travel encrypted (user-composed text, never agent-drafted
+   * here — that's #233). Ignored if `sessionId` isn't one of this node's
+   * sessions at all ({@link resolveSessionRouting}'s guard).
+   */
+  private handlePrOpenRequest(message: PrOpenRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptPrOpenRequest(message)
+      .then((payload) =>
+        this.getExecutionTarget(routing.targetId, routing.session.projectPath).then((target) =>
+          openPr(target, routing.session, payload),
+        ),
+      )
+      .then(
+        (opened) => ({ outcome: 'ok' as const, url: opened.url, number: opened.number }),
+        (error: unknown) => ({ outcome: 'failure' as const, ...this.prOpenFailureFrom(error) }),
+      )
+      .then((result) => this.sendPrOpenResult(message.sessionId, message.requestId, { result }))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle pr_open_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptPrOpenRequest(message: PrOpenRequest): Promise<PrOpenRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<PrOpenRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendPrOpenResult(
+    sessionId: string,
+    requestId: string,
+    payload: PrOpenResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'pr_open_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

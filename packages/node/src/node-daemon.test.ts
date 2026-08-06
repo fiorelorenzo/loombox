@@ -38,6 +38,7 @@ import { createNode, type NodeDaemon } from './node-daemon';
 import { SessionManager } from './session-manager';
 import { McpConfigStore } from './mcp-config-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
+import { NodeProjectEnvManager } from './project-env-secrets';
 import { FakeTransport, type FakeExecHandler } from './ssh/fake-transport';
 import type { SupervisorArtifactSource } from './ssh/supervisor-artifact';
 
@@ -142,6 +143,30 @@ function mcpProvider(): AcpProvider {
   return {
     id: 'test-mcp',
     spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [MCP_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
+// Echoes back one of its own real `process.env` entries when prompted with
+// "echo-env:<NAME>" (issue #258) — reused here to prove
+// `NodeProjectEnvManager`'s node-side resolution actually reaches the real
+// spawned child process's environment, not just that the store itself
+// resolves correctly in isolation.
+const ENV_ECHO_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'env-echo-acp-agent.mjs',
+);
+
+function envEchoProvider(): AcpProvider {
+  return {
+    id: 'test-env-echo',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [ENV_ECHO_FIXTURE], cwd }),
     enrich: (update) => update,
   };
 }
@@ -4346,6 +4371,280 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
     }
 
     expect(sentFrames.some((frame) => frame.includes(secretValue))).toBe(false);
+  });
+});
+
+describe('NodeDaemon project env-var injection at session start (issue #258)', () => {
+  it("resolves a project's declared env-var injection (with a granted secret) and it reaches the spawned agent process's real environment", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-resolve';
+
+    const mcpSecretManager = new NodeMcpSecretManager({
+      stateDir: nodeStateDir,
+      osKeyringBackendFactory: async () => undefined,
+    });
+    await mcpSecretManager.setSecretValue(projectPath, 'db-password', 'hunter2');
+    const projectEnvManager = new NodeProjectEnvManager({
+      stateDir: nodeStateDir,
+      secrets: mcpSecretManager,
+    });
+    projectEnvManager.grant(projectPath, 'db-password');
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-project-env',
+      deviceId: 'device-node-project-env',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+      mcpSecretManager,
+      projectEnvManager,
+    });
+
+    const session = await node.createSession({
+      projectPath,
+      provider: 'test-env-echo',
+      projectEnvDecls: [{ name: 'PROJECT_SECRET', secret: 'db-password' }],
+    });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-project-env',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+    );
+
+    // Prompts the real spawned child process, which reads its OWN
+    // `process.env.PROJECT_SECRET` (real OS-level environment, not a
+    // mocked spawn call) and echoes it back — the direct proof this
+    // node-level test needs that the declared secret actually reached the
+    // agent process's environment.
+    await node.promptSession(session.id, 'echo-env:PROJECT_SECRET');
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
+    expect(JSON.parse(chunk!.text!)).toBe('hunter2');
+  });
+
+  it('rejects session creation up front, before any worktree/agent is created, when a declared env var has an ungranted secret', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-ungranted';
+
+    // Deliberately never granted/set: this project has neither a grant nor
+    // a stored value for "db-password".
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-project-env-reject',
+      deviceId: 'device-node-project-env-reject',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+    });
+
+    await expect(
+      node.createSession({
+        projectPath,
+        provider: 'test-env-echo',
+        projectEnvDecls: [{ name: 'DB_PASSWORD', secret: 'db-password' }],
+      }),
+    ).rejects.toThrow(/DB_PASSWORD.*db-password/i);
+  });
+
+  it("makes a missing/ungranted secret's failure visible on the wire — session_announce and session_status: 'error' name the env var and secret, never a value", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-visible';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-project-env-visible',
+      deviceId: 'device-node-project-env-visible',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-project-env-visible-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      {
+        title: 'secret missing',
+        projectPath,
+        projectEnvDecls: [{ name: 'DB_PASSWORD', secret: 'db-password' }],
+      },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-project-env-visible',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-env-echo',
+      privateEnvelope,
+    });
+
+    // On the board — announced even though this session never gets a
+    // worktree/lease/agent, purely so the failure below is visible at all
+    // (see `reportProjectEnvPreflightFailure`'s own doc comment).
+    await waitForSessionInList(phone, sessionId);
+
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      sinceSeq: 0,
+    });
+    const [statusEvent] = await waitForDecryptedKinds(phone, sessionId, key, ['session_status'], 1);
+
+    expect(statusEvent?.status).toBe('error');
+    expect(statusEvent?.reason).toMatch(/DB_PASSWORD.*db-password/i);
+  });
+
+  it('never lets a resolved secret value cross the relay, in any message frame this node sends (issue #258)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-opaque';
+    const secretValue = '$$CREDENTIAL_9K3XQ7VZPMDA:L$$';
+
+    const mcpSecretManager = new NodeMcpSecretManager({
+      stateDir: nodeStateDir,
+      osKeyringBackendFactory: async () => undefined,
+    });
+    await mcpSecretManager.setSecretValue(projectPath, 'db-password', secretValue);
+    const projectEnvManager = new NodeProjectEnvManager({
+      stateDir: nodeStateDir,
+      secrets: mcpSecretManager,
+    });
+    projectEnvManager.grant(projectPath, 'db-password');
+
+    const sentFrames: string[] = [];
+    const originalSend = WebSocket.prototype.send;
+    const sendSpy = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (
+      this: WebSocket,
+      data: string | ArrayBufferLike | ArrayBufferView | Blob,
+    ) {
+      sentFrames.push(String(data));
+      return originalSend.call(this, data);
+    });
+
+    try {
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-project-env-opaque',
+        deviceId: 'device-node-project-env-opaque',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+        mcpSecretManager,
+        projectEnvManager,
+      });
+
+      const session = await node.createSession({
+        projectPath,
+        provider: 'test-env-echo',
+        projectEnvDecls: [{ name: 'PROJECT_SECRET', secret: 'db-password' }],
+      });
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-project-env-opaque',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+      await phone.waitFor(
+        (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+      );
+      // The fixture agent echoes the resolved env value (secret included)
+      // straight back over its own ACP session — this is the one place
+      // the value legitimately exists past the node, and it is exactly
+      // what this assertion must still catch if it ever left the node in
+      // the clear.
+      await node.promptSession(session.id, 'echo-env:PROJECT_SECRET');
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+      await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
+    } finally {
+      sendSpy.mockRestore();
+    }
+
+    expect(sentFrames.some((frame) => frame.includes(secretValue))).toBe(false);
+  });
+
+  it('a project with no declared env vars opens a session unaffected, unchanged from before this issue', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-none';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-project-env-none',
+      deviceId: 'device-node-project-env-none',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-env-echo' });
+    await node.promptSession(session.id, 'echo-env:PROJECT_SECRET');
+
+    // No wire assertion needed beyond "this didn't throw" — resolveForSession()
+    // short-circuits to {} without touching secret storage at all when the
+    // decl list is empty (see NodeProjectEnvManager's doc comment).
+    expect(session.id).toBeTruthy();
+  });
+
+  it('refuses a declared env var on an ssh: target outright, before any deploy attempt, rather than starting an agent quietly missing it', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-project-env-ssh-refused';
+    const targetId = 'ssh-target-1';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-project-env-ssh',
+      deviceId: 'device-node-project-env-ssh',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [envEchoProvider()] }),
+      targets: [{ id: targetId, kind: 'ssh', label: 'Dev box', providers: [] }],
+      sshTargets: [{ id: targetId, label: 'Dev box', host: '100.87.202.117', user: 'dev' }],
+    });
+
+    await expect(
+      node.createSession({
+        projectPath,
+        provider: 'test-env-echo',
+        targetId,
+        projectEnvDecls: [{ name: 'PROJECT_SECRET', secret: 'db-password' }],
+      }),
+    ).rejects.toThrow(/ssh:/i);
   });
 });
 
