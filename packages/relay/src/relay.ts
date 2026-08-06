@@ -2235,22 +2235,19 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'checkpoint_list':
       case 'checkpoint_restore_preview':
       case 'checkpoint_restore':
-        // A client taking/listing/previewing/rolling back a session's
-        // checkpoints (SPEC §7.20; issue #603) — routed to the owning
-        // node exactly like permission_policy_get/_set above. The relay
-        // only ever sees sessionId/requestId plus, for checkpoint_create,
-        // an opaque `EncryptedEnvelope`; checkpoint_restore_preview/
-        // _restore carry only an opaque checkpointId and (for _restore) a
-        // plain confirm boolean — no checkpoint label, commit, or file
-        // content ever reaches the relay in the clear.
       case 'pr_open_preview_request':
       case 'pr_open_request':
-        // A client previewing/confirming opening a pull request from a
-        // session's own branch (SPEC §7.14; issue #238) — routed to the
-        // owning node exactly like permission_policy_get/_set above. The
-        // relay only ever sees sessionId/requestId plus (for
-        // pr_open_request) an opaque `EncryptedEnvelope`; no title, body,
-        // branch name, or PR URL ever reaches the relay in the clear.
+        // A client taking/listing/previewing/rolling back a session's
+        // checkpoints (SPEC §7.20; issue #603), or previewing/confirming
+        // opening a pull request from a session's own branch (SPEC §7.14;
+        // issue #238) — routed to the owning node exactly like
+        // permission_policy_get/_set above. The relay only ever sees
+        // sessionId/requestId plus, for checkpoint_create/pr_open_request,
+        // an opaque `EncryptedEnvelope`; checkpoint_restore_preview/
+        // _restore carry only an opaque checkpointId and (for _restore) a
+        // plain confirm boolean — no checkpoint label, commit, file
+        // content, PR title, body, branch name, or PR URL ever reaches the
+        // relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'agent_profile_list_get':
