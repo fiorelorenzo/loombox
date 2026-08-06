@@ -612,9 +612,17 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
       // depth-2 queue) before the next one fires.
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    expect(activePhone.count((m) => m.type === 'resync_marker')).toBeGreaterThan(0); // real backpressure genuinely happened for this session/client
+    // Waits for the marker itself to actually arrive, driven off
+    // `TestPhone`'s own message-arrival poll (the same idiom every other
+    // wait in this file already uses), instead of guessing a fixed 300ms
+    // was long enough after the loop above — that blind sleep-then-assert
+    // shape was the same "wall-clock deadline as primary synchronisation"
+    // bug as issue #793's PTY test: reported flaking under full-suite
+    // parallel load, since a slower run could still be short of real
+    // backpressure at the 300ms mark. `waitFor` throws (failing the test
+    // for a real reason) if no resync_marker shows up within its own
+    // 5000ms bound.
+    await activePhone.waitFor((m) => m.type === 'resync_marker'); // real backpressure genuinely happened for this session/client
 
     // Now the attachment turn. `deliverPrompt` resolves the attachment and
     // awaits `sendFileEvent` *before* ever calling `beginTurn`/`prompt()`
