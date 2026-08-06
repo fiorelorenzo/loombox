@@ -12,7 +12,12 @@
  * `CanvasZeroState.svelte` renders its own "nothing yet" copy for that case
  * rather than this module inventing placeholder content.
  */
-import type { AcpMessageChunkKind, TranscriptItem } from '@loombox/providers-core/browser';
+import type {
+  AcpMessageChunkKind,
+  TranscriptItem,
+  TranscriptMessageItem,
+  TranscriptToolCallItem,
+} from '@loombox/providers-core/browser';
 
 /** Who a tail entry reads as: the three live message-chunk kinds `TranscriptState.items` carries, plus `'tool'` for a tool-call item (which has no `kind` of its own). */
 export type TranscriptTailSpeaker = 'user' | 'agent' | 'thought' | 'tool';
@@ -44,7 +49,11 @@ export function transcriptTail(
   items: readonly TranscriptItem[],
   limit: number,
 ): TranscriptTailEntry[] {
+  // A resync gap (issue #729) has no speaker/text of its own — it never
+  // counts toward this preview, exactly like the "zero turns yet" empty
+  // case above: skip it rather than inventing a placeholder line for it.
   return items
+    .filter((item): item is TranscriptMessageItem | TranscriptToolCallItem => item.type !== 'gap')
     .slice(-limit)
     .map((item) =>
       item.type === 'message'

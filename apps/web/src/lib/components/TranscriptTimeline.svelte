@@ -57,6 +57,7 @@
   import Icon from './icons/Icon.svelte';
   import MessageItem from './MessageItem.svelte';
   import ToolCallRow from './ToolCallRow.svelte';
+  import TranscriptGap from './TranscriptGap.svelte';
 
   /** A request to bring one specific item into the mounted window and scroll it into view (issue #740's turn-review "jump to this file's diff"), even when it's currently outside the range `windowing.svelte.ts` mounts. `token` must be bumped on every request, including a repeat click on an already-visible row's `id` — a bare `id` prop wouldn't re-trigger the `$effect` below on an unchanged value. */
   export interface TranscriptJumpTarget {
@@ -299,6 +300,8 @@
           {onFork}
           forking={forkingTurnId === item.turnId}
         />
+      {:else if item.type === 'gap'}
+        <TranscriptGap {item} />
       {:else}
         <ToolCallRow
           {item}

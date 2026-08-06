@@ -108,7 +108,25 @@ export interface TranscriptToolCallItem {
   attributedCostUsd: number | undefined;
 }
 
-export type TranscriptItem = TranscriptMessageItem | TranscriptToolCallItem;
+/**
+ * A visible "history gap" marker (issue #729, SPEC.md §7.16's bounded
+ * per-client ring: "drop-oldest + a resync marker on overflow"). Inserted
+ * when a `resync_request` reply's `resync_marker` reports `dropped: true` —
+ * the relay's ring already evicted `[fromSeq, toSeq]` before this client
+ * (or any client) could replay it, so that stretch of transcript is gone
+ * for good, not just delayed. Rendered as its own row (`TranscriptTimeline`)
+ * instead of silently skipping ahead, so a reader never mistakes a hole for
+ * a quiet turn.
+ */
+export interface TranscriptGapItem {
+  type: 'gap';
+  /** `gap::${fromSeq}::${toSeq}` — stable per range, so a duplicate marker for the identical evicted range (two resyncs both still short of it) is a no-op, not a second row. See {@link reduceResyncGap}. */
+  id: string;
+  fromSeq: number;
+  toSeq: number;
+}
+
+export type TranscriptItem = TranscriptMessageItem | TranscriptToolCallItem | TranscriptGapItem;
 
 /**
  * SPEC.md §7.9's live percentage meter warns once context fill crosses this
@@ -218,6 +236,10 @@ export function createTranscriptState(): TranscriptState {
 
 function messageItemId(kind: AcpMessageChunkKind, turnId: string, messageId: string): string {
   return `${turnId}::${kind}::${messageId}`;
+}
+
+function gapItemId(fromSeq: number, toSeq: number): string {
+  return `gap::${fromSeq}::${toSeq}`;
 }
 
 function reduceMessageChunk(
@@ -489,6 +511,38 @@ export function reduceSessionEvent(
     case 'mcp_server_status':
       return { ...state, mcpServerStatuses: event.servers.map((server) => ({ ...server })) };
   }
+}
+
+/**
+ * Reduces a relay `resync_marker` (`dropped: true`) into a visible
+ * {@link TranscriptGapItem} (issue #729) — appended to `items` exactly like
+ * every other update, so it takes its place in transcript order relative to
+ * whatever replayed history follows it (the relay always sends the marker
+ * before the entries that resume after the evicted range, and the marker
+ * itself needs no decrypt, so it is applied synchronously the instant it
+ * arrives — see `relay-client.ts`'s `handleResyncMarker`). Deliberately NOT
+ * part of {@link reduceSessionEvent}/{@link AcpSessionWireEvent}: a
+ * `resync_marker` is a top-level, unencrypted relay message (SPEC.md
+ * §7.16), never ciphertext inside a `session_update` envelope, so it never
+ * travels through this session's ACP wire-event union at all. Idempotent by
+ * `[fromSeq, toSeq]` (`gapItemId`) — a duplicate marker for the identical
+ * still-evicted range (e.g. two resyncs racing a reconnect) is a no-op, not
+ * a second gap row. Never mutates `state`, same contract as
+ * `reduceTranscript`/`reduceSessionEvent`.
+ */
+export function reduceResyncGap(
+  state: TranscriptState,
+  marker: { fromSeq: number; toSeq: number },
+): TranscriptState {
+  const id = gapItemId(marker.fromSeq, marker.toSeq);
+  if (state.items.some((item) => item.type === 'gap' && item.id === id)) return state;
+  const item: TranscriptGapItem = {
+    type: 'gap',
+    id,
+    fromSeq: marker.fromSeq,
+    toSeq: marker.toSeq,
+  };
+  return { ...state, items: [...state.items, item] };
 }
 
 /**
