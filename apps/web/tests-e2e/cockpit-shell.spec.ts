@@ -1344,11 +1344,24 @@ test.describe('cockpit shell', () => {
     // drag, one real resize outcome once it settles.
     for (let step = 1; step <= 8; step += 1) {
       await page.mouse.move(startX, startY - step * 10);
+      // One frame between moves: the dock coalesces pointermoves to a single
+      // `ResizeObserver` notification per render frame (its own doc comment),
+      // so eight moves issued inside one frame can collapse into one that the
+      // drag never applies. Under CI load that is what made this assertion
+      // flake (issue #649), landing on the untouched default height.
+      await page.evaluate(async () => {
+        const framePassed = Promise.withResolvers<void>();
+        requestAnimationFrame(() => framePassed.resolve());
+        await framePassed.promise;
+      });
     }
     await page.mouse.up();
 
-    const heightAfter = (await dock.boundingBox())?.height ?? 0;
-    expect(heightAfter).toBeGreaterThan(heightBefore + 40);
+    // Polled, not read once: the last frame of a drag settles after
+    // `mouse.up` returns.
+    await expect
+      .poll(async () => (await dock.boundingBox())?.height ?? 0, { timeout: 5_000 })
+      .toBeGreaterThan(heightBefore + 40);
 
     // The real effect of the resize, not just the CSS box (issue #572's
     // own acceptance line: "xterm reflows to the new rows/cols").
