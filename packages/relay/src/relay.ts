@@ -1492,6 +1492,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // command was involved.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'pr_open_preview_result':
+      case 'pr_open_result':
+        // The owning node's reply to a client's pr_open_preview_request/
+        // pr_open_request (SPEC §7.14; issue #238) — fanned out exactly
+        // like permission_policy_result above; the relay never opens
+        // either envelope, so it never sees a branch name, commit count,
+        // PR title/body, or the created PR's URL (SPEC §8's metadata
+        // boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'agent_profile_list_result':
       case 'agent_profile_session_result':
         // The owning node's reply to a client's agent_profile_list_get/
@@ -2233,6 +2243,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // _restore carry only an opaque checkpointId and (for _restore) a
         // plain confirm boolean — no checkpoint label, commit, or file
         // content ever reaches the relay in the clear.
+      case 'pr_open_preview_request':
+      case 'pr_open_request':
+        // A client previewing/confirming opening a pull request from a
+        // session's own branch (SPEC §7.14; issue #238) — routed to the
+        // owning node exactly like permission_policy_get/_set above. The
+        // relay only ever sees sessionId/requestId plus (for
+        // pr_open_request) an opaque `EncryptedEnvelope`; no title, body,
+        // branch name, or PR URL ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'agent_profile_list_get':

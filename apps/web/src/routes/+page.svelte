@@ -146,6 +146,7 @@
   import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
+  import PrOpenDialog from '$lib/components/PrOpenDialog.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
@@ -501,6 +502,9 @@
   /** The session a just-opened `ArchiveSessionDialog` confirms archiving for (design spec v4 §3.2's row menu); `undefined` when none is open. Kept separate from a plain boolean so the dialog's own exit transition still has real session content to render while it plays out — same split `newSessionProject`/`newSessionOpen` already use. */
   let archivingSession = $state<ClientSessionMeta | undefined>(undefined);
   let archiveSessionOpen = $state(false);
+  /** The session a just-opened `PrOpenDialog` (SPEC §7.14; issue #238) previews/opens a pull request for; `undefined` when none is open. Same split as `archivingSession`/`archiveSessionOpen` immediately above, for the same "the dialog's own exit transition still has real session content to render" reason. Reachable from ANY session row's menu, not gated to the currently-open session — unlike "Export transcript" this needs nothing beyond a session id a row already has. */
+  let prOpenSession = $state<ClientSessionMeta | undefined>(undefined);
+  let prOpenDialogOpen = $state(false);
   /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
   let renamingProjectId = $state<string | undefined>(undefined);
   /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
@@ -2769,6 +2773,16 @@
     archiveSessionOpen = false;
   }
 
+  /** The session row menu's "Open pull request…" action (SPEC §7.14; issue #238) — mirrors `openArchiveSessionDialog` immediately above. */
+  function openPrOpenDialog(session: ClientSessionMeta): void {
+    prOpenSession = session;
+    prOpenDialogOpen = true;
+  }
+
+  function closePrOpenDialog(): void {
+    prOpenDialogOpen = false;
+  }
+
   /**
    * Which single CTA the main-area empty state offers (design spec v4
    * §3.3): "always the one that unblocks the next step." Checked in this
@@ -3313,6 +3327,17 @@
                   Export transcript
                 </button>
               {/if}
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="session-pr-open-link"
+                onclick={() => {
+                  closeSidebarMenus();
+                  openPrOpenDialog(session);
+                }}
+              >
+                Open pull request…
+              </button>
               <button
                 type="button"
                 role="menuitem"
@@ -4686,6 +4711,15 @@
     session={archivingSession}
     {client}
     onClose={closeArchiveSessionDialog}
+  />
+{/if}
+
+{#if prOpenSession}
+  <PrOpenDialog
+    open={prOpenDialogOpen}
+    session={prOpenSession}
+    {client}
+    onClose={closePrOpenDialog}
   />
 {/if}
 

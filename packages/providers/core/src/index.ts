@@ -173,6 +173,21 @@ export {
   resolveMcpServerConfigs,
 } from './mcp-secret-grants';
 
+// v1: per-project env-var injection for the agent process itself — grant
+// ACL plus the resolver that turns a project's declared env-var list into
+// the plain `Record<string,string>` `AcpSpawnConfig.env` consumes, failing
+// fast on an ungranted/missing secret (SPEC.md §7.17, §8; issue #258).
+export {
+  ProjectEnvDeclError,
+  ProjectEnvGrantStore,
+  ProjectEnvVarMissingError,
+  parseProjectEnvVarDecl,
+  parseProjectEnvVarDeclList,
+  requiredProjectEnvSecrets,
+  resolveProjectEnv,
+} from './project-env';
+export type { ProjectEnvVarDecl } from './project-env';
+
 // v1: quick-add MCP server presets — a small starter catalog, each
 // expanding to the exact same `McpServerConfig` shape a hand-entered
 // server produces (SPEC.md §7.7; issue #188).
