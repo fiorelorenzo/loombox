@@ -78,11 +78,17 @@ rl.on('line', (line) => {
         agentCapabilities: {
           loadSession: true,
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
-          mcpServerPicker: false,
-          additionalDirectories: false,
-          sessionDelete: false,
-          requestPermission: true,
-          plans: true,
+          // Real ACP v1 shape (issue #821): `sessionCapabilities`'s keys are
+          // each a presence-typed sub-object, nested, never flat booleans.
+          // Not a verified claim about Claude Code's own real ACP bridge
+          // (no build-time spike has pinned/read it the way issue #182 did
+          // for codex-acp) -- illustrative, but real-shaped, and gives this
+          // fixture a different resume/list/delete/additionalDirectories
+          // combo than codex-like-acp-agent.mjs's verified-real one so
+          // capabilities.test.ts/config-capabilities-integration.test.ts
+          // still prove branding-blind derivation across two distinct
+          // capability sets.
+          sessionCapabilities: { resume: {}, list: {} },
         },
         agentInfo: { name: 'claude-like-acp-agent', version: '0.0.0' },
         authMethods: [],
