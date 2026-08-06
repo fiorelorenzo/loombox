@@ -376,6 +376,34 @@ export class AgentSession extends EventEmitter {
     }
   }
 
+  /**
+   * Truncates this session's transcript to its first `keepCount` v1
+   * updates — the transcript half of a destructive rewind (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-3; issue #747), meant to
+   * run alongside a `GitCheckpointStore.restore()` of this same session's
+   * worktree so the thread and the files on disk can never disagree about
+   * which turn the session is at. The mirror image of
+   * {@link seedTranscriptUpdates} above: that one only ever grows this
+   * session's recorded history, this one only ever shrinks it — both the
+   * in-memory cache {@link getTranscriptUpdates} reads (spliced down
+   * directly; `Array#length` assignment is a mutation, not a reassignment
+   * of the `readonly` field itself) and, via `store`, the on-disk log a
+   * later `fromPersisted()` reconstruction would otherwise still see the
+   * discarded tail in. Never emits `'transcript_update'` (or anything
+   * else): unlike a normal arrival, nothing here is new content a live
+   * listener needs to react to — a caller that also needs connected
+   * clients to catch up drives that itself, over whatever reply channel
+   * it already owns (`@loombox/node`'s `session_rewind_result`, fanned to
+   * every subscriber of this session exactly like any other checkpoint
+   * reply).
+   */
+  truncateTranscriptUpdates(keepCount: number): void {
+    this.transcriptUpdates.length = Math.min(keepCount, this.transcriptUpdates.length);
+    if (this.sessionId && !this.closed) {
+      this.store?.truncateTranscriptUpdates(this.sessionId, keepCount);
+    }
+  }
+
   /** This session's latest attention snapshot (SPEC.md §7.13; issue #79) — recorded regardless of whether any caller is currently listening for the `'attention'` event, and readable by a caller that only just attached. */
   getAttentionState(): AttentionState {
     return this.attentionState;

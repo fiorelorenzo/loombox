@@ -134,4 +134,83 @@ describe('TranscriptStore', () => {
     const store = new TranscriptStore({ stateDir: path.join(stateDir, 'not-created') });
     expect(store.listSessionIds()).toEqual([]);
   });
+
+  describe('truncateTranscriptUpdates (design spec C6-3; issue #747)', () => {
+    it('keeps entries through the Nth transcript_update plus its own turn_end, and drops everything after', () => {
+      const store = new TranscriptStore({ stateDir });
+      store.createSession({
+        sessionId: 'sess_1',
+        providerId: 'test-echo',
+        workspacePath: '/tmp/ws',
+      });
+
+      store.appendTranscriptUpdate('sess_1', CHUNK_A); // turn 1, seq 1
+      store.appendTurnEnd('sess_1', { messageId: 'm1', stopReason: 'end_turn' }); // seq 2
+      const turn2Chunk: AcpTranscriptUpdate = { ...CHUNK_A, turnId: 'turn:2', messageId: 'm2' };
+      store.appendTranscriptUpdate('sess_1', turn2Chunk); // turn 2, seq 3
+      store.appendTurnEnd('sess_1', { messageId: 'm2', stopReason: 'end_turn' }); // seq 4
+
+      store.truncateTranscriptUpdates('sess_1', 1);
+
+      const log = store.readLog('sess_1');
+      expect(log).toHaveLength(2);
+      expect(log.map((entry) => entry.seq)).toEqual([1, 2]);
+      expect(store.readTranscriptUpdates('sess_1')).toEqual([CHUNK_A]);
+    });
+
+    it('continues seq numbering from the truncated tail, never the discarded entries', () => {
+      const store = new TranscriptStore({ stateDir });
+      store.createSession({
+        sessionId: 'sess_1',
+        providerId: 'test-echo',
+        workspacePath: '/tmp/ws',
+      });
+      store.appendTranscriptUpdate('sess_1', CHUNK_A);
+      store.appendTranscriptUpdate('sess_1', CHUNK_B);
+
+      store.truncateTranscriptUpdates('sess_1', 1);
+      store.appendTranscriptUpdate('sess_1', CHUNK_B);
+
+      const log = store.readLog('sess_1');
+      expect(log.map((entry) => entry.seq)).toEqual([1, 2]);
+      expect(store.readTranscriptUpdates('sess_1')).toEqual([CHUNK_A, CHUNK_B]);
+    });
+
+    it('a fresh instance pointed at the same stateDir sees the truncated log, not the discarded tail', () => {
+      const storeA = new TranscriptStore({ stateDir });
+      storeA.createSession({
+        sessionId: 'sess_1',
+        providerId: 'test-echo',
+        workspacePath: '/tmp/ws',
+      });
+      storeA.appendTranscriptUpdate('sess_1', CHUNK_A);
+      storeA.appendTranscriptUpdate('sess_1', CHUNK_B);
+      storeA.truncateTranscriptUpdates('sess_1', 1);
+
+      const storeB = new TranscriptStore({ stateDir });
+      expect(storeB.readTranscriptUpdates('sess_1')).toEqual([CHUNK_A]);
+    });
+
+    it('keepCount 0 truncates to an empty log', () => {
+      const store = new TranscriptStore({ stateDir });
+      store.createSession({
+        sessionId: 'sess_1',
+        providerId: 'test-echo',
+        workspacePath: '/tmp/ws',
+      });
+      store.appendTranscriptUpdate('sess_1', CHUNK_A);
+      store.appendTurnEnd('sess_1', { messageId: 'm1', stopReason: 'end_turn' });
+
+      store.truncateTranscriptUpdates('sess_1', 0);
+
+      expect(store.readLog('sess_1')).toEqual([]);
+      expect(store.readTranscriptUpdates('sess_1')).toEqual([]);
+    });
+
+    it('is a no-op for a session with no persisted log yet', () => {
+      const store = new TranscriptStore({ stateDir });
+      expect(() => store.truncateTranscriptUpdates('sess_missing', 0)).not.toThrow();
+      expect(store.readLog('sess_missing')).toEqual([]);
+    });
+  });
 });

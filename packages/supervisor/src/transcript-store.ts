@@ -156,6 +156,63 @@ export class TranscriptStore {
     this.updateMetaAttention(sessionId, attention);
   }
 
+  /**
+   * Truncates a session's persisted log to its first `keepTranscriptUpdateCount`
+   * `transcript_update` entries — the on-disk half of a destructive rewind
+   * (design spec `2026-08-05-zed-parity-decisions.md`'s C6-3; issue #747),
+   * paired with `GitCheckpointStore.restore()` on the same session's
+   * worktree so the thread and the files on disk can never disagree about
+   * which turn the session is at. Unlike every `append*` method above,
+   * this REWRITES `log.jsonl` rather than appending to it — the one place
+   * this store's own "append-log" design (class doc comment) is
+   * deliberately broken, because rewind is the one operation that needs
+   * the log to actually shrink. A `turn_end` entry immediately following
+   * the kept boundary is kept too (it closes the same turn the boundary
+   * itself belongs to); anything after that — later turns'
+   * `transcript_update`/`turn_end` entries, and any `attention` entry
+   * recorded once any of that later work started — is dropped, since this
+   * store's log is a single chronological stream and everything past the
+   * boundary happened afterward. Also re-derives this store's own `seq`
+   * counter from the new tail, so a subsequent append continues numbering
+   * from the truncated log's own last entry, never the discarded one's.
+   * Never throws for a session with no persisted log yet (nothing to
+   * truncate) — mirrors every `append*` method's own best-effort
+   * contract, since this also runs from `AgentSession`'s live call path.
+   */
+  truncateTranscriptUpdates(sessionId: string, keepTranscriptUpdateCount: number): void {
+    const entries = this.readLog(sessionId);
+    if (entries.length === 0) return;
+
+    // The index (exclusive) one past the boundary entry, found by walking
+    // until the `keepTranscriptUpdateCount`-th `transcript_update` is
+    // reached — `-1` (never satisfied) for `keepTranscriptUpdateCount ===
+    // 0`, which correctly falls through to the "no boundary found, cut
+    // everything" default below.
+    let seenUpdates = 0;
+    let cutAt = -1;
+    for (let i = 0; i < entries.length && cutAt === -1; i++) {
+      if (entries[i]!.type !== 'transcript_update') continue;
+      seenUpdates++;
+      if (seenUpdates === keepTranscriptUpdateCount) {
+        cutAt = entries[i + 1]?.type === 'turn_end' ? i + 2 : i + 1;
+      }
+    }
+    if (cutAt === -1) cutAt = keepTranscriptUpdateCount > 0 ? entries.length : 0;
+
+    const kept = entries.slice(0, cutAt);
+    try {
+      writeFileSync(
+        this.logPath(sessionId),
+        kept.map((entry) => `${JSON.stringify(entry)}\n`).join(''),
+        'utf8',
+      );
+    } catch {
+      // best-effort; see appendEntry's doc comment above.
+      return;
+    }
+    this.seqCounters.set(sessionId, kept.length > 0 ? kept[kept.length - 1]!.seq : 0);
+  }
+
   private nextSeq(sessionId: string): number {
     const next = (this.seqCounters.get(sessionId) ?? 0) + 1;
     this.seqCounters.set(sessionId, next);

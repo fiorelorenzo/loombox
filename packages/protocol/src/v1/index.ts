@@ -601,6 +601,32 @@ export {
   safeParseCheckpointRestoreResultPayloadV1,
 } from './checkpoint';
 export type {
+  RewindFileChangeV1,
+  RewindErrorTypeV1,
+  RewindPreviewV1,
+  RewindResultV1,
+  SessionRewindPreview,
+  SessionRewindPreviewResult,
+  SessionRewindPreviewResultPayloadV1,
+  SessionRewind,
+  SessionRewindResult,
+  SessionRewindResultPayloadV1,
+} from './rewind';
+export {
+  rewindFileChangeV1,
+  rewindErrorTypeV1,
+  rewindPreviewV1,
+  rewindResultV1,
+  sessionRewindPreview,
+  sessionRewindPreviewResult,
+  parseSessionRewindPreviewResultPayloadV1,
+  safeParseSessionRewindPreviewResultPayloadV1,
+  sessionRewind,
+  sessionRewindResult,
+  parseSessionRewindResultPayloadV1,
+  safeParseSessionRewindResultPayloadV1,
+} from './rewind';
+export type {
   PrOpenFailureCategory,
   PrOpenFailure,
   PrOpenPreviewOutcome,

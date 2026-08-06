@@ -42,6 +42,7 @@ export {
 export type {
   GitCheckpoint,
   GitCheckpointStoreOptions,
+  RestoreFileChange,
   RestorePreview,
   RestoreResult,
 } from './git-checkpoint-store';

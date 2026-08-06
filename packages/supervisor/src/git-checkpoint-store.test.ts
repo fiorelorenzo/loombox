@@ -301,4 +301,78 @@ describe('GitCheckpointStore', () => {
       'dirtied from outside\n',
     );
   });
+
+  describe('filesAffectedByRestore (issue #747 rewind: naming what will be lost)', () => {
+    it('names a changed tracked file, a new untracked file, and a since-deleted tracked file, with the right action for each', async () => {
+      const repoPath = await createRepo();
+      const worktreePath = await createSessionWorktree(repoPath, 'sess-files-affected');
+      const store = new GitCheckpointStore({ worktreePath, sessionId: 'sess-files-affected' });
+
+      await writeFile(join(worktreePath, 'keep.txt'), 'keep v1\n');
+      await git(worktreePath, ['add', 'keep.txt']);
+      await git(worktreePath, ['commit', '-q', '-m', 'add keep.txt']);
+      const checkpoint = await store.checkpoint();
+
+      // Modify a tracked file, add a new untracked one, delete the other tracked file.
+      await writeFile(join(worktreePath, 'tracked.txt'), 'tracked v1\nchanged after checkpoint\n');
+      await writeFile(join(worktreePath, 'new_since.txt'), 'new since checkpoint\n');
+      await rm(join(worktreePath, 'keep.txt'), { force: true });
+
+      const changes = await store.filesAffectedByRestore(checkpoint.id);
+      const byPath = new Map(changes.map((c) => [c.path, c.action]));
+
+      expect(byPath.get('tracked.txt')).toBe('restore'); // content will be overwritten back
+      expect(byPath.get('new_since.txt')).toBe('delete'); // never in the checkpoint; restore removes it
+      expect(byPath.get('keep.txt')).toBe('restore'); // was tracked at checkpoint time; restore recreates it
+      expect(changes).toHaveLength(3);
+    });
+
+    it('is empty when nothing differs from the checkpoint', async () => {
+      const repoPath = await createRepo();
+      const worktreePath = await createSessionWorktree(repoPath, 'sess-files-unchanged');
+      const store = new GitCheckpointStore({ worktreePath, sessionId: 'sess-files-unchanged' });
+      const checkpoint = await store.checkpoint();
+
+      expect(await store.filesAffectedByRestore(checkpoint.id)).toEqual([]);
+    });
+
+    it('names files affected by a real commit made after the checkpoint, even with nothing uncommitted', async () => {
+      const repoPath = await createRepo();
+      const worktreePath = await createSessionWorktree(repoPath, 'sess-files-committed');
+      const store = new GitCheckpointStore({ worktreePath, sessionId: 'sess-files-committed' });
+      const checkpoint = await store.checkpoint();
+
+      await writeFile(join(worktreePath, 'tracked.txt'), 'tracked v1\ncommitted change\n');
+      await git(worktreePath, ['commit', '-q', '-am', 'a real commit after the checkpoint']);
+      expect(await statusPorcelain(worktreePath)).toBe('');
+
+      const changes = await store.filesAffectedByRestore(checkpoint.id);
+      expect(changes).toEqual([{ path: 'tracked.txt', action: 'restore' }]);
+    });
+
+    it('matches what restore() actually does, end to end', async () => {
+      const repoPath = await createRepo();
+      const worktreePath = await createSessionWorktree(repoPath, 'sess-files-matches');
+      const store = new GitCheckpointStore({ worktreePath, sessionId: 'sess-files-matches' });
+      const checkpoint = await store.checkpoint();
+
+      await writeFile(join(worktreePath, 'new_src.js'), 'export const x = 1;\n');
+
+      const changes = await store.filesAffectedByRestore(checkpoint.id);
+      expect(changes).toEqual([{ path: 'new_src.js', action: 'delete' }]);
+
+      await store.restore(checkpoint.id);
+      expect(await exists(join(worktreePath, 'new_src.js'))).toBe(false);
+    });
+
+    it('throws CheckpointNotFoundError for an unknown checkpoint id', async () => {
+      const repoPath = await createRepo();
+      const worktreePath = await createSessionWorktree(repoPath, 'sess-files-missing');
+      const store = new GitCheckpointStore({ worktreePath, sessionId: 'sess-files-missing' });
+
+      await expect(store.filesAffectedByRestore('does-not-exist')).rejects.toThrow(
+        CheckpointNotFoundError,
+      );
+    });
+  });
 });
