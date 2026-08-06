@@ -43,6 +43,12 @@
     type DockPanelState,
   } from '$lib/dock-panel.svelte';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
+  import {
+    getAvailableActions,
+    matchShortcut,
+    type ActionContext,
+    type ActionHandlers,
+  } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import {
@@ -923,8 +929,11 @@
   // visible for every session in the list, not just the one currently open.
   const sessionStatuses = new SvelteMap<string, AcpSessionStatus | undefined>();
   const sessionStatusUnsubscribers = new SvelteMap<string, () => void>();
+  /** Parallels {@link sessionStatuses}, one `RelayClient.statusReasonFor` subscription per listed session (issue #730) — why a `'error'` status happened, when the node said so (a spawn that failed or timed out); `undefined` for every other status. Kept as a separate map/subscription pair rather than widening `sessionStatuses`' value type, since every existing reader of that map (severity ranking, row/selvage labels) only ever needed the bare status. */
+  const sessionStatusReasons = new SvelteMap<string, string | undefined>();
+  const sessionStatusReasonUnsubscribers = new SvelteMap<string, () => void>();
 
-  /** (Re)syncs `sessionStatuses`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
+  /** (Re)syncs `sessionStatuses`'/`sessionStatusReasons`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
   function syncSessionStatusSubscriptions(list: ClientSessionMeta[]): void {
     if (!client) return;
     const activeClient = client;
@@ -935,12 +944,25 @@
       sessionStatusUnsubscribers.delete(id);
       sessionStatuses.delete(id);
     }
+    for (const [id, unsubscribe] of sessionStatusReasonUnsubscribers) {
+      if (currentIds.has(id)) continue;
+      unsubscribe();
+      sessionStatusReasonUnsubscribers.delete(id);
+      sessionStatusReasons.delete(id);
+    }
     for (const session of list) {
-      if (sessionStatusUnsubscribers.has(session.id)) continue;
-      const unsubscribe = activeClient
-        .statusFor(session.id)
-        .subscribe((value) => sessionStatuses.set(session.id, value));
-      sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      if (!sessionStatusUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusFor(session.id)
+          .subscribe((value) => sessionStatuses.set(session.id, value));
+        sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      }
+      if (!sessionStatusReasonUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusReasonFor(session.id)
+          .subscribe((value) => sessionStatusReasons.set(session.id, value));
+        sessionStatusReasonUnsubscribers.set(session.id, unsubscribe);
+      }
     }
   }
 
@@ -948,6 +970,9 @@
     for (const unsubscribe of sessionStatusUnsubscribers.values()) unsubscribe();
     sessionStatusUnsubscribers.clear();
     sessionStatuses.clear();
+    for (const unsubscribe of sessionStatusReasonUnsubscribers.values()) unsubscribe();
+    sessionStatusReasonUnsubscribers.clear();
+    sessionStatusReasons.clear();
   }
 
   // Persistence for the client-side UI preferences below (relay URL,
@@ -1048,20 +1073,62 @@
       : undefined,
   );
   /**
-   * Whether the selected session survived a node restart with no agent
-   * behind it (`session-manager.ts`'s `SessionLifecycleState` doc
-   * comment). Files and the terminal still work on one of these (issue
-   * #702 part 3 — neither ever needed the agent), but a new prompt
-   * genuinely cannot be delivered (no agent process to hand it to, and
-   * `prompt_inject` has no reply channel to report that failure on), so
-   * the composer is disabled rather than silently swallowing a send that
-   * would otherwise sit unanswered for 10s exactly like the bug this
-   * issue fixed.
+   * Whether the selected session currently has a live agent that is
+   * definitely NOT there to send a prompt to — issue #730, widening
+   * #702's `'disconnected'`-only check (a session that survived a node
+   * restart with no agent behind it, `session-manager.ts`'s
+   * `SessionLifecycleState` doc comment) to every other `SessionStatusV1`
+   * that means the same thing for the composer: `'queued'`/`'starting'`
+   * (the agent hasn't spawned, or hasn't finished spawning, yet) and
+   * `'error'`/`'exited'` (the spawn failed, or the agent already
+   * stopped). In every one of these a new prompt genuinely has nowhere to
+   * go (no agent process to hand it to, and `prompt_inject` has no reply
+   * channel to report that failure on), so the composer says so instead
+   * of looking ready and silently doing nothing — the same reasoning
+   * #702 already established, just for five states instead of one.
+   *
+   * Deliberately does NOT include `undefined` (no `session_status` has
+   * arrived yet): that is absence of information, not proof there is
+   * nothing to send to, and this client's own resync ring is bounded
+   * (`packages/relay/src/relay.ts`'s prune/quota machinery) — a long-
+   * running session's true status can have aged out of it by the time a
+   * reload re-subscribes, well before it or its agent did anything wrong.
+   * Gating the composer on `undefined` too would block a perfectly
+   * healthy, already-populated session's composer indefinitely after
+   * every ordinary reload whenever that happens, trading #730's narrow
+   * "freshly created session" bug for a much more common false negative.
+   * The row/inbox already treat `undefined` as "unknown" rather than
+   * "awaiting you" (`SESSION_STATUS_UNKNOWN_LABEL`,
+   * `RelayClient.attentionInbox`'s own live-status gate) without needing
+   * the composer to match.
    */
-  const selectedSessionDisconnected = $derived(selectedSessionStatus === 'disconnected');
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #702's: disabled for a disconnected session's dead composer.
+  const selectedSessionAgentless = $derived(
+    selectedSessionStatus === 'disconnected' ||
+      selectedSessionStatus === 'queued' ||
+      selectedSessionStatus === 'starting' ||
+      selectedSessionStatus === 'error' ||
+      selectedSessionStatus === 'exited',
+  );
+  /** What the composer's disabled placeholder reads for {@link selectedSessionAgentless}'s current reason (issue #730) — `undefined` while a live agent could actually receive a prompt (including "status genuinely unknown"), so the composer keeps its ordinary placeholder. */
+  const composerUnavailableReason = $derived.by((): string | undefined => {
+    switch (selectedSessionStatus) {
+      case 'disconnected':
+        return "This session's agent isn't running — it disconnected when the node last restarted.";
+      case 'queued':
+        return 'Waiting for a concurrency slot to free up before this session can start…';
+      case 'starting':
+        return "This session's agent is still starting…";
+      case 'error':
+        return `This session's agent failed to start${transcript?.statusReason ? `: ${transcript.statusReason}` : '.'}`;
+      case 'exited':
+        return "This session's agent has already exited.";
+      default:
+        return undefined;
+    }
+  });
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to.
   const sendDisabled = $derived(
-    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionDisconnected,
+    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionAgentless,
   );
 
   /**
@@ -1897,29 +1964,39 @@
     client.interruptTurn(selectedSessionId);
   }
 
-  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the palette's action list, rebuilt from current state so it always reflects what's actually doable right now (e.g. Stop only appears while a turn is active). */
-  const paletteActions = $derived.by((): CommandPaletteAction[] => {
-    const actions: CommandPaletteAction[] = [];
-    if (selectedSessionId && transcript?.turnActive) {
-      actions.push({
-        id: 'stop-turn',
-        label: 'Stop current turn',
-        shortcut: 'Mod+.',
-        run: stopSession,
-      });
-    }
-    actions.push({
-      id: 'open-inbox',
-      label: 'Open attention inbox',
-      run: () => (mainView = 'inbox'),
-    });
-    actions.push({
-      id: 'open-nodes',
-      label: 'Open nodes and targets',
-      run: () => openTargetStatus(),
-    });
-    return actions;
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
+  const actionContext = $derived<ActionContext>({
+    turnActive: turnIsActive,
+    sessionCount: sessions.length,
   });
+
+  /** Cycles `selectedSessionId` through `sessions` in its existing list order, wrapping — the handler behind the registry's `next-session`/`previous-session` actions (issue #758). No-ops with fewer than two sessions or nothing selected, which is also exactly when those two actions are unavailable, so this is never reached in a state where it would do nothing; kept defensive anyway since `isAvailable` and `run` are independent functions. */
+  function selectAdjacentSession(direction: 1 | -1): void {
+    if (sessions.length < 2 || !selectedSessionId) return;
+    const index = sessions.findIndex((session) => session.id === selectedSessionId);
+    if (index === -1) return;
+    selectSession(sessions[(index + direction + sessions.length) % sessions.length].id);
+  }
+
+  /** Wires each registry action's effect to this component's own state and the live `client` (issue #758) — the registry module itself stays a plain, framework-free array so `action-registry.test.ts` can exercise its predicates without mounting Svelte. */
+  const actionHandlers: ActionHandlers = {
+    stopTurn: stopSession,
+    toggleSessionsSidebar: () => sessionsDock.toggle(),
+    openInbox: () => (mainView = 'inbox'),
+    openNodes: () => openTargetStatus(),
+    selectNextSession: () => selectAdjacentSession(1),
+    selectPreviousSession: () => selectAdjacentSession(-1),
+  };
+
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — a pure view over `actionRegistry` (issue #758): every entry whose `isAvailable` predicate accepts `actionContext` becomes a row, so the palette never lists something that would no-op if picked right now. */
+  const paletteActions = $derived.by((): CommandPaletteAction[] =>
+    getAvailableActions(actionContext).map((action) => ({
+      id: action.id,
+      label: action.label,
+      shortcut: action.shortcut,
+      run: () => action.run(actionHandlers),
+    })),
+  );
 
   const paletteSessions = $derived(
     sessions.map((session) => ({
@@ -2122,6 +2199,23 @@
     disconnected: 1,
     exited: 0,
   };
+
+  /**
+   * The row/selvage badge's status text (issue #730): the plain
+   * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
+   * for `'error'` with a `reason` the node sent (`RelayClient.
+   * statusReasonFor` — a spawn that failed or timed out), where the
+   * reason is appended so a hover/hold on the row's own tooltip or the
+   * dot's accessible name reads WHY, not just that it failed.
+   */
+  function sessionStatusLabelWithReason(
+    status: SessionStatusV1 | undefined,
+    reason: string | undefined,
+  ): string {
+    if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
+    const label = SESSION_STATUS_LABELS[status];
+    return status === 'error' && reason ? `${label}: ${reason}` : label;
+  }
 
   /**
    * The project tree (design spec v4 §3.2), replacing v3's target-based
@@ -2352,7 +2446,7 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  /** The global shortcut dispatcher (issue #132): Escape closes an open sidebar menu; Mod+K opens the palette from anywhere, including mid-typing — deliberately, so jumping sessions doesn't require clearing focus first; every other shortcut is matched against `actionRegistry` (issue #758) and gated by the same "not typing" guard the old ad hoc `Mod+.`/`Mod+B` checks used to apply by hand. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
     // menu has no business dimming the app), so Escape is handled here
@@ -2368,15 +2462,11 @@
       paletteOpen = true;
       return;
     }
-    if (isModShortcut(event, '.') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      stopSession();
-      return;
-    }
-    if (isModShortcut(event, 'b') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      sessionsDock.toggle();
-    }
+    if (isTypingTarget(event.target)) return;
+    const action = matchShortcut(event, actionContext);
+    if (!action) return;
+    event.preventDefault();
+    action.run(actionHandlers);
   }
 
   /** The attention inbox's approve/deny action (issue #168) — the exact same `RelayClient.resolvePermission` call the session's own `PermissionQueueBar` makes, so both resolve the one shared queue store (issue #169). */
@@ -2666,9 +2756,10 @@
     {#snippet sessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
       {@const needsAttention = sessionsNeedingAttention.has(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
         class="session-row"
@@ -2813,9 +2904,10 @@
     <!-- The collapsed sidebar's icon-only row: avatar + status dot only. -->
     {#snippet selvageSessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       <li>
         <button
           type="button"
@@ -3572,6 +3664,27 @@
               {/snippet}
             </EmptyState>
           {:else}
+            <!-- Issue #730: a session with no live agent behind it must not
+                 sit as a blank transcript with no explanation — the
+                 original bug's exact symptom ("the optimistically echoed
+                 user turn sitting in an otherwise empty transcript,
+                 forever"). Shares `selectedSessionAgentless`/
+                 `composerUnavailableReason` with the composer's own gate
+                 just below, so the two surfaces never disagree. -->
+            {#if selectedSessionAgentless}
+              <div class="workspace-notice" data-testid="session-agentless-notice">
+                {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
+                  <ErrorNotice message={composerUnavailableReason ?? ''} />
+                {:else}
+                  <Card elevation="raised" padding="sm">
+                    <div class="escrow-inflight-row">
+                      <WovenLoader label={composerUnavailableReason ?? 'Waiting…'} />
+                      <span>{composerUnavailableReason}</span>
+                    </div>
+                  </Card>
+                {/if}
+              </div>
+            {/if}
             <TranscriptTimeline
               sessionKey={selectedSessionId}
               items={transcript?.items ?? []}
@@ -3665,10 +3778,8 @@
                           bind:value={draft}
                           oninput={handleComposerInput}
                           onkeydown={handleComposerKeydown}
-                          disabled={selectedSessionDisconnected}
-                          placeholder={selectedSessionDisconnected
-                            ? "This session's agent isn't running — it disconnected when the node last restarted."
-                            : 'Send a follow-up prompt…'}
+                          disabled={selectedSessionAgentless}
+                          placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
                           aria-label="Follow-up prompt"
                           aria-describedby="composer-hint"
                           rows="1"

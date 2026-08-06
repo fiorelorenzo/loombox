@@ -14,6 +14,7 @@ import type {
   PermissionQueueState,
   TranscriptState,
 } from '@loombox/providers-core/browser';
+import type { SessionStatusV1 } from '@loombox/protocol';
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
@@ -144,7 +145,18 @@ interface FakeClientScenario {
   sessions?: ClientSessionMeta[];
   targets?: TargetListEntry[];
   connectedAccounts?: ConnectedAccount[];
-  sessionStatuses?: Record<string, AcpSessionStatus>;
+  /**
+   * Typed with the protocol's wider `SessionStatusV1`, not
+   * `@loombox/providers-core`'s five-value `AcpSessionStatus`, for the exact
+   * reason `+page.svelte`'s own `selectedSessionStatus` documents: the map
+   * mirrors `client.statusFor(id)` but the wire value it stores unchecked can
+   * also be `'queued'`/`'starting'`/`'disconnected'` (issues #252, #516, #702),
+   * and issue #730's own states are two of those. A scenario has to be able to
+   * express what the node really sends.
+   */
+  sessionStatuses?: Record<string, SessionStatusV1>;
+  /** Parallels `sessionStatuses` (issue #730) — the reason behind a scenario session's 'error' status, when it has one. */
+  sessionStatusReasons?: Record<string, string>;
   /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
   transcripts?: Record<string, TranscriptState>;
   /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
@@ -202,7 +214,15 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     interruptTurn: vi.fn(),
     setConfigOption: vi.fn(),
     statusFor: (id: string) =>
-      makeStore<AcpSessionStatus | undefined>(scenario.sessionStatuses?.[id]),
+      // The seam the app itself lives with: `statusFor` is declared over the
+      // narrower five-value union while the wire really pushes eight, so the
+      // scenario's wider value is cast here exactly the way `+page.svelte`
+      // casts it back out again.
+      makeStore<AcpSessionStatus | undefined>(
+        scenario.sessionStatuses?.[id] as AcpSessionStatus | undefined,
+      ),
+    statusReasonFor: (id: string) =>
+      makeStore<string | undefined>(scenario.sessionStatusReasons?.[id]),
     transcriptFor: (id: string) =>
       makeStore<TranscriptState | undefined>(scenario.transcripts?.[id]),
     permissionQueueFor: (id: string) =>
@@ -736,6 +756,109 @@ describe('cockpit shell: attention inbox wiring (issue #167)', () => {
   });
 });
 
+describe('a session with no live agent behind it (issue #730)', () => {
+  it('a session whose agent spawn failed disables the composer with the reason, shows a transcript notice, and never claims Awaiting You in the row', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      sessionStatuses: { sess_1: 'error' },
+      sessionStatusReasons: { sess_1: 'agent spawn did not complete within 120000ms' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          status: 'error',
+          statusUpdatedAt: 't1',
+          statusReason: 'agent spawn did not complete within 120000ms',
+        },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent failed to start: agent spawn did not complete within 120000ms",
+    );
+
+    const notice = await screen.findByTestId('session-agentless-notice');
+    expect(
+      within(notice).getByText(
+        "This session's agent failed to start: agent spawn did not complete within 120000ms",
+      ),
+    ).toBeTruthy();
+
+    // The row's dot and native tooltip carry the reason (issue #730's
+    // "shows an error, with the reason, in the row") — the same slots
+    // #702's disconnected reading already used, not a new visible
+    // element, and the row's dot is never the neutral "nothing to say"
+    // one a truly awaiting-input session would get.
+    const row = screen.getByTestId('session-row-item');
+    const dot = within(row).getByTestId('ui-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe(
+      'Error: agent spawn did not complete within 120000ms',
+    );
+    expect(dot.getAttribute('data-tone')).toBe('danger');
+    expect(row.querySelector('.session')?.getAttribute('title')).toContain(
+      'agent spawn did not complete within 120000ms',
+    );
+  });
+
+  it('a starting session disables the composer with a starting reason, shows a starting notice, and never appears in the attention inbox', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Fresh session' })],
+      sessionStatuses: { sess_1: 'starting' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          // Same seam as `sessionStatuses` above: the reducer stores whatever
+          // the wire sent, and the wire sends eight states, not five.
+          status: 'starting' as AcpSessionStatus,
+          statusUpdatedAt: 't1',
+        },
+      },
+      // No attentionInboxItems seeded: the real RelayClient never produces
+      // one for 'starting' either (RelayClient.attentionInbox's own live-
+      // status gate) — this scenario confirms +page.svelte doesn't invent
+      // one of its own from the status alone.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent is still starting…",
+    );
+    expect(await screen.findByTestId('session-agentless-notice')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-count')).toBeNull();
+    expect(screen.queryByTestId('session-attention-dot')).toBeNull();
+  });
+
+  it('a session with no status yet (e.g. right after a reload) keeps the composer usable, unlike a positively-known bad state — absence of information is not proof there is nothing to send to', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Reopened after reload' })],
+      // No sessionStatuses/transcripts entry at all: `undefined`, exactly
+      // what a perfectly healthy session whose true status aged out of
+      // the relay's resync ring looks like right after a reload.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe('Send a follow-up prompt…');
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+
+  it("a working session's composer stays usable and shows no notice (sanity: the gate does not over-fire on a live status)", async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Live session' })],
+      sessionStatuses: { sess_1: 'awaiting_input' },
+      transcripts: {
+        sess_1: { ...createTranscriptState(), status: 'awaiting_input', statusUpdatedAt: 't1' },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+});
+
 describe('new session: real per-target providers (forms + real providers design spec §2/§3)', () => {
   it("keys the dialog's available providers by the project's own (nodeId, targetId) — not just the first target in the list — and shows the sole one as a context-line fact", async () => {
     mountCockpit({
@@ -1210,5 +1333,108 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
     await fireEvent.click(within(secondRow as HTMLElement).getByTestId('session-row-more'));
 
     expect(screen.queryByTestId('session-export-link')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------
+// F1-3 (Zed-parity, issue #758): the command palette is a pure view over
+// `actionRegistry` (`$lib/action-registry.ts`), and `handleGlobalKeydown`
+// dispatches shortcuts through that same registry. `action-registry.
+// test.ts` covers the registry module itself in isolation; these tests
+// exercise the real wiring end to end — a real fake-client-backed
+// cockpit, real `keydown` events on `window` — so a regression in how
+// `+page.svelte` builds `actionContext`/`actionHandlers` from live state
+// fails here even if the pure module's own tests still pass.
+// ---------------------------------------------------------------------
+
+describe('command palette: a view over the action registry (issue #758)', () => {
+  async function openPalette(): Promise<void> {
+    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    await screen.findByTestId('dialog');
+  }
+
+  it('"Stop current turn" is hidden at rest (no active turn)', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Stop current turn')).toBeNull();
+  });
+
+  it('"Stop current turn" appears, with its Mod+. binding shown, once the selected session\'s turn is active', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    const row = screen.getByText('Stop current turn').closest('button');
+    expect(row?.textContent).toContain('Mod+.');
+  });
+
+  it('"Next session"/"Previous session" are hidden with only one session', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Next session')).toBeNull();
+    expect(screen.queryByText('Previous session')).toBeNull();
+  });
+
+  it('"Next session"/"Previous session" appear with more than one session, and actually cycle the selection when picked', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.getByText('Next session')).toBeTruthy();
+    expect(screen.getByText('Previous session')).toBeTruthy();
+
+    await fireEvent.click(screen.getByText('Next session'));
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+  });
+
+  it('Mod+B still toggles the sessions column, unchanged (no regression)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    const column = await screen.findByTestId('sessions-column');
+    expect(column.className).not.toContain('collapsed');
+
+    await fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    expect(column.className).toContain('collapsed');
+  });
+
+  it('Mod+. still interrupts an active turn (no regression)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).toHaveBeenCalledWith('sess_1');
+  });
+
+  it('Mod+. does nothing when no turn is active — the deliberate tightening this migration ships (see action-registry.ts\'s "stop-turn" doc comment)', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).not.toHaveBeenCalled();
+  });
+
+  it('a chord bound to no registered action does nothing — nothing outside the registry can wire a new global shortcut', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
   });
 });
