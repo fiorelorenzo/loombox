@@ -136,6 +136,7 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { renderPromptTextWithMentions, type PromptMentionRef } from './prompt-mentions';
 import { GithubDeviceFlowError } from './github-device-flow';
 import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
 import { JiraConnectService } from './jira-connect';
@@ -612,6 +613,8 @@ interface PromptPayload {
   text: string;
   /** Attachments this turn references (SPEC §7.25); omitted/empty for a plain text prompt. */
   attachments?: PromptAttachmentRef[];
+  /** Still-live `@`-mention pills this turn references (issue #742); omitted/empty for a prompt with none. */
+  mentions?: PromptMentionRef[];
 }
 
 /**
@@ -3201,6 +3204,13 @@ export class NodeDaemon extends EventEmitter {
    * before this change) rather than ever reaching either the agent or this
    * side channel. `sendFileEvent` is on its own wire message type, never
    * `bridge.sendQueue`/`session_update` — see that method's doc comment.
+   *
+   * `payload.mentions` (issue #742's `@`-mention pills) needs no resolution
+   * step of its own — each entry already IS the resolved reference (an ACP
+   * `resource_link`'s `uri`/`name`, folded onto the wire's plaintext by the
+   * client, never re-derived here) — `renderPromptTextWithMentions` just
+   * folds it into the text `agentSession.prompt()` takes, see that
+   * function's own doc comment for why text is still the only channel.
    */
   private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
     for (const attachment of payload.attachments ?? []) {
@@ -3222,7 +3232,7 @@ export class NodeDaemon extends EventEmitter {
       });
     }
     this.beginTurn(bridge);
-    await bridge.agentSession.prompt(payload.text);
+    await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
   }
 
   /**
