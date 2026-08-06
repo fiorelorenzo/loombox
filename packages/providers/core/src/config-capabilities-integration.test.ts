@@ -181,3 +181,40 @@ describe('AcpClient: config-option state from a real session/new + session/set_c
     expect(client.configOptions.current(sessionId, 'model')).toBe('anthropic/claude-haiku-4-5');
   });
 });
+
+describe('AcpClient: available-command catalog from a real available_commands_update notification (issue #741)', () => {
+  it('starts empty for a session the agent has not sent available_commands_update for yet — declaring none is an empty list, not an error', async () => {
+    const client = makeClient();
+    await client.initialize();
+    const sessionId = await client.newSession('/tmp/loombox-config-test');
+
+    expect(client.availableCommands.get(sessionId)).toEqual([]);
+  });
+
+  it('lands the agent-declared command list in AvailableCommandsStore, keyed by session, preserving an unrecognized/future field on a command', async () => {
+    const client = makeClient();
+    await client.initialize();
+    const sessionId = await client.newSession('/tmp/loombox-config-test');
+
+    const events: { sessionId: string; commands: unknown[] }[] = [];
+    client.availableCommands.on('changed', (event: { sessionId: string; commands: unknown[] }) =>
+      events.push(event),
+    );
+
+    await client.prompt(sessionId, 'trigger-commands');
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.sessionId).toBe(sessionId);
+
+    const commands = client.availableCommands.get(sessionId);
+    expect(commands).toEqual([
+      { name: 'model', description: 'Show current model selection', input: undefined },
+      {
+        name: 'security',
+        description: 'Run a security scan',
+        input: { hint: '<plan|scan|status>' },
+        icon: 'shield',
+      },
+    ]);
+  });
+});

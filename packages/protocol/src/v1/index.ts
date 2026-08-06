@@ -116,8 +116,11 @@ export type { SessionUpdateEnvelopeV1 } from './transcript';
 export { sessionUpdateEnvelopeV1 } from './transcript';
 
 export type {
+  AcpAvailableCommandInputV1,
+  AcpAvailableCommandV1,
   AcpConfigOptionChoiceV1,
   AcpConfigOptionV1,
+  AvailableCommandsUpdateEventV1,
   ConfigOptionsEventV1,
   ConfigOptionUpdateEventV1,
   SessionLifecycleEventV1,
@@ -127,8 +130,11 @@ export type {
   TurnStartedEventV1,
 } from './session-events';
 export {
+  acpAvailableCommandInputV1,
+  acpAvailableCommandV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,
+  availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
   parseSessionLifecycleEventV1,
@@ -600,8 +606,11 @@ import {
 } from './session-lifecycle';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import {
+  acpAvailableCommandInputV1,
+  acpAvailableCommandV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,
+  availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
   sessionLifecycleEventV1,
@@ -815,6 +824,9 @@ export const schemasV1 = {
   sessionUpdateEnvelopeV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,
+  acpAvailableCommandInputV1,
+  acpAvailableCommandV1,
+  availableCommandsUpdateEventV1,
   sessionStatusV1,
   sessionStatusEventV1,
   configOptionsEventV1,

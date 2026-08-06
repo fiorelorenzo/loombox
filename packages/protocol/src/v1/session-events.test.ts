@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acpAvailableCommandV1,
+  availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
   parseSessionLifecycleEventV1,
@@ -72,6 +74,56 @@ describe('configOptionsEventV1 / configOptionUpdateEventV1', () => {
   });
 });
 
+describe('acpAvailableCommandV1 / availableCommandsUpdateEventV1', () => {
+  it('accepts a command with no input (a command that takes no arguments)', () => {
+    expect(acpAvailableCommandV1.safeParse({ name: 'model' }).success).toBe(true);
+  });
+
+  it('accepts a command with an input hint', () => {
+    expect(
+      acpAvailableCommandV1.safeParse({
+        name: 'fast',
+        description: 'Toggle fast mode',
+        input: { hint: '[on|off|status]' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a command missing a name', () => {
+    expect(acpAvailableCommandV1.safeParse({ description: 'no name' }).success).toBe(false);
+  });
+
+  it('preserves an unrecognized/future field on a command rather than dropping it (issue #741 passthrough)', () => {
+    const parsed = acpAvailableCommandV1.parse({
+      name: 'security',
+      description: 'Run a scan',
+      icon: 'shield',
+    });
+    expect(parsed).toEqual({ name: 'security', description: 'Run a scan', icon: 'shield' });
+  });
+
+  it('preserves an unrecognized/future field nested inside input too', () => {
+    const parsed = acpAvailableCommandV1.parse({
+      name: 'todo',
+      input: { hint: '<subcommand>', multiline: true },
+    });
+    expect(parsed.input).toEqual({ hint: '<subcommand>', multiline: true });
+  });
+
+  it('accepts a full command catalog, including an empty one (an agent that declares none)', () => {
+    expect(
+      availableCommandsUpdateEventV1.safeParse({ kind: 'available_commands_update', commands: [] })
+        .success,
+    ).toBe(true);
+    expect(
+      availableCommandsUpdateEventV1.safeParse({
+        kind: 'available_commands_update',
+        commands: [{ name: 'model' }],
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('turnStartedEventV1 / turnEndedEventV1', () => {
   it('requires a non-empty turnId on turn_started', () => {
     expect(turnStartedEventV1.safeParse({ kind: 'turn_started', turnId: 'turn:1' }).success).toBe(
@@ -90,11 +142,12 @@ describe('turnStartedEventV1 / turnEndedEventV1', () => {
 });
 
 describe('sessionLifecycleEventV1 (the discriminated union)', () => {
-  it('parses every one of the five kinds', () => {
+  it('parses every one of the six kinds', () => {
     const samples: unknown[] = [
       { kind: 'session_status', status: 'working', updatedAt: 't' },
       { kind: 'config_options', options: [] },
       { kind: 'config_option_update', options: [] },
+      { kind: 'available_commands_update', commands: [] },
       { kind: 'turn_started', turnId: 'turn:1' },
       { kind: 'turn_ended', stopReason: 'end_turn' },
     ];
@@ -103,7 +156,7 @@ describe('sessionLifecycleEventV1 (the discriminated union)', () => {
     }
   });
 
-  it('rejects a payload whose kind is not one of the five', () => {
+  it('rejects a payload whose kind is not one of the six', () => {
     const result = safeParseSessionLifecycleEventV1({ kind: 'agent_message_chunk' });
     expect(result.success).toBe(false);
   });

@@ -55,8 +55,13 @@ describe('browser entry (@loombox/providers-core/browser)', () => {
   });
 
   it('does not re-export the EventEmitter-based classes the barrel does', () => {
-    // These are the three that make the barrel unusable from a client bundle.
-    for (const nodeOnly of ['AcpClient', 'PermissionQueue', 'ConfigOptionStore']) {
+    // These are the four that make the barrel unusable from a client bundle.
+    for (const nodeOnly of [
+      'AcpClient',
+      'PermissionQueue',
+      'ConfigOptionStore',
+      'AvailableCommandsStore',
+    ]) {
       expect(barrel).toHaveProperty(nodeOnly);
       expect(browser).not.toHaveProperty(nodeOnly);
     }

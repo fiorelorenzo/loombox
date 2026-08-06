@@ -16,8 +16,11 @@
 // rendering two pickers). `session/prompt` with text "trigger-fallback"
 // pushes an *unprompted* `config_option_update` notification (an
 // automatic model fallback), same wire-shaped `configOptions` field, so a
-// test can assert it lands in state flagged as unprompted; any other text
-// streams a plain two-chunk "Hello world" turn.
+// test can assert it lands in state flagged as unprompted; text
+// "trigger-commands" pushes an `available_commands_update` notification
+// (issue #741) with two real-shaped commands, one carrying an
+// unrecognized/future field (`icon`) so a test can assert it survives the
+// round trip; any other text streams a plain two-chunk "Hello world" turn.
 //
 // `session/set_config_option` mirrors the real binary too (issue #707,
 // verified directly against it — see
@@ -228,6 +231,32 @@ rl.on('line', (line) => {
         params: {
           sessionId,
           update: { sessionUpdate: 'config_option_update', configOptions: wireConfigOptions },
+        },
+      });
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
+
+    if (text === 'trigger-commands') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: 'available_commands_update',
+            availableCommands: [
+              { name: 'model', description: 'Show current model selection' },
+              {
+                name: 'security',
+                description: 'Run a security scan',
+                input: { hint: '<plan|scan|status>' },
+                // Unrecognized/future field — must survive the round trip
+                // untouched (issue #741).
+                icon: 'shield',
+              },
+            ],
+          },
         },
       });
       send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });

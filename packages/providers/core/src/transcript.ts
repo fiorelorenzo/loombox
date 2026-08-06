@@ -1,4 +1,5 @@
 import type {
+  AcpAvailableCommand,
   AcpConfigOption,
   AcpDiff,
   AcpMessageChunkKind,
@@ -127,6 +128,8 @@ export interface TranscriptState {
   statusUpdatedAt: string | undefined;
   /** This session's complete, negotiated config-option catalog (SPEC.md §7.24; issue #149) — always the full current set, replaced wholesale by a `config_options`/`config_option_update` event, never patched per-category. `[]` until the first push arrives. */
   configOptions: AcpConfigOption[];
+  /** This session's complete, agent-declared `/`-command catalogue (SPEC.md §7.24; issue #741) — always the full current set, replaced wholesale by an `available_commands_update` event, never patched per-command. `[]` until the agent sends one (a real agent's first `available_commands_update` arrives with its first `session/prompt` reply, not at session creation) — a genuinely empty catalogue, not an error state. */
+  commands: AcpAvailableCommand[];
   /** True between a `turn_started` and its matching `turn_ended` (SPEC.md §7.24; issue #128) — the deterministic replacement for a client-side idle-timeout guess. */
   turnActive: boolean;
   /** The `stopReason` of the most recently settled turn, if any `turn_ended` event carried one. */
@@ -143,6 +146,7 @@ export function createTranscriptState(): TranscriptState {
     status: undefined,
     statusUpdatedAt: undefined,
     configOptions: [],
+    commands: [],
     turnActive: false,
     lastStopReason: undefined,
   };
@@ -312,10 +316,10 @@ export function reduceTranscript(
  * wider reducer entry point for everything that can travel inside a
  * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149),
  * additive to {@link reduceTranscript}: every ACP transcript-reducer update
- * kind delegates straight through to it unchanged, and the five
+ * kind delegates straight through to it unchanged, and the six
  * session-lifecycle kinds are folded into the new `status`/`configOptions`/
- * `turnActive`/`lastStopReason` fields instead. Never mutates `state`, same
- * contract as `reduceTranscript`.
+ * `commands`/`turnActive`/`lastStopReason` fields instead. Never mutates
+ * `state`, same contract as `reduceTranscript`.
  */
 export function reduceSessionEvent(
   state: TranscriptState,
@@ -338,6 +342,8 @@ export function reduceSessionEvent(
         ...state,
         configOptions: event.options.map((option) => ({ ...option, choices: [...option.choices] })),
       };
+    case 'available_commands_update':
+      return { ...state, commands: event.commands.map((command) => ({ ...command })) };
     case 'turn_started':
       return { ...state, turnActive: true };
     case 'turn_ended':

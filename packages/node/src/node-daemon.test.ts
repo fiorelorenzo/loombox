@@ -409,6 +409,7 @@ interface DecryptedSessionEvent {
   stopReason?: string;
   status?: string;
   options?: unknown[];
+  commands?: unknown[];
 }
 
 /**
@@ -840,6 +841,71 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
         m.type === 'session_update' && m.sessionId === session.id,
     )) {
       assertOpaque(message.envelope, ['sonnet', 'haiku', 'awaiting_input']);
+    }
+  });
+
+  it('forwards the agent-declared available-command catalog as an encrypted available_commands_update session_update, preserving an unrecognized field on a command (issue #741)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-commands-wire';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-commands',
+      deviceId: 'device-node-commands',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [configProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-config' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-commands',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    // The config fixture never sends available_commands_update on its own
+    // (unlike config_options, seeded at session/new) — nothing arrives
+    // until this prompt (issue #741's "declares none is empty, not an
+    // error": no event at all here means the client-side store simply
+    // stays at its own default `[]`, asserted directly against
+    // AvailableCommandsStore/AgentSession in providers-core/supervisor's
+    // own unit tests rather than re-proven at this wire layer).
+    await node.promptSession(session.id, 'trigger-commands');
+
+    const [update] = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['available_commands_update'],
+      1,
+    );
+    expect(update!.commands).toEqual([
+      { name: 'model', description: 'Show current model selection' },
+      {
+        name: 'security',
+        description: 'Run a security scan',
+        input: { hint: '<plan|scan|status>' },
+        // Unrecognized/future field, round-tripped through the wire
+        // unchanged rather than dropped (issue #741).
+        icon: 'shield',
+      },
+    ]);
+
+    // The relay never carried plaintext for any of the above.
+    for (const message of phone.messages.filter(
+      (m): m is SessionUpdateEnvelopeV1 =>
+        m.type === 'session_update' && m.sessionId === session.id,
+    )) {
+      assertOpaque(message.envelope, ['security', 'shield']);
     }
   });
 

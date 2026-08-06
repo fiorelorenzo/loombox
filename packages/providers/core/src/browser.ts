@@ -61,6 +61,7 @@ export type {
   UsageRecord,
 } from './transcript';
 export type {
+  AcpAvailableCommandsUpdateEvent,
   AcpConfigOptionsEvent,
   AcpConfigOptionUpdateEvent,
   AcpSessionLifecycleEvent,
@@ -91,6 +92,7 @@ export {
 } from './permission-queue-state';
 export type { PermissionQueueState } from './permission-queue-state';
 export type { AcpConfigOption, AcpConfigOptionChoice } from './types';
+export type { AcpAvailableCommand, AcpAvailableCommandInput } from './types';
 export { ProviderRegistry, RESERVED_PROVIDER_IDS } from './provider-registry';
 export type { AcpProviderModule } from './provider-registry';
 export { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AcpClient, mapConfigOptions, mapToTranscriptUpdate } from './client';
+import { AcpClient, mapAvailableCommands, mapConfigOptions, mapToTranscriptUpdate } from './client';
 import {
   createTranscriptState,
   reduceTranscript,
@@ -457,6 +457,81 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
         choices: [{ id: 'balanced', name: 'Balanced' }],
       },
     ]);
+  });
+});
+
+/**
+ * `mapAvailableCommands` wire-mapping tests (issue #741), same convention
+ * as `mapConfigOptions` above: driven off a captured real response
+ * (`test/fixtures/omp-acp-available-commands-update.json`, taken by
+ * spawning the real `omp acp` binary over stdio — `initialize` ->
+ * `session/new` -> `session/prompt`, trimmed to five representative
+ * commands) rather than a fixture that mirrors this client's own
+ * assumption of the shape.
+ */
+describe('mapAvailableCommands: real omp acp available_commands_update wire mapping (issue #741)', () => {
+  const RECORDED_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'test',
+    'fixtures',
+    'omp-acp-available-commands-update.json',
+  );
+  interface RecordedAvailableCommand {
+    name: string;
+    description: string;
+    input?: { hint: string };
+    [key: string]: unknown;
+  }
+  const recorded = JSON.parse(readFileSync(RECORDED_PATH, 'utf8')) as {
+    availableCommandsUpdate: { availableCommands: RecordedAvailableCommand[] };
+  };
+
+  it("maps a real available_commands_update's command list onto the internal AcpAvailableCommand shape, both with and without an input hint", () => {
+    const commands = mapAvailableCommands(recorded.availableCommandsUpdate.availableCommands);
+    expect(commands).toHaveLength(5);
+
+    const model = commands.find((c) => c.name === 'model');
+    expect(model?.description).toBe('Show current model selection');
+    expect(model?.input).toBeUndefined();
+
+    const fast = commands.find((c) => c.name === 'fast');
+    expect(fast?.input).toEqual({ hint: '[on|off|status]' });
+  });
+
+  it('an agent that declares no commands at all maps to an empty list, not an error (issue #741 acceptance)', () => {
+    expect(mapAvailableCommands(undefined)).toEqual([]);
+    expect(mapAvailableCommands([])).toEqual([]);
+  });
+
+  it('drops an entry with no name — there is nothing to key it by', () => {
+    expect(mapAvailableCommands([{ description: 'no name' }])).toEqual([]);
+  });
+
+  it('preserves an unrecognized/future field on a command rather than dropping it (issue #741)', () => {
+    const commands = mapAvailableCommands([
+      { name: 'security', description: 'Run a scan', icon: 'shield', deprecated: false },
+    ]);
+    expect(commands).toEqual([
+      {
+        name: 'security',
+        description: 'Run a scan',
+        input: undefined,
+        icon: 'shield',
+        deprecated: false,
+      },
+    ]);
+  });
+
+  it('preserves an unrecognized/future field nested inside input too', () => {
+    const commands = mapAvailableCommands([
+      {
+        name: 'todo',
+        description: 'Manage todos',
+        input: { hint: '<subcommand>', multiline: true },
+      },
+    ]);
+    expect(commands[0]?.input).toEqual({ hint: '<subcommand>', multiline: true });
   });
 });
 

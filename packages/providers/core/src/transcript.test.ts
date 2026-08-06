@@ -8,6 +8,7 @@ import {
 } from './transcript';
 import type { TranscriptState, TranscriptToolCallItem } from './transcript';
 import type {
+  AcpAvailableCommand,
   AcpConfigOption,
   AcpMessageChunkUpdate,
   AcpPlanUpdate,
@@ -25,6 +26,7 @@ describe('createTranscriptState', () => {
       status: undefined,
       statusUpdatedAt: undefined,
       configOptions: [],
+      commands: [],
       turnActive: false,
       lastStopReason: undefined,
     });
@@ -479,6 +481,60 @@ describe('reduceSessionEvent: config_options / config_option_update', () => {
   });
 });
 
+describe('reduceSessionEvent: available_commands_update', () => {
+  const commands: AcpAvailableCommand[] = [
+    { name: 'model', description: 'Show current model selection', input: undefined },
+  ];
+
+  it('replaces the whole command catalog wholesale', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'available_commands_update',
+      commands,
+    });
+    expect(state.commands).toEqual(commands);
+  });
+
+  it('a later available_commands_update replaces the list wholesale, never patching in place', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'available_commands_update',
+      commands,
+    });
+    const redeclared: AcpAvailableCommand[] = [
+      { name: 'jobs', description: 'Show background jobs', input: undefined },
+    ];
+    state = reduceSessionEvent(state, { kind: 'available_commands_update', commands: redeclared });
+    expect(state.commands).toEqual(redeclared);
+  });
+
+  it('an agent that declares no commands leaves the catalog empty, not an error', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'available_commands_update',
+      commands: [],
+    });
+    expect(state.commands).toEqual([]);
+  });
+
+  it('preserves an unrecognized/future field on a command (defensive clone, not a narrowing one)', () => {
+    const withUnknownField: AcpAvailableCommand[] = [
+      { name: 'security', description: 'Run a scan', input: undefined, icon: 'shield' },
+    ];
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'available_commands_update',
+      commands: withUnknownField,
+    });
+    expect(state.commands[0]?.icon).toBe('shield');
+  });
+
+  it('does not mutate the command objects passed in (defensive clone)', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'available_commands_update',
+      commands,
+    });
+    state.commands[0]!.description = 'tampered';
+    expect(commands[0]?.description).toBe('Show current model selection');
+  });
+});
+
 describe('reduceSessionEvent: turn_started / turn_ended', () => {
   it('turn_started flips turnActive on', () => {
     const state = reduceSessionEvent(createTranscriptState(), {
@@ -558,6 +614,7 @@ function _typeCheck(state: TranscriptState): void {
   void state.status;
   void state.statusUpdatedAt;
   void state.configOptions;
+  void state.commands;
   void state.turnActive;
   void state.lastStopReason;
 }
