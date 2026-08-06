@@ -1725,7 +1725,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       default:
-        app.log.warn({ type: message.type }, 'relay: unexpected message from a node connection');
+        // #691: a `WireMessageV1` member this relay is not equipped to handle
+        // from a node — either genuinely unrouted (see `message-routing.ts`'s
+        // `MESSAGE_ROUTES`, kept exhaustive at the type level) or a peer
+        // sending something client-only/relay-outbound-only. Either way this
+        // is always a bug, never routine traffic, so it logs at `error` (not
+        // `warn`) rather than being easy to miss in production logs.
+        app.log.error({ type: message.type }, 'relay: unexpected message from a node connection');
     }
   }
 
@@ -2354,7 +2360,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       }
       default:
-        app.log.warn({ type: message.type }, 'relay: unexpected message from a client connection');
+        // #691: same reasoning as handleNodeMessage's default above — an
+        // unrouted/misdirected message from a client is always a bug, so it
+        // logs at `error` rather than `warn`.
+        app.log.error({ type: message.type }, 'relay: unexpected message from a client connection');
     }
   }
 
