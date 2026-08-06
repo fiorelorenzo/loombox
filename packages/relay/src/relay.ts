@@ -1465,6 +1465,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // command was involved.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'agent_profile_list_result':
+      case 'agent_profile_session_result':
+        // The owning node's reply to a client's agent_profile_list_get/
+        // _set or agent_profile_session_get/_set (design spec
+        // `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) —
+        // fanned out exactly like permission_policy_result above; the
+        // relay never opens the envelope, so it never sees a profile's
+        // name or rules.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'run_started':
       case 'run_output':
       case 'run_exit':
@@ -2132,6 +2142,19 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // sees sessionId/requestId plus (for _set) an opaque
         // `EncryptedEnvelope`; no glob pattern ever reaches the relay in
         // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'agent_profile_list_get':
+      case 'agent_profile_list_set':
+      case 'agent_profile_session_get':
+      case 'agent_profile_session_set':
+        // A client reading/saving its account's agent-profile catalog, or
+        // reading/switching a session's active profile (design spec
+        // `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) —
+        // routed to the owning node exactly like permission_policy_get/
+        // _set above. The relay only ever sees sessionId/requestId plus
+        // an opaque `EncryptedEnvelope`; no profile name or rule ever
+        // reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'run_start':

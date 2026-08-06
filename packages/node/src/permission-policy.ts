@@ -132,7 +132,8 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${source}$`, 's');
 }
 
-function matchGlob(pattern: string, text: string): boolean {
+/** Anchored `*`/`?` glob match, full-string (see this module's doc comment's "Pattern language" section) — exported so a caller matching a different kind of string against the same dependency-free language (`agent-profile.ts`'s tool-name deny rules, issue #752) reuses this exact implementation rather than a second one. */
+export function matchAnchoredGlob(pattern: string, text: string): boolean {
   return globToRegExp(pattern).test(text);
 }
 
@@ -333,7 +334,7 @@ function evaluateTokens(
 
   for (const line of candidateLines) {
     for (const rule of policy.command.deny) {
-      if (matchGlob(rule, line))
+      if (matchAnchoredGlob(rule, line))
         return { allowed: false, dimension: 'command', rule, matched: line };
     }
   }
@@ -344,14 +345,14 @@ function evaluateTokens(
   }
   for (const dest of destinations) {
     for (const rule of policy.network.deny) {
-      if (matchGlob(rule, dest))
+      if (matchAnchoredGlob(rule, dest))
         return { allowed: false, dimension: 'network', rule, matched: dest };
     }
   }
 
   if (policy.command.allow.length > 0) {
     const ok = candidateLines.some((line) =>
-      policy.command.allow.some((rule) => matchGlob(rule, line)),
+      policy.command.allow.some((rule) => matchAnchoredGlob(rule, line)),
     );
     if (!ok) {
       return {
@@ -365,7 +366,7 @@ function evaluateTokens(
 
   if (policy.network.allow.length > 0 && destinations.size > 0) {
     for (const dest of destinations) {
-      const ok = policy.network.allow.some((rule) => matchGlob(rule, dest));
+      const ok = policy.network.allow.some((rule) => matchAnchoredGlob(rule, dest));
       if (!ok) {
         return {
           allowed: false,
@@ -402,10 +403,11 @@ export function evaluateCommandLine(
 /** Standalone network-only check (e.g. before dialing an `ssh:` target itself), independent of any command line. */
 export function evaluateNetworkDestination(policy: PermissionPolicy, host: string): PolicyDecision {
   for (const rule of policy.network.deny) {
-    if (matchGlob(rule, host)) return { allowed: false, dimension: 'network', rule, matched: host };
+    if (matchAnchoredGlob(rule, host))
+      return { allowed: false, dimension: 'network', rule, matched: host };
   }
   if (policy.network.allow.length > 0) {
-    const ok = policy.network.allow.some((rule) => matchGlob(rule, host));
+    const ok = policy.network.allow.some((rule) => matchAnchoredGlob(rule, host));
     if (!ok) {
       return {
         allowed: false,

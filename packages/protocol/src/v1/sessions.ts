@@ -95,6 +95,19 @@ export const sessionPrivateMetaV1 = z.object({
    * above already establish.
    */
   forkFromTurnId: z.string().min(1).optional(),
+  /**
+   * SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4 (issue
+   * #752): which named agent profile (`@loombox/protocol`'s
+   * `agent-profile.ts`) this session starts with — the "applied as a
+   * filter at session start" half, so the profile's `deniedMcpServers`
+   * can already be applied before the agent ever spawns (SPEC.md §7.7's
+   * MCP server resolution). Absent means "no profile" (unrestricted),
+   * the same optional-field-for-forward-compat rule `worktree`/
+   * `forkFromTurnId` above already establish. An id this account no
+   * longer has a profile for degrades quietly to unrestricted, never an
+   * error — see `@loombox/node`'s `agent-profile.ts` doc comment.
+   */
+  profileId: z.string().min(1).optional(),
 });
 export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
 

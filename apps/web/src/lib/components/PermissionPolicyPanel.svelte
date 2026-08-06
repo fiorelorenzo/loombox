@@ -94,13 +94,18 @@
     { key: 'allow', label: 'Allow rules', placeholder: 'e.g. pnpm *' },
   ];
 
-  /** See the file doc comment's "Refusal attribution (D3-4)" note. */
+  /** See the file doc comment's "Refusal attribution (D3-4)" note — issue #752's `kind: 'profile'` member forced this map to grow, exactly as designed. */
   const ATTRIBUTION_LABEL: Record<ToolRefusalReasonV1['kind'], string> = {
     permission_policy: 'Policy',
+    profile: 'Profile',
   };
 
-  /** One human-readable line naming which rule/dimension/candidate a `permission_policy`-kind refusal names — the only variant `ToolRefusalReasonV1` has today. */
+  /** One human-readable line naming which rule a refusal names — `permission_policy` (dimension + candidate) and `profile` (which named profile, and whether it matched by tool-kind or tool-name) each render their own shape. */
   function violationDetail(reason: ToolRefusalReasonV1): string {
+    if (reason.kind === 'profile') {
+      const matchedByLabel = reason.matchedBy === 'tool-kind' ? 'tool kind' : 'tool name';
+      return `profile "${reason.profileName}" denied ${matchedByLabel} "${reason.rule}"`;
+    }
     return `${reason.dimension} deny rule "${reason.rule}" matched "${reason.matched}"`;
   }
 
