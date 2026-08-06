@@ -1,0 +1,55 @@
+<section class="item" id="f1">
+  <div class="item-head">
+    <span class="item-id">F1</span>
+    <h2>What I found and did tonight, no decision needed</h2>
+  </div>
+  <p class="item-note">
+    Everything here is either already filed or already done; it is context for the decisions above.
+  </p>
+  <div class="options stack">
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Done</span><span class="opt-title">Your devbox node is a supervised service again</span>
+      </div>
+      <p class="opt-why">
+        A hand-written <code>systemd --user</code> unit: <code>EnvironmentFile</code> at 0600 for
+        relay/node-id/recovery code, mise shims on <code>PATH</code> (without them the node cannot
+        find the agent binaries it spawns), <code>Restart=always</code>,
+        <code>KillMode=process</code> so stopping the node does not kill the agents it started, and
+        linger enabled so it comes up at boot without a login. Proven, not assumed:
+        <code>kill -9</code> on the main pid, back up and reconnected to prod five seconds later.
+        This is a patch on one machine, and it is the thing the decisions above replace.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">#815</span><span class="opt-title">The node's identity does not actually survive a reboot</span>
+      </div>
+      <p class="opt-why">
+        It lives in a kernel keyring (<code>/proc/keys</code> shows it, 354 bytes, and the
+        persistent keyring expires after three days), while
+        <code>identity.json</code> from 25 July sits on disk being ignored, because
+        <code>load()</code> never reads the file once an OS backend answers. So the node comes back
+        as a different device. I restored the old identity by hand tonight. Filed P1.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">#814</span><span class="opt-title">Nothing uninstalls what setup installs</span>
+      </div>
+      <p class="opt-why">Your ask from tonight, filed with the full footprint list. E1 above is its one open decision.</p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">Note</span><span class="opt-title">launchd is dead code, and a doc comment is lying</span>
+      </div>
+      <p class="opt-why">
+        <code>launchd-provisioning.ts</code> is complete and tested and imported by nothing outside
+        its own tests, so #654 is not "write launchd", it is "reach it".
+        <code>keyring.ts</code>'s doc comment states that on this devbox the OS keyring always
+        throws and the file fallback always wins. That was true when written and is false now, which
+        is exactly why #815 went unnoticed. Fixing the comment is part of #815.
+      </p>
+    </div>
+  </div>
+</section>

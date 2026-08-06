@@ -1,0 +1,57 @@
+<section class="item" id="e1">
+  <div class="item-head">
+    <span class="item-id">E1</span>
+    <h2>What uninstall removes by default (#814)</h2>
+  </div>
+  <p class="item-note">
+    You asked for this tonight and it is now filed as #814. The decision worth taking up front is
+    what the default does, because it is the one people click without reading. The footprint on
+    Linux is: the unit and its wants symlink, linger, <code>~/.loombox/node/</code> (identity,
+    device token, sessions, mcp secrets, permission policies, agent profiles, spend caps, connected
+    accounts), the keyring entry, <code>~/.loombox/supervisor/</code>, and
+    <code>~/.loombox/remote-sessions/</code> on every ssh target this node ever drove, plus the
+    device registration on the relay, which no local <code>rm -rf</code> can reach.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">No uninstall exists locally; the ssh one keeps files by default</span>
+      </div>
+      <p class="opt-why">
+        <code>decommission.ts</code> stops and disables the unit and revokes the target, and only
+        deletes files when the caller opts in. Nothing equivalent exists for a local node.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-1</span><span class="opt-title">Default removes the service, keeps the data, always revokes the device</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the safe default. Reinstalling later adopts the existing identity and session
+        history instead of starting a new device. <b>Costs:</b> a machine you meant to wipe still
+        holds session transcripts and secrets until you run the second, explicit step.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-2</span><span class="opt-title">No default: the flow always asks, service or everything</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> nobody deletes transcripts by accident and nobody leaves secrets behind by
+        accident. <b>Costs:</b> a question every time, including in the scripted and CI paths, which
+        then need a flag anyway.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">E1-3</span><span class="opt-title">Default removes everything, with a keep-data flag</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> "uninstall" means the machine is clean, which is what the word implies and what
+        you asked for tonight. <b>Costs:</b> irreversible by definition; a mis-click destroys local
+        session history that exists nowhere else, since the relay only holds ciphertext it cannot
+        read.
+      </p>
+    </div>
+  </div>
+</section>
