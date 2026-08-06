@@ -3912,6 +3912,7 @@
                 {recentSessions}
                 lastTranscript={zeroStateTranscriptPreview}
                 onSelectSession={selectSession}
+                context={actionContext}
               >
                 {#snippet cta()}
                   {@const defaultProject = projects[0]}

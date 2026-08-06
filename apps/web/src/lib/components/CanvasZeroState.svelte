@@ -35,7 +35,12 @@
   import type { Snippet } from 'svelte';
   import BrandMark from './BrandMark.svelte';
   import Card from './ui/Card.svelte';
-  import { actionRegistry } from '$lib/action-registry';
+  import {
+    actionRegistry,
+    effectiveShortcut,
+    type ActionContext,
+    type ActionDefinition,
+  } from '$lib/action-registry';
   import type { TranscriptTailEntry, TranscriptTailSpeaker } from '$lib/transcript-tail';
 
   /** One row of the "recent sessions" panel — a plain view model `+page.svelte` builds from `ClientSessionMeta` plus the sidebar's own `projectDisplayName`/`sessionTargetLabel`/`formatSessionActivity` helpers, so this component never needs to know about `Project`, target lists, or how "3m ago" gets computed. */
@@ -61,9 +66,21 @@
     onSelectSession: (id: string) => void;
     /** The primary-action slot `+page.svelte` already builds (Connect a node / Add project / New session) — passed through unchanged so this component owns none of that branching. */
     cta?: Snippet;
+    /**
+     * `+page.svelte`'s own live `actionContext` (issue #759) — needed here
+     * because `next-session`/`previous-session`/`new-session` no longer
+     * carry a plain `shortcut` string; their binding is resolved per
+     * environment via `shortcutFor` (desktop shell vs. a Windows/Linux
+     * browser tab can't safely claim the same chord). Reading only the
+     * static `shortcut` field, the way this panel did before #759, would
+     * have silently hidden all three from "the bindings that matter"
+     * everywhere, including the desktop shell and a Mac browser tab where
+     * they DO have a real, working chord.
+     */
+    context: ActionContext;
   }
 
-  const { recentSessions, lastTranscript, onSelectSession, cta }: Props = $props();
+  const { recentSessions, lastTranscript, onSelectSession, cta, context }: Props = $props();
 
   const TAIL_SPEAKER_LABEL: Record<TranscriptTailSpeaker, string> = {
     user: 'You',
@@ -75,19 +92,25 @@
   /**
    * Issue #758's registry, read directly — B4-2's own decision text: "the
    * bindings shown must be read from F1's registry once that exists, not
-   * hardcoded a second time." Every entry with a real `shortcut`, in the
-   * registry's own declaration order. Deliberately NOT filtered by live
-   * `isAvailable`: this panel orients someone with no session open at all,
-   * where a turn-scoped predicate like `stop-turn`'s is never true anyway
-   * (there is no turn to stop) — it teaches the bindings that exist in
-   * this app, not just the ones actionable this instant. `matchShortcut`
-   * (the dispatcher that actually fires a chord) still gates on
-   * `isAvailable` itself, so this panel can never claim a binding "works"
-   * when it wouldn't.
+   * hardcoded a second time." Every entry whose {@link effectiveShortcut}
+   * resolves against the live `context` (issue #759's environment-
+   * conditional rows included), in the registry's own declaration order.
+   * Deliberately NOT filtered by live `isAvailable`: this panel orients
+   * someone with no session open at all, where a turn-scoped predicate
+   * like `stop-turn`'s is never true anyway (there is no turn to stop) —
+   * it teaches the bindings that exist in this app, not just the ones
+   * actionable this instant. `matchShortcut` (the dispatcher that
+   * actually fires a chord) still gates on `isAvailable` itself, so this
+   * panel can never claim a binding "works" when it wouldn't.
    */
-  const boundActions = actionRegistry.filter(
-    (action): action is (typeof actionRegistry)[number] & { shortcut: string } =>
-      action.shortcut !== undefined,
+  interface BoundAction {
+    action: ActionDefinition;
+    shortcut: string;
+  }
+  const boundActions = $derived(
+    actionRegistry
+      .map((action) => ({ action, shortcut: effectiveShortcut(action, context) }))
+      .filter((entry): entry is BoundAction => entry.shortcut !== undefined),
   );
 
   const TAIL_TEXT_MAX = 160;
@@ -171,10 +194,10 @@
     <Card elevation="flat" padding="md" class="canvas-zero-state-panel">
       <h2>Bindings that matter</h2>
       <ul class="canvas-zero-state-bindings-list">
-        {#each boundActions as action (action.id)}
+        {#each boundActions as entry (entry.action.id)}
           <li class="canvas-zero-state-binding-row" data-testid="canvas-zero-state-binding">
-            <kbd class="canvas-zero-state-binding-key font-mono">{action.shortcut}</kbd>
-            <span>{action.label}</span>
+            <kbd class="canvas-zero-state-binding-key font-mono">{entry.shortcut}</kbd>
+            <span>{entry.action.label}</span>
           </li>
         {/each}
       </ul>

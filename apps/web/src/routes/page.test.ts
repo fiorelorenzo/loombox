@@ -780,9 +780,21 @@ describe('canvas zero state (Zed-parity B4-2, issue #739)', () => {
           row.textContent?.includes('Toggle sessions sidebar'),
       ),
     ).toBe(true);
-    // 'open-inbox' is a real registered action with no shortcut — it must
+    // Issue #759 gives 'open-inbox' its first real shortcut (Mod+Shift+A)
+    // — it now belongs in this panel, not out of it; this is the zero
+    // state's own "read straight from the registry" contract paying off,
+    // not a regression of the assertion this replaced.
+    expect(
+      bindingRows.some(
+        (row) =>
+          row.textContent?.includes('Mod+Shift+A') &&
+          row.textContent?.includes('Open attention inbox'),
+      ),
+    ).toBe(true);
+    // 'open-nodes' is a real registered action with no shortcut at all
+    // (issue #759 leaves it exactly as issue #758 shipped it) — it must
     // never show up in this shortcut-only panel.
-    expect(bindingRows.some((row) => row.textContent?.includes('Open attention inbox'))).toBe(
+    expect(bindingRows.some((row) => row.textContent?.includes('Open nodes and targets'))).toBe(
       false,
     );
   });
