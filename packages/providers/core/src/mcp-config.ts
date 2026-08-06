@@ -243,3 +243,24 @@ export function resolveEffectiveMcpServers(
   for (const record of project) byName.set(record.config.name, record);
   return [...byName.values()].filter((record) => record.enabled).map((record) => record.config);
 }
+
+/**
+ * Merges two already-effective, already-enabled `McpServerConfig` lists into
+ * one, deduplicated by `name` (issue #750, D2-2: "the two config stores stop
+ * being two — one resolution path"). `primary` wins on a name collision —
+ * unlike {@link resolveEffectiveMcpServers}'s global/project merge, which is
+ * two tiers of the *same* store, this merges two *different* authorities
+ * (a node's own `McpConfigStore` records and a client's per-project
+ * `localStorage` declarations forwarded at `session_create` time), and a
+ * node's own directly-configured server — the one path that can inject a
+ * server the user never had to hand-add — must never be silently shadowed
+ * by a same-named client-declared one. Order is otherwise preserved:
+ * `primary` first, then whichever of `secondary` isn't already named in it.
+ */
+export function mergeMcpServerConfigLists(
+  primary: readonly McpServerConfig[],
+  secondary: readonly McpServerConfig[],
+): McpServerConfig[] {
+  const names = new Set(primary.map((config) => config.name));
+  return [...primary, ...secondary.filter((config) => !names.has(config.name))];
+}

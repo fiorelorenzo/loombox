@@ -36,6 +36,7 @@
   import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
   import DiffViewer from '../DiffViewer.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallMeta from '../ToolCallMeta.svelte';
   import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
   import ToolCard from './ToolCard.svelte';
@@ -66,6 +67,7 @@
   <ToolCallGutter icon="tool-edit" />
   {#snippet headerContent()}
     <span class="title font-mono">{item.title ?? 'Edit'}</span>
+    <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
     <ToolCallStatus status={item.status} />
   {/snippet}
   <ToolCard surface={false}>

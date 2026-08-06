@@ -18,6 +18,10 @@ function toolCallItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptTo
     rawInput: undefined,
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
     ...extra,
   };
 }
@@ -148,9 +152,16 @@ describe('ToolCallRow: tool-call type glyphs via the shared Icon component (#468
     expect(container.querySelector('[data-icon-name="tool-generic"]')).toBeTruthy();
   });
 
-  it('the generic fallback row draws the tool-generic glyph', () => {
+  it('the generic fallback row draws the glyph matching its ACP tool kind, not a shared generic one (issue #744)', () => {
     const { container } = render(ToolCallRow, {
       props: { item: toolCallItem({ toolKind: 'search' }) },
+    });
+    expect(container.querySelector('[data-icon-name="tool-search"]')).toBeTruthy();
+  });
+
+  it('the generic fallback row falls back to tool-generic for a kind with no bespoke widget and no dedicated glyph reason (e.g. `other`)', () => {
+    const { container } = render(ToolCallRow, {
+      props: { item: toolCallItem({ toolKind: 'other' }) },
     });
     expect(container.querySelector('[data-icon-name="tool-generic"]')).toBeTruthy();
   });
