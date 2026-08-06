@@ -5,6 +5,7 @@ import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '$lib/projects';
 import { addCustomAgent, createInMemoryCustomAgentStorage } from '$lib/custom-agent-store';
+import { AGENT_CATALOGUE } from '@loombox/providers-core/browser';
 import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svelte';
 
 afterEach(() => cleanup());
@@ -657,6 +658,171 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
 
       expect(screen.getByText(/duplicate/i)).toBeTruthy();
       expect(storage.get()).toEqual([{ name: 'My internal agent', command: 'omp', args: [] }]);
+    });
+  });
+
+  describe('curated agent catalogue quick-add (D1-3 second half, issue #749)', () => {
+    it('renders one quick-add button per catalogue entry, with its blurb and verified-against metadata visible (not just a source comment)', () => {
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: createInMemoryCustomAgentStorage(),
+        },
+      });
+
+      for (const entry of AGENT_CATALOGUE) {
+        expect(screen.getByTestId(`agent-catalogue-add-${entry.id}`).textContent).toContain(
+          entry.config.name,
+        );
+        const verified = screen.getByTestId(`agent-catalogue-verified-${entry.id}`).textContent;
+        expect(verified).toContain(entry.verification.against);
+        expect(verified).toContain(entry.verification.verifiedOn);
+      }
+    });
+
+    it('quick-adding a catalogue entry pre-fills it correctly: persists the exact catalogue command/args and selects it as the sole agent', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const geminiEntry = AGENT_CATALOGUE.find((e) => e.id === 'gemini-cli')!;
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId(`agent-catalogue-add-${geminiEntry.id}`));
+
+      expect(storage.get()).toEqual([{ name: 'Gemini CLI', command: 'gemini', args: ['--acp'] }]);
+      await waitFor(() =>
+        expect(screen.getByTestId('new-session-agent-fact').textContent).toContain(
+          'Gemini CLI (custom)',
+        ),
+      );
+    });
+
+    it('submitting right after a quick-add sends provider: "custom" with the catalogue-derived customAgent record verbatim', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const client = fakeClient();
+      const onCreated = vi.fn();
+      const qwenEntry = AGENT_CATALOGUE.find((e) => e.id === 'qwen-code')!;
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated,
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId(`agent-catalogue-add-${qwenEntry.id}`));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1', 'custom'));
+      expect(client.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'custom',
+          customAgent: { name: 'Qwen Code', command: 'qwen', args: ['--acp'] },
+        }),
+      );
+    });
+
+    it('still refuses cleanly when the node has not allowlisted the picked command: probes it and shows a visible, honest refusal, without blocking the add itself', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const geminiEntry = AGENT_CATALOGUE.find((e) => e.id === 'gemini-cli')!;
+      const probeCustomAgent = vi
+        .fn()
+        .mockResolvedValue({ outcome: 'ok', available: true, allowed: false });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient({ probeCustomAgent }),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId(`agent-catalogue-add-${geminiEntry.id}`));
+
+      expect(probeCustomAgent).toHaveBeenCalledWith({
+        nodeId: 'node_1',
+        targetId: 'local',
+        command: 'gemini',
+      });
+      // The record was still added and selected (convenience-only: the
+      // probe never gates the add itself)...
+      expect(storage.get()).toEqual([{ name: 'Gemini CLI', command: 'gemini', args: ['--acp'] }]);
+      // ...but the refusal is visible, in plain language, right away.
+      await waitFor(() =>
+        expect(screen.getByText(/not on this node's allowlist yet/i)).toBeTruthy(),
+      );
+    });
+
+    it('shows a ready/allowed state distinctly when the node has allowlisted the picked command', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const qwenEntry = AGENT_CATALOGUE.find((e) => e.id === 'qwen-code')!;
+      const probeCustomAgent = vi
+        .fn()
+        .mockResolvedValue({ outcome: 'ok', available: true, allowed: true });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient({ probeCustomAgent }),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId(`agent-catalogue-add-${qwenEntry.id}`));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('agent-catalogue-probe-ok').textContent).toContain('Ready'),
+      );
+    });
+
+    it('a fake client with no probeCustomAgent at all still lets the quick-add succeed, with no probe result rendered', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const geminiEntry = AGENT_CATALOGUE.find((e) => e.id === 'gemini-cli')!;
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId(`agent-catalogue-add-${geminiEntry.id}`));
+
+      expect(storage.get()).toEqual([{ name: 'Gemini CLI', command: 'gemini', args: ['--acp'] }]);
+      expect(screen.queryByTestId('agent-catalogue-probe-result')).toBeNull();
     });
   });
 

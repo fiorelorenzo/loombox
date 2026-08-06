@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { customAgentRecordV1, type CustomAgentRecordV1 } from '@loombox/protocol';
+import { AGENT_CATALOGUE, StaleAgentCatalogueEntryError } from '@loombox/providers-core/browser';
+import type { AgentCatalogueEntry } from '@loombox/providers-core/browser';
 import {
   addCustomAgent,
+  addCustomAgentFromCatalogueEntry,
   createInMemoryCustomAgentStorage,
   createLocalStorageCustomAgentStorage,
+  CustomAgentStoreError,
   removeCustomAgent,
 } from './custom-agent-store';
 
@@ -112,5 +116,51 @@ describe('custom-agent-store (issue #748)', () => {
       fakeLocalStorage(memory),
     );
     expect(storage.get()).toEqual([{ name: 'valid', command: 'omp', args: [] }]);
+  });
+});
+
+describe('addCustomAgentFromCatalogueEntry (issue #749)', () => {
+  it('adds a catalogue entry with the exact same shape addCustomAgent would produce for the equivalent manual entry', () => {
+    const entry = AGENT_CATALOGUE.find((e) => e.id === 'gemini-cli')!;
+
+    const viaCatalogue = createInMemoryCustomAgentStorage();
+    addCustomAgentFromCatalogueEntry(viaCatalogue, entry);
+
+    const viaManual = createInMemoryCustomAgentStorage();
+    addCustomAgent(viaManual, customAgentRecordV1.parse(entry.config));
+
+    expect(viaCatalogue.get()).toEqual(viaManual.get());
+    expect(viaCatalogue.get()).toEqual([
+      { name: 'Gemini CLI', command: 'gemini', args: ['--acp'] },
+    ]);
+  });
+
+  it('rejects a catalogue pick that collides with an existing custom agent name, same as a manual add would', () => {
+    const storage = createInMemoryCustomAgentStorage();
+    const entry = AGENT_CATALOGUE.find((e) => e.id === 'qwen-code')!;
+    addCustomAgentFromCatalogueEntry(storage, entry);
+
+    expect(() => addCustomAgentFromCatalogueEntry(storage, entry)).toThrow(CustomAgentStoreError);
+    expect(storage.get()).toHaveLength(1);
+  });
+
+  it("propagates StaleAgentCatalogueEntryError for a stale entry without touching storage — the loud runtime half of issue #749's upkeep requirement", () => {
+    const storage = createInMemoryCustomAgentStorage();
+    const staleEntry: AgentCatalogueEntry = {
+      id: 'ancient-agent',
+      description: 'An agent whose verification lapsed.',
+      config: customAgentRecordV1.parse({ name: 'Ancient Agent', command: 'ancient' }),
+      verification: {
+        against: 'ancient-agent@1.0.0',
+        verifiedOn: '2020-01-01',
+        sourceUrl: 'https://example.com/ancient-agent/docs',
+        staleAfterDays: 180,
+      },
+    };
+
+    expect(() => addCustomAgentFromCatalogueEntry(storage, staleEntry)).toThrow(
+      StaleAgentCatalogueEntryError,
+    );
+    expect(storage.get()).toEqual([]);
   });
 });
