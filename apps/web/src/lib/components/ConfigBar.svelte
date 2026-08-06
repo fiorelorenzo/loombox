@@ -165,6 +165,22 @@
    * upward when the trigger sits too close to the viewport's bottom edge
    * for the same reason `Select` already does — this bar lives directly
    * above the composer.
+   *
+   * Remembered defaults, project override (Zed-parity decision D4-3, issue
+   * #753): a session used to start entirely at the agent's own defaults,
+   * every time. Now the caller (`+page.svelte`) resolves each category
+   * against an account-wide "last used" value and a project-scoped
+   * override that beats it, applying the winner via a real
+   * `setConfigOption` round trip the moment a brand-new session's catalog
+   * first arrives — this component never resolves or applies anything
+   * itself, it only renders whatever `options` already carries, same as
+   * always. What IS this component's own job, and the pick's own named
+   * cost: `sources` (keyed by category) says which layer produced the
+   * CURRENT value — a `Badge` per category plus a `title` summary on the
+   * trigger — and `onPinToProject`/`onUnpinFromProject` add a `pin`
+   * `IconButton` per category to set or clear that project's override
+   * directly from here, the one place a user is already looking at the
+   * value worth pinning.
    */
   import { tick } from 'svelte';
   import {
@@ -173,7 +189,10 @@
     type UsageRecord,
   } from '@loombox/providers-core/browser';
   import { PROVIDER_LABELS } from '$lib/providers';
+  import type { ConfigOptionSource } from '$lib/config-option-resolution';
+  import Badge, { type BadgeTone } from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
+  import IconButton from './ui/IconButton.svelte';
   import Select from './ui/Select.svelte';
   import Icon from './icons/Icon.svelte';
 
@@ -186,6 +205,19 @@
     providerId?: string | undefined;
     /** For a caller with no room: pickers and agent name hidden, meter shortened to track + used + cost. */
     compact?: boolean;
+    /**
+     * Which layer produced each category's CURRENT value (issue #753,
+     * decision D4-3) — `'project'`/`'account'`/`'default'`, keyed by
+     * category. Omitted entirely, or missing a given category, renders no
+     * source badge and no pin control for it: a caller that hasn't wired
+     * D4-3's resolution at all looks identical to "nothing to attribute",
+     * so every call site written before this issue needs no change.
+     */
+    sources?: Record<string, ConfigOptionSource>;
+    /** Pins `category`'s CURRENT choice as this project's override (issue #753). Omit to hide the pin control entirely — paired with {@link onUnpinFromProject}, both or neither. */
+    onPinToProject?: (category: string) => void;
+    /** Clears `category`'s project override (issue #753), falling back to the account default or the agent's own. Omit alongside {@link onPinToProject}. */
+    onUnpinFromProject?: (category: string) => void;
   }
 
   const {
@@ -195,6 +227,9 @@
     onChange,
     providerId,
     compact = false,
+    sources,
+    onPinToProject,
+    onUnpinFromProject,
   }: Props = $props();
 
   const modeOption = $derived(options.find((option) => option.category === 'mode'));
@@ -245,6 +280,35 @@
   );
   const triggerText = $derived(triggerParts.join(' · '));
   const hasOptions = $derived(pickerOptions.length > 0 || modeOption !== undefined);
+
+  /** "Project" / "Account" / "Agent default" — issue #753's own acceptance line: "the ConfigBar shows the source of the current value". */
+  function sourceLabel(source: ConfigOptionSource): string {
+    switch (source) {
+      case 'project':
+        return 'Project';
+      case 'account':
+        return 'Account';
+      default:
+        return 'Agent default';
+    }
+  }
+
+  /** Only `'project'` gets a distinct tone: it is the one layer a user just deliberately pinned, so it is the one worth a glance without reading the label. `'account'`/`'default'` share the quiet neutral tone the label text alone already distinguishes. */
+  function sourceTone(source: ConfigOptionSource): BadgeTone {
+    return source === 'project' ? 'info' : 'neutral';
+  }
+
+  /** "Model: Project · Effort: Account" — every non-`mode` category's source, dot-joined the same way `triggerText` joins values, so a hover explains "why is this session on low effort" without opening the popover. `undefined` (the caller hasn't wired D4-3 at all) renders no `title`, same "absent means untouched" convention `sources` itself follows. */
+  const sourceSummary = $derived(
+    sources
+      ? pickerOptions
+          .map(
+            (option) =>
+              `${categoryLabel(option.category)}: ${sourceLabel(sources[option.category] ?? 'default')}`,
+          )
+          .join(' · ')
+      : undefined,
+  );
 
   // §7.9/§16: `usage.tokensUsed`/`usage.contextWindow` are ALREADY the
   // parent-only, subagent-free numbers by the time they reach this
@@ -465,6 +529,7 @@
           aria-expanded={popoverOpen}
           aria-controls="config-popover"
           aria-label={`Model, thinking and mode: ${triggerText}`}
+          title={sourceSummary}
           onclick={handleTriggerClick}
           onkeydown={handleTriggerKeydown}
           data-testid="config-trigger"
@@ -487,41 +552,102 @@
           >
             {#each pickerOptions as option (option.category)}
               <div class="config-popover-section" data-testid={`config-option-${option.category}`}>
-                <span class="label">{categoryLabel(option.category)}</span>
-                <Select
-                  value={option.current ?? ''}
-                  options={option.choices.map((choice) => ({ id: choice.id, label: choice.name }))}
-                  onChange={(optionId) => onChange(option.category, optionId)}
-                  label={categoryLabel(option.category)}
-                  size="sm"
-                />
+                <div class="config-popover-section-head">
+                  <span class="label">{categoryLabel(option.category)}</span>
+                  {#if sources?.[option.category]}
+                    <Badge
+                      size="sm"
+                      tone={sourceTone(sources[option.category])}
+                      dataTestId={`config-source-${option.category}`}
+                    >
+                      {sourceLabel(sources[option.category])}
+                    </Badge>
+                  {/if}
+                </div>
+                <div class="config-popover-section-row">
+                  <Select
+                    value={option.current ?? ''}
+                    options={option.choices.map((choice) => ({
+                      id: choice.id,
+                      label: choice.name,
+                    }))}
+                    onChange={(optionId) => onChange(option.category, optionId)}
+                    label={categoryLabel(option.category)}
+                    size="sm"
+                  />
+                  {#if onPinToProject && onUnpinFromProject}
+                    <IconButton
+                      label={sources?.[option.category] === 'project'
+                        ? `Unpin ${categoryLabel(option.category)} from this project`
+                        : `Pin ${categoryLabel(option.category)} to this project`}
+                      size="sm"
+                      pressed={sources?.[option.category] === 'project'}
+                      dataTestId={`config-pin-${option.category}`}
+                      onclick={() =>
+                        sources?.[option.category] === 'project'
+                          ? onUnpinFromProject(option.category)
+                          : onPinToProject(option.category)}
+                    >
+                      <Icon name="pin" />
+                    </IconButton>
+                  {/if}
+                </div>
               </div>
             {/each}
 
             {#if modeOption}
               <div class="config-popover-section">
-                <span class="label">Mode</span>
-                <div
-                  class="control mode"
-                  role="radiogroup"
-                  aria-label="Mode"
-                  data-testid="config-option-mode"
-                  bind:this={modeGroupEl}
-                >
-                  {#each modeOption.choices as choice (choice.id)}
-                    <Button
-                      variant="ghost"
+                <div class="config-popover-section-head">
+                  <span class="label">Mode</span>
+                  {#if sources?.mode}
+                    <Badge
                       size="sm"
-                      class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
-                      role="radio"
-                      ariaChecked={modeOption.current === choice.id}
-                      tabindex={modeOption.current === choice.id ? 0 : -1}
-                      onclick={() => onChange('mode', choice.id)}
-                      onkeydown={handleModeKeydown}
+                      tone={sourceTone(sources.mode)}
+                      dataTestId="config-source-mode"
                     >
-                      {choice.name}
-                    </Button>
-                  {/each}
+                      {sourceLabel(sources.mode)}
+                    </Badge>
+                  {/if}
+                </div>
+                <div class="config-popover-section-row">
+                  <div
+                    class="control mode"
+                    role="radiogroup"
+                    aria-label="Mode"
+                    data-testid="config-option-mode"
+                    bind:this={modeGroupEl}
+                  >
+                    {#each modeOption.choices as choice (choice.id)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class={`mode-choice ${modeOption.current === choice.id ? 'selected' : ''}`.trim()}
+                        role="radio"
+                        ariaChecked={modeOption.current === choice.id}
+                        tabindex={modeOption.current === choice.id ? 0 : -1}
+                        onclick={() => onChange('mode', choice.id)}
+                        onkeydown={handleModeKeydown}
+                      >
+                        {choice.name}
+                      </Button>
+                    {/each}
+                  </div>
+                  {#if onPinToProject && onUnpinFromProject}
+                    <IconButton
+                      label={sources?.mode === 'project'
+                        ? 'Unpin Mode from this project'
+                        : 'Pin Mode to this project'}
+                      size="sm"
+                      pressed={sources?.mode === 'project'}
+                      dataTestId="config-pin-mode"
+                      onclick={() =>
+                        sources?.mode === 'project'
+                          ? onUnpinFromProject('mode')
+                          : onPinToProject('mode')}
+                    >
+                      <Icon name="pin" />
+                    </IconButton>
+                  {/if}
                 </div>
               </div>
             {/if}
@@ -694,6 +820,21 @@
   .config-popover-section {
     display: flex;
     flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  /* Holds the category label and its D4-3 source badge (issue #753) on one row, badge right-aligned against the label. */
+  .config-popover-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+  }
+
+  /* Holds the picker/mode-switch control and its D4-3 pin/unpin `IconButton` (issue #753) side by side. */
+  .config-popover-section-row {
+    display: flex;
+    align-items: center;
     gap: var(--space-2xs);
   }
 

@@ -32,6 +32,39 @@ describe('sessionStatusEventV1', () => {
     }
   });
 
+  it('accepts an optional "reason" alongside "error" (issue #730)', () => {
+    const result = sessionStatusEventV1.safeParse({
+      kind: 'session_status',
+      status: 'error',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      reason: 'agent spawn did not complete within 120000ms',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.reason).toBe(
+      'agent spawn did not complete within 120000ms',
+    );
+  });
+
+  it('parses fine with "reason" omitted (every status predating issue #730, and every non-error status)', () => {
+    const result = sessionStatusEventV1.safeParse({
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.reason).toBeUndefined();
+  });
+
+  it('rejects an empty "reason" string', () => {
+    const result = sessionStatusEventV1.safeParse({
+      kind: 'session_status',
+      status: 'error',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      reason: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects an unknown status value', () => {
     const result = sessionStatusEventV1.safeParse({
       kind: 'session_status',

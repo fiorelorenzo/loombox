@@ -363,11 +363,12 @@ export type AcpTranscriptUpdate =
 export type AcpSessionStatus =
   'working' | 'awaiting_input' | 'permission_required' | 'error' | 'exited';
 
-/** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). */
+/** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). `reason` is set only for `'error'` (issue #730) — a spawn that failed or timed out, in words a user can read. */
 export interface AcpSessionStatusEvent {
   kind: 'session_status';
   status: AcpSessionStatus;
   updatedAt: string;
+  reason?: string;
 }
 
 /** The session's complete config-option catalog, pushed as a full wholesale replacement (SPEC.md §7.24; issue #149). */

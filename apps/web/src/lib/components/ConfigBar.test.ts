@@ -496,3 +496,121 @@ function usage200k(tokensUsed: number): UsageRecord {
     attributedToSubagent: false,
   };
 }
+
+describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
+  it('renders no source badge and no pin control when the caller has not wired sources at all (every call site written before this issue)', async () => {
+    render(ConfigBar, {
+      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+    });
+    await openPopover();
+    expect(screen.queryByTestId('config-source-model')).toBeNull();
+    expect(screen.queryByTestId('config-pin-model')).toBeNull();
+  });
+
+  it("shows which layer produced each category's current value", async () => {
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { model: 'project', thought_level: 'account', mode: 'default' },
+      },
+    });
+    await openPopover();
+    expect(screen.getByTestId('config-source-model').textContent).toContain('Project');
+    expect(screen.getByTestId('config-source-thought_level').textContent).toContain('Account');
+    expect(screen.getByTestId('config-source-mode').textContent).toContain('Agent default');
+  });
+
+  it("summarizes every non-mode category's source in the trigger's own title, without opening the popover", () => {
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { model: 'project', thought_level: 'account', mode: 'default' },
+      },
+    });
+    const title = screen.getByTestId('config-trigger').getAttribute('title');
+    expect(title).toContain('Model: Project');
+    expect(title).toContain('Thought Level: Account');
+  });
+
+  it('renders no pin control when only onPinToProject is given, without its onUnpinFromProject pair', async () => {
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { model: 'account' },
+        onPinToProject: vi.fn(),
+      },
+    });
+    await openPopover();
+    expect(screen.queryByTestId('config-pin-model')).toBeNull();
+  });
+
+  it('pinning an unpinned category calls onPinToProject with that category', async () => {
+    const onPinToProject = vi.fn();
+    const onUnpinFromProject = vi.fn();
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { model: 'account' },
+        onPinToProject,
+        onUnpinFromProject,
+      },
+    });
+    await openPopover();
+    await fireEvent.click(screen.getByTestId('config-pin-model'));
+    expect(onPinToProject).toHaveBeenCalledWith('model');
+    expect(onUnpinFromProject).not.toHaveBeenCalled();
+  });
+
+  it('the pin control on an already-pinned category calls onUnpinFromProject instead, and reads as pressed', async () => {
+    const onPinToProject = vi.fn();
+    const onUnpinFromProject = vi.fn();
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { model: 'project' },
+        onPinToProject,
+        onUnpinFromProject,
+      },
+    });
+    await openPopover();
+    const pinButton = screen.getByTestId('config-pin-model');
+    expect(pinButton.getAttribute('aria-pressed')).toBe('true');
+    await fireEvent.click(pinButton);
+    expect(onUnpinFromProject).toHaveBeenCalledWith('model');
+    expect(onPinToProject).not.toHaveBeenCalled();
+  });
+
+  it('mode gets its own source badge and pin control, exactly like every other category', async () => {
+    const onPinToProject = vi.fn();
+    render(ConfigBar, {
+      props: {
+        options,
+        usage: undefined,
+        cumulativeCostUsd: 0,
+        onChange: vi.fn(),
+        sources: { mode: 'account' },
+        onPinToProject,
+        onUnpinFromProject: vi.fn(),
+      },
+    });
+    await openPopover();
+    expect(screen.getByTestId('config-source-mode').textContent).toContain('Account');
+    await fireEvent.click(screen.getByTestId('config-pin-mode'));
+    expect(onPinToProject).toHaveBeenCalledWith('mode');
+  });
+});

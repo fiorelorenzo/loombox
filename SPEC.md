@@ -810,7 +810,15 @@ across providers rather than needing a bespoke per-provider transcript format.
   rather than being hidden, since the schema explicitly reserves
   non-underscore-prefixed unknown category names for future ACP variants.
   Provider/agent choice stays locked once a session exists; switching provider
-  is a new-session action.
+  is a new-session action. A new session picks up remembered values per
+  category, per agent: an account-wide last-used value (written from every
+  genuine user pick's own ack, never an unprompted/automatic change), beaten
+  by a project-scoped override when one is set for that agent — the ConfigBar
+  shows which of the two (or neither, the agent's own default) produced the
+  session's current value. A remembered or overridden value the agent no
+  longer offers is dropped rather than sent, since an unsupported value is
+  rejected outright. Session templates (target/agent/model/effort/mode as one
+  saved, nameable unit) are a separate, larger feature, not implied by this.
 - **Copy & export.** Every transcript item — a diff, a raw tool command/output,
   a thought, a message — gets a copy affordance (icon on hover/long-press),
   in both the bespoke-widget tier and the generic fallback tier. This is a
