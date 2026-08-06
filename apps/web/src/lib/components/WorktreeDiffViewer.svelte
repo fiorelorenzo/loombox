@@ -40,9 +40,14 @@
    * its Split option is disabled, so a caller resizing back up to tablet
    * width sees its own last choice honored rather than silently reset.
    */
-  import type { GitDiffFileV1 } from '@loombox/protocol';
+  import type {
+    GitDiffFileStatusV1,
+    GitDiffFileV1,
+    GitHunkFileV1,
+    GitHunkV1,
+  } from '@loombox/protocol';
   import { diffStats, pairDiffLinesForSplitView } from '$lib/diff';
-  import type { DiffTabViewerState } from '$lib/tabs.svelte';
+  import type { DiffTabViewerState, HunkTabViewerState } from '$lib/tabs.svelte';
   import { isNarrowViewport, TABLET_VIEWPORT_BREAKPOINT_PX } from '$lib/viewport';
   import { Icon } from './icons';
   import CopyButton from './CopyButton.svelte';
@@ -59,22 +64,92 @@
     viewer: DiffTabViewerState;
     /** Re-runs the same `requestWorktreeDiff` this tab opened with — the only recovery action this read-only viewer offers for a failed load. */
     onRetry: () => void;
+    /** `CanvasTabsState.hunkViewer`'s current value (issue #232's staging surface) — loading/loaded/error, fetched and refreshed independently of {@link viewer}. */
+    hunkViewer: HunkTabViewerState;
+    /** Re-runs the same `requestGitHunkDiff` the staging surface opened with — {@link onRetry}'s own sibling for the hunk side. */
+    onRetryHunks: () => void;
+    /** Stages `unstaged[hunkIndex]` of the file at `path` (issue #232). The caller owns the actual `applyGitHunkAction` relay call and re-fetches {@link hunkViewer} (and typically {@link viewer} too) once it settles — this view only ever reports the click. */
+    onStageHunk: (path: string, hunkIndex: number) => void;
+    /** Unstages `staged[hunkIndex]` of the file at `path` — {@link onStageHunk}'s own sibling for the opposite side. */
+    onUnstageHunk: (path: string, hunkIndex: number) => void;
+    /** Opens `DiscardHunkDialog` for `unstaged[hunkIndex]` of the file at `path` — discard is destructive, so unlike stage/unstage this view never applies it directly; the caller owns the confirmation dialog (`+page.svelte`'s own "the dialog that triggers a real relay call owns that call" convention, `DiscardHunkDialog`'s file doc comment). */
+    onDiscardHunk: (path: string, hunkIndex: number, hunk: GitHunkV1) => void;
     /** Opens `path` in the canvas tab strip's read-only file viewer (issue #737) — forwarded to each file's `DiffViewer`, exactly like `ReviewChangesDialog`'s own `onOpenFile` wiring. Omitted renders no "Open" affordance anywhere in this view. */
     onOpenFile?: (path: string) => void;
   }
 
-  const { viewer, onRetry, onOpenFile }: Props = $props();
+  const {
+    viewer,
+    onRetry,
+    hunkViewer,
+    onRetryHunks,
+    onStageHunk,
+    onUnstageHunk,
+    onDiscardHunk,
+    onOpenFile,
+  }: Props = $props();
 
   type DiffDisplayMode = 'inline' | 'split';
   let requestedMode = $state<DiffDisplayMode>('inline');
 
+  /** Which of the two independently-fetched surfaces (issue #206's read-only diff vs issue #232's staging view) is showing right now — a plain local toggle, not persisted, mirroring `requestedMode` immediately below. */
+  type WorktreeDiffSurface = 'diff' | 'staging';
+  let surface = $state<WorktreeDiffSurface>('diff');
+
   const narrowForSplit = isNarrowViewport(TABLET_VIEWPORT_BREAKPOINT_PX);
   const mode = $derived<DiffDisplayMode>($narrowForSplit ? 'inline' : requestedMode);
 
-  function renameNote(file: GitDiffFileV1): string | undefined {
+  function renameNote(file: {
+    status: GitDiffFileStatusV1;
+    previousPath: string | null;
+  }): string | undefined {
     return file.status === 'renamed' && file.previousPath
       ? `Renamed from ${file.previousPath}`
       : undefined;
+  }
+
+  interface NumberedHunkLine {
+    kind: GitHunkV1['lines'][number]['kind'];
+    text: string;
+    oldLineNumber: number | null;
+    newLineNumber: number | null;
+  }
+
+  /** Assigns each of `hunk.lines` its own old/new line number by walking `hunk.oldStart`/`hunk.newStart` forward — `GitHunkLineV1` itself carries no line number (only `kind`/`text`, `@loombox/protocol`'s `git-hunks.ts` doc comment), so this view derives the same `.diff-lines` old/new gutter `DiffViewer` already renders from each line's own position within the hunk. */
+  function numberedHunkLines(hunk: GitHunkV1): NumberedHunkLine[] {
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+    return hunk.lines.map((line) => {
+      if (line.kind === 'removed') {
+        const row = {
+          kind: line.kind,
+          text: line.text,
+          oldLineNumber: oldLine,
+          newLineNumber: null,
+        };
+        oldLine += 1;
+        return row;
+      }
+      if (line.kind === 'added') {
+        const row = {
+          kind: line.kind,
+          text: line.text,
+          oldLineNumber: null,
+          newLineNumber: newLine,
+        };
+        newLine += 1;
+        return row;
+      }
+      const row = {
+        kind: line.kind,
+        text: line.text,
+        oldLineNumber: oldLine,
+        newLineNumber: newLine,
+      };
+      oldLine += 1;
+      newLine += 1;
+      return row;
+    });
   }
 </script>
 
@@ -141,71 +216,193 @@
   </div>
 {/snippet}
 
+{#snippet hunkLines(hunk: GitHunkV1)}
+  <ol class="diff-lines">
+    {#each numberedHunkLines(hunk) as line, lineIndex (lineIndex)}
+      <li class={line.kind}>
+        <span class="line-no old">{line.oldLineNumber ?? ''}</span>
+        <span class="line-no new">{line.newLineNumber ?? ''}</span>
+        <span class="marker"
+          >{line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' '}</span
+        >
+        <span class="text">{line.text}</span>
+      </li>
+    {/each}
+  </ol>
+{/snippet}
+
+{#snippet hunkSide(path: string, side: 'staged' | 'unstaged', hunks: readonly GitHunkV1[])}
+  {#if hunks.length > 0}
+    <div class="hunk-side" data-testid={`hunk-side-${side}`}>
+      <h4 class="hunk-side-title">{side === 'staged' ? 'Staged' : 'Unstaged'}</h4>
+      {#each hunks as hunk, hunkIndex (hunkIndex)}
+        <div class="hunk-block" data-testid="hunk-block">
+          <div class="hunk-header font-mono">
+            <span class="hunk-header-text">{hunk.header}</span>
+            <div class="hunk-actions">
+              {#if side === 'unstaged'}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onclick={() => onStageHunk(path, hunkIndex)}
+                  dataTestId="hunk-stage-button"
+                >
+                  Stage hunk
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onclick={() => onDiscardHunk(path, hunkIndex, hunk)}
+                  dataTestId="hunk-discard-button"
+                >
+                  Discard
+                </Button>
+              {:else}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onclick={() => onUnstageHunk(path, hunkIndex)}
+                  dataTestId="hunk-unstage-button"
+                >
+                  Unstage hunk
+                </Button>
+              {/if}
+            </div>
+          </div>
+          {@render hunkLines(hunk)}
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet stagingFile(file: GitHunkFileV1)}
+  {@const note = renameNote(file)}
+  <div class="worktree-diff-file" data-testid="hunk-file">
+    <Card elevation="raised" padding="none">
+      <div class="diff-header">
+        <span class="diff-path font-mono">{file.path}</span>
+        <span class="hunk-file-status">{file.status}</span>
+      </div>
+      {#if note}
+        <p class="worktree-diff-rename-note">{note}</p>
+      {/if}
+      {@render hunkSide(file.path, 'staged', file.staged)}
+      {@render hunkSide(file.path, 'unstaged', file.unstaged)}
+    </Card>
+  </div>
+{/snippet}
+
 <div class="worktree-diff-viewer" data-testid="worktree-diff-viewer">
-  {#if viewer.status === 'loading'}
-    <div class="worktree-diff-loading" data-testid="worktree-diff-loading">
-      <WovenLoader size="md" label="Loading working-tree diff" />
+  <div class="worktree-diff-surface" role="radiogroup" aria-label="Working-tree view">
+    <Button
+      variant="ghost"
+      size="sm"
+      class={`surface-choice ${surface === 'diff' ? 'selected' : ''}`.trim()}
+      role="radio"
+      ariaChecked={surface === 'diff'}
+      tabindex={surface === 'diff' ? 0 : -1}
+      onclick={() => (surface = 'diff')}
+      dataTestId="worktree-diff-surface-diff"
+    >
+      Diff
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      class={`surface-choice ${surface === 'staging' ? 'selected' : ''}`.trim()}
+      role="radio"
+      ariaChecked={surface === 'staging'}
+      tabindex={surface === 'staging' ? 0 : -1}
+      onclick={() => (surface = 'staging')}
+      dataTestId="worktree-diff-surface-staging"
+    >
+      Stage changes
+    </Button>
+  </div>
+
+  {#if surface === 'diff'}
+    {#if viewer.status === 'loading'}
+      <div class="worktree-diff-loading" data-testid="worktree-diff-loading">
+        <WovenLoader size="md" label="Loading working-tree diff" />
+      </div>
+    {:else if viewer.status === 'error'}
+      <div class="worktree-diff-error">
+        <ErrorNotice message={viewer.message} retryable {onRetry} />
+      </div>
+    {:else if viewer.files.length === 0}
+      <EmptyState message="No uncommitted changes in this project's worktree." />
+    {:else}
+      <div class="worktree-diff-toolbar">
+        <div class="worktree-diff-mode" role="radiogroup" aria-label="Diff display mode">
+          <Button
+            variant="ghost"
+            size="sm"
+            class={`mode-choice ${mode === 'inline' ? 'selected' : ''}`.trim()}
+            role="radio"
+            ariaChecked={mode === 'inline'}
+            tabindex={mode === 'inline' ? 0 : -1}
+            onclick={() => (requestedMode = 'inline')}
+            dataTestId="worktree-diff-mode-inline"
+          >
+            Inline
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class={`mode-choice ${mode === 'split' ? 'selected' : ''}`.trim()}
+            role="radio"
+            ariaChecked={mode === 'split'}
+            tabindex={mode === 'split' ? 0 : -1}
+            disabled={$narrowForSplit}
+            title={$narrowForSplit ? 'Split view needs a wider window' : undefined}
+            onclick={() => (requestedMode = 'split')}
+            dataTestId="worktree-diff-mode-split"
+          >
+            Split
+          </Button>
+        </div>
+        <span class="worktree-diff-count">
+          {viewer.files.length}
+          {viewer.files.length === 1 ? 'file' : 'files'}
+        </span>
+      </div>
+
+      <div class="worktree-diff-files" data-testid="worktree-diff-files">
+        {#each viewer.files as file (file.path)}
+          {#if mode === 'inline'}
+            {@const note = renameNote(file)}
+            <div class="worktree-diff-file" data-testid="worktree-diff-file">
+              {#if note}
+                <p class="worktree-diff-rename-note">{note}</p>
+              {/if}
+              <DiffViewer
+                path={file.path}
+                oldText={file.oldText}
+                newText={file.newText}
+                onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
+              />
+            </div>
+          {:else}
+            {@render splitFile(file)}
+          {/if}
+        {/each}
+      </div>
+    {/if}
+  {:else if hunkViewer.status === 'loading'}
+    <div class="worktree-diff-loading" data-testid="worktree-hunk-loading">
+      <WovenLoader size="md" label="Loading staged/unstaged hunks" />
     </div>
-  {:else if viewer.status === 'error'}
+  {:else if hunkViewer.status === 'error'}
     <div class="worktree-diff-error">
-      <ErrorNotice message={viewer.message} retryable {onRetry} />
+      <ErrorNotice message={hunkViewer.message} retryable onRetry={onRetryHunks} />
     </div>
-  {:else if viewer.files.length === 0}
+  {:else if hunkViewer.files.length === 0}
     <EmptyState message="No uncommitted changes in this project's worktree." />
   {:else}
-    <div class="worktree-diff-toolbar">
-      <div class="worktree-diff-mode" role="radiogroup" aria-label="Diff display mode">
-        <Button
-          variant="ghost"
-          size="sm"
-          class={`mode-choice ${mode === 'inline' ? 'selected' : ''}`.trim()}
-          role="radio"
-          ariaChecked={mode === 'inline'}
-          tabindex={mode === 'inline' ? 0 : -1}
-          onclick={() => (requestedMode = 'inline')}
-          dataTestId="worktree-diff-mode-inline"
-        >
-          Inline
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          class={`mode-choice ${mode === 'split' ? 'selected' : ''}`.trim()}
-          role="radio"
-          ariaChecked={mode === 'split'}
-          tabindex={mode === 'split' ? 0 : -1}
-          disabled={$narrowForSplit}
-          title={$narrowForSplit ? 'Split view needs a wider window' : undefined}
-          onclick={() => (requestedMode = 'split')}
-          dataTestId="worktree-diff-mode-split"
-        >
-          Split
-        </Button>
-      </div>
-      <span class="worktree-diff-count">
-        {viewer.files.length}
-        {viewer.files.length === 1 ? 'file' : 'files'}
-      </span>
-    </div>
-
-    <div class="worktree-diff-files" data-testid="worktree-diff-files">
-      {#each viewer.files as file (file.path)}
-        {#if mode === 'inline'}
-          {@const note = renameNote(file)}
-          <div class="worktree-diff-file" data-testid="worktree-diff-file">
-            {#if note}
-              <p class="worktree-diff-rename-note">{note}</p>
-            {/if}
-            <DiffViewer
-              path={file.path}
-              oldText={file.oldText}
-              newText={file.newText}
-              onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
-            />
-          </div>
-        {:else}
-          {@render splitFile(file)}
-        {/if}
+    <div class="worktree-diff-files" data-testid="worktree-hunk-files">
+      {#each hunkViewer.files as file (file.path)}
+        {@render stagingFile(file)}
       {/each}
     </div>
   {/if}
@@ -220,6 +417,61 @@
     overflow-y: auto;
     padding: var(--space-md);
     gap: var(--space-md);
+  }
+
+  .worktree-diff-surface {
+    display: flex;
+    gap: var(--space-2xs);
+  }
+
+  :global(.worktree-diff-surface .surface-choice.selected) {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  .hunk-file-status {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+    text-transform: capitalize;
+  }
+
+  .hunk-side {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .hunk-side-title {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .hunk-block + .hunk-block {
+    border-top: 1px solid var(--color-border-subtle);
+  }
+
+  .hunk-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    background: var(--color-fill-subtle);
+  }
+
+  .hunk-header-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hunk-actions {
+    display: flex;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
   }
 
   .worktree-diff-loading {

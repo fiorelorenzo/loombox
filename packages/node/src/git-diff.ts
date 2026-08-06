@@ -333,8 +333,7 @@ async function buildTrackedHunkFile(
   entry: WorktreeStatusEntry,
 ): Promise<GitHunkFileV1> {
   const status = await determineHunkFileStatus(target, worktreePath, entry);
-  const pathspecs =
-    entry.previousPath !== null ? [entry.previousPath, entry.path] : [entry.path];
+  const pathspecs = entry.previousPath !== null ? [entry.previousPath, entry.path] : [entry.path];
 
   const [stagedResult, unstagedResult] = await Promise.all([
     target.exec('git', [
@@ -485,7 +484,12 @@ export async function applyGitHunkAction(
       throw new GitHunkActionError(`no such hunk at index ${hunkIndex} for untracked "${path}"`);
     }
     if (action === 'stage') {
-      await execGitHunkActionOrThrow(target, worktreePath, ['add', '--', path], `failed to stage "${path}"`);
+      await execGitHunkActionOrThrow(
+        target,
+        worktreePath,
+        ['add', '--', path],
+        `failed to stage "${path}"`,
+      );
     } else {
       await execGitHunkActionOrThrow(
         target,

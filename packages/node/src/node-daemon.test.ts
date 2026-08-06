@@ -2554,7 +2554,9 @@ describe('NodeDaemon git-hunks (hunk-level stage/unstage/discard, issue #232)', 
     expect(payload.files?.[0]?.status).toBe('added');
     expect(payload.files?.[0]?.staged).toEqual([]);
     expect(payload.files?.[0]?.unstaged).toHaveLength(1);
-    expect(payload.files?.[0]?.unstaged[0]?.lines).toEqual([{ kind: 'added', text: 'hello worktree' }]);
+    expect(payload.files?.[0]?.unstaged[0]?.lines).toEqual([
+      { kind: 'added', text: 'hello worktree' },
+    ]);
   });
 
   it('reports an empty file list for a clean worktree', async () => {

@@ -442,7 +442,11 @@ describe('computeHunkDiff / applyGitHunkAction against a real local git repo (is
     await writeFile(join(worktreePath, 'single.txt'), 'a\nB\n');
 
     await expect(
-      applyGitHunkAction(target, worktreePath, { path: 'single.txt', hunkIndex: 3, action: 'stage' }),
+      applyGitHunkAction(target, worktreePath, {
+        path: 'single.txt',
+        hunkIndex: 3,
+        action: 'stage',
+      }),
     ).rejects.toThrow(GitHunkActionError);
     // Nothing was mutated by the failed attempt.
     expect(await readWorktree('single.txt')).toBe('a\nB\n');
@@ -469,7 +473,11 @@ describe('computeHunkDiff / applyGitHunkAction against a real local git repo (is
     await writeFile(join(worktreePath, 'new.txt'), 'hello\n');
 
     await expect(
-      applyGitHunkAction(target, worktreePath, { path: 'new.txt', hunkIndex: 0, action: 'unstage' }),
+      applyGitHunkAction(target, worktreePath, {
+        path: 'new.txt',
+        hunkIndex: 0,
+        action: 'unstage',
+      }),
     ).rejects.toThrow(GitHunkActionError);
   });
 

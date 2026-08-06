@@ -3829,7 +3829,10 @@ describe('RelayClient: hunk-level staging (issue #232)', () => {
                 oldLines: 1,
                 newStart: 1,
                 newLines: 1,
-                lines: [{ kind: 'removed', text: 'old' }, { kind: 'added', text: 'new' }],
+                lines: [
+                  { kind: 'removed', text: 'old' },
+                  { kind: 'added', text: 'new' },
+                ],
               },
             ],
           },
@@ -3860,7 +3863,10 @@ describe('RelayClient: hunk-level staging (issue #232)', () => {
               oldLines: 1,
               newStart: 1,
               newLines: 1,
-              lines: [{ kind: 'removed', text: 'old' }, { kind: 'added', text: 'new' }],
+              lines: [
+                { kind: 'removed', text: 'old' },
+                { kind: 'added', text: 'new' },
+              ],
             },
           ],
         },

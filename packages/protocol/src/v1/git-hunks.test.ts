@@ -153,9 +153,7 @@ describe('gitHunkFileV1', () => {
 
 describe('gitHunkDiffResponsePayloadV1', () => {
   it('accepts the ok outcome with an empty file list', () => {
-    expect(gitHunkDiffResponsePayloadV1.safeParse({ outcome: 'ok', files: [] }).success).toBe(
-      true,
-    );
+    expect(gitHunkDiffResponsePayloadV1.safeParse({ outcome: 'ok', files: [] }).success).toBe(true);
   });
 
   it('accepts the ok outcome with a file list', () => {
@@ -213,8 +211,7 @@ describe('gitHunkActionRequestPayloadV1', () => {
 
   it('rejects an empty path', () => {
     expect(
-      gitHunkActionRequestPayloadV1.safeParse({ path: '', hunkIndex: 0, action: 'stage' })
-        .success,
+      gitHunkActionRequestPayloadV1.safeParse({ path: '', hunkIndex: 0, action: 'stage' }).success,
     ).toBe(false);
   });
 

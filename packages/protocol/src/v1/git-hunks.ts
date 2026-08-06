@@ -170,9 +170,7 @@ export const gitHunkActionResponsePayloadV1 = z.discriminatedUnion('outcome', [
 export type GitHunkActionResponsePayloadV1 = z.infer<typeof gitHunkActionResponsePayloadV1>;
 
 /** Parses and validates a decrypted `git_hunk_action_response` payload, throwing on an invalid one. */
-export function parseGitHunkActionResponsePayloadV1(
-  data: unknown,
-): GitHunkActionResponsePayloadV1 {
+export function parseGitHunkActionResponsePayloadV1(data: unknown): GitHunkActionResponsePayloadV1 {
   return gitHunkActionResponsePayloadV1.parse(data);
 }
 
