@@ -3,6 +3,12 @@ import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
+import {
+  gitHunkActionRequest,
+  gitHunkActionResponse,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+} from './git-hunks';
 import { mcpPromptGetRequest, mcpPromptGetResponse } from './mcp-prompts';
 import {
   amkEpochFetchRequest,
@@ -131,6 +137,7 @@ import {
 } from './tracker-records';
 import { prOpenPreviewRequest, prOpenPreviewResult, prOpenRequest, prOpenResult } from './pr';
 import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
+import { ciCheckStatus } from './ci-check';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -274,6 +281,11 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   prOpenResult,
   gitDiffRequest,
   gitDiffResponse,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+  gitHunkActionRequest,
+  gitHunkActionResponse,
+  ciCheckStatus,
   ping,
   pong,
 ]);

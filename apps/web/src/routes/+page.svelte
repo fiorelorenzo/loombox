@@ -18,7 +18,7 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
-  import type { KeymapV1, SessionStatusV1 } from '@loombox/protocol';
+  import type { GitHunkV1, KeymapV1, SessionStatusV1 } from '@loombox/protocol';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { transcriptTail } from '$lib/transcript-tail';
   import {
@@ -122,6 +122,7 @@
   import CheckpointsDialog from '$lib/components/CheckpointsDialog.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
+  import DiscardHunkDialog from '$lib/components/DiscardHunkDialog.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import FileViewer from '$lib/components/FileViewer.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
@@ -510,6 +511,11 @@
   /** The session a just-opened `CheckpointsDialog` (SPEC §7.20; issue #268) lists/creates/restores checkpoints for; `undefined` when none is open. Same split as `archivingSession`/`archiveSessionOpen`/`prOpenSession`/`prOpenDialogOpen` immediately above, for the same "the dialog's own exit transition still has real session content to render" reason. Reachable from ANY session row's menu, not gated to the currently-open session — mirrors `prOpenSession`'s own reasoning. */
   let checkpointsSession = $state<ClientSessionMeta | undefined>(undefined);
   let checkpointsDialogOpen = $state(false);
+  /** The hunk a just-opened `DiscardHunkDialog` (issue #232) is about to discard, from `WorktreeDiffViewer`'s own staging surface; `undefined` when none is open. Discard is destructive (unlike stage/unstage, which apply immediately with no confirmation), so this dialog owns its own `applyGitHunkAction` call — see that component's own file doc comment. */
+  let discardingHunk = $state<{ path: string; hunkIndex: number; hunk: GitHunkV1 } | undefined>(
+    undefined,
+  );
+  let discardHunkOpen = $state(false);
   /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
   let renamingProjectId = $state<string | undefined>(undefined);
   /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
@@ -2284,10 +2290,82 @@
     }
   }
 
-  /** Opens (or activates) the working-tree diff tab (issue #206) — the Files panel's own entry point, `openFileTab`'s sibling. Always re-fetches on open, even for an already-open tab: the working tree keeps changing under an active session, so switching back to this tab should show what's true right now, not a stale snapshot from whenever it was first opened. */
+  /** Opens (or activates) the working-tree diff tab (issue #206) — the Files panel's own entry point, `openFileTab`'s sibling. Always re-fetches on open, even for an already-open tab: the working tree keeps changing under an active session, so switching back to this tab should show what's true right now, not a stale snapshot from whenever it was first opened. Fetches both {@link loadWorktreeDiff} and {@link loadHunkDiff} — the diff tab shows both surfaces (issue #206's read-only diff, issue #232's staging view), each backed by its own request pair. */
   function openWorktreeDiffTab(): void {
     canvasTabs.openDiff(transcript?.items ?? []);
     mainView = 'session';
+    void loadWorktreeDiff();
+    void loadHunkDiff();
+  }
+
+  /** Fetches the session's current staged/unstaged hunk breakdown for the diff tab's staging surface (issue #232) — `loadWorktreeDiff`'s own sibling, same one-shot `RelayClient.requestGitHunkDiff` contract. */
+  async function loadHunkDiff(): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    canvasTabs.setHunkViewer({ status: 'loading' });
+    try {
+      const result = await client.requestGitHunkDiff(selectedSessionId);
+      if (result.outcome === 'ok') {
+        canvasTabs.setHunkViewer({ status: 'loaded', files: result.files });
+      } else {
+        canvasTabs.setHunkViewer({ status: 'error', message: result.message });
+      }
+    } catch (error) {
+      canvasTabs.setHunkViewer({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Stages or unstages one hunk (issue #232) — applies immediately, no confirmation (unlike discard, which is destructive and routed to `DiscardHunkDialog` instead). Re-fetches both {@link loadHunkDiff} and {@link loadWorktreeDiff} afterward, mirroring `DiscardHunkDialog`'s own `onDiscarded` contract: the staging view needs a fresh hunk breakdown, and re-fetching the plain diff too keeps both surfaces honest rather than one trusting a now-stale snapshot. Errors surface via a fresh `hunkViewer` `'error'` state — there is no separate toast for a stage/unstage failure, the staging view itself becomes the error surface, same as a failed initial load. */
+  async function applyHunkAction(
+    path: string,
+    hunkIndex: number,
+    action: 'stage' | 'unstage',
+  ): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    try {
+      const result = await client.applyGitHunkAction(selectedSessionId, {
+        path,
+        hunkIndex,
+        action,
+      });
+      if (result.outcome === 'error') {
+        canvasTabs.setHunkViewer({ status: 'error', message: result.message });
+        return;
+      }
+    } catch (error) {
+      canvasTabs.setHunkViewer({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    void loadHunkDiff();
+    void loadWorktreeDiff();
+  }
+
+  function stageHunk(path: string, hunkIndex: number): void {
+    void applyHunkAction(path, hunkIndex, 'stage');
+  }
+
+  function unstageHunk(path: string, hunkIndex: number): void {
+    void applyHunkAction(path, hunkIndex, 'unstage');
+  }
+
+  /** Opens `DiscardHunkDialog` for one unstaged hunk (issue #232) — the staging surface's own destructive action, `openArchiveSessionDialog`'s sibling in shape (same split state, same reachable-from-a-row-click contract). */
+  function openDiscardHunkDialog(path: string, hunkIndex: number, hunk: GitHunkV1): void {
+    discardingHunk = { path, hunkIndex, hunk };
+    discardHunkOpen = true;
+  }
+
+  function closeDiscardHunkDialog(): void {
+    discardHunkOpen = false;
+  }
+
+  /** `DiscardHunkDialog`'s own `onDiscarded` — fired after its own `applyGitHunkAction` call already succeeded, so this only re-fetches both surfaces, mirroring {@link applyHunkAction}'s own post-action refresh. */
+  function handleHunkDiscarded(): void {
+    void loadHunkDiff();
     void loadWorktreeDiff();
   }
 
@@ -4440,6 +4518,11 @@
               <WorktreeDiffViewer
                 viewer={canvasTabs.diffViewer ?? { status: 'loading' }}
                 onRetry={loadWorktreeDiff}
+                hunkViewer={canvasTabs.hunkViewer ?? { status: 'loading' }}
+                onRetryHunks={loadHunkDiff}
+                onStageHunk={stageHunk}
+                onUnstageHunk={unstageHunk}
+                onDiscardHunk={openDiscardHunkDialog}
                 onOpenFile={openFileTab}
               />
             {/if}
@@ -4794,6 +4877,19 @@
     session={archivingSession}
     {client}
     onClose={closeArchiveSessionDialog}
+  />
+{/if}
+
+{#if discardingHunk && selectedSessionId}
+  <DiscardHunkDialog
+    open={discardHunkOpen}
+    sessionId={selectedSessionId}
+    {client}
+    path={discardingHunk.path}
+    hunkIndex={discardingHunk.hunkIndex}
+    hunk={discardingHunk.hunk}
+    onClose={closeDiscardHunkDialog}
+    onDiscarded={handleHunkDiscarded}
   />
 {/if}
 

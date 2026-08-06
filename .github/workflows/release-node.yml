@@ -1,0 +1,108 @@
+name: release-node
+
+# Builds and publishes the versioned node + supervisor artifacts (issue
+# #817, decision A1-2) on every `vX.Y.Z` tag — the `~/.loombox/
+# versions/<version>/` bundle `install-layout.ts` unpacks, and the signed
+# supervisor artifact `createLocalFsSupervisorArtifactSource`-shaped callers
+# fetch. Separate from `deploy-prod.yml` (which ships the *web* bundle to
+# prodbox on the same tag pattern): this workflow's output is a GitHub
+# Release the *node/desktop* side downloads from, never touches prodbox.
+#
+# One matrix leg per `RemoteOsArch` this codebase actually recognizes today
+# (`packages/node/src/ssh/remote-runtime.ts`: linux/darwin, x64/arm64) —
+# `ubuntu-latest` (linux-x64) and `macos-latest` (darwin-arm64, GitHub-hosted
+# macOS runners are Apple Silicon). Each leg runs `pnpm package:node-release`
+# natively on its own platform, exactly like a real user's own `pnpm install`
+# would resolve node-pty/@napi-rs/keyring's platform-specific prebuilds —
+# there is no cross-compiling a native addon from a different host.
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-node-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: package (${{ matrix.os-arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os-arch: linux-x64
+          - runner: macos-latest
+            os-arch: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package node + supervisor artifacts
+        env:
+          LOOMBOX_BUILD_COMMIT: ${{ github.sha }}
+          SUPERVISOR_SIGNING_KEY: ${{ secrets.SUPERVISOR_SIGNING_KEY }}
+        run: node scripts/package-node-release.mjs
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os-arch }}
+          path: release/
+          retention-days: 14
+
+  publish:
+    name: publish GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every platform's packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-downloads
+          merge-multiple: false
+
+      # Each `release-<os-arch>` artifact unpacks to its own `release/node/`
+      # + `release/supervisor/` tree with the SAME version-numbered path
+      # (only the trailing os-arch segment differs), so a plain recursive
+      # copy from every downloaded artifact into one merged tree is safe —
+      # nothing collides, nothing overwrites a sibling platform's file.
+      - name: Merge platform trees
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for dir in release-downloads/*/; do
+            cp -a "$dir"/. release/
+          done
+          find release -maxdepth 4 -type f
+
+      - name: Create/update the GitHub Release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          assets=()
+          while IFS= read -r -d '' f; do assets+=("$f"); done < <(find release -type f -print0)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --title "$tag" \
+              --notes "Node + supervisor artifacts for $tag (issue #817). See CONTRIBUTING.md for how a node installs from these."
+          fi

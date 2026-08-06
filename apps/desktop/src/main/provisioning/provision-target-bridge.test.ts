@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { FakeTransport, SshTargetStore, type SshTargetConfig } from '@loombox/node';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { resolveProvisionTargetDeps, runProvisionTarget } from './provision-target-bridge';
+import {
+  resolveProvisionTargetDeps,
+  resolveSupervisorArtifactDeps,
+  runProvisionTarget,
+} from './provision-target-bridge';
 
 const TARGET: SshTargetConfig = {
   id: 'devbox-1',
@@ -32,8 +36,34 @@ afterEach(async () => {
 });
 
 describe('resolveProvisionTargetDeps', () => {
-  it('is undefined in this scaffold (no signed-release/#398/#399 config exists yet)', () => {
+  it('is undefined until #398/#399 land (no resident-node relay/identity config source exists yet)', () => {
     expect(resolveProvisionTargetDeps()).toBeUndefined();
+  });
+});
+
+describe('resolveSupervisorArtifactDeps (issue #817)', () => {
+  it('resolves a real, working local-fs artifact source, pinned public key, and @loombox/supervisor\u2019s own version', async () => {
+    const deps = await resolveSupervisorArtifactDeps();
+
+    expect(deps.supervisor.targetVersion).toMatch(/^\d+\.\d+\.\d+/);
+    expect(deps.supervisor.publicKey).toBeInstanceOf(Uint8Array);
+    expect(deps.supervisor.publicKey.byteLength).toBe(32);
+    expect(typeof deps.supervisor.artifactSource.fetch).toBe('function');
+  });
+
+  it('honors an overridden releasesDir instead of the default ~/.loombox/releases', async () => {
+    const releasesDir = await mkdtemp(join(tmpdir(), 'loombox-desktop-releases-'));
+    try {
+      const deps = await resolveSupervisorArtifactDeps({ releasesDir });
+      await expect(
+        deps.supervisor.artifactSource.fetch(
+          { os: 'linux', arch: 'x64', rawOs: 'Linux', rawArch: 'x86_64' },
+          '1.0.0',
+        ),
+      ).rejects.toThrow(/no supervisor build staged/);
+    } finally {
+      await rm(releasesDir, { recursive: true, force: true });
+    }
   });
 });
 

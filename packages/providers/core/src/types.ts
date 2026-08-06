@@ -524,6 +524,16 @@ export interface AcpResourceLinkContentBlock {
   size?: number;
 }
 
+/**
+ * The content blocks `AcpClient.prompt()` accepts beyond its required text
+ * block (SPEC.md §7.25 "Hand off to the agent"; issue #158): an inline
+ * base64 image, or a `resource_link` pointing at a supervisor-owned temp
+ * file for an agent/format that can't take the inline path. Named here
+ * (rather than folded into the catch-all `AcpContentBlock`) because
+ * `AcpClient.prompt()`'s signature asserts on it directly.
+ */
+export type AcpPromptContentBlock = AcpImageContentBlock | AcpResourceLinkContentBlock;
+
 /* -------------------------------------------------------------------------
  * v1: configured MCP servers, fed into `session/new` (SPEC.md §7.7 "configured
  * MCP servers feed the actual agent session"; §5.5 "session/new is a
