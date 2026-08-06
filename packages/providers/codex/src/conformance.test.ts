@@ -1,5 +1,5 @@
 import { AcpClient, ProviderRegistry } from '@loombox/providers-core';
-import type { AcpPermissionOptionKind } from '@loombox/providers-core';
+import type { AcpPermissionOptionKind, AcpToolKind } from '@loombox/providers-core';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -66,7 +66,7 @@ describe('codexProviderModule conformance', () => {
       'permission_request',
       (request: {
         requestId: string;
-        toolCall: { title?: string };
+        toolCall: { title?: string; toolKind?: AcpToolKind };
         options: { optionId: string; name: string; kind: AcpPermissionOptionKind }[];
       }) => {
         // The Codex adapter's own permission-verb mapping, exercised against
@@ -92,8 +92,14 @@ describe('codexProviderModule conformance', () => {
       'yes_for_session',
       'stop_and_explain',
     ]);
-    // The "Patch" tool call routes to a bespoke widget, not the generic row.
-    expect(wasBespoke).toBe(true);
+    // The fixture's tool-call title ("Patch") is synthetic and, by design,
+    // does not match real Codex's actual literal title ("Editing files") —
+    // see this fixture's own header comment and
+    // docs/research/codex-acp-completeness.md #3 (issue #819). Post-#819,
+    // `hasCodexBespokeWidget` correctly falls through to the generic row
+    // here; the real-shape proof against Codex's actual title lives in
+    // codex-acp-capabilities.test.ts's real-shape conformance section.
+    expect(wasBespoke).toBe(false);
 
     const state = client.getTranscriptState(sessionId);
     const toolCall = state.items.find((item) => item.type === 'tool_call' && item.id === 'tc1');
@@ -125,6 +131,9 @@ describe('codexProviderModule conformance', () => {
     const toolCall = state.items.find((item) => item.type === 'tool_call' && item.id === 'tc-bash');
     expect(toolCall).toMatchObject({ status: 'completed', title: 'Bash', toolKind: 'execute' });
     if (toolCall?.type !== 'tool_call') throw new Error('expected a tool_call item');
+    // Passes for the right (structural) reason post-#819: toolKind alone
+    // (`'execute'`) identifies a Codex bash call, so this holds regardless
+    // of the fixture's synthetic "Bash" title text.
     expect(hasCodexBespokeWidget(toolCall)).toBe(true);
   });
 
