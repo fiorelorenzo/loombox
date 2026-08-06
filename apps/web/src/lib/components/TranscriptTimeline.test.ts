@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTranscriptState,
   type TranscriptItem,
+  type TranscriptState,
   type TranscriptToolCallItem,
 } from '@loombox/providers-core/browser';
-import TranscriptTimeline from './TranscriptTimeline.svelte';
+import TranscriptTimeline, { type TranscriptJumpTarget } from './TranscriptTimeline.svelte';
 
 afterEach(() => cleanup());
 
@@ -34,7 +35,17 @@ function toolCalls(count: number): TranscriptToolCallItem[] {
   return Array.from({ length: count }, (_, i) => toolCallItem(`tc${i}`));
 }
 
-function propsFor(items: TranscriptItem[], sessionKey: string) {
+interface TranscriptTimelineTestProps {
+  sessionKey: string;
+  items: TranscriptItem[];
+  transcript: TranscriptState;
+  turnActive: boolean;
+  providerId: string;
+  permissionHead: undefined;
+  jumpTarget: TranscriptJumpTarget | undefined;
+}
+
+function propsFor(items: TranscriptItem[], sessionKey: string): TranscriptTimelineTestProps {
   return {
     sessionKey,
     items,
@@ -42,11 +53,16 @@ function propsFor(items: TranscriptItem[], sessionKey: string) {
     turnActive: false,
     providerId: 'claude',
     permissionHead: undefined,
+    jumpTarget: undefined,
   };
 }
 
-function renderTimeline(items: TranscriptItem[], sessionKey = 'sess_1') {
-  return render(TranscriptTimeline, { props: propsFor(items, sessionKey) });
+function renderTimeline(
+  items: TranscriptItem[],
+  sessionKey = 'sess_1',
+  overrides: Partial<TranscriptTimelineTestProps> = {},
+) {
+  return render(TranscriptTimeline, { props: { ...propsFor(items, sessionKey), ...overrides } });
 }
 
 /**
@@ -198,5 +214,98 @@ describe('TranscriptTimeline: session switch resets the window (issue #755)', ()
     await rerender(propsFor(toolCalls(3), 'sess_2'));
 
     expect(screen.queryByTestId('transcript-jump-latest')).toBeNull();
+  });
+});
+
+describe('TranscriptTimeline: jumpTarget (issue #740, turn-review "jump to this file’s diff")', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // jsdom never implements `Element.prototype.scrollIntoView` at all
+    // (see the earlier module doc comment) — the two tests below add it
+    // as a plain stub, which `vi.restoreAllMocks()` alone won't undo.
+    Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+  });
+
+  it('mounts a row far outside the initial pinned-to-tail window once jumped to', () => {
+    const items = toolCalls(500);
+    const { rerender, container } = renderTimeline(items);
+    // Pinned to the tail by default — item 50 of 500 is nowhere near it.
+    expect(container.querySelector('[data-item-id="tc50"]')).toBeNull();
+
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'tc50', token: 1 } });
+
+    expect(container.querySelector('[data-item-id="tc50"]')).toBeTruthy();
+  });
+
+  it('detaches from following, so the jumped-to row is not immediately pulled back to the tail', () => {
+    const items = toolCalls(500);
+    const { rerender } = renderTimeline(items);
+    expect(screen.queryByTestId('transcript-jump-latest')).toBeNull();
+
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'tc10', token: 1 } });
+
+    expect(screen.getByTestId('transcript-jump-latest')).toBeTruthy();
+  });
+
+  it('scrolls the target row into view once it mounts', () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const items = toolCalls(500);
+    const { rerender } = renderTimeline(items);
+
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'tc10', token: 1 } });
+
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('a repeat click on an already-visible row (bumped token, same id) re-triggers the scroll', () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const items = toolCalls(500);
+    const { rerender } = renderTimeline(items);
+
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'tc10', token: 1 } });
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'tc10', token: 2 } });
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('an id that is not in the transcript is silently ignored — no crash', () => {
+    const items = toolCalls(20);
+    const { rerender } = renderTimeline(items);
+
+    expect(() =>
+      rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'does-not-exist', token: 1 } }),
+    ).not.toThrow();
+  });
+
+  it('acceptance: brings a turn’s edit into view even when that turn is scrolled out of the mounted range', () => {
+    const editItems: TranscriptToolCallItem[] = [
+      toolCallItem('edit0', {
+        turnId: 't1',
+        toolKind: 'edit',
+        diff: { path: 'a.ts', oldText: 'x', newText: 'x\ny' },
+      }),
+      toolCallItem('edit1', {
+        turnId: 't1',
+        toolKind: 'edit',
+        diff: { path: 'b.ts', oldText: 'p\nq', newText: 'p' },
+      }),
+      toolCallItem('edit2', {
+        turnId: 't1',
+        toolKind: 'edit',
+        diff: { path: 'c.ts', oldText: null, newText: 'z' },
+      }),
+    ];
+    // A long tail of later turns pushes the whole turn well above the
+    // pinned-to-tail window — exactly the "most edits are not mounted"
+    // case #755 introduced.
+    const items = [...editItems, ...toolCalls(500)];
+    const { rerender, container } = renderTimeline(items);
+    expect(container.querySelector('[data-item-id="edit1"]')).toBeNull();
+
+    rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'edit1', token: 1 } });
+
+    expect(container.querySelector('[data-item-id="edit1"]')).toBeTruthy();
   });
 });
