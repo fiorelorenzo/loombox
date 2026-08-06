@@ -71,6 +71,12 @@ import {
   testRunnerConfigSet,
 } from './test-runner-config';
 import {
+  permissionPolicyGet,
+  permissionPolicyResult,
+  permissionPolicySet,
+  permissionPolicyViolation,
+} from './permission-policy';
+import {
   accountPinGetRequest,
   accountPinResolveRequest,
   accountPinResolveResponse,
@@ -194,6 +200,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   runOutput,
   runExit,
   runCancel,
+  permissionPolicyGet,
+  permissionPolicySet,
+  permissionPolicyResult,
+  permissionPolicyViolation,
   ping,
   pong,
 ]);

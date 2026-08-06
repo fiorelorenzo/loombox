@@ -62,4 +62,34 @@ describe('style-reference route (#195/#196: living token/type reference)', () =>
     expect(body).toContain('woven-loader-skeleton');
     expect(body).toContain('data-reduced-motion="true"');
   });
+
+  it('enumerates every structural-identifier kind from #735 (A4-1), each rendered mono via the shared .font-mono class', () => {
+    const { body } = render(Page);
+
+    const kinds = [
+      'mono-identifier-project-path',
+      'mono-identifier-branch-name',
+      'mono-identifier-target-name',
+      'mono-identifier-session-id',
+      'mono-identifier-tool-name',
+      'mono-identifier-file-name',
+      'mono-identifier-count',
+      'mono-identifier-duration',
+      'mono-identifier-tokens',
+      'mono-identifier-cost',
+    ];
+    for (const testId of kinds) {
+      expect(body).toContain(`class="font-mono" data-testid="${testId}"`);
+    }
+
+    // Each example reads the shared class, never a literal font name.
+    expect(body).toContain('.font-mono</code>');
+
+    // The pick's own caveat — inherited, not dropped — names the two real
+    // call sites where a lone number reads worst.
+    expect(body).toContain('MessageItem');
+    expect(body).toContain('thinking-timer');
+    expect(body).toContain('TargetStatusView');
+    expect(body).toContain('target-age');
+  });
 });

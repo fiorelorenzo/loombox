@@ -242,6 +242,13 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
     getTestRunnerConfig: vi.fn().mockResolvedValue({}),
+    getPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    setPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    onPermissionPolicyViolation: vi.fn(() => () => {}),
     runsFor: () => makeStore(new Map()),
     startRun: vi.fn(() => 'run-fake'),
     cancelRun: vi.fn(),
@@ -1326,6 +1333,21 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
     await fireEvent.click(within(secondRow as HTMLElement).getByTestId('session-row-more'));
 
     expect(screen.queryByTestId('session-export-link')).toBeNull();
+  });
+});
+
+describe('structural identifiers render in the shared mono face (#735)', () => {
+  it("the topbar breadcrumb (project path + target) and the session row's own target are mono", async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const breadcrumb = screen.getByTestId('topbar-breadcrumb');
+    expect(breadcrumb.className).toContain('font-mono');
+    expect(breadcrumb.textContent).toContain('local');
+
+    const sessionMeta = screen.getByTestId('session-activity');
+    expect(sessionMeta.className).toContain('font-mono');
+    expect(sessionMeta.textContent).toContain('local');
   });
 });
 

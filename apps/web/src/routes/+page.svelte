@@ -2753,7 +2753,7 @@
         <ErrorNotice message={authError} />
       {/if}
       {#snippet footer()}
-        <span class="account">{session.accountId}</span>
+        <span class="account font-mono">{session.accountId}</span>
         <span class="status" data-status={status}>
           {#if status === 'connecting'}
             <WovenLoader label="Connecting to the relay" />
@@ -2836,7 +2836,7 @@
                  (the group header now carries it) and picks up the
                  relative activity time that used to sit in its own grid
                  column on the right. -->
-            <span class="session-meta" data-testid="session-activity">
+            <span class="session-meta font-mono" data-testid="session-activity">
               {sessionTargetLabel(session)}
               <span aria-hidden="true">·</span>
               {formatSessionActivity(session.createdAt)}
@@ -3406,7 +3406,11 @@
                 <h1 class="topbar-title" data-testid="cockpit-session-title">
                   {selectedSession.title}
                 </h1>
-                <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                <span
+                  class="topbar-breadcrumb font-mono"
+                  data-testid="topbar-breadcrumb"
+                  title={selectedSession.projectPath}
+                >
                   {projectDisplayName(selectedSession)}
                   <span aria-hidden="true">·</span>
                   {selectedSession.targetId}
@@ -4276,7 +4280,6 @@
   }
 
   .account {
-    font-family: var(--font-mono);
     font-size: var(--text-small-size);
     opacity: 0.8;
   }
@@ -5277,7 +5280,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-small-size);
-    font-family: var(--font-mono);
     color: var(--color-text-muted);
   }
 

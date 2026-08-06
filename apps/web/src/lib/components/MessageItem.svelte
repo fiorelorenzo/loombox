@@ -284,9 +284,7 @@
     return () => clearInterval(interval);
   });
 
-  const thinkingLabel = $derived(
-    thinking ? `Thinking ${elapsedSeconds}s` : `Thought for ${elapsedSeconds}s`,
-  );
+  const thinkingPrefix = $derived(thinking ? 'Thinking' : 'Thought for');
 </script>
 
 <div
@@ -326,7 +324,9 @@
           {#if thinking}
             <WovenLoader size="sm" variant="working" label="Agent thinking" />
           {/if}
-          <span class="thinking-timer" data-testid="thinking-timer">{thinkingLabel}</span>
+          <span class="thinking-timer" data-testid="thinking-timer"
+            >{thinkingPrefix} <span class="font-mono">{elapsedSeconds}s</span></span
+          >
         </div>
         {#if displayExpanded}
           <div class="text thought-body md-body" data-testid="thought-body">

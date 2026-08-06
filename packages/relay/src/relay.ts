@@ -1407,6 +1407,21 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'permission_policy_result':
+        // The owning node's reply to a client's permission_policy_get/_set
+        // (SPEC §7.17; issue #751) — fanned out exactly like
+        // test_runner_config_result above; the relay never opens the
+        // envelope, so it never sees a project's actual glob rules
+        // (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'permission_policy_violation':
+        // The owning node reporting a live policy denial (SPEC §7.17;
+        // issue #751) — fanned out exactly like terminal_output; the
+        // relay never opens the envelope, so it never sees which rule or
+        // command was involved.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'run_started':
       case 'run_output':
       case 'run_exit':
@@ -2020,6 +2035,16 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // the owning node exactly like terminal_open above. The relay only
         // ever sees sessionId/requestId plus (for _set) an opaque
         // `EncryptedEnvelope`; no command string ever reaches the relay in
+        // the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'permission_policy_get':
+      case 'permission_policy_set':
+        // A client reading/saving a session's project's permission policy
+        // (SPEC §7.17; issue #751) — routed to the owning node exactly
+        // like test_runner_config_get/_set above. The relay only ever
+        // sees sessionId/requestId plus (for _set) an opaque
+        // `EncryptedEnvelope`; no glob pattern ever reaches the relay in
         // the clear.
         await routeToOwningNode(message.sessionId, message);
         return;

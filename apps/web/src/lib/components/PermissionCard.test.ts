@@ -34,6 +34,13 @@ describe('PermissionCard: rendering', () => {
     expect(screen.getByRole('button', { name: /Deny/ })).toBeTruthy();
   });
 
+  it('renders the title in the shared mono identifier face (#735)', () => {
+    const { container } = render(PermissionCard, {
+      props: { request, actionable: true, onResolve: vi.fn() },
+    });
+    expect(container.querySelector('.title')?.className).toContain('font-mono');
+  });
+
   it('renders a lone path-shaped rawInput as a path, not raw JSON (redesign v3 spec §2 C7)', () => {
     render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });
     expect(screen.getByTestId('permission-raw-input-path').textContent).toContain('src/foo.ts');
