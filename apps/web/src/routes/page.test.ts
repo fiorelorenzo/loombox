@@ -14,6 +14,7 @@ import type {
   PermissionQueueState,
   TranscriptState,
 } from '@loombox/providers-core/browser';
+import type { SessionStatusV1 } from '@loombox/protocol';
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
@@ -144,7 +145,18 @@ interface FakeClientScenario {
   sessions?: ClientSessionMeta[];
   targets?: TargetListEntry[];
   connectedAccounts?: ConnectedAccount[];
-  sessionStatuses?: Record<string, AcpSessionStatus>;
+  /**
+   * Typed with the protocol's wider `SessionStatusV1`, not
+   * `@loombox/providers-core`'s five-value `AcpSessionStatus`, for the exact
+   * reason `+page.svelte`'s own `selectedSessionStatus` documents: the map
+   * mirrors `client.statusFor(id)` but the wire value it stores unchecked can
+   * also be `'queued'`/`'starting'`/`'disconnected'` (issues #252, #516, #702),
+   * and issue #730's own states are two of those. A scenario has to be able to
+   * express what the node really sends.
+   */
+  sessionStatuses?: Record<string, SessionStatusV1>;
+  /** Parallels `sessionStatuses` (issue #730) — the reason behind a scenario session's 'error' status, when it has one. */
+  sessionStatusReasons?: Record<string, string>;
   /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
   transcripts?: Record<string, TranscriptState>;
   /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
@@ -202,7 +214,15 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     interruptTurn: vi.fn(),
     setConfigOption: vi.fn(),
     statusFor: (id: string) =>
-      makeStore<AcpSessionStatus | undefined>(scenario.sessionStatuses?.[id]),
+      // The seam the app itself lives with: `statusFor` is declared over the
+      // narrower five-value union while the wire really pushes eight, so the
+      // scenario's wider value is cast here exactly the way `+page.svelte`
+      // casts it back out again.
+      makeStore<AcpSessionStatus | undefined>(
+        scenario.sessionStatuses?.[id] as AcpSessionStatus | undefined,
+      ),
+    statusReasonFor: (id: string) =>
+      makeStore<string | undefined>(scenario.sessionStatusReasons?.[id]),
     transcriptFor: (id: string) =>
       makeStore<TranscriptState | undefined>(scenario.transcripts?.[id]),
     permissionQueueFor: (id: string) =>
@@ -726,6 +746,109 @@ describe('cockpit shell: attention inbox wiring (issue #167)', () => {
     expect(screen.queryByTestId('inbox-page')).toBeNull();
     expect(screen.getByTestId('destination-inbox').className).not.toContain('active');
     expect(await screen.findByTestId('composer-input')).toBeTruthy();
+  });
+});
+
+describe('a session with no live agent behind it (issue #730)', () => {
+  it('a session whose agent spawn failed disables the composer with the reason, shows a transcript notice, and never claims Awaiting You in the row', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      sessionStatuses: { sess_1: 'error' },
+      sessionStatusReasons: { sess_1: 'agent spawn did not complete within 120000ms' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          status: 'error',
+          statusUpdatedAt: 't1',
+          statusReason: 'agent spawn did not complete within 120000ms',
+        },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent failed to start: agent spawn did not complete within 120000ms",
+    );
+
+    const notice = await screen.findByTestId('session-agentless-notice');
+    expect(
+      within(notice).getByText(
+        "This session's agent failed to start: agent spawn did not complete within 120000ms",
+      ),
+    ).toBeTruthy();
+
+    // The row's dot and native tooltip carry the reason (issue #730's
+    // "shows an error, with the reason, in the row") — the same slots
+    // #702's disconnected reading already used, not a new visible
+    // element, and the row's dot is never the neutral "nothing to say"
+    // one a truly awaiting-input session would get.
+    const row = screen.getByTestId('session-row-item');
+    const dot = within(row).getByTestId('ui-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe(
+      'Error: agent spawn did not complete within 120000ms',
+    );
+    expect(dot.getAttribute('data-tone')).toBe('danger');
+    expect(row.querySelector('.session')?.getAttribute('title')).toContain(
+      'agent spawn did not complete within 120000ms',
+    );
+  });
+
+  it('a starting session disables the composer with a starting reason, shows a starting notice, and never appears in the attention inbox', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Fresh session' })],
+      sessionStatuses: { sess_1: 'starting' },
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          // Same seam as `sessionStatuses` above: the reducer stores whatever
+          // the wire sent, and the wire sends eight states, not five.
+          status: 'starting' as AcpSessionStatus,
+          statusUpdatedAt: 't1',
+        },
+      },
+      // No attentionInboxItems seeded: the real RelayClient never produces
+      // one for 'starting' either (RelayClient.attentionInbox's own live-
+      // status gate) — this scenario confirms +page.svelte doesn't invent
+      // one of its own from the status alone.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe(
+      "This session's agent is still starting…",
+    );
+    expect(await screen.findByTestId('session-agentless-notice')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-count')).toBeNull();
+    expect(screen.queryByTestId('session-attention-dot')).toBeNull();
+  });
+
+  it('a session with no status yet (e.g. right after a reload) keeps the composer usable, unlike a positively-known bad state — absence of information is not proof there is nothing to send to', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Reopened after reload' })],
+      // No sessionStatuses/transcripts entry at all: `undefined`, exactly
+      // what a perfectly healthy session whose true status aged out of
+      // the relay's resync ring looks like right after a reload.
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect((composer as HTMLTextAreaElement).placeholder).toBe('Send a follow-up prompt…');
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+
+  it("a working session's composer stays usable and shows no notice (sanity: the gate does not over-fire on a live status)", async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Live session' })],
+      sessionStatuses: { sess_1: 'awaiting_input' },
+      transcripts: {
+        sess_1: { ...createTranscriptState(), status: 'awaiting_input', statusUpdatedAt: 't1' },
+      },
+    });
+
+    const composer = await screen.findByTestId('composer-input');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
   });
 });
 

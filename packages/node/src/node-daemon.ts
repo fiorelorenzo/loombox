@@ -1427,7 +1427,7 @@ export class NodeDaemon extends EventEmitter {
       this.concurrencyGate.release(opts.targetId);
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`NodeDaemon: session ${session.id} failed to start: ${message}`);
-      await this.sendSessionStatus(session.id, 'error').catch((sendError: unknown) => {
+      await this.sendSessionStatus(session.id, 'error', message).catch((sendError: unknown) => {
         console.warn(
           `NodeDaemon: failed to report session ${session.id}'s start failure to the relay: ${
             sendError instanceof Error ? sendError.message : String(sendError)
@@ -1641,14 +1641,23 @@ export class NodeDaemon extends EventEmitter {
    * a `local` one: {@link finishSessionCreation} is the same shared tail
    * both paths use to wire transcript forwarding and announce to the relay.
    *
-   * On failure, releases this session's concurrency slot (handing it to the
-   * next queued session on this target, if any), its lease heartbeat, and
-   * its same-folder reservation — matching what the pre-#252 single-phase
-   * version of this method used to unwind in its own `catch` — before
-   * rethrowing (for an immediate launch) or logging (for a dequeued one,
-   * via {@link scheduleSshSession}'s own `.catch`). Its actual cross-node
-   * lease is deliberately left alone on failure, unchanged from before this
-   * split: it simply expires on its own TTL, exactly as it always has.
+   * Sends `'starting'` right after entering the `try` (issue #730 parity
+   * with {@link launchLocalSession} — this path used to report neither
+   * `'starting'` nor a spawn failure at all, so an `ssh:` session that
+   * never came up looked exactly as "Awaiting you" as a `local` one did).
+   *
+   * On failure, reports `'error'` with the underlying message as `reason`
+   * (issue #730 — best effort; a failure to even send that is logged and
+   * swallowed, same as {@link launchLocalSession}'s own catch, since the
+   * unwind below must still run either way) and releases this session's
+   * concurrency slot (handing it to the next queued session on this
+   * target, if any), its lease heartbeat, and its same-folder reservation
+   * — matching what the pre-#252 single-phase version of this method used
+   * to unwind in its own `catch` — before rethrowing (for an immediate
+   * launch) or logging (for a dequeued one, via {@link scheduleSshSession}'s
+   * own `.catch`). Its actual cross-node lease is deliberately left alone
+   * on failure, unchanged from before this split: it simply expires on its
+   * own TTL, exactly as it always has.
    */
   private async launchReservedSshSession(
     opts: {
@@ -1664,6 +1673,8 @@ export class NodeDaemon extends EventEmitter {
     const { sessionId, targetId } = opts;
     const inPlace = !opts.worktree;
     const sameFolderKey = `${targetId}:${opts.projectPath}`;
+
+    await this.sendSessionStatus(sessionId, 'starting');
 
     try {
       const provider = this.supervisor.getProvider(opts.provider);
@@ -1732,6 +1743,14 @@ export class NodeDaemon extends EventEmitter {
         remoteChild,
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.sendSessionStatus(sessionId, 'error', message).catch((sendError: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to report ssh: session ${sessionId}'s start failure to the relay: ${
+            sendError instanceof Error ? sendError.message : String(sendError)
+          }`,
+        );
+      });
       this.concurrencyGate.release(targetId);
       this.stopLeaseHeartbeat(sessionId);
       if (inPlace) {
@@ -2170,21 +2189,32 @@ export class NodeDaemon extends EventEmitter {
    * usable before one does. Needed for the three transitions that fall
    * outside a bridge's lifetime: `'starting'`, sent right after
    * {@link announce} while the agent is still spawning; an `'error'`
-   * reported when that spawn times out (issue #516); and `'disconnected'`
-   * (issue #702), re-sent on every reconnect (see {@link reannounceAll})
-   * for every session `SessionManager` reports in that state — a
-   * disconnected session never gets a bridge again on its own, so nothing
-   * else would ever push this one. Every other status transition rides
-   * `wireAgentSession`'s `'attention'` listener once a bridge exists. The
-   * relay reassigns the authoritative `seq` on receipt (see
-   * `SessionBridge.seq`'s doc comment), so the placeholder `0` here never
-   * needs to agree with a bridge's own counter.
+   * reported when that spawn fails or times out (issue #516), with
+   * `reason` set to something a user can read (issue #730 — previously
+   * only ever reached `console.warn`, never the client); and
+   * `'disconnected'` (issue #702), re-sent on every reconnect (see
+   * {@link reannounceAll}) for every session `SessionManager` reports in
+   * that state — a disconnected session never gets a bridge again on its
+   * own, so nothing else would ever push this one. Every other status
+   * transition rides `wireAgentSession`'s `'attention'` listener once a
+   * bridge exists. The relay reassigns the authoritative `seq` on receipt
+   * (see `SessionBridge.seq`'s doc comment), so the placeholder `0` here
+   * never needs to agree with a bridge's own counter.
    */
-  private async sendSessionStatus(sessionId: string, status: SessionStatusV1): Promise<void> {
+  private async sendSessionStatus(
+    sessionId: string,
+    status: SessionStatusV1,
+    reason?: string,
+  ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(
       sessionId,
-      { kind: 'session_status', status, updatedAt: new Date().toISOString() },
+      {
+        kind: 'session_status',
+        status,
+        updatedAt: new Date().toISOString(),
+        ...(reason === undefined ? {} : { reason }),
+      },
       key,
     );
     this.relay.send({
