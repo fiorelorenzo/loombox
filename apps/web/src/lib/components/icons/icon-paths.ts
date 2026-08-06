@@ -57,6 +57,12 @@ export const ICON_NAMES = [
   'tool-bash',
   'tool-edit',
   'tool-generic',
+  'tool-read',
+  'tool-delete',
+  'tool-move',
+  'tool-search',
+  'tool-think',
+  'tool-fetch',
   'terminal',
   'file',
   'folder',
@@ -188,8 +194,60 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // A pencil silhouette with a ferrule band — the edit tool call.
   'tool-edit': ['M40 14 L50 24 L26 48 L14 50 L16 38 Z', 'M32 22 L42 32'],
 
-  // A wrench (open jaw + shaft) — any other/generic tool call.
+  // A wrench (open jaw + shaft) — any other/generic tool call, and the
+  // fallback for a `toolKind` this set doesn't (yet) have its own glyph
+  // for (issue #744: an unrecognized future ACP tool kind degrades to
+  // this rather than a broken icon reference — see `$lib/tool-widgets.ts`'s
+  // `toolKindIcon`).
   'tool-generic': ['M40 14 A9 9 0 1 0 48 26', 'M44 22 L18 48', 'M14 44 L22 52'],
+
+  // An open book (two facing pages, spine implied by the pinch at centre)
+  // — the `read` tool call (issue #744, decisions doc C3-3: search, read,
+  // fetch, delete and move used to all draw this same wrench).
+  'tool-read': ['M14 16 V48', 'M50 16 V48', 'M14 16 Q32 22 50 16', 'M14 48 Q32 42 50 48'],
+
+  // A trash can (lid, body, two shred lines) — the `delete` tool call.
+  'tool-delete': [
+    'M14 20 H50',
+    'M22 20 V14 H42 V20',
+    'M18 20 L20 52 H44 L46 20',
+    'M28 28 V44',
+    'M36 28 V44',
+  ],
+
+  // Four short arrowheads radiating off a plus — the classic "move"
+  // four-direction cursor glyph — the `move` tool call.
+  'tool-move': [
+    'M32 10 V54',
+    'M10 32 L54 32',
+    'M32 10 L26 18',
+    'M32 10 L38 18',
+    'M32 54 L26 46',
+    'M32 54 L38 46',
+    'M10 32 L18 26',
+    'M10 32 L18 38',
+    'M54 32 L46 26',
+    'M54 32 L46 38',
+  ],
+
+  // Same magnifying-glass anatomy as `search` under its own name for the
+  // `search` tool call, same "own name, shared anatomy" convention as
+  // `terminal` reusing `tool-bash`'s frame below.
+  'tool-search': ['M16 28 A12 12 0 1 0 40 28 A12 12 0 1 0 16 28', 'M37 37 L50 50'],
+
+  // A lightbulb (bulb, base, filament cap) — the `think` tool call (an
+  // agent's own reasoning/thinking step surfaced as a tool call by some
+  // providers, distinct from the streamed `agent_thought_chunk` transcript
+  // item `icon-paths.ts` has no glyph for at all).
+  'tool-think': [
+    'M22 26 A10 10 0 1 1 42 26 A10 10 0 0 1 36 34 V40 H28 V34 A10 10 0 0 1 22 26',
+    'M28 46 H36',
+    'M30 52 H34',
+  ],
+
+  // A downward arrow landing on a baseline — inbound/"fetched" data — the
+  // `fetch` tool call.
+  'tool-fetch': ['M32 12 V40', 'M22 30 L32 40 L42 30', 'M14 48 H50'],
 
   // Same terminal-frame anatomy as `tool-bash` (frame, prompt caret,
   // cursor) under its own name for surfaces that mean "open a terminal"

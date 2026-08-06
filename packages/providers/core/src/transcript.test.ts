@@ -216,6 +216,212 @@ describe('reduceTranscript: tool_call / tool_call_update', () => {
   });
 });
 
+describe('reduceTranscript: tool_call elapsed time (issue #744)', () => {
+  it('measures elapsed ms between a real tool_call and its terminal tool_call_update, using the injected clock', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 1_000);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      1_450,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.startedAtMs).toBe(1_000);
+    expect(item.elapsedMs).toBe(450);
+  });
+
+  it('never recomputes elapsedMs once frozen — a later non-terminal-adjacent update leaves it untouched', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 0);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      100,
+    );
+    // A further update (e.g. late content arriving) at a much later clock
+    // reading must not shift the frozen duration.
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', content: 'late output' },
+      9_999,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.elapsedMs).toBe(100);
+  });
+
+  it('shows no duration for a call whose start was never seen — a tool_call_update creating the row (resumed/attached-mid-session)', () => {
+    let state = createTranscriptState();
+    // Only the terminal update ever arrives for this id: this client
+    // attached after the call had already started.
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      500,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.startedAtMs).toBeUndefined();
+    expect(item.elapsedMs).toBeUndefined();
+  });
+
+  it("shows no duration for a resumed session's history replaying an already-finished call as one terminal tool_call snapshot", () => {
+    let state = createTranscriptState();
+    // A resume can hand back a call's CURRENT (already-settled) state
+    // directly as a single `tool_call`, with no separate update to follow
+    // — there is nothing to time.
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call', id: 'tc1', status: 'completed', title: 'Already done' },
+      777,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.startedAtMs).toBeUndefined();
+    expect(item.elapsedMs).toBeUndefined();
+  });
+
+  it('leaves elapsedMs undefined for a call still pending/in_progress', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 0);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'in_progress' },
+      50,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.elapsedMs).toBeUndefined();
+  });
+
+  it('defaults `now` to Date.now() when the caller passes none, rather than requiring every call site to inject a clock', () => {
+    let state = createTranscriptState();
+    const before = Date.now();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' });
+    const after = Date.now();
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.startedAtMs).toBeGreaterThanOrEqual(before);
+    expect(item.startedAtMs).toBeLessThanOrEqual(after);
+  });
+});
+
+describe('reduceTranscript: tool_call cost attribution (issue #744 / decisions doc C3-3)', () => {
+  function usage(costUsd: number): AcpUsageUpdate {
+    return { kind: 'usage_update', sessionId: 'sess1', costUsd };
+  }
+
+  it('attributes the cost delta to a solo top-level call between its start and its terminal update', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, usage(0.1), 0);
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 0);
+    state = reduceTranscript(state, usage(0.14), 10);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      20,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.attributedCostUsd).toBeCloseTo(0.04);
+  });
+
+  it('shows nothing — never a fabricated $0 — when no usage_update ever arrived for this session', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 0);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      10,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.attributedCostUsd).toBeUndefined();
+  });
+
+  it("shows nothing when another top-level call was already active at this call's start (ambiguous source)", () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'sibling', status: 'in_progress' }, 0);
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 1);
+    state = reduceTranscript(state, usage(0.2), 5);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      10,
+    );
+
+    const item = state.items.find((i) => i.type === 'tool_call' && i.id === 'tc1') as
+      TranscriptToolCallItem | undefined;
+    expect(item?.attributedCostUsd).toBeUndefined();
+  });
+
+  it("shows nothing when another top-level call is still active at this call's terminal update (ambiguous source)", () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 0);
+    state = reduceTranscript(state, usage(0.1), 1);
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'sibling', status: 'in_progress' }, 2);
+    state = reduceTranscript(state, usage(0.15), 3);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      4,
+    );
+
+    const item = state.items.find((i) => i.type === 'tool_call' && i.id === 'tc1') as
+      TranscriptToolCallItem | undefined;
+    expect(item?.attributedCostUsd).toBeUndefined();
+  });
+
+  it("shows nothing for a nested/subagent call — its spend is indistinguishable from its parent's on the same session total", () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call', id: 'child1', parentToolCallId: 'parent1', status: 'pending' },
+      0,
+    );
+    state = reduceTranscript(state, usage(0.05), 1);
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'child1', status: 'completed' },
+      2,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.attributedCostUsd).toBeUndefined();
+  });
+
+  it('shows nothing when the total did not actually grow since start (zero delta is treated as nothing to attribute)', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, usage(0.1), 0);
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'tc1', status: 'pending' }, 1);
+    // No further usage_update before completion: cumulativeCostUsd is
+    // still 0.1, identical to the start snapshot.
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      2,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.attributedCostUsd).toBeUndefined();
+  });
+
+  it('shows nothing for a call whose start was never observed (same guard as elapsedMs)', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, usage(0.1), 0);
+    // Only a tool_call_update ever arrives for this id.
+    state = reduceTranscript(
+      state,
+      { kind: 'tool_call_update', id: 'tc1', status: 'completed' },
+      1,
+    );
+
+    const item = state.items[0] as TranscriptToolCallItem;
+    expect(item.attributedCostUsd).toBeUndefined();
+  });
+});
+
 describe('reduceTranscript: plan_update', () => {
   it('replaces the entire plan wholesale rather than diffing it', () => {
     let state = createTranscriptState();

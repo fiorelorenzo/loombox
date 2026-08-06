@@ -18,6 +18,10 @@ const item: TranscriptToolCallItem = {
   rawInput: { pattern: 'TODO' },
   content: undefined,
   parentToolCallId: undefined,
+  startedAtMs: undefined,
+  elapsedMs: undefined,
+  costAtStartUsd: undefined,
+  attributedCostUsd: undefined,
 };
 
 describe('GenericToolRow', () => {
@@ -75,11 +79,40 @@ describe('GenericToolRow', () => {
     expect(screen.queryByText('pattern')).toBeNull();
   });
 
-  it('draws its tool-call type glyph via the shared Icon component (#468)', () => {
+  it('draws the glyph matching its ACP tool kind via the shared Icon component (#468, extended per-kind by issue #744)', () => {
     const { container } = render(GenericToolRow, { props: { item } });
-    const icon = container.querySelector('[data-icon-name="tool-generic"]');
+    // `item.toolKind` is 'search'.
+    const icon = container.querySelector('[data-icon-name="tool-search"]');
     expect(icon).toBeTruthy();
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('draws a distinct glyph per ACP tool kind, and falls back to tool-generic for an unrecognized one (issue #744)', () => {
+    const cases: Array<[TranscriptToolCallItem['toolKind'], string]> = [
+      ['read', 'tool-read'],
+      ['edit', 'tool-edit'],
+      ['delete', 'tool-delete'],
+      ['move', 'tool-move'],
+      ['search', 'tool-search'],
+      ['execute', 'tool-bash'],
+      ['think', 'tool-think'],
+      ['fetch', 'tool-fetch'],
+      ['other', 'tool-generic'],
+      [undefined, 'tool-generic'],
+      // A future ACP tool kind this build doesn't know about yet — must
+      // still fall back rather than rendering nothing/throwing.
+      ['made-up-future-kind' as TranscriptToolCallItem['toolKind'], 'tool-generic'],
+    ];
+    for (const [toolKind, expectedIcon] of cases) {
+      const { container, unmount } = render(GenericToolRow, {
+        props: { item: { ...item, toolKind } },
+      });
+      expect(
+        container.querySelector(`[data-icon-name="${expectedIcon}"]`),
+        `toolKind ${String(toolKind)} draws ${expectedIcon}`,
+      ).toBeTruthy();
+      unmount();
+    }
   });
 });
 
@@ -124,7 +157,7 @@ describe('GenericToolRow: shared tool-card treatment (issue #575, superseding v5
   it('states its role via the gutter icon alone now — no visible "Tool" word — and renders its content through the shared flat ToolCard', () => {
     const { container } = render(GenericToolRow, { props: { item } });
     expect(screen.queryByText('Tool')).toBeNull();
-    expect(container.querySelector('[data-icon-name="tool-generic"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="icon"]')).toBeTruthy();
     expect(container.querySelector('.tool-card')).toBeTruthy();
   });
 });
