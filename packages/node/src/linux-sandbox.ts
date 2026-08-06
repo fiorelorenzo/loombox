@@ -63,33 +63,47 @@ export interface DetectSandboxCapabilityOptions {
 const BWRAP_BIN = 'bwrap';
 
 /**
- * The real functional check: actually unshares user+mount+pid+ipc+uts
- * namespaces, bind-mounts `/usr` read-only inside the fresh root, and
- * runs `/usr/bin/true` — not just `bwrap --version`, which only proves
- * the binary exists and would still report success on a kernel that has
- * unprivileged user namespaces disabled entirely. A 5s timeout treats a
- * hang the same as a failure (`spawnSync`'s `status` stays `null`) rather
- * than blocking session creation indefinitely on a wedged sandbox host.
+ * The real functional check: builds the exact same argv {@link
+ * buildBubblewrapArgv} would for a real session (unshare user+mount+pid+
+ * ipc+uts+net+cgroup, the merged-`/usr` symlinks, `/proc`/`/dev`/`/tmp`)
+ * and runs `/usr/bin/true` inside it — not just `bwrap --version`, which
+ * only proves the binary exists and would still report success on a
+ * kernel that has unprivileged user namespaces disabled entirely.
+ *
+ * Reusing {@link buildBubblewrapArgv} here (rather than a hand-rolled,
+ * narrower argv) is deliberate, not just DRY: an earlier version of this
+ * self-test bound `/usr` alone, with no merged-`/usr` symlinks. On any
+ * merged-`/usr` distro (Debian/Ubuntu/Fedora and most modern distros —
+ * this project's own dev box included) `/usr/bin/true` is a dynamically
+ * linked ELF whose interpreter lives at a top-level path the kernel
+ * resolves directly, e.g. `/lib64/ld-linux-x86-64.so.2` (`ldd`'s own
+ * output) — a path that self-test never created inside the sandboxed
+ * root. `execve()` returns `ENOENT` when it can't find the INTERPRETER,
+ * which glibc's `execvp` then reports against the ORIGINAL command name,
+ * so the failure reads as `execvp /usr/bin/true: No such file or
+ * directory` — indistinguishable, from this test's own `result.status`
+ * check, from a kernel genuinely refusing the user namespace. That was a
+ * real, confirmed false negative (verified live on this box: `bwrap
+ * --ro-bind /usr /usr -- /usr/bin/true` alone fails the exact same way,
+ * `bwrap --ro-bind / / -- /usr/bin/true` succeeds, and adding the
+ * missing `--symlink usr/lib64 /lib64` etc. fixes the narrower form too)
+ * — it would have reported `available: false` on the majority of real
+ * Linux desktops/servers even though sandboxing works perfectly there.
+ * Driving the self-test through the same argv builder production uses
+ * means this class of drift cannot recur: whatever `buildBubblewrapArgv`
+ * needs to actually run a command, the self-test now needs too, by
+ * construction. A 5s timeout treats a hang the same as a failure
+ * (`spawnSync`'s `status` stays `null`) rather than blocking session
+ * creation indefinitely on a wedged sandbox host.
  */
 function realBubblewrapSelfTest(bwrapPath: string): boolean {
-  const result = spawnSync(
-    bwrapPath,
-    [
-      '--unshare-user',
-      '--unshare-pid',
-      '--unshare-ipc',
-      '--unshare-uts',
-      '--die-with-parent',
-      '--ro-bind',
-      '/usr',
-      '/usr',
-      '--proc',
-      '/proc',
-      '--',
-      '/usr/bin/true',
-    ],
-    { timeout: 5000 },
-  );
+  const argv = buildBubblewrapArgv({
+    command: '/usr/bin/true',
+    args: [],
+    mounts: { readWrite: [], readOnly: [] },
+    chdir: '/',
+  });
+  const result = spawnSync(bwrapPath, argv, { timeout: 5000 });
   return result.status === 0 && !result.error;
 }
 
@@ -162,7 +176,7 @@ export function resetSandboxCapabilityCacheForTests(): void {
   cachedCapability = undefined;
 }
 
-/** Thrown wherever this module is asked to sandbox a command but {@link SandboxCapability.available} is false — the fail-closed signal every caller in this codebase (`SandboxedExecutionTarget.exec()`, `session-sandbox.ts`'s `resolveSessionSandbox` on Linux) treats as "refuse, never spawn unsandboxed". */
+/** Thrown wherever this module is asked to sandbox a command but {@link SandboxCapability.available} is false — the fail-closed signal `session-sandbox.ts`'s `resolveSessionSandbox` (the one caller wired up so far, gating a `local` session's agent spawn on Linux — see `NodeDaemonOptions.sessionSandbox`'s doc comment) treats as "refuse, never spawn unsandboxed". A future `ExecutionTarget`-level wrapper for ad hoc `exec()` calls (the test runner, git, PR-open) is a natural next extension of this same primitive, not built by issue #257. */
 export class SandboxUnavailableError extends Error {
   constructor(readonly reason: string) {
     super(`sandbox unavailable: ${reason}`);

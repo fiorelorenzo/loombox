@@ -5,11 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type {
-  AcpChildProcess,
-  AcpMcpServerConfig,
-  AcpProvider,
-  AcpUpdate,
+import {
+  markSandboxed,
+  type AcpChildProcess,
+  type AcpMcpServerConfig,
+  type AcpProvider,
+  type AcpUpdate,
 } from '@loombox/providers-core';
 
 import { AgentSupervisor, DEFAULT_PROVIDER_REQUIREMENTS } from './agent-supervisor';
@@ -471,6 +472,65 @@ describe('AgentSupervisor', () => {
       activeSessions.push(session);
 
       await expect(echoEnv(session, 'PATH')).resolves.toBe(process.env.PATH ?? null);
+    });
+  });
+
+  describe('wrapSpawnConfig (issue #257: sandboxing hook)', () => {
+    it('applies after the env merge, and its returned config — not the original — is what actually gets spawned', async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+      let seenEnvAtWrapTime: Record<string, string> | undefined;
+      const session = await supervisor.start({
+        workspacePath,
+        providerId: 'test-env-echo',
+        env: { PROJECT_SECRET: 'hunter2' },
+        wrapSpawnConfig: (config) => {
+          // Proves ordering: by the time this hook runs, `env` has
+          // already been merged into the config it receives.
+          seenEnvAtWrapTime = config.env;
+          return markSandboxed({
+            ...config,
+            env: { ...config.env, SANDBOX_MARKER: 'wrapped' },
+          });
+        },
+      });
+      activeSessions.push(session);
+
+      expect(seenEnvAtWrapTime?.PROJECT_SECRET).toBe('hunter2');
+      await expect(echoEnv(session, 'SANDBOX_MARKER')).resolves.toBe('wrapped');
+    });
+
+    it('fail-closed: a wrapSpawnConfig that refuses (sandbox unavailable) means start() never spawns anything', async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+
+      await expect(
+        supervisor.start({
+          workspacePath,
+          providerId: 'test-env-echo',
+          wrapSpawnConfig: () => {
+            throw new Error('sandbox unavailable: bubblewrap not installed on PATH');
+          },
+        }),
+      ).rejects.toThrow(/sandbox unavailable/);
+
+      // No session was ever registered — the child process behind
+      // `AgentSession.spawn()` was never reached, let alone left running
+      // unsandboxed.
+      expect(supervisor.listSessions()).toEqual([]);
+    });
+
+    it('a wrapSpawnConfig rejecting a Promise is equally fail-closed', async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+
+      await expect(
+        supervisor.start({
+          workspacePath,
+          providerId: 'test-env-echo',
+          wrapSpawnConfig: async () => {
+            throw new Error('sandbox unavailable: kernel refuses unprivileged user namespaces');
+          },
+        }),
+      ).rejects.toThrow(/sandbox unavailable/);
+      expect(supervisor.listSessions()).toEqual([]);
     });
   });
 });

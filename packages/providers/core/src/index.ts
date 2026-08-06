@@ -253,3 +253,10 @@ export {
   acpToolCallUpdateSchema,
   acpTranscriptUpdateSchema,
 } from './acp-wire-schema';
+
+// v1: the type-level proof a spawn config really went through a sandbox
+// wrapper before this package's `AcpClient` ever spawns it (SPEC §7.17;
+// issue #257) — see `SandboxedSpawnConfig`'s own doc comment for why a
+// caller cannot satisfy it with a no-op wrapper.
+export { markSandboxed } from './sandboxed-spawn-config';
+export type { SandboxedSpawnConfig } from './sandboxed-spawn-config';

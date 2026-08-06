@@ -316,3 +316,28 @@ export {
   JiraTrackerBackend,
   JiraTrackerRequestError,
 } from './jira-tracker-backend';
+
+// v1: Linux namespace/bind-mount sandboxing of a `local` session's agent
+// process (SPEC §7.17; issue #257) — `linux-sandbox.ts` is the bare
+// `bwrap` primitive, `session-sandbox.ts` the integration layer
+// `node-daemon.ts`'s `launchLocalSession` actually calls. Exported so a
+// caller (a future target-health/status surface, or a test) can query
+// `detectSandboxCapability()` without reaching into package-internal
+// files.
+export type {
+  BuildSandboxedCommandOptions,
+  DetectSandboxCapabilityOptions,
+  SandboxBackend,
+  SandboxCapability,
+  SandboxedSpawn,
+  SandboxMounts,
+} from './linux-sandbox';
+export {
+  buildBubblewrapArgv,
+  detectSandboxCapability,
+  resetSandboxCapabilityCacheForTests,
+  sandboxCommand,
+  SandboxUnavailableError,
+} from './linux-sandbox';
+export type { ResolveSessionSandboxOptions, SessionSandboxResolution } from './session-sandbox';
+export { resolveSessionSandbox } from './session-sandbox';

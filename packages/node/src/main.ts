@@ -256,6 +256,13 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
     // doc comment for why).
     resourceSampling: { enabled: true },
+    // Issue #257: same on-for-every-real-node, off-in-tests shape as
+    // `resourceSampling` just above, and for the same reason — see
+    // `NodeDaemonOptions.sessionSandbox`'s doc comment. Safe to enable
+    // unconditionally here even on a non-Linux host: `resolveSessionSandbox`
+    // itself is the platform gate (a no-op off Linux today, SPEC §7.17's
+    // documented weaker macOS fallback not being built yet), not this flag.
+    sessionSandbox: { enabled: true },
     // Same convention as `identityStore` above: MCP config/secret storage
     // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
     // silently defaulting to `~/.loombox/node` regardless of what the
