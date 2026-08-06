@@ -26,9 +26,7 @@ function fakeSecretSource(values: Record<string, Record<string, string>> = {}): 
   source: ProjectSecretValueSource;
   set(projectPath: string, secretName: string, value: string): void;
 } {
-  const store = new Map(
-    Object.entries(values).map(([p, v]) => [p, new Map(Object.entries(v))]),
-  );
+  const store = new Map(Object.entries(values).map(([p, v]) => [p, new Map(Object.entries(v))]));
   return {
     source: {
       getSecretValue: async (projectPath, secretName) => store.get(projectPath)?.get(secretName),

@@ -78,7 +78,8 @@ describe('ProjectConfigPanel (issue #366)', () => {
         projectPath: '/tmp/project',
         mcpStorage: createInMemoryMcpServerConfigStorage(),
         pluginStorage: createInMemoryPluginConfigStorage(),
-        onSecretRequired: (serverName, secretName) => calls.push([serverName, secretName]),
+        onSecretRequired: (serverName: string, secretName: string) =>
+          calls.push([serverName, secretName]),
       },
     });
 
@@ -121,8 +122,10 @@ describe('ProjectConfigPanel (issue #366)', () => {
         mcpStorage: createInMemoryMcpServerConfigStorage(),
         pluginStorage: createInMemoryPluginConfigStorage(),
         projectEnvStorage: createInMemoryProjectEnvStorage(),
-        onSecretRequired: (serverName, secretName) => mcpCalls.push([serverName, secretName]),
-        onEnvSecretRequired: (envVarName, secretName) => envCalls.push([envVarName, secretName]),
+        onSecretRequired: (serverName: string, secretName: string) =>
+          mcpCalls.push([serverName, secretName]),
+        onEnvSecretRequired: (envVarName: string, secretName: string) =>
+          envCalls.push([envVarName, secretName]),
       },
     });
 

@@ -55,9 +55,9 @@ describe('resolveProjectEnv (issue #258)', () => {
 
   it('throws ProjectEnvVarMissingError naming the env var + secret when the secret is not granted', () => {
     const grants = new ProjectEnvGrantStore();
-    expect(() =>
-      resolveProjectEnv([withSecret], grants, { 'db-password': 'hunter2' }),
-    ).toThrow(ProjectEnvVarMissingError);
+    expect(() => resolveProjectEnv([withSecret], grants, { 'db-password': 'hunter2' })).toThrow(
+      ProjectEnvVarMissingError,
+    );
     try {
       resolveProjectEnv([withSecret], grants, { 'db-password': 'hunter2' });
       expect.unreachable();
@@ -78,10 +78,7 @@ describe('resolveProjectEnv (issue #258)', () => {
   it('fails before producing any output: a later granted var is never partially resolved', () => {
     const grants = new ProjectEnvGrantStore();
     grants.grant('second-secret');
-    const decls: ProjectEnvVarDecl[] = [
-      withSecret,
-      { name: 'API_KEY', secret: 'second-secret' },
-    ];
+    const decls: ProjectEnvVarDecl[] = [withSecret, { name: 'API_KEY', secret: 'second-secret' }];
     expect(() => resolveProjectEnv(decls, grants, { 'second-secret': 'abc' })).toThrow(
       ProjectEnvVarMissingError,
     );
@@ -148,9 +145,9 @@ describe('parseProjectEnvVarDecl / parseProjectEnvVarDeclList (issue #258)', () 
   });
 
   it('rejects an entry declaring both value and secret', () => {
-    expect(() =>
-      parseProjectEnvVarDecl({ name: 'A', value: 'x', secret: 'y' }),
-    ).toThrow(ProjectEnvDeclError);
+    expect(() => parseProjectEnvVarDecl({ name: 'A', value: 'x', secret: 'y' })).toThrow(
+      ProjectEnvDeclError,
+    );
   });
 
   it('rejects an entry declaring neither value nor secret', () => {

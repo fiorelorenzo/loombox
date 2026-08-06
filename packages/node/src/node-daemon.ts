@@ -3789,22 +3789,32 @@ export class NodeDaemon extends EventEmitter {
 
     const launchOpts = { provider: opts.provider, targetId: opts.targetId, title: opts.title };
     if (this.concurrencyGate.tryAcquire(target.id)) {
-      return this.launchLocalSession(session, launchOpts, mcpServers, projectEnv, seedTranscriptUpdates);
+      return this.launchLocalSession(
+        session,
+        launchOpts,
+        mcpServers,
+        projectEnv,
+        seedTranscriptUpdates,
+      );
     }
 
     // Over the cap (SPEC §7.16, issue #252): queue rather than launch,
     // exactly like `createSessionInternal`'s own overflow path.
     await this.sendSessionStatus(session.id, 'queued');
     this.concurrencyGate.enqueue(target.id, session.id, () => {
-      this.launchLocalSession(session, launchOpts, mcpServers, projectEnv, seedTranscriptUpdates).catch(
-        (error: unknown) => {
-          console.warn(
-            `NodeDaemon: forked session ${session.id} failed to start after dequeuing: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        },
-      );
+      this.launchLocalSession(
+        session,
+        launchOpts,
+        mcpServers,
+        projectEnv,
+        seedTranscriptUpdates,
+      ).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: forked session ${session.id} failed to start after dequeuing: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     });
     return session;
   }
