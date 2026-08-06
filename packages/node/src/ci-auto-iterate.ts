@@ -137,7 +137,10 @@ export class CiAutoIterateController {
    */
   onGreen(sessionId: string): CiAutoIterateStateV1 | undefined {
     const record = this.records.get(sessionId);
-    if (!record || (!record.active && record.attempts === 0 && record.stoppedReason === undefined)) {
+    if (
+      !record ||
+      (!record.active && record.attempts === 0 && record.stoppedReason === undefined)
+    ) {
       return undefined;
     }
     const fresh = freshRecord();

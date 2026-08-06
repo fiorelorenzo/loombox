@@ -1648,8 +1648,7 @@ export class NodeDaemon extends EventEmitter {
     // every other per-session store.
     this.ciCheckWatchStore =
       options.ciCheckWatchStore ?? new CiWatchStore({ stateDir: options.stateDir });
-    this.ciAutoIterateController =
-      options.ciAutoIterateController ?? new CiAutoIterateController();
+    this.ciAutoIterateController = options.ciAutoIterateController ?? new CiAutoIterateController();
     this.ciCheckWatcher =
       options.ciCheckWatcher ??
       new CiCheckWatcher({
