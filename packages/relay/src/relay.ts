@@ -1420,6 +1420,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'fs_read_response':
+        // The owning node's reply to a client's fs_read_request (issue
+        // #737's read-only file viewer) — fanned out exactly like
+        // fs_list_response above; the relay never opens the envelope, so
+        // it never sees a file's content, only that some file was read.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'config_option_result':
         // The owning node's reply to a client's config_option (SPEC §7.24;
         // issue #718) — fanned out to this session's subscribed clients
@@ -2093,12 +2100,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'permission_response':
       case 'config_option':
       case 'fs_list_request':
-        // fs_list_request (SPEC §7.4; issue #171/#160): a client asking the
-        // owning node to list a directory inside one of its sessions'
-        // projects — routed exactly like prompt_inject/config_option above.
-        // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
-        // opaque `EncryptedEnvelope`; the requested path never reaches the
-        // relay in the clear (SPEC §8's metadata boundary).
+      case 'fs_read_request':
+        // fs_list_request (SPEC §7.4; issue #171/#160) and its sibling
+        // fs_read_request (issue #737's read-only file viewer): a client
+        // asking the owning node to list a directory / read a file inside
+        // one of its sessions' projects — routed exactly like
+        // prompt_inject/config_option above. The relay only ever sees
+        // `sessionId`/`targetId`/`requestId` and an opaque
+        // `EncryptedEnvelope`; the requested path never reaches the relay
+        // in the clear (SPEC §8's metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':

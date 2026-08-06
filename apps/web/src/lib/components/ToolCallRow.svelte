@@ -39,9 +39,11 @@
     item: TranscriptToolCallItem;
     /** True while this tool call's own permission request is the actionable FIFO head (SPEC.md §7.24 nested-visibility hook, issue #146). */
     awaitingPermission?: boolean;
+    /** Opens a file in the canvas tab strip (issue #737) — forwarded to `EditWriteWidget`'s own `onOpenFile`. Omitted renders no "Open" affordance on any edit/write card this row mounts. */
+    onOpenFile?: (path: string) => void;
   }
 
-  const { item, awaitingPermission = false }: Props = $props();
+  const { item, awaitingPermission = false, onOpenFile }: Props = $props();
   const widgetKind = $derived(resolveToolWidgetKind(item));
   // A bespoke widget that throws falls back to the generic row for this
   // render (`bespokeFailed`); tracked by item id so a fresh item id (a new
@@ -94,7 +96,7 @@
   {#if widgetKind !== 'generic' && bespokeFailedFor !== item.id}
     <svelte:boundary onerror={() => (bespokeFailedFor = item.id)}>
       {#if widgetKind === 'edit-write'}
-        <EditWriteWidget {item} />
+        <EditWriteWidget {item} {onOpenFile} />
       {:else if widgetKind === 'bash'}
         <BashWidget {item} />
       {:else if widgetKind === 'todo'}

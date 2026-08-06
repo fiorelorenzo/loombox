@@ -62,6 +62,9 @@ import {
   type FsListRequestPayloadV1,
   type FsListResponse,
   type FsListResponsePayloadV1,
+  type FsReadRequestPayloadV1,
+  type FsReadResponse,
+  type FsReadResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
   type BuildIdentityV1,
@@ -1212,6 +1215,22 @@ export class RelayClient {
    * same session is simply not a key here and is ignored.
    */
   private readonly pendingFsListRequests = new Map<string, { sessionId: string; path: string }>();
+  /**
+   * requestId -> the pending {@link readFile} call it belongs to (issue
+   * #737's read-only file viewer). Unlike {@link pendingFsListRequests}
+   * this resolves a `Promise` directly rather than feeding a reactive
+   * store — a one-shot open, not an always-on subscription (mirrors
+   * {@link pendingTrackerWriteRequests}'s same shape, for the same
+   * "caller needs the outcome directly" reason). `fs_read_response` is
+   * still fanned out to every client subscribed to the session, so a
+   * requestId not in this map means the reply belongs to a sibling
+   * device's own request, not this one — ignored exactly like
+   * {@link handleFsListResponse}'s sibling-device awareness.
+   */
+  private readonly pendingFsReadRequests = new Map<
+    string,
+    { resolve: (payload: FsReadResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
   /** Projects {@link trackerSnapshotFor} has already sent an initial `tracker_snapshot_request` for — mirrors `fileTreeFor`'s own `get(store).has('')` lazy-load-once check, without needing to inspect the store's current value to tell "never requested" apart from "requested and still loading". Keyed by `projectPath` (issue #697): two sessions bound to the same project now share one load instead of each firing (and racing) their own. */
@@ -3327,6 +3346,67 @@ export class RelayClient {
   }
 
   /**
+   * Reads one file's full text content from a session's project (issue
+   * #737's read-only file viewer's own data source; `@loombox/protocol`'s
+   * `fs.ts` `fs_read_request`/`fs_read_response` pair). Unlike
+   * {@link fileTreeFor}'s always-on reactive store, this is a deliberate
+   * one-shot request/response the caller awaits — C5-1
+   * (`docs/superpowers/specs/2026-08-05-zed-parity-decisions.md` §3)
+   * settled the Files panel, and by the same reasoning the viewer it
+   * opens, as "a browsing tool, deliberately not a live view of the
+   * agent": there is no persistent subscription to hold open here, and
+   * re-reading a file (e.g. re-activating an already-open tab) means
+   * calling this again with a fresh `requestId`. Resolves with the node's
+   * own `ok`/`error` outcome either way; only REJECTS for a genuinely
+   * unusable call — no open connection, an unknown session, or a timeout
+   * with no response at all — mirroring {@link decommissionTarget}'s same
+   * "resolves either way, rejects only when unusable" contract. `path` is
+   * relative to the session's project root, never sent to the relay in
+   * the clear.
+   */
+  async readFile(
+    sessionId: string,
+    path: string,
+    timeoutMs = 10_000,
+  ): Promise<FsReadResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot read a file, no open connection'));
+    }
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    if (!targetId) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: FsReadRequestPayloadV1 = { path };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('fsread');
+    return new Promise<FsReadResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingFsReadRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for fs_read_response'));
+      }, timeoutMs);
+      this.pendingFsReadRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'fs_read_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -4514,6 +4594,9 @@ export class RelayClient {
       case 'fs_list_response':
         this.handleFsListResponse(message);
         return;
+      case 'fs_read_response':
+        this.handleFsReadResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -4881,6 +4964,32 @@ export class RelayClient {
       })
       .catch((error: unknown) => {
         this.setFileTreeError(pending.sessionId, pending.path, errorMessage(error));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link readFile}
+   * calls (issue #737). `fs_read_response` is fanned out to every client
+   * subscribed to the session exactly like `fs_list_response`, so a
+   * `requestId` not in {@link pendingFsReadRequests} means this reply is
+   * to a sibling device's own request — silently ignored, exactly like
+   * {@link handleFsListResponse}'s identical sibling-device awareness.
+   */
+  private handleFsReadResponse(message: FsReadResponse): void {
+    const pending = this.pendingFsReadRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingFsReadRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<FsReadResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
       });
   }
 

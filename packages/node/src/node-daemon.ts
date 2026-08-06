@@ -67,6 +67,9 @@ import {
   type FsListRequest,
   type FsListRequestPayloadV1,
   type FsListResponsePayloadV1,
+  type FsReadRequest,
+  type FsReadRequestPayloadV1,
+  type FsReadResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -3079,6 +3082,9 @@ export class NodeDaemon extends EventEmitter {
       case 'fs_list_request':
         this.handleFsListRequest(message);
         return;
+      case 'fs_read_request':
+        this.handleFsReadRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -3955,6 +3961,111 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * The read-only file viewer's own byte cap (issue #737) — a real repo
+   * can hold a multi-megabyte generated file; this bounds a single
+   * `fs_read_request`'s response so an accidental "open" of one never ties
+   * up the encrypted channel with megabytes of text nobody scrolls
+   * through. `ExecutionTarget.readFile` has no size-limited variant, so
+   * this reads the whole file then truncates — fine at this cap (1MB is
+   * small for Node to hold twice), revisit only if a real workload needs
+   * streaming.
+   */
+  private static readonly MAX_FS_READ_BYTES = 1_000_000;
+
+  /**
+   * A client asked (via the relay) this node to read one file inside one
+   * of its sessions' projects (issue #737's read-only file viewer) —
+   * `handleFsListRequest`'s sibling, same "no live bridge needed, always a
+   * reply, never a silent drop" contract (issue #702).
+   */
+  private handleFsReadRequest(message: FsReadRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptFsReadRequest(message)
+      .then((payload) => this.readFileForBridge(routing, payload.path))
+      .then((responsePayload) =>
+        this.sendFsReadResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle fs_read_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptFsReadRequest(message: FsReadRequest): Promise<FsReadRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<FsReadRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves `requestedPath` against `routing`'s session root (the exact
+   * same guard `listDirectoryForBridge` uses) and reads it via that
+   * session's `ExecutionTarget`. A `\u0000` byte anywhere in the decoded
+   * text is this function's binary detector — the traditional "this isn't
+   * text" signal, since every `ExecutionTarget.readFile` implementation
+   * decodes as UTF-8 regardless of the file's real encoding: a binary file
+   * has no useful syntax-highlighted rendering, and forcing one through
+   * would paint mojibake rather than something worth viewing. Never
+   * throws itself: a path-traversal attempt, a directory, a missing file,
+   * or an `ssh:` transport failure all become an `outcome: 'error'`
+   * payload instead, so `handleFsReadRequest` always has a response to
+   * seal and send back.
+   */
+  private async readFileForBridge(
+    routing: SessionRouting,
+    requestedPath: string,
+  ): Promise<FsReadResponsePayloadV1> {
+    let resolvedPath: string;
+    try {
+      resolvedPath = resolveSessionRelativePath(routing.session.worktreePath, requestedPath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: requestedPath, message: detail };
+    }
+
+    try {
+      const target = await this.getExecutionTarget(routing.targetId);
+      const content = await target.readFile(resolvedPath);
+      if (content.includes('\u0000')) {
+        return {
+          outcome: 'error',
+          path: requestedPath,
+          message: 'Binary file — cannot preview as text.',
+        };
+      }
+      const truncated = content.length > NodeDaemon.MAX_FS_READ_BYTES;
+      return {
+        outcome: 'ok',
+        path: requestedPath,
+        content: truncated ? content.slice(0, NodeDaemon.MAX_FS_READ_BYTES) : content,
+        truncated,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: requestedPath, message: detail };
+    }
+  }
+
+  private async sendFsReadResponse(
+    sessionId: string,
+    requestId: string,
+    payload: FsReadResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'fs_read_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

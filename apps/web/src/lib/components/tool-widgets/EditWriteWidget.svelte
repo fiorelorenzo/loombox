@@ -43,9 +43,11 @@
 
   interface Props {
     item: TranscriptToolCallItem;
+    /** Opens this call's own diff `path` in the canvas tab strip (issue #737) — forwarded to `DiffViewer`'s own `onOpen`. Omitted renders no "Open" affordance on this card. */
+    onOpenFile?: (path: string) => void;
   }
 
-  const { item }: Props = $props();
+  const { item, onOpenFile }: Props = $props();
   // resolveToolWidgetKind only routes here when `diff` is present.
   const diff = $derived(item.diff!);
 
@@ -88,7 +90,12 @@
       </button>
     {/if}
     <div class="body" hidden={!expanded}>
-      <DiffViewer path={diff.path} oldText={diff.oldText} newText={diff.newText} />
+      <DiffViewer
+        path={diff.path}
+        oldText={diff.oldText}
+        newText={diff.newText}
+        onOpen={onOpenFile ? () => onOpenFile(diff.path) : undefined}
+      />
     </div>
   </ToolCard>
 </div>

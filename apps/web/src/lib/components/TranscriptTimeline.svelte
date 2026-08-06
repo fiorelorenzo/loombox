@@ -79,6 +79,8 @@
     onFork?: (turnId: string) => void;
     /** The turn currently mid-fork, if any — forwarded to `MessageItem`'s own `forking` so only that turn's row shows the busy state. */
     forkingTurnId?: string;
+    /** Opens a file in the canvas tab strip (issue #737's B2-2) — forwarded to `ToolCallRow`'s own `onOpenFile`, on down to whichever tool card actually renders a diff. Omitted renders no "Open" affordance on any diff card in this timeline. */
+    onOpenFile?: (path: string) => void;
   }
 
   const {
@@ -91,6 +93,7 @@
     jumpTarget,
     onFork,
     forkingTurnId,
+    onOpenFile,
   }: Props = $props();
 
   /**
@@ -307,6 +310,7 @@
           {item}
           awaitingPermission={permissionHead !== undefined &&
             permissionHead.toolCall.id === item.id}
+          {onOpenFile}
         />
       {/if}
     </li>

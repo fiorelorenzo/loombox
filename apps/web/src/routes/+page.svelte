@@ -63,6 +63,7 @@
     TABLET_VIEWPORT_BREAKPOINT_PX,
     WIDE_VIEWPORT_BREAKPOINT_PX,
   } from '$lib/viewport';
+  import { CanvasTabsState } from '$lib/tabs.svelte';
   import { resolvePendingPushAction } from '$lib/push-action-routing';
   import {
     SESSION_STATUS_LABELS,
@@ -115,10 +116,12 @@
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
+  import CanvasTabStrip from '$lib/components/CanvasTabStrip.svelte';
   import CanvasZeroState from '$lib/components/CanvasZeroState.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
+  import FileViewer from '$lib/components/FileViewer.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
@@ -2112,6 +2115,66 @@
     reviewChangesOpen = false;
   }
 
+  /**
+   * The canvas tab strip's own state (issue #737, settled pick B2-2): one
+   * `CanvasTabsState` instance for as long as a session is selected — the
+   * `$effect` below resets it to just the transcript tab whenever
+   * `selectedSessionId` changes, the same "a new session starts clean"
+   * convention `TranscriptTimeline`'s own `sessionKey` reset already uses.
+   */
+  const canvasTabs = new CanvasTabsState();
+
+  $effect(() => {
+    void selectedSessionId;
+    canvasTabs.reset();
+  });
+
+  /** Marks any open file tab dirty once the agent's own edit lands on its path (issue #737's acceptance line) — see `CanvasTabsState.syncDirty`'s own doc comment for the transcript-position watermark this compares against. */
+  $effect(() => {
+    canvasTabs.syncDirty(transcript?.items ?? []);
+  });
+
+  /** The active tab, narrowed to a file tab or `undefined` — captured once here so the template narrows correctly (`CanvasTabsState.activeTab`'s getter can't itself be narrowed across two separate template reads). */
+  const activeFileTab = $derived(
+    canvasTabs.activeTab.kind === 'file' ? canvasTabs.activeTab : undefined,
+  );
+
+  /** Fetches `path`'s content for its own open tab (issue #737) — a fresh one-shot `RelayClient.readFile` every call, never a cached re-render, since re-reading (a retry, or reopening an already-open tab) is meant to hit the node again. */
+  async function loadFileContent(path: string): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    canvasTabs.setViewer(path, { status: 'loading' });
+    try {
+      const result = await client.readFile(selectedSessionId, path);
+      if (result.outcome === 'ok') {
+        canvasTabs.setViewer(path, {
+          status: 'loaded',
+          content: result.content,
+          truncated: result.truncated,
+        });
+      } else {
+        canvasTabs.setViewer(path, { status: 'error', message: result.message });
+      }
+    } catch (error) {
+      canvasTabs.setViewer(path, {
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * The one shared "open a file" entry point (issue #737's own acceptance
+   * line): the Files panel tree, an `@`-mention pill, and a diff card's
+   * own "open" affordance all call this, so opening the same file from any
+   * of them lands in the exact same tab, never three separate models.
+   */
+  function openFileTab(path: string): void {
+    const alreadyOpen = canvasTabs.has(path);
+    canvasTabs.open(path, transcript?.items ?? []);
+    mainView = 'session';
+    if (!alreadyOpen) void loadFileContent(path);
+  }
+
   function resolvePermission(requestId: string, option: AcpPermissionOption): void {
     if (!client || !selectedSessionId) return;
     client.resolvePermission(selectedSessionId, requestId, option);
@@ -3929,87 +3992,97 @@
               </CanvasZeroState>
             {/if}
           {:else}
-            {#if forkError}
-              <p class="fork-error" role="alert" data-testid="fork-error">
-                {forkError}
-              </p>
-            {/if}
-            <!-- Issue #730: a session with no live agent behind it must not
+            <CanvasTabStrip
+              tabs={canvasTabs.tabs}
+              activeId={canvasTabs.activeId}
+              isDirty={(path) => canvasTabs.isDirty(path)}
+              onActivate={(id) => canvasTabs.activate(id, transcript?.items ?? [])}
+              onClose={(id) => canvasTabs.close(id)}
+              narrow={sessionsSheetViewport}
+            />
+            <div class="canvas-transcript-view" hidden={activeFileTab !== undefined}>
+              {#if forkError}
+                <p class="fork-error" role="alert" data-testid="fork-error">
+                  {forkError}
+                </p>
+              {/if}
+              <!-- Issue #730: a session with no live agent behind it must not
                  sit as a blank transcript with no explanation — the
                  original bug's exact symptom ("the optimistically echoed
                  user turn sitting in an otherwise empty transcript,
                  forever"). Shares `selectedSessionAgentless`/
                  `composerUnavailableReason` with the composer's own gate
                  just below, so the two surfaces never disagree. -->
-            {#if selectedSessionAgentless}
-              <div class="workspace-notice" data-testid="session-agentless-notice">
-                {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
-                  <ErrorNotice message={composerUnavailableReason ?? ''} />
-                {:else}
-                  <Card elevation="raised" padding="sm">
-                    <div class="escrow-inflight-row">
-                      <WovenLoader label={composerUnavailableReason ?? 'Waiting…'} />
-                      <span>{composerUnavailableReason}</span>
-                    </div>
-                  </Card>
-                {/if}
-              </div>
-            {/if}
-            <TranscriptTimeline
-              sessionKey={selectedSessionId}
-              items={transcript?.items ?? []}
-              {transcript}
-              turnActive={transcript?.turnActive ?? false}
-              providerId={selectedSession?.provider}
-              {permissionHead}
-              jumpTarget={transcriptJumpTarget}
-              onFork={narrowViewport ? undefined : forkSessionFromTurn}
-              {forkingTurnId}
-            />
+              {#if selectedSessionAgentless}
+                <div class="workspace-notice" data-testid="session-agentless-notice">
+                  {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
+                    <ErrorNotice message={composerUnavailableReason ?? ''} />
+                  {:else}
+                    <Card elevation="raised" padding="sm">
+                      <div class="escrow-inflight-row">
+                        <WovenLoader label={composerUnavailableReason ?? 'Waiting…'} />
+                        <span>{composerUnavailableReason}</span>
+                      </div>
+                    </Card>
+                  {/if}
+                </div>
+              {/if}
+              <TranscriptTimeline
+                sessionKey={selectedSessionId}
+                items={transcript?.items ?? []}
+                {transcript}
+                turnActive={transcript?.turnActive ?? false}
+                providerId={selectedSession?.provider}
+                {permissionHead}
+                jumpTarget={transcriptJumpTarget}
+                onFork={narrowViewport ? undefined : forkSessionFromTurn}
+                {forkingTurnId}
+                onOpenFile={openFileTab}
+              />
 
-            <div class="canvas-footer">
-              <!-- A3-2 (issue #666): the turn's own live line, not a
+              <div class="canvas-footer">
+                <!-- A3-2 (issue #666): the turn's own live line, not a
                    spinner welded to the Stop button — see `turnProgressVisible`'s
                    own doc comment (script section) for exactly when this
                    shows. Reuses `.composer-gutter`, the same column every
                    row in this strip aligns to, so it reads as the
                    transcript's own next line rather than a toast bolted
                    onto the footer. -->
-              {#if turnProgressVisible}
-                <div class="turn-progress" data-testid="turn-progress-line">
-                  <div class="composer-gutter" aria-hidden="true"></div>
-                  <div class="turn-progress-content">
-                    <WovenLoader size="sm" variant="working" label="Turn in progress" />
-                    Working…
+                {#if turnProgressVisible}
+                  <div class="turn-progress" data-testid="turn-progress-line">
+                    <div class="composer-gutter" aria-hidden="true"></div>
+                    <div class="turn-progress-content">
+                      <WovenLoader size="sm" variant="working" label="Turn in progress" />
+                      Working…
+                    </div>
                   </div>
-                </div>
-              {/if}
+                {/if}
 
-              {#if transcript && transcript.plan.length > 0}
-                <PlanCard
-                  entries={transcript.plan}
-                  collapsed={planCollapsed}
-                  onToggle={togglePlanCollapsed}
+                {#if transcript && transcript.plan.length > 0}
+                  <PlanCard
+                    entries={transcript.plan}
+                    collapsed={planCollapsed}
+                    onToggle={togglePlanCollapsed}
+                  />
+                {/if}
+
+                <QueuedPromptBar prompts={queuedPrompts} />
+
+                {#if staleNotice}
+                  <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+                    {staleNotice.message}
+                  </p>
+                {/if}
+
+                <PermissionQueueBar
+                  sessionId={selectedSessionId}
+                  queue={permissionQueue}
+                  onResolve={resolvePermission}
+                  onStop={stopSession}
+                  narrow={narrowViewport}
                 />
-              {/if}
 
-              <QueuedPromptBar prompts={queuedPrompts} />
-
-              {#if staleNotice}
-                <p class="stale-notice" role="status" data-testid="stale-permission-notice">
-                  {staleNotice.message}
-                </p>
-              {/if}
-
-              <PermissionQueueBar
-                sessionId={selectedSessionId}
-                queue={permissionQueue}
-                onResolve={resolvePermission}
-                onStop={stopSession}
-                narrow={narrowViewport}
-              />
-
-              <!-- Issue #740, settled pick C1-3: the turn summary bar sits
+                <!-- Issue #740, settled pick C1-3: the turn summary bar sits
                    here, in `.canvas-footer`, directly above the composer —
                    not inside `TranscriptTimeline` (issue #755 windows that
                    list to the visible range plus overscan, and this bar's
@@ -4017,14 +4090,14 @@
                    whether or not it's currently mounted) and not inside the
                    composer's own A1-3 lift or the terminal dock (v7 D1-2) —
                    neither settled surface is re-homed by this work. -->
-              <TurnEditsBar
-                summary={turnEditsSummary}
-                onJumpToFile={jumpToTranscriptItem}
-                onReviewChanges={openReviewChanges}
-              />
+                <TurnEditsBar
+                  summary={turnEditsSummary}
+                  onJumpToFile={jumpToTranscriptItem}
+                  onReviewChanges={openReviewChanges}
+                />
 
-              <form class="composer" onsubmit={submitPrompt}>
-                <!-- Design spec v6 §3.4 (issue #575): the composer is the
+                <form class="composer" onsubmit={submitPrompt}>
+                  <!-- Design spec v6 §3.4 (issue #575): the composer is the
                      last entry in the timeline, not a chat box bolted to the
                      bottom of one. It takes the same fixed role gutter every
                      transcript item uses, so the column runs unbroken from
@@ -4047,113 +4120,138 @@
                      hint occupying the row below the textarea. They now share
                      that one row under the text, so everything about the turn
                      you are composing reads inside the field's own column. -->
-                <div class="composer-row">
-                  <div class="composer-gutter" aria-hidden="true"></div>
-                  <!-- The drop/paste zone wraps the field (see AttachmentBar's
+                  <div class="composer-row">
+                    <div class="composer-gutter" aria-hidden="true"></div>
+                    <!-- The drop/paste zone wraps the field (see AttachmentBar's
                        doc comment): dropping a file on the textarea, or pasting
                        an image into it, used to do nothing at all. -->
-                  <AttachmentBar
-                    {attachments}
-                    onFiles={attachFiles}
-                    onRetry={retryAttachment}
-                    onRemove={removeAttachment}
-                  >
-                    {#snippet field({ pickFiles })}
-                      <div class="composer-field">
-                        <!-- Removable @-mention pills (issue #742, decisions
+                    <AttachmentBar
+                      {attachments}
+                      onFiles={attachFiles}
+                      onRetry={retryAttachment}
+                      onRemove={removeAttachment}
+                    >
+                      {#snippet field({ pickFiles })}
+                        <div class="composer-field">
+                          <!-- Removable @-mention pills (issue #742, decisions
                              doc C2-3): a separate row above the textarea,
                              never characters inside it — the reference
                              lives beside the prose, not inside it. -->
-                        {#if mentions.length > 0}
-                          <ul class="mention-pills" data-testid="mention-pill-list">
-                            {#each mentions as mention (mentionKey(mention))}
-                              <li class="mention-pill" data-testid="mention-pill">
-                                <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
-                                <span class="mention-pill-label">{mention.resourceLink.name}</span>
-                                <IconButton
-                                  label={`Remove ${mention.resourceLink.name}`}
-                                  size="sm"
-                                  dataTestId="mention-pill-remove"
-                                  onclick={() => removeMention(mention)}
-                                >
-                                  <Icon name="close" size="12px" />
-                                </IconButton>
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
-                        <textarea
-                          bind:this={composerTextarea}
-                          bind:value={draft}
-                          oninput={handleComposerInput}
-                          onkeydown={handleComposerKeydown}
-                          disabled={selectedSessionAgentless}
-                          placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
-                          aria-label="Follow-up prompt"
-                          aria-describedby="composer-hint"
-                          rows="1"
-                          data-testid="composer-input"></textarea>
-                        <!-- Screen-reader only: the row below is full of live
+                          {#if mentions.length > 0}
+                            <ul class="mention-pills" data-testid="mention-pill-list">
+                              {#each mentions as mention (mentionKey(mention))}
+                                <li class="mention-pill" data-testid="mention-pill">
+                                  {#if mention.kind === 'file'}
+                                    <button
+                                      type="button"
+                                      class="mention-pill-open"
+                                      onclick={() => openFileTab(mention.path)}
+                                      data-testid="mention-pill-open"
+                                    >
+                                      <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
+                                      <span class="mention-pill-label"
+                                        >{mention.resourceLink.name}</span
+                                      >
+                                    </button>
+                                  {:else}
+                                    <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
+                                    <span class="mention-pill-label"
+                                      >{mention.resourceLink.name}</span
+                                    >
+                                  {/if}
+                                  <IconButton
+                                    label={`Remove ${mention.resourceLink.name}`}
+                                    size="sm"
+                                    dataTestId="mention-pill-remove"
+                                    onclick={() => removeMention(mention)}
+                                  >
+                                    <Icon name="close" size="12px" />
+                                  </IconButton>
+                                </li>
+                              {/each}
+                            </ul>
+                          {/if}
+                          <textarea
+                            bind:this={composerTextarea}
+                            bind:value={draft}
+                            oninput={handleComposerInput}
+                            onkeydown={handleComposerKeydown}
+                            disabled={selectedSessionAgentless}
+                            placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
+                            aria-label="Follow-up prompt"
+                            aria-describedby="composer-hint"
+                            rows="1"
+                            data-testid="composer-input"></textarea>
+                          <!-- Screen-reader only: the row below is full of live
                              facts now (agent, model, context, cost), and a
                              keyboard hint read once in a lifetime does not get
                              to compete with them for the same pixels. It stays
                              in the DOM because `aria-describedby` above points
                              at it. -->
-                        <p class="composer-hint sr-only" id="composer-hint">
-                          <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
-                          line · <kbd>@</kbd> to reference a file, directory, session, or tracker item
-                        </p>
-                        <div class="composer-controls" data-testid="composer-controls">
-                          <IconButton label="Attach image" onclick={pickFiles}>
-                            <Icon name="attach" size="20px" />
-                          </IconButton>
-                          {#if narrowViewport}
-                            <IconButton
-                              label={configControlsExpanded
-                                ? 'Hide composer options'
-                                : 'More composer options'}
-                              pressed={configControlsExpanded}
-                              onclick={() => (configControlsExpanded = !configControlsExpanded)}
-                            >
-                              <Icon name="more" />
+                          <p class="composer-hint sr-only" id="composer-hint">
+                            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
+                            line · <kbd>@</kbd> to reference a file, directory, session, or tracker item
+                          </p>
+                          <div class="composer-controls" data-testid="composer-controls">
+                            <IconButton label="Attach image" onclick={pickFiles}>
+                              <Icon name="attach" size="20px" />
                             </IconButton>
-                          {/if}
-                          <ConfigBar
-                            options={configOptions}
-                            onChange={changeConfigOption}
-                            providerId={selectedSession?.provider}
-                            compact={!configControlsVisible}
-                            sources={configOptionSources}
-                            onPinToProject={pinConfigOptionToProject}
-                            onUnpinFromProject={unpinConfigOptionFromProject}
-                            bind:popoverOpen={configBarPopoverOpen}
-                          />
-                          <div class="composer-actions">
-                            <!-- A3-2 (issue #666): one button in one slot —
+                            {#if narrowViewport}
+                              <IconButton
+                                label={configControlsExpanded
+                                  ? 'Hide composer options'
+                                  : 'More composer options'}
+                                pressed={configControlsExpanded}
+                                onclick={() => (configControlsExpanded = !configControlsExpanded)}
+                              >
+                                <Icon name="more" />
+                              </IconButton>
+                            {/if}
+                            <ConfigBar
+                              options={configOptions}
+                              onChange={changeConfigOption}
+                              providerId={selectedSession?.provider}
+                              compact={!configControlsVisible}
+                              sources={configOptionSources}
+                              onPinToProject={pinConfigOptionToProject}
+                              onUnpinFromProject={unpinConfigOptionFromProject}
+                              bind:popoverOpen={configBarPopoverOpen}
+                            />
+                            <div class="composer-actions">
+                              <!-- A3-2 (issue #666): one button in one slot —
                                  while a turn runs the button IS Stop, Send is
                                  gone (not disabled-and-present). Both render
                                  at `size="md"` (Stop no longer takes the
                                  smaller `sm` it used to sit at next to a
                                  disabled Send) so the slot itself never
                                  changes footprint at the swap. -->
-                            {#if turnIsActive}
-                              <TurnStopControl turnActive={turnIsActive} onStop={stopSession} />
-                            {:else}
-                              <Button
-                                type="submit"
-                                variant="primary"
-                                disabled={sendDisabled}
-                                ariaLabel="Send prompt">Send</Button
-                              >
-                            {/if}
+                              {#if turnIsActive}
+                                <TurnStopControl turnActive={turnIsActive} onStop={stopSession} />
+                              {:else}
+                                <Button
+                                  type="submit"
+                                  variant="primary"
+                                  disabled={sendDisabled}
+                                  ariaLabel="Send prompt">Send</Button
+                                >
+                              {/if}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    {/snippet}
-                  </AttachmentBar>
-                </div>
-              </form>
+                      {/snippet}
+                    </AttachmentBar>
+                  </div>
+                </form>
+              </div>
             </div>
+            {#if activeFileTab}
+              <FileViewer
+                path={activeFileTab.path}
+                name={activeFileTab.name}
+                viewer={canvasTabs.viewerFor(activeFileTab.path) ?? { status: 'loading' }}
+                onRetry={() => loadFileContent(activeFileTab.path)}
+              />
+            {/if}
           {/if}
         </section>
       </div>
@@ -4509,6 +4607,7 @@
   open={reviewChangesOpen}
   summary={turnEditsSummary}
   onClose={closeReviewChanges}
+  onOpenFile={openFileTab}
 />
 
 <style>
@@ -5675,6 +5774,26 @@
     gap: var(--space-md);
   }
 
+  /* Issue #737's tab strip: `TranscriptTimeline` + `.canvas-footer` used to
+     be direct flex children of `.canvas` itself; wrapping them so a file
+     tab can hide the pair as one unit needs this wrapper to carry the
+     exact same flex participation `.canvas` gave them directly, or the
+     transcript collapses to zero height. `[hidden]` needs its own explicit
+     override since the UA stylesheet's `[hidden] { display: none }` loses
+     to this class's own `display: flex` at equal specificity otherwise. */
+  .canvas-transcript-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    gap: var(--space-md);
+  }
+
+  .canvas-transcript-view[hidden] {
+    display: none;
+  }
+
   /* The three `mainView` pages render here instead of the transcript
      (design spec v4 §3.3): `.canvas` itself has no scroll of its own
      (the transcript's `.items` handles that internally while `.canvas-
@@ -5892,6 +6011,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-mono);
+  }
+
+  .mention-pill-open {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
   }
 
   /* The one strip the composer has: attach, the pickers, the context/cost

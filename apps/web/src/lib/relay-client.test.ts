@@ -3224,6 +3224,193 @@ describe('RelayClient: file-tree panel (SPEC §7.4; issue #171)', () => {
   });
 });
 
+describe('RelayClient: file viewer (issue #737)', () => {
+  it('readFile resolves an ok outcome, decrypting a real fs_read_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-read-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_read_ok', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-read-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.readFile(session.id, 'src/index.ts');
+
+    const request = (await node.waitFor((m) => m.type === 'fs_read_request')) as {
+      type: 'fs_read_request';
+      sessionId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{ path: string }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ path: 'src/index.ts' });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'src/index.ts', content: 'export {};\n', truncated: false },
+      key,
+    );
+    node.send({
+      type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      path: 'src/index.ts',
+      content: 'export {};\n',
+      truncated: false,
+    });
+  });
+
+  it('readFile resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-read-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_read_error', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-read-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.readFile(session.id, 'does-not-exist.ts');
+    const request = (await node.waitFor((m) => m.type === 'fs_read_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', path: 'does-not-exist.ts', message: 'not found' },
+      key,
+    );
+    node.send({
+      type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      path: 'does-not-exist.ts',
+      message: 'not found',
+    });
+  });
+
+  it("a client ignores an fs_read_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-read-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_read_sibling', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-read-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client.readFile(session.id, 'src/index.ts').finally(() => {
+      settled = true;
+    });
+    await node.waitFor((m) => m.type === 'fs_read_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'other-file.ts', content: 'x', truncated: false },
+      key,
+    );
+    node.send({
+      type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'fs_read_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'src/index.ts', content: 'x', truncated: false },
+      key,
+    );
+    node.send({
+      type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-read-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-read-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-read-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.readFile('sess_does_not_exist', 'x.ts')).rejects.toThrow(/unknown session/);
+  });
+});
+
 describe('RelayClient: native tracker (SPEC §7.10, §7.26; issues #212, #697)', () => {
   it('trackerSnapshotFor lazily loads a project\u2019s tracker snapshot with NO session anywhere \u2014 decrypting a real tracker_snapshot_response sealed to the project key, addressed by nodeId+projectPath alone', async () => {
     const amk = generateAmk();
