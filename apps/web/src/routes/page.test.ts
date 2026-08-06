@@ -9,6 +9,7 @@ import {
   reduceTranscript,
 } from '@loombox/providers-core/browser';
 import type {
+  AcpAvailableCommand,
   AcpConfigOption,
   AcpSessionStatus,
   PermissionQueueState,
@@ -165,6 +166,8 @@ interface FakeClientScenario {
   attentionInboxItems?: AttentionInboxItem[];
   /** Per-session initial config-option catalog, keyed by session id (issue #753's D4-2/D4-3 tests below) — unlike every other per-session store here, `configOptionsFor` memoizes per id (see that method's own comment) so a test can grab the same store back via `client.configOptionsFor(id)` and `.set()` a later catalog push, simulating the agent's own `session/new`/`config_option` round trip. */
   configOptions?: Record<string, AcpConfigOption[]>;
+  /** Per-session initial agent-declared `/`-command catalog, keyed by session id (issue #743) — memoized per id exactly like `configOptionsFor`/`configOptions` above, so a test can grab the same store back via `client.commandsFor(id)` and `.set()` a later catalog push to simulate a mid-session `available_commands_update`. */
+  commands?: Record<string, AcpAvailableCommand[]>;
 }
 
 /**
@@ -186,6 +189,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
   const sessionsStore = makeStore<ClientSessionMeta[]>(scenario.sessions ?? []);
   const attentionInboxStore = makeStore<AttentionInboxItem[]>(scenario.attentionInboxItems ?? []);
   const configOptionsStores = new Map<string, TestStore<AcpConfigOption[]>>();
+  const commandsStores = new Map<string, TestStore<AcpAvailableCommand[]>>();
   return {
     status: statusStore,
     sessions: sessionsStore,
@@ -234,6 +238,14 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       if (!store) {
         store = makeStore<AcpConfigOption[]>(scenario.configOptions?.[id] ?? []);
         configOptionsStores.set(id, store);
+      }
+      return store;
+    },
+    commandsFor: (id: string) => {
+      let store = commandsStores.get(id);
+      if (!store) {
+        store = makeStore<AcpAvailableCommand[]>(scenario.commands?.[id] ?? []);
+        commandsStores.set(id, store);
       }
       return store;
     },
@@ -1451,5 +1463,115 @@ describe('command palette: a view over the action registry (issue #758)', () => 
     const event = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('composer: `/`-command picker, driven by what the agent declared (Zed-parity C2-4; issue #743)', () => {
+  const MODEL_COMMAND: AcpAvailableCommand = {
+    name: 'model',
+    description: 'Show current model selection',
+    input: undefined,
+  };
+  const SECURITY_COMMAND: AcpAvailableCommand = {
+    name: 'security',
+    description: 'Run a security scan',
+    input: { hint: '<plan|scan|status>' },
+  };
+
+  it('never opens for an agent that has declared no commands at all — `/` does nothing, no hardcoded loombox list, no placeholder', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    expect(screen.queryByTestId('dialog')).toBeNull();
+    expect(screen.queryByTestId('slash-command-picker-item')).toBeNull();
+  });
+
+  it('typing `/` at the start of an empty composer opens the picker listing exactly the agent-declared catalog', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND, SECURITY_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    const items = await screen.findAllByTestId('slash-command-picker-item');
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining('/model'),
+      expect.stringContaining('/security'),
+    ]);
+  });
+
+  it('keyboard-only: `/` opens it, typing filters, ArrowDown moves selection, Enter inserts the command form the agent declared into the composer and sends it as an ordinary prompt on submit — no mouse anywhere', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND, SECURITY_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    const searchInput = await screen.findByTestId('slash-command-picker-input');
+    await fireEvent.input(searchInput, { target: { value: 'sec' } });
+    await fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    // Selecting inserts `/name ` — the argument itself (e.g. `scan`) is
+    // whatever the user types next, never a loombox-parsed value; the
+    // agent's own `input.hint` (`<plan|scan|status>`) is picker-only
+    // guidance, never inserted as literal text (issue #743).
+    await vi.waitFor(() => expect(composer.value).toBe('/security '));
+
+    await fireEvent.input(composer, { target: { value: '/security scan' } });
+    await fireEvent.keyDown(composer, { key: 'Enter' });
+    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', []);
+  });
+
+  it('Esc dismisses the picker without touching the composer text', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    const searchInput = await screen.findByTestId('slash-command-picker-input');
+    await fireEvent.keyDown(searchInput, { key: 'Escape' });
+
+    expect(composer.value).toBe('/');
+  });
+
+  it('a mid-session catalogue update is reflected without a reload: reopening the picker after `commandsFor` pushes a new list shows the new one, not the stale one (issue #743 acceptance)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    expect(
+      (await screen.findAllByTestId('slash-command-picker-item')).map((i) => i.textContent),
+    ).toEqual([expect.stringContaining('/model')]);
+    await fireEvent.keyDown(await screen.findByTestId('slash-command-picker-input'), {
+      key: 'Escape',
+    });
+
+    client.commandsFor('sess_1').set([SECURITY_COMMAND]);
+    await fireEvent.input(composer, { target: { value: '/' } });
+
+    const items = await screen.findAllByTestId('slash-command-picker-item');
+    expect(items.map((i) => i.textContent)).toEqual([expect.stringContaining('/security')]);
+  });
+
+  it('does not trigger mid-message — `/` is only a composer-start convention, never embedded like `@file`', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: 'see the /model docs' } });
+
+    expect(screen.queryByTestId('dialog')).toBeNull();
   });
 });
