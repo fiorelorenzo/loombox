@@ -29,6 +29,7 @@ const EXPECTED_NAMES = [
   'terminal',
   'file',
   'folder',
+  'fork',
   'attach',
   'copy',
   'pin',

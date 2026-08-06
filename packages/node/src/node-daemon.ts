@@ -1476,7 +1476,13 @@ export class NodeDaemon extends EventEmitter {
       throw error;
     }
 
-    return this.finishSessionCreation(session, agentSession, opts, undefined, seedTranscriptUpdates);
+    return this.finishSessionCreation(
+      session,
+      agentSession,
+      opts,
+      undefined,
+      seedTranscriptUpdates,
+    );
   }
 
   /**

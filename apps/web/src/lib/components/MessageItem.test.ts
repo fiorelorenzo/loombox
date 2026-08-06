@@ -75,7 +75,7 @@ describe('MessageItem', () => {
     expect(screen.queryByRole('button', { name: 'Fork session from here' })).toBeNull();
   });
 
-  it('calls onFork with the item\'s own turnId when the fork button is clicked (issue #746)', async () => {
+  it("calls onFork with the item's own turnId when the fork button is clicked (issue #746)", async () => {
     const onFork = vi.fn();
     render(MessageItem, { props: { item: messageItem({ turnId: 'turn-42' }), onFork } });
 

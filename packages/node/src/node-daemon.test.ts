@@ -4442,7 +4442,7 @@ describe('NodeDaemon per-target concurrency caps (SPEC §7.16, issue #252)', () 
 });
 
 describe('NodeDaemon: session fork (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2, issue #746)', () => {
-  it('forks a session from its first turn: the fork\'s transcript ends there, the source keeps every turn unaffected, and the fork behaves like any other session', async () => {
+  it("forks a session from its first turn: the fork's transcript ends there, the source keeps every turn unaffected, and the fork behaves like any other session", async () => {
     const amk = generateAmk();
     const accountId = 'acct-fork-basic';
 

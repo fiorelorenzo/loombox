@@ -94,10 +94,7 @@ const sessionForkError = z.object({
   message: z.string().min(1),
 });
 /** The node's outcome: `'ok'` once the fork's worktree is copied and its transcript seeded (its agent may still be spawning — that progress rides the new session's ordinary `session_status` events, exactly like any other creation), or `'error'` with a message a human can act on: no active agent for the source session, an unrecognized `forkFromTurnId`, or a target this node cannot fork on. */
-export const sessionForkResult = z.discriminatedUnion('outcome', [
-  sessionForkOk,
-  sessionForkError,
-]);
+export const sessionForkResult = z.discriminatedUnion('outcome', [sessionForkOk, sessionForkError]);
 export type SessionForkResult = z.infer<typeof sessionForkResult>;
 
 /**

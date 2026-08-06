@@ -68,11 +68,7 @@ describe('AgentSession.seedTranscriptUpdates (issue #746)', () => {
       providerId: 'claude',
       workspacePath: '/tmp/ws',
     });
-    const session = AgentSession.fromPersisted(
-      store.readMeta('sess_fork_target')!,
-      [],
-      store,
-    );
+    const session = AgentSession.fromPersisted(store.readMeta('sess_fork_target')!, [], store);
 
     session.seedTranscriptUpdates([CHUNK_A, CHUNK_B]);
 

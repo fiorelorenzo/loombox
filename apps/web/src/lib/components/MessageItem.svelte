@@ -739,9 +739,12 @@
      `revealOnHover`/`.copy-button-reveal` uses, hand-rolled here since
      `IconButton` has no such opt-in of its own. Visible under
      `(hover: none)` and on keyboard focus regardless, same as Copy. */
+  /* Opacity only: `IconButton`'s own root rule already owns the transition,
+     and a second declaration here loses the specificity fight and is
+     silently dropped (issue #665's test catches exactly that). Same shape
+     as `CopyButton`'s own `.copy-button-reveal`. */
   :global(.fork-button) {
     opacity: 0;
-    transition: opacity var(--duration-fast) var(--ease-out);
   }
 
   .message-item:hover :global(.fork-button),

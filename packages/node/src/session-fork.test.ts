@@ -80,10 +80,7 @@ describe('cutTranscriptAtTurn (issue #746)', () => {
   });
 
   it('returns the full array when the target turn is the latest one', () => {
-    const updates = [
-      userChunk('t1', 'u1', 'only turn'),
-      messageChunk('t1', 'm1', 'only reply'),
-    ];
+    const updates = [userChunk('t1', 'u1', 'only turn'), messageChunk('t1', 'm1', 'only reply')];
 
     expect(cutTranscriptAtTurn(updates, 't1')).toEqual(updates);
   });

@@ -406,7 +406,7 @@ describe('SessionManager', () => {
   });
 
   describe('forkSession (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2; issue #746)', () => {
-    it('copies the source worktree\'s current uncommitted changes into an independent new session', async () => {
+    it("copies the source worktree's current uncommitted changes into an independent new session", async () => {
       const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
       await writeFile(join(source.worktreePath, 'dirty.txt'), 'uncommitted work\n');
 
@@ -426,20 +426,16 @@ describe('SessionManager', () => {
       const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
       await writeFile(join(source.worktreePath, 'committed.txt'), 'on the branch\n');
       await git(source.worktreePath, ['add', 'committed.txt']);
-      await execFileAsync(
-        'git',
-        ['-C', source.worktreePath, 'commit', '-m', 'session work'],
-        {
-          cwd: source.worktreePath,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_NAME: 'loombox test',
-            GIT_AUTHOR_EMAIL: 'test@loombox.dev',
-            GIT_COMMITTER_NAME: 'loombox test',
-            GIT_COMMITTER_EMAIL: 'test@loombox.dev',
-          },
+      await execFileAsync('git', ['-C', source.worktreePath, 'commit', '-m', 'session work'], {
+        cwd: source.worktreePath,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
         },
-      );
+      });
 
       const fork = await manager.forkSession(source.id, { provider: 'claude' });
 
@@ -452,20 +448,16 @@ describe('SessionManager', () => {
       const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
       await writeFile(join(source.worktreePath, 'committed.txt'), 'on the branch\n');
       await git(source.worktreePath, ['add', 'committed.txt']);
-      await execFileAsync(
-        'git',
-        ['-C', source.worktreePath, 'commit', '-m', 'add committed.txt'],
-        {
-          cwd: source.worktreePath,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_NAME: 'loombox test',
-            GIT_AUTHOR_EMAIL: 'test@loombox.dev',
-            GIT_COMMITTER_NAME: 'loombox test',
-            GIT_COMMITTER_EMAIL: 'test@loombox.dev',
-          },
+      await execFileAsync('git', ['-C', source.worktreePath, 'commit', '-m', 'add committed.txt'], {
+        cwd: source.worktreePath,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
         },
-      );
+      });
       // Deleted, but the deletion itself is never committed — the file
       // still exists at the branch tip `git worktree add` would check out.
       await rm(join(source.worktreePath, 'committed.txt'));
@@ -491,7 +483,7 @@ describe('SessionManager', () => {
       expect(worktreeList).toContain(fork.worktreePath);
     });
 
-    it('never writes to the source session\'s own record or worktree — byte-identical afterwards', async () => {
+    it("never writes to the source session's own record or worktree — byte-identical afterwards", async () => {
       const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
       await writeFile(join(source.worktreePath, 'dirty.txt'), 'uncommitted work\n');
       const beforeStatus = await execFileAsync('git', [
@@ -532,9 +524,9 @@ describe('SessionManager', () => {
     });
 
     it('rejects forking an unknown session id', async () => {
-      await expect(
-        manager.forkSession('does-not-exist', { provider: 'claude' }),
-      ).rejects.toThrow(/no such session/i);
+      await expect(manager.forkSession('does-not-exist', { provider: 'claude' })).rejects.toThrow(
+        /no such session/i,
+      );
     });
 
     it('rejects forking a workInPlace session, which has no isolated worktree/branch to fork from', async () => {

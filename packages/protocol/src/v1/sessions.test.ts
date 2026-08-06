@@ -191,8 +191,7 @@ describe('sessionPrivateMetaV1', () => {
 
   it('rejects an empty forkFromTurnId rather than accepting a meaningless boundary', () => {
     expect(
-      safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', forkFromTurnId: '' })
-        .success,
+      safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', forkFromTurnId: '' }).success,
     ).toBe(false);
   });
 });

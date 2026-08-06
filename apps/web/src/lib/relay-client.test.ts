@@ -4812,6 +4812,17 @@ describe('RelayClient: forkSession (design spec `2026-08-05-zed-parity-decisions
       authToken: accountId,
     });
     await node.ready;
+    // The node must have announced its targets before a fork can resolve
+    // one: `forkSession` routes by `targetId`, and the relay refuses an
+    // unknown target exactly as it does for `createSession`, whose own test
+    // above seeds the same announce.
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const session = makeSessionMeta({ id: 'sess_fork_source', accountId, targetId: 'local' });
     const key = await deriveNodeSessionKey(amk, accountId, session.id);
@@ -4885,6 +4896,13 @@ describe('RelayClient: forkSession (design spec `2026-08-05-zed-parity-decisions
       authToken: accountId,
     });
     await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const session = makeSessionMeta({ id: 'sess_fork_source_2', accountId, targetId: 'local' });
     const key = await deriveNodeSessionKey(amk, accountId, session.id);
