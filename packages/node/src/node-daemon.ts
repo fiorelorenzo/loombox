@@ -270,6 +270,7 @@ import { PolicyEnforcedPty } from './policy-enforced-pty';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
+import { resolveSessionSandbox } from './session-sandbox';
 import { SessionConcurrencyGate } from './session-concurrency-gate';
 import {
   CannotForkSessionError,
@@ -488,6 +489,36 @@ export interface NodeDaemonOptions {
     intervalMs?: number;
     timeoutMs?: number;
   };
+  /**
+   * Namespace/bind-mount sandboxing for a `local` session's agent process
+   * (SPEC §7.17; issue #257) — see `./session-sandbox.ts`'s
+   * `resolveSessionSandbox()` doc comment for what "confined" means, the
+   * Linux-only reach, and why an `ssh:` session never goes through it.
+   * `enabled` defaults to `false`, the same off-by-default-in-tests shape
+   * as `resourceSampling` above and for an analogous reason: turning this
+   * on unconditionally would wrap every existing test's fixture-agent
+   * spawn in `bwrap` too — most of this suite's fixture providers point
+   * `command` at `process.execPath` with a fixture script living outside
+   * the session's ephemeral worktree by design (they exist to exercise
+   * ACP wiring, not containment) — and the sandbox would then correctly
+   * deny that fixture the read access it needs to even start, breaking
+   * hundreds of unrelated tests. `main.ts`'s real `createNode()` call
+   * turns this on explicitly for every real node (same pattern as
+   * `resourceSampling`); `node-daemon-sandbox.test.ts` exercises the real
+   * end-to-end wiring, including the fail-closed path, with this
+   * explicitly enabled. When enabled, `launchLocalSession` calls
+   * `resolveSessionSandbox()` before ever spawning: on Linux with a
+   * working sandbox it wires `AgentSupervisorStartOptions.wrapSpawnConfig`
+   * so the agent process is genuinely confined to the session worktree; on
+   * Linux without one (missing `bwrap`, or a kernel that refuses
+   * unprivileged user namespaces) `resolveSessionSandbox` throws and the
+   * existing spawn-failure path reports it to the client via
+   * `sendSessionStatus(id, 'error', …)` — the session is refused, never
+   * silently run unsandboxed. On a non-Linux host it is a no-op today:
+   * SPEC's documented weaker macOS fallback is a separate, not-yet-built
+   * concern, not something this flag pretends to provide.
+   */
+  sessionSandbox?: { enabled?: boolean };
   /**
    * Session ownership leasing across nodes (issue #82). Defaults to a fresh
    * in-memory manager, correct for a single-node deployment and for tests;
@@ -1459,6 +1490,8 @@ export class NodeDaemon extends EventEmitter {
   /** Per-target CPU/RAM/disk sampling (issues #253/#269) — see `NodeDaemonOptions.resourceSampling`'s doc comment for why it's opt-in. */
   private readonly targetHealthSampler: TargetHealthSampler;
   private readonly resourceSamplingEnabled: boolean;
+  /** See `NodeDaemonOptions.sessionSandbox`'s doc comment. */
+  private readonly sessionSandboxEnabled: boolean;
   /** Redesign v2 §3.2; issue #475 — see `NodeDaemonOptions.sshDiscoveryOptions`/`discoverSshTargetsImpl`'s doc comments. */
   private readonly sshDiscoveryOptions?: DiscoverSshTargetsOptions;
   private readonly discoverSshTargetsImpl: typeof discoverSshTargets;
@@ -1628,6 +1661,7 @@ export class NodeDaemon extends EventEmitter {
     this.trackerBackendFetchImpl = options.trackerBackendFetchImpl;
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
+    this.sessionSandboxEnabled = options.sessionSandbox?.enabled ?? false;
     this.targetHealthSampler = new TargetHealthSampler({
       intervalMs: options.resourceSampling?.intervalMs,
       timeoutMs: options.resourceSampling?.timeoutMs,
@@ -2062,6 +2096,18 @@ export class NodeDaemon extends EventEmitter {
     let failedMcpServers: McpServerStatusEntryV1[];
     try {
       const providerId = this.resolveLaunchProviderId(session.id, opts.provider, opts.customAgent);
+      // Resolved once per launch attempt, outside the MCP-fallback retry
+      // closure below — a real `resolveSessionSandbox()` call spawns a
+      // process (bwrap's own self-test, cached process-lifetime after the
+      // first) and this session's worktree/target never change between
+      // retries, so there is nothing for a second call to catch that the
+      // first didn't already. A throw here (Linux, sandbox unavailable —
+      // SPEC §7.17's fail-closed requirement) is caught by this method's
+      // own `catch` below exactly like a spawn failure already is: the
+      // session never reaches `startAgentWithTimeout` at all.
+      const wrapSpawnConfig = this.sessionSandboxEnabled
+        ? resolveSessionSandbox({ workspacePath: session.worktreePath }).wrapSpawnConfig
+        : undefined;
       const outcome = await this.startAgentWithMcpFallback(
         session.projectPath,
         mcpServers,
@@ -2072,6 +2118,7 @@ export class NodeDaemon extends EventEmitter {
             mcpServers: servers,
             env,
             evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
+            wrapSpawnConfig,
           }),
       );
       agentSession = outcome.result;
@@ -2459,6 +2506,17 @@ export class NodeDaemon extends EventEmitter {
    * own `.catch`). Its actual cross-node lease is deliberately left alone
    * on failure, unchanged from before this split: it simply expires on its
    * own TTL, exactly as it always has.
+   *
+   * Never sandboxed (SPEC §7.17; issue #257), unlike {@link
+   * launchLocalSession}: the agent process this spawns runs on the remote
+   * `ssh:` target machine, whose mount namespace this node has no way to
+   * touch from here — `./session-sandbox.ts`'s `resolveSessionSandbox()`
+   * confines a LOCAL child process via `bwrap`, which only ever makes
+   * sense for a process this node itself spawns. Confining a remote
+   * agent the same way would need the sandbox primitive to run over the
+   * SSH transport instead, which is a real, separate follow-up, not
+   * built here — this path keeps launching exactly as it did before this
+   * issue, unsandboxed.
    */
   private async launchReservedSshSession(
     opts: {

@@ -36,11 +36,8 @@ describe('AcpClient: capability flags from a real initialize handshake (issue #1
       supportsAudio: false,
       supportsEmbeddedContext: true,
       supportsResume: true,
-      supportsMcpServerPicker: true,
       supportsAdditionalDirectories: false,
       supportsSessionDelete: true,
-      supportsPermissions: false,
-      supportsPlans: true,
     });
   });
 });
