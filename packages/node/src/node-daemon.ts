@@ -21,13 +21,20 @@ import {
 } from '@loombox/providers-core';
 import {
   AgentSupervisor,
+  CheckpointNotFoundError,
   defaultPtySpawn,
+  DetachedHeadError,
+  DirtySubmoduleError,
+  GitCheckpointStore,
+  NotAGitWorktreeError,
   TerminalSupervisor,
   type AgentSession,
   type AgentSupervisorStartOptions,
   type AttentionState,
   type AttentionStatus,
+  type GitCheckpoint,
   type PtyLike,
+  type RestorePreview,
   type TerminalSession,
   type ToolProfileDenial,
 } from '@loombox/supervisor';
@@ -119,6 +126,18 @@ import {
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
   type PermissionPolicyViolationPayloadV1,
+  type CheckpointCreate,
+  type CheckpointCreatePayloadV1,
+  type CheckpointErrorTypeV1,
+  type CheckpointList,
+  type CheckpointListResultPayloadV1,
+  type CheckpointResultPayloadV1,
+  type CheckpointRestore,
+  type CheckpointRestorePreview,
+  type CheckpointRestorePreviewResultPayloadV1,
+  type CheckpointRestoreResultPayloadV1,
+  type GitCheckpointV1,
+  type RestorePreviewV1,
   type AgentProfileListGet,
   type AgentProfileV1,
   type AgentProfileListResultPayloadV1,
@@ -949,6 +968,16 @@ interface SessionBridge {
    */
   currentTurnId?: string;
   /**
+   * Per-bridge counter of prompts sent so far (issue #603) — incremented
+   * by {@link NodeDaemon.autoCheckpointBeforeTurn} right before each
+   * turn's checkpoint, purely to label that checkpoint's `message`
+   * (`auto: before turn <n>`) distinctly; nothing reads this back as an
+   * authoritative turn index (that's `currentTurnId`'s own wire-facing
+   * id, above). Resets every time this bridge is (re)constructed — a
+   * live session's own lifetime, never persisted across a node restart.
+   */
+  turnCount?: number;
+  /**
    * Set only for an `ssh:` target's session (issue #80): the local bridge
    * object polling the remote run. `close()` must reach this directly
    * (rather than going through `AgentSupervisor.stop()`, which always kills)
@@ -1045,6 +1074,49 @@ function toPermissionPolicyV1(policy: PermissionPolicy): PermissionPolicyV1 {
     command: { allow: [...policy.command.allow], deny: [...policy.command.deny] },
     network: { allow: [...policy.network.allow], deny: [...policy.network.deny] },
   };
+}
+
+/** `checkpoint_create`/`_list`/`_restore_preview`/`_restore`'s shared refusal reason for any session but a `local`-target one — `GitCheckpointStore` spawns `git` as a LOCAL child process (its own module doc comment), so an `ssh:` session's `worktreePath` (a path on the remote host) is not reachable from this node at all. See `@loombox/protocol`'s `checkpoint.ts` doc comment for the full "refuse the one you do not support" reasoning. */
+const CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE =
+  'Checkpoint/rollback needs a local git worktree this node can reach directly; this session runs on an ssh: target, whose files live on a different host (issue #603).';
+
+/** `checkpoint_restore`'s own refusal while the session's agent is actively mid-turn (`AttentionStatus.status === 'working'`) — restoring underneath a live write would race it, leaving the worktree in a state that matches neither the checkpoint nor the turn's own result. Asks the caller to wait for the turn to finish (or stop it) first. */
+const CHECKPOINT_TURN_IN_PROGRESS_MESSAGE =
+  "This session's agent is actively working on a turn; wait for it to finish (or stop it) before rolling back.";
+
+/** Free-text prefix on every checkpoint auto-taken before a turn starts ({@link NodeDaemon.autoCheckpointBeforeTurn}, issue #603) — recognizable so a future rewind (issue #747) can tell an automatic per-turn checkpoint from a manual one (issue #268's "named or auto-labeled ... on demand") without a dedicated field. */
+const AUTO_CHECKPOINT_MESSAGE_PREFIX = 'auto: before turn ';
+
+/** Maps a `GitCheckpointStore` failure to `@loombox/protocol`'s `checkpoint.ts` named `errorType` vocabulary — every checkpoint handler funnels its `catch` through this rather than repeating the same four `instanceof` checks per call site. */
+function checkpointErrorOutcome(error: unknown): {
+  outcome: 'error';
+  errorType: CheckpointErrorTypeV1;
+  message: string;
+} {
+  if (error instanceof CheckpointNotFoundError) {
+    return { outcome: 'error', errorType: 'checkpoint_not_found', message: error.message };
+  }
+  if (error instanceof NotAGitWorktreeError) {
+    return { outcome: 'error', errorType: 'not_git_worktree', message: error.message };
+  }
+  if (error instanceof DetachedHeadError) {
+    return { outcome: 'error', errorType: 'detached_head', message: error.message };
+  }
+  if (error instanceof DirtySubmoduleError) {
+    return { outcome: 'error', errorType: 'dirty_submodule', message: error.message };
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return { outcome: 'error', errorType: 'unknown', message: detail };
+}
+
+/** `GitCheckpoint` (`@loombox/supervisor`) → `GitCheckpointV1` (`@loombox/protocol`) — adds `isWorkInPlace`, this wiring's own answer to issue #603's "worktree-isolated and in-place sessions behave differently here" (`checkpoint.ts`'s own doc comment). Derived from `Session.branch === ''`, the same test the `Session` doc comment itself uses to mean "no isolated worktree". */
+function toGitCheckpointV1(checkpoint: GitCheckpoint, session: Session): GitCheckpointV1 {
+  return { ...checkpoint, isWorkInPlace: session.branch === '' };
+}
+
+/** `RestorePreview` (`@loombox/supervisor`) → `RestorePreviewV1` (`@loombox/protocol`) — mirrors {@link toGitCheckpointV1}. */
+function toRestorePreviewV1(preview: RestorePreview, session: Session): RestorePreviewV1 {
+  return { ...preview, isWorkInPlace: session.branch === '' };
 }
 
 /** `AgentProfile`'s three denied-lists are `readonly AcpToolKind[]`/`readonly string[]` (its own module's immutability + ACP-typed contract); `AgentProfileV1`'s are plain, ACP-agnostic wire `string[]`s (`@loombox/protocol` never re-declares ACP's own vocabulary — see that module's doc comment). Named, mirroring `toPermissionPolicyV1` immediately above, rather than reasserted inline at both `handleAgentProfileListGet`/`Set` call sites. */
@@ -1534,6 +1606,7 @@ export class NodeDaemon extends EventEmitter {
     }
     await this.assertStillLeaseholder(bridge);
     this.beginTurn(bridge);
+    await this.autoCheckpointBeforeTurn(bridge);
     await bridge.agentSession.prompt(text);
   }
 
@@ -3292,6 +3365,18 @@ export class NodeDaemon extends EventEmitter {
       case 'permission_policy_set':
         this.handlePermissionPolicySet(message);
         return;
+      case 'checkpoint_create':
+        this.handleCheckpointCreate(message);
+        return;
+      case 'checkpoint_list':
+        this.handleCheckpointList(message);
+        return;
+      case 'checkpoint_restore_preview':
+        this.handleCheckpointRestorePreview(message);
+        return;
+      case 'checkpoint_restore':
+        this.handleCheckpointRestore(message);
+        return;
       case 'agent_profile_list_get':
         this.handleAgentProfileListGet(message);
         return;
@@ -3673,6 +3758,25 @@ export class NodeDaemon extends EventEmitter {
       // and must still surface as outcome: 'error'.
       if (!(error instanceof InvalidSessionTransitionError)) throw error;
     }
+    // Clean up this session's hidden checkpoint refs (issue #603) before
+    // the record disappears below — `GitCheckpointStore.deleteAllCheckpoints()`
+    // needs `worktreePath`, still readable from `sessionManager` right up
+    // until `removeSession` forgets it. Best-effort: a session this node no
+    // longer tracks, an `ssh:` session (`getCheckpointStore` refuses it),
+    // or a real git failure here must never block archiving itself — see
+    // this method's caller's own "always replies ... never a silent hang"
+    // doc comment.
+    const session = this.sessionManager.getSession(sessionId);
+    if (session) {
+      await this.getCheckpointStore(session)
+        ?.deleteAllCheckpoints()
+        .catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: failed to delete checkpoints for session ${sessionId} during archive: ${detail}`,
+          );
+        });
+    }
     await this.sessionManager.removeSession(sessionId, { removeWorktree });
   }
 
@@ -3744,6 +3848,62 @@ export class NodeDaemon extends EventEmitter {
     const session = this.sessionManager.getSession(sessionId);
     if (!session) return undefined;
     return { session, targetId: session.targetId ?? 'local' };
+  }
+
+  /**
+   * Builds this session's `GitCheckpointStore` (issue #603) — stateless
+   * (the engine's own class doc comment), so constructed fresh per call
+   * rather than cached on the bridge, exactly like this daemon already
+   * treats `permissionPolicyStore`/`testRunnerConfigStore` reads ("fresh,
+   * never cached", `handlePermissionPolicyGet`'s own doc comment).
+   * Returns `undefined` for anything but a `local` session — see
+   * `CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE`'s own doc comment for why an
+   * `ssh:` session can't be supported here at all; every checkpoint
+   * handler below checks for `undefined` first and answers
+   * `errorType: 'unsupported_target'` rather than letting
+   * `execFile('git', ...)` fail confusingly against an unrelated (or
+   * absent) local directory.
+   */
+  private getCheckpointStore(session: Session): GitCheckpointStore | undefined {
+    if (session.target !== 'local') return undefined;
+    return new GitCheckpointStore({ worktreePath: session.worktreePath, sessionId: session.id });
+  }
+
+  /**
+   * Takes an automatic "before this turn" checkpoint (issue #603, SPEC
+   * §7.20's "at minimum: before a turn's first write") right before
+   * `beginTurn`'s caller hands the prompt to `agentSession.prompt()` — the
+   * earliest point this node can guarantee no write the upcoming turn
+   * makes has landed yet. Deliberately not "right before the turn's FIRST
+   * TOOL CALL": ACP `session/update` notifications are fire-and-forget
+   * (no request/response this node could synchronously interpose on
+   * between "the agent decided to write" and "the write already
+   * happened"), so before the whole turn is the earliest point this node
+   * can actually promise, and it strictly subsumes "before the first
+   * write" since nothing in the turn has run yet either way. One
+   * checkpoint per turn regardless of whether that turn ends up writing
+   * anything (cheap: git content-addresses, so an unchanged tree costs
+   * only a small commit object, module doc comment) — this is also issue
+   * #603's own "leave the seams #747 needs obvious": a future
+   * rewind-to-turn has one checkpoint per turn boundary to land on, no
+   * separate turn→checkpoint index to build. Best-effort: a failure (no
+   * git repo, detached HEAD, a dirty submodule, or `undefined` for an
+   * `ssh:` session) is logged and never blocks the turn — rollback being
+   * unavailable for one turn must never mean the agent itself stops
+   * working.
+   */
+  private async autoCheckpointBeforeTurn(bridge: SessionBridge): Promise<void> {
+    const store = this.getCheckpointStore(bridge.session);
+    if (!store) return; // ssh: target — see getCheckpointStore's own doc comment
+    bridge.turnCount = (bridge.turnCount ?? 0) + 1;
+    try {
+      await store.checkpoint({ message: `${AUTO_CHECKPOINT_MESSAGE_PREFIX}${bridge.turnCount}` });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: auto-checkpoint before turn ${bridge.turnCount} failed for session ${bridge.session.id}: ${detail}`,
+      );
+    }
   }
 
   private sendSessionArchiveResponse(
@@ -3940,6 +4100,7 @@ export class NodeDaemon extends EventEmitter {
       });
     }
     this.beginTurn(bridge);
+    await this.autoCheckpointBeforeTurn(bridge);
     await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
   }
 
@@ -5726,6 +5887,287 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked to take a checkpoint of a session's worktree right now
+   * (issue #268's "named or auto-labeled checkpoint on demand", issue
+   * #603's own wiring). Ignored if `sessionId` isn't one of this node's
+   * sessions at all ({@link resolveSessionRouting}'s guard). A decrypt
+   * failure is logged only (mirrors `handlePermissionPolicySet`'s own
+   * "nothing to reply to a garbled request with"); once decrypted,
+   * {@link performCheckpointCreate} always replies, `outcome: 'error'`
+   * included.
+   */
+  private handleCheckpointCreate(message: CheckpointCreate): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptCheckpointCreate(message)
+      .then((payload) => this.performCheckpointCreate(routing.session, message.requestId, payload))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle checkpoint_create for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptCheckpointCreate(
+    message: CheckpointCreate,
+  ): Promise<CheckpointCreatePayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<CheckpointCreatePayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async performCheckpointCreate(
+    session: Session,
+    requestId: string,
+    payload: CheckpointCreatePayloadV1,
+  ): Promise<void> {
+    const store = this.getCheckpointStore(session);
+    if (!store) {
+      await this.sendCheckpointResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'unsupported_target',
+        message: CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      });
+      return;
+    }
+    try {
+      const checkpoint = await store.checkpoint({ message: payload.message });
+      await this.sendCheckpointResult(session.id, requestId, {
+        outcome: 'ok',
+        checkpoint: toGitCheckpointV1(checkpoint, session),
+      });
+    } catch (error) {
+      await this.sendCheckpointResult(session.id, requestId, checkpointErrorOutcome(error));
+    }
+  }
+
+  private async sendCheckpointResult(
+    sessionId: string,
+    requestId: string,
+    payload: CheckpointResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'checkpoint_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** A client asked for every checkpoint taken so far for a session (issue #603). Ignored if `sessionId` isn't one of this node's sessions at all — needs only `worktreePath`, never the live agent, mirrors `handleTestRunnerConfigGet`. No envelope on the request, so no decrypt step. */
+  private handleCheckpointList(message: CheckpointList): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.performCheckpointList(routing.session, message.requestId).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to handle checkpoint_list for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  private async performCheckpointList(session: Session, requestId: string): Promise<void> {
+    const store = this.getCheckpointStore(session);
+    if (!store) {
+      await this.sendCheckpointListResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'unsupported_target',
+        message: CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      });
+      return;
+    }
+    try {
+      const checkpoints = await store.listCheckpoints();
+      await this.sendCheckpointListResult(session.id, requestId, {
+        outcome: 'ok',
+        checkpoints: checkpoints.map((checkpoint) => toGitCheckpointV1(checkpoint, session)),
+      });
+    } catch (error) {
+      await this.sendCheckpointListResult(session.id, requestId, checkpointErrorOutcome(error));
+    }
+  }
+
+  private async sendCheckpointListResult(
+    sessionId: string,
+    requestId: string,
+    payload: CheckpointListResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'checkpoint_list_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** A client asked what restoring to `checkpointId` would do, with no side effects (issue #603's "surface `RestorePreview` to the client before a rollback executes"). Ignored if `sessionId` isn't one of this node's sessions at all. `checkpointId` travels as a plain field (no envelope), mirroring `handleTerminalClose`. */
+  private handleCheckpointRestorePreview(message: CheckpointRestorePreview): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.performCheckpointRestorePreview(
+      routing.session,
+      message.requestId,
+      message.checkpointId,
+    ).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to handle checkpoint_restore_preview for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  private async performCheckpointRestorePreview(
+    session: Session,
+    requestId: string,
+    checkpointId: string,
+  ): Promise<void> {
+    const store = this.getCheckpointStore(session);
+    if (!store) {
+      await this.sendCheckpointRestorePreviewResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'unsupported_target',
+        message: CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      });
+      return;
+    }
+    try {
+      const preview = await store.previewRestore(checkpointId);
+      await this.sendCheckpointRestorePreviewResult(session.id, requestId, {
+        outcome: 'ok',
+        preview: toRestorePreviewV1(preview, session),
+      });
+    } catch (error) {
+      await this.sendCheckpointRestorePreviewResult(
+        session.id,
+        requestId,
+        checkpointErrorOutcome(error),
+      );
+    }
+  }
+
+  private async sendCheckpointRestorePreviewResult(
+    sessionId: string,
+    requestId: string,
+    payload: CheckpointRestorePreviewResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'checkpoint_restore_preview_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked to actually roll back to `checkpointId` (issue #603) —
+   * destructive. Ignored if `sessionId` isn't one of this node's sessions
+   * at all. `checkpointId`/`confirm` travel as plain fields (no envelope),
+   * mirroring `checkpoint_restore_preview`. See
+   * {@link performCheckpointRestore} for the confirmation gate and the
+   * turn-in-progress refusal.
+   */
+  private handleCheckpointRestore(message: CheckpointRestore): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.performCheckpointRestore(
+      routing.session,
+      message.requestId,
+      message.checkpointId,
+      message.confirm,
+    ).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to handle checkpoint_restore for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * Refuses outright for an `ssh:` session or while this session's agent
+   * is actively mid-turn (`bridge.agentSession.getAttentionState().status
+   * === 'working'` — a restore racing a live write, issue #603's "the
+   * destructive path needs to be honest"). Otherwise previews first: if
+   * there is anything uncommitted to discard and the caller didn't
+   * already set `confirm: true`, replies `outcome: 'confirmation_required'`
+   * with that same preview and stops — the actual `restore()` never runs
+   * without an explicit, informed `confirm` (this is the structural half
+   * of "a rollback that would discard uncommitted human edits must say so
+   * before it runs"; `preview.isWorkInPlace` is the client's own signal
+   * for whether those uncommitted changes might be the human's, not just
+   * the agent's — see `@loombox/protocol`'s `checkpoint.ts` doc comment).
+   */
+  private async performCheckpointRestore(
+    session: Session,
+    requestId: string,
+    checkpointId: string,
+    confirm: boolean,
+  ): Promise<void> {
+    const store = this.getCheckpointStore(session);
+    if (!store) {
+      await this.sendCheckpointRestoreResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'unsupported_target',
+        message: CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      });
+      return;
+    }
+
+    const bridge = this.bridges.get(session.id);
+    if (bridge && bridge.agentSession.getAttentionState().status === 'working') {
+      await this.sendCheckpointRestoreResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'turn_in_progress',
+        message: CHECKPOINT_TURN_IN_PROGRESS_MESSAGE,
+      });
+      return;
+    }
+
+    try {
+      const preview = await store.previewRestore(checkpointId);
+      if (preview.hasUncommittedChangesToDiscard && !confirm) {
+        await this.sendCheckpointRestoreResult(session.id, requestId, {
+          outcome: 'confirmation_required',
+          preview: toRestorePreviewV1(preview, session),
+        });
+        return;
+      }
+      const result = await store.restore(checkpointId);
+      await this.sendCheckpointRestoreResult(session.id, requestId, { outcome: 'ok', result });
+    } catch (error) {
+      await this.sendCheckpointRestoreResult(session.id, requestId, checkpointErrorOutcome(error));
+    }
+  }
+
+  private async sendCheckpointRestoreResult(
+    sessionId: string,
+    requestId: string,
+    payload: CheckpointRestoreResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'checkpoint_restore_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

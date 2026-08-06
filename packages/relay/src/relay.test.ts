@@ -60,6 +60,14 @@ import {
   type TerminalOpened,
   type TerminalOutput,
   type TerminalResize,
+  type CheckpointCreate,
+  type CheckpointList,
+  type CheckpointListResult,
+  type CheckpointResult,
+  type CheckpointRestore,
+  type CheckpointRestorePreview,
+  type CheckpointRestorePreviewResult,
+  type CheckpointRestoreResult,
   type PermissionPolicyGet,
   type PermissionPolicyResult,
   type PermissionPolicySet,
@@ -3114,6 +3122,200 @@ describe('relay v1', () => {
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('checkpoint_create/_list/_restore_preview/_restore and their replies (SPEC §7.20; issue #603) — routed and fanned out exactly like test_runner_config_get/_set/_detect above, always blind', () => {
+    /** Same shared setup the terminal/test_runner_config describe blocks above use. */
+    async function bootstrapAnnouncedSession(
+      sessionId: string,
+    ): Promise<{ url: string; node: WebSocket; client: WebSocket }> {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: sessionId, accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId,
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      return { url, node, client };
+    }
+
+    it('routes a client checkpoint_create to the owning node, byte-for-byte, never inspecting the envelope (the label stays opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_create');
+
+      const request: CheckpointCreate = {
+        type: 'checkpoint_create',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_create',
+        requestId: 'req_create_1',
+        envelope: fakeEnvelope('before refactor'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as CheckpointCreate;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client checkpoint_list to the owning node — no envelope, since asking carries no content', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_list');
+
+      const request: CheckpointList = {
+        type: 'checkpoint_list',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_list',
+        requestId: 'req_list_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as CheckpointList;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client checkpoint_restore_preview to the owning node — checkpointId is a plain opaque id, no envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_preview');
+
+      const request: CheckpointRestorePreview = {
+        type: 'checkpoint_restore_preview',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_preview',
+        requestId: 'req_preview_1',
+        checkpointId: 'cp_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as CheckpointRestorePreview;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['checkpointId', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client checkpoint_restore to the owning node — checkpointId and confirm are plain fields, no envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_restore');
+
+      const request: CheckpointRestore = {
+        type: 'checkpoint_restore',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_restore',
+        requestId: 'req_restore_1',
+        checkpointId: 'cp_1',
+        confirm: true,
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as CheckpointRestore;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['checkpointId', 'confirm', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans checkpoint_result out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_result');
+
+      const response: CheckpointResult = {
+        type: 'checkpoint_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_result',
+        requestId: 'req_create_1',
+        envelope: fakeEnvelope('{"outcome":"ok","checkpoint":{"id":"cp_1"}}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as CheckpointResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans checkpoint_list_result out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_list_result');
+
+      const response: CheckpointListResult = {
+        type: 'checkpoint_list_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_list_result',
+        requestId: 'req_list_1',
+        envelope: fakeEnvelope('{"outcome":"ok","checkpoints":[]}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as CheckpointListResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans checkpoint_restore_preview_result out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_preview_result');
+
+      const response: CheckpointRestorePreviewResult = {
+        type: 'checkpoint_restore_preview_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_preview_result',
+        requestId: 'req_preview_1',
+        envelope: fakeEnvelope(
+          '{"outcome":"ok","preview":{"checkpointId":"cp_1","commitsSinceCheckpoint":0,"hasUncommittedChangesToDiscard":true,"isWorkInPlace":false}}',
+        ),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as CheckpointRestorePreviewResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans checkpoint_restore_result out to the subscribed client, byte-for-byte, never inspecting the envelope (what a restore actually discarded stays opaque)', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_checkpoint_restore_result');
+
+      const response: CheckpointRestoreResult = {
+        type: 'checkpoint_restore_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_checkpoint_restore_result',
+        requestId: 'req_restore_1',
+        envelope: fakeEnvelope(
+          '{"outcome":"ok","result":{"checkpointId":"cp_1","discardedUncommittedChanges":true,"commitsPreserved":0}}',
+        ),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as CheckpointRestoreResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
       );
     });
   });
