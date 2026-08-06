@@ -1,5 +1,5 @@
 ---
-"@loombox/web": patch
+'@loombox/web': patch
 ---
 
 Move session/project/target envelope decrypt+encrypt (SPEC §8) off the main thread into a bundled Web Worker, and batch a burst of same-tick envelopes into one `Promise.all` inside the worker's own message handler (issue #756, cockpit-parity decision E3-4).
