@@ -931,6 +931,82 @@ describe('reduceSessionEvent: mcp_server_status', () => {
   });
 });
 
+describe('reduceSessionEvent: mcp_server_prompts (issue #754, D5-2)', () => {
+  it('starts undefined — no push means no opinion, distinct from an empty list', () => {
+    expect(createTranscriptState().mcpServerPrompts).toBeUndefined();
+  });
+
+  it('records a server, its prompts, and their argument schema verbatim', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [
+        {
+          name: 'linear-server',
+          prompts: [
+            { name: 'review', description: 'Review the current diff' },
+            {
+              name: 'triage',
+              description: 'Triage an issue',
+              arguments: [{ name: 'issueId', description: 'The issue id', required: true }],
+            },
+          ],
+        },
+      ],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerPrompts).toEqual([
+      {
+        name: 'linear-server',
+        prompts: [
+          { name: 'review', description: 'Review the current diff' },
+          {
+            name: 'triage',
+            description: 'Triage an issue',
+            arguments: [{ name: 'issueId', description: 'The issue id', required: true }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('a later push replaces the list wholesale, never accumulating across pushes', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [{ name: 'a', prompts: [{ name: 'p1' }] }],
+      updatedAt: 't1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'mcp_server_prompts',
+      servers: [{ name: 'b', prompts: [{ name: 'p2' }] }],
+      updatedAt: 't2',
+    });
+    expect(state.mcpServerPrompts).toEqual([{ name: 'b', prompts: [{ name: 'p2' }] }]);
+  });
+
+  it('an empty push is genuinely valid (every launched server had no prompts), not "no push yet"', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerPrompts).toEqual([]);
+  });
+
+  it('does not mutate the server/prompt/argument objects passed in (defensive clone)', () => {
+    const argument = { name: 'issueId', required: true };
+    const prompt = { name: 'triage', arguments: [argument] };
+    const server = { name: 'linear-server', prompts: [prompt] };
+    reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [server],
+      updatedAt: 't1',
+    });
+    expect(server).toEqual({ name: 'linear-server', prompts: [prompt] });
+    expect(prompt).toEqual({ name: 'triage', arguments: [argument] });
+    expect(argument).toEqual({ name: 'issueId', required: true });
+  });
+});
+
 describe('reduceSessionEvent: delegates every AcpTranscriptUpdate kind unchanged to reduceTranscript', () => {
   it('agent_message_chunk still reduces into a transcript item', () => {
     const state = reduceSessionEvent(createTranscriptState(), {

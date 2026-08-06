@@ -2,6 +2,7 @@ import type {
   AcpAvailableCommand,
   AcpConfigOption,
   AcpDiff,
+  AcpMcpServerPromptsEntry,
   AcpMcpServerStatusEntry,
   AcpMessageChunkKind,
   AcpMessageChunkUpdate,
@@ -214,6 +215,8 @@ export interface TranscriptState {
   lastStopReason: string | undefined;
   /** The latest `mcp_server_status` push's server list, if any has arrived yet (SPEC.md §7.7/§7.17; issue #750) — always the full set that event carried (replaced wholesale, never merged/accumulated across pushes), and only ever the servers that failed to start; `undefined` until the first push, `[]` is a genuinely valid "every configured server started fine" push, not "no push yet". */
   mcpServerStatuses: AcpMcpServerStatusEntry[] | undefined;
+  /** The latest `mcp_server_prompts` push's server list, if any has arrived yet (Zed-parity D5-2, issue #754) — same "replaced wholesale, `undefined` until the first push, `[]` is genuinely valid" contract as {@link mcpServerStatuses}. Only ever the servers that both started AND declared at least one prompt (see `AcpMcpServerPromptsEvent`'s own doc comment). */
+  mcpServerPrompts: AcpMcpServerPromptsEntry[] | undefined;
 }
 
 /** The empty starting state for a session's transcript. */
@@ -231,6 +234,7 @@ export function createTranscriptState(): TranscriptState {
     turnActive: false,
     lastStopReason: undefined,
     mcpServerStatuses: undefined,
+    mcpServerPrompts: undefined,
   };
 }
 
@@ -467,13 +471,14 @@ export function reduceTranscript(
  * Reduce one {@link AcpSessionWireEvent} into a new `TranscriptState` — the
  * wider reducer entry point for everything that can travel inside a
  * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149,
- * #750), additive to {@link reduceTranscript}: every ACP transcript-reducer
- * update kind delegates straight through to it unchanged, and the seven
- * session-lifecycle kinds are folded into the new `status`/`configOptions`/
- * `commands`/`turnActive`/`lastStopReason`/`mcpServerStatuses` fields
- * instead. Never mutates `state`, same contract as `reduceTranscript`.
- * `now` (see `reduceTranscript`'s own doc comment) passes straight through
- * for the five transcript-update kinds it delegates.
+ * #750, #754), additive to {@link reduceTranscript}: every ACP transcript-
+ * reducer update kind delegates straight through to it unchanged, and the
+ * eight session-lifecycle kinds are folded into the new `status`/
+ * `configOptions`/`commands`/`turnActive`/`lastStopReason`/
+ * `mcpServerStatuses`/`mcpServerPrompts` fields instead. Never mutates
+ * `state`, same contract as `reduceTranscript`. `now` (see
+ * `reduceTranscript`'s own doc comment) passes straight through for the
+ * five transcript-update kinds it delegates.
  */
 export function reduceSessionEvent(
   state: TranscriptState,
@@ -510,6 +515,17 @@ export function reduceSessionEvent(
       return { ...state, turnActive: false, lastStopReason: event.stopReason };
     case 'mcp_server_status':
       return { ...state, mcpServerStatuses: event.servers.map((server) => ({ ...server })) };
+    case 'mcp_server_prompts':
+      return {
+        ...state,
+        mcpServerPrompts: event.servers.map((server) => ({
+          ...server,
+          prompts: server.prompts.map((prompt) => ({
+            ...prompt,
+            arguments: prompt.arguments ? prompt.arguments.map((arg) => ({ ...arg })) : undefined,
+          })),
+        })),
+      };
   }
 }
 

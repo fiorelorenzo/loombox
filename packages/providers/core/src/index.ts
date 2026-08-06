@@ -179,6 +179,30 @@ export {
 export { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from './mcp-presets';
 export type { McpServerPreset } from './mcp-presets';
 
+// v1: MCP prompts as `/`-commands (Zed-parity D5-2; issue #754) — a
+// second, independent MCP connection this package owns end to end
+// (separate from `AcpClient`'s ACP connection to the agent, which never
+// forwards an MCP server's prompt catalogue onto `available_commands_
+// update` — see this module's own doc comment). `fetchMcpServerPrompts`
+// backs the node's `mcp_server_prompts` push; `fetchMcpPromptText` backs
+// its `mcp_prompt_get_request` handler.
+export {
+  McpPromptClientError,
+  fetchMcpPromptText,
+  fetchMcpServerPrompts,
+} from './mcp-prompt-client';
+export type {
+  McpDiscoveredPrompt,
+  McpPromptArgumentSpec,
+  McpPromptClientOptions,
+  McpServerPromptsResult,
+} from './mcp-prompt-client';
+export type {
+  AcpMcpServerPrompt,
+  AcpMcpServerPromptArgument,
+  AcpMcpServerPromptsEntry,
+  AcpMcpServerPromptsEvent,
+} from './types';
 // v1: curated catalogue of known-good ACP agents that speak ACP but have
 // no registered loombox provider (D1-3's second half; issue #749) — a
 // quick-add convenience over the custom-agent path (issue #748), never a
