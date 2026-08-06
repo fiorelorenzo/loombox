@@ -3,11 +3,12 @@ import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GitCheckpointV1 } from '@loombox/protocol';
-import CheckpointPanel, { type CheckpointListClient } from './CheckpointPanel.svelte';
+import type { ClientSessionMeta } from '$lib/relay-client';
+import CheckpointsDialog, { type CheckpointsClient } from './CheckpointsDialog.svelte';
 
-// jsdom has no Web Animations API; the restore dialog this panel mounts
-// (`Dialog`'s panel-lift transition) calls `element.animate()` once opened
-// reactively — see `TargetStatusView.test.ts`'s identical stub for why.
+// jsdom has no Web Animations API; `Dialog`'s panel-lift transition calls
+// `element.animate()` once opened/closed reactively (see
+// `TargetStatusView.test.ts`'s identical stub for why).
 if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
   Element.prototype.animate = () =>
     ({
@@ -19,6 +20,20 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'func
 }
 
 afterEach(() => cleanup());
+
+function makeSession(overrides: Partial<ClientSessionMeta> = {}): ClientSessionMeta {
+  return {
+    id: 'sess_1',
+    nodeId: 'node_1',
+    targetId: 'local',
+    accountId: 'acct_1',
+    provider: 'claude',
+    createdAt: Date.now(),
+    title: 'Refactor relay routing',
+    projectPath: '/home/dev/loombox',
+    ...overrides,
+  };
+}
 
 function makeCheckpoint(overrides: Partial<GitCheckpointV1> = {}): GitCheckpointV1 {
   return {
@@ -36,7 +51,7 @@ function makeCheckpoint(overrides: Partial<GitCheckpointV1> = {}): GitCheckpoint
   };
 }
 
-function fakeClient(overrides: Partial<CheckpointListClient> = {}): CheckpointListClient {
+function fakeClient(overrides: Partial<CheckpointsClient> = {}): CheckpointsClient {
   return {
     listCheckpoints: vi.fn().mockResolvedValue({ outcome: 'ok', checkpoints: [] }),
     createCheckpoint: vi.fn().mockResolvedValue({ outcome: 'ok', checkpoint: makeCheckpoint() }),
@@ -57,13 +72,39 @@ function fakeClient(overrides: Partial<CheckpointListClient> = {}): CheckpointLi
   };
 }
 
-describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
-  it('shows an empty state instead of fetching anything when there is no active session', () => {
+describe('CheckpointsDialog (SPEC §7.20; issue #268/#603) — reached from the session row menu', () => {
+  it('is not rendered while closed, and never lists', () => {
     const client = fakeClient();
-    render(CheckpointPanel, { props: { client } });
-
-    expect(screen.getByTestId('ui-empty-state')).toBeTruthy();
+    render(CheckpointsDialog, {
+      props: { open: false, session: makeSession(), client, onClose: vi.fn() },
+    });
+    expect(screen.queryByTestId('dialog')).toBeNull();
     expect(client.listCheckpoints).not.toHaveBeenCalled();
+  });
+
+  it('loads the checkpoint list the moment it opens, named for the right session', async () => {
+    const client = fakeClient();
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession({ id: 'sess-1' }), client, onClose: vi.fn() },
+    });
+
+    await waitFor(() => expect(client.listCheckpoints).toHaveBeenCalledWith('sess-1'));
+  });
+
+  it('names the session in the context line', async () => {
+    const client = fakeClient();
+    render(CheckpointsDialog, {
+      props: {
+        open: true,
+        session: makeSession({ title: 'Add widget support' }),
+        client,
+        onClose: vi.fn(),
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('checkpoints-context').textContent).toContain('Add widget support'),
+    );
   });
 
   it('lists a session\u2019s checkpoints with their label and time', async () => {
@@ -73,9 +114,10 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
         checkpoints: [makeCheckpoint({ id: 'cp_1', message: 'before the refactor' })],
       }),
     });
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession(), client, onClose: vi.fn() },
+    });
 
-    await waitFor(() => expect(client.listCheckpoints).toHaveBeenCalledWith('sess_1'));
     await waitFor(() => {
       const row = screen.getByTestId('checkpoint-row-cp_1');
       expect(row.textContent).toContain('before the refactor');
@@ -85,7 +127,9 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
 
   it('shows an empty state (not an error) when a session has no checkpoints yet', async () => {
     const client = fakeClient();
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession(), client, onClose: vi.fn() },
+    });
 
     await waitFor(() => expect(screen.getByTestId('ui-empty-state')).toBeTruthy());
     expect(screen.queryByTestId('ui-error-notice')).toBeNull();
@@ -99,7 +143,9 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
         message: 'Checkpoint/rollback needs a local git worktree this node can reach directly.',
       }),
     });
-    render(CheckpointPanel, { props: { sessionId: 'sess_ssh', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession({ id: 'sess_ssh' }), client, onClose: vi.fn() },
+    });
 
     await waitFor(() => expect(screen.getByTestId('ui-empty-state').textContent).toContain('ssh:'));
     // No dead control sitting above a surface that will always fail.
@@ -111,7 +157,9 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
     const client = fakeClient({
       listCheckpoints: vi.fn().mockRejectedValue(new Error('node unreachable')),
     });
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession(), client, onClose: vi.fn() },
+    });
 
     await waitFor(() =>
       expect(screen.getByTestId('ui-error-notice').textContent).toContain('node unreachable'),
@@ -125,13 +173,15 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
       checkpoint: makeCheckpoint({ id: 'cp_new', message: 'manual save' }),
     });
     const client = fakeClient({ listCheckpoints, createCheckpoint });
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession({ id: 'sess-1' }), client, onClose: vi.fn() },
+    });
 
     const labelInput = (await screen.findByTestId('checkpoint-label-input')) as HTMLInputElement;
     await fireEvent.input(labelInput, { target: { value: 'manual save' } });
     await fireEvent.click(screen.getByTestId('checkpoint-create-button'));
 
-    await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith('sess_1', 'manual save'));
+    await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith('sess-1', 'manual save'));
     await waitFor(() =>
       expect(screen.getByTestId('checkpoint-row-cp_new').textContent).toContain('manual save'),
     );
@@ -151,7 +201,9 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
         message: 'submodule(s) with uncommitted state',
       }),
     });
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession(), client, onClose: vi.fn() },
+    });
 
     await screen.findByTestId('checkpoint-row-cp_1');
     await fireEvent.click(screen.getByTestId('checkpoint-create-button'));
@@ -162,7 +214,7 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
     expect(screen.getByTestId('checkpoint-row-cp_1')).toBeTruthy();
   });
 
-  it('clicking "Restore\u2026" on a row opens the restore dialog for that exact checkpoint', async () => {
+  it('clicking "Restore\u2026" on a row opens the restore dialog for that exact checkpoint, stacked over this one', async () => {
     const previewCheckpointRestore = vi.fn().mockResolvedValue({
       outcome: 'ok',
       preview: {
@@ -182,14 +234,43 @@ describe('CheckpointPanel (SPEC §7.20; issue #268/#603)', () => {
       }),
       previewCheckpointRestore,
     });
-    render(CheckpointPanel, { props: { sessionId: 'sess_1', client } });
+    render(CheckpointsDialog, {
+      props: { open: true, session: makeSession({ id: 'sess-1' }), client, onClose: vi.fn() },
+    });
 
     await screen.findByTestId('checkpoint-row-cp_2');
     await fireEvent.click(screen.getByTestId('checkpoint-restore-cp_2'));
 
-    await waitFor(() => expect(previewCheckpointRestore).toHaveBeenCalledWith('sess_1', 'cp_2'));
+    await waitFor(() => expect(previewCheckpointRestore).toHaveBeenCalledWith('sess-1', 'cp_2'));
     await waitFor(() =>
       expect(screen.getByTestId('checkpoint-restore-context').textContent).toContain('second'),
     );
+    // Both dialogs are stacked, not swapped — this dialog's own list is still there.
+    expect(screen.getByTestId('checkpoint-list')).toBeTruthy();
+  });
+
+  it('re-loads fresh checkpoints each time it re-opens for a (possibly different) session', async () => {
+    const listCheckpoints = vi.fn().mockResolvedValue({ outcome: 'ok', checkpoints: [] });
+    const client = fakeClient({ listCheckpoints });
+    const { rerender } = render(CheckpointsDialog, {
+      props: { open: true, session: makeSession({ id: 'sess-1' }), client, onClose: vi.fn() },
+    });
+    await waitFor(() => expect(listCheckpoints).toHaveBeenCalledWith('sess-1'));
+
+    await rerender({
+      open: false,
+      session: makeSession({ id: 'sess-1' }),
+      client,
+      onClose: vi.fn(),
+    });
+    await rerender({
+      open: true,
+      session: makeSession({ id: 'sess-2' }),
+      client,
+      onClose: vi.fn(),
+    });
+
+    await waitFor(() => expect(listCheckpoints).toHaveBeenCalledWith('sess-2'));
+    expect(listCheckpoints).toHaveBeenCalledTimes(2);
   });
 });

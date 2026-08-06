@@ -1,50 +1,51 @@
 <script lang="ts">
   /**
-   * The checkpoint list + manual "checkpoint now" surface (SPEC §7.20;
-   * issue #268, on top of #603's wiring PR #805 built — the wire
-   * protocol, `NodeDaemon`'s automatic per-turn checkpoint, and the
-   * `RestorePreview`/`RestoreResult` this panel and its dialog render).
+   * The session row menu's "Checkpoints…" action (SPEC §7.20; issue #268,
+   * on top of #603's wiring PR #805 built) — lists a session's checkpoints
+   * with their label and time, offers a "Checkpoint now" affordance, and
+   * opens `CheckpointRestoreDialog` per row. Kept in its own file/diff
+   * region deliberately: issue #747 (rewind) consumes the same
+   * `GitCheckpointStore` engine from the transcript side in parallel and
+   * must never collide with this list+dialog surface's own files.
    *
-   * Lives as its own right-sidebar sub-tab (`+page.svelte`'s
-   * `WORKBENCH_TABS`), the same "Files/Config/Runner" shell
-   * `RunnerPanel`/`TestRunnerConfigPanel` already use — a session's
-   * checkpoints are relevant throughout its whole lifetime, not a one-off
-   * row-menu action like `PrOpenDialog`/`ArchiveSessionDialog` (opening a
-   * PR happens once, near the end; a checkpoint accumulates continuously
-   * as the agent works).
+   * Originally shipped as a fourth `WORKBENCH_TABS` sub-tab beside Files/
+   * Config/Runner; moved here after `cockpit-shell.spec.ts` failed the
+   * same way it did for PR #804's `PrOpenPanel` (issue #238) — v8's C1-3
+   * deliberately settled that group at exactly Files/Config/Runner
+   * (always applicable to an open session), and a checkpoint action is
+   * occasional and session-scoped instead, the same shape "Archive
+   * session…"/"Export transcript"/"Open pull request…" already have.
+   * Reached from the row menu of ANY session, not gated to the
+   * currently-open one (`+page.svelte`'s `sessionRowMenuFor`), mirroring
+   * `PrOpenDialog`/`ArchiveSessionDialog` exactly — same `session`/`open`/
+   * `client`/`onClose` prop shape, same "resets whenever `open` becomes
+   * true" effect.
    *
-   * Restoring is its own dialog (`CheckpointRestoreDialog.svelte`), kept
-   * deliberately in a separate file/diff region: issue #747 (rewind)
-   * consumes the same `GitCheckpointStore` engine from the transcript
-   * side in parallel and must never collide with this list+dialog
-   * surface's own files.
+   * Stacks `CheckpointRestoreDialog` as a second `Dialog`/`Overlay` layer
+   * over this one when a row's "Restore…" is clicked, rather than
+   * swapping this dialog's own body to a second view
+   * (`TrackerManageTypesDialog`'s `view` convention): `Overlay.svelte`'s
+   * own `escapeStack` is built exactly for this ("a Dialog opened over a
+   * pinned Drawer closes one layer per press instead of both at once"),
+   * and restoring is destructive enough — a distinct extra confirm step,
+   * not a mere alternate view of the same list — that `CheckpointRestoreDialog`
+   * keeps its own title/focus-trap/backdrop rather than borrowing this
+   * one's.
    *
-   * An `ssh:` session's `checkpoint_list` answers
-   * `errorType: 'unsupported_target'` — rendered here as its own
-   * dedicated state (`unsupported`), never a generic `ErrorNotice` and
-   * never a "Checkpoint now" button sitting above a list that would only
-   * ever fail (issue #268's "the UI must reflect each of those states
-   * rather than discovering them as errors").
-   *
-   * A new checkpoint is appended to the local list directly from
-   * `createCheckpoint`'s own `'ok'` reply rather than triggering a full
-   * `listCheckpoints` round trip — `GitCheckpointStore.checkpoint()`
-   * already returns the exact record a follow-up list call would, and a
-   * restore never adds/removes a checkpoint (`GitCheckpointStore.restore`'s
-   * own contract), so nothing here ever needs to refetch after either
-   * action completes.
-   *
-   * `client` is narrowed to just the calls this panel and the dialog it
-   * mounts need (mirrors `RunnerPanel`'s identical DI pattern), satisfied
-   * structurally by the real `RelayClient` with no adapter needed.
+   * `client` is narrowed to just the calls this dialog and the restore
+   * dialog it mounts need (mirrors `RunnerPanel`'s identical DI pattern),
+   * satisfied structurally by the real `RelayClient` with no adapter
+   * needed.
    */
   import type {
     CheckpointListResultPayloadV1,
     CheckpointResultPayloadV1,
     GitCheckpointV1,
   } from '@loombox/protocol';
+  import type { ClientSessionMeta } from '$lib/relay-client';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
+  import Dialog from './ui/Dialog.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Input from './ui/Input.svelte';
@@ -55,30 +56,32 @@
     type CheckpointRestoreClient,
   } from './CheckpointRestoreDialog.svelte';
 
-  /** The calls this panel needs off `RelayClient`, on top of the two `CheckpointRestoreDialog` needs (it mounts one) — see the file doc comment's DI note. */
-  export interface CheckpointListClient extends CheckpointRestoreClient {
+  /** The calls this dialog needs off `RelayClient`, on top of the two `CheckpointRestoreDialog` needs (it mounts one) — see the file doc comment's DI note. */
+  export interface CheckpointsClient extends CheckpointRestoreClient {
     createCheckpoint(sessionId: string, message?: string): Promise<CheckpointResultPayloadV1>;
     listCheckpoints(sessionId: string): Promise<CheckpointListResultPayloadV1>;
   }
 
   interface Props {
-    sessionId?: string;
-    client?: CheckpointListClient;
+    open: boolean;
+    session: ClientSessionMeta;
+    client: CheckpointsClient | undefined;
+    onClose: () => void;
   }
 
-  const { sessionId, client }: Props = $props();
+  const { open, session, client, onClose }: Props = $props();
 
   let checkpoints = $state<GitCheckpointV1[]>([]);
   let loading = $state(true);
   let loadError = $state<string | undefined>(undefined);
-  /** `true` once `checkpoint_list` has answered `errorType: 'unsupported_target'` for the current session — see the file doc comment. */
+  /** `true` once `checkpoint_list` has answered `errorType: 'unsupported_target'` for this session — see the file doc comment. */
   let unsupported = $state(false);
 
   let labelInput = $state('');
   let creating = $state(false);
   let createError = $state<string | undefined>(undefined);
 
-  /** The checkpoint a just-opened `CheckpointRestoreDialog` previews/restores; `undefined` when none is open yet — same split `+page.svelte`'s `archivingSession`/`archiveSessionOpen` uses, so the dialog's own exit transition still has real content to render while it plays out. */
+  /** The checkpoint a just-opened `CheckpointRestoreDialog` previews/restores; `undefined` when none is open yet. */
   let restoringCheckpoint = $state<GitCheckpointV1 | undefined>(undefined);
   let restoreDialogOpen = $state(false);
 
@@ -90,15 +93,12 @@
     });
   }
 
-  async function load(
-    currentSessionId: string,
-    currentClient: CheckpointListClient,
-  ): Promise<void> {
+  async function load(sessionId: string, currentClient: CheckpointsClient): Promise<void> {
     loading = true;
     loadError = undefined;
     unsupported = false;
     try {
-      const result = await currentClient.listCheckpoints(currentSessionId);
+      const result = await currentClient.listCheckpoints(sessionId);
       if (result.outcome === 'ok') {
         checkpoints = result.checkpoints;
       } else if (result.errorType === 'unsupported_target') {
@@ -114,30 +114,28 @@
     }
   }
 
-  // Reloads whenever the selected session (or, in a test, the injected
-  // client) changes — this panel stays mounted across a session switch,
-  // same "not a one-shot onMount" reasoning `RunnerPanel`'s identical
-  // effect documents.
+  // Resets every time the dialog opens for a (possibly different) session,
+  // same "open is this effect's only reactive read" convention
+  // `ArchiveSessionDialog`/`PrOpenDialog` already use.
   $effect(() => {
-    const currentSessionId = sessionId;
-    const currentClient = client;
+    if (!open) return;
+    checkpoints = [];
+    loadError = undefined;
+    unsupported = false;
     labelInput = '';
+    creating = false;
     createError = undefined;
-    if (!currentSessionId || !currentClient) {
-      checkpoints = [];
-      loading = false;
-      unsupported = false;
-      return;
-    }
-    void load(currentSessionId, currentClient);
+    restoringCheckpoint = undefined;
+    restoreDialogOpen = false;
+    if (client) void load(session.id, client);
   });
 
   async function createNow(): Promise<void> {
-    if (!sessionId || !client || creating) return;
+    if (!client || creating) return;
     creating = true;
     createError = undefined;
     try {
-      const result = await client.createCheckpoint(sessionId, labelInput);
+      const result = await client.createCheckpoint(session.id, labelInput);
       if (result.outcome === 'ok') {
         checkpoints = [...checkpoints, result.checkpoint];
         labelInput = '';
@@ -164,12 +162,18 @@
   function closeRestoreDialog(): void {
     restoreDialogOpen = false;
   }
+
+  function handleClose(): void {
+    onClose();
+  }
 </script>
 
-<div class="checkpoint-panel" data-testid="checkpoint-panel">
-  {#if !sessionId}
-    <EmptyState message="Select a session to see its checkpoints." />
-  {:else if loading}
+{#snippet dialogBody()}
+  <p class="checkpoint-context" data-testid="checkpoints-context">
+    Checkpoints for <strong>{session.title}</strong>.
+  </p>
+
+  {#if loading}
     <p class="loading" data-testid="checkpoint-list-loading">
       <WovenLoader size="sm" label="Loading" />
       Loading checkpoints…
@@ -201,7 +205,7 @@
       <ErrorNotice
         message={`Could not load checkpoints: ${loadError}`}
         retryable
-        onRetry={() => void (sessionId && client && load(sessionId, client))}
+        onRetry={() => void (client && load(session.id, client))}
       />
     {:else if checkpoints.length === 0}
       <EmptyState
@@ -233,12 +237,18 @@
       </ul>
     {/if}
   {/if}
-</div>
+{/snippet}
 
-{#if restoringCheckpoint && sessionId}
+<Dialog {open} label="Checkpoints" onClose={handleClose} size="md" children={dialogBody}>
+  {#snippet header()}
+    <h2>Checkpoints</h2>
+  {/snippet}
+</Dialog>
+
+{#if restoringCheckpoint}
   <CheckpointRestoreDialog
     open={restoreDialogOpen}
-    {sessionId}
+    sessionId={session.id}
     checkpoint={restoringCheckpoint}
     {client}
     onClose={closeRestoreDialog}
@@ -246,10 +256,9 @@
 {/if}
 
 <style>
-  .checkpoint-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
+  .checkpoint-context {
+    margin: 0;
+    color: var(--color-text-secondary);
   }
 
   .checkpoint-create-form {
