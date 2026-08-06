@@ -1016,3 +1016,106 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
     expect(screen.queryByTestId('session-export-link')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------
+// F1-3 (Zed-parity, issue #758): the command palette is a pure view over
+// `actionRegistry` (`$lib/action-registry.ts`), and `handleGlobalKeydown`
+// dispatches shortcuts through that same registry. `action-registry.
+// test.ts` covers the registry module itself in isolation; these tests
+// exercise the real wiring end to end — a real fake-client-backed
+// cockpit, real `keydown` events on `window` — so a regression in how
+// `+page.svelte` builds `actionContext`/`actionHandlers` from live state
+// fails here even if the pure module's own tests still pass.
+// ---------------------------------------------------------------------
+
+describe('command palette: a view over the action registry (issue #758)', () => {
+  async function openPalette(): Promise<void> {
+    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    await screen.findByTestId('dialog');
+  }
+
+  it('"Stop current turn" is hidden at rest (no active turn)', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Stop current turn')).toBeNull();
+  });
+
+  it('"Stop current turn" appears, with its Mod+. binding shown, once the selected session\'s turn is active', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    const row = screen.getByText('Stop current turn').closest('button');
+    expect(row?.textContent).toContain('Mod+.');
+  });
+
+  it('"Next session"/"Previous session" are hidden with only one session', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.queryByText('Next session')).toBeNull();
+    expect(screen.queryByText('Previous session')).toBeNull();
+  });
+
+  it('"Next session"/"Previous session" appear with more than one session, and actually cycle the selection when picked', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await openPalette();
+    expect(screen.getByText('Next session')).toBeTruthy();
+    expect(screen.getByText('Previous session')).toBeTruthy();
+
+    await fireEvent.click(screen.getByText('Next session'));
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+  });
+
+  it('Mod+B still toggles the sessions column, unchanged (no regression)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    const column = await screen.findByTestId('sessions-column');
+    expect(column.className).not.toContain('collapsed');
+
+    await fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    expect(column.className).toContain('collapsed');
+  });
+
+  it('Mod+. still interrupts an active turn (no regression)', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: { ...createTranscriptState(), turnActive: true } },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).toHaveBeenCalledWith('sess_1');
+  });
+
+  it('Mod+. does nothing when no turn is active — the deliberate tightening this migration ships (see action-registry.ts\'s "stop-turn" doc comment)', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession({ id: 'sess_1' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: '.', metaKey: true });
+    expect(client.interruptTurn).not.toHaveBeenCalled();
+  });
+
+  it('a chord bound to no registered action does nothing — nothing outside the registry can wire a new global shortcut', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
