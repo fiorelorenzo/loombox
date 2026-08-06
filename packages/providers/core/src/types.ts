@@ -66,19 +66,51 @@ export interface AcpPromptCapabilities {
 }
 
 /**
+ * ACP's own `sessionCapabilities` sub-object: each key's mere presence (even
+ * an empty `{}`) means the agent supports that session-lifecycle affordance;
+ * an absent key means it doesn't (SPEC.md §5.5: "session/resume + replay
+ * ... session/list, and cancellation", "additional-directories, session
+ * delete"). Field-for-field against the real ACP v1 `SessionCapabilities`
+ * object (`@agentclientprotocol/sdk`'s own `zSessionCapabilities` schema,
+ * confirmed against the installed `@agentclientprotocol/codex-acp@1.1.10`
+ * and a real `omp acp` binary recording — issue #821;
+ * `docs/research/codex-acp-completeness.md`,
+ * `test/fixtures/omp-acp-session-new-response.json`). `fork` exists on the
+ * real object too but nothing in this codebase reads it yet, so it's left
+ * off rather than typed and ignored.
+ */
+export interface AcpSessionCapabilities {
+  resume?: Record<string, unknown>;
+  list?: Record<string, unknown>;
+  close?: Record<string, unknown>;
+  delete?: Record<string, unknown>;
+  additionalDirectories?: Record<string, unknown>;
+}
+
+/**
  * The full set of optional affordances an agent may advertise at
- * `initialize` time (SPEC.md §5.5: "image/audio attach, an MCP-server
- * picker, additional-directories, session delete"). Every field optional,
- * on the same "absent = off" rule.
+ * `initialize` time (SPEC.md §5.5), field-for-field against the real ACP v1
+ * `AgentCapabilities` object rather than an invented shape. Every field
+ * optional, on the same "absent = off" rule.
+ *
+ * Issue #821 rewrote this interface after a build-time verification spike
+ * (issue #182) found it declared five top-level fields real ACP v1 doesn't
+ * have, cross-checked against `@agentclientprotocol/sdk`'s own
+ * `zAgentCapabilities` schema and a real `omp acp` binary recording
+ * (`docs/research/codex-acp-completeness.md`,
+ * `test/fixtures/omp-acp-session-new-response.json`):
+ * `additionalDirectories`/`sessionDelete` are real, but live nested under
+ * {@link AcpSessionCapabilities} (`.additionalDirectories`/`.delete`), not
+ * flat here — fixed by nesting. `mcpServerPicker`, `requestPermission` and
+ * `plans` don't exist anywhere in the real schema, in any nesting, and
+ * nothing in this codebase read the flags `deriveFeatureFlags` derived from
+ * them — removed outright rather than kept as dead plumbing around a
+ * capability that was never real.
  */
 export interface AcpAgentCapabilities {
   loadSession?: boolean;
   promptCapabilities?: AcpPromptCapabilities;
-  mcpServerPicker?: boolean;
-  additionalDirectories?: boolean;
-  sessionDelete?: boolean;
-  requestPermission?: boolean;
-  plans?: boolean;
+  sessionCapabilities?: AcpSessionCapabilities;
 }
 
 export interface AcpInitializeResult {

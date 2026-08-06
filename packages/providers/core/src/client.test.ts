@@ -4,13 +4,14 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AcpClient, mapAvailableCommands, mapConfigOptions, mapToTranscriptUpdate } from './client';
+import { deriveFeatureFlags } from './capabilities';
 import {
   createTranscriptState,
   reduceTranscript,
   type TranscriptMessageItem,
   type TranscriptState,
 } from './transcript';
-import type { AcpMessageChunkKind, AcpUpdate } from './types';
+import type { AcpAgentCapabilities, AcpMessageChunkKind, AcpUpdate } from './types';
 
 /** Narrows a `TranscriptState.items` entry to its message-item variant with a given chunk kind — plain equality can't narrow past the `TranscriptItem` union, so `.find` needs a real type predicate to make `.text` accessible afterwards. */
 function findMessageItem(
@@ -457,6 +458,43 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
         choices: [{ id: 'balanced', name: 'Balanced' }],
       },
     ]);
+  });
+});
+
+/**
+ * `deriveFeatureFlags` against a real recorded `initialize` response (issue
+ * #821), same recording convention as `mapConfigOptions` above: the
+ * `agentCapabilities` below are exactly what spawning the real `omp acp`
+ * binary (v17.2.9) over stdio sent back, nothing hand-written — the same
+ * `test/fixtures/omp-acp-session-new-response.json` recording the
+ * `mapConfigOptions` suite above already uses. Proves the fix against a
+ * genuine ACP v1 initialize response, not just a hand-built one: real
+ * `sessionCapabilities` nests `resume`/`list`/`fork`/`close` (no
+ * `delete`/`additionalDirectories` — this particular agent doesn't support
+ * either), and the top-level `loadSession` the response also sets must NOT
+ * be what `supportsResume` reads.
+ */
+describe('deriveFeatureFlags: real omp acp initialize response (issue #821)', () => {
+  const RECORDED_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'test',
+    'fixtures',
+    'omp-acp-session-new-response.json',
+  );
+  const recorded = JSON.parse(readFileSync(RECORDED_PATH, 'utf8')) as {
+    initResult: { agentCapabilities?: AcpAgentCapabilities };
+  };
+
+  it('derives real ACP v1 feature flags from a real omp acp initialize response, including supportsResume from the nested sessionCapabilities.resume', () => {
+    expect(deriveFeatureFlags(recorded.initResult.agentCapabilities)).toEqual({
+      supportsImages: true,
+      supportsAudio: false,
+      supportsEmbeddedContext: true,
+      supportsResume: true,
+      supportsAdditionalDirectories: false,
+      supportsSessionDelete: false,
+    });
   });
 });
 

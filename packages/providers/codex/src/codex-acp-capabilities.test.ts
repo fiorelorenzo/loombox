@@ -182,24 +182,35 @@ describe("real-shape conformance: loombox's Codex adapter functions against actu
     expect(result.ok && result.block.mimeType).toBe('image/png');
   });
 
-  it("[known gap, issue #821] deriveFeatureFlags reports supportsSessionDelete/supportsAdditionalDirectories as false against Codex's real capabilities, even though Codex supports both", () => {
-    // Codex's real agentCapabilities shape (dist/index.js:28773-28795): the
-    // fields AcpAgentCapabilities expects at the TOP level don't exist
-    // there at all -- `delete`/`additionalDirectories` are nested one level
-    // down, under `sessionCapabilities`, which AcpAgentCapabilities has no
-    // field to carry. There is nothing to set here that deriveFeatureFlags
-    // reads for either flag.
+  it("deriveFeatureFlags reports supportsSessionDelete/supportsAdditionalDirectories/supportsResume correctly against Codex's real capabilities, reading the real nested/renamed fields (issue #821 fix)", () => {
+    // Codex's real agentCapabilities shape (dist/index.js:28773-28795):
+    // `delete`/`additionalDirectories` live nested under
+    // `sessionCapabilities`, and the method AcpClient's resumeSession()
+    // actually calls (session/resume) is gated by
+    // `sessionCapabilities.resume`, not the older top-level `loadSession`
+    // flag (which gates session/load, a method this client never calls).
     const realCodexAgentCapabilities: AcpAgentCapabilities = {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
+      sessionCapabilities: {
+        resume: {},
+        list: {},
+        close: {},
+        delete: {},
+        additionalDirectories: {},
+      },
     };
     const flags = deriveFeatureFlags(realCodexAgentCapabilities);
-    expect(flags.supportsSessionDelete).toBe(false);
-    expect(flags.supportsAdditionalDirectories).toBe(false);
-    // supportsResume happens to come out right today only because it reads
-    // `loadSession` (the OLDER session/load flag, which Codex also sets) --
-    // not because it reads the `sessionCapabilities.resume` field that
-    // actually gates the `session/resume` method `AcpClient` calls.
+    expect(flags.supportsSessionDelete).toBe(true);
+    expect(flags.supportsAdditionalDirectories).toBe(true);
     expect(flags.supportsResume).toBe(true);
+  });
+
+  it('deriveFeatureFlags reports supportsResume: false for an agent that sets the older loadSession flag but not sessionCapabilities.resume (issue #821: loadSession gates session/load, a different method than the one this client calls)', () => {
+    const loadSessionOnlyAgent: AcpAgentCapabilities = {
+      loadSession: true,
+      promptCapabilities: { image: true, embeddedContext: true },
+    };
+    expect(deriveFeatureFlags(loadSessionOnlyAgent).supportsResume).toBe(false);
   });
 });

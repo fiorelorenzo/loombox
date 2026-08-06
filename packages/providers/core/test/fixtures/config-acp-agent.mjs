@@ -152,11 +152,11 @@ rl.on('line', (line) => {
         agentCapabilities: {
           loadSession: true,
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
-          mcpServerPicker: true,
-          additionalDirectories: false,
-          sessionDelete: true,
-          requestPermission: false,
-          plans: true,
+          // Real ACP v1 shape (issue #821): resume/delete present, list/
+          // close/additionalDirectories absent -- a third distinct
+          // supported-subset combo from claude-like/codex-like-acp-agent.mjs
+          // for config-capabilities-integration.test.ts's flag derivation.
+          sessionCapabilities: { resume: {}, delete: {} },
         },
         agentInfo: { name: 'config-acp-agent', version: '0.0.0' },
         authMethods: [],
