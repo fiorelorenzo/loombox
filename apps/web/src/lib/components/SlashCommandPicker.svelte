@@ -130,7 +130,9 @@
             </span>
             <span class="entry-body">
               <span class="name">/{entry.name}</span>
-              {#if entry.description}
+              {#if entry.mcpServer}
+                <span class="description">MCP prompt from {entry.mcpServer}</span>
+              {:else if entry.description}
                 <span class="description">{entry.description}</span>
               {/if}
             </span>
