@@ -3207,7 +3207,11 @@ export class NodeDaemon extends EventEmitter {
       );
     }
 
-    const mcpServers = await this.resolveMcpServers(opts.projectPath);
+    // A fork request carries no `mcpServerConfigs` of its own (issue #750
+    // predates #746's fork wire shape) — only this node's own McpConfigStore
+    // applies; a future fork-time client declaration would thread through
+    // here identically to `createSessionInternal`'s own `opts.mcpServerConfigs`.
+    const mcpServers = await this.resolveMcpServers(opts.projectPath, []);
 
     let session: Session;
     try {

@@ -224,6 +224,9 @@ describe('sessionPrivateMetaV1', () => {
           },
         ],
       }).success,
+    ).toBe(false);
+  });
+
   it('carries the fork boundary turn id (issue #746), and leaves it undefined on an ordinary create', () => {
     expect(
       parseSessionPrivateMetaV1({ title: 't', projectPath: '/p' }).forkFromTurnId,
