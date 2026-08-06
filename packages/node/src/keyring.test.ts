@@ -9,6 +9,7 @@ import {
   createOsKeyringBackend,
   FileKeyringBackend,
   NodeKeyring,
+  probeOsKeyringDurability,
   type KeyringBackend,
 } from './keyring';
 
@@ -63,8 +64,72 @@ describe('createOsKeyringBackend', () => {
       if (prev !== undefined) process.env.LOOMBOX_KEYRING_DISABLE_OS = prev;
     }
   });
+
+  it('issue #815: gates a successfully round-tripped backend on probeDurability, treating "not durable" as no backend at all', async () => {
+    const prev = process.env.LOOMBOX_KEYRING_DISABLE_OS;
+    delete process.env.LOOMBOX_KEYRING_DISABLE_OS;
+    try {
+      const rejected = await createOsKeyringBackend({ probeDurability: async () => false });
+      expect(rejected).toBeUndefined();
+
+      // When the real round-trip itself fails (no OS keyring session on this
+      // host at all), there is nothing left to gate — same host-dependent
+      // contract as the test above. Only exercise the accepted branch when a
+      // genuine backend was actually reachable.
+      const accepted = await createOsKeyringBackend({ probeDurability: async () => true });
+      if (accepted !== undefined) {
+        const service = 'loombox-keyring-durability-gate-test';
+        const account = `probe-${Date.now()}`;
+        await accepted.set(service, account, 'value');
+        await expect(accepted.get(service, account)).resolves.toBe('value');
+        await accepted.delete(service, account);
+      }
+    } finally {
+      if (prev !== undefined) process.env.LOOMBOX_KEYRING_DISABLE_OS = prev;
+    }
+  });
 });
 
+describe('probeOsKeyringDurability (issue #815)', () => {
+  it('treats macOS and Windows as always durable — Keychain and Credential Manager are disk-backed', async () => {
+    await expect(
+      probeOsKeyringDurability({ platform: 'darwin', runningProcessNames: async () => new Set() }),
+    ).resolves.toBe(true);
+    await expect(
+      probeOsKeyringDurability({ platform: 'win32', runningProcessNames: async () => new Set() }),
+    ).resolves.toBe(true);
+  });
+
+  it('on Linux, treats a running Secret Service daemon (gnome-keyring or either KDE Wallet backend) as durable', async () => {
+    await expect(
+      probeOsKeyringDurability({
+        platform: 'linux',
+        runningProcessNames: async () => new Set(['gnome-keyring-daemon']),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      probeOsKeyringDurability({
+        platform: 'linux',
+        runningProcessNames: async () => new Set(['kwalletd6']),
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('on Linux with no Secret Service session running, treats the backend as volatile — the exact condition measured on this devbox', async () => {
+    await expect(
+      probeOsKeyringDurability({
+        platform: 'linux',
+        runningProcessNames: async () => new Set(['bash', 'node', 'sshd']),
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('defaults to the real host platform and process list when called with no io override', async () => {
+    // Host-dependent (this devbox has no Secret Service session; a CI runner
+    // might) — assert only the contract: a boolean, never a thrown error.
+    await expect(probeOsKeyringDurability()).resolves.toEqual(expect.any(Boolean));
+  });
+});
 describe('FileKeyringBackend', () => {
   it('has no entry yet against a fresh file', async () => {
     const backend = new FileKeyringBackend({ filePath: path.join(stateDir, 'secrets.json') });
