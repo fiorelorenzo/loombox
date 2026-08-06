@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLineDiff, languageForPath } from './diff';
+import { computeLineDiff, diffStats, languageForPath } from './diff';
 
 describe('computeLineDiff', () => {
   it('marks every line as added when oldText is null (a new file)', () => {
@@ -48,6 +48,31 @@ describe('computeLineDiff', () => {
   it('treats an empty string as zero lines, not one blank line', () => {
     expect(computeLineDiff('', '')).toEqual([]);
     expect(computeLineDiff(null, '')).toEqual([]);
+  });
+});
+
+describe('diffStats', () => {
+  it('counts added/removed lines and includes the full line list', () => {
+    const stats = diffStats('a\nb\nc', 'a\nB\nc');
+    expect(stats.hasText).toBe(true);
+    expect(stats.added).toBe(1);
+    expect(stats.removed).toBe(1);
+    expect(stats.lines).toEqual(computeLineDiff('a\nb\nc', 'a\nB\nc'));
+  });
+
+  it('the ACP binary/symlink shape (oldText null, newText empty) has no text and zero counts', () => {
+    const stats = diffStats(null, '');
+    expect(stats.hasText).toBe(false);
+    expect(stats.lines).toEqual([]);
+    expect(stats.added).toBe(0);
+    expect(stats.removed).toBe(0);
+  });
+
+  it('an emptied text file (oldText non-null, newText empty) is real content, not the binary fallback', () => {
+    const stats = diffStats('a\nb', '');
+    expect(stats.hasText).toBe(true);
+    expect(stats.removed).toBe(2);
+    expect(stats.added).toBe(0);
   });
 });
 
