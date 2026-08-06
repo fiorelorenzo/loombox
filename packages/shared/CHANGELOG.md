@@ -1,5 +1,29 @@
 # @loombox/shared
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [584520e]
+- Updated dependencies [a0fb0a6]
+- Updated dependencies [0c46b48]
+- Updated dependencies [8a3fcda]
+- Updated dependencies [97598db]
+- Updated dependencies [ff1fb1e]
+- Updated dependencies [7ad7274]
+- Updated dependencies [79f55e0]
+- Updated dependencies [6d3ad95]
+- Updated dependencies [6325366]
+- Updated dependencies [d03fc5d]
+- Updated dependencies [166551b]
+- Updated dependencies [757fa0e]
+- Updated dependencies [dace883]
+- Updated dependencies [89355b1]
+- Updated dependencies [109184d]
+- Updated dependencies [4cc52b4]
+- Updated dependencies [4291dc3]
+  - @loombox/protocol@0.7.0
+
 ## 0.2.4
 
 ### Patch Changes

@@ -1,5 +1,0 @@
----
-'@loombox/web': patch
----
-
-Add a read-only turn summary bar and a Review Changes surface (issue #740, settled pick C1-3). A turn's edits used to be three separate tool cards with no answer anywhere to "what did this turn change in total"; the composer footer now shows an `Edits · N files · +X −Y` bar for the latest turn whenever it touched a file, expanding to per-file rows that jump the (possibly windowed-out, issue #755) transcript to that file's own diff card, plus a `Review Changes` button opening a dialog that stacks every changed file with its diff in place. Both surfaces read `$lib/transcript/turn-review.ts`'s aggregation of the same `TranscriptToolCallItem.diff`/`$lib/diff.ts`'s new shared `diffStats` values `DiffViewer` already renders inside each tool card — no second diff implementation, no new wire message. Deliberately read-only: C1-4 (keep/reject per file/hunk) was not picked and depends on #603, so neither surface has any control that reverts, restores, keeps, or discards anything on disk.
