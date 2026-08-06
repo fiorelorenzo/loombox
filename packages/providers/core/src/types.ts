@@ -402,6 +402,31 @@ export interface AcpTurnEndedEvent {
   stopReason: string | undefined;
 }
 
+/** The fixed, closed vocabulary the node classifies an MCP server failure into (issue #750, D2-2) — see `AcpMcpServerStatusEvent`'s own doc comment for why this differs from `AcpConfigOption`'s open `category` string. */
+export type AcpMcpServerFailureCategory = 'missing_binary' | 'handshake_failed' | 'secret_missing';
+
+/** One MCP server's outcome, as reported inside an {@link AcpMcpServerStatusEvent}. `category`/`reason` are set only for `ok: false`. */
+export interface AcpMcpServerStatusEntry {
+  name: string;
+  ok: boolean;
+  category?: AcpMcpServerFailureCategory;
+  reason?: string;
+}
+
+/**
+ * Pushed once a session's effective MCP server set has actually been
+ * attempted against the agent (SPEC.md §7.7/§7.17; issue #750, D2-2) —
+ * never for a session with no configured servers at all. Lists every
+ * server that failed to start, by name and reason, so a session never
+ * opens with quietly fewer tools than its configuration promised. A
+ * server that started fine is never listed here.
+ */
+export interface AcpMcpServerStatusEvent {
+  kind: 'mcp_server_status';
+  servers: AcpMcpServerStatusEntry[];
+  updatedAt: string;
+}
+
 /** The full set of session-lifecycle payloads (SPEC.md §7.13/§7.24), discriminated on `kind`. */
 export type AcpSessionLifecycleEvent =
   | AcpSessionStatusEvent
@@ -409,7 +434,8 @@ export type AcpSessionLifecycleEvent =
   | AcpConfigOptionUpdateEvent
   | AcpAvailableCommandsUpdateEvent
   | AcpTurnStartedEvent
-  | AcpTurnEndedEvent;
+  | AcpTurnEndedEvent
+  | AcpMcpServerStatusEvent;
 
 /**
  * Everything that can travel inside one `session_update` encrypted envelope
