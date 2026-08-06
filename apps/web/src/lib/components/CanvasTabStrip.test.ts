@@ -214,3 +214,59 @@ describe('CanvasTabStrip: narrow layout (issue #737 — below TABLET_VIEWPORT_BR
     expect(onClose).toHaveBeenCalledWith('src/a.ts');
   });
 });
+
+describe('CanvasTabStrip: the working-tree diff tab (issue #206)', () => {
+  const withDiffTab: CanvasTab[] = [
+    { kind: 'transcript', id: 'transcript' },
+    { kind: 'diff', id: 'diff' },
+    { kind: 'file', id: 'src/a.ts', path: 'src/a.ts', name: 'a.ts' },
+  ];
+
+  it('renders the diff tab with its own label and a close button, like a file tab', () => {
+    render(CanvasTabStrip, {
+      props: {
+        tabs: withDiffTab,
+        activeId: 'diff',
+        isDirty: () => false,
+        onActivate: vi.fn(),
+        onClose: vi.fn(),
+        narrow: false,
+      },
+    });
+    const tabs = screen.getAllByTestId('canvas-tab');
+    expect(within(tabs[1]).getByText('Working tree')).toBeTruthy();
+    expect(within(tabs[1]).getByTestId('canvas-tab-close')).toBeTruthy();
+  });
+
+  it("closing the diff tab calls onClose with 'diff'", async () => {
+    const onClose = vi.fn();
+    render(CanvasTabStrip, {
+      props: {
+        tabs: withDiffTab,
+        activeId: 'diff',
+        isDirty: () => false,
+        onActivate: vi.fn(),
+        onClose,
+        narrow: false,
+      },
+    });
+    const tabs = screen.getAllByTestId('canvas-tab');
+    await fireEvent.click(within(tabs[1]).getByTestId('canvas-tab-close'));
+    expect(onClose).toHaveBeenCalledWith('diff');
+  });
+
+  it('renders the diff tab as the active narrow picker trigger, with its own close button', () => {
+    render(CanvasTabStrip, {
+      props: {
+        tabs: withDiffTab,
+        activeId: 'diff',
+        isDirty: () => false,
+        onActivate: vi.fn(),
+        onClose: vi.fn(),
+        narrow: true,
+      },
+    });
+    expect(screen.getByText('Working tree')).toBeTruthy();
+    expect(screen.getByTestId('canvas-tab-strip-close-active')).toBeTruthy();
+  });
+});

@@ -2315,6 +2315,185 @@ describe('NodeDaemon fs-read (read-only file viewer, issue #737)', () => {
   });
 });
 
+describe('NodeDaemon git-diff (working-tree diff viewer, issue #206)', () => {
+  it("reports a session's uncommitted changes over the encrypted git_diff_request/git_diff_response pair, no envelope on the request", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-1',
+      deviceId: 'device-node-git-diff-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'new-file.txt'), 'hello worktree\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-diff',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_response' && (m as { requestId?: string }).requestId === 'req-diff',
+    )) as { type: 'git_diff_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['hello worktree', 'new-file.txt', session.worktreePath]);
+    const payload = await phoneOpen<{
+      outcome: string;
+      files?: Array<{
+        path: string;
+        previousPath: string | null;
+        status: string;
+        oldText: string | null;
+        newText: string;
+      }>;
+    }>(session.id, response.envelope, key);
+    expect(payload).toEqual({
+      outcome: 'ok',
+      files: [
+        {
+          path: 'new-file.txt',
+          previousPath: null,
+          status: 'added',
+          oldText: null,
+          newText: 'hello worktree\n',
+        },
+      ],
+    });
+  });
+
+  it('reports an empty file list for a clean worktree', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-clean';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-2',
+      deviceId: 'device-node-git-diff-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-diff-clean',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_response' &&
+        (m as { requestId?: string }).requestId === 'req-diff-clean',
+    )) as { type: 'git_diff_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; files?: unknown[] }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', files: [] });
+  });
+
+  it('collapses a modified binary file to the structural-only shape rather than forwarding garbled bytes or crashing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-binary';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-3',
+      deviceId: 'device-node-git-diff-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const binaryPath = pathJoin(session.worktreePath, 'logo.png');
+    await fsWriteFile(binaryPath, Buffer.from([0x89, 0, 0x4e, 0x47]));
+    await execFileAsync('git', ['add', 'logo.png'], { cwd: session.worktreePath });
+    await execFileAsync('git', ['commit', '-m', 'add logo'], {
+      cwd: session.worktreePath,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'loombox test',
+        GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+        GIT_COMMITTER_NAME: 'loombox test',
+        GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+      },
+    });
+    await fsWriteFile(binaryPath, Buffer.from([0x89, 1, 0x4e, 0x48]));
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-diff-binary',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_response' &&
+        (m as { requestId?: string }).requestId === 'req-diff-binary',
+    )) as { type: 'git_diff_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{
+      outcome: string;
+      files?: Array<{ path: string; oldText: string | null; newText: string }>;
+    }>(session.id, response.envelope, key);
+    expect(payload).toEqual({
+      outcome: 'ok',
+      files: [{ path: 'logo.png', previousPath: null, status: 'modified', oldText: null, newText: '' }],
+    });
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();

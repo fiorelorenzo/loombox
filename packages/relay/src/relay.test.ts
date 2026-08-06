@@ -17,6 +17,8 @@ import {
   type FsListResponse,
   type FsReadRequest,
   type FsReadResponse,
+  type GitDiffRequest,
+  type GitDiffResponse,
   type Initialize,
   type InitializeResult,
   type LeaseRelease,
@@ -1619,6 +1621,113 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as FsReadResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('git_diff_request/git_diff_response (issue #206) — routed and fanned out exactly like fs_read_request/fs_read_response, always blind, no envelope on the request', () => {
+    it('routes a client git_diff_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_diff', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: GitDiffRequest = {
+        type: 'git_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_diff',
+        requestId: 'req_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as GitDiffRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a git_diff_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'git_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+      } satisfies GitDiffRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans git_diff_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_diff_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_git_diff_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: GitDiffResponse = {
+        type: 'git_diff_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_diff_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('[]'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as GitDiffResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),

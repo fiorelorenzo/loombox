@@ -159,6 +159,7 @@
   } from '$lib/components/TranscriptTimeline.svelte';
   import TurnEditsBar from '$lib/components/TurnEditsBar.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
+  import WorktreeDiffViewer from '$lib/components/WorktreeDiffViewer.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
   // #381: `PUBLIC_LOOMBOX_RELAY_URL` (SvelteKit `$env/dynamic/public`, read
@@ -2219,6 +2220,11 @@
     canvasTabs.activeTab.kind === 'file' ? canvasTabs.activeTab : undefined,
   );
 
+  /** The active tab, narrowed to the diff tab or `undefined` — the working-tree diff viewer's own sibling to `activeFileTab` above (issue #206). */
+  const activeDiffTab = $derived(
+    canvasTabs.activeTab.kind === 'diff' ? canvasTabs.activeTab : undefined,
+  );
+
   /** Fetches `path`'s content for its own open tab (issue #737) — a fresh one-shot `RelayClient.readFile` every call, never a cached re-render, since re-reading (a retry, or reopening an already-open tab) is meant to hit the node again. */
   async function loadFileContent(path: string): Promise<void> {
     if (!client || !selectedSessionId) return;
@@ -2253,6 +2259,32 @@
     canvasTabs.open(path, transcript?.items ?? []);
     mainView = 'session';
     if (!alreadyOpen) void loadFileContent(path);
+  }
+
+  /** Fetches the session's current working-tree diff for the diff tab (issue #206) — a fresh one-shot `RelayClient.requestWorktreeDiff` every call, same "re-reading hits the node again" contract as `loadFileContent`; the only way to refresh is to re-request, there is no live subscription. */
+  async function loadWorktreeDiff(): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    canvasTabs.setDiffViewer({ status: 'loading' });
+    try {
+      const result = await client.requestWorktreeDiff(selectedSessionId);
+      if (result.outcome === 'ok') {
+        canvasTabs.setDiffViewer({ status: 'loaded', files: result.files });
+      } else {
+        canvasTabs.setDiffViewer({ status: 'error', message: result.message });
+      }
+    } catch (error) {
+      canvasTabs.setDiffViewer({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Opens (or activates) the working-tree diff tab (issue #206) — the Files panel's own entry point, `openFileTab`'s sibling. Always re-fetches on open, even for an already-open tab: the working tree keeps changing under an active session, so switching back to this tab should show what's true right now, not a stale snapshot from whenever it was first opened. */
+  function openWorktreeDiffTab(): void {
+    canvasTabs.openDiff(transcript?.items ?? []);
+    mainView = 'session';
+    void loadWorktreeDiff();
   }
 
   function resolvePermission(requestId: string, option: AcpPermissionOption): void {
@@ -4119,7 +4151,10 @@
               onClose={(id) => canvasTabs.close(id)}
               narrow={sessionsSheetViewport}
             />
-            <div class="canvas-transcript-view" hidden={activeFileTab !== undefined}>
+            <div
+              class="canvas-transcript-view"
+              hidden={activeFileTab !== undefined || activeDiffTab !== undefined}
+            >
               {#if forkError}
                 <p class="fork-error" role="alert" data-testid="fork-error">
                   {forkError}
@@ -4371,6 +4406,13 @@
                 onRetry={() => loadFileContent(activeFileTab.path)}
               />
             {/if}
+            {#if activeDiffTab}
+              <WorktreeDiffViewer
+                viewer={canvasTabs.diffViewer ?? { status: 'loading' }}
+                onRetry={loadWorktreeDiff}
+                onOpenFile={openFileTab}
+              />
+            {/if}
           {/if}
         </section>
       </div>
@@ -4449,6 +4491,16 @@
                 hidden={activeWorkbenchTab !== 'files'}
                 data-testid="file-tree-panel-wrapper"
               >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  class="worktree-diff-trigger"
+                  onclick={openWorktreeDiffTab}
+                  dataTestId="open-worktree-diff"
+                >
+                  <Icon name="tool-edit" />
+                  Working tree diff
+                </Button>
                 <FileTreePanel
                   tree={fileTree}
                   onExpand={expandDirectory}
@@ -6295,6 +6347,10 @@
 
   .right-sidebar-panel-inner {
     height: 100%;
+  }
+
+  :global(.worktree-diff-trigger) {
+    margin: var(--space-sm) var(--space-sm) 0;
   }
 
   /* The WAI-ARIA APG "Window Splitter" pattern, same as `.sidebar-resize-handle`

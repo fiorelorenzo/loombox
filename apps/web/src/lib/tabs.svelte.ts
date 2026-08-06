@@ -21,12 +21,19 @@
  * wall-clock timestamp — see {@link syncDirty}'s own doc comment for why.
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import type { GitDiffFileV1 } from '@loombox/protocol';
 import type { TranscriptItem } from '@loombox/providers-core/browser';
 
 /** A file tab's own content-loading state — set to `'loading'` the instant a tab opens, then resolved once the caller's `readFile` round trip (or a re-open) settles. */
 export type FileTabViewerState =
   | { status: 'loading' }
   | { status: 'loaded'; content: string; truncated: boolean }
+  | { status: 'error'; message: string };
+
+/** The working-tree diff tab's own content-loading state (issue #206) — the exact same "loading -> resolved" shape as {@link FileTabViewerState}, minus a `truncated` flag (`git_diff_response` never truncates the file LIST, only each file's own text, already handled node-side). */
+export type DiffTabViewerState =
+  | { status: 'loading' }
+  | { status: 'loaded'; files: readonly GitDiffFileV1[] }
   | { status: 'error'; message: string };
 
 /** The one permanent tab — pinned first, never closable, never reorderable (issue #737's own acceptance line). */
@@ -43,7 +50,15 @@ export interface FileCanvasTab {
   readonly name: string;
 }
 
-export type CanvasTab = TranscriptCanvasTab | FileCanvasTab;
+/** The working-tree diff tab (SPEC §7.4; issue #206): closable like a file tab, but a singleton — there is only ever one "the session's own current diff", never one per file, so `id` is a constant rather than path-keyed. */
+export interface DiffCanvasTab {
+  readonly kind: 'diff';
+  readonly id: 'diff';
+}
+
+export type CanvasTab = TranscriptCanvasTab | FileCanvasTab | DiffCanvasTab;
+
+const DIFF_TAB: DiffCanvasTab = { kind: 'diff', id: 'diff' };
 
 const TRANSCRIPT_TAB: TranscriptCanvasTab = { kind: 'transcript', id: 'transcript' };
 
@@ -56,6 +71,8 @@ export class CanvasTabsState {
   readonly #dirty = new SvelteSet<string>();
   /** Path -> the transcript item-count watermark as of that tab's last activation — see {@link syncDirty}. */
   readonly #viewedUntil = new SvelteMap<string, number>();
+  /** The working-tree diff tab's own content (issue #206) — `undefined` until {@link openDiff} first opens it, mirroring `#viewers`' "no entry yet" state but as a single field rather than a map, since there is only ever one diff tab. */
+  #diffViewer = $state<DiffTabViewerState | undefined>(undefined);
 
   get tabs(): readonly CanvasTab[] {
     return this.#tabs;
@@ -76,6 +93,10 @@ export class CanvasTabsState {
 
   viewerFor(path: string): FileTabViewerState | undefined {
     return this.#viewers.get(path);
+  }
+
+  get diffViewer(): DiffTabViewerState | undefined {
+    return this.#diffViewer;
   }
 
   isDirty(path: string): boolean {
@@ -102,6 +123,24 @@ export class CanvasTabsState {
     this.activate(path, items);
   }
 
+  /**
+   * Opens the working-tree diff tab (or, if already open, just activates
+   * it — never a duplicate), issue #206. `items` mirrors {@link open}'s
+   * own parameter (every entry point already holds it); the diff tab has
+   * no per-file dirty/watermark tracking, so `activate` merely reuses it
+   * as the general activation entry point. A freshly opened tab's viewer
+   * starts `'loading'`; the caller is responsible for calling
+   * {@link setDiffViewer} once its own `requestWorktreeDiff` round trip
+   * settles, exactly like {@link open}'s `setViewer` contract.
+   */
+  openDiff(items: readonly TranscriptItem[]): void {
+    if (!this.#tabs.some((tab) => tab.id === DIFF_TAB.id)) {
+      this.#tabs = [...this.#tabs, DIFF_TAB];
+      this.#diffViewer = { status: 'loading' };
+    }
+    this.activate(DIFF_TAB.id, items);
+  }
+
   /** Activates an already-open tab by id (a no-op for an id that isn't open) and, for a file tab, clears its dirty flag and re-arms its watermark — "you looked" happens exactly on activation, never merely on staying mounted. */
   activate(id: string, items: readonly TranscriptItem[]): void {
     const tab = this.#tabs.find((candidate) => candidate.id === id);
@@ -114,23 +153,27 @@ export class CanvasTabsState {
   }
 
   /**
-   * Closes a file tab. The transcript tab is permanent — a `'transcript'`
-   * id (or any id that isn't currently open) is a no-op, never a throw,
-   * matching this class's contract elsewhere. Closing the active tab
-   * falls back to its nearest remaining neighbor, or the transcript tab
-   * if it was the last file tab open — never leaves `activeId` pointing
-   * at a tab that no longer exists.
+   * Closes a file or diff tab. The transcript tab is permanent — a
+   * `'transcript'` id (or any id that isn't currently open) is a no-op,
+   * never a throw, matching this class's contract elsewhere. Closing the
+   * active tab falls back to its nearest remaining neighbor, or the
+   * transcript tab if it was the last one open — never leaves `activeId`
+   * pointing at a tab that no longer exists.
    */
   close(id: string): void {
     if (id === TRANSCRIPT_TAB.id) return;
     const index = this.#tabs.findIndex((tab) => tab.id === id);
     if (index === -1) return;
-    const closing = this.#tabs[index] as FileCanvasTab;
+    const closing = this.#tabs[index]!;
     const wasActive = this.#activeId === id;
     this.#tabs = this.#tabs.filter((tab) => tab.id !== id);
-    this.#viewers.delete(closing.path);
-    this.#dirty.delete(closing.path);
-    this.#viewedUntil.delete(closing.path);
+    if (closing.kind === 'file') {
+      this.#viewers.delete(closing.path);
+      this.#dirty.delete(closing.path);
+      this.#viewedUntil.delete(closing.path);
+    } else if (closing.kind === 'diff') {
+      this.#diffViewer = undefined;
+    }
     if (wasActive) {
       this.#activeId = (this.#tabs[Math.min(index, this.#tabs.length - 1)] ?? TRANSCRIPT_TAB).id;
     }
@@ -138,6 +181,10 @@ export class CanvasTabsState {
 
   setViewer(path: string, state: FileTabViewerState): void {
     this.#viewers.set(path, state);
+  }
+
+  setDiffViewer(state: DiffTabViewerState): void {
+    this.#diffViewer = state;
   }
 
   /**
@@ -182,5 +229,6 @@ export class CanvasTabsState {
     this.#viewers.clear();
     this.#dirty.clear();
     this.#viewedUntil.clear();
+    this.#diffViewer = undefined;
   }
 }

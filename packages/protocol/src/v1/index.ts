@@ -268,6 +268,23 @@ export {
 } from './fs';
 
 export type {
+  GitDiffFileStatusV1,
+  GitDiffFileV1,
+  GitDiffRequest,
+  GitDiffResponse,
+  GitDiffResponsePayloadV1,
+} from './git-diff';
+export {
+  gitDiffFileStatusV1,
+  gitDiffFileV1,
+  gitDiffRequest,
+  gitDiffResponse,
+  gitDiffResponsePayloadV1,
+  parseGitDiffResponsePayloadV1,
+  safeParseGitDiffResponsePayloadV1,
+} from './git-diff';
+
+export type {
   McpPromptGetErrorV1,
   McpPromptGetRequest,
   McpPromptGetRequestPayloadV1,

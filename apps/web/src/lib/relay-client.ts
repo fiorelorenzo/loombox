@@ -79,6 +79,8 @@ import {
   type FsReadRequestPayloadV1,
   type FsReadResponse,
   type FsReadResponsePayloadV1,
+  type GitDiffResponse,
+  type GitDiffResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
   type BuildIdentityV1,
@@ -1346,6 +1348,18 @@ export class RelayClient {
   private readonly pendingFsReadRequests = new Map<
     string,
     { resolve: (payload: FsReadResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link requestWorktreeDiff} call it belongs
+   * to (issue #206's working-tree diff viewer) — the exact same shape as
+   * {@link pendingFsReadRequests} above, for the same "caller needs the
+   * outcome directly, one-shot, not an always-on subscription" reason.
+   * `git_diff_response` is fanned out the same way, so a requestId not in
+   * this map means the reply belongs to a sibling device's own request.
+   */
+  private readonly pendingGitDiffRequests = new Map<
+    string,
+    { resolve: (payload: GitDiffResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
@@ -4033,6 +4047,60 @@ export class RelayClient {
   }
 
   /**
+   * The session's current working-tree diff (SPEC §7.4; issue #206's diff
+   * viewer) — `@loombox/protocol`'s `git-diff.ts` `git_diff_request`/
+   * `git_diff_response` pair, {@link readFile}'s own sibling: a one-shot
+   * request/response the caller awaits, not a persistent subscription —
+   * there is no live view of the agent's own future edits here, a caller
+   * re-requests (a fresh `requestId`) to refresh, exactly like re-reading
+   * an already-open file tab. No `path`/`targetId` on the wire, and no
+   * envelope on the request at all — the owning node already knows which
+   * target a session runs on, and asking "what changed right now" carries
+   * no content of its own to filter by or encrypt (see that schema's own
+   * doc comment). Resolves with the node's own `ok`/`error` outcome
+   * either way; only REJECTS for a genuinely unusable call — no open
+   * connection, an unknown session, or a timeout with no response at all
+   * — mirroring {@link readFile}'s identical contract.
+   */
+  async requestWorktreeDiff(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitDiffResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a working-tree diff, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('gitdiff');
+    return new Promise<GitDiffResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitDiffRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_diff_response'));
+      }, timeoutMs);
+      this.pendingGitDiffRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -5223,6 +5291,9 @@ export class RelayClient {
       case 'fs_read_response':
         this.handleFsReadResponse(message);
         return;
+      case 'git_diff_response':
+        this.handleGitDiffResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -5626,6 +5697,33 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<FsReadResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * requestWorktreeDiff} calls (issue #206). `git_diff_response` is
+   * fanned out to every client subscribed to the session exactly like
+   * `fs_read_response`, so a `requestId` not in {@link
+   * pendingGitDiffRequests} means this reply is to a sibling device's own
+   * request — silently ignored, exactly like {@link
+   * handleFsReadResponse}'s identical sibling-device awareness.
+   */
+  private handleGitDiffResponse(message: GitDiffResponse): void {
+    const pending = this.pendingGitDiffRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitDiffRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitDiffResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

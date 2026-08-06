@@ -163,3 +163,54 @@ export function languageForPath(path: string): string {
       return 'plain';
   }
 }
+
+/** One row of a side-by-side ("split") diff view: the old-side line to show in the left column, the new-side line for the right column, or `undefined` on whichever side has nothing to show for this row (a pure addition has no left line; a pure removal has no right line). */
+export interface SplitDiffRow {
+  left: DiffLine | undefined;
+  right: DiffLine | undefined;
+}
+
+/**
+ * Lays `computeLineDiff`'s own flat context/added/removed list out into
+ * side-by-side rows (issue #206's working-tree diff viewer split mode) —
+ * never a second diff computation: this only re-shapes {@link DiffLine}s
+ * `computeLineDiff` already produced, the exact same list `DiffViewer`'s
+ * inline mode renders one after another. A context line becomes its own
+ * row on both sides (identical text); a change block (one run of
+ * consecutive `removed` lines immediately followed by one run of
+ * consecutive `added` lines — `computeLineDiff`'s own walk never emits
+ * any other order within one change, since it only ever advances `i`
+ * through every remaining removed line or `j` through every remaining
+ * added line, never both) zips the two runs pairwise, left-padding the
+ * shorter run's rows with `undefined` on its own side — the classic
+ * side-by-side "N old lines became M new lines" layout. A removed run
+ * with no following added run (or vice versa) still zips fine: the
+ * missing run is simply empty, so every row's other side is `undefined`.
+ */
+export function pairDiffLinesForSplitView(lines: DiffLine[]): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.kind === 'context') {
+      rows.push({ left: line, right: line });
+      i++;
+      continue;
+    }
+    const removed: DiffLine[] = [];
+    while (i < lines.length && lines[i].kind === 'removed') {
+      removed.push(lines[i]);
+      i++;
+    }
+    const added: DiffLine[] = [];
+    while (i < lines.length && lines[i].kind === 'added') {
+      added.push(lines[i]);
+      i++;
+    }
+    const pairCount = Math.max(removed.length, added.length);
+    for (let pairIndex = 0; pairIndex < pairCount; pairIndex++) {
+      rows.push({ left: removed[pairIndex], right: added[pairIndex] });
+    }
+  }
+  return rows;
+}

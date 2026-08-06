@@ -84,6 +84,8 @@ import {
   type FsReadRequest,
   type FsReadRequestPayloadV1,
   type FsReadResponsePayloadV1,
+  type GitDiffRequest,
+  type GitDiffResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -196,6 +198,7 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { computeWorktreeDiff, GitDiffError } from './git-diff';
 import {
   assertCustomAgentAllowed,
   createCustomAgentProvider,
@@ -3564,6 +3567,9 @@ export class NodeDaemon extends EventEmitter {
       case 'fs_read_request':
         this.handleFsReadRequest(message);
         return;
+      case 'git_diff_request':
+        this.handleGitDiffRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -4822,6 +4828,74 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's current
+   * working-tree diff (SPEC §7.4; issue #206's diff viewer) — `handleFsReadRequest`'s
+   * sibling, same "no live bridge needed, always a reply, never a silent
+   * drop" contract. No envelope on `git_diff_request` itself (see
+   * `@loombox/protocol`'s `git-diff.ts` doc comment), so there is nothing
+   * to decrypt before computing the diff, unlike `handleFsReadRequest`.
+   */
+  private handleGitDiffRequest(message: GitDiffRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.computeGitDiffForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitDiffResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_diff_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  /**
+   * Runs `computeWorktreeDiff` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like `pr-open.ts`'s
+   * `previewPrOpen`/`openPr` callers below (both drive real `git`
+   * subcommands the same way this does) — never `handleFsReadRequest`'s
+   * unscoped `getExecutionTarget(routing.targetId)`, since that call
+   * spawns no commands of its own. Never throws: a target that can't be
+   * resolved, or a `GitDiffError` from a genuinely uncomputable diff (no
+   * `git` on the target, not a git worktree at all), both become an
+   * `outcome: 'error'` payload instead, so `handleGitDiffRequest` always
+   * has a response to seal and send back.
+   */
+  private async computeGitDiffForBridge(
+    routing: SessionRouting,
+  ): Promise<GitDiffResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const files = await computeWorktreeDiff(target, routing.session.worktreePath);
+      return { outcome: 'ok', files };
+    } catch (error) {
+      if (error instanceof GitDiffError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitDiffResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitDiffResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_diff_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
