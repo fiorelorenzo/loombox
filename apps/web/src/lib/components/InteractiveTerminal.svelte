@@ -507,10 +507,11 @@
         class="xterm-container"
         class:focused={tab.id === activeTabId && focused}
         data-testid="xterm-container"
-        use:mountTerminalPane={tab.id}
         onfocusin={() => (focused = true)}
         onfocusout={() => (focused = false)}
-      ></div>
+      >
+        <div class="xterm-canvas" use:mountTerminalPane={tab.id}></div>
+      </div>
     </div>
   {/each}
 </div>
@@ -655,7 +656,24 @@
     padding: var(--space-xs) var(--space-sm);
   }
 
+  /* This wrapper carries the ONLY padding around the terminal now — it
+     used to sit directly on the element passed to `terminal.open()` /
+     `FitAddon`, which over-proposed rows (issue #663). `FitAddon`'s
+     `proposeDimensions()` reads the available height off
+     `getComputedStyle(terminal.element.parentElement).height`; with
+     `box-sizing: border-box` (`typography.css`) that is this element's
+     BORDER-box height, padding included, and it then tries to subtract
+     padding read off `terminal.element` itself (xterm.js's own `.xterm`
+     root, which `@xterm/xterm`'s stylesheet always leaves unpadded) —
+     never off this element. Padding living HERE therefore silently
+     escaped that arithmetic: xterm proposed however many extra rows the
+     unaccounted 2×`--space-2xs` (8px) didn't add up to a whole cell
+     height, exactly xtermjs/xterm.js#2958's "4 rows proposed against 2.5
+     visible" and the blank space Lorenzo saw. `display: flex` so
+     `.xterm-canvas` below fills this element's CONTENT box exactly,
+     outside the padding. */
   .xterm-container {
+    display: flex;
     flex: 1;
     min-width: 0;
     min-height: 0;
@@ -663,6 +681,19 @@
     overflow: hidden;
     box-shadow: inset 0 0 0 0 transparent;
     transition: box-shadow var(--duration-fast) var(--ease-beat);
+  }
+
+  /* The element `terminal.open()` actually receives, and the one
+     `FitAddon`/the `ResizeObserver` above measure (issue #663): zero
+     padding of its own, so its border-box IS the full space genuinely
+     available to xterm.js — nothing left for `FitAddon` to miscount, and
+     nothing for its canvas to overflow into `.xterm-container`'s padding
+     and get clipped by that element's own `overflow: hidden`. */
+  .xterm-canvas {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   /* The card's own focused-state border used to carry this signal; with
