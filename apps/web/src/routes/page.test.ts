@@ -1524,7 +1524,9 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
 
     await fireEvent.input(composer, { target: { value: '/security scan' } });
     await fireEvent.keyDown(composer, { key: 'Enter' });
-    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', []);
+    // The fourth argument is #742's mention list, empty here: this test
+    // types a command and nothing else.
+    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', [], []);
   });
 
   it('Esc dismisses the picker without touching the composer text', async () => {
