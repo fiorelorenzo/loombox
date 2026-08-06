@@ -4,6 +4,7 @@ import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import AppearanceSettings from './AppearanceSettings.svelte';
 import { accentStore } from '$lib/accent';
+import { DEFAULT_THOUGHT_DISPLAY_MODE, expandThoughtsStore } from '$lib/expand-thoughts';
 import { themeStore } from '$lib/theme';
 
 beforeEach(() => {
@@ -13,11 +14,13 @@ beforeEach(() => {
   document.documentElement.style.cssText = '';
   themeStore.init();
   accentStore.init();
+  expandThoughtsStore.init();
 });
 
 afterEach(() => {
   cleanup();
   themeStore.setTheme('system');
+  expandThoughtsStore.setMode(DEFAULT_THOUGHT_DISPLAY_MODE);
   localStorage.clear();
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-accent');
@@ -69,10 +72,48 @@ describe('AppearanceSettings (#195/#376 settings panel)', () => {
     expect(screen.getByTestId('accent-preset-azure').getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('renders Theme and Accent as one merged card, not two (design spec §0.8)', () => {
+  it('renders Theme, Accent and Thinking as one merged card, not several (design spec §0.8)', () => {
     render(AppearanceSettings);
     expect(screen.getAllByTestId('ui-card')).toHaveLength(1);
     expect(screen.getByText('Theme')).toBeTruthy();
     expect(screen.getByText('Accent')).toBeTruthy();
+    expect(screen.getByText('Thinking')).toBeTruthy();
+  });
+});
+
+describe('AppearanceSettings: thought-display mode (C4-2, issue #745)', () => {
+  it('renders a thought-mode option per mode, automatic selected by default', () => {
+    render(AppearanceSettings);
+    expect(screen.getByTestId('thought-mode-option-automatic')).toBeTruthy();
+    expect(screen.getByTestId('thought-mode-option-expanded')).toBeTruthy();
+    expect(screen.getByTestId('thought-mode-option-collapsed')).toBeTruthy();
+    expect(screen.getByTestId('thought-mode-option-automatic').getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('clicking a mode option applies it via expandThoughtsStore and persists it', async () => {
+    render(AppearanceSettings);
+    await fireEvent.click(screen.getByTestId('thought-mode-option-collapsed'));
+
+    expect(screen.getByTestId('thought-mode-option-collapsed').getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(screen.getByTestId('thought-mode-option-automatic').getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+    expect(localStorage.getItem('loombox:expand-thoughts')).toBe('collapsed');
+  });
+
+  it('a later init() restores the persisted mode across a reload', async () => {
+    render(AppearanceSettings);
+    await fireEvent.click(screen.getByTestId('thought-mode-option-expanded'));
+    cleanup();
+
+    expandThoughtsStore.init();
+    render(AppearanceSettings);
+    expect(screen.getByTestId('thought-mode-option-expanded').getAttribute('aria-pressed')).toBe(
+      'true',
+    );
   });
 });

@@ -10,6 +10,7 @@ import type {
   AcpTranscriptUpdate,
   AcpTurnEnd,
   AcpUpdate,
+  AvailableCommandsStore,
   ConfigOptionStore,
   PendingPermissionRequest,
   PermissionQueue,
@@ -233,6 +234,22 @@ export class AgentSession extends EventEmitter {
       );
     }
     return this.client.configOptions;
+  }
+
+  /**
+   * This session's available-command catalogue — the `/`-command list the
+   * connected agent declared via `available_commands_update` (SPEC.md
+   * §7.24; issue #741), the same `AvailableCommandsStore` `AcpClient`
+   * already updates, exposed here (unmodified) exactly like `configOptions`
+   * above. Only meaningful (and only available) on a live session.
+   */
+  get availableCommands(): AvailableCommandsStore {
+    if (!this.client) {
+      throw new Error(
+        `AgentSession: session "${this.sessionId}" has no live agent process (persisted/replay-only) — there is no available-command store to read.`,
+      );
+    }
+    return this.client.availableCommands;
   }
 
   /** Submits a new prompt into this session and awaits the turn's response. Throws on a replay-only session (`isLive === false`): there is no child left to send it to (issue #78). */

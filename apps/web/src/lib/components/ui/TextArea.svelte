@@ -1,11 +1,13 @@
 <script lang="ts">
   /**
    * The shared multi-line text control (coherence v5 design spec §1, issue
-   * #508): the composer-shaped textareas in dialogs (`NewSessionDialog`'s
-   * starting prompt) — same duplicated CSS block `Input.svelte` replaces,
-   * just on a `<textarea>`. See that file's doc comment for the
+   * #508): the composer-shaped textarea any dialog reaches for when a field
+   * needs more than one line — same duplicated CSS block `Input.svelte`
+   * replaces, just on a `<textarea>`. See that file's doc comment for the
    * `--color-surface-raised`/`monospace`/`Field`-wiring notes, all
-   * identical here.
+   * identical here. (Its original call site, `NewSessionDialog`'s starting
+   * prompt, is gone — issue #761; this stays the shared primitive for
+   * whichever dialog needs a multi-line field next.)
    */
   interface Props {
     value?: string;

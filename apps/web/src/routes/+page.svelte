@@ -1502,7 +1502,7 @@
     }
   }
 
-  /** `NewSessionDialog`'s success callback (issue #385): the session already exists by the time this fires (the dialog only closes/reports once `RelayClient.createSession` resolved), so opening it is just the same `selectSession` any other session click uses. */
+  /** `NewSessionDialog`'s success callback (issue #385): opening it is just the same `selectSession` any other session click uses. Issue #761 removed `RelayClient.createSession`'s wait for the node's own `session_announce` (it only ever existed to safely time the since-removed starting prompt), so unlike before, the session is not guaranteed to be in `sessions` yet when this fires — `selectSession` doesn't need that: it subscribes regardless and shows the session's live status the moment the announce actually arrives. Making that brief pre-announce window read honestly instead of "Awaiting you" is issue #730's remaining half. */
   function handleSessionCreated(sessionId: string): void {
     selectSession(sessionId);
   }

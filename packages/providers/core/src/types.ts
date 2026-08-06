@@ -179,6 +179,52 @@ export interface AcpConfigOption {
   type?: string;
 }
 
+/* -------------------------------------------------------------------------
+ * v1: available-command catalog (SPEC.md §7.24's slash-command surface;
+ * issue #741, built once for #743's composer picker and #754's MCP-prompt
+ * commands). Mirrors the config-option catalog immediately above
+ * field-for-field: a per-session, wholesale-replaced list this package's
+ * own `AvailableCommandsStore` (`available-commands.ts`) owns, fed by
+ * `AcpClient`'s `available_commands_update` handling, carried onto the
+ * wire the same way `AcpConfigOption` already is.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * ACP's `AvailableCommand.input` sub-shape — `{hint}` is the only variant
+ * ACP documents today (a short usage string like `<plan|scan|status>` for
+ * a command that takes arguments; absent for one that takes none, verified
+ * directly against a real `omp acp` binary). Its own named type rather than
+ * inlined so a future ACP variant this client hasn't modeled yet still has
+ * somewhere to land without reshaping `AcpAvailableCommand` itself.
+ */
+export interface AcpAvailableCommandInput {
+  hint: string | undefined;
+}
+
+/**
+ * One command the connected agent declared via `available_commands_update`
+ * (issue #741). Deliberately not narrowed to exactly `name`/`description`/
+ * `input`: unlike `AcpConfigOption.category` (a closed set of known VALUES
+ * left open), the extensibility risk here is a whole ACP field this client
+ * has never seen on the object itself, so `mapAvailableCommands`
+ * (`client.ts`) spreads the wire entry through rather than reconstructing a
+ * picked-fields object — the index signature below is what lets that
+ * survive onto this type (and through the wire round trip via
+ * `@loombox/protocol`'s `.passthrough()`ed `acpAvailableCommandV1`) rather
+ * than being silently dropped, the same "never invent a second, narrower
+ * catalog and never drop what you don't recognize" contract the
+ * config-option catalog already carries, applied at the object-key level
+ * instead of the category-value level since `AvailableCommand` has no
+ * analogous closed-set field. Same passthrough convention `AcpContentBlock`
+ * above already uses for an unmodeled ACP `ContentBlock` variant.
+ */
+export interface AcpAvailableCommand {
+  name: string;
+  description: string | undefined;
+  input: AcpAvailableCommandInput | undefined;
+  readonly [key: string]: unknown;
+}
+
 /**
  * The two things ACP deliberately leaves to the client, per provider
  * (SPEC.md §5.5): the spawn config to launch that provider's agent in ACP
@@ -296,7 +342,7 @@ export type AcpTranscriptUpdate =
  * v1: session-lifecycle wire events (SPEC.md §7.13's attention states, §7.24's
  * status badge / model-mode-effort bar / turn-settling bullets, §8's
  * relay-blind boundary; issues #126/#128/#149). Unlike the `AcpTranscriptUpdate`
- * kinds above (raw ACP `session/update` passthrough), these five are
+ * kinds above (raw ACP `session/update` passthrough), these six are
  * loombox's own invention, synthesized at `@loombox/node` from the
  * supervisor's `AgentSession` attention/turn-lifecycle state and sealed into
  * the *same* `session_update` encrypted envelope a transcript chunk already
@@ -336,6 +382,12 @@ export interface AcpConfigOptionUpdateEvent {
   options: AcpConfigOption[];
 }
 
+/** The session's complete, agent-declared command catalog (`/`-command discovery; SPEC.md §7.24; issue #741), pushed as a full wholesale replacement whenever the agent (re)declares it — ACP has no per-command patch notification, only a full re-send, same "always the complete current set" contract {@link AcpConfigOptionsEvent} already carries. */
+export interface AcpAvailableCommandsUpdateEvent {
+  kind: 'available_commands_update';
+  commands: AcpAvailableCommand[];
+}
+
 /** A new turn began (SPEC.md §7.24's turn-lifecycle bullet; issue #128). */
 export interface AcpTurnStartedEvent {
   kind: 'turn_started';
@@ -354,6 +406,7 @@ export type AcpSessionLifecycleEvent =
   | AcpSessionStatusEvent
   | AcpConfigOptionsEvent
   | AcpConfigOptionUpdateEvent
+  | AcpAvailableCommandsUpdateEvent
   | AcpTurnStartedEvent
   | AcpTurnEndedEvent;
 

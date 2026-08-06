@@ -3,14 +3,17 @@
    * The appearance settings panel (issues #195/#376's settings surface):
    * theme preference (system/dark/light — the header's own toggle already
    * cycles dark/light; this surfaces all three as explicit, individually
-   * selectable choices) and the accent preset/custom picker. A plain form
-   * over `$lib/theme.ts`/`$lib/accent.ts`'s stores — this component owns
-   * no theming logic itself, only reads/writes the two module-level
+   * selectable choices), the accent preset/custom picker, and the
+   * thought-display mode (collapsed/expanded/automatic — C4-2, issue
+   * #745). A plain form over `$lib/theme.ts`/`$lib/accent.ts`/
+   * `$lib/expand-thoughts.ts`'s stores — this component owns no theming or
+   * display logic itself, only reads/writes the three module-level
    * singleton stores directly (unlike `NotificationPreferences.svelte`'s
-   * injectable-storage pattern, there is exactly one `themeStore`/
-   * `accentStore` instance app-wide, the same ones the header's own theme
-   * toggle already talks to). Selecting anything applies live (every store
-   * applies to the DOM synchronously on every `set*` call) and persists to
+   * injectable-storage pattern, there is exactly one instance of each
+   * store app-wide — `themeStore`'s is also the header's own theme toggle,
+   * `expandThoughtsStore`'s is also what every `MessageItem` thought
+   * reads). Selecting anything applies live (every store applies
+   * synchronously on every `set*`/`setMode` call) and persists to
    * localStorage.
    *
    * The Style picker (Deck/Loom/Studio) that used to sit above Theme is
@@ -45,16 +48,27 @@
    */
   import { accentStore, isValidAccentHex } from '$lib/accent';
   import { ACCENT_PRESET_KEYS, ACCENT_PRESET_LABELS, ACCENT_PRESETS } from '$lib/accent-presets';
+  import { expandThoughtsStore, type ThoughtDisplayMode } from '$lib/expand-thoughts';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import Card from './ui/Card.svelte';
 
   const accentSelection = accentStore.selection;
   const themePreference = themeStore.preference;
+  const thoughtDisplayMode = expandThoughtsStore.mode;
 
   const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
     { value: 'system', label: 'System' },
     { value: 'dark', label: 'Dark' },
     { value: 'light', label: 'Light' },
+  ];
+
+  // Automatic first, matching THEME_OPTIONS' own convention of listing the
+  // default first — C4-2's own pick (design spec
+  // `2026-08-05-zed-parity-decisions.md` §3, issue #745).
+  const THOUGHT_DISPLAY_OPTIONS: { value: ThoughtDisplayMode; label: string }[] = [
+    { value: 'automatic', label: 'Automatic' },
+    { value: 'expanded', label: 'Always expanded' },
+    { value: 'collapsed', label: 'Always collapsed' },
   ];
 
   // Seeded from whatever's already selected so the color input never shows
@@ -161,6 +175,24 @@
           Custom
         </label>
       </section>
+
+      <section class="thought-section">
+        <h3>Thinking</h3>
+        <div class="thought-mode-options" role="radiogroup" aria-label="Thought display">
+          {#each THOUGHT_DISPLAY_OPTIONS as option (option.value)}
+            <button
+              type="button"
+              class="thought-mode-option"
+              class:selected={$thoughtDisplayMode === option.value}
+              aria-pressed={$thoughtDisplayMode === option.value}
+              onclick={() => expandThoughtsStore.setMode(option.value)}
+              data-testid={`thought-mode-option-${option.value}`}
+            >
+              {option.label}
+            </button>
+          {/each}
+        </div>
+      </section>
     </div>
   </Card>
 </div>
@@ -184,7 +216,8 @@
   }
 
   .theme-section,
-  .accent-section {
+  .accent-section,
+  .thought-section {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
@@ -201,13 +234,15 @@
     font-weight: 600;
   }
 
-  .theme-options {
+  .theme-options,
+  .thought-mode-options {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);
   }
 
-  .theme-option {
+  .theme-option,
+  .thought-mode-option {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
@@ -237,21 +272,25 @@
     height: 100%;
   }
 
-  .theme-option:hover {
+  .theme-option:hover,
+  .thought-mode-option:hover {
     border-color: var(--color-border-strong);
     background: var(--color-fill-subtle);
   }
 
-  .theme-option:active {
+  .theme-option:active,
+  .thought-mode-option:active {
     transform: scale(0.98);
   }
 
-  .theme-option:focus-visible {
+  .theme-option:focus-visible,
+  .thought-mode-option:focus-visible {
     outline: var(--focus-ring-width) solid var(--color-focus-ring);
     outline-offset: var(--focus-ring-offset);
   }
 
-  .theme-option.selected {
+  .theme-option.selected,
+  .thought-mode-option.selected {
     background: var(--color-accent-subtle);
     border-color: var(--color-accent);
     color: var(--color-accent);
@@ -365,6 +404,7 @@
      `NotificationPreferences.svelte` uses. */
   @media (pointer: coarse) {
     .theme-option,
+    .thought-mode-option,
     .custom-accent {
       min-height: 2.75rem;
     }

@@ -81,9 +81,8 @@
    * How long a directory may sit `'loading'` before this panel gives up
    * waiting on its own (issue #582) — `tree` carries no timeout of its
    * own. 10s matches every other request-shaped `RelayClient` default
-   * (`DEFAULT_CREATE_SESSION_TIMEOUT_MS`, `browseDirectory`'s own
-   * `timeoutMs`), so a stated wait means the same thing everywhere in the
-   * app.
+   * (`browseDirectory`'s own `timeoutMs`), so a stated wait means the same
+   * thing everywhere in the app.
    */
   const DIRECTORY_TIMEOUT_MS = 10_000;
 

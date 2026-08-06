@@ -49,6 +49,7 @@ export type {
 // Additive to the transcript-reducer exports above; `reduceSessionEvent` is
 // the reducer entry point over this wider union.
 export type {
+  AcpAvailableCommandsUpdateEvent,
   AcpConfigOptionsEvent,
   AcpConfigOptionUpdateEvent,
   AcpSessionLifecycleEvent,
@@ -104,6 +105,13 @@ export type { PermissionQueueState } from './permission-queue-state';
 export { ConfigOptionStore } from './config-options';
 export type { ConfigOptionChangeEvent } from './config-options';
 export type { AcpConfigOption, AcpConfigOptionChoice } from './types';
+
+// v1: available-command (`/`-command) catalogue state (SPEC.md §7.24;
+// issue #741, built once for #743's composer picker and #754's MCP-prompt
+// commands).
+export { AvailableCommandsStore } from './available-commands';
+export type { AvailableCommandsChangeEvent } from './available-commands';
+export type { AcpAvailableCommand, AcpAvailableCommandInput } from './types';
 
 // v1: the provider-module registry + enrich() hook extension point
 // (SPEC.md §5.5; issue #181).
