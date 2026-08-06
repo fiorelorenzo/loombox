@@ -104,7 +104,7 @@ describe('claudeProviderModule conformance', () => {
     expect(message).toMatchObject({ text: 'edited (chose allow-all-edits)' });
   });
 
-  it('enrich() is a no-op: a vendor _meta.claudeCode.parentToolUseId is not promoted in v1', async () => {
+  it('enrich() promotes a vendor _meta.claudeCode.parentToolUseId onto parentToolCallId (issue #200)', async () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-claude-conformance-'));
 
     const registry = new ProviderRegistry();
@@ -135,10 +135,10 @@ describe('claudeProviderModule conformance', () => {
 
     const state = client.getTranscriptState(sessionId);
     const toolCall = state.items.find((item) => item.type === 'tool_call' && item.id === 'tc1');
-    // The fixture sent `_meta.claudeCode.parentToolUseId` on the wire (see
-    // claude-like-acp-agent.mjs); enrich() being a documented no-op means it
-    // must NOT surface here yet.
-    expect(toolCall).toMatchObject({ parentToolCallId: undefined });
+    // The fixture sends `_meta.claudeCode.parentToolUseId: 'root-agent-call'`
+    // on the wire (see claude-like-acp-agent.mjs) — enrich() now promotes it,
+    // matching the real bridge's behavior verified live for issue #200.
+    expect(toolCall).toMatchObject({ parentToolCallId: 'root-agent-call' });
   });
 
   it('registered module drives a plain (non-tool-call) turn unchanged', async () => {

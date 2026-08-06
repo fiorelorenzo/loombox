@@ -57,6 +57,7 @@
    */
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
+  import type { AcpMcpServerStatusEntry } from '@loombox/providers-core/browser';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PermissionPolicyPanel, {
     type PermissionPolicyClient,
@@ -75,6 +76,16 @@
     pluginStorage?: PluginConfigStorage;
     relayClient?: ProjectConfigRelayClient;
     onSecretRequired?: (serverName: string, secretName: string) => void;
+    /**
+     * The selected session's latest `mcp_server_status` push (issue #750,
+     * D2-2; #794), forwarded straight through to `McpServerConfigPanel`'s
+     * own "Server status" section — the caller (`+page.svelte`) already
+     * mirrors `RelayClient.mcpServerStatusesFor(sessionId)` for the exact
+     * same reason it mirrors `configOptions`/`commands`, so this wrapper
+     * stays true to its own "owns no config state itself" contract by
+     * only ever passing it through, never subscribing on its own.
+     */
+    mcpServerStatuses?: AcpMcpServerStatusEntry[];
   }
 
   const {
@@ -84,13 +95,19 @@
     pluginStorage,
     relayClient,
     onSecretRequired,
+    mcpServerStatuses,
   }: Props = $props();
 </script>
 
 <div class="project-config" data-testid="project-config-panel">
   <section class="project-config-section">
     <h3>MCP servers</h3>
-    <McpServerConfigPanel {projectPath} storage={mcpStorage} {onSecretRequired} />
+    <McpServerConfigPanel
+      {projectPath}
+      storage={mcpStorage}
+      {onSecretRequired}
+      {mcpServerStatuses}
+    />
   </section>
   <section class="project-config-section">
     <h3>Plugins &amp; extensions</h3>

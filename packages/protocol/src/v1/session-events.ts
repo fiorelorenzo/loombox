@@ -269,11 +269,26 @@ export const mcpServerFailureCategoryV1 = z.enum([
 ]);
 export type McpServerFailureCategoryV1 = z.infer<typeof mcpServerFailureCategoryV1>;
 
+/**
+ * `disabled: true` (issue #794) means this exact failure was the third
+ * consecutive one, and the node just auto-disabled its OWN
+ * `McpConfigStore` record for this server (project-scoped, or global —
+ * see `NodeDaemon.autoDisableMcpServer`) as a direct result: the server
+ * will not be attempted again until a human re-enables it there. Omitted
+ * (never `false`) for every other failure, including one that happens to
+ * be a client-declared server's third-in-a-row: that server has no
+ * node-store record to disable (`autoDisableMcpServer`'s own doc
+ * comment), so the node has nothing to report disabling — the client
+ * remains the sole owner of whether to keep retrying its own declared
+ * server, exactly like `mcp-server-store.ts`'s existing enable/disable
+ * toggle already lets it decide.
+ */
 export const mcpServerStatusEntryV1 = z.object({
   name: z.string().min(1),
   ok: z.boolean(),
   category: mcpServerFailureCategoryV1.optional(),
   reason: z.string().min(1).optional(),
+  disabled: z.boolean().optional(),
 });
 export type McpServerStatusEntryV1 = z.infer<typeof mcpServerStatusEntryV1>;
 

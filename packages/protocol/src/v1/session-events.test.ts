@@ -4,6 +4,7 @@ import {
   availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  mcpServerStatusEntryV1,
   mcpServerPromptsEventV1,
   mcpServerStatusEventV1,
   parseSessionLifecycleEventV1,
@@ -195,6 +196,27 @@ describe('mcpServerStatusEventV1', () => {
       });
       expect(result.success).toBe(true);
     }
+  });
+
+  it('accepts an optional "disabled" flag alongside a failure (issue #794)', () => {
+    const result = mcpServerStatusEntryV1.safeParse({
+      name: 'bad-binary',
+      ok: false,
+      category: 'missing_binary',
+      reason: 'Executable not found',
+      disabled: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('parses fine with "disabled" omitted (an ordinary failure that has not yet crossed the auto-disable threshold)', () => {
+    const result = mcpServerStatusEventV1.safeParse({
+      kind: 'mcp_server_status',
+      servers: [{ name: 'x', ok: false, category: 'missing_binary', reason: 'r' }],
+      updatedAt: 't',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.servers[0]?.disabled).toBeUndefined();
   });
 
   it('rejects an unknown failure category', () => {
