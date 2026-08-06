@@ -1590,7 +1590,6 @@ export class NodeDaemon extends EventEmitter {
     // visible reason"); the worktree/lease cost this comment describes
     // avoiding is still avoided — only a `session_announce` plus a
     // `session_status: 'error'`/`mcp_server_status` pair go out.
-    const sessionId = opts.sessionId ?? randomUUID();
     let mcpServers: AcpMcpServerConfig[];
     try {
       const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
