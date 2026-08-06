@@ -413,15 +413,17 @@
               {@html renderMarkdownToHtml(messageSource(item))}
             </div>
             {#if item.kind === 'ci_failure' && item.prUrl}
+              <!-- eslint-disable svelte/no-navigation-without-resolve -- the node's own CI check state carries GitHub's PR URL (github.com/.../pull/N), never an internal SvelteKit route; the rule can't statically prove that from a dynamic href. -->
               <a
-                class="ci-pr-link"
                 href={item.prUrl}
                 target="_blank"
                 rel="noreferrer"
+                class="ci-pr-link"
                 data-testid="attention-inbox-ci-pr-link"
               >
                 View PR{item.prNumber ? ` #${item.prNumber}` : ''}
               </a>
+              <!-- eslint-enable svelte/no-navigation-without-resolve -->
             {/if}
             {#if answered}
               <div class="answer-outcome" data-testid="attention-inbox-answer-outcome">
