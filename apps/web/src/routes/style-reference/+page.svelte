@@ -567,6 +567,103 @@
     </p>
   </section>
 
+  <section aria-labelledby="mono-identifiers-heading">
+    <h2 id="mono-identifiers-heading">Structural identifiers, everywhere (issue #735, A4-1)</h2>
+    <p>
+      The pick: project paths, branch names, target/node names, session ids, tool names, file names
+      in tool rows, and every numeric figure (counts, durations, token and cost numbers) render mono
+      — everywhere, including inline inside prose. One rule carries all of it:
+      <code>.font-mono</code> (<code>$lib/styles/typography.css</code>), the same class already used
+      for code, diffs, and the terminal (SPEC.md §4) — an identifier needs the exact same visual
+      treatment as a code surface, so there is no second CSS taxonomy to keep in sync, only this
+      enumeration.
+    </p>
+
+    <h3>Project path</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-project-path">/home/dev/loombox</span>
+    </p>
+    <code class="scale-tag"
+      >topbar breadcrumb, session row, command palette, attention inbox, file reference picker</code
+    >
+
+    <h3>Branch name</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-branch-name">feat/mono-identifiers</span>
+    </p>
+    <code class="scale-tag"
+      >no call site renders a git branch name yet — #746's fork/branch UI is the first likely
+      consumer</code
+    >
+
+    <h3>Target / node name</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-target-name">node_a1b2 · local</span>
+    </p>
+    <code class="scale-tag">TargetStatusView, TargetPicker, a session row's meta line</code>
+
+    <h3>Session / account id</h3>
+    <p><span class="font-mono" data-testid="mono-identifier-session-id">0.0.5127391</span></p>
+    <code class="scale-tag">the sign-in gate footer</code>
+
+    <h3>Tool name</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-tool-name"
+        >Read apps/web/src/lib/diff.ts</span
+      >
+    </p>
+    <code class="scale-tag">GenericToolRow, EditWriteWidget, PermissionCard titles</code>
+
+    <h3>File name in a tool row</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-file-name">apps/web/src/lib/diff.ts</span
+      >
+    </p>
+    <code class="scale-tag">DiffViewer's path header, FileReferencePicker results</code>
+
+    <h3>Numeric figure — count</h3>
+    <p><span class="font-mono" data-testid="mono-identifier-count">3</span> pending</p>
+    <code class="scale-tag"
+      >PermissionQueueBar, TodoWidget's done/total, DiffViewer's +/- totals</code
+    >
+
+    <h3>Numeric figure — duration</h3>
+    <p>Thinking <span class="font-mono" data-testid="mono-identifier-duration">12s</span></p>
+    <code class="scale-tag"
+      >MessageItem's thinking timer, TargetStatusView's relative sample age</code
+    >
+
+    <h3>Numeric figure — tokens</h3>
+    <p>
+      <span class="font-mono" data-testid="mono-identifier-tokens">76k</span> /
+      <span class="font-mono">200k</span>
+    </p>
+    <code class="scale-tag">ConfigBar's context meter</code>
+
+    <h3>Numeric figure — cost</h3>
+    <p><span class="font-mono" data-testid="mono-identifier-cost">$1.23</span></p>
+    <code class="scale-tag">ConfigBar's session cost</code>
+
+    <h3>Where the pick's own caveat shows worst</h3>
+    <p>
+      "All numbers" reaches further than Zed's own habit, and the option's own trade sentence says
+      so: a lone relative timestamp has nothing to align against, so the tabular-figure benefit is
+      moot and the font swap can read as a glitch rather than an alignment aid. Applied anyway,
+      since that is the decision — the two places it reads worst:
+    </p>
+    <p>
+      <strong>MessageItem's thinking timer</strong> (<code>.thinking-timer</code>) — a live-ticking
+      <span class="font-mono">Ns</span> that advances every 250ms inside a two-word phrase, at caption
+      size; the digit hops font mid-sentence on every tick.
+    </p>
+    <p>
+      <strong>TargetStatusView's relative sample age</strong> (<code>.target-age</code>) — the
+      caveat's own example: a 2–3 character string (<span class="font-mono">28s</span>,
+      <span class="font-mono">5m</span>) with no neighboring column, dropped into a dense row of
+      otherwise proportional labels.
+    </p>
+  </section>
+
   <!-- === Warp Deck: UI primitives === -->
   <section aria-labelledby="components-heading">
     <h2 id="components-heading">Components (redesign brief §4, issue #428)</h2>

@@ -36,6 +36,8 @@ import {
   buildIdentityMismatch,
   initializeResult,
   newDeviceBootstrapResponse,
+  parsePermissionPolicyResultPayloadV1,
+  parsePermissionPolicyViolationPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   safeParseSessionLifecycleEventV1,
@@ -67,6 +69,7 @@ import {
   type ProvisionTargetResult,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
@@ -96,6 +99,11 @@ import {
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
   type TestRunnerCommandsV1,
+  type PermissionPolicyResult,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolation,
+  type PermissionPolicySetPayloadV1,
+  type PermissionPolicyViolationPayloadV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
@@ -126,6 +134,11 @@ export type {
   BuildIdentityV1,
   TargetHealth,
   TargetListEntry,
+} from '@loombox/protocol';
+export type {
+  PermissionPolicyV1,
+  PermissionRuleSetV1,
+  ToolRefusalReasonV1,
 } from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
@@ -1182,6 +1195,21 @@ export class RelayClient {
     { resolve: (suggestions: TestRunnerCommandsV1) => void; reject: (error: Error) => void }
   >();
   /**
+   * requestId -> the pending {@link getPermissionPolicy}/{@link setPermissionPolicy}
+   * call it belongs to (SPEC §7.17; issue #751). Both resolve to the same
+   * `permission_policy_result` reply, mirrors {@link pendingTestRunnerConfigRequests}
+   * immediately above.
+   */
+  private readonly pendingPermissionPolicyRequests = new Map<
+    string,
+    { resolve: (policy: PermissionPolicyV1) => void; reject: (error: Error) => void }
+  >();
+  /** sessionId -> every listener registered via {@link onPermissionPolicyViolation}, fired with each decrypted `permission_policy_violation` as it arrives (SPEC §7.17; issue #751) — mirrors {@link terminalOutputListeners}, keyed by session alone since a violation isn't scoped to one terminal/run. */
+  private readonly permissionPolicyViolationListeners = new Map<
+    string,
+    Set<(violation: PermissionPolicyViolationPayloadV1) => void>
+  >();
+  /**
    * requestId -> the pending {@link discoverSshHosts} call it belongs to
    * (redesign v2 §3.2's add-target candidate picker; issue #475).
    * `ssh_discovery_response` carries plain fields only (no envelope — see
@@ -1229,6 +1257,20 @@ export class RelayClient {
    * is guarded by `requestId`, exactly like every sibling map here.
    */
   private readonly pendingArchiveRequests = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link forkSession} call it belongs to
+   * (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue
+   * #746). Same account-wide broadcast shape `session_archive_response`
+   * carries (`packages/relay/src/relay.ts`), but a fork's outcome needs no
+   * store-wide side effect on `'ok'` — the new session already reaches
+   * every device the ordinary way, via `session_announce` — so unlike
+   * {@link pendingArchiveRequests} this map's own resolve/reject is the
+   * entire job of {@link handleSessionForkResponse}.
+   */
+  private readonly pendingForkRequests = new Map<
     string,
     { resolve: () => void; reject: (error: Error) => void }
   >();
@@ -2315,6 +2357,124 @@ export class RelayClient {
   }
 
   /**
+   * Reads `sessionId`'s project's saved permission policy from the owning
+   * node (SPEC §7.17; issue #751) — the allow-all default for a project
+   * with nothing saved yet. No envelope on the request, same reasoning as
+   * {@link getTestRunnerConfig}. Requires an open connection and rejects
+   * on a timeout, mirroring {@link getTestRunnerConfig}'s own contract.
+   */
+  getPermissionPolicy(sessionId: string, timeoutMs = 5000): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (policy) => {
+          clearTimeout(timer);
+          resolve(policy);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch, mirrors
+   * `PermissionPolicyStore.save()`'s own contract) `sessionId`'s
+   * project's permission policy (SPEC §7.17; issue #751). Resolves with
+   * the saved result (the same `permission_policy_result` reply
+   * {@link getPermissionPolicy} gets), so a caller's UI can show the saved
+   * state without a separate follow-up read. Validating an individual
+   * glob rule (non-blank, per issue #751's "an invalid glob is rejected
+   * at entry") is the caller's job (`PermissionPolicyPanel.svelte`'s own
+   * form) — this method sends whatever `PermissionPolicyV1` it is given.
+   */
+  setPermissionPolicy(
+    sessionId: string,
+    policy: PermissionPolicyV1,
+    timeoutMs = 5000,
+  ): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: PermissionPolicySetPayloadV1 = { policy };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'permission_policy_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingPermissionPolicyRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Registers `listener` to be called with each decrypted
+   * `permission_policy_violation` this session receives (SPEC §7.17;
+   * issue #751, D3-4's own "the UI must say which of the three layers
+   * refused it") — mirrors {@link onTerminalOutput}. Returns an
+   * unsubscribe function; call it once the caller stops rendering
+   * `sessionId`'s violations (e.g. `PermissionPolicyPanel` unmounting).
+   */
+  onPermissionPolicyViolation(
+    sessionId: string,
+    listener: (violation: PermissionPolicyViolationPayloadV1) => void,
+  ): () => void {
+    let listeners = this.permissionPolicyViolationListeners.get(sessionId);
+    if (!listeners) {
+      listeners = new Set();
+      this.permissionPolicyViolationListeners.set(sessionId, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  /**
    * Reads `sessionId`'s project's saved test/lint/build commands from the
    * owning node (SPEC §7.15; issue #245) — `{}` for a project with nothing
    * saved yet. No envelope on the request (nothing to hide about "which
@@ -2535,6 +2695,81 @@ export class RelayClient {
       targetId: options.targetId,
       provider: options.provider,
       privateEnvelope,
+    });
+
+    return sessionId;
+  }
+
+  /**
+   * Forks `sourceSessionId` from `forkFromTurnId` (inclusive) into a
+   * brand-new session (design spec `2026-08-05-zed-parity-decisions.md`
+   * §3's C6-2; issue #746) — the transcript row/turn action's own call
+   * site. `title`/`projectPath`/`targetId`/`provider` are read straight
+   * off `sourceSessionId`'s own already-known {@link ClientSessionMeta}
+   * (this client already decrypted it to render the source session at
+   * all), so a caller only ever names the source and the turn to diverge
+   * from — never re-supplies data it never had reason to duplicate.
+   *
+   * Unlike {@link createSession} (fire-and-forget, no ack), this awaits
+   * `session_fork_response`: forking has real, foreseeable refusal cases
+   * — the source has no active agent, or the requested turn was never
+   * produced — that must reach the caller as a visible reason, never a
+   * silently-dropped request the caller only learns failed by its own
+   * timeout guess.
+   */
+  async forkSession(
+    sourceSessionId: string,
+    forkFromTurnId: string,
+    options: { title?: string } = {},
+    timeoutMs = 30_000,
+  ): Promise<string> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient.forkSession: not connected to the relay');
+    }
+    const source = get(this.sessionsStore).find((session) => session.id === sourceSessionId);
+    if (!source) {
+      throw new Error(`RelayClient.forkSession: unknown source session "${sourceSessionId}"`);
+    }
+
+    const sessionId = generateId('session');
+    const privateMeta: SessionPrivateMeta = {
+      title: options.title?.trim() || `${source.title} (fork)`,
+      projectPath: source.projectPath,
+      forkFromTurnId,
+    };
+    const privateEnvelope = await this.envelopeCrypto.seal(
+      'session',
+      sessionId,
+      sessionId,
+      privateMeta,
+    );
+
+    const requestId = generateId('fork');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingForkRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_fork_response'));
+      }, timeoutMs);
+      this.pendingForkRequests.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        sessionId,
+        sourceSessionId,
+        targetId: source.targetId,
+        provider: source.provider,
+        privateEnvelope,
+      });
     });
 
     return sessionId;
@@ -4028,6 +4263,9 @@ export class RelayClient {
       case 'session_archive_response':
         this.handleSessionArchiveResponse(message);
         return;
+      case 'session_fork_response':
+        this.handleSessionForkResponse(message);
+        return;
       case 'session_update':
         this.handleSessionUpdate(message);
         return;
@@ -4063,6 +4301,12 @@ export class RelayClient {
         return;
       case 'run_exit':
         this.handleRunExit(message);
+        return;
+      case 'permission_policy_result':
+        this.handlePermissionPolicyResult(message);
+        return;
+      case 'permission_policy_violation':
+        this.handlePermissionPolicyViolation(message);
         return;
       case 'test_runner_config_result':
         this.handleTestRunnerConfigResult(message);
@@ -4219,6 +4463,18 @@ export class RelayClient {
     const pending = this.pendingArchiveRequests.get(message.requestId);
     if (!pending) return;
     this.pendingArchiveRequests.delete(message.requestId);
+    if (message.result.outcome === 'ok') {
+      pending.resolve();
+    } else {
+      pending.reject(new Error(message.result.message));
+    }
+  }
+
+  /** No `sessionsStore` side effect on `'ok'` unlike {@link handleSessionArchiveResponse}: the fork's new session reaches every device the ordinary way, via `session_announce`. This response only ever settles {@link pendingForkRequests}' own promise. */
+  private handleSessionForkResponse(message: SessionForkResponse): void {
+    const pending = this.pendingForkRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingForkRequests.delete(message.requestId);
     if (message.result.outcome === 'ok') {
       pending.resolve();
     } else {
@@ -4388,6 +4644,54 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link getPermissionPolicy}/{@link setPermissionPolicy} calls (SPEC
+   * §7.17; issue #751). `permission_policy_result` is fanned out to
+   * every client subscribed to the session (mirrors `fs_list_response`),
+   * so the same "requestId not pending means it isn't mine" guard as
+   * {@link handleFsListResponse} applies. Validated (not just cast — issue
+   * #593's own boundary discipline), same as `handleTestRunnerConfigResult`.
+   */
+  private handlePermissionPolicyResult(message: PermissionPolicyResult): void {
+    const pending = this.pendingPermissionPolicyRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPermissionPolicyRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePermissionPolicyResultPayloadV1(decrypted).policy))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * One live policy denial (SPEC §7.17; issue #751, D3-4's own "the UI
+   * must say which of the three layers refused it") — decrypted and
+   * fanned out to every listener {@link onPermissionPolicyViolation}
+   * registered for this exact `sessionId`, mirroring
+   * {@link handleTerminalOutput}. Never buffered by this class itself: a
+   * caller mounting after this fired simply never sees it, exactly like
+   * `terminalOutputListeners`' own contract (`TerminalClientState`'s doc
+   * comment).
+   */
+  private handlePermissionPolicyViolation(message: PermissionPolicyViolation): void {
+    const listeners = this.permissionPolicyViolationListeners.get(message.sessionId);
+    if (!listeners || listeners.size === 0) return;
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        const violation = parsePermissionPolicyViolationPayloadV1(decrypted);
+        for (const listener of listeners) listener(violation);
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`RelayClient: failed to decrypt permission_policy_violation: ${detail}`);
+      });
   }
 
   /**

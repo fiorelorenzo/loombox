@@ -72,6 +72,15 @@ export const sessionPrivateMetaV1 = z.object({
    * resolve exclusively node-side (SPEC §7.17).
    */
   mcpServerConfigs: z.array(mcpServerConfigV1).optional(),
+  /**
+   * Set only on a `session_fork_request`'s envelope (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746): the turn
+   * (inclusive) the new session's copied transcript ends at. Absent on an
+   * ordinary `session_create` — same "optional so an older peer keeps
+   * parsing every other field unchanged" rule `worktree` above already
+   * establishes.
+   */
+  forkFromTurnId: z.string().min(1).optional(),
 });
 export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
 

@@ -66,9 +66,22 @@
     turnActive: boolean;
     providerId: string | undefined;
     permissionHead: PendingPermissionRequest | undefined;
+    /** Fork the open session from a message row's own turn (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — forwarded to `MessageItem`'s own `onFork`. Omitted renders no fork button on any row. */
+    onFork?: (turnId: string) => void;
+    /** The turn currently mid-fork, if any — forwarded to `MessageItem`'s own `forking` so only that turn's row shows the busy state. */
+    forkingTurnId?: string;
   }
 
-  const { sessionKey, items, transcript, turnActive, providerId, permissionHead }: Props = $props();
+  const {
+    sessionKey,
+    items,
+    transcript,
+    turnActive,
+    providerId,
+    permissionHead,
+    onFork,
+    forkingTurnId,
+  }: Props = $props();
 
   /**
    * How far off the bottom still counts as "following" (issue #508). A
@@ -235,6 +248,8 @@
             : false}
           {turnActive}
           {providerId}
+          {onFork}
+          forking={forkingTurnId === item.turnId}
         />
       {:else}
         <ToolCallRow

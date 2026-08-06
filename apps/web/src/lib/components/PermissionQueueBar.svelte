@@ -47,7 +47,7 @@
           label="Permission requests pending"
           size="sm"
         />
-        {pending.length} pending
+        <span class="font-mono">{pending.length}</span> pending
       </span>
       <Button variant="danger" size="sm" onclick={onStop}>Stop</Button>
     </div>

@@ -166,7 +166,7 @@
       {#snippet headerContent()}
         <span class="sr-only">{item.toolKind ?? 'other'}</span>
         <span class="title-line">
-          <span class="title">{item.title ?? item.id}</span>
+          <span class="title font-mono">{item.title ?? item.id}</span>
           {#if showInline}
             <span class="inline-payload">
               {#if payload.kind === 'text'}

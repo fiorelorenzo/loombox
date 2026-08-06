@@ -29,6 +29,11 @@ describe('EditWriteWidget', () => {
     expect(screen.getByText('Edit src/foo.ts')).toBeTruthy();
   });
 
+  it('renders the title — a tool row file name — in the shared mono identifier face (#735)', () => {
+    const { container } = render(EditWriteWidget, { props: { item: editItem() } });
+    expect(container.querySelector('.title')?.className).toContain('font-mono');
+  });
+
   it('stays expanded by default while a call is still running', () => {
     render(EditWriteWidget, { props: { item: editItem({ status: 'in_progress' }) } });
     expect(screen.getByRole('button', { expanded: true })).toBeTruthy();
