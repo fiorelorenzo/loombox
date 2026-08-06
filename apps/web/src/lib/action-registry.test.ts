@@ -52,6 +52,7 @@ function makeHandlers(): ActionHandlers {
     focusComposer: vi.fn(),
     openSettings: vi.fn(),
     openConfigPopover: vi.fn(),
+    openTranscriptSearch: vi.fn(),
   };
 }
 
@@ -146,6 +147,7 @@ describe('getAvailableActions: predicates (issue #758, extended by #759)', () =>
     expect(ids).not.toContain('toggle-terminal-dock');
     expect(ids).not.toContain('focus-composer');
     expect(ids).not.toContain('cycle-model-effort');
+    expect(ids).not.toContain('search-transcript');
   });
 
   it('shows session-scoped actions once a session is selected', () => {
@@ -154,6 +156,7 @@ describe('getAvailableActions: predicates (issue #758, extended by #759)', () =>
     expect(ids).toContain('toggle-terminal-dock');
     expect(ids).toContain('focus-composer');
     expect(ids).toContain('cycle-model-effort');
+    expect(ids).toContain('search-transcript');
   });
 
   it('hides "Cycle model / effort" when the session has no config options yet, even with a session selected', () => {
@@ -186,6 +189,7 @@ describe('ActionDefinition.run: dispatches to the right handler', () => {
     ['focus-composer', 'focusComposer'],
     ['open-settings', 'openSettings'],
     ['cycle-model-effort', 'openConfigPopover'],
+    ['search-transcript', 'openTranscriptSearch'],
   ] as const)('%s calls handlers.%s', (id, handlerName) => {
     const action = actionRegistry.find((entry) => entry.id === id);
     expect(action).toBeTruthy();

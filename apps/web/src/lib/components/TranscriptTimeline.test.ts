@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createTranscriptState,
   type TranscriptGapItem,
@@ -40,6 +40,25 @@ function toolCalls(count: number): TranscriptToolCallItem[] {
   return Array.from({ length: count }, (_, i) => toolCallItem(`tc${i}`));
 }
 
+function messageItem(id: string, text: string): TranscriptItem {
+  return {
+    type: 'message',
+    id,
+    kind: 'agent_message_chunk',
+    turnId: 't1',
+    messageId: id,
+    text,
+  };
+}
+
+/** A minimal stand-in for the real `Highlight` DOM class (jsdom has none) — captures whatever `Range`s it was constructed with, mirroring `search-highlight.test.ts`'s own fake. */
+class FakeHighlight {
+  readonly ranges: Range[];
+  constructor(...ranges: Range[]) {
+    this.ranges = ranges;
+  }
+}
+
 interface TranscriptTimelineTestProps {
   sessionKey: string;
   items: TranscriptItem[];
@@ -48,6 +67,8 @@ interface TranscriptTimelineTestProps {
   providerId: string;
   permissionHead: undefined;
   jumpTarget: TranscriptJumpTarget | undefined;
+  searchQuery?: string;
+  activeSearchItemId?: string;
 }
 
 function propsFor(items: TranscriptItem[], sessionKey: string): TranscriptTimelineTestProps {
@@ -407,5 +428,87 @@ describe('TranscriptTimeline: jumpTarget (issue #740, turn-review "jump to this 
     rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'edit1', token: 1 } });
 
     expect(container.querySelector('[data-item-id="edit1"]')).toBeTruthy();
+  });
+});
+
+describe('TranscriptTimeline: search highlighting (issues #262/#263)', () => {
+  let registry: Map<string, FakeHighlight>;
+
+  beforeEach(() => {
+    registry = new Map();
+    vi.stubGlobal('CSS', { highlights: registry });
+    vi.stubGlobal('Highlight', FakeHighlight);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('paints a highlight over every match inside a currently mounted row', () => {
+    const items = [messageItem('m0', 'looking for the needle in here')];
+    renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
+
+    const highlight = registry.get('loombox-transcript-search');
+    expect(highlight?.ranges).toHaveLength(1);
+    expect(highlight?.ranges[0]?.toString()).toBe('needle');
+  });
+
+  it('paints no highlight at all for a match that exists in `items` but is outside the mounted window — the documented, accepted DOM-only constraint (search.ts still counted it; only painting is DOM-bound)', () => {
+    // A huge tail of unrelated tool calls pushes "m0" out of the
+    // pinned-to-tail window, the same setup the jumpTarget "brings a row
+    // outside the window into view" test above uses.
+    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...toolCalls(500)];
+    const { container } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
+    expect(container.querySelector('[data-item-id="m0"]')).toBeNull();
+
+    expect(registry.has('loombox-transcript-search')).toBe(false);
+  });
+
+  it('navigating to that same off-window match (via jumpTarget, exactly like +page.svelte does) mounts it and the highlight then appears', () => {
+    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...toolCalls(500)];
+    const { rerender, container } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
+    expect(registry.has('loombox-transcript-search')).toBe(false);
+
+    rerender({
+      ...propsFor(items, 'sess_1'),
+      searchQuery: 'needle',
+      jumpTarget: { id: 'm0', token: 1 },
+    });
+
+    expect(container.querySelector('[data-item-id="m0"]')).toBeTruthy();
+    expect(registry.get('loombox-transcript-search')?.ranges).toHaveLength(1);
+  });
+
+  it('paints the active-match highlight only for the row matching activeSearchItemId', () => {
+    const items = [messageItem('m0', 'first needle'), messageItem('m1', 'second needle')];
+    renderTimeline(items, 'sess_1', { searchQuery: 'needle', activeSearchItemId: 'm1' });
+
+    const active = registry.get('loombox-transcript-search-active');
+    expect(active?.ranges).toHaveLength(1);
+    expect(
+      (
+        active?.ranges[0]?.startContainer.parentElement?.closest(
+          '[data-item-id]',
+        ) as HTMLElement | null
+      )?.dataset.itemId,
+    ).toBe('m1');
+  });
+
+  it('clears highlights on session switch, before the new session\u2019s own rows ever mount', () => {
+    const items = [messageItem('m0', 'a needle here')];
+    const { rerender } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
+    expect(registry.has('loombox-transcript-search')).toBe(true);
+
+    rerender({ ...propsFor([messageItem('m1', 'no relation')], 'sess_2'), searchQuery: 'needle' });
+
+    expect(registry.has('loombox-transcript-search')).toBe(false);
+  });
+
+  it('an empty query clears any existing highlight', () => {
+    const items = [messageItem('m0', 'a needle here')];
+    const { rerender } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
+    expect(registry.has('loombox-transcript-search')).toBe(true);
+
+    rerender({ ...propsFor(items, 'sess_1'), searchQuery: '' });
+
+    expect(registry.has('loombox-transcript-search')).toBe(false);
   });
 });

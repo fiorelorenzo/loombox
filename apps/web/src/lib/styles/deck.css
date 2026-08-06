@@ -335,3 +335,32 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 }
+
+/*
+ * Client-side transcript search highlights (SPEC.md §7.19; issues
+ * #262/#263: "highlighting uses the CSS Custom Highlight API, not manual
+ * DOM text-node wrapping"). Painted by `$lib/transcript/search-
+ * highlight.ts` via `CSS.highlights.set(name, new Highlight(...ranges))`.
+ *
+ * `::highlight()` cannot be qualified by any other selector at all (the
+ * spec's own grammar — no class, no attribute, no descendant combinator),
+ * so these rules live here, in the one genuinely global stylesheet,
+ * rather than inside `TranscriptTimeline.svelte`'s own scoped `<style>`:
+ * Svelte's per-component scoping would append its usual attribute
+ * selector and break the bare-pseudo grammar the spec requires.
+ *
+ * Reuses the warning ramp rather than introducing a new token: a find
+ * highlight is a transient "here's what you searched for" marker, not a
+ * real warning, but the same amber registers as "look here" without
+ * competing with the accent color this app already reserves for actual
+ * selection/action state (`--color-accent`).
+ */
+::highlight(loombox-transcript-search) {
+  background-color: var(--color-warning-subtle);
+  color: var(--color-text-primary);
+}
+
+::highlight(loombox-transcript-search-active) {
+  background-color: var(--color-warning);
+  color: var(--color-text-inverse);
+}
