@@ -42,10 +42,12 @@
    * unaffected; this component does nothing to restore native find, on
    * purpose.
    */
-  import type {
-    PendingPermissionRequest,
-    TranscriptItem,
-    TranscriptState,
+  import {
+    computeToolCallNesting,
+    type PendingPermissionRequest,
+    type ToolCallNesting,
+    type TranscriptItem,
+    type TranscriptState,
   } from '@loombox/providers-core/browser';
   import { flushSync } from 'svelte';
   import { isThoughtStillThinking } from '$lib/thinking';
@@ -126,6 +128,33 @@
   const visibleItems = $derived(
     win.range.start >= 0 ? items.slice(win.range.start, win.range.end + 1) : [],
   );
+
+  /**
+   * Subagent/nested-tool-call tree rendering (issue #200; SPEC.md §7.24).
+   * Computed ONCE per `items` reference from the FULL transcript, never
+   * from `visibleItems` — a windowed transcript (#755) can easily mount a
+   * child without its parent's own row also being mounted (they can be far
+   * apart in a long session), and this must still resolve the same nesting
+   * either way. Each mounted tool-call row below does an O(1) `.get(item.id)`
+   * against this map rather than re-walking its own chain.
+   */
+  const toolCallNesting = $derived(computeToolCallNesting(items));
+
+  /**
+   * Visual indent is capped, unlike the real (unbounded) `depth` this reads
+   * from `toolCallNesting` — a genuinely deep chain (issue #200's "depth
+   * greater than two" acceptance bullet) still needs SOME defined behavior
+   * rather than the row shrinking toward zero width; capping the padding
+   * while leaving `depth` itself uncapped is that behavior. The "nested in
+   * …" caption always names the IMMEDIATE parent regardless of overall
+   * depth, so a reader never loses that context even once the indent stops
+   * growing.
+   */
+  const MAX_NESTING_INDENT = 3;
+
+  function nesting(item: TranscriptItem): ToolCallNesting | undefined {
+    return item.type === 'tool_call' ? toolCallNesting.get(item.id) : undefined;
+  }
 
   function distanceFromBottom(el: HTMLElement): number {
     return el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -283,14 +312,20 @@
   {/if}
   {#each visibleItems as item, offset (item.id)}
     {@const itemIndex = win.range.start + offset}
+    {@const itemNesting = nesting(item)}
     <li
       use:measureRow={item.id}
       class:tool-call-compact={isCompactToolRow(
         items as readonly TranscriptWindowItem[],
         itemIndex,
       )}
+      class:tool-call-nested={itemNesting !== undefined && itemNesting.depth > 0}
       data-testid="transcript-row"
       data-item-id={item.id}
+      data-nesting-depth={itemNesting?.depth}
+      style={itemNesting && itemNesting.depth > 0
+        ? `padding-left: calc(var(--space-lg) * ${Math.min(itemNesting.depth, MAX_NESTING_INDENT)})`
+        : undefined}
     >
       {#if item.type === 'message'}
         <MessageItem
@@ -306,6 +341,12 @@
       {:else if item.type === 'gap'}
         <TranscriptGap {item} />
       {:else}
+        {#if itemNesting && itemNesting.depth > 0}
+          <div class="nesting-label" data-testid="tool-call-nesting-label">
+            <span class="nesting-connector" aria-hidden="true"></span>
+            <span>nested in {itemNesting.parentTitle ?? 'a subagent call'}</span>
+          </div>
+        {/if}
         <ToolCallRow
           {item}
           awaitingPermission={permissionHead !== undefined &&
@@ -382,6 +423,43 @@
      the full gap, same as any other turn boundary. */
   .items li.tool-call-compact {
     margin-top: calc(var(--space-3xs) - var(--space-sm));
+  }
+
+  /*
+   * Subagent/nested-tool-call tree rendering (issue #200; SPEC.md §7.24).
+   * Purely a visual affordance on the ROW WRAPPER — `ToolCallRow`'s own
+   * markup/CSS is completely untouched, so a nested call renders through
+   * its normal tier-1/2 widget with an unchanged row shape, just indented
+   * (issue #200's acceptance). The indent itself is set inline per-`<li>`
+   * (`padding-left: calc(var(--space-lg) * <capped depth>)`, see
+   * `MAX_NESTING_INDENT`) rather than through a bespoke custom property
+   * here — `styles/tokens.test.ts`'s hygiene check requires every `var()`
+   * reference to resolve to a real, globally-defined token, and a per-row
+   * computed depth is not one. Depth is computed from the FULL transcript,
+   * not from what's currently mounted, so this never depends on the
+   * parent row also being mounted (see `toolCallNesting`'s own doc
+   * comment). The border, unlike the indent, is a plain static rule.
+   */
+  .items li.tool-call-nested {
+    border-left: 2px solid var(--color-border-subtle);
+  }
+
+  .nesting-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin: 0 0 var(--space-3xs);
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
+  }
+
+  .nesting-connector {
+    flex-shrink: 0;
+    width: 0.7em;
+    height: 0.7em;
+    border-left: 2px solid var(--color-border);
+    border-bottom: 2px solid var(--color-border);
+    border-radius: 0 0 0 3px;
   }
 
   /* The "there is more below" affordance #508 asked for. Sits between the

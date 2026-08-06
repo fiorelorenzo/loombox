@@ -95,6 +95,15 @@
    * client-side regardless of the probe's outcome.
    */
   import type { CreateSessionOptions } from '$lib/relay-client';
+  import {
+    createLocalStorageMcpServerConfigStorage,
+    effectiveMcpServerConfigs,
+    type McpServerConfigStorage,
+  } from '$lib/mcp-server-store';
+  import {
+    createLocalStorageProjectEnvStorage,
+    type ProjectEnvDeclStorage,
+  } from '$lib/project-env-store';
   import type { Project } from '$lib/projects';
   import { PROVIDER_LABELS } from '$lib/providers';
   import {
@@ -171,6 +180,28 @@
      * default-storage pattern); overridable for a hermetic component test.
      */
     customAgentStorage?: CustomAgentStorage;
+    /**
+     * The Config panel's per-project MCP server list (issue #750, D2-2;
+     * #794's own "a server added in the Config panel is launched for the
+     * next session" acceptance line) — defaults to the exact same real
+     * `localStorage`-backed store `McpServerConfigPanel` itself defaults
+     * to (`mcp-server-store.ts`'s `createLocalStorageMcpServerConfigStorage`,
+     * scoped to `project.path`), so a server added there is read from the
+     * SAME record this dialog forwards, not a second copy; overridable
+     * for a hermetic component test, mirroring `customAgentStorage` above.
+     */
+    mcpStorage?: McpServerConfigStorage;
+    /**
+     * The Config panel's per-project declared env-var/secret injection
+     * list (issue #258) — mirrors `mcpStorage`'s own doc comment exactly:
+     * defaults to the same real `localStorage`-backed store
+     * `ProjectSecretsPanel` itself defaults to
+     * (`project-env-store.ts`'s `createLocalStorageProjectEnvStorage`,
+     * scoped to `project.path`), so a var declared there is read from the
+     * SAME record this dialog forwards, not a second copy; overridable
+     * for a hermetic component test.
+     */
+    projectEnvStorage?: ProjectEnvDeclStorage;
   }
 
   const {
@@ -182,10 +213,18 @@
     onClose,
     onCreated,
     customAgentStorage: customAgentStorageProp,
+    mcpStorage: mcpStorageProp,
+    projectEnvStorage: projectEnvStorageProp,
   }: Props = $props();
 
   const agentStorage = $derived(
     customAgentStorageProp ?? createLocalStorageCustomAgentStorage(project.path),
+  );
+  const mcpStorage = $derived(
+    mcpStorageProp ?? createLocalStorageMcpServerConfigStorage(project.path),
+  );
+  const projectEnvStorage = $derived(
+    projectEnvStorageProp ?? createLocalStorageProjectEnvStorage(project.path),
   );
 
   const providerOptions: SelectOption[] = $derived(
@@ -286,6 +325,16 @@
     createError = undefined;
     try {
       const customAgent = customAgentFor(selectedProvider);
+      // Same omit-rather-than-send-empty discipline `worktree`/`customAgent`
+      // below already follow — `RelayClient.createSession` treats omitted
+      // and `[]` identically anyway, this just keeps the common "nothing
+      // configured" call shape unchanged from before this field existed.
+      const mcpServerConfigs = effectiveMcpServerConfigs(mcpStorage);
+      // Same discipline, for this project's declared env-var injection
+      // (issue #258) — `ProjectSecretsPanel` writes straight to
+      // `projectEnvStorage` and this dialog never re-reads it after mount
+      // otherwise, so every declared var is forwarded on every creation.
+      const projectEnvDecls = projectEnvStorage.get();
       const sessionId = await client.createSession({
         targetId: project.targetId,
         // A custom agent always travels as the `'custom'` wire sentinel
@@ -301,6 +350,13 @@
         ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
         ...(customAgent ? { customAgent } : {}),
+        // The Config panel's own currently-enabled server list for this
+        // project (issue #750, D2-2; #794) — forwarded on every creation,
+        // not just when the panel itself is open, since that panel writes
+        // straight to `mcpStorage` and this dialog never re-reads it after
+        // mount otherwise.
+        ...(mcpServerConfigs.length > 0 ? { mcpServerConfigs } : {}),
+        ...(projectEnvDecls.length > 0 ? { projectEnvDecls } : {}),
       });
       onCreated(sessionId, customAgent ? 'custom' : selectedProvider);
       onClose();

@@ -479,8 +479,8 @@ interface DecryptedSessionEvent {
   reason?: string;
   options?: unknown[];
   commands?: unknown[];
-  /** `mcp_server_status`'s own payload field (issue #750, D2-2). */
-  servers?: { name: string; ok: boolean; category?: string; reason?: string }[];
+  /** `mcp_server_status`'s own payload field (issue #750, D2-2; `disabled` added issue #794). */
+  servers?: { name: string; ok: boolean; category?: string; reason?: string; disabled?: boolean }[];
 }
 
 /**
@@ -3995,7 +3995,7 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
     ]);
   });
 
-  it("auto-disables an MCP server in this node's own McpConfigStore after three consecutive failures to start", async () => {
+  it("auto-disables an MCP server in this node's own McpConfigStore after three consecutive failures to start, and marks only the disabling attempt's mcp_server_status entry disabled: true (issues #750, #794)", async () => {
     const amk = generateAmk();
     const accountId = 'acct-mcp-auto-disable';
 
@@ -4021,17 +4021,62 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
       mcpConfigStore,
     });
 
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-auto-disable',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // One phone subscribes to each session's own id in turn (a fresh
+    // `sessionId` per `createSession` call, so a `resync_request` for one
+    // never picks up another's events) and reads back its lone
+    // `mcp_server_status` push.
+    async function statusForSession(sessionId: string): Promise<DecryptedSessionEvent['servers']> {
+      const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+      phone!.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        sinceSeq: 0,
+      });
+      const [event] = await waitForDecryptedKinds(phone!, sessionId, key, ['mcp_server_status'], 1);
+      return event?.servers;
+    }
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+      const session = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
       // Still enabled — only three consecutive failures auto-disable it.
       expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
         true,
       );
+      // Not yet the third failure — no `disabled` flag on the wire.
+      expect(await statusForSession(session.id)).toEqual([
+        {
+          name: 'bad-binary',
+          ok: false,
+          category: 'missing_binary',
+          reason: expect.stringContaining('Executable not found') as unknown as string,
+        },
+      ]);
     }
-    await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+
+    const finalSession = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
     expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
       false,
     );
+    // The third, disabling failure carries `disabled: true` (issue #794) —
+    // this is the exact push a client's Config panel renders as
+    // "auto-disabled" rather than a plain "failed to start".
+    expect(await statusForSession(finalSession.id)).toEqual([
+      {
+        name: 'bad-binary',
+        ok: false,
+        category: 'missing_binary',
+        reason: expect.stringContaining('Executable not found') as unknown as string,
+        disabled: true,
+      },
+    ]);
   });
 
   it("discovers a real launched MCP server's own declared prompts, attributed to that server, with a no-prompts server and an unreachable server both leaving the rest of the list working — then renders a selected prompt with its argument over mcp_prompt_get_request/response (Zed-parity D5-2, issue #754)", async () => {
