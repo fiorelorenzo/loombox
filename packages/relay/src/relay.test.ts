@@ -32,6 +32,8 @@ import {
   type SessionArchiveRequest,
   type SessionArchiveResponse,
   type SessionCreate,
+  type SessionForkRequest,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionMetaPublic,
   type SessionResume,
@@ -4050,6 +4052,133 @@ describe('relay v1', () => {
         message: 'git worktree remove failed: exit code 128',
       });
       expect(await store.sessions.get('sess_archive_err')).toBeDefined();
+    });
+  });
+
+  describe('session_fork_request/session_fork_response (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2, issue #746): routed by targetId like session_create (the forked session has no SessionRecord yet), replied to account-wide like session_archive_response', () => {
+    it('routes session_fork_request to the node owning the target, byte-for-byte, keeping requestId', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget()],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: SessionForkRequest = {
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_fork_1',
+        sessionId: 'sess_fork_new',
+        sourceSessionId: 'sess_source',
+        targetId: 'target_1',
+        provider: 'claude',
+        privateEnvelope: fakeEnvelope('title'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as SessionForkRequest;
+      expect(received).toEqual(request);
+    });
+
+    it("a fork request for an unknown/foreign target gets outcome: 'error' directly, without routing it anywhere", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_fork_unknown',
+        sessionId: 'sess_fork_new',
+        sourceSessionId: 'sess_source',
+        targetId: 'target_nonexistent',
+        provider: 'claude',
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionForkRequest);
+
+      const response = (await nextMessage(client)) as unknown as SessionForkResponse;
+      expect(response.type).toBe('session_fork_response');
+      expect(response.requestId).toBe('req_fork_unknown');
+      expect(response.result.outcome).toBe('error');
+    });
+
+    it("forking with outcome: 'ok' reaches every client of the account, not just the requester, and leaves the relay store alone (no deletion, unlike archive)", async () => {
+      const store = createInMemoryRelayStore();
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0, store });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_1',
+        targets: [makeTarget()],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must ALSO see the
+      // fork's outcome, same "every device holding the same board" reasoning
+      // session_archive_response's own broadcast test already establishes.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: SessionForkRequest = {
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req_fork_ok',
+        sessionId: 'sess_fork_ok',
+        sourceSessionId: 'sess_source',
+        targetId: 'target_1',
+        provider: 'claude',
+        privateEnvelope: fakeEnvelope('title'),
+      };
+      send(requester, request);
+      const forwarded = (await nextMessage(node)) as unknown as SessionForkRequest;
+      expect(forwarded).toEqual(request);
+
+      const response: SessionForkResponse = {
+        type: 'session_fork_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: request.requestId,
+        sessionId: 'sess_fork_ok',
+        result: { outcome: 'ok' },
+      };
+      send(node, response);
+
+      const requesterReply = (await nextMessage(requester)) as unknown as SessionForkResponse;
+      expect(requesterReply).toEqual(response);
+      const bystanderReply = (await nextMessage(bystander)) as unknown as SessionForkResponse;
+      expect(bystanderReply).toEqual(response);
     });
   });
 });

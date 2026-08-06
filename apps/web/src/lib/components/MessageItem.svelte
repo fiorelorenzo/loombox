@@ -121,6 +121,7 @@
   import CopyButton from './CopyButton.svelte';
   import WovenLoader from './WovenLoader.svelte';
   import Icon from './icons/Icon.svelte';
+  import IconButton from './ui/IconButton.svelte';
 
   interface Props {
     item: TranscriptMessageItem;
@@ -130,9 +131,27 @@
     turnActive?: boolean;
     /** The session's `ClientSessionMeta.provider` (e.g. `'claude'`) — only meaningful for an agent/thought row's `.sr-only` accessible label; a user row's label is always "You" regardless. Omitted falls back to the generic "Agent" label rather than guessing. */
     providerId?: string;
+    /**
+     * Fork the open session from this item's own turn (design spec
+     * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) —
+     * the turn's own hover-revealed icon, next to Copy, matching v7 B3's
+     * existing per-row affordance rather than a new control. Omitted
+     * renders no fork button at all (a caller with no session context to
+     * fork from, e.g. a standalone test).
+     */
+    onFork?: (turnId: string) => void;
+    /** True while a fork from THIS item's own turn is in flight — disables the button and swaps its label, so a second click can't queue a duplicate request. */
+    forking?: boolean;
   }
 
-  const { item, thinking = false, turnActive = false, providerId }: Props = $props();
+  const {
+    item,
+    thinking = false,
+    turnActive = false,
+    providerId,
+    onFork,
+    forking = false,
+  }: Props = $props();
 
   // Markdown (issue #574, design spec §3.4; async highlighting issue #600):
   // re-parsing the whole message through remark/rehype on every chunk that
@@ -321,6 +340,17 @@
       </div>
     {/if}
     <div class="copy-row">
+      {#if onFork}
+        <IconButton
+          label={forking ? 'Forking session…' : 'Fork session from here'}
+          class="fork-button"
+          dataTestId="fork-turn-button"
+          disabled={forking}
+          onclick={() => onFork?.(item.turnId)}
+        >
+          <Icon name="fork" />
+        </IconButton>
+      {/if}
       <CopyButton text={itemCopyText(item)} label={`Copy ${role} message`} revealOnHover />
     </div>
   </div>
@@ -688,6 +718,9 @@
   }
 
   .copy-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
     flex-shrink: 0;
   }
 
@@ -698,6 +731,29 @@
   .message-item:hover :global(.copy-button-reveal),
   .message-item:focus-within :global(.copy-button-reveal) {
     opacity: 1;
+  }
+
+  /* The fork affordance (design spec `2026-08-05-zed-parity-decisions.md`
+     §3's C6-2; issue #746) reveals on the same row hover/focus-within as
+     Copy — the identical hide-by-default treatment `CopyButton`'s own
+     `revealOnHover`/`.copy-button-reveal` uses, hand-rolled here since
+     `IconButton` has no such opt-in of its own. Visible under
+     `(hover: none)` and on keyboard focus regardless, same as Copy. */
+  :global(.fork-button) {
+    opacity: 0;
+    transition: opacity var(--duration-fast) var(--ease-out);
+  }
+
+  .message-item:hover :global(.fork-button),
+  .message-item:focus-within :global(.fork-button),
+  :global(.fork-button:focus-visible) {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    :global(.fork-button) {
+      opacity: 0.7;
+    }
   }
 
   /* Below `--bp-mobile` the role column collapses and moves above the turn

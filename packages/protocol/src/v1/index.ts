@@ -105,11 +105,17 @@ export type {
   SessionArchiveRequest,
   SessionArchiveResponse,
   SessionArchiveResult,
+  SessionForkRequest,
+  SessionForkResponse,
+  SessionForkResult,
 } from './session-lifecycle';
 export {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionArchiveResult,
+  sessionForkRequest,
+  sessionForkResponse,
+  sessionForkResult,
 } from './session-lifecycle';
 
 export type { SessionUpdateEnvelopeV1 } from './transcript';
@@ -603,6 +609,9 @@ import {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionArchiveResult,
+  sessionForkRequest,
+  sessionForkResponse,
+  sessionForkResult,
 } from './session-lifecycle';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import {
@@ -821,6 +830,9 @@ export const schemasV1 = {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionArchiveResult,
+  sessionForkRequest,
+  sessionForkResponse,
+  sessionForkResult,
   sessionUpdateEnvelopeV1,
   acpConfigOptionChoiceV1,
   acpConfigOptionV1,

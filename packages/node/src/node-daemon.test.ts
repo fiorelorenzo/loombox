@@ -4365,3 +4365,181 @@ describe('NodeDaemon per-target concurrency caps (SPEC §7.16, issue #252)', () 
     }
   });
 });
+
+describe('NodeDaemon: session fork (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2, issue #746)', () => {
+  it('forks a session from its first turn: the fork\'s transcript ends there, the source keeps every turn unaffected, and the fork behaves like any other session', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-basic';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork',
+      deviceId: 'device-node-fork',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const source = await node.createSession({ projectPath, provider: 'test-echo' });
+    const sourceKey = await derivePhoneSessionKey(amk, accountId, source.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-source',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: source.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await node.promptSession(source.id, 'first turn');
+    // The fork boundary is the AGENT's own per-turn id
+    // (`AcpClient`'s `turn:${n}`, stamped onto every `AcpTranscriptUpdate`
+    // it emits) — NOT the wire's separate `turn_started`/`turn_ended`
+    // `turnId` (`NodeDaemon.beginTurn`'s own synthesized uuid, a different
+    // id space purely for that framing pair). This is exactly the id a
+    // client's own `TranscriptItem.turnId` already carries (populated by
+    // `reduceTranscript` straight off the same `AcpTranscriptUpdate`s).
+    const [turn1Chunk] = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      1,
+    );
+    const turn1Id = turn1Chunk!.turnId!;
+
+    await node.promptSession(source.id, 'second turn');
+    await waitForDecryptedKinds(phone, source.id, sourceKey, ['turn_ended'], 2);
+
+    const fork = await node.forkSession(source.id, turn1Id);
+
+    expect(fork.id).not.toBe(source.id);
+    expect(fork.worktreePath).not.toBe(source.worktreePath);
+    expect(fork.target).toBe('local');
+    expect(fork.provider).toBe(source.provider);
+
+    const forkKey = await derivePhoneSessionKey(amk, accountId, fork.id);
+    // `session_resume` alone only subscribes for what's sent AFTER this
+    // point (`relay.ts`'s own handler); the fork's seeded history was
+    // already sent (and ring-buffered) the instant `forkSession()`
+    // resolved, above, so `resync_request` from seq 0 backfills it —
+    // the exact pairing this file's own `subscribeSession` helper uses
+    // for the identical "might already have missed the start" reason.
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: fork.id,
+      sinceSeq: 0,
+    });
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: fork.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === fork.id,
+    );
+
+    // The fork's own transcript ends at turn 1: exactly one turn's worth of
+    // chunks arrives, never a second (turn 2 was never copied).
+    const forkChunks = await waitForDecryptedKinds(
+      phone,
+      fork.id,
+      forkKey,
+      ['agent_message_chunk'],
+      2,
+    );
+    expect(forkChunks.every((chunk) => chunk.turnId === turn1Id)).toBe(true);
+    expect(forkChunks.map((chunk) => chunk.text).join('')).toBe('Hello world');
+    // Give a stray, wrongly-copied second turn a real chance to show up
+    // before asserting its absence.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(
+      phone.messages.filter(
+        (m): m is SessionUpdateEnvelopeV1 => m.type === 'session_update' && m.sessionId === fork.id,
+      ).length,
+    ).toBeLessThan(8); // status/config snapshot + turn 1's own handful of events, never turn 2's too
+
+    // The source's own transcript is untouched: both turns are still there.
+    const sourceChunks = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      4,
+    );
+    expect(sourceChunks).toHaveLength(4);
+
+    // The fork behaves like any other session: it can be prompted
+    // immediately, producing genuinely new output on top of the 2 seeded
+    // chunks (never turn_started/turn_ended for the seed itself — only a
+    // live prompt produces those).
+    await node.promptSession(fork.id, 'diverge from here');
+    const [forkTurnEnded] = await waitForDecryptedKinds(phone, fork.id, forkKey, ['turn_ended'], 1);
+    expect(forkTurnEnded!.stopReason).toBe('end_turn');
+    const allForkChunks = await waitForDecryptedKinds(
+      phone,
+      fork.id,
+      forkKey,
+      ['agent_message_chunk'],
+      4,
+    );
+    expect(allForkChunks).toHaveLength(4);
+  });
+
+  it('refuses to fork an unknown source session, with a visible reason, and creates nothing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-unknown-source';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-refuse',
+      deviceId: 'device-node-fork-refuse',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    await expect(node.forkSession('does-not-exist', 'turn_1')).rejects.toThrow(/no session/i);
+  });
+
+  it('refuses to fork a turn id that never occurred in the source transcript, without creating a new session', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-bad-turn';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-bad-turn',
+      deviceId: 'device-node-fork-bad-turn',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const source = await node.createSession({ projectPath, provider: 'test-echo' });
+    await node.promptSession(source.id, 'only turn');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-bad-turn',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const before = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+
+    await expect(node.forkSession(source.id, 'turn-that-never-happened')).rejects.toThrow(
+      /not found/i,
+    );
+
+    phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+    const after = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
+    expect(after.sessions.length).toBe(before.sessions.length);
+  });
+});
