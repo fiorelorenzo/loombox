@@ -908,8 +908,11 @@
   // visible for every session in the list, not just the one currently open.
   const sessionStatuses = new SvelteMap<string, AcpSessionStatus | undefined>();
   const sessionStatusUnsubscribers = new SvelteMap<string, () => void>();
+  /** Parallels {@link sessionStatuses}, one `RelayClient.statusReasonFor` subscription per listed session (issue #730) — why a `'error'` status happened, when the node said so (a spawn that failed or timed out); `undefined` for every other status. Kept as a separate map/subscription pair rather than widening `sessionStatuses`' value type, since every existing reader of that map (severity ranking, row/selvage labels) only ever needed the bare status. */
+  const sessionStatusReasons = new SvelteMap<string, string | undefined>();
+  const sessionStatusReasonUnsubscribers = new SvelteMap<string, () => void>();
 
-  /** (Re)syncs `sessionStatuses`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
+  /** (Re)syncs `sessionStatuses`'/`sessionStatusReasons`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
   function syncSessionStatusSubscriptions(list: ClientSessionMeta[]): void {
     if (!client) return;
     const activeClient = client;
@@ -920,12 +923,25 @@
       sessionStatusUnsubscribers.delete(id);
       sessionStatuses.delete(id);
     }
+    for (const [id, unsubscribe] of sessionStatusReasonUnsubscribers) {
+      if (currentIds.has(id)) continue;
+      unsubscribe();
+      sessionStatusReasonUnsubscribers.delete(id);
+      sessionStatusReasons.delete(id);
+    }
     for (const session of list) {
-      if (sessionStatusUnsubscribers.has(session.id)) continue;
-      const unsubscribe = activeClient
-        .statusFor(session.id)
-        .subscribe((value) => sessionStatuses.set(session.id, value));
-      sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      if (!sessionStatusUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusFor(session.id)
+          .subscribe((value) => sessionStatuses.set(session.id, value));
+        sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      }
+      if (!sessionStatusReasonUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusReasonFor(session.id)
+          .subscribe((value) => sessionStatusReasons.set(session.id, value));
+        sessionStatusReasonUnsubscribers.set(session.id, unsubscribe);
+      }
     }
   }
 
@@ -933,6 +949,9 @@
     for (const unsubscribe of sessionStatusUnsubscribers.values()) unsubscribe();
     sessionStatusUnsubscribers.clear();
     sessionStatuses.clear();
+    for (const unsubscribe of sessionStatusReasonUnsubscribers.values()) unsubscribe();
+    sessionStatusReasonUnsubscribers.clear();
+    sessionStatusReasons.clear();
   }
 
   // Persistence for the client-side UI preferences below (relay URL,
@@ -1033,20 +1052,62 @@
       : undefined,
   );
   /**
-   * Whether the selected session survived a node restart with no agent
-   * behind it (`session-manager.ts`'s `SessionLifecycleState` doc
-   * comment). Files and the terminal still work on one of these (issue
-   * #702 part 3 — neither ever needed the agent), but a new prompt
-   * genuinely cannot be delivered (no agent process to hand it to, and
-   * `prompt_inject` has no reply channel to report that failure on), so
-   * the composer is disabled rather than silently swallowing a send that
-   * would otherwise sit unanswered for 10s exactly like the bug this
-   * issue fixed.
+   * Whether the selected session currently has a live agent that is
+   * definitely NOT there to send a prompt to — issue #730, widening
+   * #702's `'disconnected'`-only check (a session that survived a node
+   * restart with no agent behind it, `session-manager.ts`'s
+   * `SessionLifecycleState` doc comment) to every other `SessionStatusV1`
+   * that means the same thing for the composer: `'queued'`/`'starting'`
+   * (the agent hasn't spawned, or hasn't finished spawning, yet) and
+   * `'error'`/`'exited'` (the spawn failed, or the agent already
+   * stopped). In every one of these a new prompt genuinely has nowhere to
+   * go (no agent process to hand it to, and `prompt_inject` has no reply
+   * channel to report that failure on), so the composer says so instead
+   * of looking ready and silently doing nothing — the same reasoning
+   * #702 already established, just for five states instead of one.
+   *
+   * Deliberately does NOT include `undefined` (no `session_status` has
+   * arrived yet): that is absence of information, not proof there is
+   * nothing to send to, and this client's own resync ring is bounded
+   * (`packages/relay/src/relay.ts`'s prune/quota machinery) — a long-
+   * running session's true status can have aged out of it by the time a
+   * reload re-subscribes, well before it or its agent did anything wrong.
+   * Gating the composer on `undefined` too would block a perfectly
+   * healthy, already-populated session's composer indefinitely after
+   * every ordinary reload whenever that happens, trading #730's narrow
+   * "freshly created session" bug for a much more common false negative.
+   * The row/inbox already treat `undefined` as "unknown" rather than
+   * "awaiting you" (`SESSION_STATUS_UNKNOWN_LABEL`,
+   * `RelayClient.attentionInbox`'s own live-status gate) without needing
+   * the composer to match.
    */
-  const selectedSessionDisconnected = $derived(selectedSessionStatus === 'disconnected');
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #702's: disabled for a disconnected session's dead composer.
+  const selectedSessionAgentless = $derived(
+    selectedSessionStatus === 'disconnected' ||
+      selectedSessionStatus === 'queued' ||
+      selectedSessionStatus === 'starting' ||
+      selectedSessionStatus === 'error' ||
+      selectedSessionStatus === 'exited',
+  );
+  /** What the composer's disabled placeholder reads for {@link selectedSessionAgentless}'s current reason (issue #730) — `undefined` while a live agent could actually receive a prompt (including "status genuinely unknown"), so the composer keeps its ordinary placeholder. */
+  const composerUnavailableReason = $derived.by((): string | undefined => {
+    switch (selectedSessionStatus) {
+      case 'disconnected':
+        return "This session's agent isn't running — it disconnected when the node last restarted.";
+      case 'queued':
+        return 'Waiting for a concurrency slot to free up before this session can start…';
+      case 'starting':
+        return "This session's agent is still starting…";
+      case 'error':
+        return `This session's agent failed to start${transcript?.statusReason ? `: ${transcript.statusReason}` : '.'}`;
+      case 'exited':
+        return "This session's agent has already exited.";
+      default:
+        return undefined;
+    }
+  });
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to.
   const sendDisabled = $derived(
-    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionDisconnected,
+    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionAgentless,
   );
 
   /**
@@ -1965,6 +2026,23 @@
   };
 
   /**
+   * The row/selvage badge's status text (issue #730): the plain
+   * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
+   * for `'error'` with a `reason` the node sent (`RelayClient.
+   * statusReasonFor` — a spawn that failed or timed out), where the
+   * reason is appended so a hover/hold on the row's own tooltip or the
+   * dot's accessible name reads WHY, not just that it failed.
+   */
+  function sessionStatusLabelWithReason(
+    status: SessionStatusV1 | undefined,
+    reason: string | undefined,
+  ): string {
+    if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
+    const label = SESSION_STATUS_LABELS[status];
+    return status === 'error' && reason ? `${label}: ${reason}` : label;
+  }
+
+  /**
    * The project tree (design spec v4 §3.2), replacing v3's target-based
    * `sessionGroups`. Built from the registry (`projects`, already sorted
    * by name there) rather than purely derived from `sessions`, so a
@@ -2524,9 +2602,10 @@
     {#snippet sessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
       {@const needsAttention = sessionsNeedingAttention.has(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
         class="session-row"
@@ -2671,9 +2750,10 @@
     <!-- The collapsed sidebar's icon-only row: avatar + status dot only. -->
     {#snippet selvageSessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       <li>
         <button
           type="button"
@@ -3430,6 +3510,27 @@
               {/snippet}
             </EmptyState>
           {:else}
+            <!-- Issue #730: a session with no live agent behind it must not
+                 sit as a blank transcript with no explanation — the
+                 original bug's exact symptom ("the optimistically echoed
+                 user turn sitting in an otherwise empty transcript,
+                 forever"). Shares `selectedSessionAgentless`/
+                 `composerUnavailableReason` with the composer's own gate
+                 just below, so the two surfaces never disagree. -->
+            {#if selectedSessionAgentless}
+              <div class="workspace-notice" data-testid="session-agentless-notice">
+                {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
+                  <ErrorNotice message={composerUnavailableReason ?? ''} />
+                {:else}
+                  <Card elevation="raised" padding="sm">
+                    <div class="escrow-inflight-row">
+                      <WovenLoader label={composerUnavailableReason ?? 'Waiting…'} />
+                      <span>{composerUnavailableReason}</span>
+                    </div>
+                  </Card>
+                {/if}
+              </div>
+            {/if}
             <ol
               class="items"
               bind:this={transcriptList}
@@ -3557,10 +3658,8 @@
                           bind:value={draft}
                           oninput={handleComposerInput}
                           onkeydown={handleComposerKeydown}
-                          disabled={selectedSessionDisconnected}
-                          placeholder={selectedSessionDisconnected
-                            ? "This session's agent isn't running — it disconnected when the node last restarted."
-                            : 'Send a follow-up prompt…'}
+                          disabled={selectedSessionAgentless}
+                          placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
                           aria-label="Follow-up prompt"
                           aria-describedby="composer-hint"
                           rows="1"

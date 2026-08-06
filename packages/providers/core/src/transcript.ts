@@ -126,6 +126,8 @@ export interface TranscriptState {
   status: AcpSessionStatus | undefined;
   /** The ISO timestamp of `status`'s own transition, mirrored from the pushing `session_status` event. */
   statusUpdatedAt: string | undefined;
+  /** Set alongside an `'error'` `status` that carried one (SPEC.md §7.13/§7.24; issue #730) — why the spawn failed or timed out, in words a user can read. Cleared (`undefined`) by any status transition that doesn't carry its own reason, exactly like `statusUpdatedAt` always reflects the latest push rather than accumulating. */
+  statusReason: string | undefined;
   /** This session's complete, negotiated config-option catalog (SPEC.md §7.24; issue #149) — always the full current set, replaced wholesale by a `config_options`/`config_option_update` event, never patched per-category. `[]` until the first push arrives. */
   configOptions: AcpConfigOption[];
   /** This session's complete, agent-declared `/`-command catalogue (SPEC.md §7.24; issue #741) — always the full current set, replaced wholesale by an `available_commands_update` event, never patched per-command. `[]` until the agent sends one (a real agent's first `available_commands_update` arrives with its first `session/prompt` reply, not at session creation) — a genuinely empty catalogue, not an error state. */
@@ -145,6 +147,7 @@ export function createTranscriptState(): TranscriptState {
     cumulativeCostUsd: 0,
     status: undefined,
     statusUpdatedAt: undefined,
+    statusReason: undefined,
     configOptions: [],
     commands: [],
     turnActive: false,
@@ -335,7 +338,12 @@ export function reduceSessionEvent(
     case 'usage_update':
       return reduceTranscript(state, event);
     case 'session_status':
-      return { ...state, status: event.status, statusUpdatedAt: event.updatedAt };
+      return {
+        ...state,
+        status: event.status,
+        statusUpdatedAt: event.updatedAt,
+        statusReason: event.reason,
+      };
     case 'config_options':
     case 'config_option_update':
       return {
