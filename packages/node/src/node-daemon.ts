@@ -143,6 +143,12 @@ import {
   type CheckpointRestoreResultPayloadV1,
   type GitCheckpointV1,
   type RestorePreviewV1,
+  type RewindErrorTypeV1,
+  type RewindPreviewV1,
+  type SessionRewind,
+  type SessionRewindPreview,
+  type SessionRewindPreviewResultPayloadV1,
+  type SessionRewindResultPayloadV1,
   type AgentProfileListGet,
   type AgentProfileV1,
   type AgentProfileListResultPayloadV1,
@@ -242,6 +248,12 @@ import {
   type Session,
 } from './session-manager';
 import { cutTranscriptAtTurn } from './session-fork';
+import {
+  AUTO_CHECKPOINT_MESSAGE_PREFIX,
+  orderedTurnIds,
+  resolveRewindCheckpoint,
+  turnIdForTurnNumber,
+} from './session-rewind';
 import { resolveSessionBranch } from './session-branch';
 import { openPr, previewPrOpen, PrOpenError } from './pr-open';
 import { SessionStore } from './session-store';
@@ -1134,9 +1146,6 @@ const CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE =
 /** `checkpoint_restore`'s own refusal while the session's agent is actively mid-turn (`AttentionStatus.status === 'working'`) — restoring underneath a live write would race it, leaving the worktree in a state that matches neither the checkpoint nor the turn's own result. Asks the caller to wait for the turn to finish (or stop it) first. */
 const CHECKPOINT_TURN_IN_PROGRESS_MESSAGE =
   "This session's agent is actively working on a turn; wait for it to finish (or stop it) before rolling back.";
-
-/** Free-text prefix on every checkpoint auto-taken before a turn starts ({@link NodeDaemon.autoCheckpointBeforeTurn}, issue #603) — recognizable so a future rewind (issue #747) can tell an automatic per-turn checkpoint from a manual one (issue #268's "named or auto-labeled ... on demand") without a dedicated field. */
-const AUTO_CHECKPOINT_MESSAGE_PREFIX = 'auto: before turn ';
 
 /** Maps a `GitCheckpointStore` failure to `@loombox/protocol`'s `checkpoint.ts` named `errorType` vocabulary — every checkpoint handler funnels its `catch` through this rather than repeating the same four `instanceof` checks per call site. */
 function checkpointErrorOutcome(error: unknown): {
@@ -3620,6 +3629,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'checkpoint_restore':
         this.handleCheckpointRestore(message);
+        return;
+      case 'session_rewind_preview':
+        this.handleSessionRewindPreview(message);
+        return;
+      case 'session_rewind':
+        this.handleSessionRewind(message);
         return;
       case 'agent_profile_list_get':
         this.handleAgentProfileListGet(message);
@@ -6588,6 +6603,261 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'checkpoint_restore_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** `session_rewind`'s own refusal while `resolveSessionRewind` (below) needs a live `AgentSession` to read the transcript from, but this session was reloaded `'disconnected'` after a node restart (issue #702's real state) — see `@loombox/protocol`'s `rewind.ts` module doc comment for why this is a real, contained refusal rather than issue #706's "revive a disconnected session" scope. */
+  private static readonly SESSION_REWIND_NO_LIVE_AGENT_MESSAGE =
+    "This session has no live agent (disconnected since the last restart) — its transcript can't be read to rewind. Reconnect or start a new session.";
+
+  /**
+   * Resolves what rewinding `session` to `turn` would do, with no side
+   * effects — the shared computation behind `session_rewind_preview` and
+   * `session_rewind`'s own confirmation gate, exactly mirroring how
+   * `performCheckpointRestore` reuses `previewRestore` rather than a
+   * second confirmation mechanism (issue #747's own instruction). Checked
+   * in order: `unsupported_target` (an `ssh:` session — no worktree store
+   * at all, {@link getCheckpointStore}'s own doc comment), then
+   * `no_live_agent` (no bridge to read the transcript from), then
+   * `turn_not_found` (`turn` doesn't map to a checkpoint this session
+   * ever took, via {@link resolveRewindCheckpoint}, OR the transcript
+   * itself never produced that many distinct turns — a defensive check:
+   * the two should always agree, since `autoCheckpointBeforeTurn` and
+   * the ACP-level turn id both advance once per real prompt, but this
+   * refuses honestly instead of truncating to a turn count that doesn't
+   * actually exist in the transcript). `targetTurnId` is `undefined` only
+   * for `turn: 0` (rewind to before any turn ran — nothing to cut TO,
+   * the whole transcript is discarded).
+   */
+  private async resolveSessionRewind(
+    session: Session,
+    turn: number,
+  ): Promise<
+    | { outcome: 'ok'; preview: RewindPreviewV1; targetTurnId: string | undefined }
+    | { outcome: 'error'; errorType: RewindErrorTypeV1; message: string }
+  > {
+    const store = this.getCheckpointStore(session);
+    if (!store) {
+      return {
+        outcome: 'error',
+        errorType: 'unsupported_target',
+        message: CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      };
+    }
+    const bridge = this.bridges.get(session.id);
+    if (!bridge) {
+      return {
+        outcome: 'error',
+        errorType: 'no_live_agent',
+        message: NodeDaemon.SESSION_REWIND_NO_LIVE_AGENT_MESSAGE,
+      };
+    }
+
+    try {
+      const checkpoints = await store.listCheckpoints();
+      const targetCheckpoint = resolveRewindCheckpoint(checkpoints, turn);
+      const updates = bridge.agentSession.getTranscriptUpdates();
+      const targetTurnId = turn > 0 ? turnIdForTurnNumber(updates, turn) : undefined;
+      const turnsAtRisk = orderedTurnIds(updates).length - turn;
+
+      if (!targetCheckpoint || (turn > 0 && !targetTurnId) || turnsAtRisk <= 0) {
+        return {
+          outcome: 'error',
+          errorType: 'turn_not_found',
+          message: `session ${session.id} has no turn ${turn} to rewind to — it hasn't happened yet, or it's already the session's current turn with nothing recorded after it`,
+        };
+      }
+
+      const [restorePreview, filesAtRisk] = await Promise.all([
+        store.previewRestore(targetCheckpoint.id),
+        store.filesAffectedByRestore(targetCheckpoint.id),
+      ]);
+
+      return {
+        outcome: 'ok',
+        preview: {
+          turn,
+          checkpointId: targetCheckpoint.id,
+          isWorkInPlace: session.branch === '',
+          turnsAtRisk,
+          filesAtRisk,
+          commitsSinceCheckpoint: restorePreview.commitsSinceCheckpoint,
+        },
+        targetTurnId,
+      };
+    } catch (error) {
+      return checkpointErrorOutcome(error);
+    }
+  }
+
+  /** A client asked what rewinding this session to `turn` would do, with no side effects (issue #747). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard). No envelope on the request (a plain integer, not content), mirroring `checkpoint_restore_preview`. */
+  private handleSessionRewindPreview(message: SessionRewindPreview): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.resolveSessionRewind(routing.session, message.turn)
+      .then((resolved) =>
+        this.sendSessionRewindPreviewResult(
+          message.sessionId,
+          message.requestId,
+          resolved.outcome === 'ok' ? { outcome: 'ok', preview: resolved.preview } : resolved,
+        ),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle session_rewind_preview for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async sendSessionRewindPreviewResult(
+    sessionId: string,
+    requestId: string,
+    payload: SessionRewindPreviewResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'session_rewind_preview_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked to actually rewind this session to `turn` (issue #747)
+   * — destructive. Ignored if `sessionId` isn't one of this node's
+   * sessions at all. `turn`/`confirm` travel as plain fields (no
+   * envelope), mirroring `checkpoint_restore`. See
+   * {@link performSessionRewind} for the confirmation gate, the
+   * turn-in-progress refusal, and the worktree-restore-plus-transcript-
+   * truncation that runs as one operation once confirmed.
+   */
+  private handleSessionRewind(message: SessionRewind): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.performSessionRewind(
+      routing.session,
+      message.requestId,
+      message.turn,
+      message.confirm,
+    ).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to handle session_rewind for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * Refuses outright for an `ssh:` session, a session with no live agent,
+   * or an unresolvable `turn` (all three via {@link resolveSessionRewind}),
+   * or while this session's agent is actively mid-turn
+   * (`bridge.agentSession.getAttentionState().status === 'working'` —
+   * mirrors `performCheckpointRestore`'s own race guard, checked first,
+   * before the possibly-slow preview computation). Otherwise previews via
+   * {@link resolveSessionRewind}: every valid rewind target discards at
+   * least one turn (`turnsAtRisk >= 1`), so unlike
+   * `performCheckpointRestore`'s conditional gate, an unconfirmed
+   * `session_rewind` ALWAYS replies `outcome: 'confirmation_required'`
+   * with that same preview — this issue's own "Destructive, and confirmed
+   * before it runs" as an unconditional rule. Once confirmed, restores the
+   * worktree AND truncates the transcript to the target turn in the same
+   * call — this issue's own "so the thread and the worktree cannot
+   * disagree" — reusing the preview's own `filesAtRisk` as the result's
+   * `filesChanged` rather than recomputing it (the worktree now matches
+   * the checkpoint, so a fresh diff would show nothing).
+   */
+  private async performSessionRewind(
+    session: Session,
+    requestId: string,
+    turn: number,
+    confirm: boolean,
+  ): Promise<void> {
+    const bridge = this.bridges.get(session.id);
+    if (bridge && bridge.agentSession.getAttentionState().status === 'working') {
+      await this.sendSessionRewindResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: 'turn_in_progress',
+        message: CHECKPOINT_TURN_IN_PROGRESS_MESSAGE,
+      });
+      return;
+    }
+
+    const resolved = await this.resolveSessionRewind(session, turn);
+    if (resolved.outcome === 'error') {
+      await this.sendSessionRewindResult(session.id, requestId, resolved);
+      return;
+    }
+    if (!confirm) {
+      await this.sendSessionRewindResult(session.id, requestId, {
+        outcome: 'confirmation_required',
+        preview: resolved.preview,
+      });
+      return;
+    }
+
+    // Re-checked rather than trusted from the top of this method: the
+    // async preview computation above (real `git` subprocess calls) is
+    // exactly the same window `performCheckpointRestore` already accepts
+    // this same race for — the store/bridge existing a moment ago is
+    // best-effort, not a lock.
+    const store = this.getCheckpointStore(session);
+    const liveBridge = this.bridges.get(session.id);
+    if (!store || !liveBridge) {
+      await this.sendSessionRewindResult(session.id, requestId, {
+        outcome: 'error',
+        errorType: store ? 'no_live_agent' : 'unsupported_target',
+        message: store
+          ? NodeDaemon.SESSION_REWIND_NO_LIVE_AGENT_MESSAGE
+          : CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE,
+      });
+      return;
+    }
+
+    try {
+      const restoreResult = await store.restore(resolved.preview.checkpointId);
+      const keepCount = resolved.targetTurnId
+        ? (cutTranscriptAtTurn(
+            liveBridge.agentSession.getTranscriptUpdates(),
+            resolved.targetTurnId,
+          ) ?? [])!.length
+        : 0;
+      liveBridge.agentSession.truncateTranscriptUpdates(keepCount);
+
+      await this.sendSessionRewindResult(session.id, requestId, {
+        outcome: 'ok',
+        result: {
+          turn,
+          checkpointId: resolved.preview.checkpointId,
+          turnsDiscarded: resolved.preview.turnsAtRisk,
+          filesChanged: resolved.preview.filesAtRisk,
+          discardedUncommittedChanges: restoreResult.discardedUncommittedChanges,
+          commitsPreserved: restoreResult.commitsPreserved,
+        },
+      });
+    } catch (error) {
+      await this.sendSessionRewindResult(session.id, requestId, checkpointErrorOutcome(error));
+    }
+  }
+
+  private async sendSessionRewindResult(
+    sessionId: string,
+    requestId: string,
+    payload: SessionRewindResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'session_rewind_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

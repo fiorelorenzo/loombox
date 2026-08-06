@@ -88,6 +88,12 @@ import {
   checkpointRestorePreviewResult,
   checkpointRestoreResult,
 } from './checkpoint';
+import {
+  sessionRewind,
+  sessionRewindPreview,
+  sessionRewindPreviewResult,
+  sessionRewindResult,
+} from './rewind';
 import { keymapGetRequest, keymapResult, keymapSetRequest } from './keymap';
 import {
   agentProfileListGet,
@@ -249,6 +255,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   checkpointRestorePreviewResult,
   checkpointRestore,
   checkpointRestoreResult,
+  sessionRewindPreview,
+  sessionRewindPreviewResult,
+  sessionRewind,
+  sessionRewindResult,
   prOpenPreviewRequest,
   prOpenPreviewResult,
   prOpenRequest,

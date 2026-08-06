@@ -1477,6 +1477,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // restore actually discarded (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'session_rewind_preview_result':
+      case 'session_rewind_result':
+        // The owning node's reply to a client's session_rewind_preview/
+        // session_rewind (design spec `2026-08-05-zed-parity-decisions.md`
+        // §3's C6-3; issue #747) — fanned out exactly like
+        // checkpoint_restore_result above; the relay never opens either
+        // envelope, so it never sees which files or turns a rewind put at
+        // risk, or what it actually discarded (SPEC §8's metadata
+        // boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'permission_policy_result':
         // The owning node's reply to a client's permission_policy_get/_set
         // (SPEC §7.17; issue #751) — fanned out exactly like
@@ -2254,6 +2265,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // plain confirm boolean — no checkpoint label, commit, file
         // content, PR title, body, branch name, or PR URL ever reaches the
         // relay in the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'session_rewind_preview':
+      case 'session_rewind':
+        // A client previewing/confirming a rewind of a session to a turn
+        // (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-3;
+        // issue #747) — routed to the owning node exactly like
+        // checkpoint_restore_preview/_restore above. The relay only ever
+        // sees sessionId/requestId plus a plain turn number and (for
+        // session_rewind) a plain confirm boolean — no file path, turn
+        // content, or checkpoint id ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'agent_profile_list_get':

@@ -224,6 +224,25 @@ export interface RestoreResult {
   commitsPreserved: number;
 }
 
+/**
+ * One file {@link GitCheckpointStore.filesAffectedByRestore} found to
+ * differ between the worktree's current state and `checkpointId`'s own
+ * captured snapshot — the file-level counterpart to
+ * {@link RestorePreview}'s summary booleans (issue #747's "the
+ * confirmation must name what will be lost, in files"). `action` names
+ * what {@link GitCheckpointStore.restore} does to this specific path:
+ * `'restore'` (re)writes it to the checkpoint's own content, whether that
+ * means overwriting a changed file or recreating one deleted since;
+ * `'delete'` removes it outright, because it exists now but the
+ * checkpoint never captured it (created — tracked or untracked — after
+ * the checkpoint was taken).
+ */
+export interface RestoreFileChange {
+  /** Worktree-relative, matching `git`'s own path format (`/`-separated). */
+  path: string;
+  action: 'restore' | 'delete';
+}
+
 export interface GitCheckpointStoreOptions {
   /** Absolute path to the git worktree this store checkpoints/restores — a session's `Session.worktreePath`/`worktreePath` (`@loombox/node`), though this class has no dependency on that type; any git working tree path works. */
   worktreePath: string;
@@ -626,5 +645,84 @@ export class GitCheckpointStore {
     for (const checkpoint of await this.listCheckpoints()) {
       await this.deleteCheckpoint(checkpoint.id);
     }
+  }
+
+  /**
+   * Every file whose on-disk content will differ after restoring to
+   * `checkpointId`, computed with no side effects — see
+   * {@link RestoreFileChange}'s own doc comment for what `action` means.
+   * Mirrors {@link restore}'s own two-phase algorithm exactly rather than
+   * inventing a separate notion of "changed": tracked content is diffed
+   * as checkpointCommit's own tree against the SAME combined
+   * (real-index-plus-`add -u`) tree {@link checkpoint}/{@link restore}
+   * build for "the worktree's current state", and untracked content is
+   * diffed the same way against the checkpoint's own `untrackedCommit`
+   * (or the canonical empty tree, for a checkpoint that captured none).
+   * `git diff --name-status --no-renames <current> <checkpoint>` reads
+   * naturally as "what changes to go FROM current TO the checkpoint" —
+   * exactly what `restore()` is about to do — so `A` (added in the
+   * checkpoint) means the file comes back (`'restore'`), `D` (missing
+   * from the checkpoint) means it goes away (`'delete'`), and `M` means
+   * its content changes (`'restore'`). `--no-renames` keeps every
+   * "removed here, satisfied by pairing with `-M`'ing renames" case as a
+   * demonstration.
+   */
+  async filesAffectedByRestore(checkpointId: string): Promise<RestoreFileChange[]> {
+    await this.assertUsable();
+    const { checkpointCommit, untrackedCommit } = await this.resolveCheckpoint(checkpointId);
+
+    const [currentTrackedTree, currentUntrackedFiles, checkpointTrackedTree, emptyTree] =
+      await Promise.all([
+        this.withTempIndex(async (tempIndexPath) => {
+          await this.copyRealIndexInto(tempIndexPath);
+          await this.git(['add', '-u'], { GIT_INDEX_FILE: tempIndexPath });
+          return this.git(['write-tree'], { GIT_INDEX_FILE: tempIndexPath });
+        }),
+        this.git(['ls-files', '--others', '--exclude-standard']).then((raw) =>
+          raw.split('\n').filter((line) => line.length > 0),
+        ),
+        this.git(['rev-parse', `${checkpointCommit}^{tree}`]),
+        this.withTempIndex((tempIndexPath) =>
+          this.git(['write-tree'], { GIT_INDEX_FILE: tempIndexPath }),
+        ),
+      ]);
+
+    const currentUntrackedTree =
+      currentUntrackedFiles.length > 0
+        ? await this.withTempIndex(async (tempIndexPath) => {
+            await this.git(['add', '--', ...currentUntrackedFiles], {
+              GIT_INDEX_FILE: tempIndexPath,
+            });
+            return this.git(['write-tree'], { GIT_INDEX_FILE: tempIndexPath });
+          })
+        : emptyTree;
+    const checkpointUntrackedTree = untrackedCommit
+      ? await this.git(['rev-parse', `${untrackedCommit}^{tree}`])
+      : emptyTree;
+
+    const [trackedDiff, untrackedDiff] = await Promise.all([
+      this.diffTreeNames(currentTrackedTree, checkpointTrackedTree),
+      this.diffTreeNames(currentUntrackedTree, checkpointUntrackedTree),
+    ]);
+
+    return [...trackedDiff, ...untrackedDiff].map(({ status, path }) => ({
+      path,
+      action: status === 'D' ? 'delete' : 'restore',
+    }));
+  }
+
+  /** `git diff --name-status --no-renames -z fromTree toTree`, parsed into `{status, path}` pairs — factored out of {@link filesAffectedByRestore} for its own doc comment's "current going to checkpoint" reading. */
+  private async diffTreeNames(
+    fromTree: string,
+    toTree: string,
+  ): Promise<Array<{ status: string; path: string }>> {
+    const raw = await this.git(['diff', '--name-status', '--no-renames', '-z', fromTree, toTree]);
+    if (!raw) return [];
+    const parts = raw.split('\0').filter((part) => part.length > 0);
+    const out: Array<{ status: string; path: string }> = [];
+    for (let i = 0; i < parts.length; i += 2) {
+      out.push({ status: parts[i], path: parts[i + 1] });
+    }
+    return out;
   }
 }
