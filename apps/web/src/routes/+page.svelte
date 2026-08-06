@@ -53,6 +53,7 @@
   } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
+  import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -132,10 +133,14 @@
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
+  import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import StatusBar, { type TargetHealthDotState } from '$lib/components/StatusBar.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
-  import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
+  import TranscriptTimeline, {
+    type TranscriptJumpTarget,
+  } from '$lib/components/TranscriptTimeline.svelte';
+  import TurnEditsBar from '$lib/components/TurnEditsBar.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -704,6 +709,9 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
+  /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
+  let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
+  let reviewChangesOpen = $state(false);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
@@ -1038,6 +1046,10 @@
   );
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
+  );
+  /** Issue #740's turn summary bar / Review Changes surface: the latest turn's aggregated edits, or `undefined` when it touched no files — see `TurnEditsBar`'s own doc comment for why this reads the full, unwindowed `transcript.items` rather than anything `TranscriptTimeline` mounts. */
+  const turnEditsSummary = $derived(
+    transcript ? latestTurnDiffSummary(transcript.items) : undefined,
   );
   // Issue #366: the project config surface is scoped to the selected
   // session's `projectPath` (v1 has no separate project entity yet, same
@@ -2022,6 +2034,19 @@
     );
   }
 
+  /** Issue #740: a `TurnEditsBar` per-file row click — brings that file's own diff card into the (possibly windowed-out) transcript and scrolls to it. Never mutates anything on disk; see `TranscriptJumpTarget`'s own doc comment for the token-bump reason. */
+  function jumpToTranscriptItem(toolCallId: string): void {
+    transcriptJumpTarget = { id: toolCallId, token: (transcriptJumpTarget?.token ?? 0) + 1 };
+  }
+
+  function openReviewChanges(): void {
+    reviewChangesOpen = true;
+  }
+
+  function closeReviewChanges(): void {
+    reviewChangesOpen = false;
+  }
+
   function resolvePermission(requestId: string, option: AcpPermissionOption): void {
     if (!client || !selectedSessionId) return;
     client.resolvePermission(selectedSessionId, requestId, option);
@@ -2579,6 +2604,26 @@
   async function exportTranscript(): Promise<void> {
     if (!transcript) return;
     await copyToClipboard(exportTranscriptText(transcript));
+  }
+
+  /** The turn currently being forked, if any (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — drives the fork button's busy state on that one row (`TranscriptTimeline`'s own `forkingTurnId`). */
+  let forkingTurnId = $state<string | undefined>(undefined);
+  /** The most recent fork request's refusal reason, if any — cleared on the next attempt. Rendered inline above the transcript (see the template below); mirrors this file's own `rePairError`/`escrowError`/`targetStatusError` convention for a lightweight, non-dialog async action. */
+  let forkError = $state<string | undefined>(undefined);
+
+  /** The turn's own fork affordance (`MessageItem`'s hover-revealed icon, v7 B3's row convention — see design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2). On success, navigates straight to the new session, exactly like `handleSessionCreated` already does for an ordinary creation. */
+  async function forkSessionFromTurn(turnId: string): Promise<void> {
+    if (!client || !selectedSessionId || forkingTurnId) return;
+    forkingTurnId = turnId;
+    forkError = undefined;
+    try {
+      const newSessionId = await client.forkSession(selectedSessionId, turnId);
+      selectSession(newSessionId);
+    } catch (error) {
+      forkError = error instanceof Error ? error.message : String(error);
+    } finally {
+      forkingTurnId = undefined;
+    }
   }
 
   onMount(() => {
@@ -3685,6 +3730,11 @@
               {/snippet}
             </EmptyState>
           {:else}
+            {#if forkError}
+              <p class="fork-error" role="alert" data-testid="fork-error">
+                {forkError}
+              </p>
+            {/if}
             <!-- Issue #730: a session with no live agent behind it must not
                  sit as a blank transcript with no explanation — the
                  original bug's exact symptom ("the optimistically echoed
@@ -3713,6 +3763,9 @@
               turnActive={transcript?.turnActive ?? false}
               providerId={selectedSession?.provider}
               {permissionHead}
+              jumpTarget={transcriptJumpTarget}
+              onFork={narrowViewport ? undefined : forkSessionFromTurn}
+              {forkingTurnId}
             />
 
             <div class="canvas-footer">
@@ -3755,6 +3808,20 @@
                 onResolve={resolvePermission}
                 onStop={stopSession}
                 narrow={narrowViewport}
+              />
+
+              <!-- Issue #740, settled pick C1-3: the turn summary bar sits
+                   here, in `.canvas-footer`, directly above the composer —
+                   not inside `TranscriptTimeline` (issue #755 windows that
+                   list to the visible range plus overscan, and this bar's
+                   totals need every diff-carrying tool call in the turn
+                   whether or not it's currently mounted) and not inside the
+                   composer's own A1-3 lift or the terminal dock (v7 D1-2) —
+                   neither settled surface is re-homed by this work. -->
+              <TurnEditsBar
+                summary={turnEditsSummary}
+                onJumpToFile={jumpToTranscriptItem}
+                onReviewChanges={openReviewChanges}
               />
 
               <form class="composer" onsubmit={submitPrompt}>
@@ -4209,6 +4276,12 @@
 />
 
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
+
+<ReviewChangesDialog
+  open={reviewChangesOpen}
+  summary={turnEditsSummary}
+  onClose={closeReviewChanges}
+/>
 
 <style>
   /* The pre-cockpit screens (checking session / sign-in / onboarding) own
@@ -6058,5 +6131,19 @@
     .panel-word {
       display: inline;
     }
+  }
+
+  /* The fork-from-turn action's refusal reason (design spec
+     `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — a
+     lightweight inline banner above the transcript, the same
+     `--color-danger` token every other inline error in this file uses,
+     no dialog needed for a single-line, dismiss-by-retrying message. */
+  .fork-error {
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
+    font-size: 0.875rem;
   }
 </style>
