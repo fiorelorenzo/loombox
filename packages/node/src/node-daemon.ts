@@ -7825,6 +7825,121 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * SPEC §7.14, issue #239: once a session's PR is genuinely open, this
+   * starts (or replaces) that session's watched entry — `CiCheckWatcher`
+   * polls it from the very next pass, and `CiWatchStore` persists it so a
+   * later node restart re-registers it too (see this daemon's own
+   * constructor). Best-effort: `parseGithubPullRequestUrl` returning
+   * `undefined` (a non-`github.com` PR — out of this watcher's scope, see
+   * that function's own doc comment) or `resolveSessionBranch` resolving
+   * nothing usable both fall through as a silent no-op rather than an
+   * error, matching `handlePrOpenRequest`'s own "never lets a watch-
+   * registration failure turn an otherwise-successful pr_open_request
+   * into a reported failure" contract.
+   */
+  private async registerCiCheckWatch(
+    session: Session,
+    target: ExecutionTarget,
+    opened: OpenPrResult,
+  ): Promise<void> {
+    const parsed = parseGithubPullRequestUrl(opened.url);
+    if (!parsed) return;
+    const ref = await resolveSessionBranch(target, session);
+    if (!ref) return;
+    const entry: CiWatchEntry = {
+      owner: parsed.owner,
+      repo: parsed.repo,
+      ref,
+      prNumber: opened.number,
+      prUrl: opened.url,
+      projectPath: session.projectPath,
+    };
+    this.ciCheckWatchStore.set(session.id, entry);
+    this.ciCheckWatcher.watch(session.id, entry);
+  }
+
+  /**
+   * `CiCheckWatcher`'s only source of a GitHub bearer token (SPEC §7.14,
+   * issue #239) — reuses SPEC §7.26's connected-account pin resolution
+   * (`./account-pin.ts`'s `resolveAccountForRead`) rather than a new
+   * token path, the same composition `resolveTrackerBackend`'s own GitHub
+   * branch applies. `github.com` only (this watcher's own scope — see
+   * `parseGithubPullRequestUrl`'s doc comment): a GHES account pinned for
+   * a project's `github` capability is simply never a candidate here.
+   * Never throws: an ambiguous pin ({@link AmbiguousAccountError}) or any
+   * other resolution error is caught and treated exactly like "nothing
+   * configured" — `undefined` — so a project a person hasn't yet resolved
+   * their GitHub ambiguity for degrades this one watched session's state
+   * to `'unknown'` rather than crashing a poll pass.
+   */
+  private async resolveCiCheckGithubToken(projectPath: string): Promise<string | undefined> {
+    let account: ConnectedAccount | undefined;
+    try {
+      account = resolveAccountForRead({
+        pins: this.accountPinStore.get(projectPath),
+        capability: 'github',
+        accounts: this.connectedAccounts,
+        target: { provider: 'github', host: 'github.com' },
+      });
+    } catch {
+      return undefined;
+    }
+    if (!account) return undefined;
+    return this.githubConnectService.getAccessToken(account);
+  }
+
+  /**
+   * Pushes a session's latest `CiCheckWatcher` reading to its subscribed
+   * clients (SPEC §7.14, issue #239) — `CiCheckWatcher`'s own `onUpdate`,
+   * fired after every completed poll pass, whatever the resulting state.
+   * Session-scoped and envelope-sealed exactly like `sendFileEvent`/
+   * `sendPrOpenResult`: the relay only ever sees `sessionId` and
+   * ciphertext.
+   */
+  private async sendCiCheckStatus(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: CiCheckStatusPayloadV1 = { status: state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * `CiCheckWatcher`'s `onFailure` hook (SPEC §7.14, issue #239) — fired
+   * exactly once per NEW failing commit (see `ci-check-watcher.ts`'s own
+   * "exactly-once-per-failure dedup" doc comment; this method itself does
+   * no deduping of its own). Feeds the failure straight back to the
+   * session's own agent via `promptSession` — the "surfaced ... which can
+   * auto-iterate a fix" half of SPEC §7.14's PR & CI lifecycle bullet.
+   * This is only the hook: driving the resulting turn to a genuinely
+   * green re-run (re-pushing, watching the NEXT poll, deciding when to
+   * stop) is issue #246's job, not this one's. A session with no live
+   * agent (`promptSession`'s own "no session with id" — archived, or
+   * `'disconnected'` since a restart) rejects here and is caught by this
+   * method's own caller (the `onFailure` wiring in this daemon's
+   * constructor), exactly like every other best-effort hook in this file.
+   */
+  private async handleCiCheckFailure(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    const failing = state.checkRuns.filter((run) => isFailingConclusion(run.conclusion));
+    const lines = failing.map((run) => {
+      const detail = run.summary ? `: ${run.summary}` : '';
+      return `- ${run.name} (${run.conclusion ?? 'unknown'})${detail}`;
+    });
+    const text = [
+      `CI just went red on this session's open pull request (${state.prUrl}):`,
+      '',
+      ...(lines.length > 0 ? lines : ['- (no failing check run details available)']),
+      '',
+      'Please look into the failure above and push a fix.',
+    ].join('\n');
+    await this.promptSession(sessionId, text);
+  }
+
+  /**
    * A client asked this node to run a session's project's configured
    * `kind` command and stream its output live (SPEC §7.15; issue #244).
    * Always replies with `run_started` — `outcome: 'ok'` once this project

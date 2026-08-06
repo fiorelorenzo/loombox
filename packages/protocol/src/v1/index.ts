@@ -1083,6 +1083,13 @@ import {
   prOpenOutcome,
 } from './pr';
 import {
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
+} from './ci-check';
+import {
   permissionPolicyGet,
   permissionPolicyResult,
   permissionPolicySet,
@@ -1436,4 +1443,9 @@ export const schemasV1 = {
   prOpenRequest,
   prOpenResult,
   prOpenOutcome,
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
 } as const;
