@@ -1336,6 +1336,21 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
   });
 });
 
+describe('structural identifiers render in the shared mono face (#735)', () => {
+  it("the topbar breadcrumb (project path + target) and the session row's own target are mono", async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const breadcrumb = screen.getByTestId('topbar-breadcrumb');
+    expect(breadcrumb.className).toContain('font-mono');
+    expect(breadcrumb.textContent).toContain('local');
+
+    const sessionMeta = screen.getByTestId('session-activity');
+    expect(sessionMeta.className).toContain('font-mono');
+    expect(sessionMeta.textContent).toContain('local');
+  });
+});
+
 // ---------------------------------------------------------------------
 // F1-3 (Zed-parity, issue #758): the command palette is a pure view over
 // `actionRegistry` (`$lib/action-registry.ts`), and `handleGlobalKeydown`
