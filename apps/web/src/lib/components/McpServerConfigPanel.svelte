@@ -46,10 +46,30 @@
    * "add" glyph, and each preset's name is already the button's visible
    * label. The root's `data-testid="mcp-config-panel"` and every other
    * `data-testid` are unchanged; only markup/CSS move.
+   *
+   * Client send side plus feedback surface (issue #750, D2-2; #794): the
+   * "Configured servers" list above is this device's own half of one
+   * resolution path the owning node completes, not the whole truth on its
+   * own — the node merges it with its own `McpConfigStore` (its record
+   * always winning a same-name collision) into what a session's agent
+   * actually receives, forwarded by the caller through
+   * `RelayClient.createSession`'s `mcpServerConfigs` option
+   * (`mcp-server-store.ts`'s `effectiveMcpServerConfigs`). A new "Server
+   * status" section renders the node's own `mcp_server_status` push
+   * (`mcpServerStatuses` prop, `RelayClient.mcpServerStatusesFor`) by name
+   * and reason — including a server this device never declared, since the
+   * node's own store can fail or auto-disable one too — and distinguishes
+   * an auto-disabled server (`disabled: true`, three consecutive failures)
+   * from one that will simply be retried on the next session. No secret
+   * value ever reaches either section: `mcp_server_status.reason` is
+   * always the human-readable failure detail, never the secret itself
+   * (`mcp-secret-grants.ts`'s node-local boundary, unweakened here).
    */
   import {
     MCP_SERVER_PRESET_CATALOG,
     McpServerConfigError,
+    type AcpMcpServerFailureCategory,
+    type AcpMcpServerStatusEntry,
     type McpServerConfig,
     type McpServerPreset,
   } from '@loombox/providers-core/browser';
@@ -77,6 +97,22 @@
     catalog?: readonly McpServerPreset[];
     onChange?: (records: ReturnType<McpServerConfigStorage['get']>) => void;
     onSecretRequired?: (serverName: string, secretName: string) => void;
+    /**
+     * The session-owning node's latest `mcp_server_status` push for the
+     * currently selected session on this project (issue #750, D2-2;
+     * #794's own acceptance line) — `RelayClient.mcpServerStatusesFor`'s
+     * store, read by the caller (`+page.svelte` -> `ProjectConfigPanel`)
+     * off the same reduced `TranscriptState` every other live session
+     * signal already comes from. `undefined` before the first session on
+     * this project has reported anything, or while none is selected; `[]`
+     * is the real, meaningful "every configured server started fine".
+     * Rendered in its own "Server status" section below, entirely
+     * independent of `records` — a name here need not be one of this
+     * device's own `records` at all, since the node's own `McpConfigStore`
+     * can report failures/disables for servers this panel never declared
+     * (see that section's own intro copy).
+     */
+    mcpServerStatuses?: AcpMcpServerStatusEntry[];
   }
 
   const {
@@ -85,6 +121,7 @@
     catalog = MCP_SERVER_PRESET_CATALOG,
     onChange,
     onSecretRequired,
+    mcpServerStatuses = [],
   }: Props = $props();
 
   // One-shot initial read into a plain local before seeding `$state`, same
@@ -159,6 +196,27 @@
     records = setMcpServerEnabled(storage, name, enabled);
     onChange?.(records);
   }
+
+  /** Human copy for each closed `AcpMcpServerFailureCategory` value (issue #750, D2-2; mirrors the node's own fixed vocabulary — `session-events.ts`'s `mcpServerFailureCategoryV1` doc comment). */
+  const CATEGORY_LABELS: Record<AcpMcpServerFailureCategory, string> = {
+    missing_binary: 'Missing binary',
+    handshake_failed: 'Handshake failed',
+    secret_missing: 'Secret missing',
+  };
+
+  /**
+   * Only entries the node actually reported as failed — schema-legal but
+   * never actually sent, an `ok: true` entry would mean "started fine",
+   * which the node's own doc comment says is never listed at all; this
+   * guards the render against that case rather than trusting the wire.
+   */
+  const failedStatuses = $derived(mcpServerStatuses.filter((entry) => !entry.ok));
+
+  /** "Auto-disabled" takes priority over the raw category (issue #794's own acceptance line: an auto-disabled server must say so, distinctly from a server that will simply be retried next session). */
+  function statusLabel(entry: AcpMcpServerStatusEntry): string {
+    if (entry.disabled) return 'Auto-disabled';
+    return entry.category ? CATEGORY_LABELS[entry.category] : 'Failed to start';
+  }
 </script>
 
 <div class="mcp-config" data-testid="mcp-config-panel">
@@ -190,6 +248,12 @@
   <Card elevation="raised" padding="md" class="config-section">
     <section class="servers">
       <h3>Configured servers</h3>
+      <p class="section-help">
+        This device's own list for this project. The node that runs your sessions merges it with its
+        own MCP servers — a name it already has always wins over one added here, and it can
+        auto-disable one of its own after repeated failures. "Server status" below shows what
+        actually happened the last time a session on this project started.
+      </p>
       {#if records.length === 0}
         <EmptyState message="No MCP servers configured yet." />
       {:else}
@@ -226,6 +290,34 @@
       {/if}
     </section>
   </Card>
+
+  {#if failedStatuses.length > 0}
+    <Card elevation="raised" padding="md" class="config-section">
+      <section class="status">
+        <h3>Server status</h3>
+        <p class="section-help">
+          What the node actually reported the last time a session on this project started —
+          including a server only the node itself is configured with, not just the list above.
+        </p>
+        <ul class="status-list" data-testid="mcp-status-list">
+          {#each failedStatuses as entry (entry.name)}
+            <li class="status-row" data-testid={`mcp-status-${entry.name}`}>
+              <span class="status-name">{entry.name}</span>
+              <Badge
+                tone={entry.disabled ? 'danger' : 'warning'}
+                dataTestId={`mcp-status-badge-${entry.name}`}
+              >
+                {statusLabel(entry)}
+              </Badge>
+              {#if entry.reason}
+                <span class="status-reason">{entry.reason}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </section>
+    </Card>
+  {/if}
 
   <Card elevation="raised" padding="md" class="config-section">
     <section class="manual-add">
@@ -311,7 +403,8 @@
   }
 
   .preset-list,
-  .server-list {
+  .server-list,
+  .status-list {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -322,13 +415,15 @@
   /* Quiet hairline-divided rows (redesign brief §4 "Rows"), not boxed
      cards, so a long list stays scannable. */
   .preset-row,
-  .server-row {
+  .server-row,
+  .status-row {
     border-top: 1px solid var(--color-border-subtle);
     padding: var(--space-xs) var(--space-2xs);
   }
 
   .preset-row:first-child,
-  .server-row:first-child {
+  .server-row:first-child,
+  .status-row:first-child {
     border-top: none;
     padding-top: 0;
   }
@@ -340,16 +435,32 @@
     flex-wrap: wrap;
   }
 
-  .preset-description {
+  .preset-description,
+  .section-help {
     color: var(--color-text-secondary);
     font-size: var(--text-small-size);
   }
 
-  .server-row {
+  .section-help {
+    margin: 0 0 var(--space-sm);
+  }
+
+  .server-row,
+  .status-row {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
     flex-wrap: wrap;
+  }
+
+  .status-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+
+  .status-reason {
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
   .server-transport {

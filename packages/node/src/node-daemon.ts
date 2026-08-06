@@ -1892,13 +1892,18 @@ export class NodeDaemon extends EventEmitter {
       } catch (error) {
         const attribution = attributeMcpFailure(error, remaining);
         if (!attribution) throw error;
+        // Recorded BEFORE the push below (issue #794): the streak crossing
+        // the auto-disable threshold on THIS failure is exactly what
+        // `disabled: true` on the pushed entry reports — see
+        // `recordMcpServerOutcome`'s own doc comment.
+        const disabled = this.recordMcpServerOutcome(projectPath, attribution.name, false);
         failedServers.push({
           name: attribution.name,
           ok: false,
           category: attribution.category,
           reason: attribution.reason,
+          ...(disabled ? { disabled: true } : {}),
         });
-        this.recordMcpServerOutcome(projectPath, attribution.name, false);
         remaining = remaining.filter((server) => server.name !== attribution.name);
       }
     }
@@ -3019,20 +3024,28 @@ export class NodeDaemon extends EventEmitter {
    * only from *this* attempt's list, so the very next session creation
    * retries it fresh — self-healing without this node ever deciding "now
    * is the moment to retry."
+   *
+   * Returns whether THIS call is the one that just auto-disabled the
+   * server (issue #794's `mcp_server_status.disabled` field) — `true`
+   * only when the streak just crossed the threshold AND
+   * {@link autoDisableMcpServer} actually flipped a node-owned record;
+   * `false` for a success, an ordinary (not-yet-third) failure, or a
+   * third failure against a client-declared server the node has no
+   * record for (see that method's own doc comment).
    */
-  private recordMcpServerOutcome(projectPath: string, serverName: string, ok: boolean): void {
+  private recordMcpServerOutcome(projectPath: string, serverName: string, ok: boolean): boolean {
     const key = `${projectPath}\u0000${serverName}`;
     if (ok) {
       this.mcpFailureStreaks.delete(key);
-      return;
+      return false;
     }
     const streak = (this.mcpFailureStreaks.get(key) ?? 0) + 1;
     if (streak < NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD) {
       this.mcpFailureStreaks.set(key, streak);
-      return;
+      return false;
     }
     this.mcpFailureStreaks.delete(key);
-    this.autoDisableMcpServer(projectPath, serverName);
+    return this.autoDisableMcpServer(projectPath, serverName);
   }
 
   /**
@@ -3044,15 +3057,19 @@ export class NodeDaemon extends EventEmitter {
    * disable — this node doesn't own that storage — so it keeps being
    * reported as failed on every attempt until the client itself disables
    * or removes it; logged, not thrown, since a failed auto-disable must
-   * never mask the real failure this was reacting to.
+   * never mask the real failure this was reacting to. Returns `true` only
+   * when a node-owned record (project or global) was actually flipped —
+   * `recordMcpServerOutcome` reports that boolean straight through as
+   * `mcp_server_status.disabled` (issue #794), so a client never sees a
+   * disable claim the node didn't actually act on.
    */
-  private autoDisableMcpServer(projectPath: string, serverName: string): void {
+  private autoDisableMcpServer(projectPath: string, serverName: string): boolean {
     try {
       this.mcpConfigStore.setProjectEnabled(projectPath, serverName, false);
       console.warn(
         `NodeDaemon: auto-disabled project "${projectPath}"'s MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
       );
-      return;
+      return true;
     } catch {
       // No project-scoped record by that name — try a global one below.
     }
@@ -3061,9 +3078,11 @@ export class NodeDaemon extends EventEmitter {
       console.warn(
         `NodeDaemon: auto-disabled global MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
       );
+      return true;
     } catch {
       // A client-declared server with no node-store record at all —
       // nothing to disable node-side; see this method's own doc comment.
+      return false;
     }
   }
 
