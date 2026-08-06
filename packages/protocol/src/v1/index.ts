@@ -285,6 +285,41 @@ export {
 } from './git-diff';
 
 export type {
+  GitHunkActionRequest,
+  GitHunkActionRequestPayloadV1,
+  GitHunkActionResponse,
+  GitHunkActionResponsePayloadV1,
+  GitHunkActionV1,
+  GitHunkDiffRequest,
+  GitHunkDiffResponse,
+  GitHunkDiffResponsePayloadV1,
+  GitHunkFileV1,
+  GitHunkLineKindV1,
+  GitHunkLineV1,
+  GitHunkV1,
+} from './git-hunks';
+export {
+  gitHunkActionRequest,
+  gitHunkActionRequestPayloadV1,
+  gitHunkActionResponse,
+  gitHunkActionResponsePayloadV1,
+  gitHunkActionV1,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+  gitHunkDiffResponsePayloadV1,
+  gitHunkFileV1,
+  gitHunkLineKindV1,
+  gitHunkLineV1,
+  gitHunkV1,
+  parseGitHunkActionRequestPayloadV1,
+  parseGitHunkActionResponsePayloadV1,
+  parseGitHunkDiffResponsePayloadV1,
+  safeParseGitHunkActionRequestPayloadV1,
+  safeParseGitHunkActionResponsePayloadV1,
+  safeParseGitHunkDiffResponsePayloadV1,
+} from './git-hunks';
+
+export type {
   McpPromptGetErrorV1,
   McpPromptGetRequest,
   McpPromptGetRequestPayloadV1,

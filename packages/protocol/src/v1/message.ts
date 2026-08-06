@@ -3,6 +3,12 @@ import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
+import {
+  gitHunkActionRequest,
+  gitHunkActionResponse,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+} from './git-hunks';
 import { mcpPromptGetRequest, mcpPromptGetResponse } from './mcp-prompts';
 import {
   amkEpochFetchRequest,
@@ -272,6 +278,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   prOpenResult,
   gitDiffRequest,
   gitDiffResponse,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+  gitHunkActionRequest,
+  gitHunkActionResponse,
   ciCheckStatus,
   ping,
   pong,
