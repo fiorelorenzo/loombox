@@ -8,9 +8,7 @@
    * (`model`, `model_config`, `thought_level`, or any future/unrecognized
    * one) renders as a generic labeled selector grouped near the model
    * picker, per ACP's own recommendation — an unrecognized category name is
-   * never dropped. A per-session context-fill percentage meter (excluding
-   * any usage attributable to a subagent tool call, SPEC.md §7.9/§16) sits
-   * at the end of the bar.
+   * never dropped.
    *
    * Always driven straight off `options` (a prop): there is no internal
    * "currently selected" state duplicated here, so a user pick and an
@@ -47,39 +45,17 @@
    * `--radius-md`/`--color-border` tokens and the same `sm` size scale as
    * the `mode` segmented control's `Button` (`ghost`, `sm`) choices, so
    * the two control idioms share height/radius/border by construction,
-   * not by coincidence. The context/cost meter now gets its own
-   * right-aligned, bordered-off slot with the percentage as the primary
-   * figure and the cost muted beside it (previously undifferentiated grey
-   * text jammed against the controls), plus a `title` spelling out both
-   * numbers for anyone hovering.
+   * not by coincidence.
    *
    * Composer strip (Lorenzo's ask, 2026-07-30): this bar moved from a strip
    * of its own ABOVE the composer to the one control row directly under the
-   * textarea, so the composer owns one strip instead of two. Three changes
-   * came with the move:
-   *
-   *  - The visible word "Model" is gone. The value already reads as a model
-   *    name ("Sonnet 4.5"), so the label spent a word to say nothing; the
-   *    agent's own name stands in front of the picker instead, which is the
-   *    fact that was missing ("which agent am I talking to"). The `Select`
-   *    keeps `Model` as its ACCESSIBLE name — the agent name is a sibling
-   *    fact, never marked up as that control's label.
-   *  - The meter reports the context in use AGAINST ITS MAXIMUM ("76k /
-   *    200k") rather than a bare percentage, plus a 3px track that carries
-   *    the percentage pre-attentively: context exhaustion is the one thing
-   *    you want to notice without reading, and the track tints amber at 80%
-   *    and red at 95%. No figure is encoded twice — the track IS the
-   *    percentage, the numbers ARE the absolutes, and the `title` spells
-   *    both out in words.
-   *  - `compact` is for a caller with no room (below `--bp-mobile`, where it
-   *    collapses the pickers behind a "···"): the pickers and the agent name
-   *    go, and the meter drops the denominator, keeping the track, the used
-   *    count and the cost. Measured, not guessed — at 390px the full meter is
-   *    215px of a ~300px content width, which wrapped Send onto a line of its
-   *    own and cost the composer half the screen. The ratio is not lost with
-   *    the denominator: the track IS the ratio, and the `title` still spells
-   *    every figure out. The old strip hid all of it behind the "···", so the
-   *    first thing to disappear on a phone was the number a user watches.
+   * textarea, so the composer owns one strip instead of two. The visible
+   * word "Model" went with it: the value already reads as a model name
+   * ("Sonnet 4.5"), so the label spent a word to say nothing; the agent's
+   * own name stands in front of the picker instead, which is the fact that
+   * was missing ("which agent am I talking to"). The `Select` keeps `Model`
+   * as its ACCESSIBLE name — the agent name is a sibling fact, never marked
+   * up as that control's label.
    *
    * Segmented-control a11y (issue #549): the mode control's selection lived
    * only in a background tint — `role="group"` around two plain buttons —
@@ -99,28 +75,13 @@
    * hand-rolled `<button>` here, so the segmented-control idiom stays one
    * shared primitive.
    *
-   * Usage-meter correctness (SPEC §7.9, issue #248): this bar's meter IS
-   * §7.9's per-session usage meter — the composer never had a second one,
-   * so this issue fixes what already sits here rather than adding a new
-   * surface beside it. Three real bugs fixed underneath it, none visible
-   * from this file's own diff: (1) `packages/providers/core/src/client.ts`
-   * was reading a raw wire `usage_update` for field names
-   * (`tokensUsed`/`contextWindow`/`costUsd`) that don't exist on ACP's real
-   * `{used, size, cost}` shape, so the meter never actually populated
-   * against a real agent; (2) the reducer let a subagent's own (much
-   * smaller) numbers overwrite the parent's before this file's own
-   * `attributedToSubagent` guard hid them, which just traded "the meter
-   * shows the wrong number" for "the meter shows nothing" — genuinely fixed
-   * now means `usage.tokensUsed`/`contextWindow` are ALREADY parent-only by
-   * the time they reach this component, so the guard is gone, not
-   * relocated; (3) `cumulativeCostUsd` summed each event's cost as a delta,
-   * but ACP documents `cost.amount` as the session's running total already,
-   * so summing double-counted every event after the first. This file's own
-   * addition is the near-limit warning: `isNearLimit`, gated on the
-   * exported `CONTEXT_NEAR_LIMIT_THRESHOLD` (`transcript.ts`) so a future
-   * consumer (issue #250's inbox surfacing) shares the same number, plus a
-   * `.sr-only` span carrying it to assistive tech (the track itself stays
-   * `aria-hidden`, unreachable without hovering `title`).
+   * The context/cost meter (SPEC §7.9, issue #248's usage-meter
+   * correctness fixes) used to sit at the end of this bar. Zed-parity
+   * decision B1-1 (issue #736) moved it to `StatusBar.svelte` — the
+   * permanent status bar every page now renders, not only the composer —
+   * rather than leaving it duplicated here; see that file's own doc
+   * comment for what it inherits and this file's git history for how
+   * issue #248's three correctness fixes were made in the first place.
    *
    * One consolidated control (cockpit v8 decision E1-2, issue #711): model,
    * thinking and mode used to sit inline as three-plus separate controls in
@@ -183,11 +144,7 @@
    * value worth pinning.
    */
   import { tick } from 'svelte';
-  import {
-    CONTEXT_NEAR_LIMIT_THRESHOLD,
-    type AcpConfigOption,
-    type UsageRecord,
-  } from '@loombox/providers-core/browser';
+  import { type AcpConfigOption } from '@loombox/providers-core/browser';
   import { PROVIDER_LABELS } from '$lib/providers';
   import type { ConfigOptionSource } from '$lib/config-option-resolution';
   import Badge, { type BadgeTone } from './ui/Badge.svelte';
@@ -198,12 +155,10 @@
 
   interface Props {
     options: AcpConfigOption[];
-    usage: UsageRecord | undefined;
-    cumulativeCostUsd: number;
     onChange: (category: string, optionId: string) => void;
     /** The session's ACP provider id — named in front of the model picker so the row says which agent is answering. */
     providerId?: string | undefined;
-    /** For a caller with no room: pickers and agent name hidden, meter shortened to track + used + cost. */
+    /** For a caller with no room: pickers and agent name hidden. */
     compact?: boolean;
     /**
      * Which layer produced each category's CURRENT value (issue #753,
@@ -222,8 +177,6 @@
 
   const {
     options,
-    usage,
-    cumulativeCostUsd,
     onChange,
     providerId,
     compact = false,
@@ -309,55 +262,6 @@
           .join(' · ')
       : undefined,
   );
-
-  // §7.9/§16: `usage.tokensUsed`/`usage.contextWindow` are ALREADY the
-  // parent-only, subagent-free numbers by the time they reach this
-  // component — `transcript.ts`'s `reduceUsage` freezes them during a
-  // subagent-attributed update rather than adopting the subagent's own
-  // (much smaller) window, specifically so no consumer here needs its own
-  // `attributedToSubagent` guard. An earlier version of this component DID
-  // gate on that flag directly, which meant a subagent update blanked the
-  // percentage instead of bouncing it to the wrong number — still a bounce,
-  // just to nothing instead of a lie. `usage.costUsd` (the raw per-event
-  // figure) is unused here on purpose; `cumulativeCostUsd` below is the one
-  // the meter shows, and it always includes subagent spend (SPEC.md §7.9).
-  const contextPercent = $derived(
-    usage && usage.tokensUsed !== undefined && usage.contextWindow
-      ? Math.min(100, Math.round((usage.tokensUsed / usage.contextWindow) * 100))
-      : undefined,
-  );
-
-  /** The context figures behind the meter, present only when `contextPercent` is — a used count with no window to measure it against is noise, not information. */
-  const contextTokens = $derived(
-    contextPercent !== undefined && usage?.tokensUsed !== undefined && usage.contextWindow
-      ? { used: usage.tokensUsed, max: usage.contextWindow }
-      : undefined,
-  );
-
-  /** SPEC.md §7.9's near-context-limit warning — see `CONTEXT_NEAR_LIMIT_THRESHOLD`'s own doc comment (`transcript.ts`) for why 80, not a rounder-looking 90. */
-  const isNearLimit = $derived(
-    contextPercent !== undefined && contextPercent >= CONTEXT_NEAR_LIMIT_THRESHOLD,
-  );
-
-  // Bullet 2 of the v3 Controls slice: a clear, hoverable explanation of
-  // both meter figures — the percentage is turn-scoped and subagent-free,
-  // the cost is the whole session and always includes subagent spend
-  // (see the `contextPercent` comment above). It is also where the
-  // percentage is stated in words now that the track carries it visually,
-  // and where the near-limit warning reaches anyone hovering rather than
-  // reading the color.
-  const meterTitle = $derived(
-    contextTokens
-      ? `${contextPercent}% of the context window used this turn${isNearLimit ? ' — nearly full' : ''} (${contextTokens.used.toLocaleString('en-US')} of ${contextTokens.max.toLocaleString('en-US')} tokens) · $${cumulativeCostUsd.toFixed(2)} spent this session`
-      : `$${cumulativeCostUsd.toFixed(2)} spent this session`,
-  );
-
-  /** Token counts abbreviated to the unit a context window is discussed in ("76k / 200k"), so the pair stays readable at caption size in a row that also holds controls. */
-  function formatTokens(count: number): string {
-    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-    if (count >= 1_000) return `${Math.round(count / 1_000)}k`;
-    return `${count}`;
-  }
 
   // The rough pixel height the popover budgets for (a handful of sections,
   // each a `Select` trigger or a row of mode segments) — same rough-budget
@@ -656,38 +560,6 @@
       </div>
     {/if}
   {/if}
-
-  <div class="meter" data-testid="context-meter" title={meterTitle}>
-    {#if contextTokens}
-      <!-- The track is the percentage; the numbers are the absolutes. Hidden
-           from the accessibility tree because it re-states, in pixels, what
-           the figures beside it and the `title` already say in words. The
-           near-limit warning itself still reaches assistive tech — see the
-           `.sr-only` span below, which doesn't depend on hover. -->
-      <span
-        class="track"
-        class:high={isNearLimit}
-        class:full={contextPercent !== undefined && contextPercent >= 95}
-        data-testid="context-track"
-        data-fill={contextPercent}
-        aria-hidden="true"
-      >
-        <span class="track-fill" style:width={`${contextPercent}%`}></span>
-      </span>
-      <span class="meter-primary">{formatTokens(contextTokens.used)}</span>
-      {#if !compact}
-        <span class="meter-sep" aria-hidden="true">/</span>
-        <span class="meter-max">{formatTokens(contextTokens.max)}</span>
-      {/if}
-      <span class="meter-sep" aria-hidden="true">·</span>
-      {#if isNearLimit}
-        <span class="sr-only" data-testid="context-warning"
-          >Context window nearly full, {contextPercent}% used</span
-        >
-      {/if}
-    {/if}
-    <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
-  </div>
 </div>
 
 <style>
@@ -863,86 +735,6 @@
   :global(.mode-choice.selected) {
     background: var(--color-accent-subtle);
     color: var(--color-accent);
-  }
-
-  /* Right-aligned against the send controls (v3 §3.5). The vertical rule this
-     slot used to carry is gone: it separated the meter from pickers sitting
-     right beside it in the old strip, and in the composer row — where
-     `margin-left: auto` already opens a gap of real space — it read as an
-     orphan pipe with nothing on its left. */
-  .meter {
-    margin-left: auto;
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2xs);
-    /* One figure per side of the slash, never a number split across lines. */
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-feature-settings: var(--font-feature-tabular);
-    font-size: var(--text-small-size);
-  }
-
-  .meter-primary {
-    color: var(--color-text-primary);
-    font-weight: 600;
-  }
-
-  .meter-sep,
-  .meter-max,
-  .meter-cost {
-    color: var(--color-text-muted);
-  }
-
-  /* 3px of pre-attentive signal: you register "nearly full" without reading a
-     number. Centred against a baseline-aligned row, so it sits with the digits
-     rather than on them. */
-  .track {
-    align-self: center;
-    width: 2.5rem;
-    height: 3px;
-    flex-shrink: 0;
-    border-radius: var(--radius-full);
-    background: var(--color-border);
-    overflow: hidden;
-  }
-
-  .track-fill {
-    display: block;
-    height: 100%;
-    background: var(--color-text-secondary);
-    transition: width var(--duration-base) var(--ease-beat);
-  }
-
-  /* Amber at CONTEXT_NEAR_LIMIT_THRESHOLD (80%, `transcript.ts`, issue
-     #248): the point where what you do next changes (wrap up the turn, or
-     intervene) — see that constant's own doc comment for why 80, grounded
-     against real auto-compaction thresholds rather than picked for looking
-     round. Red at 95%, a second, more urgent tier: by then even the most
-     conservative of those same real thresholds has likely already fired, so
-     this is "expect a compaction any moment," not a second warning level of
-     the same kind. */
-  .track.high .track-fill {
-    background: var(--color-warning);
-  }
-
-  .track.full .track-fill {
-    background: var(--color-danger);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .track.full .track-fill {
-    background: var(--color-danger);
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same

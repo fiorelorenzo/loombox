@@ -20,6 +20,7 @@
   import {
     RelayClient,
     bootstrapAmkFromRecoveryCode,
+    buildIdentityMismatch,
     type AttentionInboxItem,
     type BootstrapAmkResult,
     type BuildIdentityV1,
@@ -61,7 +62,7 @@
   import {
     SESSION_STATUS_LABELS,
     SESSION_STATUS_TONES,
-    SESSION_STATUS_UNKNOWN_LABEL,
+    sessionStatusLabelWithReason,
   } from '$lib/session-status';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import {
@@ -131,6 +132,7 @@
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
+  import StatusBar, { type TargetHealthDotState } from '$lib/components/StatusBar.svelte';
   import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
@@ -2012,9 +2014,8 @@
     Array.from(new Set(sessions.map((session) => session.projectPath))).sort(),
   );
 
-  /** Compact per-target health, for the header's always-visible StatusDot cluster (redesign brief §1/§6) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the header dots and the Drawer's "targets" tab detail never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). */
+  /** Per-target health for the status bar's own summary (issue #736; before it, the header's `StatusDot` cluster this doc comment used to describe) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the two never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). `TargetHealthDotState` itself is `StatusBar.svelte`'s own exported type, not redeclared here — the one place a `TargetListEntry` becomes this vocabulary. */
   const TARGET_OVERLOAD_PERCENT = 90;
-  type TargetHealthDotState = 'healthy' | 'overloaded' | 'unreachable' | 'no-data';
   function classifyTargetHealth(target: TargetListEntry): TargetHealthDotState {
     if (!target.reachable) return 'unreachable';
     if (!target.health) return 'no-data';
@@ -2043,8 +2044,16 @@
       state: classifyTargetHealth(target),
     })),
   );
-  const hasUnhealthyTarget = $derived(
-    targetHealthDots.some((dot) => dot.state === 'unreachable' || dot.state === 'overloaded'),
+  /** The status bar's Behind badge (issue #736): every currently-listed target whose build identity doesn't match this relay's own — `TargetStatusView`'s per-row `isBehind`/`buildIdentityMismatch` check, aggregated across the account instead of per row. */
+  const targetsBehindCount = $derived(
+    targetStatusEntries.filter((target) => buildIdentityMismatch(relayBuildIdentity, target.build))
+      .length,
+  );
+  /** How many OTHER sessions across the account are currently `'queued'` (issue #730's "waiting for a concurrency slot"), for the status bar's own right-zone segment (issue #736) — read straight off the same live `sessionStatuses` map every row's own badge already uses, not a separate subscription. */
+  const queuedSessionCount = $derived(
+    (Array.from(sessionStatuses.values()) as (SessionStatusV1 | undefined)[]).filter(
+      (value) => value === 'queued',
+    ).length,
   );
 
   /**
@@ -2199,23 +2208,6 @@
     disconnected: 1,
     exited: 0,
   };
-
-  /**
-   * The row/selvage badge's status text (issue #730): the plain
-   * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
-   * for `'error'` with a `reason` the node sent (`RelayClient.
-   * statusReasonFor` — a spawn that failed or timed out), where the
-   * reason is appended so a hover/hold on the row's own tooltip or the
-   * dot's accessible name reads WHY, not just that it failed.
-   */
-  function sessionStatusLabelWithReason(
-    status: SessionStatusV1 | undefined,
-    reason: string | undefined,
-  ): string {
-    if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
-    const label = SESSION_STATUS_LABELS[status];
-    return status === 'error' && reason ? `${label}: ${reason}` : label;
-  }
 
   /**
    * The project tree (design spec v4 §3.2), replacing v3's target-based
@@ -2982,9 +2974,10 @@
              transcript is one click. Nodes & targets is no longer one of
              these rows — issue #568 folded it into Settings, reachable from
              the account menu below, so Inbox is the sole row left; the
-             health dot that used to live here moved onto the account
-             trigger and the Settings menu entry instead (see
-             `hasUnhealthyTarget` below). -->
+             health dot that used to live here (and, until issue #736, on
+             the account trigger and the Settings menu entry too) is the
+             status bar's own target-health segment now, retired outright
+             rather than duplicated. -->
         <nav
           class="sidebar-destinations"
           aria-label="Primary destinations"
@@ -3271,21 +3264,12 @@
               <button
                 type="button"
                 role="menuitem"
-                class="settings-menu-item"
                 onclick={() => {
                   closeSidebarMenus();
                   mainView = 'settings';
                 }}
               >
-                <span>Settings</span>
-                {#if hasUnhealthyTarget}
-                  <span
-                    class="menu-item-alert-dot"
-                    data-testid="settings-menu-health-badge"
-                    aria-hidden="true"
-                  ></span>
-                  <span class="sr-only">Some targets need attention</span>
-                {/if}
+                Settings
               </button>
               <!-- Not `danger`: signing out ends a session on this device and
                    nothing else. The red belonged to the surfaces that destroy
@@ -3314,19 +3298,7 @@
             }}
             data-testid="account-menu-toggle"
           >
-            <span class="account-avatar" aria-hidden="true">
-              {accountInitial}
-              {#if hasUnhealthyTarget}
-                <span
-                  class="account-avatar-alert"
-                  data-testid="account-health-badge"
-                  aria-hidden="true"
-                ></span>
-              {/if}
-            </span>
-            {#if hasUnhealthyTarget}
-              <span class="sr-only">Some targets need attention</span>
-            {/if}
+            <span class="account-avatar" aria-hidden="true">{accountInitial}</span>
             <span class="account-name">{accountShortLabel}</span>
             <Icon name="more" class="account-chevron" />
           </button>
@@ -3453,28 +3425,6 @@
           {/if}
 
           <div class="topbar-actions">
-            {#if connectionNotice}
-              <span
-                class="connection-chip"
-                data-tone={connectionNotice.tone}
-                data-testid="connection-status-chip"
-                role="status"
-              >
-                <StatusDot
-                  tone={connectionNotice.tone}
-                  pulse={status === 'connecting' || status === 'closed'}
-                  label={connectionNotice.label}
-                  size="sm"
-                />
-                {connectionNotice.label}
-                {#if connectionNotice.retry}
-                  <button type="button" onclick={retryConnection} data-testid="connection-retry">
-                    Retry
-                  </button>
-                {/if}
-              </span>
-            {/if}
-
             {#if selectedSessionId && mainView === 'session'}
               <!-- One toggle for the right sidebar itself (design spec §3.3,
                    issue #571): the Files/Terminal/Config three-button group
@@ -3811,8 +3761,6 @@
                           {/if}
                           <ConfigBar
                             options={configOptions}
-                            usage={transcript?.usage}
-                            cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
                             onChange={changeConfigOption}
                             providerId={selectedSession?.provider}
                             compact={!configControlsVisible}
@@ -4059,6 +4007,29 @@
         {/if}
       </div>
     {/if}
+
+    <!-- The permanent status bar (Zed-parity decision B1-1, issue #736): a
+         flex sibling of `.shell`/`.terminal-dock`, same convention as both
+         (see `.terminal-dock`'s own CSS doc comment) — but unlike them,
+         never gated on `selectedSessionId`/`mainView`. It is chrome for
+         the WHOLE window (inbox, settings, tracker, a session, or none of
+         those yet selected), not session-view furniture, so it is the one
+         `main.cockpit` child with no `{#if}` around it at all. -->
+    <StatusBar
+      connectionStatus={status}
+      onRetryConnection={retryConnection}
+      {targetHealthDots}
+      {targetsBehindCount}
+      onOpenNodes={openTargetStatus}
+      hasSelectedSession={selectedSessionId !== undefined}
+      {selectedSessionStatus}
+      selectedSessionStatusReason={selectedSessionId
+        ? sessionStatusReasons.get(selectedSessionId)
+        : undefined}
+      {queuedSessionCount}
+      usage={transcript?.usage}
+      cumulativeCostUsd={transcript?.cumulativeCostUsd ?? 0}
+    />
 
     <!-- Below `--bp-desktop` the sidebar becomes a sheet and this bar is the
          primary navigation. It deliberately sits ABOVE the sheet's own
@@ -4607,26 +4578,6 @@
     color: var(--color-danger);
   }
 
-  /* The Settings menu item's own alert dot (issue #568's account-menu-
-     trigger route for `hasUnhealthyTarget`, replacing the sidebar row's
-     dot the old Nodes destination carried). Every other `.popover-menu`
-     button is a plain text label, so this class alone gets the flex
-     treatment needed to push the dot to the trailing edge. */
-  .settings-menu-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .menu-item-alert-dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: var(--radius-full);
-    background: var(--color-warning);
-    flex-shrink: 0;
-  }
-
   /* ------------------------------------------------------------------ */
   /* Filter + session list                                               */
   /* ------------------------------------------------------------------ */
@@ -5107,7 +5058,6 @@
   }
 
   .account-avatar {
-    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -5119,23 +5069,6 @@
     color: var(--color-accent);
     font-size: var(--text-small-size);
     font-weight: 600;
-  }
-
-  /* The account trigger's own health signal (issue #568): an unhealthy
-     target used to light a dot on the sidebar's Nodes row; now that Nodes
-     is two levels deep inside Settings, this is the "still discoverable
-     without opening Settings" surface the issue asks for, mirroring the
-     old sidebar Nodes row's dot (size/color; issue #568 removed that row
-     along with its own `.destination-badge-dot` class). */
-  .account-avatar-alert {
-    position: absolute;
-    bottom: -1px;
-    right: -1px;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-full);
-    background: var(--color-warning);
-    border: 1.5px solid var(--color-surface);
   }
 
   .account-name {
@@ -5320,44 +5253,6 @@
   .panel-word {
     display: none;
     margin-left: var(--space-2xs);
-  }
-
-  /* Rendered only when the connection is NOT healthy (spec §3.3): the v2
-     header spent its highest-attention pixels on a permanently green,
-     unlabelled dot that said nothing and offered nothing. */
-  .connection-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    padding: var(--space-3xs) var(--space-xs);
-    margin-right: var(--space-2xs);
-    border-radius: var(--radius-full);
-    font-size: var(--text-caption-size);
-  }
-
-  .connection-chip[data-tone='warning'] {
-    background: var(--color-warning-subtle);
-    color: var(--color-warning);
-  }
-
-  .connection-chip[data-tone='danger'] {
-    background: var(--color-danger-subtle);
-    color: var(--color-danger);
-  }
-
-  .connection-chip[data-tone='neutral'] {
-    background: var(--color-fill-subtle);
-    color: var(--color-text-muted);
-  }
-
-  .connection-chip button {
-    border: none;
-    background: transparent;
-    color: inherit;
-    padding: 0 var(--space-2xs);
-    font: inherit;
-    text-decoration: underline;
-    cursor: pointer;
   }
 
   /* Same measure and centring as `.items` below, so a banner does not run

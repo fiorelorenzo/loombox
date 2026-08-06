@@ -2,7 +2,7 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AcpConfigOption, UsageRecord } from '@loombox/providers-core/browser';
+import type { AcpConfigOption } from '@loombox/providers-core/browser';
 import ConfigBar from './ConfigBar.svelte';
 
 afterEach(() => cleanup());
@@ -38,7 +38,7 @@ async function openPopover(): Promise<void> {
 describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #711)', () => {
   it('reads the current model and effort, dot-joined, without opening anything', () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     expect(screen.getByTestId('config-trigger').textContent).toContain('Sonnet · Medium');
     // Nothing else is in the DOM yet — the whole point of collapsing behind
@@ -53,21 +53,21 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
       { category: 'model', current: undefined, choices: [{ id: 'opus', name: 'Opus' }] },
     ];
     render(ConfigBar, {
-      props: { options: unset, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options: unset, onChange: vi.fn() },
     });
     expect(screen.getByTestId('config-trigger').textContent).toContain('Model');
   });
 
   it('renders no trigger at all when the catalog is still empty (issue #705 not yet landed for this session)', () => {
     render(ConfigBar, {
-      props: { options: [], usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options: [], onChange: vi.fn() },
     });
     expect(screen.queryByTestId('config-trigger')).toBeNull();
   });
 
   it('opens one popover holding model, thinking and mode together on click', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     expect(screen.getByTestId('config-popover')).toBeTruthy();
@@ -84,7 +84,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
       { category: 'reasoning_budget', current: 'high', choices: [{ id: 'high', name: 'High' }] },
     ];
     render(ConfigBar, {
-      props: { options: withUnknown, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options: withUnknown, onChange: vi.fn() },
     });
     // Not hardcoded to "exactly three categories": a fourth joins the
     // trigger's own summary the same generic way the first two do.
@@ -101,7 +101,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 
   it('a user change calls onChange with the category and chosen option id (Select control)', async () => {
     const onChange = vi.fn();
-    render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
+    render(ConfigBar, { props: { options, onChange } });
     await openPopover();
     const trigger = within(screen.getByTestId('config-option-model')).getByRole('combobox');
     await fireEvent.click(trigger);
@@ -111,7 +111,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 
   it('a user change calls onChange for the mode segmented control', async () => {
     const onChange = vi.fn();
-    render(ConfigBar, { props: { options, usage: undefined, cumulativeCostUsd: 0, onChange } });
+    render(ConfigBar, { props: { options, onChange } });
     await openPopover();
     await fireEvent.click(screen.getByRole('radio', { name: 'Plan' }));
     expect(onChange).toHaveBeenCalledWith('mode', 'plan');
@@ -119,7 +119,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 
   it('marks the current mode in the accessibility tree, not only with a class (issue #549)', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     const group = screen.getByRole('radiogroup', { name: 'Mode' });
@@ -134,7 +134,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 
   it('roving tabindex: only the checked segment is a tab stop, and it moves with the selection', async () => {
     const { rerender } = render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     expect(screen.getByRole('radio', { name: 'Default' }).tabIndex).toBe(0);
@@ -150,8 +150,6 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
     );
     await rerender({
       options: planSelected,
-      usage: undefined,
-      cumulativeCostUsd: 0,
       onChange: vi.fn(),
     });
 
@@ -163,7 +161,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
   it('arrow keys move the mode selection and move focus onto the newly-selected segment', async () => {
     const onChange = vi.fn();
     const { rerender } = render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange },
+      props: { options, onChange },
     });
     await openPopover();
     const defaultRadio = screen.getByRole('radio', { name: 'Default' });
@@ -184,7 +182,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
     const planSelected: AcpConfigOption[] = options.map((option) =>
       option.category === 'mode' ? { ...option, current: 'plan' } : option,
     );
-    await rerender({ options: planSelected, usage: undefined, cumulativeCostUsd: 0, onChange });
+    await rerender({ options: planSelected, onChange });
     const planRadio = screen.getByRole('radio', { name: 'Plan' });
     planRadio.focus();
     await fireEvent.keyDown(planRadio, { key: 'ArrowLeft' });
@@ -196,7 +194,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 
   it('re-renders the full control set (not a single patched control) when the options prop is wholesale replaced', async () => {
     const { rerender } = render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     expect(screen.getByTestId('config-option-model').textContent).toContain('Sonnet');
@@ -208,8 +206,6 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
     ];
     await rerender({
       options: fallenBack,
-      usage: undefined,
-      cumulativeCostUsd: 0,
       onChange: vi.fn(),
     });
 
@@ -221,7 +217,7 @@ describe('ConfigBar: the consolidated trigger (cockpit v8 decision E1-2, issue #
 describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acceptance)', () => {
   it('ArrowDown and Enter both open the popover from the trigger', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     const trigger = screen.getByTestId('config-trigger');
 
@@ -238,7 +234,7 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
 
   it('opening moves focus onto the first control inside, and Escape returns it to the trigger', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     const trigger = screen.getByTestId('config-trigger');
     await openPopover();
@@ -254,7 +250,7 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
 
   it('every control inside the popover is a real, reachable tab stop', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
 
@@ -273,7 +269,7 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
 
   it('Tab from the last control wraps to the first, and Shift+Tab from the first wraps to the last', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     const panel = screen.getByTestId('config-popover');
@@ -291,7 +287,7 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
 
   it('a click outside the trigger/popover closes it', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     expect(screen.getByTestId('config-popover')).toBeTruthy();
@@ -303,7 +299,7 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
 
   it('clicking the trigger again while open closes it and returns focus to the trigger', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     const trigger = screen.getByTestId('config-trigger');
     await openPopover();
@@ -316,120 +312,11 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
   });
 });
 
-describe('ConfigBar: context/cost meter', () => {
-  const usageAt = (tokensUsed: number, attributedToSubagent = false): UsageRecord => ({
-    sessionId: 's1',
-    tokensUsed,
-    contextWindow: 200_000,
-    costUsd: 0.5,
-    attributedToSubagent,
-  });
-
-  it('reports the context in use against its maximum, not a bare percentage', () => {
-    render(ConfigBar, {
-      props: { options: [], usage: usageAt(50_000), cumulativeCostUsd: 1.23, onChange: vi.fn() },
-    });
-    expect(screen.getByText('50k')).toBeTruthy();
-    expect(screen.getByText('200k')).toBeTruthy();
-    expect(screen.getByText('$1.23')).toBeTruthy();
-    // The percentage is the track's job visually; in words it lives on the
-    // title, which is also the only place a screen reader gets it.
-    expect(screen.getByTestId('context-meter').getAttribute('title')).toBe(
-      '25% of the context window used this turn (50,000 of 200,000 tokens) · $1.23 spent this session',
-    );
-  });
-
-  it('fills the track to the percentage used', () => {
-    render(ConfigBar, {
-      props: { options: [], usage: usageAt(50_000), cumulativeCostUsd: 0, onChange: vi.fn() },
-    });
-    const track = screen.getByTestId('context-track');
-    expect(track.dataset.fill).toBe('25');
-    expect((track.firstElementChild as HTMLElement).style.width).toBe('25%');
-  });
-
-  // The two points where what a user does next changes, so each earns a
-  // colour of its own rather than one undifferentiated "getting full".
-  it('warns at 80% of the window and escalates at 95%', () => {
-    const { rerender } = render(ConfigBar, {
-      props: { options: [], usage: usageAt(100_000), cumulativeCostUsd: 0, onChange: vi.fn() },
-    });
-    expect(screen.getByTestId('context-track').className).not.toContain('high');
-
-    rerender({ options: [], usage: usageAt(170_000), cumulativeCostUsd: 0, onChange: vi.fn() });
-    expect(screen.getByTestId('context-track').className).toContain('high');
-    expect(screen.getByTestId('context-track').className).not.toContain('full');
-
-    rerender({ options: [], usage: usageAt(195_000), cumulativeCostUsd: 0, onChange: vi.fn() });
-    expect(screen.getByTestId('context-track').className).toContain('full');
-  });
-
-  it('the near-limit warning fires at exactly the threshold, and not one percentage point before (issue #248 acceptance boundary)', () => {
-    const { rerender } = render(ConfigBar, {
-      props: { options: [], usage: usageAt(158_000), cumulativeCostUsd: 0, onChange: vi.fn() },
-    });
-    expect(screen.getByTestId('context-track').dataset.fill).toBe('79');
-    expect(screen.queryByTestId('context-warning')).toBeNull();
-
-    rerender({ options: [], usage: usageAt(160_000), cumulativeCostUsd: 0, onChange: vi.fn() });
-    expect(screen.getByTestId('context-track').dataset.fill).toBe('80');
-    expect(screen.getByTestId('context-warning')).toBeTruthy();
-    expect(screen.getByTestId('context-warning').textContent).toContain('80%');
-  });
-
-  it("renders the context figures regardless of attributedToSubagent — excluding a subagent update from the percentage is the reducer's job now, not this component's (issue #248)", () => {
-    // By the time `usage` reaches this component, `tokensUsed`/
-    // `contextWindow` are ALREADY the parent-only numbers regardless of
-    // `attributedToSubagent` — `transcript.ts`'s `reduceUsage` freezes them
-    // at the reducer, see that file's own test for the freeze logic. This
-    // component intentionally does NOT re-check the flag: an earlier
-    // version gated the percentage on it here too, which meant a subagent
-    // update blanked the meter instead of bouncing it to the wrong number —
-    // still a bounce. This is a regression guard against reintroducing that
-    // guard.
-    render(ConfigBar, {
-      props: {
-        options: [],
-        usage: usageAt(50_000, true),
-        cumulativeCostUsd: 1.23,
-        onChange: vi.fn(),
-      },
-    });
-    expect(screen.getByTestId('context-track').dataset.fill).toBe('25');
-    expect(screen.getByText('50k')).toBeTruthy();
-    expect(screen.getByText('200k')).toBeTruthy();
-    // The cumulative cost figure includes it too (SPEC.md §7.9).
-    expect(screen.getByText('$1.23')).toBeTruthy();
-  });
-
-  it('says nothing about the context when the agent reported a used count with no window to measure it against', () => {
-    render(ConfigBar, {
-      props: {
-        options: [],
-        usage: {
-          sessionId: 's1',
-          tokensUsed: 50_000,
-          contextWindow: undefined,
-          costUsd: 0.5,
-          attributedToSubagent: false,
-        },
-        cumulativeCostUsd: 1.23,
-        onChange: vi.fn(),
-      },
-    });
-    expect(screen.queryByTestId('context-track')).toBeNull();
-    expect(screen.queryByText('50k')).toBeNull();
-    expect(screen.getByText('$1.23')).toBeTruthy();
-  });
-});
-
 describe('ConfigBar: the agent answering', () => {
   it('names the agent in front of the trigger, so the row says who is answering', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         providerId: 'claude',
       },
@@ -442,8 +329,6 @@ describe('ConfigBar: the agent answering', () => {
     render(ConfigBar, {
       props: {
         options: [],
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         providerId: 'some-future-agent',
       },
@@ -451,12 +336,10 @@ describe('ConfigBar: the agent answering', () => {
     expect(screen.getByTestId('config-agent').textContent).toBe('some-future-agent');
   });
 
-  it('keeps the figures a user watches when the caller has no room, and only the denominator goes', () => {
+  it('hides the pickers and agent name entirely when the caller has no room, keeping the popover reachable behind nothing until it is toggled back', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: usage200k(120_000),
-        cumulativeCostUsd: 2,
         onChange: vi.fn(),
         providerId: 'claude',
         compact: true,
@@ -464,34 +347,13 @@ describe('ConfigBar: the agent answering', () => {
     });
     expect(screen.queryByTestId('config-trigger')).toBeNull();
     expect(screen.queryByTestId('config-agent')).toBeNull();
-    // What a phone must NOT lose: the used count, the cost, and the track that
-    // carries the ratio the dropped denominator used to spell out.
-    expect(screen.getByText('120k')).toBeTruthy();
-    expect(screen.getByText('$2.00')).toBeTruthy();
-    expect(screen.getByTestId('context-track').dataset.fill).toBe('60');
-    expect(screen.queryByText('200k')).toBeNull();
-    // ...and the figure it dropped is still readable on the meter itself.
-    expect(screen.getByTestId('context-meter').getAttribute('title')).toContain(
-      'of 200,000 tokens',
-    );
   });
 });
-
-/** The same 200k-window record the meter suite uses, for the collapse test above. */
-function usage200k(tokensUsed: number): UsageRecord {
-  return {
-    sessionId: 's1',
-    tokensUsed,
-    contextWindow: 200_000,
-    costUsd: 0.5,
-    attributedToSubagent: false,
-  };
-}
 
 describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
   it('renders no source badge and no pin control when the caller has not wired sources at all (every call site written before this issue)', async () => {
     render(ConfigBar, {
-      props: { options, usage: undefined, cumulativeCostUsd: 0, onChange: vi.fn() },
+      props: { options, onChange: vi.fn() },
     });
     await openPopover();
     expect(screen.queryByTestId('config-source-model')).toBeNull();
@@ -502,8 +364,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { model: 'project', thought_level: 'account', mode: 'default' },
       },
@@ -518,8 +378,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { model: 'project', thought_level: 'account', mode: 'default' },
       },
@@ -533,8 +391,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { model: 'account' },
         onPinToProject: vi.fn(),
@@ -550,8 +406,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { model: 'account' },
         onPinToProject,
@@ -570,8 +424,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { model: 'project' },
         onPinToProject,
@@ -591,8 +443,6 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     render(ConfigBar, {
       props: {
         options,
-        usage: undefined,
-        cumulativeCostUsd: 0,
         onChange: vi.fn(),
         sources: { mode: 'account' },
         onPinToProject,
