@@ -451,14 +451,24 @@
   /* Below the desktop breakpoint the fixed tabbar already claims the
      window's true bottom edge (`+page.svelte`'s `.tabbar`); this bar sits
      directly above it, matching how the terminal dock and both sidebars
-     already dock against `--tabbar-height` in that same media query. */
+     already dock against `--tabbar-height` in that same media query.
+     `--z-raised` (10), deliberately BELOW every sheet/overlay this shell
+     opens on mobile — the sessions sidebar sheet and its backdrop sit at
+     `--z-sticky`/`--z-sticky - 1` (20/19), `Overlay`-backed dialogs at
+     `--z-overlay`/`--z-modal` (30/40), same as `.tabbar` itself
+     (`--z-overlay`, "deliberately ABOVE the sheet and its backdrop").
+     This bar is passive chrome, never a control any of those need to
+     reach through: at the SAME `--z-sticky` tier as the sidebar sheet it
+     used to sit above it by DOM order alone (this component mounts after
+     `.shell`), covering the sheet's own account-menu trigger and hanging
+     every test that opens it at 390px (`accounts-mobile.spec.ts`). */
   @media (max-width: 1023px) {
     .status-bar {
       position: fixed;
       left: 0;
       right: 0;
       bottom: var(--tabbar-height);
-      z-index: var(--z-sticky);
+      z-index: var(--z-raised);
     }
   }
 
