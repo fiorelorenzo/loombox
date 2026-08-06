@@ -158,8 +158,13 @@ describe("real-shape conformance: loombox's Codex adapter functions against actu
 
   it('buildCodexImageContentBlock is gated on the real negotiated image capability, which Codex does advertise', () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xaa, 0xbb]);
-    const block = buildCodexImageContentBlock(pngBytes, { imageCapabilityNegotiated: true });
-    expect(block?.mimeType).toBe('image/png');
+    // #158 changed this builder's return from a bare block to a discriminated
+    // result (`{ ok: true, block }` / `{ ok: false, reason }`), so the block now
+    // hangs off `.block`. The two landed the same night from different branches,
+    // each green on its own, and only crossed on main.
+    const result = buildCodexImageContentBlock(pngBytes, { imageCapabilityNegotiated: true });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.block.mimeType).toBe('image/png');
   });
 
   it("[known gap, issue #821] deriveFeatureFlags reports supportsSessionDelete/supportsAdditionalDirectories as false against Codex's real capabilities, even though Codex supports both", () => {
