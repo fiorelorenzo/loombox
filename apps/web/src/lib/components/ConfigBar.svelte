@@ -218,9 +218,21 @@
     onPinToProject?: (category: string) => void;
     /** Clears `category`'s project override (issue #753), falling back to the account default or the agent's own. Omit alongside {@link onPinToProject}. */
     onUnpinFromProject?: (category: string) => void;
+    /**
+     * The popover's own open state (issue #759's "Cycle model / effort"
+     * keyboard action, `Mod+Shift+M`): `$bindable` rather than the plain
+     * prop + callback pairing this file's siblings (`SettingsPage.svelte`'s
+     * `section`) prefer, because the popover's OWN close paths
+     * (`closePopover`, `Escape`, click-outside) need to write it back just
+     * as often as `+page.svelte`'s keyboard handler needs to set it —
+     * genuinely two-way, not the "caller drives, this reads" shape that
+     * pairing exists for. Defaults `false`/uncontrolled so every call site
+     * written before #759 needs no change.
+     */
+    popoverOpen?: boolean;
   }
 
-  const {
+  let {
     options,
     usage,
     cumulativeCostUsd,
@@ -230,6 +242,7 @@
     sources,
     onPinToProject,
     onUnpinFromProject,
+    popoverOpen = $bindable(false),
   }: Props = $props();
 
   const modeOption = $derived(options.find((option) => option.category === 'mode'));
@@ -241,7 +254,6 @@
   let triggerEl = $state<HTMLButtonElement | undefined>(undefined);
   /** The popover panel, for `focusableElements()` (the Tab-trap) and the initial focus-on-open effect below. */
   let panelEl = $state<HTMLDivElement | undefined>(undefined);
-  let popoverOpen = $state(false);
   /** Flips the popover above the trigger instead of below — see `Select.svelte`'s identical `openUpward`, and this file's own doc comment for why this bar specifically needs it. */
   let openUpward = $state(false);
 

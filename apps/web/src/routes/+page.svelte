@@ -43,8 +43,9 @@
     type DockPanelPersistence,
     type DockPanelState,
   } from '$lib/dock-panel.svelte';
-  import { isModShortcut, isTypingTarget } from '$lib/keyboard';
+  import { isDesktopShell, isMacPlatform, isTypingTarget, matchesShortcut } from '$lib/keyboard';
   import {
+    effectiveShortcut,
     getAvailableActions,
     matchShortcut,
     type ActionContext,
@@ -901,6 +902,8 @@
 
   // The fuzzy command palette (SPEC §7.3; issue #132).
   let paletteOpen = $state(false);
+  /** `ConfigBar`'s "model, thinking and mode" popover (issue #759's "Cycle model / effort" keyboard action) — `bind:popoverOpen` on the live `<ConfigBar>` below, so `actionHandlers.openConfigPopover` can open it the same way `handleTriggerClick` already does by mouse. */
+  let configBarPopoverOpen = $state(false);
   // Narrow-viewport permission footer (SPEC §7.3; issue #134) — a live
   // `matchMedia` read, client-only (see `viewport.ts`'s doc comment for why
   // it defaults `false` during SSR).
@@ -2031,10 +2034,19 @@
     client.interruptTurn(selectedSessionId);
   }
 
-  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
+  /** Computed once per component instance rather than reactively (issue #759) — see `keyboard.ts`'s `isDesktopShell`/`isMacPlatform` doc comments for why each is a plain function call, not a `$derived`: neither environment fact changes after the page loads, and a `$derived` would imply a live dependency neither function actually reads. */
+  const desktopShellActive = isDesktopShell();
+  const macPlatformActive = isMacPlatform();
+
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate (and, since #759, `shortcutFor`) reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
   const actionContext = $derived<ActionContext>({
     turnActive: turnIsActive,
     sessionCount: sessions.length,
+    sessionSelected: selectedSessionId !== undefined,
+    hasProjects: projects.length > 0,
+    hasConfigOptions: configOptions.length > 0,
+    desktopShell: desktopShellActive,
+    macPlatform: macPlatformActive,
   });
 
   /** Cycles `selectedSessionId` through `sessions` in its existing list order, wrapping — the handler behind the registry's `next-session`/`previous-session` actions (issue #758). No-ops with fewer than two sessions or nothing selected, which is also exactly when those two actions are unavailable, so this is never reached in a state where it would do nothing; kept defensive anyway since `isAvailable` and `run` are independent functions. */
@@ -2045,7 +2057,7 @@
     selectSession(sessions[(index + direction + sessions.length) % sessions.length].id);
   }
 
-  /** Wires each registry action's effect to this component's own state and the live `client` (issue #758) — the registry module itself stays a plain, framework-free array so `action-registry.test.ts` can exercise its predicates without mounting Svelte. */
+  /** Wires each registry action's effect to this component's own state and the live `client` (issue #758, extended by #759). The registry module itself stays a plain, framework-free array so `action-registry.test.ts` can exercise its predicates without mounting Svelte. */
   const actionHandlers: ActionHandlers = {
     stopTurn: stopSession,
     toggleSessionsSidebar: () => sessionsDock.toggle(),
@@ -2053,6 +2065,23 @@
     openNodes: () => openTargetStatus(),
     selectNextSession: () => selectAdjacentSession(1),
     selectPreviousSession: () => selectAdjacentSession(-1),
+    createSession: () => {
+      const project = projects[0];
+      if (project) openNewSessionDialogFor(project);
+    },
+    toggleWorkbenchPanel: toggleRightSidebar,
+    toggleTerminalDock,
+    focusComposer: () => composerTextarea?.focus(),
+    openSettings: () => (mainView = 'settings'),
+    openConfigPopover: () => {
+      // Narrow-viewport composer collapse (`configControlsExpanded`'s own
+      // doc comment): the trigger this opens isn't in the DOM at all below
+      // that gate, so expand it first — same order `ConfigBar`'s own click
+      // handler never has to think about, since a mouse can't click a
+      // trigger that isn't rendered either.
+      configControlsExpanded = true;
+      configBarPopoverOpen = true;
+    },
   };
 
   /** SPEC §7.3 "Keyboard & command palette" (issue #132) — a pure view over `actionRegistry` (issue #758): every entry whose `isAvailable` predicate accepts `actionContext` becomes a row, so the palette never lists something that would no-op if picked right now. */
@@ -2060,7 +2089,7 @@
     getAvailableActions(actionContext).map((action) => ({
       id: action.id,
       label: action.label,
-      shortcut: action.shortcut,
+      shortcut: effectiveShortcut(action, actionContext),
       run: () => action.run(actionHandlers),
     })),
   );
@@ -2513,7 +2542,29 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /** The global shortcut dispatcher (issue #132): Escape closes an open sidebar menu; Mod+K opens the palette from anywhere, including mid-typing — deliberately, so jumping sessions doesn't require clearing focus first; every other shortcut is matched against `actionRegistry` (issue #758) and gated by the same "not typing" guard the old ad hoc `Mod+.`/`Mod+B` checks used to apply by hand. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  /**
+   * The global shortcut dispatcher (issue #132): Escape closes an open
+   * sidebar menu; `Mod+K` opens the palette from anywhere, including
+   * mid-typing — deliberately, so jumping sessions doesn't require
+   * clearing focus first. Issue #759 (F2-3 rows 1-2) adds two more
+   * muscle-memory chords for the exact same open, both agreeing between
+   * Zed and VS Code on macOS: `Mod+Shift+P` (VS Code's "Command Palette")
+   * and `Mod+P` (VS Code's "Quick Open", flagged "verify: print dialog" in
+   * the artifact — evergreen browsers let a page's `keydown` handler
+   * `preventDefault()` the OS print dialog, unlike the `Mod+N`/
+   * `Mod+Alt+Right`/`Mod+Alt+Left` chords a browser reserves at chrome
+   * level, see `action-registry.ts`'s `new-session`/`next-session`/
+   * `previous-session` entries). Neither gets its own row inside the
+   * palette: loombox has one combined session-and-action list, not Zed/VS
+   * Code's separate quick-open/command-palette surfaces, so all three
+   * chords open the identical dialog `Mod+K` already does — there is no
+   * second capability for a row to represent, the same reason `Mod+K`
+   * itself has never been a registry entry. Every other shortcut is
+   * matched against `actionRegistry` (issue #758) and gated by the same
+   * "not typing" guard the old ad hoc `Mod+.`/`Mod+B` checks used to apply
+   * by hand. The palette itself owns Esc/Arrow/Enter once open
+   * (`CommandPalette.svelte`).
+   */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
     // menu has no business dimming the app), so Escape is handled here
@@ -2524,7 +2575,11 @@
       return;
     }
     if (paletteOpen) return;
-    if (isModShortcut(event, 'k')) {
+    if (
+      matchesShortcut(event, 'Mod+K') ||
+      matchesShortcut(event, 'Mod+Shift+P') ||
+      matchesShortcut(event, 'Mod+P')
+    ) {
       event.preventDefault();
       paletteOpen = true;
       return;
@@ -3917,6 +3972,7 @@
                             sources={configOptionSources}
                             onPinToProject={pinConfigOptionToProject}
                             onUnpinFromProject={unpinConfigOptionFromProject}
+                            bind:popoverOpen={configBarPopoverOpen}
                           />
                           <div class="composer-actions">
                             <!-- A3-2 (issue #666): one button in one slot —

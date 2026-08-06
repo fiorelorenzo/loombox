@@ -250,6 +250,13 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       return store;
     },
     attachmentsFor: () => makeStore([]),
+    /** Issue #759's Mod+J test is the first in this file to actually flip `terminalDock.open`, which mounts a real `InteractiveTerminal` (see that component's own doc comment) — every `client.*Terminal*` call it makes on mount/dispose needs a stub, mirroring the identical `runsFor`/`startRun`/`cancelRun`/`onRunOutput` shape a few lines down for `RunnerPanel`. */
+    terminalsFor: () => makeStore(new Map()),
+    openTerminal: vi.fn(() => 'terminal-fake'),
+    closeTerminal: vi.fn(),
+    sendTerminalInput: vi.fn(),
+    resizeTerminal: vi.fn(),
+    onTerminalOutput: vi.fn(() => () => {}),
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
@@ -268,13 +275,15 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
   };
 }
 
-/** jsdom implements neither `matchMedia` (viewport/reduced-motion reads), same stub `viewport.test.ts`/`accent.test.ts` already use. `matches: false` throughout means "wide viewport, no reduced motion", the desktop cockpit this suite exercises. */
+/** jsdom implements neither `matchMedia` (viewport/reduced-motion reads), same stub `viewport.test.ts`/`accent.test.ts` already use. `matches: false` throughout means "wide viewport, no reduced motion", the desktop cockpit this suite exercises. `addListener`/`removeListener` (the deprecated pre-`addEventListener` `MediaQueryList` methods) are stubbed too, issue #759's Mod+J test being the first in this file to actually open the terminal dock: `@xterm/xterm`'s `CoreBrowserService` still calls the legacy pair for its DPR-change listener and throws without them. */
 function stubMatchMedia(matches = false): void {
   const mql = {
     matches,
     media: '',
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
   };
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue(mql));
 }
@@ -1463,6 +1472,246 @@ describe('command palette: a view over the action registry (issue #758)', () => 
     const event = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// F2-3 (Zed-parity, issue #759): the full eighteen-row default binding
+// set, VS Code's keys where Zed and VS Code differ. `action-registry.
+// test.ts` covers each shortcut's resolution against `ActionContext` in
+// isolation; these exercise the real wiring end to end — a real
+// fake-client-backed cockpit, real `keydown` events on `window` — so a
+// regression in how `+page.svelte` wires a new `ActionHandlers` entry to
+// its own local state fails here even if the pure module's own tests
+// still pass.
+// ---------------------------------------------------------------------
+
+describe('default keyboard bindings, VS Code keys where Zed/VS Code differ (issue #759)', () => {
+  it('Mod+Alt+B toggles the workbench panel (right sidebar), reaching it from the keyboard for the first time', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    // Open by default (design spec §3.3): a session is selected and this
+    // suite's `stubMatchMedia(false)` reads as the wide viewport.
+    await screen.findByTestId('right-sidebar');
+
+    await fireEvent.keyDown(window, { key: 'b', code: 'KeyB', metaKey: true, altKey: true });
+    expect(screen.queryByTestId('right-sidebar')).toBeNull();
+
+    await fireEvent.keyDown(window, { key: 'b', code: 'KeyB', metaKey: true, altKey: true });
+    await screen.findByTestId('right-sidebar');
+  });
+
+  it('a plain Mod+B (no Alt) still only toggles the sessions column, never the workbench panel — the two chords share a letter and must not collide', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('right-sidebar');
+
+    await fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    await screen.findByTestId('right-sidebar');
+  });
+
+  it('Mod+J toggles the terminal dock, closed by default', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    const toggle = await screen.findByTestId('terminal-dock-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.keyDown(window, { key: 'j', metaKey: true });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+
+    await fireEvent.keyDown(window, { key: 'j', metaKey: true });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('Mod+I focuses the composer', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+    const composer = screen.getByLabelText('Follow-up prompt');
+    expect(document.activeElement).not.toBe(composer);
+
+    await fireEvent.keyDown(window, { key: 'i', metaKey: true });
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it('Mod+, opens Settings', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: ',', metaKey: true });
+    await screen.findByTestId('settings-nav');
+  });
+
+  it('Mod+Shift+A opens the attention inbox — its first real shortcut (issue #438\'s own "invisible to the palette" row, now bound)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
+    expect(screen.getByTestId('destination-inbox').className).toContain('active');
+  });
+
+  it('plain Mod+A does nothing — only Mod+Shift+A opens the inbox (the old "last `+` segment" parser this replaces could never have told these apart)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', { key: 'a', metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.getByTestId('destination-inbox').className).not.toContain('active');
+  });
+
+  it('Mod+Shift+M opens the model/effort popover once the session has config options', async () => {
+    const catalog: AcpConfigOption[] = [
+      { category: 'model', current: 'sonnet', choices: [{ id: 'sonnet', name: 'Sonnet' }] },
+    ];
+    mountCockpit({ sessions: [makeSession()], configOptions: { sess_1: catalog } });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'm', metaKey: true, shiftKey: true });
+    expect(screen.getByRole('dialog', { name: 'Model, thinking and mode' })).toBeTruthy();
+  });
+
+  it('Mod+Shift+M does nothing before the session has reported any config options — the row would otherwise open an empty trigger that is not even in the DOM', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'm',
+      metaKey: true,
+      shiftKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.queryByRole('dialog', { name: 'Model, thinking and mode' })).toBeNull();
+  });
+
+  it('"New session" is reachable via the palette even where its Mod+N binding cannot be safely claimed (a plain browser tab — see the platform-conditional describe below for where it does fire)', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    await screen.findByTestId('dialog');
+    expect(within(screen.getByRole('listbox')).getByText('New session')).toBeTruthy();
+  });
+});
+
+// The two rows the issue names explicitly as needing a defined,
+// per-platform behaviour rather than a silent inherited no-op: next/
+// previous session on Mod+Alt+Right/Left collide with a Windows/Linux
+// browser tab's own forward/back history navigation. `Mod+N` (new
+// session) inherits the same shape of risk from F2-2, just reserved on
+// every platform's browser rather than only two of three.
+describe('the two risk rows: next/previous session on Mod+Alt+Right/Left, and Mod+N, per platform (issue #759 F2-3)', () => {
+  afterEach(() => {
+    delete (window as unknown as { loombox?: unknown }).loombox;
+    Object.defineProperty(navigator, 'platform', { value: '', configurable: true });
+  });
+
+  function twoSessions() {
+    return mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+    });
+  }
+
+  it('Mod+Alt+Right does NOT fire on a plain Windows browser tab — the browser owns tab-history navigation there, and nothing here silently claims it', async () => {
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+    twoSessions();
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      ctrlKey: true,
+      altKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'First session',
+    );
+  });
+
+  it('on that same Windows browser tab, "Next session" stays reachable via the palette, with no shortcut hint shown next to it', async () => {
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+    twoSessions();
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    await screen.findByTestId('dialog');
+    const row = screen.getByText('Next session').closest('button');
+    expect(row?.textContent).not.toContain('Alt');
+
+    await fireEvent.click(screen.getByText('Next session'));
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+  });
+
+  it('Mod+Alt+Right fires on a macOS browser tab with no desktop shell — the collision is Windows/Linux-only', async () => {
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true });
+    twoSessions();
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      metaKey: true,
+      altKey: true,
+    });
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+  });
+
+  it('Mod+Alt+Right/Left both fire inside the desktop shell regardless of platform', async () => {
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+    (window as unknown as { loombox?: unknown }).loombox = {};
+    twoSessions();
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      ctrlKey: true,
+      altKey: true,
+    });
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'Second session',
+    );
+
+    await fireEvent.keyDown(window, {
+      key: 'ArrowLeft',
+      code: 'ArrowLeft',
+      ctrlKey: true,
+      altKey: true,
+    });
+    expect((await screen.findByTestId('cockpit-session-title')).textContent?.trim()).toBe(
+      'First session',
+    );
+  });
+
+  it('Mod+N does NOT fire on a Mac browser tab either — unlike the Alt-arrow rows, it is reserved by every browser on every platform, not just Windows/Linux', async () => {
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true });
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'n',
+      metaKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('Mod+N fires inside the desktop shell', async () => {
+    (window as unknown as { loombox?: unknown }).loombox = {};
+    mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'n', metaKey: true });
+    await screen.findByTestId('new-session-project-context');
   });
 });
 
