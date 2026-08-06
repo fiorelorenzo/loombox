@@ -128,6 +128,18 @@ export const sessionStatusEventV1 = z.object({
   kind: z.literal('session_status'),
   status: sessionStatusV1,
   updatedAt: z.string().min(1),
+  /**
+   * Set only alongside an `'error'` status the node wants the client to
+   * show VERBATIM rather than a generic "session failed" — today the one
+   * producer is a custom-agent allowlist refusal (issue #748's "a request
+   * to run a binary outside it is refused with a reason the client
+   * shows"), naming the disallowed command and where the allowlist lives.
+   * `undefined` for every other status transition and for an ordinary
+   * spawn failure with nothing more specific to add than "error" — this is
+   * additive, so an older peer's schema simply drops an unrecognized field
+   * rather than rejecting the whole envelope (mirrors `sessionStatusV1`'s
+   * own "enum widenings degrade, never crash" doc comment above).
+   */
   reason: z.string().min(1).optional(),
 });
 export type SessionStatusEventV1 = z.infer<typeof sessionStatusEventV1>;

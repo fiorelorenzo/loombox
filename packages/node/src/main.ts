@@ -246,6 +246,11 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     // target announces `providers: []`, which a client correctly reads as "no
     // agent CLI installed here" and refuses to create a session on.
     providerCandidates: [...DEFAULT_PROVIDER_REQUIREMENTS],
+    // D1-3's node-side security boundary for custom ACP agents (issue
+    // #748) — see `NodeCliConfig.customAgentAllowlist`'s own doc comment
+    // for the full "how it is edited" story; this is the only place that
+    // value ever reaches a running `NodeDaemon`.
+    customAgentAllowlist: config.customAgentAllowlist,
     // Issues #253/#269: on for every real node started this way (tests
     // build `NodeDaemon`/`createNode` directly and get the option's own
     // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s

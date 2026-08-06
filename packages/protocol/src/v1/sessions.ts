@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { customAgentRecordV1 } from './custom-agent';
 import { encryptedEnvelope } from './envelope';
 import { PROTOCOL_V1 } from './handshake';
 import { mcpServerConfigV1 } from './mcp-servers';
@@ -57,6 +58,19 @@ export const sessionPrivateMetaV1 = z.object({
    */
   worktree: z.boolean().optional(),
   /**
+   * D1-3's per-project custom agent (`docs/superpowers/specs/
+   * 2026-08-05-zed-parity-decisions.md` §4; issue #748), present only when
+   * `session_create`'s `provider` is the `'custom'` sentinel. Carried here,
+   * inside the SAME encrypted envelope as `title`/`projectPath` — never in
+   * the clear `sessionCreate.provider`/`sessionMetaPublic.provider` fields
+   * — so the record (a binary name, args, env) is opaque to the relay
+   * exactly like every other piece of session-private metadata. Optional
+   * for the same versioning reason `worktree` is: an older peer that has
+   * never heard of this field must keep parsing every other session
+   * unchanged rather than failing closed on it.
+   */
+  customAgent: customAgentRecordV1.optional(),
+  /**
    * This client's per-project, currently-enabled MCP server declarations
    * (issue #750, D2-2) — `apps/web`'s `mcp-server-store.ts`'s `localStorage`
    * list at the moment this session was created, forwarded so
@@ -77,8 +91,8 @@ export const sessionPrivateMetaV1 = z.object({
    * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746): the turn
    * (inclusive) the new session's copied transcript ends at. Absent on an
    * ordinary `session_create` — same "optional so an older peer keeps
-   * parsing every other field unchanged" rule `worktree` above already
-   * establishes.
+   * parsing every other field unchanged" rule `worktree`/`customAgent`
+   * above already establish.
    */
   forkFromTurnId: z.string().min(1).optional(),
 });
