@@ -43,6 +43,8 @@ import {
   parsePermissionPolicyViolationPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
+  parsePrOpenPreviewResultPayloadV1,
+  parsePrOpenResultPayloadV1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
   type AccountPinMapV1,
@@ -138,6 +140,11 @@ import {
   type TrackerWriteResponse,
   type TrackerWriteResponsePayloadV1,
   type TestRunnerKindV1,
+  type PrOpenOutcome,
+  type PrOpenPreviewOutcome,
+  type PrOpenPreviewResult,
+  type PrOpenRequestPayloadV1,
+  type PrOpenResult,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -193,6 +200,7 @@ export type {
   JiraConnectOutcome,
 } from '@loombox/protocol';
 export type { CustomAgentProbeResultV1, CustomAgentRecordV1 } from '@loombox/protocol';
+export type { PrOpenFailureCategory, PrOpenOutcome, PrOpenPreviewOutcome } from '@loombox/protocol';
 
 /**
  * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
@@ -1375,6 +1383,16 @@ export class RelayClient {
   private readonly pendingPermissionPolicyRequests = new Map<
     string,
     { resolve: (policy: PermissionPolicyV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link previewPrOpen} call it belongs to (SPEC §7.14; issue #238) — resolves with the whole outcome union (`'ok'` or `'failure'`) rather than throwing, since a `'failure'` outcome (no commits, gh missing/unauthenticated, ...) is an expected, renderable result, not a transport error; only a timeout/no-connection rejects. */
+  private readonly pendingPrOpenPreviewRequests = new Map<
+    string,
+    { resolve: (result: PrOpenPreviewOutcome) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link openPr} call it belongs to (SPEC §7.14; issue #238) — a separate map from {@link pendingPrOpenPreviewRequests} since its reply is `pr_open_result`, not `pr_open_preview_result`. Same "resolves the outcome union, never throws for a failure outcome" contract. */
+  private readonly pendingPrOpenRequests = new Map<
+    string,
+    { resolve: (result: PrOpenOutcome) => void; reject: (error: Error) => void }
   >();
   /** sessionId -> every listener registered via {@link onPermissionPolicyViolation}, fired with each decrypted `permission_policy_violation` as it arrives (SPEC §7.17; issue #751) — mirrors {@link terminalOutputListeners}, keyed by session alone since a violation isn't scoped to one terminal/run. */
   private readonly permissionPolicyViolationListeners = new Map<
@@ -2710,6 +2728,107 @@ export class RelayClient {
         })
         .catch((error: unknown) => {
           this.pendingPermissionPolicyRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Asks `sessionId`'s owning node what opening a pull request from this
+   * session's own branch would do (SPEC §7.14; issue #238) — never
+   * pushes, never creates anything itself. Resolves with the whole
+   * `pr_open_preview_result` outcome (`'ok'` with branch/base/commitCount,
+   * or `'failure'` with a named category — see `PrOpenFailureCategory`)
+   * rather than throwing for a `'failure'` outcome, since that is an
+   * expected, renderable result a caller's UI shows the operator, not a
+   * transport error; only a timeout/no-connection rejects.
+   */
+  previewPrOpen(sessionId: string, timeoutMs = 15_000): Promise<PrOpenPreviewOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot preview opening a pull request, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('propenpreview');
+    return new Promise<PrOpenPreviewOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPrOpenPreviewRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for pr_open_preview_result'));
+      }, timeoutMs);
+      this.pendingPrOpenPreviewRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'pr_open_preview_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Confirms opening a pull request from `sessionId`'s own branch (SPEC
+   * §7.14; issue #238) — the one call in this whole feature with a real
+   * side effect on the operator's actual repository: the owning node
+   * pushes the branch, then runs `gh pr create` with `title`/`body`
+   * verbatim. Send only after showing the operator a
+   * {@link previewPrOpen} result and getting their explicit confirmation
+   * (`PrOpenPanel.svelte`'s own gate) — this method itself sends
+   * unconditionally, whatever it is given. Resolves with the whole
+   * `pr_open_result` outcome, same "never throws for a `'failure'`
+   * outcome" contract as {@link previewPrOpen}.
+   */
+  openPr(
+    sessionId: string,
+    pr: { title: string; body: string },
+    timeoutMs = 30_000,
+  ): Promise<PrOpenOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot open a pull request, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('propen');
+    return new Promise<PrOpenOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPrOpenRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for pr_open_result'));
+      }, timeoutMs);
+      this.pendingPrOpenRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: PrOpenRequestPayloadV1 = { title: pr.title, body: pr.body };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'pr_open_request',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingPrOpenRequests.delete(requestId);
           clearTimeout(timer);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
@@ -4961,6 +5080,12 @@ export class RelayClient {
       case 'test_runner_config_detected':
         this.handleTestRunnerConfigDetected(message);
         return;
+      case 'pr_open_preview_result':
+        this.handlePrOpenPreviewResult(message);
+        return;
+      case 'pr_open_result':
+        this.handlePrOpenResult(message);
+        return;
       case 'target_list':
         this.handleTargetList(message);
         return;
@@ -5578,6 +5703,46 @@ export class RelayClient {
       .then((decrypted) =>
         pending.resolve(parseTestRunnerConfigDetectedPayloadV1(decrypted).suggestions),
       )
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link previewPrOpen} calls (SPEC §7.14; issue #238). Fanned out to
+   * every client subscribed to the session (mirrors
+   * `test_runner_config_detected`), so the same "requestId not pending
+   * means it isn't mine" guard as {@link handleTestRunnerConfigDetected}
+   * applies.
+   */
+  private handlePrOpenPreviewResult(message: PrOpenPreviewResult): void {
+    const pending = this.pendingPrOpenPreviewRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPrOpenPreviewRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePrOpenPreviewResultPayloadV1(decrypted).result))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link openPr}
+   * calls (SPEC §7.14; issue #238) — a separate map from
+   * {@link pendingPrOpenPreviewRequests} since the reply type differs;
+   * otherwise mirrors {@link handlePrOpenPreviewResult} exactly.
+   */
+  private handlePrOpenResult(message: PrOpenResult): void {
+    const pending = this.pendingPrOpenRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPrOpenRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePrOpenResultPayloadV1(decrypted).result))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });

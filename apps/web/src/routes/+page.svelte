@@ -145,6 +145,7 @@
   import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
+  import PrOpenPanel from '$lib/components/PrOpenPanel.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
@@ -297,7 +298,7 @@
    * `cockpit-shell.spec.ts` already click them there; they still work
    * clicking the same ids at this panel's new home.
    */
-  type WorkbenchTab = 'files' | 'config' | 'runner';
+  type WorkbenchTab = 'files' | 'config' | 'runner' | 'pr';
   const WORKBENCH_TABS: {
     id: WorkbenchTab;
     label: string;
@@ -320,6 +321,17 @@
       name: 'Test/lint/build runner',
       icon: 'check',
       testId: 'test-runner-toggle',
+    },
+    {
+      id: 'pr',
+      label: 'PR',
+      name: 'Open pull request',
+      // No dedicated pull-request glyph in the icon set yet (SPEC §7.14,
+      // issue #238) — 'fork' is the closest existing git-shaped stand-in
+      // (same "interim, natural follow-up" treatment `TodoWidget.svelte`
+      // already documents for its own borrowed icon).
+      icon: 'fork',
+      testId: 'pr-open-toggle',
     },
   ];
   /** Which of `WORKBENCH_TABS` the right sidebar's content area shows. Not persisted (unlike the sidebar's own open/size below): a fresh reload settling back on Files is the same "no surprise" default the old topbar switch gave, and nothing in the issue's acceptance asks for more. */
@@ -4382,6 +4394,15 @@
                 data-testid="test-runner-panel-wrapper"
               >
                 <RunnerPanel sessionId={selectedSessionId} {client} />
+              </div>
+            {/if}
+            {#if selectedSessionId}
+              <div
+                class="right-sidebar-panel-inner"
+                hidden={activeWorkbenchTab !== 'pr'}
+                data-testid="pr-open-panel-wrapper"
+              >
+                <PrOpenPanel sessionId={selectedSessionId} {client} />
               </div>
             {/if}
           </div>

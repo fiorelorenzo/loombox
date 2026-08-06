@@ -137,6 +137,12 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type PrOpenFailureCategory,
+  type PrOpenPreviewRequest,
+  type PrOpenPreviewResultPayloadV1,
+  type PrOpenRequest,
+  type PrOpenRequestPayloadV1,
+  type PrOpenResultPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -209,6 +215,7 @@ import {
 } from './session-manager';
 import { cutTranscriptAtTurn } from './session-fork';
 import { resolveSessionBranch } from './session-branch';
+import { openPr, previewPrOpen, PrOpenError } from './pr-open';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -3313,6 +3320,12 @@ export class NodeDaemon extends EventEmitter {
       case 'test_runner_config_detect':
         this.handleTestRunnerConfigDetect(message);
         return;
+      case 'pr_open_preview_request':
+        this.handlePrOpenPreviewRequest(message);
+        return;
+      case 'pr_open_request':
+        this.handlePrOpenRequest(message);
+        return;
       case 'run_start':
         this.handleRunStart(message);
         return;
@@ -6076,6 +6089,125 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'test_runner_config_detected',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** Maps a `pr-open.ts` rejection to `{ category, reason }` for `pr_open_preview_result`/`pr_open_result`'s own `outcome: 'failure'` shape — `PrOpenError`'s own named `category` passes straight through; anything else (an unexpected throw this module didn't anticipate) becomes `'create_failed'` with the raw message, so a caller here never has to handle a third, uncategorized shape. */
+  private prOpenFailureFrom(error: unknown): { category: PrOpenFailureCategory; reason: string } {
+    if (error instanceof PrOpenError) return { category: error.category, reason: error.message };
+    return {
+      category: 'create_failed',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  /**
+   * A client asked this node what opening a pull request from a session's
+   * own branch would do (SPEC §7.14; issue #238) — never pushes, never
+   * calls `gh pr create`, only checks `gh` availability/auth on the
+   * session's own target, resolves its branch (`resolveSessionBranch`,
+   * issue #738) and the repo's default base branch, and counts commits
+   * ahead, via `pr-open.ts`'s `previewPrOpen`. No envelope on the
+   * request, same reasoning as `test_runner_config_detect`. Ignored if
+   * `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard).
+   */
+  private handlePrOpenPreviewRequest(message: PrOpenPreviewRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.getExecutionTarget(routing.targetId, routing.session.projectPath)
+      .then((target) => previewPrOpen(target, routing.session))
+      .then(
+        (preview) => ({
+          outcome: 'ok' as const,
+          branch: preview.branch,
+          base: preview.base,
+          commitCount: preview.commitCount,
+        }),
+        (error: unknown) => ({ outcome: 'failure' as const, ...this.prOpenFailureFrom(error) }),
+      )
+      .then((result) =>
+        this.sendPrOpenPreviewResult(message.sessionId, message.requestId, { result }),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send pr_open_preview_result for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async sendPrOpenPreviewResult(
+    sessionId: string,
+    requestId: string,
+    payload: PrOpenPreviewResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'pr_open_preview_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client confirmed opening a pull request from a session's own branch
+   * (SPEC §7.14; issue #238) — sent only after the client already showed
+   * the operator a `pr_open_preview_result` and the operator typed a
+   * title/body and explicitly confirmed; this is the one message in the
+   * whole feature with a real side effect on the operator's actual
+   * repository (`pr-open.ts`'s `openPr`: pushes the branch, then `gh pr
+   * create`). `openPr` re-verifies the same preview fresh right before
+   * acting rather than trusting this client's now-possibly-stale one.
+   * Title/body travel encrypted (user-composed text, never agent-drafted
+   * here — that's #233). Ignored if `sessionId` isn't one of this node's
+   * sessions at all ({@link resolveSessionRouting}'s guard).
+   */
+  private handlePrOpenRequest(message: PrOpenRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptPrOpenRequest(message)
+      .then((payload) =>
+        this.getExecutionTarget(routing.targetId, routing.session.projectPath).then((target) =>
+          openPr(target, routing.session, payload),
+        ),
+      )
+      .then(
+        (opened) => ({ outcome: 'ok' as const, url: opened.url, number: opened.number }),
+        (error: unknown) => ({ outcome: 'failure' as const, ...this.prOpenFailureFrom(error) }),
+      )
+      .then((result) => this.sendPrOpenResult(message.sessionId, message.requestId, { result }))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle pr_open_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptPrOpenRequest(message: PrOpenRequest): Promise<PrOpenRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<PrOpenRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendPrOpenResult(
+    sessionId: string,
+    requestId: string,
+    payload: PrOpenResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'pr_open_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
