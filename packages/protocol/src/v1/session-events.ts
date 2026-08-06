@@ -295,6 +295,64 @@ export const mcpServerStatusEventV1 = z.object({
 });
 export type McpServerStatusEventV1 = z.infer<typeof mcpServerStatusEventV1>;
 
+/**
+ * One argument an MCP prompt declared (MCP's own `PromptArgument` shape,
+ * unrelated to ACP's `AvailableCommand.input.hint` display string —
+ * `mcpServerPromptV1` below is the loombox wire mirror of MCP's
+ * `prompts/list` result, not of anything ACP itself carries). `required`
+ * is only ever a hint for `mcp_prompt_get_request`'s own best-effort
+ * argument-name mapping (`@loombox/providers-core`'s
+ * `AcpAvailableCommand.mcpArguments` doc comment) — the node never
+ * enforces it client-side; a missing required argument surfaces as the
+ * MCP server's own rejection, folded into `mcp_prompt_get_response`'s
+ * `outcome: 'error'`.
+ */
+export const mcpServerPromptArgumentV1 = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+});
+export type McpServerPromptArgumentV1 = z.infer<typeof mcpServerPromptArgumentV1>;
+
+/** One prompt one MCP server declared via `prompts/list` — name, description and argument schema, verbatim; never the rendered content itself (that's `prompts/get`, fetched live per-selection through `mcp_prompt_get_request`). */
+export const mcpServerPromptV1 = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  arguments: z.array(mcpServerPromptArgumentV1).optional(),
+});
+export type McpServerPromptV1 = z.infer<typeof mcpServerPromptV1>;
+
+/** One MCP server's declared prompt catalogue, keyed by that server's own name (the same `name` `mcpServerStatusEntryV1` reports against). */
+export const mcpServerPromptsEntryV1 = z.object({
+  name: z.string().min(1),
+  prompts: z.array(mcpServerPromptV1),
+});
+export type McpServerPromptsEntryV1 = z.infer<typeof mcpServerPromptsEntryV1>;
+
+/**
+ * Pushed once per session, right alongside `mcp_server_status` (Zed-parity
+ * decision D5-2, issue #754), after this session's launched MCP servers'
+ * own `prompts/list` has actually been read — the node's independent MCP
+ * connection for this, not anything the connected agent forwards (a real
+ * `omp acp` binary, hand-verified against this issue's own PR, seeds
+ * `available_commands_update` with only its own built-in commands and
+ * never connects an `mcp_prompt_get`-declaring server on its own — see
+ * that PR's verification section). Same "only ever the interesting half"
+ * convention `mcp_server_status` already established, just inverted: only
+ * a server that both started AND declared at least one prompt is listed
+ * here — a server with no prompts contributes nothing (not an empty
+ * entry), and a server this session's `mcp_server_status` already named as
+ * failed is never attempted a second time for its prompts either. Never
+ * sent at all when the resulting `servers` list would be empty, mirroring
+ * `mcp_server_status`'s own empty-list short circuit.
+ */
+export const mcpServerPromptsEventV1 = z.object({
+  kind: z.literal('mcp_server_prompts'),
+  servers: z.array(mcpServerPromptsEntryV1),
+  updatedAt: z.string().min(1),
+});
+export type McpServerPromptsEventV1 = z.infer<typeof mcpServerPromptsEventV1>;
+
 /** The full set of session-lifecycle payloads that can ride inside one `session_update` envelope's plaintext, discriminated on `kind`. */
 export const sessionLifecycleEventV1 = z.discriminatedUnion('kind', [
   sessionStatusEventV1,
@@ -304,6 +362,7 @@ export const sessionLifecycleEventV1 = z.discriminatedUnion('kind', [
   turnStartedEventV1,
   turnEndedEventV1,
   mcpServerStatusEventV1,
+  mcpServerPromptsEventV1,
 ]);
 export type SessionLifecycleEventV1 = z.infer<typeof sessionLifecycleEventV1>;
 
