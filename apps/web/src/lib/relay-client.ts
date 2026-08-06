@@ -92,6 +92,11 @@ import {
   type FsReadRequestPayloadV1,
   type FsReadResponse,
   type FsReadResponsePayloadV1,
+  type GitCommitDraftResponse,
+  type GitCommitDraftResponsePayloadV1,
+  type GitCommitRequestPayloadV1,
+  type GitCommitResponse,
+  type GitCommitResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
   type GitHunkActionRequestPayloadV1,
@@ -1442,6 +1447,30 @@ export class RelayClient {
       resolve: (payload: GitHunkActionResponsePayloadV1) => void;
       reject: (error: Error) => void;
     }
+  >();
+  /**
+   * requestId -> the pending {@link requestGitCommitDraft} call it
+   * belongs to (issue #233's commit workflow) — the exact same shape as
+   * {@link pendingGitHunkDiffRequests} above (envelope-less request,
+   * one-shot). `git_commit_draft_response` is fanned out the same way,
+   * so a requestId not in this map means the reply belongs to a sibling
+   * device's own request.
+   */
+  private readonly pendingGitCommitDraftRequests = new Map<
+    string,
+    { resolve: (payload: GitCommitDraftResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link commitStaged} call it belongs to
+   * (issue #233) — the exact same shape as {@link
+   * pendingGitHunkActionRequests} above (enveloped, one-shot).
+   * `git_commit_response` is fanned out the same way, so a requestId not
+   * in this map means the reply belongs to a sibling device's own
+   * request.
+   */
+  private readonly pendingGitCommitRequests = new Map<
+    string,
+    { resolve: (payload: GitCommitResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
@@ -4531,6 +4560,114 @@ export class RelayClient {
   }
 
   /**
+   * Drafts a commit message for the session's currently staged diff
+   * (SPEC §7.6; issue #233) — generated node-side by prompting the
+   * session's own live agent (`@loombox/protocol`'s `git-commit.ts` own
+   * doc comment explains why, never a separate provider call), so this
+   * can fail for reasons {@link requestGitHunkDiff} never has to
+   * consider: no live agent for this session, or nothing staged to draft
+   * from — both reported as the node's own `outcome: 'error'`, resolved
+   * (not rejected) exactly like every other `outcome`-carrying reply.
+   * The draft is purely advisory: nothing is committed until an explicit
+   * {@link commitStaged} call. No `path`/envelope on the request itself
+   * (asking carries no content, mirrors {@link requestGitHunkDiff}); the
+   * reply is real session content, so it travels sealed.
+   */
+  async requestGitCommitDraft(
+    sessionId: string,
+    timeoutMs = 60_000,
+  ): Promise<GitCommitDraftResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a commit draft, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('gitcommitdraft');
+    return new Promise<GitCommitDraftResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitCommitDraftRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_commit_draft_response'));
+      }, timeoutMs);
+      this.pendingGitCommitDraftRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_commit_draft_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Commits whatever is currently staged, with `message` (SPEC §7.6;
+   * issue #233) — {@link applyGitHunkAction}'s own sibling in shape (an
+   * enveloped request, since the commit message is real session
+   * content), but the one call in this file with a real, unrecoverable-
+   * by-undo side effect on the operator's actual repository. Called only
+   * from an explicit confirm (`CommitDialog.svelte`'s own file doc
+   * comment) — a draft from {@link requestGitCommitDraft}, accepted
+   * verbatim or edited first, never sent automatically. Resolves with
+   * the node's own `ok`/`error` outcome either way (an empty index or an
+   * empty message both come back as a clear `outcome: 'error'`, never a
+   * silent no-op or a thrown exception); only REJECTS for a genuinely
+   * unusable call — no open connection, an unknown session, or a
+   * timeout with no response at all — mirroring {@link
+   * applyGitHunkAction}'s identical contract.
+   */
+  async commitStaged(
+    sessionId: string,
+    params: { message: string },
+    timeoutMs = 10_000,
+  ): Promise<GitCommitResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot commit, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitCommitRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitcommit');
+    return new Promise<GitCommitResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitCommitRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_commit_response'));
+      }, timeoutMs);
+      this.pendingGitCommitRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_commit_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -5765,6 +5902,12 @@ export class RelayClient {
       case 'git_hunk_action_response':
         this.handleGitHunkActionResponse(message);
         return;
+      case 'git_commit_draft_response':
+        this.handleGitCommitDraftResponse(message);
+        return;
+      case 'git_commit_response':
+        this.handleGitCommitResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -6264,6 +6407,60 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<GitHunkActionResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * requestGitCommitDraft} calls (issue #233). `git_commit_draft_response`
+   * is fanned out to every client subscribed to the session exactly like
+   * `git_hunk_diff_response`, so a `requestId` not in {@link
+   * pendingGitCommitDraftRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleGitHunkDiffResponse}'s identical sibling-device awareness.
+   */
+  private handleGitCommitDraftResponse(message: GitCommitDraftResponse): void {
+    const pending = this.pendingGitCommitDraftRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitCommitDraftRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitCommitDraftResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * commitStaged} calls (issue #233). `git_commit_response` is fanned
+   * out to every client subscribed to the session exactly like
+   * `git_hunk_action_response`, so a `requestId` not in {@link
+   * pendingGitCommitRequests} means this reply is to a sibling device's
+   * own request — silently ignored, exactly like {@link
+   * handleGitHunkActionResponse}'s identical sibling-device awareness.
+   */
+  private handleGitCommitResponse(message: GitCommitResponse): void {
+    const pending = this.pendingGitCommitRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitCommitRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitCommitResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

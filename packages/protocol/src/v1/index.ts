@@ -320,6 +320,29 @@ export {
 } from './git-hunks';
 
 export type {
+  GitCommitDraftRequest,
+  GitCommitDraftResponse,
+  GitCommitDraftResponsePayloadV1,
+  GitCommitRequest,
+  GitCommitRequestPayloadV1,
+  GitCommitResponse,
+  GitCommitResponsePayloadV1,
+} from './git-commit';
+export {
+  gitCommitDraftRequest,
+  gitCommitDraftResponse,
+  gitCommitRequest,
+  gitCommitRequestPayloadV1,
+  gitCommitResponse,
+  parseGitCommitDraftResponsePayloadV1,
+  parseGitCommitRequestPayloadV1,
+  parseGitCommitResponsePayloadV1,
+  safeParseGitCommitDraftResponsePayloadV1,
+  safeParseGitCommitRequestPayloadV1,
+  safeParseGitCommitResponsePayloadV1,
+} from './git-commit';
+
+export type {
   McpPromptGetErrorV1,
   McpPromptGetRequest,
   McpPromptGetRequestPayloadV1,

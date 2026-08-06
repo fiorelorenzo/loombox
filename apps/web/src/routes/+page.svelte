@@ -121,6 +121,7 @@
   import CanvasZeroState from '$lib/components/CanvasZeroState.svelte';
   import CheckpointsDialog from '$lib/components/CheckpointsDialog.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
+  import CommitDialog from '$lib/components/CommitDialog.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import DiscardHunkDialog from '$lib/components/DiscardHunkDialog.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
@@ -516,6 +517,8 @@
     undefined,
   );
   let discardHunkOpen = $state(false);
+  /** `CommitDialog` (SPEC §7.6; issue #233) — reachable only from the worktree diff tab's own staging surface "Commit staged changes" button, always for `selectedSessionId` (unlike `discardingHunk`/`prOpenSession` above, this needs no session snapshot of its own to survive the dialog's exit transition: the diff tab that opens it only exists for the currently selected session). */
+  let commitDialogOpen = $state(false);
   /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
   let renamingProjectId = $state<string | undefined>(undefined);
   /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
@@ -2365,6 +2368,21 @@
 
   /** `DiscardHunkDialog`'s own `onDiscarded` — fired after its own `applyGitHunkAction` call already succeeded, so this only re-fetches both surfaces, mirroring {@link applyHunkAction}'s own post-action refresh. */
   function handleHunkDiscarded(): void {
+    void loadHunkDiff();
+    void loadWorktreeDiff();
+  }
+
+  /** Opens `CommitDialog` for the working-tree diff tab's staging surface (SPEC §7.6; issue #233) — `openDiscardHunkDialog`'s sibling in shape, but nothing to snapshot beyond the flag itself: the dialog reads `selectedSessionId` directly (see `commitDialogOpen`'s own doc comment). */
+  function openCommitDialog(): void {
+    commitDialogOpen = true;
+  }
+
+  function closeCommitDialog(): void {
+    commitDialogOpen = false;
+  }
+
+  /** `CommitDialog`'s own `onCommitted` — fired after its own `commitStaged` call already succeeded, so this only re-fetches both surfaces, mirroring {@link handleHunkDiscarded}'s identical post-action refresh: the staged content that dialog just committed is now gone from the index. */
+  function handleCommitted(): void {
     void loadHunkDiff();
     void loadWorktreeDiff();
   }
@@ -4523,6 +4541,7 @@
                 onStageHunk={stageHunk}
                 onUnstageHunk={unstageHunk}
                 onDiscardHunk={openDiscardHunkDialog}
+                onOpenCommit={openCommitDialog}
                 onOpenFile={openFileTab}
               />
             {/if}
@@ -4890,6 +4909,16 @@
     hunk={discardingHunk.hunk}
     onClose={closeDiscardHunkDialog}
     onDiscarded={handleHunkDiscarded}
+  />
+{/if}
+
+{#if commitDialogOpen && selectedSessionId}
+  <CommitDialog
+    open={commitDialogOpen}
+    sessionId={selectedSessionId}
+    {client}
+    onClose={closeCommitDialog}
+    onCommitted={handleCommitted}
   />
 {/if}
 
