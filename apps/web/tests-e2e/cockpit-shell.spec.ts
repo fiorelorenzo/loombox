@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import {
   announceSession,
   expect,
@@ -9,6 +9,18 @@ import {
   type LoomboxFixture,
 } from './fixtures';
 import { randomBase64 } from './harness/relay-harness';
+
+/**
+ * The shape `Locator.boundingBox()` resolves to. Playwright does not export
+ * a name for it, and this file needs one to type the settled-measurement
+ * helper below without reaching into the method's own return type.
+ */
+interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 /**
  * Navigates to the app and waits for the cockpit to actually be up: this
@@ -305,10 +317,47 @@ test.describe('cockpit shell', () => {
     // symmetric inline padding — measuring against it directly, rather
     // than the viewport, is what actually proves the grid (not a
     // coincidence of this suite's own symmetric chrome).
+    //
+    // Measured through `settledBox`, not `boundingBox`, because
+    // `setViewportSize` returns before the resulting layout has settled
+    // (issue #765): this assertion read a mid-reflow `.topbar` 352px wide
+    // while its own grid columns already summed to the settled 736px, and
+    // reported the switch 192px off centre on a layout that was, once
+    // still, exactly centred. Waiting for two identical frames measures
+    // the layout the user actually sees.
+    const settledBox = async (locator: Locator): Promise<BoundingBox | null> => {
+      let previous = await locator.boundingBox();
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await page.evaluate(async () => {
+          const settled = Promise.withResolvers<void>();
+          requestAnimationFrame(() => requestAnimationFrame(() => settled.resolve()));
+          await settled.promise;
+        });
+        const current = await locator.boundingBox();
+        if (
+          previous &&
+          current &&
+          previous.x === current.x &&
+          previous.width === current.width &&
+          previous.y === current.y &&
+          previous.height === current.height
+        ) {
+          return current;
+        }
+        previous = current;
+      }
+      return previous;
+    };
+
     const centreDelta = async (): Promise<number> => {
-      const topbarBox = await page.locator('.topbar').boundingBox();
-      const switchBox = await page.getByTestId('topbar-view-switch').boundingBox();
+      const topbarBox = await settledBox(page.locator('.topbar'));
+      const switchBox = await settledBox(page.getByTestId('topbar-view-switch'));
       if (!topbarBox || !switchBox) throw new Error('.topbar or the switch is not measurable');
+      // A sanity check on the measurement itself, so a future mid-reflow
+      // read fails as "measured the wrong thing" rather than as a centring
+      // regression: the topbar spans the window minus the sidebar, so it
+      // can never be narrower than the switch plus both flanks.
+      expect(topbarBox.width).toBeGreaterThan(switchBox.width * 2);
       const topbarCentre = topbarBox.x + topbarBox.width / 2;
       const switchCentre = switchBox.x + switchBox.width / 2;
       return Math.abs(switchCentre - topbarCentre);

@@ -381,15 +381,16 @@ export async function highlightMarkdownToHtml(source: string): Promise<string | 
  * *safe* to fully parse as Markdown (issue #574's central streaming
  * decision — see the design spec §3.4 and the PR for the measurement).
  *
- * `MessageItem`'s `TextPacer` reveals `displayText` a few characters at a
- * time on a 32ms tick; re-running the full parse+sanitize+highlight
- * pipeline on the whole message every tick does not hold up on a long,
- * code-heavy turn. This function is the cheap part of the fix: a linear
- * scan (no parsing) that finds the last point at which every block opened
- * so far has also closed, so the caller (`MessageItem`) only needs to
- * re-run `renderMarkdownToHtml` when `stable` itself actually grows, not on
- * every tick — most ticks move the boundary inside `tailText` instead,
- * which is a plain string, not a re-parse.
+ * `MessageItem` renders `item.text` exactly as it arrives, straight off the
+ * wire (issue #757 — no pacing, no reveal ticks); re-running the full
+ * parse+sanitize+highlight pipeline on the whole message on every chunk
+ * arrival does not hold up on a long, code-heavy turn. This function is the
+ * cheap part of the fix: a linear scan (no parsing) that finds the last
+ * point at which every block opened so far has also closed, so the caller
+ * (`MessageItem`) only needs to re-run `renderMarkdownToHtml` when `stable`
+ * itself actually grows, not on every arrival — most chunks move the
+ * boundary inside `tailText` instead, which is a plain string, not a
+ * re-parse.
  *
  * A position is safe once every block that started before it has also
  * ended before it:
@@ -414,8 +415,8 @@ export async function highlightMarkdownToHtml(source: string): Promise<string | 
  *   case).
  *
  * `finalized` is `MessageItem`'s `!turnActive` — the real `turn_ended`
- * signal `TextPacer.flush` already keys off. Once a turn is over nothing
- * more is coming, so the entire text is treated as stable regardless of a
+ * signal. Once a turn is over nothing more is coming, so the entire text
+ * is treated as stable regardless of a
  * trailing partial block or an unterminated fence (CommonMark itself
  * defines an unclosed fence as implicitly closing at end of document, so
  * `renderMarkdownToHtml` handles that correctly on its own).
