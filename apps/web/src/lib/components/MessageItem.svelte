@@ -87,16 +87,24 @@
    * as every other icon-only control in this app.
    *
    * B2-1 also turned `expanded` from local, per-instance state into one
-   * global preference (`$lib/expand-thoughts.ts`'s `expandThoughtsStore`,
-   * shaped like `$lib/accent.ts`'s own store): a single `localStorage`
-   * boolean, read once and applied to every thought in every session,
-   * defaulting to expanded (Lorenzo's own ask — "di default espanso").
-   * `displayExpanded` below ORs that preference with `thinking`: a thought
-   * that is currently producing text stays visible regardless of the
-   * resting preference, closing the collapsed-container collision this
-   * decision calls out by name with issue #660 (a thought streaming into
-   * a collapsed container is why #660's own fake stayed green for
-   * months — see this file's tests for the reverted-fix proof).
+   * global preference (`$lib/expand-thoughts.ts`'s `expandThoughtsStore`).
+   * Issue #745 (design spec `2026-08-05-zed-parity-decisions.md` §3,
+   * decision C4-2) extends that from a boolean to three values —
+   * `'collapsed'`, `'expanded'`, `'automatic'` (the default) — without
+   * reversing it: still one global mode, read once and applied to every
+   * thought in every session. `modeDefaultExpanded` below computes each
+   * mode's own baseline: always false, always true, or (automatic) exactly
+   * `thinking` itself — expanded while the thought is producing text,
+   * collapsed to one line the instant real message content starts
+   * arriving for that turn, which is `thinking`'s own definition already.
+   * `manualExpandOverride` layers a per-thought escape hatch on top: a
+   * click always sets it, and once set it wins over the mode's baseline
+   * for the rest of this component's lifetime (i.e. until a new turn
+   * mounts a new thought with a fresh id). This is what keeps automatic
+   * mode from reintroducing issue #661 — a thought expanded by hand stays
+   * expanded for that thought straight through its own settle transition —
+   * without turning the mode itself back into per-component state, since
+   * the override sets no default for any other, future thought.
    */
   import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
@@ -242,17 +250,27 @@
     role === 'user' ? 'You' : (providerId && PROVIDER_LABELS[providerId]?.role) || 'Agent',
   );
 
-  // B2-1 (design spec `2026-08-05-cockpit-v8-decisions.md` §2, issue #709):
-  // one global boolean, applied to every thought — replaces the old
-  // per-instance `let expanded = $state(false)`. `thinking` overrides it
-  // one-directionally: a thought that is *currently producing text* must
-  // stay visible no matter what the resting preference says (the #660
-  // collision this decision calls out by name — a thought streaming into
-  // a collapsed container is why #660's fake stayed green for months).
-  // The instant `thinking` flips false this collapses right back to
-  // whatever the shared preference is, same as every other thought.
-  const expandThoughtsPreference = expandThoughtsStore.expanded;
-  const displayExpanded = $derived($expandThoughtsPreference || thinking);
+  // C4-2 (design spec `2026-08-05-zed-parity-decisions.md` §3, issue
+  // #745): three named modes rather than v8's B2-1 boolean.
+  // `modeDefaultExpanded` is each mode's own baseline with no per-thought
+  // input at all — `'expanded'`/`'collapsed'` are constants, `'automatic'`
+  // is exactly `thinking` (expanded while producing, collapsed the moment
+  // real content starts, which is `thinking` flipping false). A manual
+  // click always sets `manualExpandOverride`, which then wins over that
+  // baseline for as long as this component instance stays mounted — the
+  // per-thought memory issue #661 asks for without turning the mode back
+  // into per-component state: a new turn mounts a new `MessageItem` with a
+  // fresh id, so the override never leaks onto a thought nobody clicked.
+  const thoughtDisplayMode = expandThoughtsStore.mode;
+  let manualExpandOverride: boolean | undefined = $state(undefined);
+  const modeDefaultExpanded = $derived(
+    $thoughtDisplayMode === 'expanded'
+      ? true
+      : $thoughtDisplayMode === 'collapsed'
+        ? false
+        : thinking,
+  );
+  const displayExpanded = $derived(manualExpandOverride ?? modeDefaultExpanded);
 
   // The ticking header (issue #136): `elapsedSeconds` only ever advances
   // while `thinking` is true; it freezes at whatever it last reached the
@@ -307,7 +325,7 @@
             class="expand"
             aria-expanded={displayExpanded}
             aria-label={displayExpanded ? 'Collapse thought' : 'Expand thought'}
-            onclick={() => expandThoughtsStore.toggle()}
+            onclick={() => (manualExpandOverride = !displayExpanded)}
           >
             <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
           </button>

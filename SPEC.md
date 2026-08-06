@@ -687,10 +687,13 @@ across providers rather than needing a bespoke per-provider transcript format.
   `agent_thought_chunk` is streaming (ticking timer from first chunk), settling
   to a static "Thought for Ns" the instant real message content starts arriving
   for that turn — reasoning never blocks or delays the answer rendering behind
-  it. Collapsed by default once done, expandable on tap; visually muted/
-  de-emphasized from assistant text. Scope transcript-item ids by turn + kind,
-  not raw `messageId` alone, since a provider may reuse ids across a thought
-  and a message within the same turn.
+  it. A global display preference, three states: always collapsed, always
+  expanded, or automatic (the default) — expanded while producing text,
+  collapsed to one line the instant real content starts, and a thought a user
+  expands by hand stays expanded for that thought regardless. Expandable on
+  tap either way; visually muted/de-emphasized from assistant text. Scope
+  transcript-item ids by turn + kind, not raw `messageId` alone, since a
+  provider may reuse ids across a thought and a message within the same turn.
 - **Streaming mechanics.** Decouple chunk arrival from render/animation rate (a
   small smoothing buffer) so a fast, low-latency agent doesn't cause per-frame
   jank; keep item ids stable across ticks so a virtualized transcript never

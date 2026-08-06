@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
-import { DEFAULT_EXPAND_THOUGHTS, expandThoughtsStore } from '$lib/expand-thoughts';
+import { DEFAULT_THOUGHT_DISPLAY_MODE, expandThoughtsStore } from '$lib/expand-thoughts';
 import MessageItem from './MessageItem.svelte';
 
 afterEach(() => {
@@ -13,7 +14,7 @@ afterEach(() => {
   // toggle click can't bleed into the next test's "default" assumption
   // (same pattern as `theme.test.ts`/`accent.test.ts` for their own
   // module-level stores).
-  expandThoughtsStore.setExpanded(DEFAULT_EXPAND_THOUGHTS);
+  expandThoughtsStore.setMode(DEFAULT_THOUGHT_DISPLAY_MODE);
   localStorage.clear();
 });
 
@@ -48,19 +49,20 @@ describe('MessageItem', () => {
     expect(screen.getByText('You')).toBeTruthy();
   });
 
-  it('expands a thought by default and collapses on tap (B2-1: "di default espanso", issue #709)', async () => {
+  it('starts collapsed by default for a settled thought under the automatic default, and expands on tap (C4-2, issue #745)', async () => {
     render(MessageItem, {
       props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
     });
     // A thought is still the agent speaking (the accessible label doesn't
     // gain a third value) — "Thought for" already carries the aside itself.
     expect(screen.getByText('Agent')).toBeTruthy();
-    // The shared preference starts expanded, so the body is already
-    // visible with no click at all.
-    expect(screen.getByText('secret reasoning')).toBeTruthy();
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Collapse thought' }));
+    // No `thinking` passed (settled/replayed) and the default mode is
+    // 'automatic': collapsed the moment real content starts, which for an
+    // item that never streamed in this component's lifetime is immediate.
     expect(screen.queryByText('secret reasoning')).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Expand thought' }));
+    expect(screen.getByText('secret reasoning')).toBeTruthy();
   });
 
   it('has a working copy affordance', () => {
@@ -70,7 +72,10 @@ describe('MessageItem', () => {
 
   it("draws the thought disclosure chevron via the shared Icon component (#468), decorative behind the button's own aria-label", () => {
     render(MessageItem, {
-      props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
+      props: {
+        item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }),
+        thinking: true,
+      },
     });
     // Icon-only since B2-1 (issue #709) moved the visible label above the
     // thought — the button's `aria-label` carries the name now, not text
@@ -134,8 +139,8 @@ describe('MessageItem: thinking/reasoning display (#136)', () => {
     expect(screen.getByTestId('thinking-timer').textContent).toBe(settled);
   });
 
-  it('thought content follows an explicitly-collapsed preference post-turn and expands on tap (B2-1, issue #709)', async () => {
-    expandThoughtsStore.setExpanded(false);
+  it('thought content follows an explicitly-collapsed mode post-turn and expands on tap (C4-2, issue #745)', async () => {
+    expandThoughtsStore.setMode('collapsed');
     render(MessageItem, {
       props: {
         item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }),
@@ -282,13 +287,16 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
 
   it('B2-1: the disclosure toggle carries no visible text — the label moved above the thought, the accessible name lives in aria-label alone', () => {
     render(MessageItem, {
-      props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }) },
+      props: {
+        item: messageItem({ kind: 'agent_thought_chunk', text: 'secret reasoning' }),
+        thinking: true,
+      },
     });
     const button = screen.getByRole('button', { name: 'Collapse thought' });
     expect(button.textContent?.trim()).toBe('');
   });
 
-  it('B2-1: one global switch — toggling the preference from ANY thought flips every currently-mounted thought, not just the one clicked', async () => {
+  it('C4-2: the mode is one global preference — changing it applies to every currently-mounted thought, not just one (issue #745)', async () => {
     render(MessageItem, {
       props: { item: messageItem({ id: 'a', kind: 'agent_thought_chunk', text: 'first thought' }) },
     });
@@ -302,32 +310,49 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
       },
     });
 
-    // Both start expanded (the shared default).
-    expect(screen.getByText('first thought')).toBeTruthy();
-    expect(screen.getByText('second thought')).toBeTruthy();
-
-    // Collapsing the FIRST thought's own toggle collapses the second one
-    // too — proof it's one shared boolean, not two independent instances
-    // of the old per-component `$state(false)`.
-    const [firstToggle] = screen.getAllByRole('button', { name: 'Collapse thought' });
-    await fireEvent.click(firstToggle);
+    // Both settled, automatic default: both start collapsed.
     expect(screen.queryByText('first thought')).toBeNull();
     expect(screen.queryByText('second thought')).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Expand thought' })).toHaveLength(2);
+
+    // Setting the mode from the store — not clicking a thought's own
+    // toggle — is what "one global preference" means now; it reaches
+    // every mounted thought at once.
+    expandThoughtsStore.setMode('expanded');
+    await tick();
+    expect(screen.getByText('first thought')).toBeTruthy();
+    expect(screen.getByText('second thought')).toBeTruthy();
   });
 
-  it('B2-1 x #660: a thought that is currently producing text stays visible and keeps growing even while the resting preference is collapsed', async () => {
-    expandThoughtsStore.setExpanded(false);
+  it('C4-2 x #661: a manual click is scoped to the thought it was clicked on — it does not bleed into a different, independently-mounted thought', async () => {
+    render(MessageItem, {
+      props: { item: messageItem({ id: 'a', kind: 'agent_thought_chunk', text: 'first thought' }) },
+    });
+    render(MessageItem, {
+      props: {
+        item: messageItem({ id: 'b', kind: 'agent_thought_chunk', text: 'second thought' }),
+      },
+    });
+
+    // Both collapsed under the automatic default; expanding the first by
+    // hand must not also reveal the second — proof the override is a
+    // per-component escape hatch, not a rename of the old shared boolean.
+    const [firstToggle] = screen.getAllByRole('button', { name: 'Expand thought' });
+    await fireEvent.click(firstToggle);
+    expect(screen.getByText('first thought')).toBeTruthy();
+    expect(screen.queryByText('second thought')).toBeNull();
+  });
+
+  it('C4-2 x #660: under automatic (the default), a thought producing text stays visible and keeps growing, then collapses back once real content settles', async () => {
     vi.useFakeTimers();
     const item = messageItem({ kind: 'agent_thought_chunk', text: '' });
     const { getByTestId, queryByTestId, rerender } = render(MessageItem, {
       props: { item, thinking: true, turnActive: true },
     });
 
-    // Collapsed preference, but actively thinking: the body must already
-    // be in the DOM with no click — this is the exact collapsed-container
-    // collision #660 names (a thought streaming into a collapsed
-    // container is why #660's own fake stayed green for months).
+    // Automatic, actively thinking: the body must already be in the DOM
+    // with no click — this is the exact collapsed-container collision
+    // #660 names (a thought streaming into a collapsed container is why
+    // #660's own fake stayed green for months).
     expect(queryByTestId('thought-body')).toBeTruthy();
 
     const full = 'reasoning about the empty-table edge case in some detail';
@@ -338,11 +363,35 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
     expect(midway.length).toBeLessThan(full.length);
     expect(full.startsWith(midway)).toBe(true);
 
-    // Once thinking ends the override is one-directional: it collapses
-    // right back to the still-collapsed shared preference, same as every
-    // other thought.
+    // Once thinking ends, automatic collapses right back — "collapses to
+    // one line the moment real content starts" is C4-2's own wording.
     await rerender({ item: { ...item, text: full }, thinking: false, turnActive: false });
     expect(queryByTestId('thought-body')).toBeNull();
+  });
+
+  it("C4-2: 'collapsed' is stricter than automatic — it never shows the body, even while the thought is actively producing text", () => {
+    expandThoughtsStore.setMode('collapsed');
+    render(MessageItem, {
+      props: {
+        item: messageItem({ kind: 'agent_thought_chunk', text: 'reasoning so far' }),
+        thinking: true,
+        turnActive: true,
+      },
+    });
+    expect(screen.queryByTestId('thought-body')).toBeNull();
+    // 'collapsed' only ever suppresses the thought's own text — the header
+    // still shows real-time activity through the timer and woven-thread
+    // motif, same as every other mode.
+    expect(screen.getByTestId('thinking-timer')).toBeTruthy();
+    expect(screen.getByTestId('woven-loader')).toBeTruthy();
+  });
+
+  it("C4-2: 'expanded' always shows the body, streaming or settled", () => {
+    expandThoughtsStore.setMode('expanded');
+    render(MessageItem, {
+      props: { item: messageItem({ kind: 'agent_thought_chunk', text: 'settled reasoning' }) },
+    });
+    expect(screen.getByTestId('thought-body').textContent).toBe('settled reasoning');
   });
 });
 
@@ -442,9 +491,14 @@ describe('MessageItem: Markdown rendering (issue #574)', () => {
 
   it('renders thought bodies through the same Markdown pipeline as messages', () => {
     render(MessageItem, {
-      props: { item: messageItem({ kind: 'agent_thought_chunk', text: '- one\n- two' }) },
+      props: {
+        item: messageItem({ kind: 'agent_thought_chunk', text: '- one\n- two' }),
+        thinking: true,
+      },
     });
-    // Expanded by default (B2-1) — no click needed to reach the body.
+    // thinking: true keeps it visible under the automatic default (C4-2,
+    // issue #745) — this test is about the Markdown pipeline, not the
+    // display mode itself.
     const body = screen.getByTestId('thought-body');
     expect(body.querySelectorAll('li').length).toBe(2);
   });
