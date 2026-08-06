@@ -39,6 +39,7 @@
   import CopyButton from '../CopyButton.svelte';
   import TerminalOutput from '../TerminalOutput.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallMeta from '../ToolCallMeta.svelte';
   import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
   import ToolCard from './ToolCard.svelte';
@@ -72,6 +73,7 @@
     <div class="header-line">
       {#snippet headerContent()}
         <code class="title">$ {command}</code>
+        <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
         <ToolCallStatus status={item.status} />
       {/snippet}
       {#if locked}

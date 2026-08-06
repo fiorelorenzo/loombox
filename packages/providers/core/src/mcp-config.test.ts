@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   McpServerConfigError,
+  mergeMcpServerConfigLists,
   parseMcpServerConfig,
   parseMcpServerConfigList,
   requiredSecrets,
@@ -203,5 +204,28 @@ describe('resolveEffectiveMcpServers: global + project override (issue #187)', (
     };
     const effective = resolveEffectiveMcpServers([globalG1], [projectG1]);
     expect(effective).toEqual([projectG1.config]);
+  });
+});
+
+describe('mergeMcpServerConfigLists (issue #750, D2-2)', () => {
+  function config(name: string, command = `/bin/${name}`): McpServerConfig {
+    return { name, transport: 'stdio', command, args: [], env: [] };
+  }
+
+  it('unions two disjoint lists, primary first', () => {
+    const merged = mergeMcpServerConfigLists([config('a')], [config('b')]);
+    expect(merged.map((c) => c.name)).toEqual(['a', 'b']);
+  });
+
+  it("primary's record wins outright on a name collision, never the secondary's", () => {
+    const primaryA = config('a', '/node/a');
+    const secondaryA = config('a', '/client/a');
+    const merged = mergeMcpServerConfigLists([primaryA], [secondaryA]);
+    expect(merged).toEqual([primaryA]);
+  });
+
+  it('returns the other list untouched when one side is empty', () => {
+    expect(mergeMcpServerConfigLists([], [config('a')])).toEqual([config('a')]);
+    expect(mergeMcpServerConfigLists([config('a')], [])).toEqual([config('a')]);
   });
 });

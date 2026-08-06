@@ -40,6 +40,7 @@
   import { isTodoInput } from '$lib/tool-widgets';
   import CopyButton from '../CopyButton.svelte';
   import ToolCallGutter from '../ToolCallGutter.svelte';
+  import ToolCallMeta from '../ToolCallMeta.svelte';
   import ToolCallStatus from '../ToolCallStatus.svelte';
   import Icon from '../icons/Icon.svelte';
   import ToolCard from './ToolCard.svelte';
@@ -79,6 +80,7 @@
             ><span class="font-mono">{doneCount}/{todos.length}</span> done</span
           >
         {/if}
+        <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
         <ToolCallStatus status={item.status} />
       {/snippet}
       {#if locked}

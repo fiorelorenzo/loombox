@@ -52,6 +52,9 @@ export type {
   AcpAvailableCommandsUpdateEvent,
   AcpConfigOptionsEvent,
   AcpConfigOptionUpdateEvent,
+  AcpMcpServerFailureCategory,
+  AcpMcpServerStatusEntry,
+  AcpMcpServerStatusEvent,
   AcpSessionLifecycleEvent,
   AcpSessionStatus,
   AcpSessionStatusEvent,
@@ -140,6 +143,7 @@ export type {
 // (SPEC.md §7.7; issue #187).
 export {
   McpServerConfigError,
+  mergeMcpServerConfigLists,
   parseMcpServerConfig,
   parseMcpServerConfigList,
   requiredSecrets,

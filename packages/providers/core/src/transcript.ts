@@ -2,6 +2,7 @@ import type {
   AcpAvailableCommand,
   AcpConfigOption,
   AcpDiff,
+  AcpMcpServerStatusEntry,
   AcpMessageChunkKind,
   AcpMessageChunkUpdate,
   AcpPlanEntry,
@@ -48,6 +49,63 @@ export interface TranscriptToolCallItem {
   content: unknown;
   /** Promoted from a vendor `_meta` field by a provider's `enrich()` hook (SPEC.md §5.5); marks a nested/subagent tool call. */
   parentToolCallId: string | undefined;
+  /**
+   * Client-side wall-clock ms (`Date.now()`, or the injected `now` a test
+   * passes to `reduceTranscript`/`reduceToolCall`) at the moment this item
+   * was created — but ONLY from a real `tool_call` that wasn't already
+   * terminal on arrival, never from a `tool_call_update` (issue #744: ACP
+   * carries no timestamp field at all, so this is the one honest signal
+   * "this client watched the call start" — a `tool_call_update` creating a
+   * new row means the id was never seen before, e.g. a client that
+   * attached mid-session, and a `tool_call` that's already `completed`/
+   * `failed` on its very first sighting is a resumed session's history
+   * replaying an already-finished call as one snapshot with nothing to
+   * time). `undefined` here permanently forecloses `elapsedMs` for this
+   * item — see that field.
+   */
+  startedAtMs: number | undefined;
+  /**
+   * `now - startedAtMs`, frozen the moment a LATER `tool_call_update`
+   * first carries a terminal status (`completed`/`failed`); `undefined`
+   * while still running AND whenever `startedAtMs` is `undefined` — a call
+   * whose true start this client never observed shows no duration rather
+   * than a wrong one (issue #744's resumed-session acceptance bullet).
+   * Never recomputed once set.
+   */
+  elapsedMs: number | undefined;
+  /**
+   * Internal bookkeeping only — NOT for display, see `attributedCostUsd`.
+   * `state.cumulativeCostUsd` at the instant this item started, captured
+   * only when it was the sole top-level (`parentToolCallId === undefined`)
+   * call already `pending`/`in_progress` (i.e. nothing else in this
+   * session could also have been the source of a later cost increase).
+   */
+  costAtStartUsd: number | undefined;
+  /**
+   * THE CLIENT-SIDE ATTRIBUTION HEURISTIC (issue #744 / decisions doc
+   * C3-3): ACP's `usage_update` carries no `toolCallId` at all (SPEC.md
+   * §1656) — there is no real per-tool-call cost on the wire, only a
+   * session-level running total (`TranscriptState.cumulativeCostUsd`). So
+   * this is the delta of that total between this call's start and its
+   * terminal update, shown ONLY when the attribution is honest:
+   *   1. `costAtStartUsd` was captured (this call was the sole active
+   *      top-level call when it started — see that field), AND
+   *   2. no OTHER top-level call was `pending`/`in_progress` at the
+   *      instant this one settled (checked in `reduceToolCall`), AND
+   *   3. the total actually grew (`> 0`) since start — a session with no
+   *      cost reporting at all leaves both snapshots at `0`, and a `0`
+   *      delta is treated the same as "nothing to attribute," never
+   *      surfaced as a fabricated `$0.00`.
+   * Any other case — a nested/subagent call (excluded outright, since its
+   * spend is indistinguishable from its parent's on this same total), a
+   * call that overlapped a sibling, or one whose start was never observed
+   * — leaves this `undefined`. Best-effort like `UsageRecord.
+   * attributedToSubagent`: two top-level calls that both happen to be
+   * solo at their own start/end instants but overlapped in the middle can
+   * still double-attribute the same spend — there is no protocol-level fix
+   * for that without a real per-call cost field.
+   */
+  attributedCostUsd: number | undefined;
 }
 
 export type TranscriptItem = TranscriptMessageItem | TranscriptToolCallItem;
@@ -136,6 +194,8 @@ export interface TranscriptState {
   turnActive: boolean;
   /** The `stopReason` of the most recently settled turn, if any `turn_ended` event carried one. */
   lastStopReason: string | undefined;
+  /** The latest `mcp_server_status` push's server list, if any has arrived yet (SPEC.md §7.7/§7.17; issue #750) — always the full set that event carried (replaced wholesale, never merged/accumulated across pushes), and only ever the servers that failed to start; `undefined` until the first push, `[]` is a genuinely valid "every configured server started fine" push, not "no push yet". */
+  mcpServerStatuses: AcpMcpServerStatusEntry[] | undefined;
 }
 
 /** The empty starting state for a session's transcript. */
@@ -152,6 +212,7 @@ export function createTranscriptState(): TranscriptState {
     commands: [],
     turnActive: false,
     lastStopReason: undefined,
+    mcpServerStatuses: undefined,
   };
 }
 
@@ -184,7 +245,32 @@ function reduceMessageChunk(
   return { ...state, items };
 }
 
-function reduceToolCall(state: TranscriptState, update: AcpToolCallUpdate): TranscriptState {
+/**
+ * True when some OTHER top-level (no `parentToolCallId`) tool-call item is
+ * currently `pending`/`in_progress`, excluding `excludeId` — the "is
+ * anything else in this session that could also be the source of a cost
+ * change right now" check `attributedCostUsd` gates on both at a call's
+ * start and at its terminal update (see `TranscriptToolCallItem`'s own doc
+ * comment).
+ */
+function hasOtherActiveTopLevelCall(
+  items: readonly TranscriptItem[],
+  excludeId: string | undefined,
+): boolean {
+  return items.some(
+    (item) =>
+      item.type === 'tool_call' &&
+      item.id !== excludeId &&
+      item.parentToolCallId === undefined &&
+      (item.status === 'pending' || item.status === 'in_progress'),
+  );
+}
+
+function reduceToolCall(
+  state: TranscriptState,
+  update: AcpToolCallUpdate,
+  now: number,
+): TranscriptState {
   // `update.id` is typed `string`, but the wire cast that produces an
   // `AcpSessionWireEvent` (`apps/web/src/lib/relay-client.ts`'s
   // `openJson<AcpSessionWireEvent>`) never validates it, so a malformed
@@ -200,6 +286,16 @@ function reduceToolCall(state: TranscriptState, update: AcpToolCallUpdate): Tran
 
   const items = state.items.slice();
   if (index === -1) {
+    // See `TranscriptToolCallItem.startedAtMs`'s doc comment: only a
+    // `tool_call` that isn't already terminal on arrival counts as a real,
+    // timeable start.
+    const isRealStart =
+      update.kind === 'tool_call' && update.status !== 'completed' && update.status !== 'failed';
+    const startedAtMs = isRealStart ? now : undefined;
+    const solo =
+      isRealStart &&
+      update.parentToolCallId === undefined &&
+      !hasOtherActiveTopLevelCall(state.items, update.id);
     const item: TranscriptToolCallItem = {
       type: 'tool_call',
       id: update.id,
@@ -211,6 +307,10 @@ function reduceToolCall(state: TranscriptState, update: AcpToolCallUpdate): Tran
       rawInput: update.rawInput,
       content: update.content,
       parentToolCallId: update.parentToolCallId,
+      startedAtMs,
+      elapsedMs: undefined,
+      costAtStartUsd: solo ? state.cumulativeCostUsd : undefined,
+      attributedCostUsd: undefined,
     };
     items.push(item);
   } else {
@@ -218,16 +318,36 @@ function reduceToolCall(state: TranscriptState, update: AcpToolCallUpdate): Tran
     // update didn't resend (e.g. a status-only flip omitting `diff`) must
     // not clobber what was already recorded (SPEC.md §7.24).
     const existing = items[index] as TranscriptToolCallItem;
+    const nextStatus = update.status ?? existing.status;
+    const becameTerminal =
+      existing.status !== 'completed' &&
+      existing.status !== 'failed' &&
+      (nextStatus === 'completed' || nextStatus === 'failed');
+
+    const elapsedMs =
+      becameTerminal && existing.startedAtMs !== undefined
+        ? now - existing.startedAtMs
+        : existing.elapsedMs;
+
+    let attributedCostUsd = existing.attributedCostUsd;
+    if (becameTerminal && existing.costAtStartUsd !== undefined) {
+      const soloThroughout = !hasOtherActiveTopLevelCall(state.items, existing.id);
+      const delta = state.cumulativeCostUsd - existing.costAtStartUsd;
+      if (soloThroughout && delta > 0) attributedCostUsd = delta;
+    }
+
     items[index] = {
       ...existing,
       turnId: update.turnId ?? existing.turnId,
       title: update.title ?? existing.title,
       toolKind: update.toolKind ?? existing.toolKind,
-      status: update.status ?? existing.status,
+      status: nextStatus,
       diff: update.diff ?? existing.diff,
       rawInput: update.rawInput ?? existing.rawInput,
       content: update.content ?? existing.content,
       parentToolCallId: update.parentToolCallId ?? existing.parentToolCallId,
+      elapsedMs,
+      attributedCostUsd,
     };
   }
   return { ...state, items };
@@ -294,10 +414,17 @@ function reduceUsage(state: TranscriptState, update: AcpUsageUpdate): Transcript
  * Reduce one ACP v1 update into a new `TranscriptState`. Never mutates
  * `state`; a late listener that kept a reference to the old state still sees
  * the pre-update value (SPEC.md §7.24).
+ *
+ * `now` defaults to `Date.now()` — a real client never passes it. Tests
+ * override it for a deterministic `TranscriptToolCallItem.startedAtMs`/
+ * `elapsedMs` (issue #744), the same "inject the clock rather than mock the
+ * global" convention `packages/providers/core/src/permission-queue-state.ts`
+ * already uses for `enqueuedAt`.
  */
 export function reduceTranscript(
   state: TranscriptState,
   update: AcpTranscriptUpdate,
+  now: number = Date.now(),
 ): TranscriptState {
   switch (update.kind) {
     case 'user_message_chunk':
@@ -306,7 +433,7 @@ export function reduceTranscript(
       return reduceMessageChunk(state, update);
     case 'tool_call':
     case 'tool_call_update':
-      return reduceToolCall(state, update);
+      return reduceToolCall(state, update, now);
     case 'plan_update':
       return reducePlan(state, update);
     case 'usage_update':
@@ -317,16 +444,19 @@ export function reduceTranscript(
 /**
  * Reduce one {@link AcpSessionWireEvent} into a new `TranscriptState` — the
  * wider reducer entry point for everything that can travel inside a
- * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149),
- * additive to {@link reduceTranscript}: every ACP transcript-reducer update
- * kind delegates straight through to it unchanged, and the six
+ * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149,
+ * #750), additive to {@link reduceTranscript}: every ACP transcript-reducer
+ * update kind delegates straight through to it unchanged, and the seven
  * session-lifecycle kinds are folded into the new `status`/`configOptions`/
- * `commands`/`turnActive`/`lastStopReason` fields instead. Never mutates
- * `state`, same contract as `reduceTranscript`.
+ * `commands`/`turnActive`/`lastStopReason`/`mcpServerStatuses` fields
+ * instead. Never mutates `state`, same contract as `reduceTranscript`.
+ * `now` (see `reduceTranscript`'s own doc comment) passes straight through
+ * for the five transcript-update kinds it delegates.
  */
 export function reduceSessionEvent(
   state: TranscriptState,
   event: AcpSessionWireEvent,
+  now: number = Date.now(),
 ): TranscriptState {
   switch (event.kind) {
     case 'user_message_chunk':
@@ -336,7 +466,7 @@ export function reduceSessionEvent(
     case 'tool_call_update':
     case 'plan_update':
     case 'usage_update':
-      return reduceTranscript(state, event);
+      return reduceTranscript(state, event, now);
     case 'session_status':
       return {
         ...state,
@@ -356,6 +486,8 @@ export function reduceSessionEvent(
       return { ...state, turnActive: true };
     case 'turn_ended':
       return { ...state, turnActive: false, lastStopReason: event.stopReason };
+    case 'mcp_server_status':
+      return { ...state, mcpServerStatuses: event.servers.map((server) => ({ ...server })) };
   }
 }
 
