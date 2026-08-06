@@ -85,7 +85,6 @@
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
-  import MessageItem from '$lib/components/MessageItem.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
   import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
@@ -108,7 +107,7 @@
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
-  import ToolCallRow from '$lib/components/ToolCallRow.svelte';
+  import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -672,26 +671,6 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
-  /**
-   * The transcript's scroll container, and whether it is currently following
-   * the newest output (issue #508).
-   *
-   * It never did. `.items` scrolls, but nothing ever moved `scrollTop`, so a
-   * live session streamed its newest tool calls and messages in *below the
-   * fold* and left the list pinned at the very first frame — measured at
-   * `scrollTop: 0` with 140px of unseen content on the audit transcript.
-   * What you saw at the boundary was a diff sliced through the middle of its
-   * glyphs with no scrollbar and no bottom border, which is why #508 was
-   * filed as a rendering fault: the cut was real, "there is more below" was
-   * the part never communicated.
-   *
-   * Following is conditional on purpose. Yanking the view back down while
-   * someone is reading earlier output is the other half of this bug, so
-   * scrolling up detaches, {@link jumpToLatest} (and switching session)
-   * re-attaches, and the button only exists while detached.
-   */
-  let transcriptList = $state<HTMLElement | undefined>(undefined);
-  let followingTranscript = $state(true);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   let attachments = $state<ComposerAttachment[]>([]);
@@ -1230,9 +1209,6 @@
     unsubscribeStaleNotice?.();
     unsubscribeFileTree?.();
     transcript = undefined;
-    // Opening a session shows its newest output, never wherever the previous
-    // one happened to be scrolled to (issue #508).
-    followingTranscript = true;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     attachments = [];
@@ -2192,46 +2168,6 @@
     notificationPreferences = preferences;
     syncNotificationPreferencesToServiceWorker();
   }
-
-  /**
-   * How far off the bottom still counts as "following" (issue #508). A
-   * couple of lines of slack, because sub-pixel rounding and a growing last
-   * item routinely leave `scrollTop` a hair short of the exact bottom, and
-   * detaching on that would make the button flicker on every streamed chunk.
-   */
-  const FOLLOW_TRANSCRIPT_SLACK_PX = 48;
-
-  function distanceFromTranscriptBottom(el: HTMLElement): number {
-    return el.scrollHeight - el.scrollTop - el.clientHeight;
-  }
-
-  function onTranscriptScroll(event: Event): void {
-    const el = event.currentTarget as HTMLElement;
-    followingTranscript = distanceFromTranscriptBottom(el) <= FOLLOW_TRANSCRIPT_SLACK_PX;
-  }
-
-  function jumpToLatest(): void {
-    followingTranscript = true;
-    transcriptList?.scrollTo({ top: transcriptList.scrollHeight, behavior: 'smooth' });
-  }
-
-  /**
-   * Follows the newest output while attached (issue #508).
-   *
-   * Keyed on `transcript` itself rather than on `items.length`: the reducer
-   * returns a fresh state object for every update, and a streaming text
-   * chunk grows the *last existing* item rather than appending a new one, so
-   * a length-keyed effect would sit still through exactly the case that
-   * needs it most. Runs after the DOM is updated, which is what makes
-   * reading the just-grown `scrollHeight` correct.
-   */
-  $effect(() => {
-    void transcript;
-    if (!followingTranscript) return;
-    const el = transcriptList;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  });
 
   /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
@@ -3430,48 +3366,14 @@
               {/snippet}
             </EmptyState>
           {:else}
-            <ol
-              class="items"
-              bind:this={transcriptList}
-              onscroll={onTranscriptScroll}
-              data-testid="transcript-items"
-            >
-              {#each transcript?.items ?? [] as item, itemIndex (item.id)}
-                <li
-                  class:tool-call-compact={item.type === 'tool_call' &&
-                    transcript?.items?.[itemIndex - 1]?.type === 'tool_call'}
-                >
-                  {#if item.type === 'message'}
-                    <MessageItem
-                      {item}
-                      thinking={item.kind === 'agent_thought_chunk' && transcript
-                        ? isThoughtStillThinking(transcript, item.turnId)
-                        : false}
-                      turnActive={transcript?.turnActive ?? false}
-                      providerId={selectedSession?.provider}
-                    />
-                  {:else}
-                    <ToolCallRow
-                      {item}
-                      awaitingPermission={permissionHead !== undefined &&
-                        permissionHead.toolCall.id === item.id}
-                    />
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-
-            {#if !followingTranscript}
-              <button
-                type="button"
-                class="jump-latest"
-                onclick={jumpToLatest}
-                data-testid="transcript-jump-latest"
-              >
-                <Icon name="chevron-down" size="100%" />
-                Jump to latest
-              </button>
-            {/if}
+            <TranscriptTimeline
+              sessionKey={selectedSessionId}
+              items={transcript?.items ?? []}
+              {transcript}
+              turnActive={transcript?.turnActive ?? false}
+              providerId={selectedSession?.provider}
+              {permissionHead}
+            />
 
             <div class="canvas-footer">
               <!-- A3-2 (issue #666): the turn's own live line, not a
@@ -5166,67 +5068,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  /* A readable measure (spec §3.4 / defect C3): transcript prose used to
-     run the full 1440-1920px canvas, ~150 characters a line. Code, diffs
-     and terminal output opt into `--measure-wide` from their own
-     components. */
-  .items {
-    flex: 1;
-    width: 100%;
-    max-width: var(--measure);
-    margin-inline: auto;
-    overflow-y: auto;
-    list-style: none;
-    padding: 0;
-    margin-block: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  /* C3-2 (v7 decisions §3, issue #668): consecutive tool calls read as one
-     compact list, not N separately-spaced turns — this `<li>` sits
-     directly under another tool-call `<li>` (see the loop's own
-     `class:tool-call-compact`), so it pulls up against `.items`' own
-     `--space-sm` flex gap, leaving a tight `--space-3xs` list rhythm
-     instead. The first call in a run (or a lone one) keeps the full gap,
-     same as any other turn boundary. */
-  .items li.tool-call-compact {
-    margin-top: calc(var(--space-3xs) - var(--space-sm));
-  }
-
-  /* The "there is more below" affordance #508 asked for. Sits between the
-     scrolling transcript and the pinned footer, so it reads as the edge of
-     the scroll region rather than as another transcript item, and it exists
-     only while detached — a permanent control here would be one more thing
-     to ignore. */
-  .jump-latest {
-    align-self: center;
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    margin-top: calc(var(--space-sm) * -1);
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-full);
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-sm);
-    color: var(--color-text-secondary);
-    font-size: var(--text-caption-size);
-    cursor: pointer;
-  }
-
-  .jump-latest :global(svg) {
-    width: 0.85em;
-    height: 0.85em;
-  }
-
-  .jump-latest:hover {
-    color: var(--color-text-primary);
-    border-color: var(--color-border-strong);
   }
 
   /* Everything below the transcript - the live plan, queued prompts, the
