@@ -105,6 +105,7 @@ import {
   agentProfileSessionSet,
 } from './agent-profile';
 import { spendCapGet, spendCapResult, spendCapSet, sessionSpendCapResume } from './spend-cap';
+import { spendReportRequest, spendReportResponse } from './spend-report';
 import {
   accountPinGetRequest,
   accountPinResolveRequest,
@@ -253,6 +254,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   spendCapSet,
   spendCapResult,
   sessionSpendCapResume,
+  spendReportRequest,
+  spendReportResponse,
   checkpointCreate,
   checkpointResult,
   checkpointList,

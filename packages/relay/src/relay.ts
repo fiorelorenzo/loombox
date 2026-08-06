@@ -1700,7 +1700,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'account_pin_resolve_response':
       case 'tracker_mode_response':
       case 'tracker_snapshot_response':
-      case 'tracker_write_response': {
+      case 'tracker_write_response':
+      case 'spend_report_response': {
         // #230/#631/#697: every other single-shot connect/pin/tracker-mode/
         // tracker-record reply — delivered to the requesting client and the
         // routing entry retired, exactly like `target_update_response` above.
@@ -2165,7 +2166,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'tracker_mode_get_request':
       case 'tracker_mode_set_request':
       case 'tracker_snapshot_request':
-      case 'tracker_write_request': {
+      case 'tracker_write_request':
+      case 'spend_report_request': {
         // #230/#631/#697: every SPEC §7.26 connect/disconnect/pin request,
         // SPEC §7.10's tracker-mode get/set (issue #631), and (as of #697)
         // the tracker-record snapshot/write requests, share one routing
