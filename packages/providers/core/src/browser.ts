@@ -48,6 +48,7 @@ export type {
 } from './types';
 export {
   ancestorChainForToolCall,
+  computeToolCallNesting,
   CONTEXT_NEAR_LIMIT_THRESHOLD,
   createTranscriptState,
   reduceResyncGap,
@@ -55,6 +56,7 @@ export {
   reduceTranscript,
 } from './transcript';
 export type {
+  ToolCallNesting,
   TranscriptGapItem,
   TranscriptItem,
   TranscriptMessageItem,
@@ -67,6 +69,10 @@ export type {
   AcpConfigOptionsEvent,
   AcpConfigOptionUpdateEvent,
   AcpMcpServerFailureCategory,
+  AcpMcpServerPrompt,
+  AcpMcpServerPromptArgument,
+  AcpMcpServerPromptsEntry,
+  AcpMcpServerPromptsEvent,
   AcpMcpServerStatusEntry,
   AcpMcpServerStatusEvent,
   AcpSessionLifecycleEvent,

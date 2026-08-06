@@ -164,6 +164,23 @@ const MCP_FAILING_FIXTURE = path.join(
   'mcp-failing-acp-agent.mjs',
 );
 
+// Zed-parity D5-2 (issue #754): a real MCP stdio server declaring prompts,
+// reused from `@loombox/providers-core`'s own `mcp-prompt-client.test.ts`
+// fixture rather than duplicated — see that fixture's own doc comment for
+// its exact `prompts/list`/`prompts/get` contract (a zero-argument
+// `greet` and a one-required/one-optional-argument `translate`, or `[]`
+// when `MCP_FIXTURE_NO_PROMPTS=1` is set).
+const MCP_PROMPT_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'mcp-prompt-fixture-server.mjs',
+);
+
 function failingMcpProvider(): AcpProvider {
   return {
     id: 'test-mcp-failing',
@@ -437,8 +454,8 @@ interface DecryptedSessionEvent {
   reason?: string;
   options?: unknown[];
   commands?: unknown[];
-  /** `mcp_server_status`'s own payload field (issue #750, D2-2). */
-  servers?: { name: string; ok: boolean; category?: string; reason?: string }[];
+  /** `mcp_server_status`'s own payload field (issue #750, D2-2; `disabled` added issue #794). */
+  servers?: { name: string; ok: boolean; category?: string; reason?: string; disabled?: boolean }[];
 }
 
 /**
@@ -3953,7 +3970,7 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
     ]);
   });
 
-  it("auto-disables an MCP server in this node's own McpConfigStore after three consecutive failures to start", async () => {
+  it("auto-disables an MCP server in this node's own McpConfigStore after three consecutive failures to start, and marks only the disabling attempt's mcp_server_status entry disabled: true (issues #750, #794)", async () => {
     const amk = generateAmk();
     const accountId = 'acct-mcp-auto-disable';
 
@@ -3979,18 +3996,200 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
       mcpConfigStore,
     });
 
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-auto-disable',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+
+    // One phone subscribes to each session's own id in turn (a fresh
+    // `sessionId` per `createSession` call, so a `resync_request` for one
+    // never picks up another's events) and reads back its lone
+    // `mcp_server_status` push.
+    async function statusForSession(sessionId: string): Promise<DecryptedSessionEvent['servers']> {
+      const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+      phone!.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        sinceSeq: 0,
+      });
+      const [event] = await waitForDecryptedKinds(phone!, sessionId, key, ['mcp_server_status'], 1);
+      return event?.servers;
+    }
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+      const session = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
       // Still enabled — only three consecutive failures auto-disable it.
       expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
         true,
       );
+      // Not yet the third failure — no `disabled` flag on the wire.
+      expect(await statusForSession(session.id)).toEqual([
+        {
+          name: 'bad-binary',
+          ok: false,
+          category: 'missing_binary',
+          reason: expect.stringContaining('Executable not found') as unknown as string,
+        },
+      ]);
     }
-    await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+
+    const finalSession = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
     expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
       false,
     );
+    // The third, disabling failure carries `disabled: true` (issue #794) —
+    // this is the exact push a client's Config panel renders as
+    // "auto-disabled" rather than a plain "failed to start".
+    expect(await statusForSession(finalSession.id)).toEqual([
+      {
+        name: 'bad-binary',
+        ok: false,
+        category: 'missing_binary',
+        reason: expect.stringContaining('Executable not found') as unknown as string,
+        disabled: true,
+      },
+    ]);
   });
+
+  it("discovers a real launched MCP server's own declared prompts, attributed to that server, with a no-prompts server and an unreachable server both leaving the rest of the list working — then renders a selected prompt with its argument over mcp_prompt_get_request/response (Zed-parity D5-2, issue #754)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-prompts';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-prompts',
+      deviceId: 'device-node-mcp-prompts',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({
+      projectPath,
+      provider: 'test-echo',
+      mcpServerConfigs: [
+        {
+          name: 'prompt-server',
+          transport: 'stdio',
+          command: process.execPath,
+          args: [MCP_PROMPT_FIXTURE],
+          env: [],
+        },
+        {
+          name: 'empty-server',
+          transport: 'stdio',
+          command: process.execPath,
+          args: [MCP_PROMPT_FIXTURE],
+          env: [{ name: 'MCP_FIXTURE_NO_PROMPTS', value: '1' }],
+        },
+        {
+          name: 'unreachable',
+          transport: 'stdio',
+          command: 'this-binary-does-not-exist',
+          args: [],
+          env: [],
+        },
+      ],
+    });
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-prompts',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const [promptsEvent] = await waitForDecryptedKinds(
+      phone,
+      session.id,
+      key,
+      ['mcp_server_prompts'],
+      1,
+    );
+    // Only prompt-server is listed: empty-server declared none, and the
+    // unreachable server never breaks this — both are simply absent, not
+    // errors (acceptance: "a server with no prompts adds nothing... an
+    // unreachable server does not break the list for the others").
+    expect(promptsEvent!.servers).toEqual([
+      {
+        name: 'prompt-server',
+        prompts: [
+          { name: 'greet', description: 'A static greeting, no arguments' },
+          {
+            name: 'translate',
+            description: 'Translate text into another tone/language',
+            arguments: [
+              { name: 'text', description: 'The text to translate', required: true },
+              { name: 'tone', description: 'Optional target tone', required: false },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    // Selecting the prompt sends the server's own definition, with its
+    // argument — a real mcp_prompt_get_request/response round trip, not a
+    // simulated one.
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { serverName: 'prompt-server', promptName: 'translate', arguments: { text: 'bonjour' } },
+      key,
+    );
+    phone.send({
+      type: 'mcp_prompt_get_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-mcp-prompt-1',
+      envelope: requestEnvelope,
+    });
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'mcp_prompt_get_response' &&
+        (m as { requestId?: string }).requestId === 'req-mcp-prompt-1',
+    )) as { envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; text?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', text: 'Translate "bonjour".' });
+
+    // A request naming a server outside this session's resolved set
+    // (the unreachable one, or one that was never configured at all)
+    // fails clearly rather than hanging or crashing the node.
+    const badEnvelope = await phoneSeal(
+      session.id,
+      { serverName: 'unreachable', promptName: 'anything' },
+      key,
+    );
+    phone.send({
+      type: 'mcp_prompt_get_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-mcp-prompt-2',
+      envelope: badEnvelope,
+    });
+    const badResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'mcp_prompt_get_response' &&
+        (m as { requestId?: string }).requestId === 'req-mcp-prompt-2',
+    )) as { envelope: EncryptedEnvelope };
+    const badPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      badResponse.envelope,
+      key,
+    );
+    expect(badPayload.outcome).toBe('error');
+  }, 20000);
 
   it("makes a revoked/ungranted secret grant's failure visible on the wire — session_announce, session_status: 'error' and mcp_server_status all name the server, not just a console warning (issue #750, D2-2)", async () => {
     const amk = generateAmk();

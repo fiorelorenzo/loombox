@@ -1421,11 +1421,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'mcp_prompt_get_response':
       case 'fs_read_response':
-        // The owning node's reply to a client's fs_read_request (issue
-        // #737's read-only file viewer) — fanned out exactly like
-        // fs_list_response above; the relay never opens the envelope, so
-        // it never sees a file's content, only that some file was read.
+        // The owning node's reply to a client's mcp_prompt_get_request
+        // (Zed-parity D5-2; issue #754) or fs_read_request (issue #737's
+        // read-only file viewer) — fanned out to this session's
+        // subscribed clients exactly like fs_list_response above; the
+        // relay never opens the envelope, so it never learns which
+        // server/prompt/rendered text or file content, only that
+        // something was read (SPEC §8's metadata boundary). A requesting
+        // client matches its own pending request by `requestId`; any
+        // other subscribed client simply has no pending request with
+        // that id.
         fanOutDirect(message.sessionId, message);
         return;
       case 'config_option_result':
@@ -2163,15 +2170,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'permission_response':
       case 'config_option':
       case 'fs_list_request':
+      case 'mcp_prompt_get_request':
       case 'fs_read_request':
-        // fs_list_request (SPEC §7.4; issue #171/#160) and its sibling
-        // fs_read_request (issue #737's read-only file viewer): a client
-        // asking the owning node to list a directory / read a file inside
-        // one of its sessions' projects — routed exactly like
-        // prompt_inject/config_option above. The relay only ever sees
-        // `sessionId`/`targetId`/`requestId` and an opaque
-        // `EncryptedEnvelope`; the requested path never reaches the relay
-        // in the clear (SPEC §8's metadata boundary).
+        // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
+        // mcp_prompt_get_request (Zed-parity D5-2; issue #754), and its
+        // #737 sibling fs_read_request (read-only file viewer): a client
+        // asking the owning node to list a directory, render an MCP
+        // prompt, or read a file inside one of its sessions' projects —
+        // routed exactly like prompt_inject/config_option above. The
+        // relay only ever sees `sessionId`/`targetId`/`requestId` and an
+        // opaque `EncryptedEnvelope`; the requested path, or which
+        // server/prompt was asked for, never reaches the relay in the
+        // clear (SPEC §8's metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':

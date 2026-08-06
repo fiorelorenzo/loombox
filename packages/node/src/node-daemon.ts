@@ -5,6 +5,8 @@ import { basename, posix } from 'node:path';
 
 import {
   McpServerSecretMissingError,
+  fetchMcpPromptText,
+  fetchMcpServerPrompts,
   mergeMcpServerConfigLists,
   parseMcpServerConfig,
   type AcpMcpServerConfig,
@@ -18,6 +20,7 @@ import {
   type AvailableCommandsChangeEvent,
   type ConfigOptionChangeEvent,
   type McpServerConfig,
+  type McpServerPromptsResult,
 } from '@loombox/providers-core';
 import {
   AgentSupervisor,
@@ -134,6 +137,9 @@ import {
   type AgentProfileSessionPayloadV1,
   type AgentProfileSessionSet,
   type TestRunnerConfigDetect,
+  type McpPromptGetRequest,
+  type McpPromptGetRequestPayloadV1,
+  type McpPromptGetResponsePayloadV1,
   type McpServerConfigV1,
   type McpServerFailureCategoryV1,
   type McpServerStatusEntryV1,
@@ -1167,6 +1173,8 @@ export class NodeDaemon extends EventEmitter {
   /** Chains every `run_output` send per run (mirrors `terminalSendQueues` above) so concurrent `crypto.subtle.encrypt` calls can never resolve — and so get sent to the relay — out of the order their chunks actually arrived in. */
   private readonly runSendQueues = new Map<string, Promise<void>>();
   private readonly bridges = new Map<string, SessionBridge>();
+  /** This session's actually-launched, effective MCP server set (issue #750's fallback loop already excludes any that failed to start) — kept for the lifetime of the bridge so a later `mcp_prompt_get_request` (Zed-parity D5-2, issue #754) can open a fresh connection to the named server without re-resolving secrets/config. Populated by {@link finishSessionCreation}, deleted alongside the bridge itself (see the `'exit'` handler in {@link wireAgentSession} — "the one place a bridge ever leaves the map"). A session reloaded after a node restart (no live bridge) has no entry here, so its `mcp_prompt_get_request`s fail cleanly (`outcome: 'error'`) rather than being served from stale config. */
+  private readonly mcpServersBySession = new Map<string, AcpMcpServerConfig[]>();
   private _connected = false;
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   /** Backs {@link getTargetKey} (SPEC §7.25's directory picker; issue #474) — a target's key is derived once per process, same caching shape as {@link sessionKeys}. */
@@ -1791,6 +1799,7 @@ export class NodeDaemon extends EventEmitter {
       session,
       agentSession,
       opts,
+      mcpServers,
       undefined,
       seedTranscriptUpdates,
     );
@@ -1922,13 +1931,18 @@ export class NodeDaemon extends EventEmitter {
       } catch (error) {
         const attribution = attributeMcpFailure(error, remaining);
         if (!attribution) throw error;
+        // Recorded BEFORE the push below (issue #794): the streak crossing
+        // the auto-disable threshold on THIS failure is exactly what
+        // `disabled: true` on the pushed entry reports — see
+        // `recordMcpServerOutcome`'s own doc comment.
+        const disabled = this.recordMcpServerOutcome(projectPath, attribution.name, false);
         failedServers.push({
           name: attribution.name,
           ok: false,
           category: attribution.category,
           reason: attribution.reason,
+          ...(disabled ? { disabled: true } : {}),
         });
-        this.recordMcpServerOutcome(projectPath, attribution.name, false);
         remaining = remaining.filter((server) => server.name !== attribution.name);
       }
     }
@@ -2270,6 +2284,7 @@ export class NodeDaemon extends EventEmitter {
         session,
         agentSession,
         { targetId, title: opts.title, customAgent: opts.customAgent },
+        mcpServers,
         remoteChild,
       );
     } catch (error) {
@@ -2478,6 +2493,7 @@ export class NodeDaemon extends EventEmitter {
     session: Session,
     agentSession: AgentSession,
     opts: { targetId: string; title: string; customAgent?: CustomAgentRecordV1 },
+    mcpServers: AcpMcpServerConfig[],
     remoteChild?: RemoteAgentChildProcess,
     seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
@@ -2500,6 +2516,21 @@ export class NodeDaemon extends EventEmitter {
     // out.
     await this.announce(bridge.session, bridge.targetId, bridge.title);
     this.forwardInitialSessionState(bridge);
+    // Zed-parity D5-2 (issue #754): remembered for a later `mcp_prompt_get_
+    // request` (see {@link mcpServersBySession}'s own doc comment), then
+    // discovery fires fire-and-forget — never blocks session creation on
+    // an `npx`/`uvx`-fetched server's own cold start (see
+    // `discoverAndSendMcpPrompts`'s doc comment for why this is safe to
+    // run after `announce`/`forwardInitialSessionState` rather than
+    // awaited before them).
+    this.mcpServersBySession.set(session.id, mcpServers);
+    this.discoverAndSendMcpPrompts(session.id, mcpServers).catch((error: unknown) => {
+      console.warn(
+        `NodeDaemon: failed to discover MCP prompts for session ${session.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
     // A fork's copied history (design spec
     // `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746): recorded
     // onto the fresh agent's own transcript exactly like a live arrival
@@ -2702,6 +2733,10 @@ export class NodeDaemon extends EventEmitter {
       // `forwardSessionEvent` no-ops the moment `this.bridges.get()` comes
       // back empty. This is the one place a bridge ever leaves the map.
       this.bridges.delete(bridge.session.id);
+      // Zed-parity D5-2 (issue #754): this session's resolved MCP server
+      // set has no reason to outlive the bridge that launched it — see
+      // {@link mcpServersBySession}'s own doc comment.
+      this.mcpServersBySession.delete(bridge.session.id);
     });
   }
 
@@ -3067,6 +3102,64 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * Reads every launched server's own `prompts/list` (Zed-parity D5-2;
+   * issue #754) via `@loombox/providers-core`'s independent MCP client
+   * (`fetchMcpServerPrompts` — a second connection per server, separate
+   * from whatever the ACP agent itself did with `mcpServers` at
+   * `session/new`; see that module's own doc comment for why there is no
+   * cheaper seam), then pushes the result. Called fire-and-forget from
+   * {@link finishSessionCreation} — never on the critical path a user is
+   * waiting on to see their new session open, since an `npx`/`uvx`-fetched
+   * server's first cold start can take real seconds and this issue's own
+   * acceptance only promises the `/` list fills in, not that it blocks
+   * anything. `servers` already excludes anything `mcp_server_status`
+   * named as failed (only the survivors of `startAgentWithMcpFallback`
+   * ever reach {@link finishSessionCreation} at all) — a server this
+   * discovery pass itself can't reach, or that declares no prompts, is
+   * silently absent from the result (`fetchMcpServerPrompts`'s own
+   * contract), which is exactly this issue's "an unreachable server does
+   * not break the list for the others" acceptance line, satisfied at the
+   * source rather than by a try/catch here.
+   */
+  private async discoverAndSendMcpPrompts(
+    sessionId: string,
+    servers: AcpMcpServerConfig[],
+  ): Promise<void> {
+    if (servers.length === 0) return;
+    const prompts = await fetchMcpServerPrompts(servers);
+    await this.sendMcpServerPrompts(sessionId, prompts);
+  }
+
+  /**
+   * Pushes one `mcp_server_prompts` lifecycle event (Zed-parity D5-2;
+   * issue #754) straight to the relay, sealed under this session's
+   * derived key — same "ride the `session_update` envelope, no-op on an
+   * empty list" shape {@link sendMcpServerStatus} already established
+   * (`@loombox/protocol`'s `mcpServerPromptsEventV1` doc comment spells
+   * out why this mirrors it deliberately rather than inventing a second
+   * transport shape).
+   */
+  private async sendMcpServerPrompts(
+    sessionId: string,
+    servers: McpServerPromptsResult[],
+  ): Promise<void> {
+    if (servers.length === 0) return;
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(
+      sessionId,
+      { kind: 'mcp_server_prompts', servers, updatedAt: new Date().toISOString() },
+      key,
+    );
+    this.relay.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 0,
+      envelope,
+    });
+  }
+
+  /**
    * Makes a `McpServerSecretMissingError` pre-flight failure visible
    * (issue #750, D2-2's "a revoked secret grant... produce a distinct,
    * visible reason") without paying for a worktree, lease, or `Session`
@@ -3142,20 +3235,28 @@ export class NodeDaemon extends EventEmitter {
    * only from *this* attempt's list, so the very next session creation
    * retries it fresh — self-healing without this node ever deciding "now
    * is the moment to retry."
+   *
+   * Returns whether THIS call is the one that just auto-disabled the
+   * server (issue #794's `mcp_server_status.disabled` field) — `true`
+   * only when the streak just crossed the threshold AND
+   * {@link autoDisableMcpServer} actually flipped a node-owned record;
+   * `false` for a success, an ordinary (not-yet-third) failure, or a
+   * third failure against a client-declared server the node has no
+   * record for (see that method's own doc comment).
    */
-  private recordMcpServerOutcome(projectPath: string, serverName: string, ok: boolean): void {
+  private recordMcpServerOutcome(projectPath: string, serverName: string, ok: boolean): boolean {
     const key = `${projectPath}\u0000${serverName}`;
     if (ok) {
       this.mcpFailureStreaks.delete(key);
-      return;
+      return false;
     }
     const streak = (this.mcpFailureStreaks.get(key) ?? 0) + 1;
     if (streak < NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD) {
       this.mcpFailureStreaks.set(key, streak);
-      return;
+      return false;
     }
     this.mcpFailureStreaks.delete(key);
-    this.autoDisableMcpServer(projectPath, serverName);
+    return this.autoDisableMcpServer(projectPath, serverName);
   }
 
   /**
@@ -3167,15 +3268,19 @@ export class NodeDaemon extends EventEmitter {
    * disable — this node doesn't own that storage — so it keeps being
    * reported as failed on every attempt until the client itself disables
    * or removes it; logged, not thrown, since a failed auto-disable must
-   * never mask the real failure this was reacting to.
+   * never mask the real failure this was reacting to. Returns `true` only
+   * when a node-owned record (project or global) was actually flipped —
+   * `recordMcpServerOutcome` reports that boolean straight through as
+   * `mcp_server_status.disabled` (issue #794), so a client never sees a
+   * disable claim the node didn't actually act on.
    */
-  private autoDisableMcpServer(projectPath: string, serverName: string): void {
+  private autoDisableMcpServer(projectPath: string, serverName: string): boolean {
     try {
       this.mcpConfigStore.setProjectEnabled(projectPath, serverName, false);
       console.warn(
         `NodeDaemon: auto-disabled project "${projectPath}"'s MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
       );
-      return;
+      return true;
     } catch {
       // No project-scoped record by that name — try a global one below.
     }
@@ -3184,9 +3289,11 @@ export class NodeDaemon extends EventEmitter {
       console.warn(
         `NodeDaemon: auto-disabled global MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
       );
+      return true;
     } catch {
       // A client-declared server with no node-store record at all —
       // nothing to disable node-side; see this method's own doc comment.
+      return false;
     }
   }
 
@@ -3454,6 +3561,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'fs_list_request':
         this.handleFsListRequest(message);
+        return;
+      case 'mcp_prompt_get_request':
+        this.handleMcpPromptGetRequest(message);
         return;
       case 'fs_read_request':
         this.handleFsReadRequest(message);
@@ -4370,6 +4480,94 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to render one MCP server's
+   * declared prompt (Zed-parity D5-2; issue #754). Ignored if `sessionId`
+   * isn't one of this node's sessions at all ({@link resolveSessionRouting}'s
+   * guard, same as {@link handleFsListRequest}). A decrypt failure is
+   * logged and dropped (there is no path to reply about); everything past
+   * that point — an unknown server name, an unreachable server, a
+   * rejected `prompts/get` call — is turned into an `outcome: 'error'`
+   * response instead of silently dropping, per `@loombox/protocol`'s
+   * `mcpPromptGetResponsePayloadV1` doc comment.
+   */
+  private handleMcpPromptGetRequest(message: McpPromptGetRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptMcpPromptGetRequest(message)
+      .then((payload) => this.renderMcpPromptForSession(message.sessionId, payload))
+      .then((responsePayload) =>
+        this.sendMcpPromptGetResponse(message.sessionId, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle mcp_prompt_get_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptMcpPromptGetRequest(
+    message: McpPromptGetRequest,
+  ): Promise<McpPromptGetRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<McpPromptGetRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Renders one MCP prompt for `sessionId` (Zed-parity D5-2; issue #754) —
+   * looks up that session's actually-launched server config from
+   * {@link mcpServersBySession} (a session with no live bridge, e.g.
+   * reloaded after a node restart, has no entry here and gets a clear
+   * `outcome: 'error'` rather than a stale/guessed config), then opens a
+   * fresh MCP connection to render it (`@loombox/providers-core`'s
+   * `fetchMcpPromptText`, a second connection independent of whatever the
+   * ACP agent itself did — see that module's own doc comment). Never
+   * throws: any failure — unknown server name, a timed-out/unreachable
+   * server, the server's own rejection (e.g. a missing required argument)
+   * — becomes an `outcome: 'error'` payload naming the reason, so
+   * {@link handleMcpPromptGetRequest} always has a response to seal and
+   * send back rather than leaving the requesting client's
+   * `RelayClient.getMcpPromptText` promise hanging.
+   */
+  private async renderMcpPromptForSession(
+    sessionId: string,
+    payload: McpPromptGetRequestPayloadV1,
+  ): Promise<McpPromptGetResponsePayloadV1> {
+    const servers = this.mcpServersBySession.get(sessionId);
+    const server = servers?.find((candidate) => candidate.name === payload.serverName);
+    if (!server) {
+      return {
+        outcome: 'error',
+        message: `MCP server "${payload.serverName}" is not part of session ${sessionId}'s resolved server set`,
+      };
+    }
+    try {
+      const text = await fetchMcpPromptText(server, payload.promptName, payload.arguments ?? {});
+      return { outcome: 'ok', text };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendMcpPromptGetResponse(
+    sessionId: string,
+    requestId: string,
+    payload: McpPromptGetResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'mcp_prompt_get_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

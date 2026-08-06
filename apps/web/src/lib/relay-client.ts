@@ -21,11 +21,14 @@ import {
   reduceSessionEvent,
   resolvePermissionRequest,
   type AcpAvailableCommand,
+  type AcpMcpServerPromptsEntry,
   type AcpConfigOption,
+  type AcpMcpServerStatusEntry,
   type AcpPermissionOption,
   type AcpSessionStatus,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
+  type McpServerConfig,
   type PendingPermissionRequest,
   type PermissionQueueState,
   type TranscriptItem,
@@ -61,6 +64,9 @@ import {
   type CustomAgentRecordV1,
   trackerSnapshotResponsePayloadV1,
   trackerWriteResponsePayloadV1,
+  mcpPromptGetResponsePayloadV1,
+  type McpPromptGetRequestPayloadV1,
+  type McpPromptGetResponse,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
   type FsEntryV1,
@@ -751,6 +757,35 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Flattens the `mcp_server_prompts` catalogue (`@loombox/providers-core`'s
+ * `AcpMcpServerPromptsEntry[]`) into `AcpAvailableCommand[]` — one row per
+ * declared prompt, attributed to its server via `mcpServer`, with
+ * `mcpArguments` carrying the argument schema and `input.hint` a
+ * display-only rendering of it (mirrors the `<name1> <name2>` shape an
+ * agent-declared command's own hint already uses). `undefined` state
+ * (no `mcp_server_prompts` push has arrived yet) and an explicit empty
+ * push both flatten to `[]` — {@link RelayClient.mcpPromptCommandsFor}'s
+ * own doc comment covers why that distinction doesn't matter to a caller
+ * here (there's nothing to render either way).
+ */
+function flattenMcpServerPrompts(
+  servers: AcpMcpServerPromptsEntry[] | undefined,
+): AcpAvailableCommand[] {
+  if (!servers) return [];
+  return servers.flatMap((server) =>
+    server.prompts.map((prompt) => ({
+      name: prompt.name,
+      description: prompt.description,
+      input: prompt.arguments?.length
+        ? { hint: `<${prompt.arguments.map((arg) => arg.name).join('> <')}>` }
+        : undefined,
+      mcpServer: server.name,
+      mcpArguments: prompt.arguments,
+    })),
+  );
+}
+
 /** Options for {@link bootstrapAmkFromRecoveryCode}. */
 export interface BootstrapAmkFromRecoveryCodeOptions {
   /** The relay's ws:// (or wss://) URL to connect to. */
@@ -992,6 +1027,27 @@ export interface CreateSessionOptions {
    * like any other session error).
    */
   customAgent?: CustomAgentRecordV1;
+  /**
+   * This client's own per-project, currently-enabled MCP server
+   * declarations (issue #750, D2-2; #794) — `apps/web`'s
+   * `mcp-server-store.ts`'s `localStorage` list for `projectPath`, at the
+   * moment of creation, in the plain `McpServerConfig[]` shape
+   * `effectiveMcpServerConfigs` returns. Travels inside the SAME private
+   * envelope as `title`/`projectPath`/`customAgent` — never in the clear
+   * — and never carries a secret *value*, only a secret *name* reference
+   * (`McpServerVarDecl`'s `{ secret }` arm); resolving that into a value
+   * stays exclusively node-side (SPEC §7.17), unchanged and unweakened by
+   * this field's existence.
+   *
+   * The owning node's `NodeDaemon.resolveMcpServers` merges this list
+   * with its OWN `McpConfigStore` (global + project) — its own record
+   * always wins a same-name collision — into the one effective server set
+   * the session's agent actually receives (`mergeMcpServerConfigLists`'s
+   * own doc comment). Omitted or `[]` (an older client, or a project with
+   * nothing declared) behaves exactly like before this field existed:
+   * only the node's own store is consulted.
+   */
+  mcpServerConfigs?: McpServerConfig[];
 }
 
 /**
@@ -1247,6 +1303,11 @@ export class RelayClient {
    * same session is simply not a key here and is ignored.
    */
   private readonly pendingFsListRequests = new Map<string, { sessionId: string; path: string }>();
+  /** requestId -> the pending {@link getMcpPromptText} call it belongs to (Zed-parity D5-2; issue #754) — resolves a `Promise` directly, same shape as {@link pendingTrackerWriteRequests}: a caller (the composer's submit path) needs the rendered text directly to decide what to send, not a reactive store update. */
+  private readonly pendingMcpPromptRequests = new Map<
+    string,
+    { sessionId: string; resolve: (text: string) => void; reject: (error: Error) => void }
+  >();
   /**
    * requestId -> the pending {@link readFile} call it belongs to (issue
    * #737's read-only file viewer). Unlike {@link pendingFsListRequests}
@@ -3208,6 +3269,14 @@ export class RelayClient {
       // all, not an explicit `undefined`, so an older node's schema (which
       // predates this field) parses the envelope unchanged.
       ...(options.customAgent === undefined ? {} : { customAgent: options.customAgent }),
+      // Same omit-rather-than-undefined discipline (issue #750/#794): an
+      // empty/omitted list is behaviorally identical to omitting the key
+      // entirely (`sessionPrivateMetaV1.mcpServerConfigs`'s own doc
+      // comment), so this keeps the common "nothing declared" envelope
+      // exactly as small as it was before this field existed.
+      ...(options.mcpServerConfigs === undefined || options.mcpServerConfigs.length === 0
+        ? {}
+        : { mcpServerConfigs: options.mcpServerConfigs }),
     };
     const privateEnvelope = await this.envelopeCrypto.seal(
       'session',
@@ -3554,6 +3623,107 @@ export class RelayClient {
     const transcript = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(transcript, (state) => state.commands);
+  }
+
+  /**
+   * The session's latest `mcp_server_status` push (issue #750, D2-2's
+   * report/disable lifecycle; issue #794's own client-side surface),
+   * always the full set the node last reported — only the servers that
+   * failed to start, replaced wholesale on every push, never merged
+   * across pushes (`reduceSessionEvent`'s own `mcp_server_status` case).
+   * Backed by the same reduced `TranscriptState` `transcriptFor` exposes
+   * (its `mcpServerStatuses` field), not a separate parallel store,
+   * exactly like `configOptionsFor`/`commandsFor` above. `undefined`
+   * until the first push arrives — a session with no MCP servers
+   * configured at all stays silent forever, same as the node never
+   * sending the event in that case; `[]` is the real, meaningful "every
+   * configured server started fine" push.
+   */
+  mcpServerStatusesFor(sessionId: string): Readable<AcpMcpServerStatusEntry[] | undefined> {
+    const transcript = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(transcript, (state) => state.mcpServerStatuses);
+  }
+
+  /**
+   * Every MCP server's own declared prompts (Zed-parity D5-2; issue #754),
+   * flattened into the same `AcpAvailableCommand[]` shape {@link commandsFor}
+   * returns so `SlashCommandPicker` can render one merged `/`-list — each
+   * entry carries `mcpServer` (the declaring server's name, so the picker
+   * can attribute it distinctly from an agent-native command) and
+   * `mcpArguments` (the prompt's own declared argument schema, for
+   * building the `{name: value}` map {@link getMcpPromptText} sends).
+   * Backed by `TranscriptState.mcpServerPrompts` (populated by the node's
+   * `mcp_server_prompts` session-lifecycle event) — `[]` until that
+   * arrives or if it never carries anything (a project with no MCP
+   * servers, or none of them declaring prompts).
+   */
+  mcpPromptCommandsFor(sessionId: string): Readable<AcpAvailableCommand[]> {
+    const transcript = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(transcript, (state) => flattenMcpServerPrompts(state.mcpServerPrompts));
+  }
+
+  /**
+   * Asks the owning node to render one MCP server's declared prompt
+   * (Zed-parity D5-2; issue #754's "selecting an MCP prompt sends the
+   * server's own definition, with its arguments if it declared any") —
+   * seals `{serverName, promptName, arguments}` under this session's key
+   * and awaits the matching `mcp_prompt_get_response`, mirroring
+   * {@link sendTrackerWriteRequest}'s promise+timeout shape (the caller,
+   * the composer's submit path, needs the rendered text directly to know
+   * what to actually send — not a reactive store update). Rejects on a
+   * timeout, a decrypt failure, or the node's own `outcome: 'error'`
+   * (an unreachable server, a missing required argument); the composer
+   * falls back to sending the user's raw typed text on any rejection
+   * rather than blocking the send outright.
+   */
+  async getMcpPromptText(
+    sessionId: string,
+    serverName: string,
+    promptName: string,
+    args: Record<string, string>,
+    timeoutMs = 15_000,
+  ): Promise<string> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient: cannot fetch an MCP prompt, no open connection');
+    }
+    // mcp_prompt_get_response is fanned out only to a session's subscribed
+    // clients (mirrors fs_list_response) — belt-and-suspenders subscribe,
+    // same as openTerminal/sendFsListRequest, for a caller that hasn't
+    // already subscribed via mcpPromptCommandsFor/transcriptFor.
+    this.ensureSubscribed(sessionId);
+    const payload: McpPromptGetRequestPayloadV1 = {
+      serverName,
+      promptName,
+      arguments: Object.keys(args).length > 0 ? args : undefined,
+    };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('mcpprompt');
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingMcpPromptRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for mcp_prompt_get_response'));
+      }, timeoutMs);
+      this.pendingMcpPromptRequests.set(requestId, {
+        sessionId,
+        resolve: (text) => {
+          clearTimeout(timer);
+          resolve(text);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'mcp_prompt_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
   }
 
   /**
@@ -4922,6 +5092,9 @@ export class RelayClient {
       case 'tracker_write_response':
         this.handleTrackerWriteResponse(message);
         return;
+      case 'mcp_prompt_get_response':
+        this.handleMcpPromptGetResponse(message);
+        return;
       case 'terminal_opened':
         this.handleTerminalOpened(message);
         return;
@@ -5375,6 +5548,37 @@ export class RelayClient {
       .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
       .then((raw) => trackerWriteResponsePayloadV1.parse(raw))
       .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own `mcp_prompt_get_
+   * request`s (Zed-parity D5-2; issue #754) — resolves the `Promise`
+   * {@link getMcpPromptText} returned. `mcp_prompt_get_response` is
+   * fanned out to every client subscribed to the session (mirrors
+   * `fs_list_response`), so `requestId` not being in
+   * {@link pendingMcpPromptRequests} means this reply is to a sibling
+   * device's own request, not this one — silently ignored. A node-side
+   * `outcome: 'error'` payload rejects the promise with that message,
+   * exactly like a decrypt failure does.
+   */
+  private handleMcpPromptGetResponse(message: McpPromptGetResponse): void {
+    const pending = this.pendingMcpPromptRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingMcpPromptRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', pending.sessionId, pending.sessionId, message.envelope)
+      .then((raw) => mcpPromptGetResponsePayloadV1.parse(raw))
+      .then((payload) => {
+        if (payload.outcome === 'error') {
+          pending.reject(new Error(payload.message));
+        } else {
+          pending.resolve(payload.text);
+        }
+      })
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });

@@ -11,6 +11,7 @@ import {
 import type {
   AcpAvailableCommand,
   AcpConfigOption,
+  AcpMcpServerStatusEntry,
   AcpSessionStatus,
   PermissionQueueState,
   TranscriptState,
@@ -169,6 +170,15 @@ interface FakeClientScenario {
   configOptions?: Record<string, AcpConfigOption[]>;
   /** Per-session initial agent-declared `/`-command catalog, keyed by session id (issue #743) — memoized per id exactly like `configOptionsFor`/`configOptions` above, so a test can grab the same store back via `client.commandsFor(id)` and `.set()` a later catalog push to simulate a mid-session `available_commands_update`. */
   commands?: Record<string, AcpAvailableCommand[]>;
+  /** Per-session initial MCP-server-declared prompt catalog, keyed by session id (Zed-parity D5-2, issue #754) — same memoize-per-id shape as {@link commands}, so a test can grab the same store back via `client.mcpPromptCommandsFor(id)`. */
+  mcpPromptCommands?: Record<string, AcpAvailableCommand[]>;
+  /** Overrides the default `getMcpPromptText` mock (Zed-parity D5-2, issue #754), which otherwise rejects — a test exercising a successful send must supply one that resolves. */
+  getMcpPromptText?: (
+    sessionId: string,
+    serverName: string,
+    promptName: string,
+    args: Record<string, string>,
+  ) => Promise<string>;
 }
 
 /**
@@ -191,6 +201,11 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
   const attentionInboxStore = makeStore<AttentionInboxItem[]>(scenario.attentionInboxItems ?? []);
   const configOptionsStores = new Map<string, TestStore<AcpConfigOption[]>>();
   const commandsStores = new Map<string, TestStore<AcpAvailableCommand[]>>();
+  const mcpPromptCommandsStores = new Map<string, TestStore<AcpAvailableCommand[]>>();
+  const getMcpPromptTextMock = vi.fn(
+    scenario.getMcpPromptText ??
+      (() => Promise.reject(new Error('getMcpPromptText: no scenario override supplied'))),
+  );
   return {
     status: statusStore,
     sessions: sessionsStore,
@@ -252,6 +267,16 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       }
       return store;
     },
+    mcpServerStatusesFor: () => makeStore<AcpMcpServerStatusEntry[] | undefined>(undefined),
+    mcpPromptCommandsFor: (id: string) => {
+      let store = mcpPromptCommandsStores.get(id);
+      if (!store) {
+        store = makeStore<AcpAvailableCommand[]>(scenario.mcpPromptCommands?.[id] ?? []);
+        mcpPromptCommandsStores.set(id, store);
+      }
+      return store;
+    },
+    getMcpPromptText: getMcpPromptTextMock,
     attachmentsFor: () => makeStore([]),
     /** Issue #759's Mod+J test is the first in this file to actually flip `terminalDock.open`, which mounts a real `InteractiveTerminal` (see that component's own doc comment) — every `client.*Terminal*` call it makes on mount/dispose needs a stub, mirroring the identical `runsFor`/`startRun`/`cancelRun`/`onRunOutput` shape a few lines down for `RunnerPanel`. */
     terminalsFor: () => makeStore(new Map()),
@@ -1984,8 +2009,12 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
     await fireEvent.input(composer, { target: { value: '/security scan' } });
     await fireEvent.keyDown(composer, { key: 'Enter' });
     // The fourth argument is #742's mention list, empty here: this test
-    // types a command and nothing else.
-    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', [], []);
+    // types a command and nothing else. `submitPrompt` is async (issue
+    // #754 added a client-side MCP-prompt resolution step it must await
+    // before sending), so this settles a tick after the keydown.
+    await vi.waitFor(() =>
+      expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', [], []),
+    );
   });
 
   it('Esc dismisses the picker without touching the composer text', async () => {
@@ -2034,5 +2063,75 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
     await fireEvent.input(composer, { target: { value: 'see the /model docs' } });
 
     expect(screen.queryByTestId('dialog')).toBeNull();
+  });
+
+  it("lists an MCP-server-declared prompt alongside the agent's own commands, attributed to its server, and selecting it sends the server's rendered definition (not the raw /name text) — Zed-parity D5-2, issue #754", async () => {
+    const mcpReview = {
+      name: 'review',
+      description: 'Review the current diff',
+      input: { hint: '<focus>' },
+      mcpServer: 'linear-server',
+      mcpArguments: [{ name: 'focus', description: 'What to focus on', required: false }],
+    } as AcpAvailableCommand;
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [MODEL_COMMAND] },
+      mcpPromptCommands: { sess_1: [mcpReview] },
+      getMcpPromptText: async (sessionId, serverName, promptName, args) => {
+        expect(sessionId).toBe('sess_1');
+        expect(serverName).toBe('linear-server');
+        expect(promptName).toBe('review');
+        expect(args).toEqual({ focus: 'error handling' });
+        return 'Please review the current diff, focusing on error handling.';
+      },
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/' } });
+    const items = await screen.findAllByTestId('slash-command-picker-item');
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining('/model'),
+      expect.stringContaining('/review'),
+    ]);
+    expect(items[1]!.textContent).toContain('MCP prompt from linear-server');
+
+    await fireEvent.click(items[1]!);
+    await vi.waitFor(() => expect(composer.value).toBe('/review '));
+
+    await fireEvent.input(composer, { target: { value: '/review error handling' } });
+    await fireEvent.keyDown(composer, { key: 'Enter' });
+
+    await vi.waitFor(() =>
+      expect(client.sendPrompt).toHaveBeenCalledWith(
+        'sess_1',
+        'Please review the current diff, focusing on error handling.',
+        [],
+        [],
+      ),
+    );
+  });
+
+  it('falls back to sending the raw typed text when getMcpPromptText rejects, never blocking the send (issue #754)', async () => {
+    const mcpReview = {
+      name: 'review',
+      description: 'Review the current diff',
+      input: undefined,
+      mcpServer: 'linear-server',
+      mcpArguments: undefined,
+    } as AcpAvailableCommand;
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      commands: { sess_1: [] },
+      mcpPromptCommands: { sess_1: [mcpReview] },
+      getMcpPromptText: async () => Promise.reject(new Error('server unreachable')),
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: '/review' } });
+    await fireEvent.keyDown(composer, { key: 'Enter' });
+
+    await vi.waitFor(() =>
+      expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/review', [], []),
+    );
   });
 });

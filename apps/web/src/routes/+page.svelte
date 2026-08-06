@@ -8,6 +8,7 @@
   import type {
     AcpAvailableCommand,
     AcpConfigOption,
+    AcpMcpServerStatusEntry,
     AcpPermissionOption,
     AcpSessionStatus,
     PermissionQueueState,
@@ -733,6 +734,12 @@
   let configOptions = $state<AcpConfigOption[]>([]);
   /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
   let commands = $state<AcpAvailableCommand[]>([]);
+  /** The selected session's latest `mcp_server_status` push (issue #750, D2-2; #794), mirrored off `client.mcpServerStatusesFor(id)` exactly like `commands` above — forwarded straight through to `ProjectConfigPanel` -> `McpServerConfigPanel`'s own "Server status" section. `undefined` until the first push for this session arrives, or while none is selected. */
+  let mcpServerStatuses = $state<AcpMcpServerStatusEntry[] | undefined>(undefined);
+  /** The selected session's MCP-server-declared prompts, flattened into the same `AcpAvailableCommand[]` shape as `commands` (Zed-parity D5-2, issue #754), mirrored off `client.mcpPromptCommandsFor(id)` — `[]` until any `mcp_server_prompts` push arrives, or when no launched server declared any prompt. Merged with `commands` into {@link slashCommands} for the `/` picker; kept as a separate field (not folded directly into `commands`) so `insertSlashCommand`'s send-time branch can tell an MCP-sourced row apart from an agent-native one via `mcpServer`. */
+  let mcpPromptCommands = $state<AcpAvailableCommand[]>([]);
+  /** The `/` picker's actual catalogue (Zed-parity D5-2, issue #754): the agent's own declared commands plus every MCP server's declared prompts, attributed via each entry's own `mcpServer` field (`SlashCommandPicker.svelte` renders the attribution; `undefined` for an agent-native command). */
+  let slashCommands = $derived([...commands, ...mcpPromptCommands]);
   /**
    * The selected session's own agent's remembered account-wide values and
    * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
@@ -1332,6 +1339,8 @@
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
   let unsubscribeCommands: (() => void) | undefined;
+  let unsubscribeMcpServerStatuses: (() => void) | undefined;
+  let unsubscribeMcpPromptCommands: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
@@ -1472,6 +1481,8 @@
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
     unsubscribeCommands?.();
+    unsubscribeMcpServerStatuses?.();
+    unsubscribeMcpPromptCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
@@ -1480,6 +1491,8 @@
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     commands = [];
+    mcpServerStatuses = undefined;
+    mcpPromptCommands = [];
     configOptionAccountDefaults = {};
     configOptionProjectOverrides = {};
     attachments = [];
@@ -1497,6 +1510,12 @@
       .configOptionsFor(id)
       .subscribe((value) => handleConfigOptionsUpdate(id, value));
     unsubscribeCommands = client.commandsFor(id).subscribe((value) => (commands = value));
+    unsubscribeMcpServerStatuses = client
+      .mcpServerStatusesFor(id)
+      .subscribe((value) => (mcpServerStatuses = value));
+    unsubscribeMcpPromptCommands = client
+      .mcpPromptCommandsFor(id)
+      .subscribe((value) => (mcpPromptCommands = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -1838,6 +1857,7 @@
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
     unsubscribeCommands?.();
+    unsubscribeMcpPromptCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
@@ -1855,6 +1875,7 @@
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     commands = [];
+    mcpPromptCommands = [];
     attachments = [];
     queuedPrompts = [];
     attentionInboxItems = [];
@@ -1918,11 +1939,58 @@
     await authStore?.signOut();
   }
 
-  function submitPrompt(event: Event): void {
+  /**
+   * If `text` invokes an MCP-declared slash command (Zed-parity D5-2,
+   * issue #754) — a leading `/name` matching one of `mcpPromptCommands`
+   * and not shadowed by an agent-declared command of the same name (an
+   * agent command always wins a name collision, sent verbatim exactly
+   * like today) — asks the node to render that prompt's own definition
+   * (`RelayClient.getMcpPromptText`) and returns that instead of the raw
+   * typed text. Whatever the user typed after `/name ` becomes the
+   * prompt's one declared argument's value when it declares exactly one;
+   * with zero declared arguments it's appended after the rendered text as
+   * extra free-form context instead of being silently dropped. A prompt
+   * declaring more than one argument (not distinguishable from free text
+   * alone) maps the whole typed suffix onto the first declared argument,
+   * best-effort. Falls back to `text` unchanged on any failure — an
+   * unreachable server, a missing required argument — so the user's own
+   * typed text always still sends, never blocked on this.
+   */
+  async function resolveMcpPromptSend(sessionId: string, text: string): Promise<string> {
+    const match = /^\/(\S+)(?:[ \t]+([\s\S]*))?$/.exec(text);
+    if (!match || !client) return text;
+    const [, name, rest] = match;
+    if (commands.some((c) => c.name === name)) return text; // agent command wins a collision
+    const mcpCommand = mcpPromptCommands.find((c) => c.name === name);
+    if (!mcpCommand?.mcpServer) return text;
+    const typed = (rest ?? '').trim();
+    const declaredArgs = mcpCommand.mcpArguments ?? [];
+    const args: Record<string, string> = {};
+    if (declaredArgs.length > 0 && typed) args[declaredArgs[0]!.name] = typed;
+    try {
+      const rendered = await client.getMcpPromptText(
+        sessionId,
+        mcpCommand.mcpServer,
+        mcpCommand.name,
+        args,
+      );
+      return declaredArgs.length === 0 && typed ? `${rendered}\n\n${typed}` : rendered;
+    } catch (error) {
+      console.warn(
+        `Failed to render MCP prompt "${name}" from ${mcpCommand.mcpServer}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return text;
+    }
+  }
+
+  async function submitPrompt(event: Event): Promise<void> {
     event.preventDefault();
     if (!client || !selectedSessionId || sendDisabled) return;
     const attachmentIds = attachments.map((a) => a.id);
-    const { text, liveMentions } = resolveMentionsForSend(draft.trim(), mentions, isMentionLive);
+    const resolvedDraft = await resolveMcpPromptSend(selectedSessionId, draft.trim());
+    const { text, liveMentions } = resolveMentionsForSend(resolvedDraft, mentions, isMentionLive);
     client.sendPrompt(selectedSessionId, text, attachmentIds, liveMentions);
     draft = '';
     mentions = [];
@@ -1993,17 +2061,18 @@
       atTriggerStart = undefined;
     }
 
-    // Detects a `/`-command trigger (Zed-parity C2-4; issue #743): unlike
-    // `@file`, a slash command is a whole-message convention, not
-    // something embedded mid-sentence, so this only fires when `/` sits at
-    // the very start of the composer (nothing but `/` plus a run of
-    // non-whitespace before the caret). Never a hardcoded loombox command
-    // list — `commands` is exactly what the connected agent declared
-    // (`RelayClient.commandsFor`, issue #741), so an agent that has
-    // declared none leaves this branch permanently closed: `/` does
-    // nothing.
+    // Detects a `/`-command trigger (Zed-parity C2-4/D5-2; issues #743/
+    // #754): unlike `@file`, a slash command is a whole-message
+    // convention, not something embedded mid-sentence, so this only
+    // fires when `/` sits at the very start of the composer (nothing but
+    // `/` plus a run of non-whitespace before the caret). Never a
+    // hardcoded loombox command list — `slashCommands` is the connected
+    // agent's own declared catalogue plus every MCP server's declared
+    // prompts (`RelayClient.commandsFor`/`mcpPromptCommandsFor`), so an
+    // agent/project with neither leaves this branch permanently closed:
+    // `/` does nothing.
     const slashMatch = /^\/(\S*)$/.exec(beforeCaret);
-    if (slashMatch && commands.length > 0) {
+    if (slashMatch && slashCommands.length > 0) {
       slashTriggerStart = 0;
       slashPickerOpen = true;
     } else {
@@ -4377,6 +4446,7 @@
                   projectPath={selectedProjectPath}
                   sessionId={selectedSessionId}
                   relayClient={client}
+                  {mcpServerStatuses}
                 />
               </div>
             {/if}
@@ -4598,7 +4668,7 @@
 
 <SlashCommandPicker
   open={slashPickerOpen}
-  {commands}
+  commands={slashCommands}
   onSelect={insertSlashCommand}
   onClose={closeSlashPicker}
 />

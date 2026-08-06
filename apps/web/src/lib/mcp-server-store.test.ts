@@ -10,6 +10,7 @@ import {
   addMcpServerFromPreset,
   createInMemoryMcpServerConfigStorage,
   createLocalStorageMcpServerConfigStorage,
+  effectiveMcpServerConfigs,
   removeMcpServerConfig,
   requiredSecretNames,
   setMcpServerEnabled,
@@ -82,6 +83,26 @@ describe('mcp-server-store (issue #188)', () => {
     expect(disabled).toEqual([{ config: manualConfig, enabled: false }]);
     const reenabled = setMcpServerEnabled(storage, manualConfig.name, true);
     expect(reenabled).toEqual([{ config: manualConfig, enabled: true }]);
+  });
+
+  it('effectiveMcpServerConfigs (issue #750/#794) returns every enabled server, in the plain McpServerConfig shape session_create expects, excluding disabled ones', () => {
+    const storage = createInMemoryMcpServerConfigStorage();
+    addMcpServerConfig(storage, manualConfig);
+    const secondConfig = parseMcpServerConfig({
+      name: 'second-tool',
+      transport: 'stdio',
+      command: '/usr/local/bin/second-tool',
+      args: [],
+      env: [],
+    });
+    addMcpServerConfig(storage, secondConfig);
+    setMcpServerEnabled(storage, secondConfig.name, false);
+
+    expect(effectiveMcpServerConfigs(storage)).toEqual([manualConfig]);
+  });
+
+  it('effectiveMcpServerConfigs returns [] for an empty store, never throwing', () => {
+    expect(effectiveMcpServerConfigs(createInMemoryMcpServerConfigStorage())).toEqual([]);
   });
 
   it('createLocalStorageMcpServerConfigStorage persists across a fresh storage handle for the same project (localStorage-like round trip)', () => {

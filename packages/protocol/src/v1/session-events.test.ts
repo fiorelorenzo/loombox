@@ -4,6 +4,8 @@ import {
   availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  mcpServerStatusEntryV1,
+  mcpServerPromptsEventV1,
   mcpServerStatusEventV1,
   parseSessionLifecycleEventV1,
   safeParseSessionLifecycleEventV1,
@@ -208,6 +210,27 @@ describe('mcpServerStatusEventV1', () => {
     }
   });
 
+  it('accepts an optional "disabled" flag alongside a failure (issue #794)', () => {
+    const result = mcpServerStatusEntryV1.safeParse({
+      name: 'bad-binary',
+      ok: false,
+      category: 'missing_binary',
+      reason: 'Executable not found',
+      disabled: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('parses fine with "disabled" omitted (an ordinary failure that has not yet crossed the auto-disable threshold)', () => {
+    const result = mcpServerStatusEventV1.safeParse({
+      kind: 'mcp_server_status',
+      servers: [{ name: 'x', ok: false, category: 'missing_binary', reason: 'r' }],
+      updatedAt: 't',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.servers[0]?.disabled).toBeUndefined();
+  });
+
   it('rejects an unknown failure category', () => {
     const result = mcpServerStatusEventV1.safeParse({
       kind: 'mcp_server_status',
@@ -227,8 +250,58 @@ describe('mcpServerStatusEventV1', () => {
   });
 });
 
+describe('mcpServerPromptsEventV1', () => {
+  it('accepts a server with one no-argument prompt and one with a required+optional argument', () => {
+    const result = mcpServerPromptsEventV1.safeParse({
+      kind: 'mcp_server_prompts',
+      servers: [
+        {
+          name: 'linear-server',
+          prompts: [
+            { name: 'simple-prompt', description: 'A prompt with no arguments' },
+            {
+              name: 'args-prompt',
+              description: 'Two arguments, one required and one optional',
+              arguments: [
+                { name: 'city', description: 'Name of the city', required: true },
+                { name: 'state', required: false },
+              ],
+            },
+          ],
+        },
+      ],
+      updatedAt: '2026-08-06T00:00:00.000Z',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an empty servers list (never sent by the node in practice, but a valid shape)', () => {
+    expect(
+      mcpServerPromptsEventV1.safeParse({ kind: 'mcp_server_prompts', servers: [], updatedAt: 't' })
+        .success,
+    ).toBe(true);
+  });
+
+  it('rejects an empty server name or prompt name', () => {
+    expect(
+      mcpServerPromptsEventV1.safeParse({
+        kind: 'mcp_server_prompts',
+        servers: [{ name: '', prompts: [] }],
+        updatedAt: 't',
+      }).success,
+    ).toBe(false);
+    expect(
+      mcpServerPromptsEventV1.safeParse({
+        kind: 'mcp_server_prompts',
+        servers: [{ name: 'x', prompts: [{ name: '' }] }],
+        updatedAt: 't',
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('sessionLifecycleEventV1 (the discriminated union)', () => {
-  it('parses every one of the seven kinds', () => {
+  it('parses every one of the eight kinds', () => {
     const samples: unknown[] = [
       { kind: 'session_status', status: 'working', updatedAt: 't' },
       { kind: 'config_options', options: [] },
@@ -237,13 +310,14 @@ describe('sessionLifecycleEventV1 (the discriminated union)', () => {
       { kind: 'turn_started', turnId: 'turn:1' },
       { kind: 'turn_ended', stopReason: 'end_turn' },
       { kind: 'mcp_server_status', servers: [], updatedAt: 't' },
+      { kind: 'mcp_server_prompts', servers: [], updatedAt: 't' },
     ];
     for (const sample of samples) {
       expect(() => parseSessionLifecycleEventV1(sample)).not.toThrow();
     }
   });
 
-  it('rejects a payload whose kind is not one of the seven', () => {
+  it('rejects a payload whose kind is not one of the eight', () => {
     const result = safeParseSessionLifecycleEventV1({ kind: 'agent_message_chunk' });
     expect(result.success).toBe(false);
   });

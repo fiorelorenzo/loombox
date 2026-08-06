@@ -2,6 +2,7 @@ import type {
   AcpAvailableCommand,
   AcpConfigOption,
   AcpDiff,
+  AcpMcpServerPromptsEntry,
   AcpMcpServerStatusEntry,
   AcpMessageChunkKind,
   AcpMessageChunkUpdate,
@@ -214,6 +215,8 @@ export interface TranscriptState {
   lastStopReason: string | undefined;
   /** The latest `mcp_server_status` push's server list, if any has arrived yet (SPEC.md §7.7/§7.17; issue #750) — always the full set that event carried (replaced wholesale, never merged/accumulated across pushes), and only ever the servers that failed to start; `undefined` until the first push, `[]` is a genuinely valid "every configured server started fine" push, not "no push yet". */
   mcpServerStatuses: AcpMcpServerStatusEntry[] | undefined;
+  /** The latest `mcp_server_prompts` push's server list, if any has arrived yet (Zed-parity D5-2, issue #754) — same "replaced wholesale, `undefined` until the first push, `[]` is genuinely valid" contract as {@link mcpServerStatuses}. Only ever the servers that both started AND declared at least one prompt (see `AcpMcpServerPromptsEvent`'s own doc comment). */
+  mcpServerPrompts: AcpMcpServerPromptsEntry[] | undefined;
 }
 
 /** The empty starting state for a session's transcript. */
@@ -231,6 +234,7 @@ export function createTranscriptState(): TranscriptState {
     turnActive: false,
     lastStopReason: undefined,
     mcpServerStatuses: undefined,
+    mcpServerPrompts: undefined,
   };
 }
 
@@ -467,13 +471,14 @@ export function reduceTranscript(
  * Reduce one {@link AcpSessionWireEvent} into a new `TranscriptState` — the
  * wider reducer entry point for everything that can travel inside a
  * `session_update` envelope (SPEC.md §7.13/§7.24/§8; issues #126/#128/#149,
- * #750), additive to {@link reduceTranscript}: every ACP transcript-reducer
- * update kind delegates straight through to it unchanged, and the seven
- * session-lifecycle kinds are folded into the new `status`/`configOptions`/
- * `commands`/`turnActive`/`lastStopReason`/`mcpServerStatuses` fields
- * instead. Never mutates `state`, same contract as `reduceTranscript`.
- * `now` (see `reduceTranscript`'s own doc comment) passes straight through
- * for the five transcript-update kinds it delegates.
+ * #750, #754), additive to {@link reduceTranscript}: every ACP transcript-
+ * reducer update kind delegates straight through to it unchanged, and the
+ * eight session-lifecycle kinds are folded into the new `status`/
+ * `configOptions`/`commands`/`turnActive`/`lastStopReason`/
+ * `mcpServerStatuses`/`mcpServerPrompts` fields instead. Never mutates
+ * `state`, same contract as `reduceTranscript`. `now` (see
+ * `reduceTranscript`'s own doc comment) passes straight through for the
+ * five transcript-update kinds it delegates.
  */
 export function reduceSessionEvent(
   state: TranscriptState,
@@ -510,6 +515,17 @@ export function reduceSessionEvent(
       return { ...state, turnActive: false, lastStopReason: event.stopReason };
     case 'mcp_server_status':
       return { ...state, mcpServerStatuses: event.servers.map((server) => ({ ...server })) };
+    case 'mcp_server_prompts':
+      return {
+        ...state,
+        mcpServerPrompts: event.servers.map((server) => ({
+          ...server,
+          prompts: server.prompts.map((prompt) => ({
+            ...prompt,
+            arguments: prompt.arguments ? prompt.arguments.map((arg) => ({ ...arg })) : undefined,
+          })),
+        })),
+      };
   }
 }
 
@@ -555,10 +571,16 @@ export function reduceResyncGap(
  *
  * `toolCallId` itself is never included. Returns `[]` for an unknown id, a
  * root-level call (no `parentToolCallId`), or a broken/cyclic chain once a
- * link no longer resolves to a known item — this never throws. v1 has no
- * bespoke provider that populates `parentToolCallId` yet (§7.24: "ships in
- * v2"), so this is a real no-op today and only exercised once a provider's
- * `enrich()` hook starts promoting one.
+ * link no longer resolves to a known item — this never throws. Exercised
+ * for real against Claude Code as of issue #200: its ACP bridge
+ * (`@agentclientprotocol/claude-agent-acp`) stamps a subagent's own nested
+ * tool calls with `_meta.claudeCode.parentToolUseId`, which
+ * `@loombox/providers-claude`'s `claudeProviderModule.enrich()` promotes
+ * onto `parentToolCallId` (verified with a live run against the real npx
+ * bridge, not the fixture — see that module's own doc comment). Codex and
+ * the generic ACP tier have no equivalent signal yet (same issue's PR
+ * description), so this stays a no-op for them — `[]` for every item,
+ * same as before any provider populated the field.
  */
 export function ancestorChainForToolCall(
   items: readonly TranscriptItem[],
@@ -580,4 +602,80 @@ export function ancestorChainForToolCall(
   }
 
   return chain;
+}
+
+/**
+ * Per-tool-call nesting info (issue #200, SPEC.md §7.24's subagent-tree
+ * rendering): how many resolved `parentToolCallId` hops separate an item
+ * from a root, and — only when `depth > 0` — the immediate parent's own
+ * `title`, for a "nested in …" caption. See {@link computeToolCallNesting}.
+ */
+export interface ToolCallNesting {
+  /**
+   * `0` for a genuine root-level call (no `parentToolCallId`) AND for an
+   * ORPHAN — `parentToolCallId` set, but that id was never seen as its own
+   * tool-call item (the parent update was dropped, evicted by #729's
+   * resync ring, or simply hasn't arrived yet). Both render identically,
+   * at the top level: issue #200's acceptance is explicit that "a child
+   * whose parent never arrives" must still render, never disappear, and
+   * there is no honest way to distinguish "never had a parent" from
+   * "parent not seen (yet)" from the client's own state alone.
+   */
+  depth: number;
+  /** The immediate resolved parent's own `title`, set only when `depth > 0`. */
+  parentTitle: string | undefined;
+}
+
+/**
+ * One-pass nesting lookup for every tool-call item currently in `items`,
+ * keyed by id (issue #200). A UI (`TranscriptTimeline.svelte`) computes
+ * this ONCE per `items` reference and looks up each mounted row by id,
+ * rather than re-walking a chain per rendered row — the same "compute
+ * once from the full history, mounted rows just look up their own id"
+ * shape `TranscriptWindow` itself already uses for offsets, so a windowed
+ * transcript with thousands of items costs one pass per update, not one
+ * per visible row. Depends only on `items` (never on what a virtualized
+ * transcript currently has mounted), which is what lets a child's nesting
+ * render correctly even while its parent's own row is scrolled out of the
+ * mounted window (issue #755) — the child carries its own resolved depth,
+ * it never reads it off a parent DOM node.
+ *
+ * Each chain is walked independently with its own cycle guard, exactly
+ * like {@link ancestorChainForToolCall}'s own `visited` set (no
+ * cross-item memoization) — real subagent nesting is at most a few levels
+ * deep, so this is effectively linear in practice; deliberately the same
+ * bounded-walk shape already established here rather than a more
+ * complex memoized/iterative variant for a depth no real provider
+ * produces.
+ */
+export function computeToolCallNesting(
+  items: readonly TranscriptItem[],
+): ReadonlyMap<string, ToolCallNesting> {
+  const byId = new Map<string, TranscriptToolCallItem>();
+  for (const item of items) {
+    if (item.type === 'tool_call') byId.set(item.id, item);
+  }
+
+  const result = new Map<string, ToolCallNesting>();
+  for (const item of byId.values()) {
+    const immediateParent =
+      item.parentToolCallId !== undefined ? byId.get(item.parentToolCallId) : undefined;
+    if (!immediateParent) {
+      result.set(item.id, { depth: 0, parentTitle: undefined });
+      continue;
+    }
+
+    let depth = 1;
+    const visited = new Set<string>([item.id, immediateParent.id]);
+    let current = immediateParent;
+    while (current.parentToolCallId !== undefined) {
+      const next = byId.get(current.parentToolCallId);
+      if (!next || visited.has(next.id)) break;
+      depth += 1;
+      visited.add(next.id);
+      current = next;
+    }
+    result.set(item.id, { depth, parentTitle: immediateParent.title });
+  }
+  return result;
 }

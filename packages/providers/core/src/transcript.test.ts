@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ancestorChainForToolCall,
+  computeToolCallNesting,
   createTranscriptState,
   reduceResyncGap,
   reduceSessionEvent,
@@ -614,7 +615,7 @@ describe('ancestorChainForToolCall', () => {
     expect(ancestorChainForToolCall(state.items, 'root')).toEqual([]);
   });
 
-  it('returns [] for an unknown tool call id (v1 no-op: no bespoke provider populates parentToolCallId yet)', () => {
+  it('returns [] for an unknown tool call id', () => {
     const state = seedNested();
     expect(ancestorChainForToolCall(state.items, 'never-existed')).toEqual([]);
   });
@@ -624,6 +625,68 @@ describe('ancestorChainForToolCall', () => {
     state = reduceTranscript(state, { kind: 'tool_call', id: 'a', parentToolCallId: 'b' });
     state = reduceTranscript(state, { kind: 'tool_call', id: 'b', parentToolCallId: 'a' });
     expect(ancestorChainForToolCall(state.items, 'a')).toEqual(['b']);
+  });
+});
+
+describe('computeToolCallNesting (issue #200)', () => {
+  function seedNested(): TranscriptState {
+    let state = createTranscriptState();
+    const root: AcpToolCallUpdate = { kind: 'tool_call', id: 'root', title: 'Run subagent' };
+    const mid: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: 'mid',
+      parentToolCallId: 'root',
+      title: 'Bash',
+    };
+    const leaf: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: 'leaf',
+      parentToolCallId: 'mid',
+      title: 'Edit',
+    };
+    state = reduceTranscript(state, root);
+    state = reduceTranscript(state, mid);
+    state = reduceTranscript(state, leaf);
+    return state;
+  }
+
+  it('depth 0 for a root-level call with no parentToolCallId', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('root')).toEqual({ depth: 0, parentTitle: undefined });
+  });
+
+  it('depth 1 for a direct child, carrying the resolved parent title', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('mid')).toEqual({ depth: 1, parentTitle: 'Run subagent' });
+  });
+
+  it('depth 2+ for a grandchild — a tree deeper than two levels is defined, not capped', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('leaf')).toEqual({ depth: 2, parentTitle: 'Bash' });
+  });
+
+  it('an orphan child — parentToolCallId set, but that id never arrived — renders at depth 0, same as a root call', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: 'orphan',
+      parentToolCallId: 'never-arrived',
+      title: 'Bash',
+    });
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('orphan')).toEqual({ depth: 0, parentTitle: undefined });
+  });
+
+  it('never throws or loops forever on a cyclic chain (defensive against malformed data)', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'a', parentToolCallId: 'b' });
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'b', parentToolCallId: 'a' });
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('a')?.depth).toBe(1);
+    expect(nesting.get('b')?.depth).toBe(1);
   });
 });
 
@@ -865,6 +928,82 @@ describe('reduceSessionEvent: mcp_server_status', () => {
       updatedAt: 't1',
     });
     expect(entry).toEqual({ name: 'a', ok: false, category: 'handshake_failed', reason: 'r' });
+  });
+});
+
+describe('reduceSessionEvent: mcp_server_prompts (issue #754, D5-2)', () => {
+  it('starts undefined — no push means no opinion, distinct from an empty list', () => {
+    expect(createTranscriptState().mcpServerPrompts).toBeUndefined();
+  });
+
+  it('records a server, its prompts, and their argument schema verbatim', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [
+        {
+          name: 'linear-server',
+          prompts: [
+            { name: 'review', description: 'Review the current diff' },
+            {
+              name: 'triage',
+              description: 'Triage an issue',
+              arguments: [{ name: 'issueId', description: 'The issue id', required: true }],
+            },
+          ],
+        },
+      ],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerPrompts).toEqual([
+      {
+        name: 'linear-server',
+        prompts: [
+          { name: 'review', description: 'Review the current diff' },
+          {
+            name: 'triage',
+            description: 'Triage an issue',
+            arguments: [{ name: 'issueId', description: 'The issue id', required: true }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('a later push replaces the list wholesale, never accumulating across pushes', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [{ name: 'a', prompts: [{ name: 'p1' }] }],
+      updatedAt: 't1',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'mcp_server_prompts',
+      servers: [{ name: 'b', prompts: [{ name: 'p2' }] }],
+      updatedAt: 't2',
+    });
+    expect(state.mcpServerPrompts).toEqual([{ name: 'b', prompts: [{ name: 'p2' }] }]);
+  });
+
+  it('an empty push is genuinely valid (every launched server had no prompts), not "no push yet"', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [],
+      updatedAt: 't1',
+    });
+    expect(state.mcpServerPrompts).toEqual([]);
+  });
+
+  it('does not mutate the server/prompt/argument objects passed in (defensive clone)', () => {
+    const argument = { name: 'issueId', required: true };
+    const prompt = { name: 'triage', arguments: [argument] };
+    const server = { name: 'linear-server', prompts: [prompt] };
+    reduceSessionEvent(createTranscriptState(), {
+      kind: 'mcp_server_prompts',
+      servers: [server],
+      updatedAt: 't1',
+    });
+    expect(server).toEqual({ name: 'linear-server', prompts: [prompt] });
+    expect(prompt).toEqual({ name: 'triage', arguments: [argument] });
+    expect(argument).toEqual({ name: 'issueId', required: true });
   });
 });
 
