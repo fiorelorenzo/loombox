@@ -10,6 +10,9 @@
   "dependencies": {
     "@loombox/providers-core": "workspace:*"
   },
+  "devDependencies": {
+    "@agentclientprotocol/codex-acp": "1.1.10"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
