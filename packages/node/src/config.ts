@@ -127,6 +127,25 @@ export interface NodeCliConfig {
   /** Connection recipes for this node's `ssh:` targets, file-only (see {@link loadNodeConfig}). */
   sshTargets?: SshTargetConfig[];
   /**
+   * The node-side security boundary for D1-3's custom ACP agents
+   * (`docs/superpowers/specs/2026-08-05-zed-parity-decisions.md` §4;
+   * issue #748): the exact set of `command` strings a client's
+   * `SessionPrivateMetaV1.customAgent` is ever allowed to spawn on this
+   * node. Compared verbatim against `CustomAgentRecordV1.command` — no
+   * globbing, no path canonicalization, so an entry here is exactly the
+   * string an operator typed, nothing a client can influence.
+   *
+   * File/env-only by design, mirroring `sshTargets`'s own "not reachable
+   * from the client alone" contract: there is no wire message that reads
+   * OR writes this field, so a compromised or merely careless client has
+   * no path to it at all, only to `NodeDaemon`'s read-only in-memory copy
+   * enforced at spawn time (`CustomAgentNotAllowedError`). Defaults to
+   * `[]` on a fresh node with neither `LOOMBOX_CUSTOM_AGENT_ALLOWLIST` nor
+   * a config file entry set — refuse every custom agent until an operator
+   * explicitly opts one in, never trust-on-first-use.
+   */
+  customAgentAllowlist: readonly string[];
+  /**
    * This node's `local` target's concurrency cap (SPEC §7.16, issue #252;
    * `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS`/the config file's
    * `localMaxConcurrentSessions`) — see
@@ -157,6 +176,8 @@ interface NodeConfigFile {
   recoveryCode?: string;
   targets?: TargetDescriptor[];
   sshTargets?: SshTargetConfig[];
+  /** See {@link NodeCliConfig.customAgentAllowlist}. */
+  customAgentAllowlist?: string[];
   /** See {@link NodeCliConfig.localMaxConcurrentSessions}. */
   localMaxConcurrentSessions?: number;
   stateDir?: string;
@@ -261,6 +282,27 @@ function parseLocalMaxConcurrentSessions(
   return parsed;
 }
 
+/**
+ * Parses `LOOMBOX_CUSTOM_AGENT_ALLOWLIST`/the config file's
+ * `customAgentAllowlist` (issue #748) into the concrete list `NodeCliConfig.
+ * customAgentAllowlist` always carries — the env var (a comma-separated
+ * list, matching the operator-facing convenience `sshTargets`'s JSON-only
+ * shape deliberately skips) wins outright over the file when both are set,
+ * same precedence as every other field in this loader; neither set at all
+ * resolves to `[]`, the safe fresh-node default (see `NodeCliConfig.
+ * customAgentAllowlist`'s own doc comment for why that default matters).
+ */
+function parseCustomAgentAllowlist(
+  envValue: string | undefined,
+  fileValue: string[] | undefined,
+): readonly string[] {
+  if (envValue === undefined) return fileValue ?? [];
+  return envValue
+    .split(',')
+    .map((command) => command.trim())
+    .filter((command) => command.length > 0);
+}
+
 export interface LoadNodeConfigOptions {
   /** Defaults to `process.env`; tests inject a plain object instead. */
   env?: NodeJS.ProcessEnv;
@@ -306,6 +348,11 @@ export interface LoadNodeConfigOptions {
  * - `LOOMBOX_TARGETS` (optional; a JSON array of `TargetDescriptor`)
  * - `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS` (optional; a positive integer —
  *   see {@link NodeCliConfig.localMaxConcurrentSessions})
+ * - `LOOMBOX_CUSTOM_AGENT_ALLOWLIST` (optional; a comma-separated list of
+ *   allowed `command` strings for D1-3's custom ACP agents, issue #748 —
+ *   see {@link NodeCliConfig.customAgentAllowlist}. Never settable over the
+ *   wire; edit this env var, or the config file's `customAgentAllowlist`
+ *   JSON array, on the node's own host and restart it.)
  * - `LOOMBOX_NODE_STATE_DIR` (optional; overrides where node state — the
  *   persisted identity keypair — lives on disk)
  * - `LOOMBOX_NODE_CONFIG` (optional; path to a JSON config file, same as
@@ -370,6 +417,10 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     file.localMaxConcurrentSessions,
   );
   const stateDir = env.LOOMBOX_NODE_STATE_DIR ?? file.stateDir;
+  const customAgentAllowlist = parseCustomAgentAllowlist(
+    env.LOOMBOX_CUSTOM_AGENT_ALLOWLIST,
+    file.customAgentAllowlist,
+  );
 
   return {
     relayUrl: withRelayWsPath(relayUrl!),
@@ -385,6 +436,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     recoveryCode: amk || wrappedAmkFilePath ? undefined : recoveryCode,
     targets,
     sshTargets: file.sshTargets,
+    customAgentAllowlist,
     localMaxConcurrentSessions,
     stateDir,
   };
