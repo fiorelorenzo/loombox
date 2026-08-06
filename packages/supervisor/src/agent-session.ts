@@ -4,8 +4,10 @@ import { AcpClient } from '@loombox/providers-core';
 import type {
   AcpChildProcess,
   AcpConfigOption,
+  AcpFeatureFlags,
   AcpMcpServerConfig,
   AcpProvider,
+  AcpPromptContentBlock,
   AcpSpawnConfig,
   AcpToolKind,
   AcpTranscriptUpdate,
@@ -310,15 +312,45 @@ export class AgentSession extends EventEmitter {
     return this.client.availableCommands;
   }
 
-  /** Submits a new prompt into this session and awaits the turn's response. Throws on a replay-only session (`isLive === false`): there is no child left to send it to (issue #78). */
-  async prompt(text: string): Promise<void> {
+  /**
+   * This session's negotiated capability flags (SPEC.md §5.5; issue #180),
+   * the same flat `AcpFeatureFlags` `AcpClient.getFeatureFlags()` derives
+   * from the `initialize` handshake, exposed here (unmodified) exactly like
+   * `configOptions`/`availableCommands` above so a caller
+   * (`@loombox/node`'s `deliverPrompt`) can decide whether this turn's
+   * attachments are eligible for the inline base64 hand-off
+   * (`supportsImages`, SPEC.md §7.25; issue #158) without reaching past
+   * this class into `AcpClient` itself. Only meaningful (and only
+   * available) on a live session.
+   */
+  getFeatureFlags(): AcpFeatureFlags {
+    if (!this.client) {
+      throw new Error(
+        `AgentSession: session "${this.sessionId}" has no live agent process (persisted/replay-only) — there are no negotiated capabilities to read.`,
+      );
+    }
+    return this.client.getFeatureFlags();
+  }
+
+  /**
+   * Submits a new prompt into this session and awaits the turn's response.
+   * `extraContent` (SPEC.md §7.25 "Hand off to the agent"; issue #158)
+   * appends any content blocks a caller already resolved for this turn —
+   * typically an inline base64 image built via
+   * `@loombox/providers-core`'s `buildInlineImageContentBlock`, gated on
+   * {@link getFeatureFlags}'s `supportsImages` — after the required text
+   * block, verbatim; defaults to `[]` so every existing plain-text caller
+   * is unaffected. Throws on a replay-only session (`isLive === false`):
+   * there is no child left to send it to (issue #78).
+   */
+  async prompt(text: string, extraContent: AcpPromptContentBlock[] = []): Promise<void> {
     if (!this.client) {
       throw new Error(
         `AgentSession: session "${this.sessionId}" has no live agent process (persisted/replay-only after a supervisor restart) — start a new session instead of prompting this one.`,
       );
     }
     this.setAttention('working');
-    await this.client.prompt(this.id, text);
+    await this.client.prompt(this.id, text, extraContent);
   }
 
   /**

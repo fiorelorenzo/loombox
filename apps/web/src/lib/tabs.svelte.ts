@@ -21,7 +21,7 @@
  * wall-clock timestamp — see {@link syncDirty}'s own doc comment for why.
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import type { GitDiffFileV1 } from '@loombox/protocol';
+import type { GitDiffFileV1, GitHunkFileV1 } from '@loombox/protocol';
 import type { TranscriptItem } from '@loombox/providers-core/browser';
 
 /** A file tab's own content-loading state — set to `'loading'` the instant a tab opens, then resolved once the caller's `readFile` round trip (or a re-open) settles. */
@@ -34,6 +34,12 @@ export type FileTabViewerState =
 export type DiffTabViewerState =
   | { status: 'loading' }
   | { status: 'loaded'; files: readonly GitDiffFileV1[] }
+  | { status: 'error'; message: string };
+
+/** The working-tree diff tab's own STAGING-mode content-loading state (SPEC §7.6; issue #232) — the exact same "loading -> resolved" shape as {@link DiffTabViewerState}, a per-hunk breakdown fetched separately from it (`git_hunk_diff_request`/`git_hunk_diff_response`, distinct from `git_diff_request`/`git_diff_response`) since the two views answer different questions ("what changed against HEAD" vs. "what's staged vs. unstaged, hunk by hunk"). */
+export type HunkTabViewerState =
+  | { status: 'loading' }
+  | { status: 'loaded'; files: readonly GitHunkFileV1[] }
   | { status: 'error'; message: string };
 
 /** The one permanent tab — pinned first, never closable, never reorderable (issue #737's own acceptance line). */
@@ -73,6 +79,8 @@ export class CanvasTabsState {
   readonly #viewedUntil = new SvelteMap<string, number>();
   /** The working-tree diff tab's own content (issue #206) — `undefined` until {@link openDiff} first opens it, mirroring `#viewers`' "no entry yet" state but as a single field rather than a map, since there is only ever one diff tab. */
   #diffViewer = $state<DiffTabViewerState | undefined>(undefined);
+  /** The working-tree diff tab's own STAGING-mode content (issue #232) — same "no entry until first opened" shape as {@link #diffViewer}, kept as a separate field since it's fetched via a separate wire pair on its own refresh cadence (every hunk action re-fetches only this, never {@link #diffViewer}). */
+  #hunkViewer = $state<HunkTabViewerState | undefined>(undefined);
 
   get tabs(): readonly CanvasTab[] {
     return this.#tabs;
@@ -97,6 +105,10 @@ export class CanvasTabsState {
 
   get diffViewer(): DiffTabViewerState | undefined {
     return this.#diffViewer;
+  }
+
+  get hunkViewer(): HunkTabViewerState | undefined {
+    return this.#hunkViewer;
   }
 
   isDirty(path: string): boolean {
@@ -137,6 +149,7 @@ export class CanvasTabsState {
     if (!this.#tabs.some((tab) => tab.id === DIFF_TAB.id)) {
       this.#tabs = [...this.#tabs, DIFF_TAB];
       this.#diffViewer = { status: 'loading' };
+      this.#hunkViewer = { status: 'loading' };
     }
     this.activate(DIFF_TAB.id, items);
   }
@@ -173,6 +186,7 @@ export class CanvasTabsState {
       this.#viewedUntil.delete(closing.path);
     } else if (closing.kind === 'diff') {
       this.#diffViewer = undefined;
+      this.#hunkViewer = undefined;
     }
     if (wasActive) {
       this.#activeId = (this.#tabs[Math.min(index, this.#tabs.length - 1)] ?? TRANSCRIPT_TAB).id;
@@ -185,6 +199,10 @@ export class CanvasTabsState {
 
   setDiffViewer(state: DiffTabViewerState): void {
     this.#diffViewer = state;
+  }
+
+  setHunkViewer(state: HunkTabViewerState): void {
+    this.#hunkViewer = state;
   }
 
   /**
@@ -230,5 +248,6 @@ export class CanvasTabsState {
     this.#dirty.clear();
     this.#viewedUntil.clear();
     this.#diffViewer = undefined;
+    this.#hunkViewer = undefined;
   }
 }
