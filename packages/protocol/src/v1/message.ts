@@ -78,6 +78,16 @@ import {
   permissionPolicySet,
   permissionPolicyViolation,
 } from './permission-policy';
+import {
+  checkpointCreate,
+  checkpointList,
+  checkpointListResult,
+  checkpointResult,
+  checkpointRestore,
+  checkpointRestorePreview,
+  checkpointRestorePreviewResult,
+  checkpointRestoreResult,
+} from './checkpoint';
 import { keymapGetRequest, keymapResult, keymapSetRequest } from './keymap';
 import {
   agentProfileListGet,
@@ -231,6 +241,14 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   agentProfileSessionGet,
   agentProfileSessionSet,
   agentProfileSessionResult,
+  checkpointCreate,
+  checkpointResult,
+  checkpointList,
+  checkpointListResult,
+  checkpointRestorePreview,
+  checkpointRestorePreviewResult,
+  checkpointRestore,
+  checkpointRestoreResult,
   prOpenPreviewRequest,
   prOpenPreviewResult,
   prOpenRequest,

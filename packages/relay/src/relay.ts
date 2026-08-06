@@ -1465,6 +1465,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'checkpoint_result':
+      case 'checkpoint_list_result':
+      case 'checkpoint_restore_preview_result':
+      case 'checkpoint_restore_result':
+        // The owning node's reply to a client's checkpoint_create/_list/
+        // _restore_preview/_restore (SPEC §7.20; issue #603) — fanned out
+        // exactly like permission_policy_result above; the relay never
+        // opens any of these envelopes, so it never sees a checkpoint's
+        // label, which commits sit between it and HEAD, or what a
+        // restore actually discarded (SPEC §8's metadata boundary).
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'permission_policy_result':
         // The owning node's reply to a client's permission_policy_get/_set
         // (SPEC §7.17; issue #751) — fanned out exactly like
@@ -2219,14 +2231,23 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
+      case 'checkpoint_create':
+      case 'checkpoint_list':
+      case 'checkpoint_restore_preview':
+      case 'checkpoint_restore':
       case 'pr_open_preview_request':
       case 'pr_open_request':
-        // A client previewing/confirming opening a pull request from a
-        // session's own branch (SPEC §7.14; issue #238) — routed to the
-        // owning node exactly like permission_policy_get/_set above. The
-        // relay only ever sees sessionId/requestId plus (for
-        // pr_open_request) an opaque `EncryptedEnvelope`; no title, body,
-        // branch name, or PR URL ever reaches the relay in the clear.
+        // A client taking/listing/previewing/rolling back a session's
+        // checkpoints (SPEC §7.20; issue #603), or previewing/confirming
+        // opening a pull request from a session's own branch (SPEC §7.14;
+        // issue #238) — routed to the owning node exactly like
+        // permission_policy_get/_set above. The relay only ever sees
+        // sessionId/requestId plus, for checkpoint_create/pr_open_request,
+        // an opaque `EncryptedEnvelope`; checkpoint_restore_preview/
+        // _restore carry only an opaque checkpointId and (for _restore) a
+        // plain confirm boolean — no checkpoint label, commit, file
+        // content, PR title, body, branch name, or PR URL ever reaches the
+        // relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'agent_profile_list_get':
