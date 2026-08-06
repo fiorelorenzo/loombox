@@ -3721,7 +3721,7 @@
               turnActive={transcript?.turnActive ?? false}
               providerId={selectedSession?.provider}
               {permissionHead}
-              onFork={forkSessionFromTurn}
+              onFork={narrowViewport ? undefined : forkSessionFromTurn}
               {forkingTurnId}
             />
 
