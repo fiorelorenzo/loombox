@@ -70,6 +70,29 @@ describe('MessageItem', () => {
     expect(screen.getByRole('button', { name: 'Copy agent message' })).toBeTruthy();
   });
 
+  it('renders no fork button when onFork is omitted (issue #746)', () => {
+    render(MessageItem, { props: { item: messageItem() } });
+    expect(screen.queryByRole('button', { name: 'Fork session from here' })).toBeNull();
+  });
+
+  it("calls onFork with the item's own turnId when the fork button is clicked (issue #746)", async () => {
+    const onFork = vi.fn();
+    render(MessageItem, { props: { item: messageItem({ turnId: 'turn-42' }), onFork } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Fork session from here' }));
+
+    expect(onFork).toHaveBeenCalledWith('turn-42');
+  });
+
+  it('disables the fork button and swaps its label while forking is true (issue #746)', () => {
+    render(MessageItem, { props: { item: messageItem(), onFork: vi.fn(), forking: true } });
+
+    const button = screen.getByRole('button', {
+      name: 'Forking session…',
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
   it("draws the thought disclosure chevron via the shared Icon component (#468), decorative behind the button's own aria-label", () => {
     render(MessageItem, {
       props: {

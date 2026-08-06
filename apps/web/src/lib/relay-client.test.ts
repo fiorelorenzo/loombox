@@ -4997,6 +4997,170 @@ describe('RelayClient: archiveSession (SPEC §7.2 board archive; issue #512)', (
   });
 });
 
+describe('RelayClient: forkSession (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2; issue #746)', () => {
+  it('sends a session_fork_request derived from the source session\'s own known meta, and resolves with the new session id once outcome: "ok" comes back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fork-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    // The node must have announced its targets before a fork can resolve
+    // one: `forkSession` routes by `targetId`, and the relay refuses an
+    // unknown target exactly as it does for `createSession`, whose own test
+    // above seeds the same announce.
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const session = makeSessionMeta({ id: 'sess_fork_source', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Fork me', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fork-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const forkPromise = client.forkSession(session.id, 'turn:1');
+
+    const request = (await node.waitFor((m) => m.type === 'session_fork_request')) as {
+      type: 'session_fork_request';
+      requestId: string;
+      sessionId: string;
+      sourceSessionId: string;
+      targetId: string;
+      provider: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+    expect(request.sourceSessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+    expect(request.provider).toBe(session.provider);
+    expect(Object.keys(request).sort()).toEqual(
+      [
+        'privateEnvelope',
+        'protocolVersion',
+        'provider',
+        'requestId',
+        'sessionId',
+        'sourceSessionId',
+        'targetId',
+        'type',
+      ].sort(),
+    );
+
+    const forkKey = await deriveNodeSessionKey(amk, accountId, request.sessionId);
+    const decryptedMeta = await nodeOpen<{
+      title: string;
+      projectPath: string;
+      forkFromTurnId: string;
+    }>(request.sessionId, request.privateEnvelope, forkKey);
+    expect(decryptedMeta.projectPath).toBe('/proj');
+    expect(decryptedMeta.forkFromTurnId).toBe('turn:1');
+    expect(decryptedMeta.title).toBe('Fork me (fork)');
+
+    node.send({
+      type: 'session_fork_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      result: { outcome: 'ok' },
+    });
+
+    await expect(forkPromise).resolves.toBe(request.sessionId);
+  });
+
+  it('rejects with the node-reported refusal reason when outcome: "error" comes back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fork-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const session = makeSessionMeta({ id: 'sess_fork_source_2', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Fork me too', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fork-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const forkPromise = client.forkSession(session.id, 'turn:1');
+    const request = (await node.waitFor((m) => m.type === 'session_fork_request')) as {
+      requestId: string;
+      sessionId: string;
+    };
+    node.send({
+      type: 'session_fork_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      result: { outcome: 'error', message: 'no active agent for the source session' },
+    });
+
+    await expect(forkPromise).rejects.toThrow('no active agent for the source session');
+  });
+
+  it('rejects immediately for an unknown source session, sending nothing over the wire', async () => {
+    const amk = generateAmk();
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-fork-unknown',
+      deviceId: 'client-fork-unknown',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.forkSession('sess_does_not_exist', 'turn:1')).rejects.toThrow(
+      /unknown source session/,
+    );
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-fork-no-conn',
+      deviceId: 'client-fork-no-conn',
+    });
+    await expect(client.forkSession('sess_whatever', 'turn:1')).rejects.toThrow(
+      /not connected to the relay/,
+    );
+  });
+});
+
 describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#174)', () => {
   it('openTerminal sends an encrypted terminal_open, flips to open on terminal_opened ok, streams decrypted output to onTerminalOutput listeners, and resize/close send their own encrypted/plain frames', async () => {
     const amk = generateAmk();

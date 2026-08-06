@@ -68,6 +68,8 @@ import {
   type SessionArchiveRequest,
   type SessionArchiveResult,
   type SessionCreate,
+  type SessionForkRequest,
+  type SessionForkResult,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
   type SessionStatusV1,
@@ -159,11 +161,13 @@ import { sampleLocalResources, sampleRemoteResources } from './resource-sampler'
 import { SameFolderGuard } from './same-folder-guard';
 import { SessionConcurrencyGate } from './session-concurrency-gate';
 import {
+  CannotForkSessionError,
   InvalidSessionTransitionError,
   SessionManager,
   sessionWorktreeBranch,
   type Session,
 } from './session-manager';
+import { cutTranscriptAtTurn } from './session-fork';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -1288,6 +1292,35 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /**
+   * Forks `sourceSessionId` from `forkFromTurnId` directly on this node
+   * (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue
+   * #746) — the node-initiated counterpart to {@link createSession} above,
+   * as opposed to a client's `session_fork_request` routed in over the
+   * relay ({@link handleSessionForkRequest}). Both paths converge on
+   * {@link forkSessionInternal}; see its doc comment for the full set of
+   * refusal cases.
+   */
+  async forkSession(
+    sourceSessionId: string,
+    forkFromTurnId: string,
+    options: { title?: string; provider?: string; targetId?: string } = {},
+  ): Promise<Session> {
+    const source = this.sessionManager.getSession(sourceSessionId);
+    if (!source) {
+      throw new Error(`NodeDaemon: no session with id ${sourceSessionId}`);
+    }
+    return this.forkSessionInternal({
+      sessionId: randomUUID(),
+      sourceSessionId,
+      forkFromTurnId,
+      projectPath: source.projectPath,
+      provider: options.provider ?? source.provider,
+      targetId: options.targetId ?? source.targetId ?? 'local',
+      title: options.title ?? basename(source.projectPath),
+    });
+  }
+
   /** Submits a prompt directly into a session this node owns (bypassing the relay). */
   async promptSession(sessionId: string, text: string): Promise<void> {
     const bridge = this.bridges.get(sessionId);
@@ -1426,12 +1459,18 @@ export class NodeDaemon extends EventEmitter {
    * feature worse than nothing"). On success the slot instead lives on for
    * as long as the session runs, released only once its agent exits — a
    * crash, a kill, or an explicit stop (see {@link wireAgentSession}'s
-   * `'exit'` handler and {@link stopBridgeIfActive}).
+   * `'exit'` handler and {@link stopBridgeIfActive}). `seedTranscriptUpdates`
+   * is set only by {@link forkSessionInternal}: once the freshly spawned
+   * agent's own bridge exists, {@link finishSessionCreation} replays them
+   * onto it as this fork's copied history (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — `undefined`
+   * for every ordinary creation, which is a no-op.
    */
   private async launchLocalSession(
     session: Session,
     opts: { provider: string; targetId: string; title: string },
     mcpServers: AcpMcpServerConfig[],
+    seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
     await this.sendSessionStatus(session.id, 'starting');
 
@@ -1456,7 +1495,13 @@ export class NodeDaemon extends EventEmitter {
       throw error;
     }
 
-    return this.finishSessionCreation(session, agentSession, opts);
+    return this.finishSessionCreation(
+      session,
+      agentSession,
+      opts,
+      undefined,
+      seedTranscriptUpdates,
+    );
   }
 
   /**
@@ -1957,6 +2002,7 @@ export class NodeDaemon extends EventEmitter {
     agentSession: AgentSession,
     opts: { targetId: string; title: string },
     remoteChild?: RemoteAgentChildProcess,
+    seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
     const bridge: SessionBridge = {
       session,
@@ -1977,6 +2023,19 @@ export class NodeDaemon extends EventEmitter {
     // out.
     await this.announce(bridge.session, bridge.targetId, bridge.title);
     this.forwardInitialSessionState(bridge);
+    // A fork's copied history (design spec
+    // `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746): recorded
+    // onto the fresh agent's own transcript exactly like a live arrival
+    // would be, then replayed to the relay in the same order — after
+    // `forwardInitialSessionState` above, so a subscribing client sees
+    // status/config first, history second, live turns third, the same
+    // order any other session's own history would arrive in.
+    if (seedTranscriptUpdates?.length) {
+      agentSession.seedTranscriptUpdates(seedTranscriptUpdates);
+      for (const update of seedTranscriptUpdates) {
+        this.forwardSessionEvent(session.id, update);
+      }
+    }
 
     return session;
   }
@@ -2501,6 +2560,9 @@ export class NodeDaemon extends EventEmitter {
       case 'session_archive_request':
         this.handleSessionArchiveRequest(message);
         return;
+      case 'session_fork_request':
+        this.handleSessionForkRequest(message);
+        return;
       case 'prompt_inject':
         this.handlePromptInject(message);
         return;
@@ -2660,6 +2722,173 @@ export class NodeDaemon extends EventEmitter {
     // `undefined`/wrong-shaped or missing fields.
     const decrypted = await openJson<unknown>(message.sessionId, message.privateEnvelope, key);
     return parseSessionPrivateMetaV1(decrypted);
+  }
+
+  /**
+   * A client asked (via the relay) to fork one of this node's sessions
+   * from a turn into a brand-new one (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746). Always
+   * replies — `outcome: 'error'` with a human-readable reason for every
+   * refusal case, `outcome: 'ok'` only once the fork's worktree is copied,
+   * its transcript seeded, and its own agent spawn kicked off (whose
+   * success/failure rides the new session's ordinary `session_status`
+   * events from here, exactly like any other creation) — never a
+   * half-created fork left for the client to discover on its own.
+   */
+  private handleSessionForkRequest(message: SessionForkRequest): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      this.sendSessionForkResponse(message, {
+        outcome: 'error',
+        message: `unknown target "${message.targetId}"`,
+      });
+      return;
+    }
+
+    this.decryptSessionFork(message)
+      .then(async (privateMeta) => {
+        const forkFromTurnId = privateMeta.forkFromTurnId;
+        if (!forkFromTurnId) {
+          this.sendSessionForkResponse(message, {
+            outcome: 'error',
+            message: 'malformed fork request: missing forkFromTurnId',
+          });
+          return;
+        }
+        try {
+          await this.forkSessionInternal({
+            sessionId: message.sessionId,
+            sourceSessionId: message.sourceSessionId,
+            forkFromTurnId,
+            projectPath: privateMeta.projectPath,
+            provider: message.provider,
+            targetId: message.targetId,
+            title: privateMeta.title,
+          });
+          this.sendSessionForkResponse(message, { outcome: 'ok' });
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: failed to fork session ${message.sourceSessionId} into ${message.sessionId}: ${detail}`,
+          );
+          this.sendSessionForkResponse(message, { outcome: 'error', message: detail });
+        }
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendSessionForkResponse(message, {
+          outcome: 'error',
+          message: `could not read the fork request: ${detail}`,
+        });
+      });
+  }
+
+  private async decryptSessionFork(message: SessionForkRequest): Promise<SessionPrivateMetaV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    const decrypted = await openJson<unknown>(message.sessionId, message.privateEnvelope, key);
+    return parseSessionPrivateMetaV1(decrypted);
+  }
+
+  /**
+   * Does the actual work behind a `session_fork_request`, once its
+   * envelope is decrypted: validates the source is forkable right now
+   * (issue #746's "never a half-created fork" bar), cuts its transcript at
+   * `forkFromTurnId`, copies its worktree via `SessionManager.forkSession`,
+   * and launches the new session exactly like `createSessionInternal`
+   * does for an ordinary creation — same concurrency-gate queueing, same
+   * `launchLocalSession` — with `seedTranscriptUpdates` threaded through
+   * so `finishSessionCreation` replays the copied history onto it. Throws
+   * (never half-creates) for: an unrecognized target, a non-`local`
+   * target (this wave's scope — an `ssh:` fork would need a remote
+   * worktree copy this doesn't build), a source with no active bridge (no
+   * live agent, or disconnected — there is nothing to read its transcript
+   * from), or a `forkFromTurnId` this source's transcript never produced.
+   */
+  private async forkSessionInternal(opts: {
+    sessionId: string;
+    sourceSessionId: string;
+    forkFromTurnId: string;
+    projectPath: string;
+    provider: string;
+    targetId: string;
+    title: string;
+  }): Promise<Session> {
+    const target = this.targets.find((candidate) => candidate.id === opts.targetId);
+    if (!target) {
+      throw new Error(`no target with id "${opts.targetId}"`);
+    }
+    if (target.kind !== 'local') {
+      throw new Error(`forking is only supported on a 'local' target, not '${target.kind}'`);
+    }
+
+    const sourceBridge = this.bridges.get(opts.sourceSessionId);
+    if (!sourceBridge) {
+      throw new Error(
+        `session ${opts.sourceSessionId} has no active agent to fork from (no live agent, or disconnected)`,
+      );
+    }
+    if (sourceBridge.session.target !== 'local') {
+      throw new Error(`cannot fork a '${sourceBridge.session.target}' session`);
+    }
+
+    const seedTranscriptUpdates = cutTranscriptAtTurn(
+      sourceBridge.agentSession.getTranscriptUpdates(),
+      opts.forkFromTurnId,
+    );
+    if (!seedTranscriptUpdates) {
+      throw new Error(
+        `turn "${opts.forkFromTurnId}" was not found in session ${opts.sourceSessionId}'s transcript`,
+      );
+    }
+
+    const mcpServers = await this.resolveMcpServers(opts.projectPath);
+
+    let session: Session;
+    try {
+      session = await this.sessionManager.forkSession(opts.sourceSessionId, {
+        id: opts.sessionId,
+        provider: opts.provider,
+        nodeId: this.nodeId,
+        targetId: opts.targetId,
+      });
+    } catch (error) {
+      // Re-thrown as a plain Error: `handleSessionForkRequest`'s caller
+      // only cares about `.message` (the wire's `outcome: 'error'`
+      // string), not the class identity `CannotForkSessionError`
+      // otherwise carries.
+      throw error instanceof CannotForkSessionError ? new Error(error.message) : error;
+    }
+    await this.announce(session, opts.targetId, opts.title);
+
+    const launchOpts = { provider: opts.provider, targetId: opts.targetId, title: opts.title };
+    if (this.concurrencyGate.tryAcquire(target.id)) {
+      return this.launchLocalSession(session, launchOpts, mcpServers, seedTranscriptUpdates);
+    }
+
+    // Over the cap (SPEC §7.16, issue #252): queue rather than launch,
+    // exactly like `createSessionInternal`'s own overflow path.
+    await this.sendSessionStatus(session.id, 'queued');
+    this.concurrencyGate.enqueue(target.id, session.id, () => {
+      this.launchLocalSession(session, launchOpts, mcpServers, seedTranscriptUpdates).catch(
+        (error: unknown) => {
+          console.warn(
+            `NodeDaemon: forked session ${session.id} failed to start after dequeuing: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        },
+      );
+    });
+    return session;
+  }
+
+  private sendSessionForkResponse(message: SessionForkRequest, result: SessionForkResult): void {
+    this.relay.send({
+      type: 'session_fork_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      result,
+    });
   }
 
   /**

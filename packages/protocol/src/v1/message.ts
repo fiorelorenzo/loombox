@@ -52,7 +52,12 @@ import {
   targetUpdateRequest,
   targetUpdateResponse,
 } from './target-lifecycle';
-import { sessionArchiveRequest, sessionArchiveResponse } from './session-lifecycle';
+import {
+  sessionArchiveRequest,
+  sessionArchiveResponse,
+  sessionForkRequest,
+  sessionForkResponse,
+} from './session-lifecycle';
 import {
   connectedAccountAnnounce,
   connectedAccountList,
@@ -121,6 +126,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   sessionListV1,
   sessionArchiveRequest,
   sessionArchiveResponse,
+  sessionForkRequest,
+  sessionForkResponse,
   sessionUpdateEnvelopeV1,
   promptInjectV1,
   permissionRequest,
