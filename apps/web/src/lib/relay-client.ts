@@ -49,6 +49,10 @@ import {
   parseTestRunnerConfigResultPayloadV1,
   parsePrOpenPreviewResultPayloadV1,
   parsePrOpenResultPayloadV1,
+  parseCheckpointResultPayloadV1,
+  parseCheckpointListResultPayloadV1,
+  parseCheckpointRestorePreviewResultPayloadV1,
+  parseCheckpointRestoreResultPayloadV1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
   type AccountPinMapV1,
@@ -65,6 +69,15 @@ import {
   type CustomAgentProbeResponsePayloadV1,
   type CustomAgentProbeResultV1,
   type CustomAgentRecordV1,
+  type CheckpointCreatePayloadV1,
+  type CheckpointListResult,
+  type CheckpointListResultPayloadV1,
+  type CheckpointResult,
+  type CheckpointResultPayloadV1,
+  type CheckpointRestorePreviewResult,
+  type CheckpointRestorePreviewResultPayloadV1,
+  type CheckpointRestoreResult,
+  type CheckpointRestoreResultPayloadV1,
   trackerSnapshotResponsePayloadV1,
   trackerWriteResponsePayloadV1,
   mcpPromptGetResponsePayloadV1,
@@ -208,6 +221,16 @@ export type {
 } from '@loombox/protocol';
 export type { CustomAgentProbeResultV1, CustomAgentRecordV1 } from '@loombox/protocol';
 export type { PrOpenFailureCategory, PrOpenOutcome, PrOpenPreviewOutcome } from '@loombox/protocol';
+export type {
+  CheckpointErrorTypeV1,
+  CheckpointResultPayloadV1,
+  CheckpointListResultPayloadV1,
+  CheckpointRestorePreviewResultPayloadV1,
+  CheckpointRestoreResultPayloadV1,
+  GitCheckpointV1,
+  RestorePreviewV1,
+  RestoreResultV1,
+} from '@loombox/protocol';
 
 /**
  * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
@@ -1469,6 +1492,29 @@ export class RelayClient {
   private readonly pendingPrOpenRequests = new Map<
     string,
     { resolve: (result: PrOpenOutcome) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link createCheckpoint} call it belongs to (SPEC §7.20; issue #268/#603). Resolves the whole `checkpoint_result` outcome union (`'ok'` or `'error'`) rather than throwing for an error outcome — same "expected, renderable result" contract {@link pendingPrOpenPreviewRequests} above documents, since a caller needs to distinguish which named `errorType` (e.g. `unsupported_target` for an ssh: session) rather than only free text. */
+  private readonly pendingCheckpointCreateRequests = new Map<
+    string,
+    { resolve: (result: CheckpointResultPayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link listCheckpoints} call it belongs to (SPEC §7.20; issue #268/#603) — a separate map from {@link pendingCheckpointCreateRequests} since its reply is `checkpoint_list_result`, not `checkpoint_result`. Same "resolves the outcome union, never throws for a named error" contract. */
+  private readonly pendingCheckpointListRequests = new Map<
+    string,
+    { resolve: (result: CheckpointListResultPayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link previewCheckpointRestore} call it belongs to (SPEC §7.20; issue #268/#603) — a separate map since its reply is `checkpoint_restore_preview_result`. */
+  private readonly pendingCheckpointRestorePreviewRequests = new Map<
+    string,
+    {
+      resolve: (result: CheckpointRestorePreviewResultPayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /** requestId -> the pending {@link restoreCheckpoint} call it belongs to (SPEC §7.20; issue #268/#603) — a separate map since its reply is `checkpoint_restore_result`, whose outcome union adds a third `'confirmation_required'` member on top of `'ok'`/`'error'` ({@link CheckpointRestoreResultPayloadV1}). */
+  private readonly pendingCheckpointRestoreRequests = new Map<
+    string,
+    { resolve: (result: CheckpointRestoreResultPayloadV1) => void; reject: (error: Error) => void }
   >();
   /** sessionId -> every listener registered via {@link onPermissionPolicyViolation}, fired with each decrypted `permission_policy_violation` as it arrives (SPEC §7.17; issue #751) — mirrors {@link terminalOutputListeners}, keyed by session alone since a violation isn't scoped to one terminal/run. */
   private readonly permissionPolicyViolationListeners = new Map<
@@ -2908,6 +2954,215 @@ export class RelayClient {
           clearTimeout(timer);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
+    });
+  }
+
+  /**
+   * Takes a checkpoint of `sessionId`'s worktree right now (SPEC §7.20;
+   * issue #268's "named or auto-labeled checkpoint on demand", issue
+   * #603's own wiring) — the manual counterpart to the owning node's
+   * automatic per-turn checkpoint (`auto: before turn <n>`), since that
+   * one only ever fires at a turn boundary. `message` is free text (a
+   * user-chosen label), sent trimmed and only when non-blank — the wire
+   * payload's own `min(1).optional()` contract
+   * (`checkpointCreatePayloadV1`) — and enveloped, same reasoning
+   * `setTestRunnerConfig` already applies to a command string. Resolves
+   * the whole `checkpoint_result` outcome union (`'ok'` with the new
+   * {@link GitCheckpointV1}, or `'error'` with a named
+   * {@link CheckpointErrorTypeV1}) rather than throwing for an error
+   * outcome — an `ssh:` session's `unsupported_target` is an expected,
+   * renderable state (`CheckpointPanel.svelte`'s own "unsupported" state),
+   * not a transport failure; only a timeout/no-connection rejects.
+   */
+  createCheckpoint(
+    sessionId: string,
+    message?: string,
+    timeoutMs = 5000,
+  ): Promise<CheckpointResultPayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot create checkpoint, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('checkpoint');
+    return new Promise<CheckpointResultPayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCheckpointCreateRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for checkpoint_result'));
+      }, timeoutMs);
+      this.pendingCheckpointCreateRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const trimmed = message?.trim();
+      const payload: CheckpointCreatePayloadV1 = trimmed ? { message: trimmed } : {};
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'checkpoint_create',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingCheckpointCreateRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Reads every checkpoint taken so far for `sessionId` (SPEC §7.20; issue
+   * #268/#603), oldest first — `[]` for a session with none yet, never an
+   * error by itself. No envelope on the request, same reasoning as
+   * {@link getPermissionPolicy}. Resolves the whole `checkpoint_list_result`
+   * outcome union rather than throwing for an error outcome — same
+   * "unsupported_target is an expected, renderable state" contract
+   * {@link createCheckpoint} documents, so `CheckpointPanel.svelte` can
+   * render that state distinctly instead of a generic load failure.
+   */
+  listCheckpoints(sessionId: string, timeoutMs = 5000): Promise<CheckpointListResultPayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list checkpoints, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('checkpointlist');
+    return new Promise<CheckpointListResultPayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCheckpointListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for checkpoint_list_result'));
+      }, timeoutMs);
+      this.pendingCheckpointListRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'checkpoint_list',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Asks `sessionId`'s owning node what restoring to `checkpointId` would
+   * do, with NO side effects (SPEC §7.20; issue #268/#603) — the read
+   * `CheckpointRestoreDialog.svelte` calls the moment it opens, before its
+   * "restore" button is ever enabled, same two-phase shape
+   * {@link previewPrOpen}/{@link openPr} already establish.
+   * `checkpointId` travels as a plain field, no envelope, mirroring the
+   * wire message's own shape. Resolves the whole outcome union — same
+   * "never throws for a named error" contract {@link createCheckpoint}
+   * documents, since `checkpoint_not_found` and `unsupported_target` are
+   * both expected, renderable states here, not transport failures.
+   */
+  previewCheckpointRestore(
+    sessionId: string,
+    checkpointId: string,
+    timeoutMs = 5000,
+  ): Promise<CheckpointRestorePreviewResultPayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot preview checkpoint restore, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('checkpointpreview');
+    return new Promise<CheckpointRestorePreviewResultPayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCheckpointRestorePreviewRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for checkpoint_restore_preview_result'));
+      }, timeoutMs);
+      this.pendingCheckpointRestorePreviewRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'checkpoint_restore_preview',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        checkpointId,
+      });
+    });
+  }
+
+  /**
+   * Actually rolls `sessionId`'s worktree back to `checkpointId` —
+   * destructive (SPEC §7.20; issue #268/#603). `confirm` is REQUIRED, no
+   * default, mirroring `@loombox/protocol`'s own `checkpointRestore`
+   * schema: pass `true` only once the caller has shown the human
+   * {@link previewCheckpointRestore}'s own `hasUncommittedChangesToDiscard`
+   * (`CheckpointRestoreDialog.svelte`'s own gate) — sending `false` when
+   * there is something to discard resolves `outcome: 'confirmation_required'`
+   * with that same preview instead of actually restoring; the owning node
+   * enforces this structurally, this method just sends whatever `confirm`
+   * it is given. `outcome: 'error'` covers a real refusal too —
+   * `errorType: 'turn_in_progress'` while the session's agent is actively
+   * working, `'unsupported_target'` for an `ssh:` session — resolved, not
+   * thrown, same "expected, renderable state" contract every checkpoint
+   * call here documents. A longer default timeout than the other three
+   * calls: a real restore does several `git` subprocess spawns
+   * (`GitCheckpointStore.restore`'s own doc comment), not just a read.
+   */
+  restoreCheckpoint(
+    sessionId: string,
+    checkpointId: string,
+    confirm: boolean,
+    timeoutMs = 15_000,
+  ): Promise<CheckpointRestoreResultPayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot restore checkpoint, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('checkpointrestore');
+    return new Promise<CheckpointRestoreResultPayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCheckpointRestoreRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for checkpoint_restore_result'));
+      }, timeoutMs);
+      this.pendingCheckpointRestoreRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'checkpoint_restore',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        checkpointId,
+        confirm,
+      });
     });
   }
 
@@ -5277,6 +5532,18 @@ export class RelayClient {
       case 'pr_open_result':
         this.handlePrOpenResult(message);
         return;
+      case 'checkpoint_result':
+        this.handleCheckpointResult(message);
+        return;
+      case 'checkpoint_list_result':
+        this.handleCheckpointListResult(message);
+        return;
+      case 'checkpoint_restore_preview_result':
+        this.handleCheckpointRestorePreviewResult(message);
+        return;
+      case 'checkpoint_restore_result':
+        this.handleCheckpointRestoreResult(message);
+        return;
       case 'target_list':
         this.handleTargetList(message);
         return;
@@ -5965,6 +6232,85 @@ export class RelayClient {
     this.envelopeCrypto
       .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) => pending.resolve(parsePrOpenResultPayloadV1(decrypted).result))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link createCheckpoint} calls (SPEC §7.20; issue #268/#603).
+   * `checkpoint_result` is fanned out to every client subscribed to the
+   * session (mirrors `fs_list_response`), so the same "requestId not
+   * pending means it isn't mine" guard as {@link handleFsListResponse}
+   * applies. Resolves the whole parsed outcome union, never narrows to
+   * just the `'ok'` case — {@link createCheckpoint}'s own doc comment.
+   */
+  private handleCheckpointResult(message: CheckpointResult): void {
+    const pending = this.pendingCheckpointCreateRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingCheckpointCreateRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseCheckpointResultPayloadV1(decrypted)))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link listCheckpoints} calls (SPEC §7.20; issue #268/#603) — a
+   * separate map from {@link pendingCheckpointCreateRequests} since the
+   * reply type differs; otherwise mirrors {@link handleCheckpointResult}.
+   */
+  private handleCheckpointListResult(message: CheckpointListResult): void {
+    const pending = this.pendingCheckpointListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingCheckpointListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseCheckpointListResultPayloadV1(decrypted)))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link previewCheckpointRestore} calls (SPEC §7.20; issue #268/#603) —
+   * mirrors {@link handleCheckpointResult} against its own pending map.
+   */
+  private handleCheckpointRestorePreviewResult(message: CheckpointRestorePreviewResult): void {
+    const pending = this.pendingCheckpointRestorePreviewRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingCheckpointRestorePreviewRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseCheckpointRestorePreviewResultPayloadV1(decrypted)))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link restoreCheckpoint} calls (SPEC §7.20; issue #268/#603) —
+   * mirrors {@link handleCheckpointResult} against its own pending map.
+   * The resolved outcome's third member, `'confirmation_required'`, is
+   * `restoreCheckpoint`'s own contract to leave rendering to the caller.
+   */
+  private handleCheckpointRestoreResult(message: CheckpointRestoreResult): void {
+    const pending = this.pendingCheckpointRestoreRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingCheckpointRestoreRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseCheckpointRestoreResultPayloadV1(decrypted)))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });

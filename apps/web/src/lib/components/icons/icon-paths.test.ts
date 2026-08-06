@@ -39,6 +39,7 @@ const EXPECTED_NAMES = [
   'attach',
   'copy',
   'pin',
+  'checkpoint',
   'close',
   'sidebar-panel',
   'provider-claude',

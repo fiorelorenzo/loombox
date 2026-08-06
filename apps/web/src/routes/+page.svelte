@@ -119,6 +119,7 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CanvasTabStrip from '$lib/components/CanvasTabStrip.svelte';
   import CanvasZeroState from '$lib/components/CanvasZeroState.svelte';
+  import CheckpointsDialog from '$lib/components/CheckpointsDialog.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
@@ -505,6 +506,9 @@
   /** The session a just-opened `PrOpenDialog` (SPEC §7.14; issue #238) previews/opens a pull request for; `undefined` when none is open. Same split as `archivingSession`/`archiveSessionOpen` immediately above, for the same "the dialog's own exit transition still has real session content to render" reason. Reachable from ANY session row's menu, not gated to the currently-open session — unlike "Export transcript" this needs nothing beyond a session id a row already has. */
   let prOpenSession = $state<ClientSessionMeta | undefined>(undefined);
   let prOpenDialogOpen = $state(false);
+  /** The session a just-opened `CheckpointsDialog` (SPEC §7.20; issue #268) lists/creates/restores checkpoints for; `undefined` when none is open. Same split as `archivingSession`/`archiveSessionOpen`/`prOpenSession`/`prOpenDialogOpen` immediately above, for the same "the dialog's own exit transition still has real session content to render" reason. Reachable from ANY session row's menu, not gated to the currently-open session — mirrors `prOpenSession`'s own reasoning. */
+  let checkpointsSession = $state<ClientSessionMeta | undefined>(undefined);
+  let checkpointsDialogOpen = $state(false);
   /** The project group currently showing its name as an editable `<input>` instead of a label: the group menu's "Rename" action (design spec v4 §3.2); `undefined` when no group is being renamed. */
   let renamingProjectId = $state<string | undefined>(undefined);
   /** The in-progress edit for {@link renamingProjectId}: a separate field (not read from the `Project` itself) so an Escape-cancelled rename never touches the store. */
@@ -2783,6 +2787,16 @@
     prOpenDialogOpen = false;
   }
 
+  /** The session row menu's "Checkpoints…" action (SPEC §7.20; issue #268) — mirrors `openPrOpenDialog` immediately above. */
+  function openCheckpointsDialog(session: ClientSessionMeta): void {
+    checkpointsSession = session;
+    checkpointsDialogOpen = true;
+  }
+
+  function closeCheckpointsDialog(): void {
+    checkpointsDialogOpen = false;
+  }
+
   /**
    * Which single CTA the main-area empty state offers (design spec v4
    * §3.3): "always the one that unblocks the next step." Checked in this
@@ -3337,6 +3351,17 @@
                 }}
               >
                 Open pull request…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="session-checkpoints-link"
+                onclick={() => {
+                  closeSidebarMenus();
+                  openCheckpointsDialog(session);
+                }}
+              >
+                Checkpoints…
               </button>
               <button
                 type="button"
@@ -4720,6 +4745,15 @@
     session={prOpenSession}
     {client}
     onClose={closePrOpenDialog}
+  />
+{/if}
+
+{#if checkpointsSession}
+  <CheckpointsDialog
+    open={checkpointsDialogOpen}
+    session={checkpointsSession}
+    {client}
+    onClose={closeCheckpointsDialog}
   />
 {/if}
 

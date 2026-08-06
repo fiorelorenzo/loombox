@@ -21,6 +21,10 @@ import {
   PROTOCOL_V1,
   buildIdentityMismatch,
   type BlobDownloadResponse,
+  type CheckpointRestoreResultPayloadV1,
+  type GitCheckpointV1,
+  type RestorePreviewV1,
+  type RestoreResultV1,
   type BuildIdentityV1,
   type ConfigOption,
   type ConnectedAccount,
@@ -4901,6 +4905,333 @@ describe('RelayClient: permission policy (SPEC §7.17; issue #751)', () => {
     });
 
     await expect(violationPromise).resolves.toEqual(violationPayload);
+  });
+});
+
+/** Shared setup for the checkpoint tests below: a `FakeNode` announcing a `local`-target session, then a connected `RelayClient` subscribed to it — mirrors the `permission_policy`/`test_runner_config` describe blocks' own hand-rolled setup, factored out once here since every checkpoint test below needs the identical five steps. */
+async function setupCheckpointSession(
+  amk: Uint8Array,
+  accountId: string,
+  overrides: Partial<SessionMetaPublic> = {},
+): Promise<{ session: SessionMetaPublic; key: CryptoKey }> {
+  node = new FakeNode(relay.url, {
+    deviceId: `node-${accountId}`,
+    devicePublicKey: randomBase64(),
+    authToken: accountId,
+  });
+  await node.ready;
+
+  const session = makeSessionMeta({ accountId, targetId: 'local', ...overrides });
+  const key = await deriveNodeSessionKey(amk, accountId, session.id);
+  const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+  node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+  client = new RelayClient({
+    relayUrl: relay.url,
+    amk,
+    accountId,
+    deviceId: `client-${accountId}`,
+  });
+  client.connect();
+  await waitForStore(client.status, (status) => status === 'open');
+  await waitForStore(client.sessions, (value) => value.length > 0);
+
+  return { session, key };
+}
+
+describe('RelayClient: checkpoint (SPEC §7.20; issue #268/#603)', () => {
+  it('createCheckpoint seals a trimmed label and resolves with the ok outcome the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-create';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_create',
+    });
+
+    const createPromise = client!.createCheckpoint(session.id, '  before refactor  ');
+
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_create')) as {
+      type: 'checkpoint_create';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    const requestPayload = await nodeOpen<{ message?: string }>(session.id, request.envelope, key);
+    // Trimmed, per `checkpointCreatePayloadV1`'s own `min(1)` contract.
+    expect(requestPayload).toEqual({ message: 'before refactor' });
+
+    const checkpoint: GitCheckpointV1 = {
+      id: 'cp_1',
+      sessionId: session.id,
+      message: 'before refactor',
+      createdAt: Date.now(),
+      commit: 'abc123',
+      baseCommit: 'def456',
+      hasStagedChanges: false,
+      hasUnstagedChanges: true,
+      hasUntrackedFiles: false,
+      isWorkInPlace: false,
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', checkpoint }, key);
+    node!.send({
+      type: 'checkpoint_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(createPromise).resolves.toEqual({ outcome: 'ok', checkpoint });
+  });
+
+  it('createCheckpoint omits message entirely when none is given, never sending a blank label', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-create-blank';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_create_blank',
+    });
+
+    client!.createCheckpoint(session.id).catch(() => undefined);
+
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_create')) as {
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ message?: string }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({});
+  });
+
+  it('listCheckpoints sends no envelope and resolves the checkpoints array the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-list';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_list',
+    });
+
+    const listPromise = client!.listCheckpoints(session.id);
+
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_list')) as {
+      type: 'checkpoint_list';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    // No envelope: asking carries no content, only which session to ask about.
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const checkpoints: GitCheckpointV1[] = [
+      {
+        id: 'cp_1',
+        sessionId: session.id,
+        message: 'auto: before turn 1',
+        createdAt: Date.now() - 1000,
+        commit: 'aaa',
+        baseCommit: 'bbb',
+        hasStagedChanges: false,
+        hasUnstagedChanges: false,
+        hasUntrackedFiles: false,
+        isWorkInPlace: false,
+      },
+    ];
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', checkpoints }, key);
+    node!.send({
+      type: 'checkpoint_list_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(listPromise).resolves.toEqual({ outcome: 'ok', checkpoints });
+  });
+
+  it('listCheckpoints resolves the unsupported_target error outcome for an ssh: session rather than throwing', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-list-ssh';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_list_ssh',
+      targetId: 'target_ssh_1',
+    });
+
+    const listPromise = client!.listCheckpoints(session.id);
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_list')) as {
+      requestId: string;
+    };
+
+    const outcome = {
+      outcome: 'error' as const,
+      errorType: 'unsupported_target' as const,
+      message:
+        'Checkpoint/rollback needs a local git worktree this node can reach directly; this session runs on an ssh: target, whose files live on a different host (issue #603).',
+    };
+    const responseEnvelope = await nodeSeal(session.id, outcome, key);
+    node!.send({
+      type: 'checkpoint_list_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(listPromise).resolves.toEqual(outcome);
+  });
+
+  it('previewCheckpointRestore sends checkpointId as a plain field (no envelope) and resolves the preview', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-preview';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_preview',
+    });
+
+    const previewPromise = client!.previewCheckpointRestore(session.id, 'cp_1');
+
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_restore_preview')) as {
+      type: 'checkpoint_restore_preview';
+      sessionId: string;
+      requestId: string;
+      checkpointId: string;
+    };
+    expect(request.checkpointId).toBe('cp_1');
+    expect(Object.keys(request).sort()).toEqual(
+      ['checkpointId', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const preview: RestorePreviewV1 = {
+      checkpointId: 'cp_1',
+      commitsSinceCheckpoint: 2,
+      hasUncommittedChangesToDiscard: true,
+      isWorkInPlace: true,
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', preview }, key);
+    node!.send({
+      type: 'checkpoint_restore_preview_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(previewPromise).resolves.toEqual({ outcome: 'ok', preview });
+  });
+
+  it('restoreCheckpoint sends checkpointId/confirm as plain fields (no envelope) and resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-restore-ok';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_restore_ok',
+    });
+
+    const restorePromise = client!.restoreCheckpoint(session.id, 'cp_1', true);
+
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_restore')) as {
+      type: 'checkpoint_restore';
+      sessionId: string;
+      requestId: string;
+      checkpointId: string;
+      confirm: boolean;
+    };
+    expect(request.checkpointId).toBe('cp_1');
+    expect(request.confirm).toBe(true);
+    expect(Object.keys(request).sort()).toEqual(
+      ['checkpointId', 'confirm', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const result: RestoreResultV1 = {
+      checkpointId: 'cp_1',
+      discardedUncommittedChanges: true,
+      commitsPreserved: 3,
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', result }, key);
+    node!.send({
+      type: 'checkpoint_restore_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(restorePromise).resolves.toEqual({ outcome: 'ok', result });
+  });
+
+  it('restoreCheckpoint resolves confirmation_required with the preview instead of throwing, when confirm is false and something would be discarded', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-restore-confirm';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_restore_confirm',
+    });
+
+    const restorePromise = client!.restoreCheckpoint(session.id, 'cp_1', false);
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_restore')) as {
+      requestId: string;
+    };
+
+    const preview: RestorePreviewV1 = {
+      checkpointId: 'cp_1',
+      commitsSinceCheckpoint: 0,
+      hasUncommittedChangesToDiscard: true,
+      isWorkInPlace: false,
+    };
+    const outcome: CheckpointRestoreResultPayloadV1 = { outcome: 'confirmation_required', preview };
+    const responseEnvelope = await nodeSeal(session.id, outcome, key);
+    node!.send({
+      type: 'checkpoint_restore_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(restorePromise).resolves.toEqual(outcome);
+  });
+
+  it('restoreCheckpoint resolves the turn_in_progress error outcome verbatim, refused rather than a generic transport failure', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-checkpoint-restore-turn';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_checkpoint_restore_turn',
+    });
+
+    const restorePromise = client!.restoreCheckpoint(session.id, 'cp_1', true);
+    const request = (await node!.waitFor((m) => m.type === 'checkpoint_restore')) as {
+      requestId: string;
+    };
+
+    const outcome = {
+      outcome: 'error' as const,
+      errorType: 'turn_in_progress' as const,
+      message:
+        "This session's agent is actively working on a turn; wait for it to finish (or stop it) before rolling back.",
+    };
+    const responseEnvelope = await nodeSeal(session.id, outcome, key);
+    node!.send({
+      type: 'checkpoint_restore_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(restorePromise).resolves.toEqual(outcome);
+  });
+
+  it('rejects immediately when there is no open connection, for all four calls', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-checkpoint-no-conn',
+      deviceId: 'client-checkpoint-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.createCheckpoint('sess_x')).rejects.toThrow(/no open connection/);
+    await expect(client.listCheckpoints('sess_x')).rejects.toThrow(/no open connection/);
+    await expect(client.previewCheckpointRestore('sess_x', 'cp_1')).rejects.toThrow(
+      /no open connection/,
+    );
+    await expect(client.restoreCheckpoint('sess_x', 'cp_1', true)).rejects.toThrow(
+      /no open connection/,
+    );
   });
 });
 

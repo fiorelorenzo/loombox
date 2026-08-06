@@ -70,6 +70,7 @@ export const ICON_NAMES = [
   'copy',
   'fork',
   'pin',
+  'checkpoint',
   'close',
   'sidebar-panel',
   'provider-claude',
@@ -282,6 +283,12 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
 
   // A pushpin — pin/unpin affordance.
   pin: ['M26 12 H38 L36 24 L46 36 H18 L28 24 Z', 'M32 36 V52'],
+
+  // A flag on a pole — a checkpoint/waypoint marker (SPEC §7.20; issue
+  // #268): "a point you can come back to", read literally rather than
+  // reusing `pin` (already the session pin/unpin affordance, a distinct
+  // concept) or `refresh` (already retry/reload).
+  checkpoint: ['M20 10 V54', 'M20 12 L46 20 L20 28 Z'],
 
   // An X — close/dismiss.
   close: ['M18 18 L46 46', 'M46 18 L18 46'],
