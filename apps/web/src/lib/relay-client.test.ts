@@ -4234,6 +4234,512 @@ describe('RelayClient: hunk-level staging (issue #232)', () => {
   });
 });
 
+describe('RelayClient: agent instructions (SPEC §7.18; issue #260)', () => {
+  it('getAgentInstructions sends an agent_instructions_get_request with no envelope, and resolves an ok outcome decrypted from the real agent_instructions_get_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-get-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-get-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_get_ok',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-get-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.getAgentInstructions(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'agent_instructions_get_request')) as {
+      type: 'agent_instructions_get_request';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', files: [{ fileName: 'AGENTS.md', content: '# hi', hash: 'h1' }] },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      files: [{ fileName: 'AGENTS.md', content: '# hi', hash: 'h1' }],
+    });
+  });
+
+  it('getAgentInstructions resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-get-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-get-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_get_error',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-get-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.getAgentInstructions(session.id);
+    const request = (await node.waitFor((m) => m.type === 'agent_instructions_get_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'worktree is not reachable' },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      message: 'worktree is not reachable',
+    });
+  });
+
+  it("a client ignores an agent_instructions_get_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-get-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-get-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_get_sibling',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-get-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client.getAgentInstructions(session.id).finally(() => {
+      settled = true;
+    });
+    await node.waitFor((m) => m.type === 'agent_instructions_get_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(session.id, { outcome: 'ok', files: [] }, key);
+    node.send({
+      type: 'agent_instructions_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'agent_instructions_get_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(session.id, { outcome: 'ok', files: [] }, key);
+    node.send({
+      type: 'agent_instructions_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('getAgentInstructions rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-get-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-get-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-get-4',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.getAgentInstructions('sess_does_not_exist')).rejects.toThrow(
+      /unknown session/,
+    );
+  });
+
+  it('setAgentInstructions seals fileName/content/baseHash into an envelope, and resolves an ok outcome decrypted from the real agent_instructions_set_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-set-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-set-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_set_ok',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-set-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.setAgentInstructions(session.id, {
+      fileName: 'AGENTS.md',
+      content: '# new content',
+      baseHash: null,
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'agent_instructions_set_request')) as {
+      type: 'agent_instructions_set_request';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{
+      fileName: string;
+      content: string;
+      baseHash: string | null;
+    }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({
+      fileName: 'AGENTS.md',
+      content: '# new content',
+      baseHash: null,
+    });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', fileName: 'AGENTS.md', content: '# new content', hash: 'h-new' },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      fileName: 'AGENTS.md',
+      content: '# new content',
+      hash: 'h-new',
+    });
+  });
+
+  it('setAgentInstructions resolves (not rejects) a conflict outcome, carrying what is actually on disk now — never overwrites blindly', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-set-conflict';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-set-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_set_conflict',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-set-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.setAgentInstructions(session.id, {
+      fileName: 'AGENTS.md',
+      content: 'my stale edit',
+      baseHash: 'stale-hash',
+    });
+    const request = (await node.waitFor((m) => m.type === 'agent_instructions_set_request')) as {
+      requestId: string;
+    };
+    const conflictEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'conflict',
+        fileName: 'AGENTS.md',
+        current: { fileName: 'AGENTS.md', content: 'changed underneath', hash: 'h-real' },
+      },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: conflictEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'conflict',
+      fileName: 'AGENTS.md',
+      current: { fileName: 'AGENTS.md', content: 'changed underneath', hash: 'h-real' },
+    });
+  });
+
+  it('setAgentInstructions resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-set-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-set-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_set_error',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-set-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.setAgentInstructions(session.id, {
+      fileName: 'CLAUDE.md',
+      content: 'x',
+      baseHash: null,
+    });
+    const request = (await node.waitFor((m) => m.type === 'agent_instructions_set_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', fileName: 'CLAUDE.md', message: 'permission denied' },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      fileName: 'CLAUDE.md',
+      message: 'permission denied',
+    });
+  });
+
+  it("a client ignores an agent_instructions_set_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-set-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-set-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_agent_instr_set_sibling',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-set-4',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client
+      .setAgentInstructions(session.id, { fileName: 'AGENTS.md', content: 'x', baseHash: null })
+      .finally(() => {
+        settled = true;
+      });
+    await node.waitFor((m) => m.type === 'agent_instructions_set_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', fileName: 'AGENTS.md', content: 'other', hash: 'h-other' },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'agent_instructions_set_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', fileName: 'AGENTS.md', content: 'x', hash: 'h-x' },
+      key,
+    );
+    node.send({
+      type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('setAgentInstructions rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-agent-instr-set-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-agent-instr-set-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-agent-instr-set-5',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(
+      client.setAgentInstructions('sess_does_not_exist', {
+        fileName: 'AGENTS.md',
+        content: 'x',
+        baseHash: null,
+      }),
+    ).rejects.toThrow(/unknown session/);
+  });
+});
+
 describe('RelayClient: native tracker (SPEC §7.10, §7.26; issues #212, #697)', () => {
   it('trackerSnapshotFor lazily loads a project\u2019s tracker snapshot with NO session anywhere \u2014 decrypting a real tracker_snapshot_response sealed to the project key, addressed by nodeId+projectPath alone', async () => {
     const amk = generateAmk();

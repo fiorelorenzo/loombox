@@ -83,6 +83,11 @@ import {
   mcpPromptGetResponsePayloadV1,
   type McpPromptGetRequestPayloadV1,
   type McpPromptGetResponse,
+  type AgentInstructionsGetResponse,
+  type AgentInstructionsGetResponsePayloadV1,
+  type AgentInstructionsSetRequestPayloadV1,
+  type AgentInstructionsSetResponse,
+  type AgentInstructionsSetResponsePayloadV1,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
   type FsEntryV1,
@@ -1440,6 +1445,35 @@ export class RelayClient {
     string,
     {
       resolve: (payload: GitHunkActionResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /**
+   * requestId -> the pending {@link getAgentInstructions} call it
+   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
+   * {@link pendingGitDiffRequests} above. `agent_instructions_get_response`
+   * is fanned out the same way, so a requestId not in this map means the
+   * reply belongs to a sibling device's own request.
+   */
+  private readonly pendingAgentInstructionsGetRequests = new Map<
+    string,
+    {
+      resolve: (payload: AgentInstructionsGetResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /**
+   * requestId -> the pending {@link setAgentInstructions} call it
+   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
+   * {@link pendingGitHunkActionRequests} above (enveloped, one-shot).
+   * `agent_instructions_set_response` is fanned out the same way, so a
+   * requestId not in this map means the reply belongs to a sibling
+   * device's own request.
+   */
+  private readonly pendingAgentInstructionsSetRequests = new Map<
+    string,
+    {
+      resolve: (payload: AgentInstructionsSetResponsePayloadV1) => void;
       reject: (error: Error) => void;
     }
   >();
@@ -4531,6 +4565,115 @@ export class RelayClient {
   }
 
   /**
+   * A session's project's current `AGENTS.md`/`CLAUDE.md` state (SPEC
+   * §7.18; issue #260) — `@loombox/protocol`'s `agent-instructions.ts`
+   * `agent_instructions_get_request`/`_response` pair, {@link
+   * requestWorktreeDiff}'s own sibling: a one-shot request/response the
+   * caller awaits, not a persistent subscription — a caller re-requests
+   * (a fresh `requestId`) to refresh, exactly like re-reading an
+   * already-open file tab. No envelope on the request at all — asking
+   * carries no content (see that schema's own doc comment). Resolves
+   * with the node's own `ok`/`error` outcome either way; only REJECTS
+   * for a genuinely unusable call — no open connection, an unknown
+   * session, or a timeout with no response at all — mirroring {@link
+   * requestWorktreeDiff}'s identical contract.
+   */
+  async getAgentInstructions(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<AgentInstructionsGetResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get agent instructions, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('agentinstrget');
+    return new Promise<AgentInstructionsGetResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentInstructionsGetRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_instructions_get_response'));
+      }, timeoutMs);
+      this.pendingAgentInstructionsGetRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_instructions_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces) one `AGENTS.md`/`CLAUDE.md` file inside a
+   * session's project (SPEC §7.18; issue #260) — {@link
+   * applyGitHunkAction}'s own sibling (enveloped request, since unlike
+   * {@link getAgentInstructions} this one carries real content). `params.baseHash`
+   * must be the exact hash a prior {@link getAgentInstructions}/{@link
+   * setAgentInstructions} call last reported for `params.fileName`, or
+   * `null` when creating a file that doesn't exist yet — see that
+   * schema's own doc comment for the full optimistic-concurrency
+   * contract. A stale `baseHash` never overwrites: the node replies with
+   * `outcome: 'conflict'` (this method resolves normally, it does not
+   * reject) carrying what's actually on disk right now. Resolves with
+   * the node's own `ok`/`conflict`/`error` outcome either way; only
+   * REJECTS for a genuinely unusable call, mirroring {@link
+   * applyGitHunkAction}'s identical contract.
+   */
+  async setAgentInstructions(
+    sessionId: string,
+    params: AgentInstructionsSetRequestPayloadV1,
+    timeoutMs = 10_000,
+  ): Promise<AgentInstructionsSetResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save agent instructions, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
+    const requestId = generateId('agentinstrset');
+    return new Promise<AgentInstructionsSetResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentInstructionsSetRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_instructions_set_response'));
+      }, timeoutMs);
+      this.pendingAgentInstructionsSetRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_instructions_set_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -5765,6 +5908,12 @@ export class RelayClient {
       case 'git_hunk_action_response':
         this.handleGitHunkActionResponse(message);
         return;
+      case 'agent_instructions_get_response':
+        this.handleAgentInstructionsGetResponse(message);
+        return;
+      case 'agent_instructions_set_response':
+        this.handleAgentInstructionsSetResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -6264,6 +6413,58 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<GitHunkActionResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * getAgentInstructions} calls (SPEC §7.18; issue #260).
+   * `agent_instructions_get_response` is fanned out to every client
+   * subscribed to the session exactly like `fs_read_response`, so a
+   * `requestId` not in {@link pendingAgentInstructionsGetRequests} means
+   * this reply is to a sibling device's own request — silently ignored,
+   * exactly like {@link handleFsReadResponse}'s identical sibling-device
+   * awareness.
+   */
+  private handleAgentInstructionsGetResponse(message: AgentInstructionsGetResponse): void {
+    const pending = this.pendingAgentInstructionsGetRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentInstructionsGetRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<AgentInstructionsGetResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * setAgentInstructions} calls (SPEC §7.18; issue #260) — exactly like
+   * {@link handleAgentInstructionsGetResponse} above, sibling-device
+   * awareness included.
+   */
+  private handleAgentInstructionsSetResponse(message: AgentInstructionsSetResponse): void {
+    const pending = this.pendingAgentInstructionsSetRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentInstructionsSetRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<AgentInstructionsSetResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

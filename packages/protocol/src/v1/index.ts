@@ -227,6 +227,35 @@ export {
 } from './attachments';
 
 export type {
+  AgentInstructionsFileNameV1,
+  AgentInstructionsFileStateV1,
+  AgentInstructionsGetRequest,
+  AgentInstructionsGetResponse,
+  AgentInstructionsGetResponsePayloadV1,
+  AgentInstructionsSetRequest,
+  AgentInstructionsSetRequestPayloadV1,
+  AgentInstructionsSetResponse,
+  AgentInstructionsSetResponsePayloadV1,
+} from './agent-instructions';
+export {
+  agentInstructionsFileNameV1,
+  agentInstructionsFileStateV1,
+  agentInstructionsGetRequest,
+  agentInstructionsGetResponse,
+  agentInstructionsGetResponsePayloadV1,
+  agentInstructionsSetRequest,
+  agentInstructionsSetRequestPayloadV1,
+  agentInstructionsSetResponse,
+  agentInstructionsSetResponsePayloadV1,
+  parseAgentInstructionsGetResponsePayloadV1,
+  parseAgentInstructionsSetRequestPayloadV1,
+  parseAgentInstructionsSetResponsePayloadV1,
+  safeParseAgentInstructionsGetResponsePayloadV1,
+  safeParseAgentInstructionsSetRequestPayloadV1,
+  safeParseAgentInstructionsSetResponsePayloadV1,
+} from './agent-instructions';
+
+export type {
   FsEntryKindV1,
   FsEntryV1,
   FsListErrorV1,
@@ -1238,6 +1267,17 @@ import {
   runStartPayloadV1,
   testRunnerKindV1,
 } from './test-runner';
+import {
+  agentInstructionsFileNameV1,
+  agentInstructionsFileStateV1,
+  agentInstructionsGetRequest,
+  agentInstructionsGetResponse,
+  agentInstructionsGetResponsePayloadV1,
+  agentInstructionsSetRequest,
+  agentInstructionsSetRequestPayloadV1,
+  agentInstructionsSetResponse,
+  agentInstructionsSetResponsePayloadV1,
+} from './agent-instructions';
 
 /** Registry of every v1 wire schema, for introspection/tooling (mirrors v0's `schemas` in `../index.ts`). */
 export const schemasV1 = {
@@ -1507,4 +1547,13 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  agentInstructionsFileNameV1,
+  agentInstructionsFileStateV1,
+  agentInstructionsGetResponsePayloadV1,
+  agentInstructionsSetRequestPayloadV1,
+  agentInstructionsSetResponsePayloadV1,
+  agentInstructionsGetRequest,
+  agentInstructionsGetResponse,
+  agentInstructionsSetRequest,
+  agentInstructionsSetResponse,
 } as const;

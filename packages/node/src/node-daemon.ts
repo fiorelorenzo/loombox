@@ -66,6 +66,11 @@ import {
   type AccountPinResolveRequest,
   type AccountPinSetRequest,
   type AccountPinUnsetRequest,
+  type AgentInstructionsGetRequest,
+  type AgentInstructionsGetResponsePayloadV1,
+  type AgentInstructionsSetRequest,
+  type AgentInstructionsSetRequestPayloadV1,
+  type AgentInstructionsSetResponsePayloadV1,
   type AmkEpochPendingEnvelope,
   type AttentionHintClass,
   type BuildIdentityV1,
@@ -221,6 +226,7 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { readAgentInstructionsFiles, writeAgentInstructionsFile } from './agent-instructions';
 import {
   applyGitHunkAction,
   computeHunkDiff,
@@ -3929,6 +3935,12 @@ export class NodeDaemon extends EventEmitter {
       case 'git_hunk_action_request':
         this.handleGitHunkActionRequest(message);
         return;
+      case 'agent_instructions_get_request':
+        this.handleAgentInstructionsGetRequest(message);
+        return;
+      case 'agent_instructions_set_request':
+        this.handleAgentInstructionsSetRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -5477,6 +5489,147 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's project's
+   * current `AGENTS.md`/`CLAUDE.md` state (SPEC §7.18; issue #260) —
+   * `handleGitDiffRequest`'s sibling, same "no live bridge needed,
+   * always a reply, never a silent drop" contract. No envelope on
+   * `agent_instructions_get_request` itself (see `@loombox/protocol`'s
+   * `agent-instructions.ts` doc comment), so there is nothing to decrypt
+   * before reading the files.
+   */
+  private handleAgentInstructionsGetRequest(message: AgentInstructionsGetRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.readAgentInstructionsForBridge(routing)
+      .then((responsePayload) =>
+        this.sendAgentInstructionsGetResponse(
+          routing.session.id,
+          message.requestId,
+          responsePayload,
+        ),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle agent_instructions_get_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  /**
+   * Runs `readAgentInstructionsFiles` (`./agent-instructions.ts`) against
+   * `routing`'s own `ExecutionTarget` — unscoped, exactly like
+   * `handleFsReadRequest`'s own `getExecutionTarget(routing.targetId)`,
+   * since this is a plain filesystem read/write, never a spawned
+   * command. Never throws: an unreachable worktree
+   * (`AgentInstructionsError`) or any other error becomes an
+   * `outcome: 'error'` payload instead, so `handleAgentInstructionsGetRequest`
+   * always has a response to seal and send back.
+   */
+  private async readAgentInstructionsForBridge(
+    routing: SessionRouting,
+  ): Promise<AgentInstructionsGetResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId);
+      const files = await readAgentInstructionsFiles(target, routing.session.worktreePath);
+      return { outcome: 'ok', files };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendAgentInstructionsGetResponse(
+    sessionId: string,
+    requestId: string,
+    payload: AgentInstructionsGetResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'agent_instructions_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to save one `AGENTS.md`/
+   * `CLAUDE.md` file inside one of its sessions' projects (SPEC §7.18;
+   * issue #260) — `handleGitHunkActionRequest`'s sibling, same "decrypt,
+   * apply, always reply" contract.
+   */
+  private handleAgentInstructionsSetRequest(message: AgentInstructionsSetRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptAgentInstructionsSetRequest(message)
+      .then((payload) => this.writeAgentInstructionsForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendAgentInstructionsSetResponse(
+          routing.session.id,
+          message.requestId,
+          responsePayload,
+        ),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle agent_instructions_set_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptAgentInstructionsSetRequest(
+    message: AgentInstructionsSetRequest,
+  ): Promise<AgentInstructionsSetRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<AgentInstructionsSetRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Runs `writeAgentInstructionsFile` (`./agent-instructions.ts`)
+   * against `routing`'s own `ExecutionTarget`, unscoped exactly like
+   * {@link readAgentInstructionsForBridge} above. Never throws: an
+   * `AgentInstructionsError` (an unreachable worktree, or a genuine
+   * write failure) or any other error becomes an `outcome: 'error'`
+   * payload instead — a legitimate `'conflict'` outcome (the file
+   * changed underneath the edit) comes straight back from
+   * `writeAgentInstructionsFile` itself, never thrown.
+   */
+  private async writeAgentInstructionsForBridge(
+    routing: SessionRouting,
+    payload: AgentInstructionsSetRequestPayloadV1,
+  ): Promise<AgentInstructionsSetResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId);
+      return await writeAgentInstructionsFile(target, routing.session.worktreePath, payload);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', fileName: payload.fileName, message: detail };
+    }
+  }
+
+  private async sendAgentInstructionsSetResponse(
+    sessionId: string,
+    requestId: string,
+    payload: AgentInstructionsSetResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'agent_instructions_set_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

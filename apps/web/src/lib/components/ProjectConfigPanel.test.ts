@@ -25,6 +25,7 @@ describe('ProjectConfigPanel (issue #366)', () => {
     expect(screen.getByTestId('mcp-config-panel')).toBeTruthy();
     expect(screen.getByTestId('plugin-config-panel')).toBeTruthy();
     expect(screen.getByTestId('project-secrets-panel')).toBeTruthy();
+    expect(screen.getByTestId('agent-instructions-panel')).toBeTruthy();
   });
 
   it('quick-adding an MCP preset produces a server record in the panel and its own storage', async () => {

@@ -59,6 +59,9 @@
   import type { PluginConfigStorage } from '$lib/plugin-store';
   import type { ProjectEnvDeclStorage } from '$lib/project-env-store';
   import type { AcpMcpServerStatusEntry } from '@loombox/providers-core/browser';
+  import AgentInstructionsPanel, {
+    type AgentInstructionsClient,
+  } from './AgentInstructionsPanel.svelte';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PermissionPolicyPanel, {
     type PermissionPolicyClient,
@@ -72,7 +75,8 @@
 
   type ProjectConfigRelayClient = TestRunnerConfigClient &
     PermissionPolicyClient &
-    SpendReportClient;
+    SpendReportClient &
+    AgentInstructionsClient;
 
   interface Props {
     projectPath: string;
@@ -145,6 +149,10 @@
   <section class="project-config-section">
     <h3>Spend over time</h3>
     <SpendReportPanel {projectPath} {nodeId} client={relayClient} />
+  </section>
+  <section class="project-config-section">
+    <h3>Agent instructions</h3>
+    <AgentInstructionsPanel {projectPath} {sessionId} client={relayClient} />
   </section>
 </div>
 

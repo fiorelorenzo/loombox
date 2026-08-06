@@ -3,6 +3,10 @@ import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   buildIdentityMismatch,
+  type AgentInstructionsGetRequest,
+  type AgentInstructionsGetResponse,
+  type AgentInstructionsSetRequest,
+  type AgentInstructionsSetResponse,
   type AmkEpochFetchResponse,
   type AmkEscrow,
   type BlobDownloadResponse,
@@ -1948,6 +1952,227 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as GitHunkActionResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('agent_instructions_get_request/agent_instructions_get_response (SPEC §7.18; issue #260) — routed and fanned out exactly like git_diff_request/git_diff_response, always blind, no envelope on the request', () => {
+    it('routes a client agent_instructions_get_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_agent_instructions', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: AgentInstructionsGetRequest = {
+        type: 'agent_instructions_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_agent_instructions',
+        requestId: 'req_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as AgentInstructionsGetRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an agent_instructions_get_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'agent_instructions_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+      } satisfies AgentInstructionsGetRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans agent_instructions_get_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_agent_instructions_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_agent_instructions_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: AgentInstructionsGetResponse = {
+        type: 'agent_instructions_get_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_agent_instructions_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('{"outcome":"ok","files":[]}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as AgentInstructionsGetResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('agent_instructions_set_request/agent_instructions_set_response (SPEC §7.18; issue #260) — routed and fanned out exactly like git_hunk_action_request/git_hunk_action_response, always blind, envelope on both request and response', () => {
+    it('routes a client agent_instructions_set_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_agent_instructions_set', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: AgentInstructionsSetRequest = {
+        type: 'agent_instructions_set_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_agent_instructions_set',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('{"fileName":"AGENTS.md","content":"# hi","baseHash":null}'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as AgentInstructionsSetRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an agent_instructions_set_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'agent_instructions_set_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('{"fileName":"AGENTS.md","content":"# hi","baseHash":null}'),
+      } satisfies AgentInstructionsSetRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans agent_instructions_set_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({
+        id: 'sess_agent_instructions_set_reply',
+        accountId: 'acct_1',
+      });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_agent_instructions_set_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: AgentInstructionsSetResponse = {
+        type: 'agent_instructions_set_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_agent_instructions_set_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope(
+          '{"outcome":"ok","fileName":"AGENTS.md","content":"# hi","hash":"h1"}',
+        ),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as AgentInstructionsSetResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
