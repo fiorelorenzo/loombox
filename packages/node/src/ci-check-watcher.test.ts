@@ -44,7 +44,11 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   it('never calls fetch when resolveToken has nothing for this entry — reports unknown instead', async () => {
     const fetchImpl = vi.fn();
     const onUpdate = vi.fn();
-    const watcher = new CiCheckWatcher({ fetchImpl, resolveToken: async () => undefined, onUpdate });
+    const watcher = new CiCheckWatcher({
+      fetchImpl,
+      resolveToken: async () => undefined,
+      onUpdate,
+    });
     watcher.watch('sess-1', entry());
 
     await watcher.pollNow();
@@ -84,11 +88,13 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   });
 
   it('reports pending while a check run is still queued/in_progress, with no failure yet', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      checkRunsResponse([
-        { name: 'build', head_sha: 'sha-a', status: 'in_progress', conclusion: null },
-      ]),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        checkRunsResponse([
+          { name: 'build', head_sha: 'sha-a', status: 'in_progress', conclusion: null },
+        ]),
+      );
     const onUpdate = vi.fn();
     const onFailure = vi.fn();
     const watcher = new CiCheckWatcher({
@@ -139,13 +145,15 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
     // would make poll 2/3 throw "body already used", silently degrading
     // to `'unknown'` via `pollOne`'s own catch-all rather than genuinely
     // exercising three real `'failing'` reads.
-    const fetchImpl = vi.fn().mockImplementation(() =>
-      Promise.resolve(
-        checkRunsResponse([
-          { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
-        ]),
-      ),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          checkRunsResponse([
+            { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
+          ]),
+        ),
+      );
     const onFailure = vi.fn();
     const onUpdate = vi.fn();
     const watcher = new CiCheckWatcher({
@@ -175,25 +183,35 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   it('fires onFailure again once the failure clears and a later poll fails again on a new commit', async () => {
     const fetchImpl = vi.fn();
     const onFailure = vi.fn();
-    const watcher = new CiCheckWatcher({ fetchImpl, resolveToken: async () => 'ghp_token', onFailure });
+    const watcher = new CiCheckWatcher({
+      fetchImpl,
+      resolveToken: async () => 'ghp_token',
+      onFailure,
+    });
     watcher.watch('sess-1', entry());
 
     fetchImpl.mockResolvedValueOnce(
-      checkRunsResponse([{ name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' }]),
+      checkRunsResponse([
+        { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
+      ]),
     );
     await watcher.pollNow();
     expect(onFailure).toHaveBeenCalledTimes(1);
 
     // The operator pushes a fix: the same ref now has a passing check on a new commit.
     fetchImpl.mockResolvedValueOnce(
-      checkRunsResponse([{ name: 'test', head_sha: 'sha-b', status: 'completed', conclusion: 'success' }]),
+      checkRunsResponse([
+        { name: 'test', head_sha: 'sha-b', status: 'completed', conclusion: 'success' },
+      ]),
     );
     await watcher.pollNow();
     expect(onFailure).toHaveBeenCalledTimes(1);
 
     // A later commit fails again — a genuinely new failure, must fire again.
     fetchImpl.mockResolvedValueOnce(
-      checkRunsResponse([{ name: 'test', head_sha: 'sha-c', status: 'completed', conclusion: 'failure' }]),
+      checkRunsResponse([
+        { name: 'test', head_sha: 'sha-c', status: 'completed', conclusion: 'failure' },
+      ]),
     );
     await watcher.pollNow();
     expect(onFailure).toHaveBeenCalledTimes(2);
@@ -205,7 +223,11 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
       .mockResolvedValueOnce(new Response('nope', { status: 403 }))
       .mockResolvedValueOnce(new Response('not json', { status: 200 }));
     const onUpdate = vi.fn();
-    const watcher = new CiCheckWatcher({ fetchImpl, resolveToken: async () => 'ghp_token', onUpdate });
+    const watcher = new CiCheckWatcher({
+      fetchImpl,
+      resolveToken: async () => 'ghp_token',
+      onUpdate,
+    });
     watcher.watch('sess-1', entry());
 
     await watcher.pollNow();
@@ -218,7 +240,12 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   it('treats an unrecognized future conclusion value as non-failing, never crying wolf', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       checkRunsResponse([
-        { name: 'exotic', head_sha: 'sha-a', status: 'completed', conclusion: 'some_future_value' },
+        {
+          name: 'exotic',
+          head_sha: 'sha-a',
+          status: 'completed',
+          conclusion: 'some_future_value',
+        },
       ]),
     );
     const onFailure = vi.fn();
@@ -238,11 +265,19 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   });
 
   it('unwatch stops polling and forgets the last reading and dedup state', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      checkRunsResponse([{ name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' }]),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        checkRunsResponse([
+          { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
+        ]),
+      );
     const onFailure = vi.fn();
-    const watcher = new CiCheckWatcher({ fetchImpl, resolveToken: async () => 'ghp_token', onFailure });
+    const watcher = new CiCheckWatcher({
+      fetchImpl,
+      resolveToken: async () => 'ghp_token',
+      onFailure,
+    });
     watcher.watch('sess-1', entry());
     await watcher.pollNow();
     expect(watcher.latestFor('sess-1')).toBeDefined();
@@ -259,10 +294,14 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
-        checkRunsResponse([{ name: 'a', head_sha: 'sha-a', status: 'completed', conclusion: 'success' }]),
+        checkRunsResponse([
+          { name: 'a', head_sha: 'sha-a', status: 'completed', conclusion: 'success' },
+        ]),
       )
       .mockResolvedValueOnce(
-        checkRunsResponse([{ name: 'b', head_sha: 'sha-b', status: 'completed', conclusion: 'failure' }]),
+        checkRunsResponse([
+          { name: 'b', head_sha: 'sha-b', status: 'completed', conclusion: 'failure' },
+        ]),
       );
     const onUpdate = vi.fn();
     const onFailure = vi.fn();
@@ -300,7 +339,9 @@ describe('parseGithubPullRequestUrl (issue #239)', () => {
   });
 
   it('returns undefined for a non-GitHub-pull-request URL', () => {
-    expect(parseGithubPullRequestUrl('https://gitlab.com/acme/widgets/-/merge_requests/7')).toBeUndefined();
+    expect(
+      parseGithubPullRequestUrl('https://gitlab.com/acme/widgets/-/merge_requests/7'),
+    ).toBeUndefined();
     expect(parseGithubPullRequestUrl('not a url')).toBeUndefined();
   });
 });

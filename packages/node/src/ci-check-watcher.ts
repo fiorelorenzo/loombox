@@ -98,7 +98,13 @@ export function parseGithubPullRequestUrl(
 }
 
 function unknownState(entry: CiWatchEntry, now: number): CiCheckStateV1 {
-  return { state: 'unknown', prUrl: entry.prUrl, prNumber: entry.prNumber, checkRuns: [], updatedAt: now };
+  return {
+    state: 'unknown',
+    prUrl: entry.prUrl,
+    prNumber: entry.prNumber,
+    checkRuns: [],
+    updatedAt: now,
+  };
 }
 
 export interface CiCheckWatcherOptions {
@@ -169,7 +175,9 @@ export class CiCheckWatcher {
 
   private async runPass(): Promise<void> {
     await Promise.all(
-      Array.from(this.entries.entries()).map(([sessionId, entry]) => this.pollOne(sessionId, entry)),
+      Array.from(this.entries.entries()).map(([sessionId, entry]) =>
+        this.pollOne(sessionId, entry),
+      ),
     );
   }
 

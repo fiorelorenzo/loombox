@@ -148,7 +148,13 @@ function internals(node: NodeDaemon): DaemonInternals {
 }
 
 function checkRunsResponse(
-  runs: Array<{ id?: number; name: string; head_sha: string; status: string; conclusion: string | null }>,
+  runs: Array<{
+    id?: number;
+    name: string;
+    head_sha: string;
+    status: string;
+    conclusion: string | null;
+  }>,
 ): Response {
   return new Response(
     JSON.stringify({
@@ -278,7 +284,7 @@ describe('NodeDaemon.registerCiCheckWatch (SPEC §7.14; issue #239)', () => {
 });
 
 describe('NodeDaemon CI check wiring end to end (SPEC §7.14; issue #239)', () => {
-  it("a failing check is detected, its state reaches the client (ci_check_status), and the auto-iterate hook fires exactly once per failure, not once per poll — no real network call", async () => {
+  it('a failing check is detected, its state reaches the client (ci_check_status), and the auto-iterate hook fires exactly once per failure, not once per poll — no real network call', async () => {
     const account = githubAccount();
     await seedToken(account.secretRef, 'ghp_wiring_token');
 
@@ -286,13 +292,15 @@ describe('NodeDaemon CI check wiring end to end (SPEC §7.14; issue #239)', () =
     // on why `mockResolvedValue` would be wrong here): three genuinely
     // successful, genuinely 'failing' polls, not one real read plus two
     // swallowed "body already used" errors.
-    const fetchImpl = vi.fn().mockImplementation(() =>
-      Promise.resolve(
-        checkRunsResponse([
-          { name: 'unit-tests', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
-        ]),
-      ),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          checkRunsResponse([
+            { name: 'unit-tests', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
+          ]),
+        ),
+      );
     vi.stubGlobal('fetch', fetchImpl);
 
     // `CiCheckWatcher`'s default `fetchImpl` is read from the global once,
