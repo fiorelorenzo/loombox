@@ -172,7 +172,7 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
 
     await fireEvent.click(screen.getByTestId('new-session-submit'));
 
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1', 'claude'));
     expect(client.createSession).toHaveBeenCalledWith({
       targetId: 'local',
       provider: 'claude',

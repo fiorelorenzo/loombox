@@ -408,6 +408,7 @@ interface DecryptedSessionEvent {
   turnId?: string;
   stopReason?: string;
   status?: string;
+  reason?: string;
   options?: unknown[];
   commands?: unknown[];
 }
@@ -1150,6 +1151,9 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     }
     expect(events[0]?.status).toBe('starting');
     expect(events[1]?.status).toBe('error');
+    // Issue #730: the reason a `console.warn` used to be the only trace of
+    // now rides the wire too — a client can show WHY, not just that.
+    expect(events[1]?.reason).toMatch(/did not complete within/);
 
     // Still present and archivable — not a silent disappearance, and no
     // worktree left untracked (issue #515's failure mode, avoided here).
@@ -1164,6 +1168,77 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
       (m) => m.type === 'session_archive_response',
     )) as SessionArchiveResponse;
     expect(response.result).toEqual({ outcome: 'ok' });
+  }, 15000);
+
+  it('reports why an agent spawn fails immediately, not just a console warning (issue #730)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-start-immediate-failure';
+
+    // A real supervisor with only `start` swapped (same shape as "says so
+    // when an agent spawn fails after it had already timed out" below) —
+    // rejects right away, no timeout involved, so this exercises
+    // `launchLocalSession`'s ordinary catch path, not `startAgentWithTimeout`'s
+    // race.
+    const supervisor = new AgentSupervisor({ providers: [] });
+    supervisor.start = () =>
+      Promise.reject(new Error('spawn ENOENT: claude-code not found on PATH'));
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-immediate-failure',
+      deviceId: 'device-node-immediate-failure',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor,
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-immediate-failure-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'spawn fails immediately', projectPath },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-immediate-failure',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-immediate-failure',
+      privateEnvelope,
+    });
+
+    // On the board immediately, exactly like the "starting"/"timeout"
+    // tests above — before the spawn attempt (which fails synchronously
+    // on the next tick) has even been reported.
+    await waitForSessionInList(phone, sessionId);
+
+    // This phone never `session_resume`d, so it resyncs the full ring
+    // instead of relying on live fanout (see the "starting" test's own
+    // comment for why).
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      sinceSeq: 0,
+    });
+    const events = await waitForDecryptedKinds(phone, sessionId, key, ['session_status'], 2);
+    expect(events[0]?.status).toBe('starting');
+    expect(events[1]?.status).toBe('error');
+    // Issue #730's acceptance: the client gets a reason it can read, not
+    // just a `console.warn` on the node.
+    expect(events[1]?.reason).toBe('spawn ENOENT: claude-code not found on PATH');
   }, 15000);
 
   it('says so when an agent spawn fails after it had already timed out, instead of dropping it on the floor (issue #516)', async () => {

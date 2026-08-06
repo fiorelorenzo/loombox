@@ -1132,16 +1132,21 @@ describe('NodeDaemon ssh: target concurrency cap (SPEC §7.16, issue #252)', () 
       }
 
       // The first two are within the default cap of 2 and start
-      // immediately — `ssh:` sessions have no 'starting' status (unlike
-      // `local`'s issue #516 worktree-vs-spawn gap, there is no
-      // long-lived local step to announce ahead of the spawn here), so
-      // their first observable status is straight to 'awaiting_input'.
+      // immediately — issue #730 gave `ssh:` sessions the same 'starting'
+      // status `local` sessions already had (issue #516's worktree-vs-
+      // spawn gap) before they reach 'awaiting_input', so their first two
+      // observable statuses are 'starting' then 'awaiting_input', not
+      // 'awaiting_input' alone.
       expect(
-        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 1))[0]!.status,
-      ).toBe('awaiting_input');
+        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 2)).map(
+          (event) => event.status,
+        ),
+      ).toEqual(['starting', 'awaiting_input']);
       expect(
-        (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1))[0]!.status,
-      ).toBe('awaiting_input');
+        (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 2)).map(
+          (event) => event.status,
+        ),
+      ).toEqual(['starting', 'awaiting_input']);
       // The third is over the cap: queued, not launched.
       expect(
         (await waitForDecryptedKinds(phone, session3.id, key3, ['session_status'], 1))[0]!.status,
@@ -1208,9 +1213,13 @@ describe('NodeDaemon ssh: target concurrency cap (SPEC §7.16, issue #252)', () 
         sinceSeq: 0,
       });
 
+      // Issue #730: within the cap, starts immediately — 'starting' then
+      // 'awaiting_input', same as the default-cap test above.
       expect(
-        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 1))[0]!.status,
-      ).toBe('awaiting_input');
+        (await waitForDecryptedKinds(phone, session1.id, key1, ['session_status'], 2)).map(
+          (event) => event.status,
+        ),
+      ).toEqual(['starting', 'awaiting_input']);
       // Over the overridden cap of 1 (well under the default of 2): queued.
       expect(
         (await waitForDecryptedKinds(phone, session2.id, key2, ['session_status'], 1))[0]!.status,

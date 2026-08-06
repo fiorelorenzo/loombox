@@ -25,6 +25,7 @@ describe('createTranscriptState', () => {
       cumulativeCostUsd: 0,
       status: undefined,
       statusUpdatedAt: undefined,
+      statusReason: undefined,
       configOptions: [],
       commands: [],
       turnActive: false,
@@ -444,6 +445,34 @@ describe('reduceSessionEvent: session_status', () => {
     expect(state.status).toBe('permission_required');
     expect(state.statusUpdatedAt).toBe('t2');
   });
+
+  it('records an "error" status\'s reason (issue #730)', () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'error',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      reason: 'agent spawn did not complete within 120000ms',
+    });
+    expect(state.status).toBe('error');
+    expect(state.statusReason).toBe('agent spawn did not complete within 120000ms');
+  });
+
+  it('clears a stale reason once a later status transition arrives without one', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'error',
+      updatedAt: 't1',
+      reason: 'agent spawn timed out',
+    });
+    expect(state.statusReason).toBe('agent spawn timed out');
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'working',
+      updatedAt: 't2',
+    });
+    expect(state.status).toBe('working');
+    expect(state.statusReason).toBeUndefined();
+  });
 });
 
 describe('reduceSessionEvent: config_options / config_option_update', () => {
@@ -617,5 +646,6 @@ function _typeCheck(state: TranscriptState): void {
   void state.commands;
   void state.turnActive;
   void state.lastStopReason;
+  void state.statusReason;
 }
 void _typeCheck;
