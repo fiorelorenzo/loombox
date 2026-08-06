@@ -1,20 +1,37 @@
 /**
- * Pure grouping logic over `SpendLedgerStore` rows (SPEC §7.9; issue
- * #249) — the "shared aggregation source" issue #249's own acceptance
- * demands: this is the one place a set of `SpendLedgerRow`s becomes a
- * per-project/per-provider rollup, used both by
- * `node-daemon.ts`'s handlers (filtering a `spend_report_request`'s date
- * range before sealing the reply) and directly by this file's own test
- * suite, which is what proves "a known fixture set produces exactly the
- * expected totals" against real numbers rather than against whatever the
- * wire handler happens to do internally.
+ * Pure grouping logic over spend-ledger rows (SPEC §7.9; issue #249) —
+ * the "shared aggregation source" issue #249's own acceptance demands:
+ * this is the one place a set of dated project/provider spend deltas
+ * becomes a per-project/per-provider rollup. Lives in `@loombox/shared`
+ * (not `@loombox/node`, which already depends on this package) so BOTH
+ * sides of the wire reuse the identical function rather than each
+ * reimplementing it — `@loombox/node`'s `NodeDaemon` filters a
+ * `spend_report_request`'s date range through {@link filterSpendLedgerRows}
+ * before sealing the reply, and `@loombox/web`'s `RelayClient` feeds the
+ * decrypted `spend_report_response` rows straight back through
+ * {@link aggregateSpendLedgerRows} to render the view — never a second,
+ * independently-written grouping in the browser.
  *
  * No I/O, no `Date.now()` — every date bound is an explicit `YYYY-MM-DD`
  * string the caller supplies, so this module is trivially deterministic
  * to test.
  */
 
-import type { SpendLedgerRow } from './spend-ledger-store';
+/**
+ * One dated spend delta for a project/provider — structurally identical
+ * to `@loombox/node`'s own persisted `SpendLedgerRow` (that type stays
+ * defined in `spend-ledger-store.ts`, the file that owns the on-disk
+ * shape); this module only needs the fields it actually reads, so it
+ * names its own minimal shape rather than importing a node-only type
+ * into a package `@loombox/node` itself depends on.
+ */
+export interface SpendAggregationRow {
+  /** UTC calendar date, `YYYY-MM-DD`. */
+  date: string;
+  projectPath: string;
+  provider: string;
+  costUsd: number;
+}
 
 export interface SpendLedgerFilter {
   projectPath?: string;
@@ -27,9 +44,9 @@ export interface SpendLedgerFilter {
 
 /** Narrows `rows` to the ones matching every given filter field — an omitted field matches everything, exactly like `SpendCapStore.get`'s "no cap" reading undefined rather than a wildcard value. */
 export function filterSpendLedgerRows(
-  rows: readonly SpendLedgerRow[],
+  rows: readonly SpendAggregationRow[],
   filter: SpendLedgerFilter = {},
-): SpendLedgerRow[] {
+): SpendAggregationRow[] {
   return rows.filter((row) => {
     if (filter.projectPath !== undefined && row.projectPath !== filter.projectPath) return false;
     if (filter.provider !== undefined && row.provider !== filter.provider) return false;
@@ -58,7 +75,7 @@ export interface SpendAggregateV1 {
 }
 
 /** Sums `rows` (already filtered to whatever period/project/provider the caller cares about — see {@link filterSpendLedgerRows}) into per-project and per-provider totals. */
-export function aggregateSpendLedgerRows(rows: readonly SpendLedgerRow[]): SpendAggregateV1 {
+export function aggregateSpendLedgerRows(rows: readonly SpendAggregationRow[]): SpendAggregateV1 {
   const byProject: Record<string, number> = {};
   const byProvider: Record<string, number> = {};
   let totalUsd = 0;

@@ -237,7 +237,7 @@ import {
 import { PermissionPolicyStore } from './permission-policy-store';
 import { SpendCapStore } from './spend-cap-store';
 import { SpendLedgerStore } from './spend-ledger-store';
-import { filterSpendLedgerRows } from './spend-aggregation';
+import { filterSpendLedgerRows } from '@loombox/shared';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,

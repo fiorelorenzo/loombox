@@ -600,6 +600,7 @@ export type {
 } from './spend-report';
 export {
   spendReportRowV1,
+  spendReportResponsePayloadV1,
   parseSpendReportResponsePayloadV1,
   safeParseSpendReportResponsePayloadV1,
   spendReportRequest,

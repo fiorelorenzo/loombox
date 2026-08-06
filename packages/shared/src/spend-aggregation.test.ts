@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { aggregateSpendLedgerRows, filterSpendLedgerRows } from './spend-aggregation';
-import type { SpendLedgerRow } from './spend-ledger-store';
+import {
+  aggregateSpendLedgerRows,
+  filterSpendLedgerRows,
+  type SpendAggregationRow,
+} from './spend-aggregation';
 
 /**
  * The known fixture set issue #249's acceptance names: two projects, two
@@ -9,7 +12,7 @@ import type { SpendLedgerRow } from './spend-ledger-store';
  * naive "sum everything" implementation and a correct per-project/
  * per-provider grouping would disagree on at least one total.
  */
-const FIXTURE: SpendLedgerRow[] = [
+const FIXTURE: SpendAggregationRow[] = [
   { date: '2026-08-01', projectPath: '/proj-alpha', provider: 'claude', costUsd: 1.5 },
   { date: '2026-08-01', projectPath: '/proj-alpha', provider: 'codex', costUsd: 0.75 },
   { date: '2026-08-02', projectPath: '/proj-alpha', provider: 'claude', costUsd: 2.25 },

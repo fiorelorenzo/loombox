@@ -353,7 +353,7 @@ describe('spend_report_request / spend_report_response (SPEC §7.9; issue #249)'
     }
 
     expect(rows).toEqual([
-      { date: new Date().toISOString().slice(0, 10), projectPath, provider: 'claude', costUsd: 3.25 },
+      { date: new Date().toISOString().slice(0, 10), projectPath, provider: 'test-spend-report', costUsd: 3.25 },
     ]);
   });
 });
