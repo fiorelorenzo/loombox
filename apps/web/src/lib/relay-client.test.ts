@@ -11,7 +11,11 @@ import {
   generateRecoveryCode,
   importAesGcmKey,
 } from '@loombox/crypto';
-import { createTranscriptState, reduceTranscript } from '@loombox/providers-core/browser';
+import {
+  createTranscriptState,
+  parseMcpServerConfig,
+  reduceTranscript,
+} from '@loombox/providers-core/browser';
 import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
@@ -6924,6 +6928,117 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
     // goes through the composer's ordinary `sendPrompt` path instead.
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(node.messages.some((m) => m.type === 'prompt_inject')).toBe(false);
+  });
+
+  it("seals mcpServerConfigs into session_create's private envelope alongside title/projectPath, never in the clear (issue #750, D2-2; #794)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-mcp';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-mcp',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_create_mcp',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-create-mcp',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const filesystemServer = parseMcpServerConfig({
+      name: 'filesystem',
+      transport: 'stdio',
+      command: '/usr/local/bin/mcp-filesystem',
+      args: ['--root', '/home/dev/project'],
+      env: [{ name: 'API_TOKEN', secret: 'filesystem-token' }],
+    });
+
+    await client.createSession({
+      targetId: 'local',
+      provider: 'claude',
+      projectPath: '/home/dev/project',
+      mcpServerConfigs: [filesystemServer],
+    });
+
+    const createMessage = (await node.waitFor((m) => m.type === 'session_create')) as {
+      sessionId: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+
+    // Never in the clear on the wire message itself.
+    expect(JSON.stringify(createMessage)).not.toContain('mcp-filesystem');
+
+    const sessionKey = await deriveNodeSessionKey(amk, accountId, createMessage.sessionId);
+    const decryptedMeta = await nodeOpen<{ mcpServerConfigs?: unknown }>(
+      createMessage.sessionId,
+      createMessage.privateEnvelope,
+      sessionKey,
+    );
+    expect(decryptedMeta.mcpServerConfigs).toEqual([filesystemServer]);
+    // The declared secret NAME travels (the node needs it to resolve a
+    // grant) — but no secret VALUE was ever available to seal in the
+    // first place, since this client-side type has no `value` field for
+    // a `{ secret }` var decl at all (mcp-secret-grants.ts's boundary).
+    expect(JSON.stringify(decryptedMeta)).toContain('filesystem-token');
+  });
+
+  it('omits mcpServerConfigs entirely from the sealed envelope when nothing is declared, matching every client that predates the field', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-mcp-empty';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-mcp-empty',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_create_mcp_empty',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-create-mcp-empty',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await client.createSession({
+      targetId: 'local',
+      provider: 'claude',
+      projectPath: '/home/dev/project',
+      mcpServerConfigs: [],
+    });
+
+    const createMessage = (await node.waitFor((m) => m.type === 'session_create')) as {
+      sessionId: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+    const sessionKey = await deriveNodeSessionKey(amk, accountId, createMessage.sessionId);
+    const decryptedMeta = await nodeOpen<Record<string, unknown>>(
+      createMessage.sessionId,
+      createMessage.privateEnvelope,
+      sessionKey,
+    );
+    expect('mcpServerConfigs' in decryptedMeta).toBe(false);
   });
 
   it('rejects immediately when there is no open connection', async () => {

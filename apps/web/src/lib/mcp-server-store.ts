@@ -154,3 +154,26 @@ export function setMcpServerEnabled(
 export function requiredSecretNames(config: McpServerConfig): string[] {
   return requiredSecrets(config);
 }
+
+/**
+ * This client's currently-enabled MCP server declarations for a project, in
+ * the plain `McpServerConfig[]` shape `RelayClient.createSession`'s
+ * `mcpServerConfigs` option — and, on the wire, `session_create`'s
+ * `SessionPrivateMetaV1.mcpServerConfigs` — expects (issue #750/#794's
+ * "forward the client list into `session_create`" acceptance line).
+ * A disabled record is deliberately excluded, mirroring
+ * `@loombox/providers-core`'s `resolveEffectiveMcpServers`'s own "only
+ * `enabled` records make it into the result" rule for the node's mirror
+ * store — this is the client-side half of the exact same rule, not a
+ * different one, which is the point (issue #794's "make the two config
+ * stores legible as one resolution path"). Storage order is preserved;
+ * `NodeDaemon.resolveMcpServers`/`mergeMcpServerConfigLists` is what
+ * actually decides precedence against this node's own record of the same
+ * name, not this function.
+ */
+export function effectiveMcpServerConfigs(storage: McpServerConfigStorage): McpServerConfig[] {
+  return storage
+    .get()
+    .filter((record) => record.enabled)
+    .map((record) => record.config);
+}

@@ -11,6 +11,7 @@ import {
 import type {
   AcpAvailableCommand,
   AcpConfigOption,
+  AcpMcpServerStatusEntry,
   AcpSessionStatus,
   PermissionQueueState,
   TranscriptState,
@@ -252,6 +253,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       }
       return store;
     },
+    mcpServerStatusesFor: () => makeStore<AcpMcpServerStatusEntry[] | undefined>(undefined),
     attachmentsFor: () => makeStore([]),
     /** Issue #759's Mod+J test is the first in this file to actually flip `terminalDock.open`, which mounts a real `InteractiveTerminal` (see that component's own doc comment) — every `client.*Terminal*` call it makes on mount/dispose needs a stub, mirroring the identical `runsFor`/`startRun`/`cancelRun`/`onRunOutput` shape a few lines down for `RunnerPanel`. */
     terminalsFor: () => makeStore(new Map()),

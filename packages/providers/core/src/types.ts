@@ -405,12 +405,21 @@ export interface AcpTurnEndedEvent {
 /** The fixed, closed vocabulary the node classifies an MCP server failure into (issue #750, D2-2) — see `AcpMcpServerStatusEvent`'s own doc comment for why this differs from `AcpConfigOption`'s open `category` string. */
 export type AcpMcpServerFailureCategory = 'missing_binary' | 'handshake_failed' | 'secret_missing';
 
-/** One MCP server's outcome, as reported inside an {@link AcpMcpServerStatusEvent}. `category`/`reason` are set only for `ok: false`. */
+/**
+ * One MCP server's outcome, as reported inside an {@link
+ * AcpMcpServerStatusEvent}. `category`/`reason` are set only for
+ * `ok: false`. `disabled` (issue #794) is `true` only when this exact
+ * failure was the third consecutive one and the node just auto-disabled
+ * its OWN config-store record for this server as a direct result — see
+ * `mcpServerStatusEntryV1`'s own doc comment (`@loombox/protocol`) for
+ * why a client-declared server's repeated failure never sets it.
+ */
 export interface AcpMcpServerStatusEntry {
   name: string;
   ok: boolean;
   category?: AcpMcpServerFailureCategory;
   reason?: string;
+  disabled?: boolean;
 }
 
 /**

@@ -8,6 +8,7 @@
   import type {
     AcpAvailableCommand,
     AcpConfigOption,
+    AcpMcpServerStatusEntry,
     AcpPermissionOption,
     AcpSessionStatus,
     PermissionQueueState,
@@ -733,6 +734,8 @@
   let configOptions = $state<AcpConfigOption[]>([]);
   /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
   let commands = $state<AcpAvailableCommand[]>([]);
+  /** The selected session's latest `mcp_server_status` push (issue #750, D2-2; #794), mirrored off `client.mcpServerStatusesFor(id)` exactly like `commands` above — forwarded straight through to `ProjectConfigPanel` -> `McpServerConfigPanel`'s own "Server status" section. `undefined` until the first push for this session arrives, or while none is selected. */
+  let mcpServerStatuses = $state<AcpMcpServerStatusEntry[] | undefined>(undefined);
   /**
    * The selected session's own agent's remembered account-wide values and
    * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
@@ -1332,6 +1335,7 @@
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
   let unsubscribeCommands: (() => void) | undefined;
+  let unsubscribeMcpServerStatuses: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
@@ -1472,6 +1476,7 @@
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
     unsubscribeCommands?.();
+    unsubscribeMcpServerStatuses?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
@@ -1480,6 +1485,7 @@
     permissionQueue = createPermissionQueueState();
     configOptions = [];
     commands = [];
+    mcpServerStatuses = undefined;
     configOptionAccountDefaults = {};
     configOptionProjectOverrides = {};
     attachments = [];
@@ -1497,6 +1503,9 @@
       .configOptionsFor(id)
       .subscribe((value) => handleConfigOptionsUpdate(id, value));
     unsubscribeCommands = client.commandsFor(id).subscribe((value) => (commands = value));
+    unsubscribeMcpServerStatuses = client
+      .mcpServerStatusesFor(id)
+      .subscribe((value) => (mcpServerStatuses = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -4372,6 +4381,7 @@
                   projectPath={selectedProjectPath}
                   sessionId={selectedSessionId}
                   relayClient={client}
+                  {mcpServerStatuses}
                 />
               </div>
             {/if}
