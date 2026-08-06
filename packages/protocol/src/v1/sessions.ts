@@ -3,6 +3,7 @@ import { customAgentRecordV1 } from './custom-agent';
 import { encryptedEnvelope } from './envelope';
 import { PROTOCOL_V1 } from './handshake';
 import { mcpServerConfigV1 } from './mcp-servers';
+import { projectEnvVarDeclV1 } from './project-env';
 
 /**
  * The session-metadata boundary Lorenzo approved (`docs/v1-plan.md`,
@@ -132,6 +133,24 @@ export const sessionPrivateMetaV1 = z.object({
    * error — see `@loombox/node`'s `agent-profile.ts` doc comment.
    */
   profileId: z.string().min(1).optional(),
+  /**
+   * This project's declared env-var injection for the spawned agent
+   * process itself (SPEC §7.17, §8; issue #258) — `apps/web`'s
+   * `project-env-store.ts`'s `localStorage` list at the moment this
+   * session was created, forwarded so `NodeDaemon`'s
+   * `NodeProjectEnvManager.resolveForSession` can resolve each declared
+   * var against this node's own local secret grant/value storage before
+   * the agent ever spawns. Omitted (an older client, or a project with
+   * nothing declared) behaves exactly like an empty array: no extra env
+   * is injected, unchanged from before this field existed. Never carries
+   * a secret *value* — only a secret *name* reference
+   * (`ProjectEnvVarDeclV1`'s `{ secret }` variant); those still resolve
+   * exclusively node-side and never reach the relay or a client
+   * (SPEC §7.17's node-local-secrets rule). A missing/ungranted secret
+   * fails session start outright rather than starting an agent quietly
+   * missing a credential it declared it needed.
+   */
+  projectEnvDecls: z.array(projectEnvVarDeclV1).optional(),
 });
 export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
 

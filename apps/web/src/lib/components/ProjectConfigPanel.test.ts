@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from '@loombox/providers-core/browser';
 import { createInMemoryMcpServerConfigStorage } from '$lib/mcp-server-store';
 import { createInMemoryPluginConfigStorage } from '$lib/plugin-store';
+import { createInMemoryProjectEnvStorage } from '$lib/project-env-store';
 import ProjectConfigPanel from './ProjectConfigPanel.svelte';
 
 afterEach(() => cleanup());
@@ -23,6 +24,7 @@ describe('ProjectConfigPanel (issue #366)', () => {
 
     expect(screen.getByTestId('mcp-config-panel')).toBeTruthy();
     expect(screen.getByTestId('plugin-config-panel')).toBeTruthy();
+    expect(screen.getByTestId('project-secrets-panel')).toBeTruthy();
   });
 
   it('quick-adding an MCP preset produces a server record in the panel and its own storage', async () => {
@@ -83,5 +85,56 @@ describe('ProjectConfigPanel (issue #366)', () => {
     await fireEvent.click(screen.getByTestId(`preset-add-${secretPreset.config.name}`));
 
     expect(calls).toEqual([[secretPreset.config.name, 'github-personal-access-token']]);
+  });
+
+  it('declaring a project env var round-trips through its own storage, independently of the MCP list', async () => {
+    const mcpStorage = createInMemoryMcpServerConfigStorage();
+    const projectEnvStorage = createInMemoryProjectEnvStorage();
+    render(ProjectConfigPanel, {
+      props: {
+        projectPath: '/tmp/project',
+        mcpStorage,
+        pluginStorage: createInMemoryPluginConfigStorage(),
+        projectEnvStorage,
+      },
+    });
+
+    await fireEvent.input(screen.getByTestId('env-add-name'), {
+      target: { value: 'DB_PASSWORD' },
+    });
+    await fireEvent.input(screen.getByTestId('env-add-secret'), {
+      target: { value: 'db-password' },
+    });
+    await fireEvent.click(screen.getByTestId('env-add-submit'));
+
+    expect(projectEnvStorage.get()).toEqual([{ name: 'DB_PASSWORD', secret: 'db-password' }]);
+    expect(screen.getByTestId('project-secret-DB_PASSWORD')).toBeTruthy();
+    expect(mcpStorage.get()).toEqual([]);
+  });
+
+  it('declaring a secret-requiring env var forwards onEnvSecretRequired, never onSecretRequired (the MCP-scoped one)', async () => {
+    const mcpCalls: Array<[string, string]> = [];
+    const envCalls: Array<[string, string]> = [];
+    render(ProjectConfigPanel, {
+      props: {
+        projectPath: '/tmp/project',
+        mcpStorage: createInMemoryMcpServerConfigStorage(),
+        pluginStorage: createInMemoryPluginConfigStorage(),
+        projectEnvStorage: createInMemoryProjectEnvStorage(),
+        onSecretRequired: (serverName, secretName) => mcpCalls.push([serverName, secretName]),
+        onEnvSecretRequired: (envVarName, secretName) => envCalls.push([envVarName, secretName]),
+      },
+    });
+
+    await fireEvent.input(screen.getByTestId('env-add-name'), {
+      target: { value: 'DB_PASSWORD' },
+    });
+    await fireEvent.input(screen.getByTestId('env-add-secret'), {
+      target: { value: 'db-password' },
+    });
+    await fireEvent.click(screen.getByTestId('env-add-submit'));
+
+    expect(envCalls).toEqual([['DB_PASSWORD', 'db-password']]);
+    expect(mcpCalls).toEqual([]);
   });
 });

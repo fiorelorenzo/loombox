@@ -57,11 +57,13 @@
    */
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
+  import type { ProjectEnvDeclStorage } from '$lib/project-env-store';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PermissionPolicyPanel, {
     type PermissionPolicyClient,
   } from './PermissionPolicyPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
+  import ProjectSecretsPanel from './ProjectSecretsPanel.svelte';
   import TestRunnerConfigPanel, {
     type TestRunnerConfigClient,
   } from './TestRunnerConfigPanel.svelte';
@@ -73,8 +75,11 @@
     sessionId?: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
+    projectEnvStorage?: ProjectEnvDeclStorage;
     relayClient?: ProjectConfigRelayClient;
     onSecretRequired?: (serverName: string, secretName: string) => void;
+    /** Same seam as `onSecretRequired`, scoped to a project's directly-declared env-var injection (issue #258) rather than an MCP server's — kept as its own prop since the two are a genuinely distinct grant/trust boundary (see `ProjectSecretsPanel`'s doc comment). */
+    onEnvSecretRequired?: (envVarName: string, secretName: string) => void;
   }
 
   const {
@@ -82,8 +87,10 @@
     sessionId,
     mcpStorage,
     pluginStorage,
+    projectEnvStorage,
     relayClient,
     onSecretRequired,
+    onEnvSecretRequired,
   }: Props = $props();
 </script>
 
@@ -91,6 +98,14 @@
   <section class="project-config-section">
     <h3>MCP servers</h3>
     <McpServerConfigPanel {projectPath} storage={mcpStorage} {onSecretRequired} />
+  </section>
+  <section class="project-config-section">
+    <h3>Env vars &amp; secrets</h3>
+    <ProjectSecretsPanel
+      {projectPath}
+      storage={projectEnvStorage}
+      onSecretRequired={onEnvSecretRequired}
+    />
   </section>
   <section class="project-config-section">
     <h3>Plugins &amp; extensions</h3>
