@@ -19,6 +19,7 @@ import {
   type ResyncMarker,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionUpdateEnvelopeV1,
   type TargetList,
@@ -1318,6 +1319,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         return;
       }
+      case 'session_fork_response': {
+        // #746 (design spec `2026-08-05-zed-parity-decisions.md` §3's
+        // C6-2): the owning node's reply to a client's
+        // session_fork_request, matched back by requestId. Broadcast
+        // account-wide exactly like session_archive_response above — the
+        // new session itself (on outcome 'ok') already reached every
+        // device the ordinary way via session_announce, this only settles
+        // whichever device's pending fork promise is waiting on
+        // requestId.
+        for (const client of registry.clients) {
+          if (client.accountId === connection.accountId) sendDirect(client, message);
+        }
+        return;
+      }
       case 'permission_request':
         fanOutDirect(message.sessionId, message);
         // #163: presence-aware push — a tool call awaiting approval is one
@@ -1746,6 +1761,36 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             { targetId: message.targetId },
             'relay: session_create for unknown/foreign target',
           );
+          return;
+        }
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'session_fork_request': {
+        // #746: routed by targetId exactly like session_create above — the
+        // forked session doesn't exist as a SessionRecord yet, so there is
+        // nothing to route by sessionId. Unlike session_create's own
+        // silent drop on a bad target, a fork's own request/response
+        // contract exists specifically to surface a refusal (SPEC C6-2's
+        // "never half-creates"), so an unroutable target replies with an
+        // explicit error instead of leaving the requester to learn it only
+        // from its own pending-request timeout — the same reasoning
+        // session_archive_request's unknown-session branch already applies.
+        const nodeId = store.targets.findNodeForTarget(message.targetId);
+        const nodeConnection = nodeId ? registry.nodeConnectionsByNodeId.get(nodeId) : undefined;
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { targetId: message.targetId },
+            'relay: session_fork_request for unknown/foreign target',
+          );
+          const errorResponse: SessionForkResponse = {
+            type: 'session_fork_response',
+            protocolVersion: PROTOCOL_V1,
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            result: { outcome: 'error', message: `unknown target ${message.targetId}` },
+          };
+          sendDirect(connection, errorResponse);
           return;
         }
         sendDirect(nodeConnection, message);

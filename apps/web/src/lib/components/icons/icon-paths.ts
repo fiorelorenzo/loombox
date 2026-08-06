@@ -68,6 +68,7 @@ export const ICON_NAMES = [
   'folder',
   'attach',
   'copy',
+  'fork',
   'pin',
   'close',
   'sidebar-panel',
@@ -265,6 +266,19 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
 
   // Two overlapping squares — the copy affordance.
   copy: ['M26 14 H46 V34 H26 Z', 'M14 26 H34 V46 H14 Z'],
+
+  // A single node splitting into two — the fork-a-session affordance
+  // (issue #746): "one thing becomes two, diverging from here", the same
+  // three-connected-nodes register `targets` already draws, just read
+  // top-to-bottom instead of left-to-right.
+  fork: [
+    'M28 14 A4 4 0 1 0 36 14 A4 4 0 1 0 28 14',
+    'M14 48 A4 4 0 1 0 22 48 A4 4 0 1 0 14 48',
+    'M42 48 A4 4 0 1 0 50 48 A4 4 0 1 0 42 48',
+    'M32 18 V30',
+    'M32 30 L18 44',
+    'M32 30 L46 44',
+  ],
 
   // A pushpin — pin/unpin affordance.
   pin: ['M26 12 H38 L36 24 L46 36 H18 L28 24 Z', 'M32 36 V52'],

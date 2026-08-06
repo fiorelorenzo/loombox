@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -161,6 +161,28 @@ export class NotAGitRepoError extends Error {
 }
 
 /**
+ * Thrown by {@link SessionManager.forkSession} when `sourceId` cannot be
+ * forked as-is (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2;
+ * issue #746) — never a half-created fork, always thrown before anything is
+ * written to disk. Two cases: no session with `sourceId`; and a
+ * `workInPlace` source (`branch === ''`, `worktreePath === projectPath`) —
+ * there is no isolated worktree to copy FROM without touching the user's
+ * actual project folder, and no branch to fork the new worktree's git
+ * plumbing off of either. (An `ssh:` source is a third, related refusal,
+ * but it's `NodeDaemon`'s to make, before it ever calls this method — see
+ * {@link SessionManager.forkSession}'s own doc comment.)
+ */
+export class CannotForkSessionError extends Error {
+  constructor(
+    readonly sourceId: string,
+    reason: string,
+  ) {
+    super(`SessionManager: cannot fork session ${sourceId}: ${reason}`);
+    this.name = 'CannotForkSessionError';
+  }
+}
+
+/**
  * Confirms `projectPath` exists at all, before anything below ever asks
  * whether it's a git repo. A missing directory and one that merely isn't a
  * repo are different problems with different fixes (issue #507): conflating
@@ -233,6 +255,40 @@ async function ensureLoomboxDirIsSelfIgnoring(projectPath: string): Promise<void
       }`,
     );
   }
+}
+
+/**
+ * Overwrites every top-level entry of `destWorktreePath` (a freshly
+ * `git worktree add`-ed directory, `.git` itself never touched) with a
+ * byte-for-byte copy of `sourceWorktreePath`'s current entries, `.git`
+ * excluded on that side too — {@link SessionManager.forkSession}'s
+ * worktree-fidelity half. Clearing the destination first (rather than only
+ * copying over it) matters: `git worktree add` checks the fork's branch
+ * tip out onto disk, and a file the source deleted but never committed
+ * would otherwise survive the copy as a stray leftover from that checkout,
+ * silently reintroducing something the transcript never claims exists.
+ */
+async function replaceWorktreeContents(
+  sourceWorktreePath: string,
+  destWorktreePath: string,
+): Promise<void> {
+  const destEntries = await readdir(destWorktreePath, { withFileTypes: true });
+  await Promise.all(
+    destEntries
+      .filter((entry) => entry.name !== '.git')
+      .map((entry) => rm(join(destWorktreePath, entry.name), { recursive: true, force: true })),
+  );
+
+  const sourceEntries = await readdir(sourceWorktreePath, { withFileTypes: true });
+  await Promise.all(
+    sourceEntries
+      .filter((entry) => entry.name !== '.git')
+      .map((entry) =>
+        cp(join(sourceWorktreePath, entry.name), join(destWorktreePath, entry.name), {
+          recursive: true,
+        }),
+      ),
+  );
 }
 
 /**
@@ -338,6 +394,75 @@ export class SessionManager {
       state: 'running',
       nodeId,
       targetId: targetId ?? 'local',
+    };
+
+    this.sessions.set(id, session);
+    this.persist();
+    return session;
+  }
+
+  /**
+   * Forks `sourceId` into a brand-new, independent session (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746). Never
+   * writes to `sourceId`'s own record, worktree, or branch — this only
+   * reads from them. Throws {@link CannotForkSessionError}, before
+   * anything is created on disk, for a source this manager cannot fork:
+   * unknown id, or `workInPlace` (no isolated worktree/branch to fork
+   * from). There is no separate non-`local`-target check here: this
+   * manager only ever holds `local` sessions in the first place (an
+   * `ssh:` session is tracked by `NodeDaemon` directly, never recorded
+   * here — see `Session.target`'s own doc comment) — the caller
+   * (`NodeDaemon.forkSessionInternal`) is what refuses an `ssh:` source
+   * before ever reaching this method.
+   *
+   * Worktree fidelity: see {@link replaceWorktreeContents}'s doc comment
+   * for the "why not branch off a commit" reasoning in full. In short,
+   * `git worktree add -b branch worktreePath <source's own branch>`
+   * establishes real, independent git worktree plumbing (so every other
+   * worktree-keyed capability — teardown, the diff viewer, a future
+   * checkpoint engine — sees a normal session), and
+   * {@link replaceWorktreeContents} then overwrites its checked-out files
+   * with an exact copy of the source's CURRENT disk state, uncommitted and
+   * untracked changes included — the part a bare branch-off would silently
+   * drop, and the part that actually matters, since an agent's edits are
+   * usually uncommitted.
+   */
+  async forkSession(
+    sourceId: string,
+    options: { id?: string; provider: string; nodeId?: string; targetId?: string },
+  ): Promise<Session> {
+    const source = this.sessions.get(sourceId);
+    if (!source) {
+      throw new CannotForkSessionError(sourceId, 'no such session');
+    }
+    if (!source.branch) {
+      throw new CannotForkSessionError(
+        sourceId,
+        'the source session runs in place (workInPlace), with no isolated worktree of its own to fork from',
+      );
+    }
+
+    const id = options.id ?? randomUUID();
+    const branch = sessionWorktreeBranch(id);
+    const worktreePath = join(source.projectPath, '.loombox', 'worktrees', id);
+    await ensureLoomboxDirIsSelfIgnoring(source.projectPath);
+    await runGit(
+      ['worktree', 'add', '-b', branch, worktreePath, source.branch],
+      source.projectPath,
+    );
+    await replaceWorktreeContents(source.worktreePath, worktreePath);
+
+    const session: Session = {
+      id,
+      projectPath: source.projectPath,
+      worktreePath,
+      target: 'local',
+      provider: options.provider,
+      branch,
+      createdAt: Date.now(),
+      state: 'running',
+      nodeId: options.nodeId,
+      targetId: options.targetId ?? 'local',
     };
 
     this.sessions.set(id, session);
