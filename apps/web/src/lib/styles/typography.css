@@ -36,7 +36,22 @@
   --text-title-line: 1.5rem;
   --text-title-weight: 600;
 
-  --text-body-size: 0.95rem;
+  /* A2-1 tightening (issue #734, `2026-08-05-zed-parity-decisions.md`):
+     14.4px, was `0.95rem` (15.2px). Not just a chrome number: `html`
+     below sets its own `font-size` to this token, and `rem`'s one spec
+     exception is that on the ROOT element's OWN `font-size`, `rem`
+     resolves against the UA initial value (16px), never against itself —
+     so `0.9rem` here lands on exactly 14.4px, and every OTHER `rem` value
+     in the app (spacing, radii, `--nav-row-height`/`--topbar-height`,
+     component paddings) now computes against that 14.4px root instead of
+     the old 15.2px one. That cascade is the mechanism, not a side effect
+     to work around: one token tightens the whole chrome, which is the
+     A2-1 pick's own point ("one diff, nothing to explain in Settings").
+     `--nav-row-height`/`--topbar-height`/`--text-code-size` each carry
+     their own tightened value on top of this, computed against the new
+     14.4px root rather than the naive 16px this repo's older comments
+     assumed. */
+  --text-body-size: 0.9rem;
   --text-body-line: 1.45rem;
   --text-body-weight: 400;
 
@@ -59,7 +74,11 @@
   --text-caption-weight: 500;
   --text-caption-tracking: 0.08em;
 
-  --text-code-size: 0.85rem;
+  /* A2-1 tightening (issue #734): 12.8px, was `0.85rem` (13.6px nominal
+     against a 16px root / ~12.9px actual against the pre-A2-1 15.2px
+     one). Computed against the new 14.4px root `--text-body-size` sets
+     (see that token's own note above): `0.8889rem * 14.4px ≈ 12.8px`. */
+  --text-code-size: 0.8889rem;
   --text-code-line: 1.4rem;
   --text-code-weight: 400;
 }

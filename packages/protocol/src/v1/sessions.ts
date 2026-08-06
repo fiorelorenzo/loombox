@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { customAgentRecordV1 } from './custom-agent';
 import { encryptedEnvelope } from './envelope';
 import { PROTOCOL_V1 } from './handshake';
+import { mcpServerConfigV1 } from './mcp-servers';
 
 /**
  * The session-metadata boundary Lorenzo approved (`docs/v1-plan.md`,
@@ -69,6 +70,22 @@ export const sessionPrivateMetaV1 = z.object({
    * unchanged rather than failing closed on it.
    */
   customAgent: customAgentRecordV1.optional(),
+  /**
+   * This client's per-project, currently-enabled MCP server declarations
+   * (issue #750, D2-2) — `apps/web`'s `mcp-server-store.ts`'s `localStorage`
+   * list at the moment this session was created, forwarded so
+   * `NodeDaemon.resolveMcpServers` can merge it with this node's own
+   * `McpConfigStore` (global + project) into one effective, deduplicated
+   * server list, instead of the node's file store and the client's
+   * `localStorage` store each answering "which servers does this project
+   * have" on their own. Omitted (an older client, or a project with no
+   * client-declared servers) behaves exactly like an empty array: only
+   * this node's own store is consulted, unchanged from before this field
+   * existed. Never carries a secret *value* — only a secret *name*
+   * reference (`McpServerVarDeclV1`'s `{ secret }` variant); those still
+   * resolve exclusively node-side (SPEC §7.17).
+   */
+  mcpServerConfigs: z.array(mcpServerConfigV1).optional(),
   /**
    * Set only on a `session_fork_request`'s envelope (design spec
    * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746): the turn

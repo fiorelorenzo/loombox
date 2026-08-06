@@ -138,7 +138,12 @@ test.describe('Tool-call gutter glyph alignment (issue #703)', () => {
         status: 'completed',
       });
 
-      await expectGlyphAlignedWithText(page.getByTestId('generic-tool-row'), 'tool-generic');
+      // `toolKind: 'read'` now draws its own `tool-read` glyph (issue
+      // #744) rather than the shared `tool-generic` wrench every
+      // `GenericToolRow` consumer used to draw regardless of kind — the
+      // alignment guarantee itself is unchanged, only which icon name to
+      // look for.
+      await expectGlyphAlignedWithText(page.getByTestId('generic-tool-row'), 'tool-read');
     });
 
     test(`the edit/write glyph sits on its title's baseline, ${theme} theme`, async ({

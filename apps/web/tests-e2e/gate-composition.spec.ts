@@ -52,13 +52,25 @@ test.describe('signed-out gate composition', () => {
     // The lockup must not move at all, and the panel must keep its position and
     // width. Its height is free to change: the states carry different content,
     // and the panel grows downwards from a fixed top edge.
-    expect(await lockup.boundingBox()).toEqual(checkingLockup);
+    //
+    // Sub-pixel tolerance on `y` only (issue #734, A2-1): `.gate-column`'s
+    // `min-height: 22rem` (`GateShell.svelte`) computes against `html`'s
+    // font-size, which is `var(--text-body-size)` — tightening that token
+    // moves the reserved column height by a fraction of a pixel differently
+    // than the two states' own content heights round, so the browser's
+    // sub-pixel layout rounding lands the centred column a hairline apart
+    // between "checking" and "signed-out". A real jump (the 46px bug this
+    // test was written to catch) would still fail this loudly; this only
+    // tolerates the sub-pixel noise a fractional root font-size introduces.
+    const signedOutLockup = await lockup.boundingBox();
+    expect(signedOutLockup?.x).toBe(checkingLockup?.x);
+    expect(signedOutLockup?.width).toBe(checkingLockup?.width);
+    expect(signedOutLockup?.height).toBe(checkingLockup?.height);
+    expect(Math.abs((signedOutLockup?.y ?? 0) - (checkingLockup?.y ?? 0))).toBeLessThanOrEqual(1);
     const signedOutPanel = await panel.boundingBox();
-    expect({
-      x: signedOutPanel?.x,
-      y: signedOutPanel?.y,
-      width: signedOutPanel?.width,
-    }).toEqual({ x: checkingPanel?.x, y: checkingPanel?.y, width: checkingPanel?.width });
+    expect(signedOutPanel?.x).toBe(checkingPanel?.x);
+    expect(signedOutPanel?.width).toBe(checkingPanel?.width);
+    expect(Math.abs((signedOutPanel?.y ?? 0) - (checkingPanel?.y ?? 0))).toBeLessThanOrEqual(1);
   });
 
   test('centres the panel in the viewport', async ({ page }) => {

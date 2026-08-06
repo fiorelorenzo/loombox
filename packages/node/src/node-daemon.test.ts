@@ -146,6 +146,32 @@ function mcpProvider(): AcpProvider {
   };
 }
 
+// Simulates a real agent's own MCP client rejecting `session/new` when a
+// declared server named "bad-binary"/"bad-handshake" is present (issue
+// #750, D2-2) — the exact `AcpClient: Internal error (code -32603): <name>:
+// <detail>` shape verified against a real `omp acp` binary, so
+// `attributeMcpFailure`'s classification/exclusion loop is exercised
+// deterministically. See the fixture's own doc comment for the full
+// contract.
+const MCP_FAILING_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'mcp-failing-acp-agent.mjs',
+);
+
+function failingMcpProvider(): AcpProvider {
+  return {
+    id: 'test-mcp-failing',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [MCP_FAILING_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
 // packages/supervisor's own crash fixture (issue #170's session_outcome
 // coverage needs a real 'exited' attention transition, not just the
 // 'awaiting_input' every other test here already gets from session
@@ -411,6 +437,8 @@ interface DecryptedSessionEvent {
   reason?: string;
   options?: unknown[];
   commands?: unknown[];
+  /** `mcp_server_status`'s own payload field (issue #750, D2-2). */
+  servers?: { name: string; ok: boolean; category?: string; reason?: string }[];
 }
 
 /**
@@ -3425,6 +3453,419 @@ describe('NodeDaemon MCP server resolution at session start (issues #187/#189)',
     // the project's effective server set is empty (see node-daemon.ts's doc
     // comment on that method).
     expect(session.id).toBeTruthy();
+  });
+});
+
+describe('NodeDaemon MCP server placement/lifecycle on the execution target (issue #750, D2-2)', () => {
+  it("merges the client-declared MCP server list with this node's own McpConfigStore, deduplicated by name — the node's own record wins a collision", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-merge';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    mcpConfigStore.saveGlobal({
+      name: 'shared',
+      transport: 'stdio',
+      command: '/node/shared',
+      args: [],
+      env: [],
+    });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-merge',
+      deviceId: 'device-node-mcp-merge',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [mcpProvider()] }),
+      mcpConfigStore,
+    });
+
+    const session = await node.createSession({
+      projectPath,
+      provider: 'test-mcp',
+      mcpServerConfigs: [
+        { name: 'shared', transport: 'stdio', command: '/client/shared', args: [], env: [] },
+        { name: 'client-only', transport: 'stdio', command: '/client/only', args: [], env: [] },
+      ],
+    });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-merge',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+    );
+
+    await node.promptSession(session.id, 'echo-mcp-servers');
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
+    const echoed = JSON.parse(chunk!.text!) as { name: string; command: string }[];
+
+    expect(echoed.map((s) => s.name).sort()).toEqual(['client-only', 'shared']);
+    // The node's own record wins outright — never the client-declared one
+    // of the same name.
+    expect(echoed.find((s) => s.name === 'shared')?.command).toBe('/node/shared');
+  });
+
+  it('excludes a server with a missing binary, reports it by name and category, and the session still starts with the remaining servers', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-missing-binary';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    mcpConfigStore.saveGlobal({
+      name: 'bad-binary',
+      transport: 'stdio',
+      command: 'this-binary-does-not-exist',
+      args: [],
+      env: [],
+    });
+    mcpConfigStore.saveGlobal({
+      name: 'good',
+      transport: 'stdio',
+      command: '/bin/good',
+      args: [],
+      env: [],
+    });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-missing-binary',
+      deviceId: 'device-node-mcp-missing-binary',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [failingMcpProvider()] }),
+      mcpConfigStore,
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+    await node.promptSession(session.id, 'echo-mcp-servers');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-missing-binary',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      sinceSeq: 0,
+    });
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    // `mcp_server_status` is already buffered by the time this phone
+    // subscribes, but `agent_message_chunk` only lands once the prompt
+    // turn's transcript update actually finishes flushing through
+    // `bridge.sendQueue` — a single resync snapshot can race ahead of
+    // that, so this re-polls (same pattern the "bounds an agent spawn
+    // that never resolves" test above uses) rather than trusting one
+    // resync reply.
+    let events: DecryptedSessionEvent[] = [];
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      phone.send({
+        type: 'resync_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        sinceSeq: 0,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const seen = await waitForDecryptedKinds(
+        phone,
+        session.id,
+        key,
+        ['mcp_server_status', 'agent_message_chunk'],
+        0,
+        0,
+      ).catch(() => []);
+      const bySeq = new Map(seen.map((event) => [event.seq, event]));
+      events = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+      if (
+        events.some((event) => event.kind === 'mcp_server_status') &&
+        events.some((event) => event.kind === 'agent_message_chunk')
+      ) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          'timed out waiting for both mcp_server_status and agent_message_chunk to resync',
+        );
+      }
+    }
+    const statusEvent = events.find((e) => e.kind === 'mcp_server_status');
+    expect(statusEvent?.servers).toEqual([
+      {
+        name: 'bad-binary',
+        ok: false,
+        category: 'missing_binary',
+        reason: expect.stringContaining('Executable not found') as unknown as string,
+      },
+    ]);
+
+    const chunk = events.find((e) => e.kind === 'agent_message_chunk');
+    const echoed = JSON.parse(chunk!.text!) as { name: string }[];
+    expect(echoed.map((s) => s.name)).toEqual(['good']);
+  }, 15000);
+
+  it('excludes a server with a failed MCP handshake, reported with a distinct category from a missing binary', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-bad-handshake';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    mcpConfigStore.saveGlobal({
+      name: 'bad-handshake',
+      transport: 'stdio',
+      command: 'cat',
+      args: [],
+      env: [],
+    });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-bad-handshake',
+      deviceId: 'device-node-mcp-bad-handshake',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [failingMcpProvider()] }),
+      mcpConfigStore,
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-bad-handshake',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      sinceSeq: 0,
+    });
+
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const events = await waitForDecryptedKinds(phone, session.id, key, ['mcp_server_status'], 1);
+    expect(events[0]?.servers).toEqual([
+      {
+        name: 'bad-handshake',
+        ok: false,
+        category: 'handshake_failed',
+        reason: expect.any(String) as unknown as string,
+      },
+    ]);
+  });
+
+  it("auto-disables an MCP server in this node's own McpConfigStore after three consecutive failures to start", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-auto-disable';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    mcpConfigStore.saveGlobal({
+      name: 'bad-binary',
+      transport: 'stdio',
+      command: 'this-binary-does-not-exist',
+      args: [],
+      env: [],
+    });
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-auto-disable',
+      deviceId: 'device-node-mcp-auto-disable',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [failingMcpProvider()] }),
+      mcpConfigStore,
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+      // Still enabled — only three consecutive failures auto-disable it.
+      expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
+        true,
+      );
+    }
+    await node.createSession({ projectPath, provider: 'test-mcp-failing' });
+    expect(mcpConfigStore.listGlobal().find((r) => r.config.name === 'bad-binary')?.enabled).toBe(
+      false,
+    );
+  });
+
+  it("makes a revoked/ungranted secret grant's failure visible on the wire — session_announce, session_status: 'error' and mcp_server_status all name the server, not just a console warning (issue #750, D2-2)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-secret-visible';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    mcpConfigStore.saveGlobal({
+      name: 'github',
+      transport: 'stdio',
+      command: '/usr/bin/mcp-github',
+      args: [],
+      env: [{ name: 'GITHUB_TOKEN', secret: 'github-token' }],
+    });
+    // Deliberately never granted/set.
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-mcp-secret-visible',
+      deviceId: 'device-node-mcp-secret-visible',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [mcpProvider()] }),
+      mcpConfigStore,
+    });
+    await waitForConnected(node);
+
+    const sessionId = 'sess-mcp-secret-visible-1';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'secret missing', projectPath },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-mcp-secret-visible',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-mcp',
+      privateEnvelope,
+    });
+
+    // On the board — announced even though this session never gets a
+    // worktree/lease/agent, purely so the failure below is visible at all
+    // (see `reportMcpPreflightFailure`'s own doc comment).
+    await waitForSessionInList(phone, sessionId);
+
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      sinceSeq: 0,
+    });
+    const events = await waitForDecryptedKinds(
+      phone,
+      sessionId,
+      key,
+      ['session_status', 'mcp_server_status'],
+      2,
+    );
+
+    const statusEvent = events.find((e) => e.kind === 'session_status');
+    expect(statusEvent?.status).toBe('error');
+    expect(statusEvent?.reason).toMatch(/github.*GITHUB_TOKEN/i);
+
+    const mcpEvent = events.find((e) => e.kind === 'mcp_server_status');
+    expect(mcpEvent?.servers).toEqual([
+      {
+        name: 'github',
+        ok: false,
+        category: 'secret_missing',
+        reason: expect.stringContaining('GITHUB_TOKEN') as unknown as string,
+      },
+    ]);
+  });
+
+  it('never lets a resolved secret value cross the relay, in any message frame this node sends (issue #750, D2-2)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-secret-opaque';
+    const secretValue = 'ghp_this_exact_value_must_never_leave_the_node';
+
+    const mcpConfigStore = new McpConfigStore({ stateDir: nodeStateDir });
+    const mcpSecretManager = new NodeMcpSecretManager({
+      stateDir: nodeStateDir,
+      osKeyringBackendFactory: async () => undefined,
+    });
+    mcpConfigStore.saveGlobal({
+      name: 'github',
+      transport: 'stdio',
+      command: '/usr/bin/mcp-github',
+      args: [],
+      env: [{ name: 'GITHUB_TOKEN', secret: 'github-token' }],
+    });
+    await mcpSecretManager.setSecretValue(projectPath, 'github-token', secretValue);
+    mcpSecretManager.grant(projectPath, 'github', 'github-token');
+
+    const sentFrames: string[] = [];
+    const originalSend = WebSocket.prototype.send;
+    const sendSpy = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (
+      this: WebSocket,
+      data: string | ArrayBufferLike | ArrayBufferView | Blob,
+    ) {
+      sentFrames.push(String(data));
+      return originalSend.call(this, data);
+    });
+
+    try {
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-mcp-secret-opaque',
+        deviceId: 'device-node-mcp-secret-opaque',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        supervisor: new AgentSupervisor({ providers: [mcpProvider()] }),
+        mcpConfigStore,
+        mcpSecretManager,
+      });
+
+      const session = await node.createSession({ projectPath, provider: 'test-mcp' });
+
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-mcp-secret-opaque',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+      await phone.waitFor(
+        (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === session.id,
+      );
+      // The fixture agent echoes the resolved mcpServers (secret value
+      // included) straight back over its own ACP session — this is the
+      // one place the value legitimately exists past the node, and it is
+      // exactly what this assertion must still catch if it ever left the
+      // node in the clear.
+      await node.promptSession(session.id, 'echo-mcp-servers');
+      const key = await derivePhoneSessionKey(amk, accountId, session.id);
+      await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
+    } finally {
+      sendSpy.mockRestore();
+    }
+
+    expect(sentFrames.some((frame) => frame.includes(secretValue))).toBe(false);
   });
 });
 

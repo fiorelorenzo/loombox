@@ -176,19 +176,24 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same 44px
-     coarse-pointer convention `CopyButton`/`PermissionCard` already use.
+     coarse-pointer convention `CopyButton`/`PermissionCard` already use —
+     `var(--touch-target-min)`, not a `2.75rem` literal (A2-1, issue #734):
+     see that token's own note in `tokens.css` for why a literal `rem`
+     floor here would have shrunk every time `--text-body-size` moves.
      `sm` gets its own, smaller-but-still-touchable floor (issue #669): a
      terminal tab strip's close controls sit close together, and 44px each
-     would make them overlap; 36px keeps them tappable without colliding. */
+     would make them overlap; 36px keeps them tappable without colliding —
+     kept as a literal `px` (not `rem`) for the same cascade reason, since
+     no other control shares this exact compact size. */
   @media (pointer: coarse) {
     .ui-icon-button-md {
-      width: 2.75rem;
-      height: 2.75rem;
+      width: var(--touch-target-min);
+      height: var(--touch-target-min);
     }
 
     .ui-icon-button-sm {
-      width: 2.25rem;
-      height: 2.25rem;
+      width: 36px;
+      height: 36px;
     }
   }
 </style>

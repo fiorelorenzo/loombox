@@ -236,13 +236,23 @@
     text-decoration: none;
   }
 
+  /* A2-1 tightening (issue #734, `2026-08-05-zed-parity-decisions.md`):
+     one rung down the spacing scale on each size (`md` now sits where
+     `sm`'s padding used to, `sm` drops below that) rather than a bespoke
+     pixel padding, so the shrink stays expressed in the same token scale
+     every other control reads. Measured against the real `Inter Variable`
+     metrics and the 14.4px root `--text-body-size` now sets: md lands
+     ~25px tall (was ~37px), sm ~20px (was ~25px) — the A2-1 pick's own
+     "roughly 26/20px" from "roughly 39/26px". The coarse-pointer floors
+     below are unchanged: they're an explicit touch-target contract, not a
+     multiple of this padding, so they don't move with it. */
   .ui-button-md {
-    padding: var(--space-sm) var(--space-lg);
+    padding: var(--space-2xs) var(--space-md);
     font-size: var(--text-body-size);
   }
 
   .ui-button-sm {
-    padding: var(--space-2xs) var(--space-md);
+    padding: var(--space-3xs) var(--space-sm);
     font-size: var(--text-small-size);
   }
 
@@ -326,14 +336,20 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
-     coarse-pointer convention `CopyButton`/`PermissionCard` already use. */
+     coarse-pointer convention `CopyButton`/`PermissionCard` already use.
+     `var(--touch-target-min)`/`var(--touch-target-compact)`, not a
+     `2.75rem`/`2.5rem` literal (A2-1, issue #734): those `rem` values
+     resolve against `html`'s font-size, which IS `--text-body-size` — a
+     literal here would have shrunk this floor every time that token
+     moves, which is exactly what tightening it for A2-1 would have done
+     silently. See `tokens.css`'s own note on `--touch-target-min`. */
   @media (pointer: coarse) {
     .ui-button-md {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
 
     .ui-button-sm {
-      min-height: 2.5rem;
+      min-height: var(--touch-target-compact);
     }
   }
 </style>

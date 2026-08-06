@@ -3,9 +3,12 @@ import type { TranscriptToolCallItem } from '@loombox/providers-core/browser';
 import {
   bashCommand,
   classifyRawInput,
+  formatAttributedCost,
+  formatToolCallElapsed,
   isTodoInput,
   resolveToolWidgetKind,
   toolCallOutputText,
+  toolKindIcon,
   TOOL_CALL_STATUS_LABELS,
   TOOL_CALL_STATUS_TONES,
 } from './tool-widgets';
@@ -22,6 +25,10 @@ function toolCallItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptTo
     rawInput: undefined,
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
     ...extra,
   };
 }
@@ -57,6 +64,69 @@ describe('resolveToolWidgetKind', () => {
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: 'read' }))).toBe('generic');
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: 'search' }))).toBe('generic');
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: undefined }))).toBe('generic');
+  });
+});
+
+describe('toolKindIcon', () => {
+  it('maps every ACP tool kind to its own distinct glyph', () => {
+    const cases: Array<[TranscriptToolCallItem['toolKind'], string]> = [
+      ['read', 'tool-read'],
+      ['edit', 'tool-edit'],
+      ['delete', 'tool-delete'],
+      ['move', 'tool-move'],
+      ['search', 'tool-search'],
+      ['execute', 'tool-bash'],
+      ['think', 'tool-think'],
+      ['fetch', 'tool-fetch'],
+      ['other', 'tool-generic'],
+    ];
+    const seen = new Set<string>();
+    for (const [toolKind, expected] of cases) {
+      expect(toolKindIcon(toolKind)).toBe(expected);
+      seen.add(expected);
+    }
+    // Every mapped icon in the table above is unique — no two kinds share
+    // a glyph (the exact defect issue #744 fixes).
+    expect(seen.size).toBe(cases.length);
+  });
+
+  it('falls back to tool-generic for undefined and for an unrecognized future kind, rather than throwing', () => {
+    expect(toolKindIcon(undefined)).toBe('tool-generic');
+    expect(toolKindIcon('made-up-future-kind' as TranscriptToolCallItem['toolKind'])).toBe(
+      'tool-generic',
+    );
+  });
+});
+
+describe('formatToolCallElapsed', () => {
+  it('renders sub-second durations in whole milliseconds', () => {
+    expect(formatToolCallElapsed(0)).toBe('0ms');
+    expect(formatToolCallElapsed(420)).toBe('420ms');
+    expect(formatToolCallElapsed(999)).toBe('999ms');
+  });
+
+  it('renders sub-minute durations in seconds with one decimal', () => {
+    expect(formatToolCallElapsed(1000)).toBe('1.0s');
+    expect(formatToolCallElapsed(3200)).toBe('3.2s');
+    expect(formatToolCallElapsed(59_900)).toBe('59.9s');
+  });
+
+  it('renders minute-plus durations as minutes and zero-padded seconds', () => {
+    expect(formatToolCallElapsed(60_000)).toBe('1m 00s');
+    expect(formatToolCallElapsed(64_000)).toBe('1m 04s');
+    expect(formatToolCallElapsed(125_000)).toBe('2m 05s');
+  });
+});
+
+describe('formatAttributedCost', () => {
+  it('renders a cent or more with two decimal places', () => {
+    expect(formatAttributedCost(0.04)).toBe('$0.04');
+    expect(formatAttributedCost(1.5)).toBe('$1.50');
+  });
+
+  it('renders a sub-cent figure with four decimal places instead of rounding it to the misleading $0.00', () => {
+    expect(formatAttributedCost(0.0032)).toBe('$0.0032');
+    expect(formatAttributedCost(0.0001)).toBe('$0.0001');
   });
 });
 

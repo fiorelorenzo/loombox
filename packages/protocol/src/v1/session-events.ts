@@ -249,6 +249,52 @@ export const turnEndedEventV1 = z.object({
 });
 export type TurnEndedEventV1 = z.infer<typeof turnEndedEventV1>;
 
+/**
+ * One MCP server's outcome for the session it's reported against (issue
+ * #750, D2-2's "a missing binary, a failing handshake and a revoked secret
+ * grant each produce a distinct, visible reason" acceptance line).
+ * `category` is only set for `ok: false` — a fixed, closed vocabulary
+ * (unlike `AcpConfigOptionV1`'s open `category` string) because the node
+ * itself is the one classifying the failure, not passing through an
+ * agent-declared value, so there's no future-value forward-compat concern.
+ * `reason` is always the underlying, human-readable detail (the agent's
+ * own rejection text, or `McpServerSecretMissingError`'s message) — never
+ * a secret value, since a server whose secret failed to resolve fails
+ * before ever holding one (SPEC §7.17).
+ */
+export const mcpServerFailureCategoryV1 = z.enum([
+  'missing_binary',
+  'handshake_failed',
+  'secret_missing',
+]);
+export type McpServerFailureCategoryV1 = z.infer<typeof mcpServerFailureCategoryV1>;
+
+export const mcpServerStatusEntryV1 = z.object({
+  name: z.string().min(1),
+  ok: z.boolean(),
+  category: mcpServerFailureCategoryV1.optional(),
+  reason: z.string().min(1).optional(),
+});
+export type McpServerStatusEntryV1 = z.infer<typeof mcpServerStatusEntryV1>;
+
+/**
+ * Pushed once a session's effective MCP server set has actually been
+ * attempted against the agent (issue #750, D2-2) — never for a session
+ * with no configured servers at all (that stays silent, unchanged from
+ * before this event existed). Carries every server that failed to start,
+ * by name, so "the session opened with quietly fewer tools" (the
+ * acceptance line this event exists to prevent) never happens without the
+ * client being told exactly which server and why. A server that started
+ * fine is never listed here — its tools simply show up in the agent's own
+ * catalogue, same as always.
+ */
+export const mcpServerStatusEventV1 = z.object({
+  kind: z.literal('mcp_server_status'),
+  servers: z.array(mcpServerStatusEntryV1),
+  updatedAt: z.string().min(1),
+});
+export type McpServerStatusEventV1 = z.infer<typeof mcpServerStatusEventV1>;
+
 /** The full set of session-lifecycle payloads that can ride inside one `session_update` envelope's plaintext, discriminated on `kind`. */
 export const sessionLifecycleEventV1 = z.discriminatedUnion('kind', [
   sessionStatusEventV1,
@@ -257,6 +303,7 @@ export const sessionLifecycleEventV1 = z.discriminatedUnion('kind', [
   availableCommandsUpdateEventV1,
   turnStartedEventV1,
   turnEndedEventV1,
+  mcpServerStatusEventV1,
 ]);
 export type SessionLifecycleEventV1 = z.infer<typeof sessionLifecycleEventV1>;
 
