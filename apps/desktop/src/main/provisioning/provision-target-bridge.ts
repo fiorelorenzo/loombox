@@ -28,7 +28,7 @@ import type { ProvisionProgressStep, ProvisionTargetResult } from '../../shared/
  * never checked in. Rotating: generate a new pair, ship the new public key
  * in a node release *before* signing anything with the new private key.
  */
-const PINNED_SUPERVISOR_PUBLIC_KEY_B64 = 'izvuHGZtOgMTwuJI9PMzPIUUk6hxT3HrbwM3SNUDOBg=';
+const PINNED_SUPERVISOR_PUBLIC_KEY_B64 = 'thERD9oRaYndgS8xJUDQ6YHzRzfuLqGxegQwXZWH37A=';
 
 /** Where {@link resolveSupervisorArtifactDeps} looks for staged releases by default — `scripts/package-node-release.mjs`'s own output directory, and the shape `createLocalFsSupervisorArtifactSource` reads (issue #817). Overridable so a build pulling from a real download cache (a future GitHub-Releases-backed source, same interface) can point elsewhere without this module changing. */
 function defaultReleasesDir(): string {
