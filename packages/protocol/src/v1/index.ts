@@ -508,6 +508,35 @@ export {
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
+  AgentProfileV1,
+  AgentProfileListResultPayloadV1,
+  AgentProfileListSetPayloadV1,
+  AgentProfileListGet,
+  AgentProfileListSet,
+  AgentProfileListResult,
+  AgentProfileSessionPayloadV1,
+  AgentProfileSessionGet,
+  AgentProfileSessionSet,
+  AgentProfileSessionResult,
+  AgentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+export {
+  agentProfileV1,
+  parseAgentProfileListResultPayloadV1,
+  safeParseAgentProfileListResultPayloadV1,
+  parseAgentProfileListSetPayloadV1,
+  safeParseAgentProfileListSetPayloadV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  parseAgentProfileSessionPayloadV1,
+  safeParseAgentProfileSessionPayloadV1,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+export type {
   AccountPinErrorType,
   AccountPinGetRequest,
   AccountPinMapV1,
@@ -841,6 +870,16 @@ import {
 } from './permission-policy';
 import { keymapGetRequest, keymapResult, keymapSetRequest, keymapV1 } from './keymap';
 import {
+  agentProfileV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+import {
   accountPinErrorType,
   accountPinGetRequest,
   accountPinMapV1,
@@ -1055,6 +1094,14 @@ export const schemasV1 = {
   permissionPolicyResult,
   toolRefusalReasonV1,
   permissionPolicyViolation,
+  agentProfileV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,

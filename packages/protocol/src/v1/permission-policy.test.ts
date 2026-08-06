@@ -110,7 +110,7 @@ describe('permission_policy_set payload', () => {
   });
 });
 
-describe('toolRefusalReasonV1 (D3-4 attribution seam, issue #751)', () => {
+describe('toolRefusalReasonV1 (D3-4 attribution seam, issues #751/#752)', () => {
   it('parses the permission_policy variant', () => {
     const reason = {
       kind: 'permission_policy' as const,
@@ -121,8 +121,23 @@ describe('toolRefusalReasonV1 (D3-4 attribution seam, issue #751)', () => {
     expect(toolRefusalReasonV1.parse(reason)).toEqual(reason);
   });
 
-  it('rejects an unknown kind — a future profile reason must add its own member, not loosen this one', () => {
+  it('parses the profile variant (issue #752)', () => {
+    const reason = {
+      kind: 'profile' as const,
+      profileId: 'prof_ask',
+      profileName: 'Ask First',
+      matchedBy: 'tool-kind' as const,
+      rule: 'execute',
+    };
+    expect(toolRefusalReasonV1.parse(reason)).toEqual(reason);
+  });
+
+  it('rejects a profile variant missing its required fields — a bare {kind, name} shape from before #752 never validates', () => {
     expect(() => toolRefusalReasonV1.parse({ kind: 'profile', name: 'Ask' })).toThrow();
+  });
+
+  it('rejects an unknown kind entirely — a future fourth reason must add its own member, not loosen this one', () => {
+    expect(() => toolRefusalReasonV1.parse({ kind: 'something_else' })).toThrow();
   });
 });
 
@@ -138,7 +153,7 @@ describe('permission_policy_violation', () => {
     expect(() => permissionPolicyViolation.parse({ ...message, envelope: undefined })).toThrow();
   });
 
-  it('parses a full violation payload', () => {
+  it('parses a full violation payload for a permission_policy refusal', () => {
     const payload = {
       reason: {
         kind: 'permission_policy' as const,
@@ -148,6 +163,22 @@ describe('permission_policy_violation', () => {
       },
       surface: 'terminal' as const,
       command: 'curl evil.example.com',
+      timestamp: '2026-08-06T00:00:00.000Z',
+    };
+    expect(parsePermissionPolicyViolationPayloadV1(payload)).toEqual(payload);
+  });
+
+  it('parses a full violation payload for a profile refusal, surface: tool_call (issue #752)', () => {
+    const payload = {
+      reason: {
+        kind: 'profile' as const,
+        profileId: 'prof_min',
+        profileName: 'Minimal',
+        matchedBy: 'tool-name' as const,
+        rule: 'mcp__github__*',
+      },
+      surface: 'tool_call' as const,
+      command: 'mcp__github__create_issue',
       timestamp: '2026-08-06T00:00:00.000Z',
     };
     expect(parsePermissionPolicyViolationPayloadV1(payload)).toEqual(payload);

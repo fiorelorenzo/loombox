@@ -79,6 +79,14 @@ import {
 } from './permission-policy';
 import { keymapGetRequest, keymapResult, keymapSetRequest } from './keymap';
 import {
+  agentProfileListGet,
+  agentProfileListResult,
+  agentProfileListSet,
+  agentProfileSessionGet,
+  agentProfileSessionResult,
+  agentProfileSessionSet,
+} from './agent-profile';
+import {
   accountPinGetRequest,
   accountPinResolveRequest,
   accountPinResolveResponse,
@@ -211,6 +219,12 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   keymapGetRequest,
   keymapSetRequest,
   keymapResult,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
   ping,
   pong,
 ]);
