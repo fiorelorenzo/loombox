@@ -39,6 +39,19 @@ import {
  *     that existing, already-encrypted surface rather than inventing a
  *     new one (SPEC §7.17's "logged and surfaced to the user").
  *
+ * **The policy is re-read on every submitted line, never snapshotted**
+ * (issue #751's "a rule added in the UI takes effect on the next tool
+ * call with no node restart"): a terminal is long-lived — it stays open
+ * for as long as the user keeps it open, potentially the whole session —
+ * so capturing `PermissionPolicy` once at construction time would mean a
+ * policy edited mid-terminal-session never applies until that terminal is
+ * closed and reopened. `policy` is therefore a resolver
+ * (`() => PermissionPolicy`), called fresh inside {@link submitLine} for
+ * every Enter, exactly the way `NodeDaemon.getExecutionTarget()` already
+ * reads `PermissionPolicyStore.get()` fresh on every project-scoped exec
+ * call rather than caching a `PolicyEnforcedExecutionTarget` — this
+ * brings the terminal surface to the same "always current" contract.
+ *
  * **Named, not closed, gaps** (see the PR description for the full
  * inventory): mid-line cursor edits via arrow keys are not tracked (only
  * append/backspace/Ctrl-C/Ctrl-U are), so an ANSI cursor-movement escape
@@ -56,7 +69,8 @@ import {
 export interface PolicyEnforcedPtyOptions {
   inner: PtyLike;
   projectPath: string;
-  policy: PermissionPolicy;
+  /** Resolves this project's current policy — called fresh on every submitted line, never cached across this instance's lifetime. See this file's own doc comment. */
+  policy: () => PermissionPolicy;
   onViolation?: (violation: PolicyViolation) => void;
 }
 
@@ -133,7 +147,7 @@ export class PolicyEnforcedPty implements PtyLike {
   private submitLine(enterChar: string): void {
     const line = this.lineBuffer;
     this.lineBuffer = '';
-    const decision = evaluateCommandLine(this.options.policy, line);
+    const decision = evaluateCommandLine(this.options.policy(), line);
     if (decision.allowed) {
       this.options.inner.write(enterChar);
       return;

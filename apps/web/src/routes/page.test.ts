@@ -242,6 +242,13 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
     getTestRunnerConfig: vi.fn().mockResolvedValue({}),
+    getPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    setPermissionPolicy: vi
+      .fn()
+      .mockResolvedValue({ command: { allow: [], deny: [] }, network: { allow: [], deny: [] } }),
+    onPermissionPolicyViolation: vi.fn(() => () => {}),
     runsFor: () => makeStore(new Map()),
     startRun: vi.fn(() => 'run-fake'),
     cancelRun: vi.fn(),
