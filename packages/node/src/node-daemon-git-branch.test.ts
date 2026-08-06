@@ -165,9 +165,9 @@ describe('NodeDaemon git-branch/stash bridge: worktree-isolated-session guard (S
       });
       // Never even ran `git checkout` — the isolated worktree is still on
       // its own dedicated session branch, not `main`.
-      await expect(execGit(session.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).resolves.toBe(
-        session.branch,
-      );
+      await expect(
+        execGit(session.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      ).resolves.toBe(session.branch);
     } finally {
       node.close();
     }
@@ -187,9 +187,9 @@ describe('NodeDaemon git-branch/stash bridge: worktree-isolated-session guard (S
       // only the switch half was refused.
       const branches = await execGit(session.worktreePath, ['branch', '--list']);
       expect(branches).toContain('feature');
-      await expect(execGit(session.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).resolves.toBe(
-        session.branch,
-      );
+      await expect(
+        execGit(session.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      ).resolves.toBe(session.branch);
     } finally {
       node.close();
     }
@@ -211,7 +211,9 @@ describe('NodeDaemon git-branch/stash bridge: worktree-isolated-session guard (S
         { name: 'feature' },
       );
       expect(result).toEqual({ outcome: 'ok', branch: 'feature' });
-      await expect(execGit(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD'])).resolves.toBe('feature');
+      await expect(execGit(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD'])).resolves.toBe(
+        'feature',
+      );
     } finally {
       node.close();
     }
@@ -234,7 +236,9 @@ describe('NodeDaemon git-branch/stash bridge: worktree-isolated-session guard (S
       await expect(
         execGit(session.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']),
       ).resolves.toBe(session.branch);
-      await expect(execGit(session.worktreePath, ['cat-file', '-e', 'HEAD:g.txt'])).resolves.toBe('');
+      await expect(execGit(session.worktreePath, ['cat-file', '-e', 'HEAD:g.txt'])).resolves.toBe(
+        '',
+      );
     } finally {
       node.close();
     }
@@ -485,7 +489,11 @@ describe('NodeDaemon git-branch/stash wire handlers: real encrypted envelope rou
 
       const response = sent[0] as { type: string; envelope: EncryptedEnvelope };
       expect(response.type).toBe('git_stash_pop_response');
-      const payload = await openJson<GitStashPopResponsePayloadV1>(session.id, response.envelope, key);
+      const payload = await openJson<GitStashPopResponsePayloadV1>(
+        session.id,
+        response.envelope,
+        key,
+      );
       expect(payload.outcome).toBe('not_found');
     } finally {
       node.close();

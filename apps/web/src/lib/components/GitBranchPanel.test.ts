@@ -104,9 +104,10 @@ describe('GitBranchPanel: branches (SPEC §7.6; issue #234)', () => {
           { name: 'feature', current: true },
         ],
       } satisfies GitBranchListResponsePayloadV1);
-    const switchBranch = vi
-      .fn()
-      .mockResolvedValue({ outcome: 'ok', branch: 'feature' } satisfies GitBranchSwitchResponsePayloadV1);
+    const switchBranch = vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      branch: 'feature',
+    } satisfies GitBranchSwitchResponsePayloadV1);
     const onChanged = vi.fn();
     const client = fakeClient({ requestBranches, switchBranch });
     render(GitBranchPanel, { props: { sessionId: 'sess-1', client, onChanged } });
@@ -274,9 +275,7 @@ describe('GitBranchPanel: merge (SPEC §7.6; issue #234)', () => {
     await fireEvent.click(await screen.findByTestId('git-branch-merge-abort'));
 
     expect(abortBranchMerge).toHaveBeenCalledWith('sess-1');
-    await vi.waitFor(() =>
-      expect(screen.queryByTestId('git-branch-merge-conflict')).toBeNull(),
-    );
+    await vi.waitFor(() => expect(screen.queryByTestId('git-branch-merge-conflict')).toBeNull());
     expect(requestBranches).toHaveBeenCalledTimes(2);
   });
 });
@@ -327,7 +326,9 @@ describe('GitBranchPanel: stash (SPEC §7.6; issue #234)', () => {
   });
 
   it('pops a stash and reloads on success', async () => {
-    const popStash = vi.fn().mockResolvedValue({ outcome: 'ok' } satisfies GitStashPopResponsePayloadV1);
+    const popStash = vi
+      .fn()
+      .mockResolvedValue({ outcome: 'ok' } satisfies GitStashPopResponsePayloadV1);
     const requestStashes = vi
       .fn()
       .mockResolvedValueOnce({
@@ -346,7 +347,7 @@ describe('GitBranchPanel: stash (SPEC §7.6; issue #234)', () => {
     expect(requestStashes).toHaveBeenCalledTimes(2);
   });
 
-  it("a stash that cannot pop renders a conflict banner noting the stash was kept, and never fires onChanged", async () => {
+  it('a stash that cannot pop renders a conflict banner noting the stash was kept, and never fires onChanged', async () => {
     const popStash = vi.fn().mockResolvedValue({
       outcome: 'conflict',
       message: 'popping "stash@{0}" produced conflicts',

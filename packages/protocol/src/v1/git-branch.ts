@@ -139,7 +139,9 @@ export const gitBranchCreateRequestPayloadV1 = z.object({
 });
 export type GitBranchCreateRequestPayloadV1 = z.infer<typeof gitBranchCreateRequestPayloadV1>;
 
-export function parseGitBranchCreateRequestPayloadV1(data: unknown): GitBranchCreateRequestPayloadV1 {
+export function parseGitBranchCreateRequestPayloadV1(
+  data: unknown,
+): GitBranchCreateRequestPayloadV1 {
   return gitBranchCreateRequestPayloadV1.parse(data);
 }
 
@@ -208,7 +210,9 @@ export const gitBranchSwitchRequestPayloadV1 = z.object({
 });
 export type GitBranchSwitchRequestPayloadV1 = z.infer<typeof gitBranchSwitchRequestPayloadV1>;
 
-export function parseGitBranchSwitchRequestPayloadV1(data: unknown): GitBranchSwitchRequestPayloadV1 {
+export function parseGitBranchSwitchRequestPayloadV1(
+  data: unknown,
+): GitBranchSwitchRequestPayloadV1 {
   return gitBranchSwitchRequestPayloadV1.parse(data);
 }
 

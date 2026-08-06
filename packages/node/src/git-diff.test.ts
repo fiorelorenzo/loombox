@@ -613,9 +613,9 @@ describe('branch create/switch/merge/abort against a real local git repo (issue 
     });
 
     it('throws GitBranchNotFoundError for a name matching no branch, and never moves HEAD', async () => {
-      await expect(
-        switchBranch(target, worktreePath, { name: 'no-such-branch' }),
-      ).rejects.toThrow(GitBranchNotFoundError);
+      await expect(switchBranch(target, worktreePath, { name: 'no-such-branch' })).rejects.toThrow(
+        GitBranchNotFoundError,
+      );
       await expect(currentBranch()).resolves.toBe('main');
     });
 
@@ -699,9 +699,9 @@ describe('branch create/switch/merge/abort against a real local git repo (issue 
     });
 
     it('throws GitBranchNotFoundError for a name matching no branch', async () => {
-      await expect(
-        mergeBranch(target, worktreePath, { name: 'no-such-branch' }),
-      ).rejects.toThrow(GitBranchNotFoundError);
+      await expect(mergeBranch(target, worktreePath, { name: 'no-such-branch' })).rejects.toThrow(
+        GitBranchNotFoundError,
+      );
     });
   });
 

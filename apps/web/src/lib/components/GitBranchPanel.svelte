@@ -62,14 +62,20 @@
       sessionId: string,
       params: { name: string },
     ): Promise<GitBranchSwitchResponsePayloadV1>;
-    mergeBranch(sessionId: string, params: { name: string }): Promise<GitBranchMergeResponsePayloadV1>;
+    mergeBranch(
+      sessionId: string,
+      params: { name: string },
+    ): Promise<GitBranchMergeResponsePayloadV1>;
     abortBranchMerge(sessionId: string): Promise<GitBranchMergeAbortResponsePayloadV1>;
     saveStash(
       sessionId: string,
       params: { message?: string | null },
     ): Promise<GitStashSaveResponsePayloadV1>;
     requestStashes(sessionId: string): Promise<GitStashListResponsePayloadV1>;
-    popStash(sessionId: string, params?: { index?: number | null }): Promise<GitStashPopResponsePayloadV1>;
+    popStash(
+      sessionId: string,
+      params?: { index?: number | null },
+    ): Promise<GitStashPopResponsePayloadV1>;
     dropStash(sessionId: string, params: { index: number }): Promise<GitStashDropResponsePayloadV1>;
   }
 
@@ -538,7 +544,10 @@
                     <li>{path}</li>
                   {/each}
                 </ul>
-                <p>The stash was kept — nothing was lost. Resolve the conflicts, then Drop this entry, or discard the conflicted changes and try again.</p>
+                <p>
+                  The stash was kept — nothing was lost. Resolve the conflicts, then Drop this
+                  entry, or discard the conflicted changes and try again.
+                </p>
               </div>
             {/if}
           </li>

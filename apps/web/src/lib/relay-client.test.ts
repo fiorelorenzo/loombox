@@ -4043,7 +4043,11 @@ describe('RelayClient: branch create/switch/merge and stash save/pop (SPEC §7.6
     };
     const responseEnvelope = await nodeSeal(
       session.id,
-      { outcome: 'conflict', message: 'merging "feature" produced conflicts', conflictedPaths: ['f.txt'] },
+      {
+        outcome: 'conflict',
+        message: 'merging "feature" produced conflicts',
+        conflictedPaths: ['f.txt'],
+      },
       key,
     );
     node.send({
@@ -4201,7 +4205,7 @@ describe('RelayClient: branch create/switch/merge and stash save/pop (SPEC §7.6
     });
   });
 
-  it('popStash resolves (not rejects) a conflict outcome with stashKept: true — issue #234\'s own named failure mode', async () => {
+  it("popStash resolves (not rejects) a conflict outcome with stashKept: true — issue #234's own named failure mode", async () => {
     const amk = generateAmk();
     const accountId = 'acct-git-stash-pop-conflict';
 

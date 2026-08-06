@@ -5922,7 +5922,11 @@ export class NodeDaemon extends EventEmitter {
 
     this.abortMergeForBridge(routing)
       .then((responsePayload) =>
-        this.sendGitBranchMergeAbortResponse(routing.session.id, message.requestId, responsePayload),
+        this.sendGitBranchMergeAbortResponse(
+          routing.session.id,
+          message.requestId,
+          responsePayload,
+        ),
       )
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);

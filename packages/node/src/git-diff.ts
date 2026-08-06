@@ -595,7 +595,10 @@ export class GitStashPopConflictError extends GitBranchActionError {
 }
 
 /** Every currently-unmerged path — `git diff --name-only --diff-filter=U`, real during a stopped merge or a failed stash pop alike (both leave the index in the same conflicted shape). Never throws: an unmerged-free worktree (nothing to report) and a target that can't even run the command both resolve `[]`, since a caller only reaches this after its own `git merge`/`git stash pop` already told it something is wrong. */
-async function listConflictedPaths(target: ExecutionTarget, worktreePath: string): Promise<string[]> {
+async function listConflictedPaths(
+  target: ExecutionTarget,
+  worktreePath: string,
+): Promise<string[]> {
   const result = await target
     .exec('git', ['-C', worktreePath, 'diff', '--name-only', '--diff-filter=U'])
     .catch(() => undefined);
@@ -766,7 +769,9 @@ export async function listStashes(
     .filter((line) => line.trim().length > 0)
     .map((line) => {
       const match = /^stash@\{(\d+)\}:\s?(.*)$/.exec(line);
-      return match ? { index: Number(match[1]), message: match[2] ?? '' } : { index: 0, message: line };
+      return match
+        ? { index: Number(match[1]), message: match[2] ?? '' }
+        : { index: 0, message: line };
     });
 }
 
