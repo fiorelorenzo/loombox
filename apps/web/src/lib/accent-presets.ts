@@ -8,6 +8,16 @@
  * theme, then runs it through `deriveAccentPalette` (`accent-color.ts`) for
  * the hover/active/subtle/contrast variants — a custom hex (also in
  * `accent.ts`) skips this file entirely and uses one hex for both grounds.
+ *
+ * `dark` values were re-lightened for Zed-parity A1-2 (issue #733,
+ * `deck.css`'s new lighter dark ground): the originals fell under
+ * `accent-color.ts`'s `AA_CONTRAST_MIN` (4.5:1) as text against the new,
+ * lighter `--color-surface-raised` (e.g. azure dropped to 3.39:1). Each
+ * was lightened in Lab, hue and chroma held, until it cleared 4.5:1 there
+ * again — `--color-surface-raised` chosen as the binding case because
+ * it's the lightest of the three grounds these colors actually render
+ * text on (`--color-bg`/`--color-surface` are darker, so easier). `light`
+ * values are untouched: their own ground didn't move.
  */
 export interface AccentPresetGrounds {
   dark: string;
@@ -15,12 +25,12 @@ export interface AccentPresetGrounds {
 }
 
 export const ACCENT_PRESETS = {
-  azure: { dark: '#3b9df7', light: '#1f7fd0' },
-  violet: { dark: '#7c74ff', light: '#5b4fd6' },
-  teal: { dark: '#17b8a6', light: '#0e8a7d' },
-  orchid: { dark: '#db5bc4', light: '#b8339f' },
-  emerald: { dark: '#2fbf87', light: '#0f9d68' },
-  cyan: { dark: '#22c3d6', light: '#0e94a6' },
+  azure: { dark: '#64baff', light: '#1f7fd0' },
+  violet: { dark: '#b7a8ff', light: '#5b4fd6' },
+  teal: { dark: '#34c8b5', light: '#0e8a7d' },
+  orchid: { dark: '#ff88f1', light: '#b8339f' },
+  emerald: { dark: '#3dca91', light: '#0f9d68' },
+  cyan: { dark: '#25c5d8', light: '#0e94a6' },
 } as const satisfies Record<string, AccentPresetGrounds>;
 
 export type AccentPresetKey = keyof typeof ACCENT_PRESETS;

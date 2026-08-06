@@ -22,6 +22,7 @@ import {
   type ConnectedAccount,
   type EncryptedEnvelope,
   type PermissionResponse,
+  type PermissionPolicyV1,
   type PromptInjectV1,
   type SessionMetaPublic,
   type WireMessageV1,
@@ -4331,6 +4332,201 @@ describe('RelayClient: test runner config (SPEC §7.15; issue #245)', () => {
   });
 });
 
+describe('RelayClient: permission policy (SPEC §7.17; issue #751)', () => {
+  it('getPermissionPolicy resolves with the decrypted saved policy the owning node replies with, sealed under the session key', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-get';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_permpolicy_get', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const getPromise = client.getPermissionPolicy(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'permission_policy_get')) as {
+      type: 'permission_policy_get';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    // No envelope: a plain "which session am I asking about" request carries no content.
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const policy: PermissionPolicyV1 = {
+      command: { allow: [], deny: ['rm -rf *'] },
+      network: { allow: [], deny: [] },
+    };
+    const responseEnvelope = await nodeSeal(session.id, { policy }, key);
+    node.send({
+      type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(getPromise).resolves.toEqual(policy);
+  });
+
+  it('setPermissionPolicy seals the full policy (never a partial patch) and resolves with what the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-set';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_permpolicy_set', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const newPolicy: PermissionPolicyV1 = {
+      command: { allow: ['pnpm *'], deny: [] },
+      network: { allow: [], deny: ['*.internal'] },
+    };
+    const setPromise = client.setPermissionPolicy(session.id, newPolicy);
+
+    const request = (await node.waitFor((m) => m.type === 'permission_policy_set')) as {
+      type: 'permission_policy_set';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ policy: unknown }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ policy: newPolicy });
+
+    const responseEnvelope = await nodeSeal(session.id, { policy: newPolicy }, key);
+    node.send({
+      type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(setPromise).resolves.toEqual(newPolicy);
+  });
+
+  it('rejects immediately when there is no open connection, for both calls', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-permpolicy-no-conn',
+      deviceId: 'client-permpolicy-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.getPermissionPolicy('sess_x')).rejects.toThrow(/no open connection/);
+    await expect(
+      client.setPermissionPolicy('sess_x', {
+        command: { allow: [], deny: [] },
+        network: { allow: [], deny: [] },
+      }),
+    ).rejects.toThrow(/no open connection/);
+  });
+
+  it('onPermissionPolicyViolation fires with the decrypted violation, naming the deny rule (D3-4 attribution)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-violation';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_permpolicy_violation',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    // Establishes the relay subscription this client needs to receive a
+    // fanned-out permission_policy_violation — getPermissionPolicy is
+    // deliberately never answered here; only its subscribe side effect
+    // matters (mirrors how the real PermissionPolicyPanel already
+    // subscribes on mount via its own initial load).
+    client.getPermissionPolicy(session.id).catch(() => undefined);
+    await node.waitFor((m) => m.type === 'permission_policy_get');
+
+    const violationPromise = new Promise<unknown>((resolve) => {
+      const unsubscribe = client!.onPermissionPolicyViolation(session.id, (violation) => {
+        unsubscribe();
+        resolve(violation);
+      });
+    });
+
+    const violationPayload = {
+      reason: {
+        kind: 'permission_policy' as const,
+        dimension: 'command' as const,
+        rule: 'rm *',
+        matched: 'rm -rf /',
+      },
+      surface: 'terminal' as const,
+      command: 'rm -rf /',
+      timestamp: '2026-08-06T00:00:00.000Z',
+    };
+    const violationEnvelope = await nodeSeal(session.id, violationPayload, key);
+    node.send({
+      type: 'permission_policy_violation',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: violationEnvelope,
+    });
+
+    await expect(violationPromise).resolves.toEqual(violationPayload);
+  });
+});
+
 describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate picker; issue #475)', () => {
   it("resolves with the acting node's discovered SSH candidates, plain fields only (no envelope)", async () => {
     const amk = generateAmk();
@@ -4873,6 +5069,170 @@ describe('RelayClient: archiveSession (SPEC §7.2 board archive; issue #512)', (
     });
 
     await waitForStore(client.sessions, (sessions) => !sessions.some((s) => s.id === session.id));
+  });
+});
+
+describe('RelayClient: forkSession (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2; issue #746)', () => {
+  it('sends a session_fork_request derived from the source session\'s own known meta, and resolves with the new session id once outcome: "ok" comes back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fork-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    // The node must have announced its targets before a fork can resolve
+    // one: `forkSession` routes by `targetId`, and the relay refuses an
+    // unknown target exactly as it does for `createSession`, whose own test
+    // above seeds the same announce.
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const session = makeSessionMeta({ id: 'sess_fork_source', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Fork me', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fork-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const forkPromise = client.forkSession(session.id, 'turn:1');
+
+    const request = (await node.waitFor((m) => m.type === 'session_fork_request')) as {
+      type: 'session_fork_request';
+      requestId: string;
+      sessionId: string;
+      sourceSessionId: string;
+      targetId: string;
+      provider: string;
+      privateEnvelope: EncryptedEnvelope;
+    };
+    expect(request.sourceSessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+    expect(request.provider).toBe(session.provider);
+    expect(Object.keys(request).sort()).toEqual(
+      [
+        'privateEnvelope',
+        'protocolVersion',
+        'provider',
+        'requestId',
+        'sessionId',
+        'sourceSessionId',
+        'targetId',
+        'type',
+      ].sort(),
+    );
+
+    const forkKey = await deriveNodeSessionKey(amk, accountId, request.sessionId);
+    const decryptedMeta = await nodeOpen<{
+      title: string;
+      projectPath: string;
+      forkFromTurnId: string;
+    }>(request.sessionId, request.privateEnvelope, forkKey);
+    expect(decryptedMeta.projectPath).toBe('/proj');
+    expect(decryptedMeta.forkFromTurnId).toBe('turn:1');
+    expect(decryptedMeta.title).toBe('Fork me (fork)');
+
+    node.send({
+      type: 'session_fork_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      result: { outcome: 'ok' },
+    });
+
+    await expect(forkPromise).resolves.toBe(request.sessionId);
+  });
+
+  it('rejects with the node-reported refusal reason when outcome: "error" comes back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-2';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fork-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_fork_2',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const session = makeSessionMeta({ id: 'sess_fork_source_2', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Fork me too', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fork-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (sessions) => sessions.some((s) => s.id === session.id));
+
+    const forkPromise = client.forkSession(session.id, 'turn:1');
+    const request = (await node.waitFor((m) => m.type === 'session_fork_request')) as {
+      requestId: string;
+      sessionId: string;
+    };
+    node.send({
+      type: 'session_fork_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      result: { outcome: 'error', message: 'no active agent for the source session' },
+    });
+
+    await expect(forkPromise).rejects.toThrow('no active agent for the source session');
+  });
+
+  it('rejects immediately for an unknown source session, sending nothing over the wire', async () => {
+    const amk = generateAmk();
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-fork-unknown',
+      deviceId: 'client-fork-unknown',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.forkSession('sess_does_not_exist', 'turn:1')).rejects.toThrow(
+      /unknown source session/,
+    );
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-fork-no-conn',
+      deviceId: 'client-fork-no-conn',
+    });
+    await expect(client.forkSession('sess_whatever', 'turn:1')).rejects.toThrow(
+      /not connected to the relay/,
+    );
   });
 });
 

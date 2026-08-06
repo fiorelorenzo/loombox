@@ -50,13 +50,22 @@ describe('PermissionQueueBar', () => {
   });
 
   it('shows only the FIFO head as the focused, actionable card — one at a time', () => {
-    render(PermissionQueueBar, {
+    const { container } = render(PermissionQueueBar, {
       props: { sessionId: 's1', queue: seedThree(), onResolve: vi.fn(), onStop: vi.fn() },
     });
     expect(screen.getAllByTestId('permission-card')).toHaveLength(1);
     expect(screen.getByText('first')).toBeTruthy();
     expect(screen.queryByText('second')).toBeNull();
-    expect(screen.getByText('3 pending')).toBeTruthy();
+    expect(container.querySelector('.queue-count')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '3 pending',
+    );
+  });
+
+  it('renders the pending count — a numeric figure — in the shared mono identifier face (#735)', () => {
+    const { container } = render(PermissionQueueBar, {
+      props: { sessionId: 's1', queue: seedThree(), onResolve: vi.fn(), onStop: vi.fn() },
+    });
+    expect(container.querySelector('.queue-count .font-mono')?.textContent).toBe('3');
   });
 
   it('calls onResolve with the head request id and the chosen option', async () => {

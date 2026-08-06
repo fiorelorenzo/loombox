@@ -6,6 +6,7 @@
   import type { TransitionConfig } from 'svelte/transition';
   import { env as publicEnv } from '$env/dynamic/public';
   import type {
+    AcpAvailableCommand,
     AcpConfigOption,
     AcpPermissionOption,
     AcpSessionStatus,
@@ -140,6 +141,7 @@
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
+  import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
   import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
@@ -711,6 +713,8 @@
   let transcript = $state<TranscriptState | undefined>(undefined);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
+  /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
+  let commands = $state<AcpAvailableCommand[]>([]);
   /**
    * The selected session's own agent's remembered account-wide values and
    * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
@@ -889,6 +893,13 @@
    * disconnect.
    */
   let mentions = $state<MentionRef[]>([]);
+  let slashPickerOpen = $state(false);
+  // The index in `draft` where the triggering '/' sits — see
+  // `atTriggerStart` just above, same contract, scoped to the `/`-command
+  // picker (issue #743). Only ever set when `/` is the very first
+  // character of the composer (slash commands are a whole-message
+  // convention, never embedded mid-sentence like `@file`).
+  let slashTriggerStart = $state<number | undefined>(undefined);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -1295,6 +1306,7 @@
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
+  let unsubscribeCommands: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
@@ -1434,6 +1446,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
@@ -1441,6 +1454,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
     configOptionAccountDefaults = {};
     configOptionProjectOverrides = {};
     attachments = [];
@@ -1457,6 +1471,7 @@
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
       .subscribe((value) => handleConfigOptionsUpdate(id, value));
+    unsubscribeCommands = client.commandsFor(id).subscribe((value) => (commands = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -1793,6 +1808,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
@@ -1809,6 +1825,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
     attachments = [];
     queuedPrompts = [];
     attentionInboxItems = [];
@@ -1818,6 +1835,8 @@
     mentionPickerOpen = false;
     mentions = [];
     atTriggerStart = undefined;
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
     configControlsExpanded = false;
     newSessionOpen = false;
     newSessionProject = undefined;
@@ -1944,6 +1963,54 @@
       mentionPickerOpen = false;
       atTriggerStart = undefined;
     }
+
+    // Detects a `/`-command trigger (Zed-parity C2-4; issue #743): unlike
+    // `@file`, a slash command is a whole-message convention, not
+    // something embedded mid-sentence, so this only fires when `/` sits at
+    // the very start of the composer (nothing but `/` plus a run of
+    // non-whitespace before the caret). Never a hardcoded loombox command
+    // list — `commands` is exactly what the connected agent declared
+    // (`RelayClient.commandsFor`, issue #741), so an agent that has
+    // declared none leaves this branch permanently closed: `/` does
+    // nothing.
+    const slashMatch = /^\/(\S*)$/.exec(beforeCaret);
+    if (slashMatch && commands.length > 0) {
+      slashTriggerStart = 0;
+      slashPickerOpen = true;
+    } else {
+      slashPickerOpen = false;
+      slashTriggerStart = undefined;
+    }
+  }
+
+  /**
+   * Inserts `/name ` into the composer for the selected declared command
+   * (Zed-parity C2-4; issue #743) — `/name` plus a trailing space, ready
+   * for the user's own argument text, exactly the same "plain text in the
+   * draft, sent as an ordinary prompt on submit" shape
+   * {@link insertFileReference} already uses for `@path`. No loombox
+   * schema parses or validates the argument: `command.input?.hint` is
+   * rendered by `SlashCommandPicker` purely as on-screen guidance, never
+   * inserted as literal text, since the actual argument is whatever the
+   * agent itself expects the user to type next. Always replaces the
+   * triggering `/partial-query` text at `slashTriggerStart` — this picker
+   * only ever opens via `/`-typing (unlike the `@file` picker, there is no
+   * other entry point), so `slashTriggerStart` is always defined here.
+   */
+  function insertSlashCommand(command: AcpAvailableCommand): void {
+    if (slashTriggerStart !== undefined) {
+      const before = draft.slice(0, slashTriggerStart);
+      const afterTrigger = draft.slice(slashTriggerStart);
+      const afterQuery = /^\/\S*/.exec(afterTrigger)?.[0] ?? '/';
+      const rest = draft.slice(slashTriggerStart + afterQuery.length).replace(/^\s+/, '');
+      draft = `${before}/${command.name} ${rest}`;
+    }
+    closeSlashPicker();
+  }
+
+  function closeSlashPicker(): void {
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
   }
 
   /**
@@ -2582,6 +2649,26 @@
     await copyToClipboard(exportTranscriptText(transcript));
   }
 
+  /** The turn currently being forked, if any (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — drives the fork button's busy state on that one row (`TranscriptTimeline`'s own `forkingTurnId`). */
+  let forkingTurnId = $state<string | undefined>(undefined);
+  /** The most recent fork request's refusal reason, if any — cleared on the next attempt. Rendered inline above the transcript (see the template below); mirrors this file's own `rePairError`/`escrowError`/`targetStatusError` convention for a lightweight, non-dialog async action. */
+  let forkError = $state<string | undefined>(undefined);
+
+  /** The turn's own fork affordance (`MessageItem`'s hover-revealed icon, v7 B3's row convention — see design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2). On success, navigates straight to the new session, exactly like `handleSessionCreated` already does for an ordinary creation. */
+  async function forkSessionFromTurn(turnId: string): Promise<void> {
+    if (!client || !selectedSessionId || forkingTurnId) return;
+    forkingTurnId = turnId;
+    forkError = undefined;
+    try {
+      const newSessionId = await client.forkSession(selectedSessionId, turnId);
+      selectSession(newSessionId);
+    } catch (error) {
+      forkError = error instanceof Error ? error.message : String(error);
+    } finally {
+      forkingTurnId = undefined;
+    }
+  }
+
   onMount(() => {
     // Design spec v4 §4.2: mirrors the project registry's store into
     // `projects`, created eagerly at module scope above (its default storage
@@ -2793,7 +2880,7 @@
         <ErrorNotice message={authError} />
       {/if}
       {#snippet footer()}
-        <span class="account">{session.accountId}</span>
+        <span class="account font-mono">{session.accountId}</span>
         <span class="status" data-status={status}>
           {#if status === 'connecting'}
             <WovenLoader label="Connecting to the relay" />
@@ -2876,7 +2963,7 @@
                  (the group header now carries it) and picks up the
                  relative activity time that used to sit in its own grid
                  column on the right. -->
-            <span class="session-meta" data-testid="session-activity">
+            <span class="session-meta font-mono" data-testid="session-activity">
               {sessionTargetLabel(session)}
               <span aria-hidden="true">·</span>
               {formatSessionActivity(session.createdAt)}
@@ -3446,7 +3533,11 @@
                 <h1 class="topbar-title" data-testid="cockpit-session-title">
                   {selectedSession.title}
                 </h1>
-                <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                <span
+                  class="topbar-breadcrumb font-mono"
+                  data-testid="topbar-breadcrumb"
+                  title={selectedSession.projectPath}
+                >
                   {projectDisplayName(selectedSession)}
                   <span aria-hidden="true">·</span>
                   {selectedSession.targetId}
@@ -3724,6 +3815,11 @@
               {/snippet}
             </EmptyState>
           {:else}
+            {#if forkError}
+              <p class="fork-error" role="alert" data-testid="fork-error">
+                {forkError}
+              </p>
+            {/if}
             <!-- Issue #730: a session with no live agent behind it must not
                  sit as a blank transcript with no explanation — the
                  original bug's exact symptom ("the optimistically echoed
@@ -3752,6 +3848,8 @@
               turnActive={transcript?.turnActive ?? false}
               providerId={selectedSession?.provider}
               {permissionHead}
+              onFork={narrowViewport ? undefined : forkSessionFromTurn}
+              {forkingTurnId}
             />
 
             <div class="canvas-footer">
@@ -4218,6 +4316,13 @@
   />
 {/if}
 
+<SlashCommandPicker
+  open={slashPickerOpen}
+  {commands}
+  onSelect={insertSlashCommand}
+  onClose={closeSlashPicker}
+/>
+
 {#if newSessionProject}
   <NewSessionDialog
     open={newSessionOpen}
@@ -4337,7 +4442,6 @@
   }
 
   .account {
-    font-family: var(--font-mono);
     font-size: var(--text-small-size);
     opacity: 0.8;
   }
@@ -5338,7 +5442,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-small-size);
-    font-family: var(--font-mono);
     color: var(--color-text-muted);
   }
 
@@ -6207,5 +6310,19 @@
     .panel-word {
       display: inline;
     }
+  }
+
+  /* The fork-from-turn action's refusal reason (design spec
+     `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — a
+     lightweight inline banner above the transcript, the same
+     `--color-danger` token every other inline error in this file uses,
+     no dialog needed for a single-line, dismiss-by-retrying message. */
+  .fork-error {
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
+    font-size: 0.875rem;
   }
 </style>

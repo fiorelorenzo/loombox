@@ -32,6 +32,16 @@ describe('CommandPalette (#132)', () => {
     expect(screen.getAllByTestId('command-palette-item')).toHaveLength(3);
   });
 
+  it('renders the project path in the shared mono identifier face (#735)', () => {
+    const { container } = render(CommandPalette, {
+      props: { open: true, sessions, onSelectSession: vi.fn(), onClose: vi.fn() },
+    });
+    const meta = [...container.querySelectorAll('.meta')].find((el) =>
+      el.textContent?.includes('/proj/loombox'),
+    );
+    expect(meta?.className).toContain('font-mono');
+  });
+
   it('fuzzy-filters as the user types', async () => {
     render(CommandPalette, {
       props: { open: true, sessions, onSelectSession: vi.fn(), onClose: vi.fn() },

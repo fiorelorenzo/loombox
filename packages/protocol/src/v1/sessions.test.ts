@@ -178,4 +178,20 @@ describe('sessionPrivateMetaV1', () => {
     expect(safeParseSessionPrivateMetaV1({ projectPath: '/p' }).success).toBe(false);
     expect(safeParseSessionPrivateMetaV1({ title: 't' }).success).toBe(false);
   });
+
+  it('carries the fork boundary turn id (issue #746), and leaves it undefined on an ordinary create', () => {
+    expect(
+      parseSessionPrivateMetaV1({ title: 't', projectPath: '/p' }).forkFromTurnId,
+    ).toBeUndefined();
+    expect(
+      parseSessionPrivateMetaV1({ title: 't', projectPath: '/p', forkFromTurnId: 'turn_5' })
+        .forkFromTurnId,
+    ).toBe('turn_5');
+  });
+
+  it('rejects an empty forkFromTurnId rather than accepting a meaningless boundary', () => {
+    expect(
+      safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', forkFromTurnId: '' }).success,
+    ).toBe(false);
+  });
 });

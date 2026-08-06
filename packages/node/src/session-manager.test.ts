@@ -405,6 +405,143 @@ describe('SessionManager', () => {
     expect(bare.targetId).toBe('local');
   });
 
+  describe('forkSession (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2; issue #746)', () => {
+    it("copies the source worktree's current uncommitted changes into an independent new session", async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await writeFile(join(source.worktreePath, 'dirty.txt'), 'uncommitted work\n');
+
+      const fork = await manager.forkSession(source.id, { provider: 'claude' });
+
+      expect(fork.id).not.toBe(source.id);
+      expect(fork.worktreePath).not.toBe(source.worktreePath);
+      expect(fork.target).toBe('local');
+      expect(fork.state).toBe('running');
+      expect(fork.branch).toBe(`loombox/session-${fork.id}`);
+      await expect(readFile(join(fork.worktreePath, 'dirty.txt'), 'utf8')).resolves.toBe(
+        'uncommitted work\n',
+      );
+    });
+
+    it('copies files the source committed on its own branch too, not just its uncommitted diff', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await writeFile(join(source.worktreePath, 'committed.txt'), 'on the branch\n');
+      await git(source.worktreePath, ['add', 'committed.txt']);
+      await execFileAsync('git', ['-C', source.worktreePath, 'commit', '-m', 'session work'], {
+        cwd: source.worktreePath,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+        },
+      });
+
+      const fork = await manager.forkSession(source.id, { provider: 'claude' });
+
+      await expect(readFile(join(fork.worktreePath, 'committed.txt'), 'utf8')).resolves.toBe(
+        'on the branch\n',
+      );
+    });
+
+    it('does not leak a file the source deleted-but-never-committed back in via the branch checkout', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await writeFile(join(source.worktreePath, 'committed.txt'), 'on the branch\n');
+      await git(source.worktreePath, ['add', 'committed.txt']);
+      await execFileAsync('git', ['-C', source.worktreePath, 'commit', '-m', 'add committed.txt'], {
+        cwd: source.worktreePath,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'loombox test',
+          GIT_AUTHOR_EMAIL: 'test@loombox.dev',
+          GIT_COMMITTER_NAME: 'loombox test',
+          GIT_COMMITTER_EMAIL: 'test@loombox.dev',
+        },
+      });
+      // Deleted, but the deletion itself is never committed — the file
+      // still exists at the branch tip `git worktree add` would check out.
+      await rm(join(source.worktreePath, 'committed.txt'));
+
+      const fork = await manager.forkSession(source.id, { provider: 'claude' });
+
+      await expect(stat(join(fork.worktreePath, 'committed.txt'))).rejects.toThrow();
+    });
+
+    it('creates a real, independent git worktree on its own branch, alongside the source', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const fork = await manager.forkSession(source.id, { provider: 'claude' });
+
+      const insideWorkTree = await git(fork.worktreePath, ['rev-parse', '--is-inside-work-tree']);
+      expect(insideWorkTree).toBe('true');
+      const currentBranch = await git(fork.worktreePath, ['branch', '--show-current']);
+      expect(currentBranch).toBe(fork.branch);
+      expect(currentBranch).not.toBe(source.branch);
+
+      const worktreeList = await git(repoPath, ['worktree', 'list', '--porcelain']);
+      expect(worktreeList).toContain(source.worktreePath);
+      expect(worktreeList).toContain(fork.worktreePath);
+    });
+
+    it("never writes to the source session's own record or worktree — byte-identical afterwards", async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await writeFile(join(source.worktreePath, 'dirty.txt'), 'uncommitted work\n');
+      const beforeStatus = await execFileAsync('git', [
+        '-C',
+        source.worktreePath,
+        'status',
+        '--porcelain',
+      ]);
+
+      await manager.forkSession(source.id, { provider: 'claude' });
+
+      const afterStatus = await execFileAsync('git', [
+        '-C',
+        source.worktreePath,
+        'status',
+        '--porcelain',
+      ]);
+      expect(afterStatus.stdout).toBe(beforeStatus.stdout);
+      await expect(readFile(join(source.worktreePath, 'dirty.txt'), 'utf8')).resolves.toBe(
+        'uncommitted work\n',
+      );
+      expect(manager.getSession(source.id)).toEqual(source);
+    });
+
+    it('accepts a caller-supplied id instead of generating one', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+
+      const fork = await manager.forkSession(source.id, {
+        provider: 'claude',
+        id: 'explicit-fork-id',
+        nodeId: 'node-1',
+        targetId: 'local',
+      });
+
+      expect(fork.id).toBe('explicit-fork-id');
+      expect(fork.nodeId).toBe('node-1');
+      expect(manager.getSession('explicit-fork-id')).toEqual(fork);
+    });
+
+    it('rejects forking an unknown session id', async () => {
+      await expect(manager.forkSession('does-not-exist', { provider: 'claude' })).rejects.toThrow(
+        /no such session/i,
+      );
+    });
+
+    it('rejects forking a workInPlace session, which has no isolated worktree/branch to fork from', async () => {
+      const source = await manager.createSession({
+        projectPath: repoPath,
+        provider: 'claude',
+        workInPlace: true,
+      });
+
+      await expect(manager.forkSession(source.id, { provider: 'claude' })).rejects.toThrow(
+        /workInPlace/i,
+      );
+    });
+  });
+
   describe('lifecycle', () => {
     it('starts a fresh session in the "running" state', async () => {
       const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });

@@ -155,7 +155,7 @@
         pulse={actionable}
         label={actionable ? 'Waiting for your response' : 'Queued'}
       />
-      <span class="title">{request.toolCall.title ?? request.toolCall.id}</span>
+      <span class="title font-mono">{request.toolCall.title ?? request.toolCall.id}</span>
     </div>
 
     {#if request.toolCall.diff}
