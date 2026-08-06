@@ -25,13 +25,18 @@
    * stores — see `PluginConfigPanel.svelte`'s "isolated from the MCP-server
    * config panel" test). `mcpStorage`/`pluginStorage` are only ever
    * overridden in tests; in the app both default to each panel's own real
-   * `localStorage`-backed store, scoped by `projectPath`. `sessionId`/
-   * `relayClient` are `TestRunnerConfigPanel`'s own: unlike its two
-   * siblings, test/lint/build config genuinely lives on the owning node
-   * (`TestRunnerConfigStore`, `@loombox/node`), not `localStorage`, so
-   * that one panel needs a live session + the real `RelayClient` rather
-   * than a storage adapter — see `TestRunnerConfigPanel.svelte`'s own doc
-   * comment.
+   * `localStorage`-backed store, scoped by `projectPath`.
+   * `sessionId`/`relayClient` are `TestRunnerConfigPanel`'s and
+   * `PermissionPolicyPanel`'s own: unlike their `localStorage` siblings,
+   * test/lint/build config and the permission policy genuinely live on
+   * the owning node (`TestRunnerConfigStore`/`PermissionPolicyStore`,
+   * `@loombox/node`), not `localStorage`, so those two panels need a live
+   * session + the real `RelayClient` rather than a storage adapter — see
+   * each panel's own doc comment. `relayClient`'s type is the
+   * intersection of both panels' own narrow DI interfaces (never a third,
+   * looser type invented here) — the real `RelayClient` instance already
+   * satisfies both structurally, so `+page.svelte`'s one `relayClient={client}`
+   * call site needs no change.
    *
    * Warp Deck restyle (redesign brief `docs/design/redesign.md` §1/§4,
    * issue #435): only the section headers and column rhythm change here —
@@ -53,17 +58,22 @@
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
+  import PermissionPolicyPanel, {
+    type PermissionPolicyClient,
+  } from './PermissionPolicyPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
   import TestRunnerConfigPanel, {
     type TestRunnerConfigClient,
   } from './TestRunnerConfigPanel.svelte';
+
+  type ProjectConfigRelayClient = TestRunnerConfigClient & PermissionPolicyClient;
 
   interface Props {
     projectPath: string;
     sessionId?: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
-    relayClient?: TestRunnerConfigClient;
+    relayClient?: ProjectConfigRelayClient;
     onSecretRequired?: (serverName: string, secretName: string) => void;
   }
 
@@ -89,6 +99,10 @@
   <section class="project-config-section">
     <h3>Test, lint &amp; build</h3>
     <TestRunnerConfigPanel {projectPath} {sessionId} client={relayClient} />
+  </section>
+  <section class="project-config-section">
+    <h3>Permission policy</h3>
+    <PermissionPolicyPanel {projectPath} {sessionId} client={relayClient} />
   </section>
 </div>
 

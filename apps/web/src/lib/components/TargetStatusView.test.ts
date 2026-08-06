@@ -319,6 +319,26 @@ describe('TargetStatusView load metric (v5 design spec §3: honest label, honest
     expect(metric.textContent).not.toContain('5%');
   });
 
+  it('renders the load percentage — a numeric figure — in the shared mono identifier face (#735)', () => {
+    const mismatched: TargetListEntry[] = [
+      {
+        nodeId: 'node_mix',
+        targetId: 'local',
+        kind: 'local',
+        label: 'mixed',
+        reachable: true,
+        providers: ['claude'],
+        health: { ...HEALTHY, cpuPercent: 5, loadPercent: 77 },
+      },
+    ];
+    render(TargetStatusView, {
+      props: { targets: mismatched, loading: false, error: undefined, onRefresh: noop },
+    });
+    expect(screen.getByTestId('metric-load').querySelector('.metric-value')?.className).toContain(
+      'font-mono',
+    );
+  });
+
   it('shows an em dash rather than silently falling back to cpuPercent when a peer predates loadPercent', () => {
     render(TargetStatusView, {
       props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
@@ -368,6 +388,24 @@ describe('TargetStatusView expansion (v5 design spec §3: meters/absolute time/a
     await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('target-expansion')).toBeNull();
+  });
+
+  it('renders the meter percentages/bytes and the sampled-at timestamp — numeric figures — in the shared mono identifier face (#735)', async () => {
+    render(TargetStatusView, {
+      props: {
+        targets: TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        client: fakeActionsClient(),
+      },
+    });
+    await fireEvent.click(screen.getByTestId('target-row-toggle-node_1:local'));
+    const expansion = screen.getByTestId('target-expansion');
+    for (const value of expansion.querySelectorAll('.meter-value')) {
+      expect(value.className).toContain('font-mono');
+    }
+    expect(screen.getByTestId('target-sampled-at').querySelector('.font-mono')).toBeTruthy();
   });
 });
 

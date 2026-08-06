@@ -65,7 +65,7 @@
 <div class="edit-write-widget" data-testid="edit-write-widget">
   <ToolCallGutter icon="tool-edit" />
   {#snippet headerContent()}
-    <span class="title">{item.title ?? 'Edit'}</span>
+    <span class="title font-mono">{item.title ?? 'Edit'}</span>
     <ToolCallStatus status={item.status} />
   {/snippet}
   <ToolCard surface={false}>

@@ -174,7 +174,7 @@
           <span class="sr-only">{entry.kind === 'session' ? 'Session' : 'Action'}</span>
           {#if entry.kind === 'session'}
             <span class="label">{entry.session.title}</span>
-            <span class="meta">{entry.session.projectPath}</span>
+            <span class="meta font-mono">{entry.session.projectPath}</span>
           {:else}
             <span class="label">{entry.action.label}</span>
             {#if entry.action.shortcut}
