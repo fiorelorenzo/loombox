@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
@@ -65,6 +66,14 @@
   } from '$lib/session-status';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import {
+    fileMention,
+    mentionKey,
+    resolveMentionsForSend,
+    type MentionRef,
+    type SessionMention,
+    type TrackerMention,
+  } from '$lib/mentions';
+  import {
     createLocalStorageNotificationPreferencesStorage,
     defaultNotificationPreferences,
     type NotificationPreferences as NotificationPreferencesData,
@@ -103,12 +112,12 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
-  import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
   import InteractiveTerminal from '$lib/components/InteractiveTerminal.svelte';
+  import MentionPicker from '$lib/components/MentionPicker.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import AddTargetWizard from '$lib/components/AddTargetWizard.svelte';
   import type { FocusTarget as TargetStatusFocusTarget } from '$lib/components/TargetStatusView.svelte';
@@ -864,12 +873,22 @@
   // sidebar's "Config" tab (`activeWorkbenchTab`); mounts the MCP-server
   // quick-add panel (#188) and the plugin/extension panel (#191). See
   // `ProjectConfigPanel.svelte`.
-  let filePickerOpen = $state(false);
-  // The index in `draft` where the triggering '@' sits, so a picked file
-  // reference replaces exactly the '@partial-query' text the user typed,
+  let mentionPickerOpen = $state(false);
+  // The index in `draft` where the triggering '@' sits, so a picked
+  // mention replaces exactly the '@partial-query' text the user typed,
   // rather than being appended blindly. `undefined` means "no active
   // trigger" (the picker was opened some other way, or was never opened).
   let atTriggerStart = $state<number | undefined>(undefined);
+  /**
+   * The composer's removable `@`-mention pills (issue #742, decisions doc
+   * C2-3) — a separate list, never characters spliced into `draft`, so
+   * editing the surrounding prose can never corrupt or silently drop one.
+   * Persists across a session switch the same way `draft` itself already
+   * does (v1 has no per-session composer state beyond what the node
+   * tracks, e.g. `attachments`); cleared only on send and on full
+   * disconnect.
+   */
+  let mentions = $state<MentionRef[]>([]);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -1126,9 +1145,11 @@
         return undefined;
     }
   });
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to.
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to. Issue #742 widens the empty-draft check: a composer holding only mention pills (no typed prose) is still a real send, exactly like an attachments-only send already would be if `hasBlockingAttachments` let it through.
   const sendDisabled = $derived(
-    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionAgentless,
+    (draft.trim() === '' && mentions.length === 0) ||
+      hasBlockingAttachments(attachments) ||
+      selectedSessionAgentless,
   );
 
   /**
@@ -1179,6 +1200,13 @@
 
   /** The selected session itself — the header's breadcrumb needs its project/target, not just its title. */
   const selectedSession = $derived(sessions.find((session) => session.id === selectedSessionId));
+
+  /** The `@` mention picker's Sessions/Tracker tabs scope to the selected session's own project (issue #742) — `undefined` disables both tabs rather than searching across every project this account can see. */
+  const mentionProjectContext = $derived(
+    selectedSession
+      ? { nodeId: selectedSession.nodeId, projectPath: selectedSession.projectPath }
+      : undefined,
+  );
 
   /** Every category's current source (issue #753, D4-3 — `ConfigBar`'s own acceptance: "shows the source of the current value"), recomputed off `configOptions` and the two remembered maps `selectSession`/`rememberConfigOptionValues`/the pin actions keep current. */
   const configOptionSources: Record<string, ConfigOptionSource> = $derived(
@@ -1436,12 +1464,12 @@
     unsubscribeStaleNotice = client.staleNoticeFor(id).subscribe((value) => (staleNotice = value));
     // SPEC §7.4/issue #171: lazily loads the root directory the moment this
     // session is selected; deeper directories only load on an explicit
-    // expand (file-tree panel click) or the @file picker's own bounded
-    // opportunistic walk (`FileReferencePicker.svelte`).
+    // expand (file-tree panel click) or the @ mention picker's own bounded
+    // opportunistic walk (`MentionPicker.svelte`).
     unsubscribeFileTree = client.fileTreeFor(id).subscribe((value) => (fileTree = value));
   }
 
-  /** Wired to both `FileTreePanel`'s and `FileReferencePicker`'s `onExpand` (SPEC §7.4; issue #171). */
+  /** Wired to both `FileTreePanel`'s and `MentionPicker`'s `onExpand` (SPEC §7.4; issue #171). */
   function expandDirectory(path: string): void {
     if (!client || !selectedSessionId) return;
     client.expandDirectory(selectedSessionId, path);
@@ -1787,7 +1815,8 @@
     staleNotice = undefined;
     paletteOpen = false;
     fileTree = new Map();
-    filePickerOpen = false;
+    mentionPickerOpen = false;
+    mentions = [];
     atTriggerStart = undefined;
     configControlsExpanded = false;
     newSessionOpen = false;
@@ -1843,11 +1872,12 @@
 
   function submitPrompt(event: Event): void {
     event.preventDefault();
-    const text = draft.trim();
-    if (!client || !selectedSessionId || text === '' || sendDisabled) return;
+    if (!client || !selectedSessionId || sendDisabled) return;
     const attachmentIds = attachments.map((a) => a.id);
-    client.sendPrompt(selectedSessionId, text, attachmentIds);
+    const { text, liveMentions } = resolveMentionsForSend(draft.trim(), mentions, isMentionLive);
+    client.sendPrompt(selectedSessionId, text, attachmentIds, liveMentions);
     draft = '';
+    mentions = [];
   }
 
   /** Warp Deck composer convention (redesign brief §4 "Inputs", issue #439): Enter sends, Shift+Enter inserts a newline — the same auto-growing `<textarea>` behavior `NewSessionDialog`'s starting-prompt field already brings to parity with. Composition (IME) `Enter` keystrokes confirm the candidate instead of submitting mid-composition. */
@@ -1892,14 +1922,14 @@
   }
 
   /**
-   * Detects an `@`-trigger in the composer as the user types (SPEC §7.25
-   * "@file references"; issue #160): whenever the text immediately before
-   * the caret ends with `@` followed by a run of non-whitespace (no space
-   * yet typed after the `@`), the picker opens/stays open, scoped to that
-   * partial query; typing a space, deleting back past the `@`, or moving
-   * the caret elsewhere closes it. `atTriggerStart` records where the `@`
-   * itself sits so {@link insertFileReference} replaces exactly the
-   * `@partial-query` text rather than guessing.
+   * Detects an `@`-trigger in the composer as the user types (issue #742,
+   * decisions doc C2-3): whenever the text immediately before the caret
+   * ends with `@` followed by a run of non-whitespace (no space yet typed
+   * after the `@`), the picker opens/stays open, scoped to that partial
+   * query; typing a space, deleting back past the `@`, or moving the caret
+   * elsewhere closes it. `atTriggerStart` records where the `@` itself
+   * sits so {@link addMention} deletes exactly the `@partial-query` text
+   * rather than guessing.
    */
   function handleComposerInput(event: Event): void {
     const input = event.currentTarget as HTMLTextAreaElement;
@@ -1909,39 +1939,69 @@
     const match = /(?:^|\s)@(\S*)$/.exec(beforeCaret);
     if (match) {
       atTriggerStart = beforeCaret.length - match[1].length - 1;
-      filePickerOpen = true;
+      mentionPickerOpen = true;
     } else {
-      filePickerOpen = false;
+      mentionPickerOpen = false;
       atTriggerStart = undefined;
     }
   }
 
   /**
-   * Inserts a `@path` reference into the composer (SPEC §7.25; issue #160)
-   * — the actual `ResourceLink`/`EmbeddedResource` hand-off to the agent is
-   * the provider adapter's job at prompt-build time (out of this wave's
-   * `apps/web`-only scope); here it is plain text in the draft, exactly
-   * like every other word the user types, since it costs nothing beyond the
-   * reference itself (no upload/encryption round trip). Replaces the
-   * triggering `@partial-query` text when opened via `@`-typing; otherwise
-   * (e.g. picked directly from the file-tree panel) appends it at the end.
+   * A session/tracker mention this composer can no longer confirm is still
+   * current (issue #742's degrade-to-text acceptance) — checked lazily, at
+   * send time, against whichever live store this client already holds:
+   * `sessions` for a session mention, `RelayClient.trackerSnapshotFor`'s
+   * already-warm store (the mention picker itself triggered its load when
+   * the mention was picked) for a tracker one. A file/directory mention
+   * never reaches this function at all — see `resolveMentionsForSend`'s own
+   * doc comment for why.
    */
-  function insertFileReference(path: string): void {
+  function isMentionLive(mention: SessionMention | TrackerMention): boolean {
+    if (!client) return false;
+    if (mention.kind === 'session') {
+      return sessions.some((session) => session.id === mention.sessionId);
+    }
+    const snapshot = get(client.trackerSnapshotFor(mention.nodeId, mention.projectPath));
+    return snapshot.records.some((record) => record.id === mention.recordId);
+  }
+
+  /**
+   * Attaches `mention` as a removable pill (issue #742) — never inserted as
+   * text; `mentions` (rendered above the textarea) is the only place it
+   * lives. When opened via `@`-typing, the triggering `@partial-query` span
+   * is deleted from `draft` (it was only ever a search query, not
+   * something to keep); picked another way (e.g. `FileTreePanel`'s own row
+   * click), `draft` is untouched. A duplicate pick (same `mentionKey`) is a
+   * no-op rather than a second pill.
+   */
+  function addMention(mention: MentionRef): void {
     if (atTriggerStart !== undefined) {
       const before = draft.slice(0, atTriggerStart);
       const afterTrigger = draft.slice(atTriggerStart);
       const afterQuery = /^@\S*/.exec(afterTrigger)?.[0] ?? '@';
       const rest = draft.slice(atTriggerStart + afterQuery.length).replace(/^\s+/, '');
-      draft = `${before}@${path} ${rest}`;
-    } else {
-      const needsSpace = draft !== '' && !draft.endsWith(' ');
-      draft = `${draft}${needsSpace ? ' ' : ''}@${path} `;
+      draft = `${before}${rest}`;
     }
-    closeFilePicker();
+    if (!mentions.some((existing) => mentionKey(existing) === mentionKey(mention))) {
+      mentions = [...mentions, mention];
+    }
+    closeMentionPicker();
   }
 
-  function closeFilePicker(): void {
-    filePickerOpen = false;
+  function removeMention(mention: MentionRef): void {
+    mentions = mentions.filter((existing) => mentionKey(existing) !== mentionKey(mention));
+  }
+
+  /** Pill icon per mention kind (issue #742) — matches `MentionPicker.svelte`'s own per-source glyphs. */
+  const MENTION_ICON_BY_KIND: Record<MentionRef['kind'], IconName> = {
+    file: 'file',
+    directory: 'folder',
+    session: 'sessions',
+    tracker: 'tracker',
+  };
+
+  function closeMentionPicker(): void {
+    mentionPickerOpen = false;
     atTriggerStart = undefined;
   }
 
@@ -3773,6 +3833,28 @@
                   >
                     {#snippet field({ pickFiles })}
                       <div class="composer-field">
+                        <!-- Removable @-mention pills (issue #742, decisions
+                             doc C2-3): a separate row above the textarea,
+                             never characters inside it — the reference
+                             lives beside the prose, not inside it. -->
+                        {#if mentions.length > 0}
+                          <ul class="mention-pills" data-testid="mention-pill-list">
+                            {#each mentions as mention (mentionKey(mention))}
+                              <li class="mention-pill" data-testid="mention-pill">
+                                <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
+                                <span class="mention-pill-label">{mention.resourceLink.name}</span>
+                                <IconButton
+                                  label={`Remove ${mention.resourceLink.name}`}
+                                  size="sm"
+                                  dataTestId="mention-pill-remove"
+                                  onclick={() => removeMention(mention)}
+                                >
+                                  <Icon name="close" size="12px" />
+                                </IconButton>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
                         <textarea
                           bind:this={composerTextarea}
                           bind:value={draft}
@@ -3792,7 +3874,7 @@
                              at it. -->
                         <p class="composer-hint sr-only" id="composer-hint">
                           <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
-                          line · <kbd>@</kbd> to reference a file
+                          line · <kbd>@</kbd> to reference a file, directory, session, or tracker item
                         </p>
                         <div class="composer-controls" data-testid="composer-controls">
                           <IconButton label="Attach image" onclick={pickFiles}>
@@ -3927,7 +4009,7 @@
                 <FileTreePanel
                   tree={fileTree}
                   onExpand={expandDirectory}
-                  onSelectFile={insertFileReference}
+                  onSelectFile={(path) => addMention(fileMention(path))}
                 />
               </div>
             {/if}
@@ -4122,13 +4204,19 @@
   onClose={() => (paletteOpen = false)}
 />
 
-<FileReferencePicker
-  open={filePickerOpen}
-  tree={fileTree}
-  onExpand={expandDirectory}
-  onSelect={insertFileReference}
-  onClose={closeFilePicker}
-/>
+{#if client}
+  <MentionPicker
+    open={mentionPickerOpen}
+    tree={fileTree}
+    onExpand={expandDirectory}
+    {sessions}
+    currentSessionId={selectedSessionId}
+    projectContext={mentionProjectContext}
+    {client}
+    onSelect={addMention}
+    onClose={closeMentionPicker}
+  />
+{/if}
 
 {#if newSessionProject}
   <NewSessionDialog
@@ -5564,6 +5652,38 @@
   .composer-field textarea:focus,
   .composer-field textarea:focus-visible {
     outline: none;
+  }
+
+  /* The removable @-mention pill row (issue #742) — sits above the textarea,
+     inside the same `.composer-field` box, wrapping onto its own line(s)
+     rather than pushing the field wider. */
+  .mention-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .mention-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .mention-pill-label {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
   }
 
   /* The one strip the composer has: attach, the pickers, the context/cost
