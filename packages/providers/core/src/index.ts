@@ -177,6 +177,31 @@ export {
 export { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from './mcp-presets';
 export type { McpServerPreset } from './mcp-presets';
 
+// v1: MCP prompts as `/`-commands (Zed-parity D5-2; issue #754) — a
+// second, independent MCP connection this package owns end to end
+// (separate from `AcpClient`'s ACP connection to the agent, which never
+// forwards an MCP server's prompt catalogue onto `available_commands_
+// update` — see this module's own doc comment). `fetchMcpServerPrompts`
+// backs the node's `mcp_server_prompts` push; `fetchMcpPromptText` backs
+// its `mcp_prompt_get_request` handler.
+export {
+  McpPromptClientError,
+  fetchMcpPromptText,
+  fetchMcpServerPrompts,
+} from './mcp-prompt-client';
+export type {
+  McpDiscoveredPrompt,
+  McpPromptArgumentSpec,
+  McpPromptClientOptions,
+  McpServerPromptsResult,
+} from './mcp-prompt-client';
+export type {
+  AcpMcpServerPrompt,
+  AcpMcpServerPromptArgument,
+  AcpMcpServerPromptsEntry,
+  AcpMcpServerPromptsEvent,
+} from './types';
+
 // v1: agent plugin/extension management, independent of the MCP-server
 // list — data model, parser/validator, and the global-plus-project-
 // overrides resolver (SPEC.md §7.7; issue #191).

@@ -21,6 +21,8 @@ import {
   type LeaseReleaseResult,
   type LeaseRequest,
   type LeaseResult,
+  type McpPromptGetRequest,
+  type McpPromptGetResponse,
   type NewDeviceBootstrapRequest,
   type NewDeviceBootstrapResponse,
   type PromptInjectV1,
@@ -1378,6 +1380,124 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as FsListResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('mcp_prompt_get_request/mcp_prompt_get_response (Zed-parity D5-2; issue #754) — routed and fanned out exactly like fs_list_request/fs_list_response, always blind', () => {
+    it('routes a client mcp_prompt_get_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_mcp_prompt', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // Deliberately garbage bytes, not real AES-GCM output — proves the
+      // relay forwards the envelope opaquely rather than requiring it to
+      // be decryptable (it never attempts to decrypt anything, ever).
+      const request: McpPromptGetRequest = {
+        type: 'mcp_prompt_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_mcp_prompt',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('linear-server::review'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as McpPromptGetRequest;
+      expect(received).toEqual(request);
+      // The relay-visible frame carries only routing metadata + the opaque
+      // envelope — never serverName/promptName/arguments fields.
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an mcp_prompt_get_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'mcp_prompt_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('some-prompt'),
+      } satisfies McpPromptGetRequest);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans mcp_prompt_get_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_mcp_prompt_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      // Subscribe (session_resume, same as the session_update fan-out
+      // model) — mcp_prompt_get_response is fanned out through the exact
+      // same per-session subscriber list fs_list_response uses.
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_mcp_prompt_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: McpPromptGetResponse = {
+        type: 'mcp_prompt_get_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_mcp_prompt_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('Please review the current diff.'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as McpPromptGetResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),

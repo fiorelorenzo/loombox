@@ -1420,6 +1420,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // subscribed client simply has no pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'mcp_prompt_get_response':
+        // The owning node's reply to a client's mcp_prompt_get_request
+        // (Zed-parity D5-2; issue #754) — fanned out to this session's
+        // subscribed clients exactly like fs_list_response above; the
+        // relay never opens the envelope, so it never learns which server,
+        // which prompt, or its rendered text (SPEC §8's metadata
+        // boundary). A requesting client matches its own pending request
+        // by `requestId`; any other subscribed client simply has no
+        // pending request with that id.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'config_option_result':
         // The owning node's reply to a client's config_option (SPEC §7.24;
         // issue #718) — fanned out to this session's subscribed clients
@@ -2093,12 +2104,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'permission_response':
       case 'config_option':
       case 'fs_list_request':
+      case 'mcp_prompt_get_request':
         // fs_list_request (SPEC §7.4; issue #171/#160): a client asking the
         // owning node to list a directory inside one of its sessions'
         // projects — routed exactly like prompt_inject/config_option above.
-        // The relay only ever sees `sessionId`/`targetId`/`requestId` and an
-        // opaque `EncryptedEnvelope`; the requested path never reaches the
-        // relay in the clear (SPEC §8's metadata boundary).
+        // mcp_prompt_get_request (Zed-parity D5-2; issue #754) rides the
+        // exact same routing, for exactly the same reason: `sessionId`
+        // alone finds the owning node. The relay only ever sees
+        // `sessionId`/`targetId`/`requestId` and an opaque
+        // `EncryptedEnvelope`; the requested path, or which server/prompt
+        // was asked for, never reaches the relay in the clear (SPEC §8's
+        // metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':
