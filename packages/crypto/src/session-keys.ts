@@ -64,3 +64,30 @@ export async function deriveProjectKey(
   const node = await deriveKeyTree(amk, ['project', accountId, projectPath]);
   return importAesGcmKey(node.key);
 }
+
+/**
+ * Derives the account's single keymap symmetric AES-256-GCM key from its
+ * Account Master Key via this package's HMAC-SHA512 key tree (SPEC §8, §16)
+ * — the third resource-key family, alongside {@link deriveSessionKey} and
+ * {@link deriveProjectKey} above.
+ *
+ * Documented derivation path: `['keymap', accountId]`. No third path
+ * segment: unlike a session or a project, a keymap has no further scoping
+ * dimension — Zed-parity F3-3 (issue #760) is explicit that the keymap is
+ * per-account, not per-device, so one account has exactly one keymap key no
+ * matter which device derives it.
+ *
+ * This family exists because a keymap is a pure account/UI concern with no
+ * session or project attached at all — a user must be able to remap a
+ * binding with zero sessions running and zero nodes online, which ruled out
+ * routing it through a node the way `deriveProjectKey`'s own tracker-records
+ * consumer still does. Any device holding the AMK derives this exact key
+ * with no relay round trip and no node involved (same "derive locally,
+ * relay only ever forwards ciphertext" property {@link deriveProjectKey}'s
+ * own doc comment describes), which is what lets a keymap edit reach a
+ * brand-new device the moment it has bootstrapped the AMK.
+ */
+export async function deriveKeymapKey(amk: Uint8Array, accountId: string): Promise<CryptoKey> {
+  const node = await deriveKeyTree(amk, ['keymap', accountId]);
+  return importAesGcmKey(node.key);
+}

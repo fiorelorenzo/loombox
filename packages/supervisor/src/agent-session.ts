@@ -7,6 +7,7 @@ import type {
   AcpMcpServerConfig,
   AcpProvider,
   AcpSpawnConfig,
+  AcpToolKind,
   AcpTranscriptUpdate,
   AcpTurnEnd,
   AcpUpdate,
@@ -24,6 +25,27 @@ import type {
   TranscriptStore,
 } from './transcript-store';
 
+/**
+ * Why an incoming `session/request_permission` was auto-refused before it
+ * ever reached this session's FIFO queue (design spec
+ * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) — the shape
+ * {@link AgentSessionSpawnOptions.evaluateToolProfile}'s caller returns.
+ * Deliberately a plain structural type owned by this package, not
+ * imported from `@loombox/node`'s own `ProfileToolDenial`/`AgentProfile`
+ * (this package depends on neither `@loombox/node` nor
+ * `@loombox/protocol` — see this file's own doc comment on why the caller,
+ * not this class, owns "what a profile is") nor from `@loombox/protocol`'s
+ * `ToolRefusalReasonV1['profile']` member (same reason, the other
+ * direction): `@loombox/node`'s `NodeDaemon` is the one place that already
+ * knows all three shapes and maps between them.
+ */
+export interface ToolProfileDenial {
+  readonly profileId: string;
+  readonly profileName: string;
+  readonly matchedBy: 'tool-kind' | 'tool-name';
+  readonly rule: string;
+}
+
 /** Constructor options threading a `TranscriptStore` through `AgentSession.spawn()` (issue #77); optional so a caller that doesn't care about persistence still works exactly like v0. */
 export interface AgentSessionSpawnOptions {
   store?: TranscriptStore;
@@ -39,6 +61,30 @@ export interface AgentSessionSpawnOptions {
    * "no servers configured" default.
    */
   mcpServers?: AcpMcpServerConfig[];
+  /**
+   * Evaluates whether the currently active agent profile (design spec
+   * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) denies a live
+   * tool call — the enforcement half of "applied ... as an enforcement
+   * point on each tool call". Called fresh on EVERY incoming
+   * `session/request_permission`, never cached: this class has no opinion
+   * on what a "profile" is or where it's stored (`@loombox/node`'s own
+   * `evaluateAgentProfile` + `AgentProfileStore` own that entirely) — it
+   * only calls this closure at the moment of decision, exactly mirroring
+   * `policy-enforced-pty.ts`'s `() => PermissionPolicy` resolver being
+   * re-read on every submitted line for the identical "switching mid-
+   * session applies from the very next call, never half-applied" reason.
+   * Returns `undefined` to let the request proceed to the normal FIFO
+   * queue unrestricted (no profile active, or this tool call survives
+   * it); a `ToolProfileDenial` auto-resolves the request as refused
+   * (`wireClientEvents`'s `'permission_request'` listener) before the
+   * human/queue ever sees it. Defaults to `undefined`, matching "no
+   * profile enforcement" — every existing caller that doesn't pass this
+   * is unaffected.
+   */
+  evaluateToolProfile?: (toolCall: {
+    readonly toolKind?: AcpToolKind;
+    readonly title?: string;
+  }) => ToolProfileDenial | undefined;
 }
 
 /**
@@ -98,6 +144,12 @@ export class AgentSession extends EventEmitter {
   private closed = false;
   private sessionId: string | undefined;
   private attentionState: AttentionState;
+  private readonly evaluateToolProfile:
+    | ((toolCall: {
+        readonly toolKind?: AcpToolKind;
+        readonly title?: string;
+      }) => ToolProfileDenial | undefined)
+    | undefined;
 
   private constructor(opts: {
     client: AcpClient | undefined;
@@ -105,6 +157,10 @@ export class AgentSession extends EventEmitter {
     providerId: string;
     workspacePath: string;
     store: TranscriptStore | undefined;
+    evaluateToolProfile?: (toolCall: {
+      readonly toolKind?: AcpToolKind;
+      readonly title?: string;
+    }) => ToolProfileDenial | undefined;
   }) {
     super();
     this.client = opts.client;
@@ -112,6 +168,7 @@ export class AgentSession extends EventEmitter {
     this.providerId = opts.providerId;
     this.workspacePath = opts.workspacePath;
     this.store = opts.store;
+    this.evaluateToolProfile = opts.evaluateToolProfile;
     this.attentionState = { status: 'working', updatedAt: new Date().toISOString() };
 
     if (this.client) {
@@ -153,6 +210,7 @@ export class AgentSession extends EventEmitter {
       providerId: provider.id,
       workspacePath,
       store: options.store,
+      evaluateToolProfile: options.evaluateToolProfile,
     });
 
     await client.initialize();
@@ -359,6 +417,38 @@ export class AgentSession extends EventEmitter {
 
     client.on('permission_request', (request: PendingPermissionRequest) => {
       if (request.sessionId !== this.sessionId) return;
+
+      // D3-4's profile gate (issue #752): checked before this ever becomes
+      // a human-visible 'permission_required' — see
+      // `AgentSessionSpawnOptions.evaluateToolProfile`'s own doc comment
+      // for why this is the one real per-call enforcement chokepoint a
+      // profile has. A denial resolves the request itself (replying to
+      // the agent's still-pending `session/request_permission`, exactly
+      // like a human's own answer would via the `'resolved'` listener
+      // below) and emits `'tool_profile_refusal'` for the caller
+      // (`@loombox/node`'s `NodeDaemon`) to report over the wire —
+      // deliberately never reaching `setAttention('permission_required', ...)`,
+      // so this session never shows as waiting on a human for a tool call
+      // the active profile already answered.
+      const denial = this.evaluateToolProfile?.(request.toolCall);
+      if (denial) {
+        const rejectOption =
+          request.options.find((option) => option.kind === 'reject_once') ??
+          request.options.find((option) => option.kind === 'reject_always');
+        client.permissions.resolve(
+          request.requestId,
+          rejectOption
+            ? { outcome: 'selected', optionId: rejectOption.optionId }
+            : { outcome: 'cancelled' },
+        );
+        this.emit('tool_profile_refusal', {
+          requestId: request.requestId,
+          toolCall: request.toolCall,
+          denial,
+        });
+        return;
+      }
+
       this.setAttention('permission_required', {
         requestId: request.requestId,
         toolCallId: request.toolCall.id,

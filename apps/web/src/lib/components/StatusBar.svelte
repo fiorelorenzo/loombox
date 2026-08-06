@@ -61,6 +61,18 @@
     connectionStatus: ConnectionStatus;
     /** Only ever called while the connection segment's own Retry control is showing (`connectionSummary.retry`). */
     onRetryConnection: () => void;
+    /**
+     * The specific target the SELECTED session runs on (e.g. "MacBook-Pro-
+     * Lorenzo"), `undefined` when nothing is selected — the piece B3-3
+     * (issue #738) moves down from the topbar breadcrumb's old `project ·
+     * target` trail, so it renders exactly once rather than duplicating
+     * `targetHealthDots`' aggregate health summary just below it. Already
+     * resolved to a human label by the caller (`+page.svelte`'s
+     * `sessionTargetLabel`, the same helper the sidebar row and the canvas
+     * zero state already use), not a bare `targetId` this component would
+     * have to look up on its own.
+     */
+    selectedSessionTargetLabel: string | undefined;
     targetHealthDots: TargetHealthDot[];
     /** How many currently-listed targets' build identity mismatches this relay's own (`buildIdentityMismatch`) — `TargetStatusView`'s per-row Behind badge, aggregated. */
     targetsBehindCount: number;
@@ -90,6 +102,7 @@
   const {
     connectionStatus,
     onRetryConnection,
+    selectedSessionTargetLabel,
     targetHealthDots,
     targetsBehindCount,
     onOpenNodes,
@@ -236,6 +249,12 @@
         </button>
       {/if}
     </span>
+
+    {#if selectedSessionTargetLabel}
+      <span class="status-bar-segment" data-testid="status-bar-session-target">
+        <span class="status-bar-label font-mono">{selectedSessionTargetLabel}</span>
+      </span>
+    {/if}
 
     <button
       type="button"
@@ -482,6 +501,21 @@
        dot/label and the meter stay, same "the figures a user watches
        must not go" rule `ConfigBar`'s old `compact` used. */
     .status-bar-right :global([data-testid='status-bar-queued']) {
+      display: none;
+    }
+
+    /* The selected session's own target chip (issue #738) is the least
+       useful LEFT-zone segment at phone width: a phone user is rarely
+       picking between targets mid-session, unlike the connection/target-
+       health segments this bar exists to surface at a glance. Dropping it
+       here (issue #736's own composer-strip e2e spec pins this bar's
+       phone budget — `composer-strip.spec.ts`'s "fits one row on a
+       phone") still leaves it discoverable at this width: the sessions
+       sheet's own row for the open session already carries the identical
+       label (`+page.svelte`'s `session-activity`, reachable from the
+       bottom tab bar), so nothing here becomes undiscoverable, only
+       un-glanceable while composing. */
+    .status-bar-left :global([data-testid='status-bar-session-target']) {
       display: none;
     }
   }

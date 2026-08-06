@@ -77,17 +77,45 @@
    * this file's pre-migration Agent-field-vs-Title-field inconsistency as
    * its motivating example. (The starting-prompt field this migration also
    * touched, via `ui/TextArea`, is gone — issue #761.)
+   *
+   * Curated agent catalogue (D1-3's second half, `docs/superpowers/specs/
+   * 2026-08-05-zed-parity-decisions.md` §4; issue #749): the custom-agent
+   * section below also offers a "Quick-add" row over
+   * `@loombox/providers-core`'s `AGENT_CATALOGUE` — verified, known-good
+   * ACP agents (Gemini CLI, Qwen Code) a user can add in one click instead
+   * of typing a command line. Convenience only: `handleQuickAddAgent` does
+   * nothing `handleAddCustomAgent` doesn't already do (both end in the
+   * same `addCustomAgent` call), and picking a catalogue entry still has
+   * to clear the exact same node-side allowlist as a hand-typed one. Right
+   * after a quick-add, this dialog also fires `client.probeCustomAgent`
+   * (issue #748's provider-availability probe) against `project`'s own
+   * target purely so the picker can say, honestly and immediately,
+   * whether *this* node has actually allowlisted the command it just
+   * pre-filled — never to gate the add itself, which always succeeds
+   * client-side regardless of the probe's outcome.
    */
   import type { CreateSessionOptions } from '$lib/relay-client';
   import type { Project } from '$lib/projects';
   import { PROVIDER_LABELS } from '$lib/providers';
   import {
     addCustomAgent,
+    addCustomAgentFromCatalogueEntry,
     createLocalStorageCustomAgentStorage,
     CustomAgentStoreError,
     type CustomAgentStorage,
   } from '$lib/custom-agent-store';
-  import { customAgentRecordV1, type CustomAgentRecordV1 } from '@loombox/protocol';
+  import {
+    customAgentRecordV1,
+    type CustomAgentProbeResultV1,
+    type CustomAgentRecordV1,
+  } from '@loombox/protocol';
+  import {
+    AGENT_CATALOGUE,
+    isAgentCatalogueEntryStale,
+    StaleAgentCatalogueEntryError,
+    type AgentCatalogueEntry,
+  } from '@loombox/providers-core/browser';
+  import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
@@ -100,6 +128,20 @@
 
   export interface NewSessionClient {
     createSession: (options: CreateSessionOptions) => Promise<string>;
+    /**
+     * D1-3's provider-availability probe for a custom agent (issue #748) —
+     * optional so a fake client exercising only `createSession` (most of
+     * this suite's existing fixtures) still satisfies this interface. When
+     * present, the quick-add catalogue flow (issue #749) calls it right
+     * after adding a picked entry to surface, immediately and honestly,
+     * whether this specific node has actually allowlisted the command it
+     * just pre-filled — never to gate the add itself.
+     */
+    probeCustomAgent?: (options: {
+      nodeId: string;
+      targetId: string;
+      command: string;
+    }) => Promise<CustomAgentProbeResultV1>;
   }
 
   interface Props {
@@ -167,6 +209,21 @@
   let newAgentArgs = $state('');
   let newAgentEnv = $state('');
   let customAgentError = $state<string | undefined>(undefined);
+  /**
+   * The most recent quick-add allowlist probe (issue #749), keyed by
+   * `command` so a probe for one entry is never mistakenly shown against a
+   * different one picked afterwards. `undefined` before any quick-add has
+   * run in this dialog-open, or whenever `client.probeCustomAgent` isn't
+   * implemented (see `NewSessionClient.probeCustomAgent`'s own doc
+   * comment) — the row simply renders no probe result in that case.
+   */
+  interface CatalogueProbeState {
+    command: string;
+    status: 'checking' | 'result' | 'error';
+    result?: CustomAgentProbeResultV1;
+    errorMessage?: string;
+  }
+  let catalogueProbe = $state<CatalogueProbeState | undefined>(undefined);
   type WorkspaceChoice = 'worktree' | 'in-place';
   let workspaceChoice = $state<WorkspaceChoice>('worktree');
 
@@ -317,6 +374,64 @@
     }
   }
 
+  /**
+   * The curated-catalogue quick-add row's own click handler (issue #749) —
+   * calls `addCustomAgentFromCatalogueEntry` (the same `addCustomAgent`
+   * call `handleAddCustomAgent` above makes, just fed a catalogue entry
+   * instead of the manual form's fields), selects the freshly added
+   * agent, then fires an allowlist probe against `project`'s own target
+   * so the row can say, right away, whether this node has actually
+   * allowlisted the command it just pre-filled. A `StaleAgentCatalogueEntryError`
+   * (the entry's own verified-against window has lapsed) and a
+   * `CustomAgentStoreError` (duplicate name) both surface through the
+   * same `customAgentError` notice `handleAddCustomAgent` already uses.
+   */
+  function handleQuickAddAgent(entry: AgentCatalogueEntry): void {
+    try {
+      customAgents = addCustomAgentFromCatalogueEntry(agentStorage, entry);
+    } catch (err) {
+      customAgentError =
+        err instanceof StaleAgentCatalogueEntryError || err instanceof CustomAgentStoreError
+          ? err.message
+          : String(err);
+      return;
+    }
+    customAgentError = undefined;
+    selectedProvider = `${CUSTOM_AGENT_PREFIX}${entry.config.name}`;
+    void runCatalogueProbe(entry.config.command);
+  }
+
+  /**
+   * Fires `client.probeCustomAgent` for `command` against `project`'s own
+   * `(nodeId, targetId)` and records the outcome in `catalogueProbe` — the
+   * "still refuses cleanly when the node has not allowlisted it" half of
+   * issue #749's acceptance. A no-op when the injected `client` doesn't
+   * implement the probe at all (`NewSessionClient.probeCustomAgent`'s own
+   * doc comment); a rejection (no open connection, timeout) is shown the
+   * same way a failed probe result would be, never thrown into the void.
+   */
+  async function runCatalogueProbe(command: string): Promise<void> {
+    if (!client?.probeCustomAgent) {
+      catalogueProbe = undefined;
+      return;
+    }
+    catalogueProbe = { command, status: 'checking' };
+    try {
+      const result = await client.probeCustomAgent({
+        nodeId: project.nodeId,
+        targetId: project.targetId,
+        command,
+      });
+      catalogueProbe = { command, status: 'result', result };
+    } catch (err) {
+      catalogueProbe = {
+        command,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   function resetForm(): void {
     customAgents = agentStorage.get();
     selectedProvider = agentOptions[0]?.id ?? '';
@@ -330,6 +445,7 @@
     newAgentArgs = '';
     newAgentEnv = '';
     customAgentError = undefined;
+    catalogueProbe = undefined;
   }
 
   function handleClose(): void {
@@ -381,6 +497,71 @@
     {/if}
 
     <div class="custom-agent-section">
+      <div class="agent-catalogue" data-testid="agent-catalogue">
+        <p class="agent-catalogue-heading">Quick-add from the curated catalogue</p>
+        <ul class="agent-catalogue-list">
+          {#each AGENT_CATALOGUE as entry (entry.id)}
+            {@const stale = isAgentCatalogueEntryStale(entry)}
+            <li class="agent-catalogue-row">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onclick={() => handleQuickAddAgent(entry)}
+                dataTestId={`agent-catalogue-add-${entry.id}`}
+              >
+                {entry.config.name}
+              </Button>
+              <span class="agent-catalogue-description">{entry.description}</span>
+              <Badge
+                tone={stale ? 'danger' : 'neutral'}
+                dataTestId={`agent-catalogue-verified-${entry.id}`}
+              >
+                {stale
+                  ? 'Stale — re-verify before use'
+                  : `Verified: ${entry.verification.against} (${entry.verification.verifiedOn})`}
+              </Badge>
+            </li>
+          {/each}
+        </ul>
+        <p class="agent-catalogue-note">
+          Convenience only: picking one still has to clear this node's own allowlist before it can
+          launch.
+        </p>
+      </div>
+
+      {#if customAgentError}
+        <ErrorNotice message={customAgentError} />
+      {/if}
+
+      {#if catalogueProbe}
+        <div data-testid="agent-catalogue-probe-result">
+          {#if catalogueProbe.status === 'checking'}
+            <p class="probe-checking">
+              Checking &quot;{catalogueProbe.command}&quot; against this node…
+            </p>
+          {:else if catalogueProbe.status === 'error'}
+            <ErrorNotice
+              message={`Could not check this node's allowlist: ${catalogueProbe.errorMessage}`}
+            />
+          {:else if catalogueProbe.result?.outcome === 'error'}
+            <ErrorNotice message={catalogueProbe.result.message} />
+          {:else if catalogueProbe.result?.outcome === 'ok' && !catalogueProbe.result.allowed}
+            <ErrorNotice
+              message={`"${catalogueProbe.command}" is not on this node's allowlist yet — an operator must add it (LOOMBOX_CUSTOM_AGENT_ALLOWLIST or the config file's "customAgentAllowlist") before this session can launch.`}
+            />
+          {:else if catalogueProbe.result?.outcome === 'ok' && !catalogueProbe.result.available}
+            <ErrorNotice
+              message={`"${catalogueProbe.command}" is allowlisted, but wasn't found on this target's PATH.`}
+            />
+          {:else if catalogueProbe.result?.outcome === 'ok'}
+            <Badge tone="success" dataTestId="agent-catalogue-probe-ok">
+              Ready: allowlisted and found on this target.
+            </Badge>
+          {/if}
+        </div>
+      {/if}
+
       <Button
         type="button"
         variant="ghost"
@@ -392,9 +573,6 @@
       </Button>
       {#if showCustomAgentForm}
         <div class="custom-agent-form">
-          {#if customAgentError}
-            <ErrorNotice message={customAgentError} />
-          {/if}
           <Field label="Name">
             {#snippet children({ id, describedBy, errorId, invalid, required })}
               <Input
@@ -554,6 +732,58 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+
+  .agent-catalogue {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .agent-catalogue-heading {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    font-weight: 600;
+  }
+
+  .agent-catalogue-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .agent-catalogue-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .agent-catalogue-description {
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
+  }
+
+  .agent-catalogue-note {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
+  }
+
+  .probe-checking {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
   }
 
   .custom-agent-form {

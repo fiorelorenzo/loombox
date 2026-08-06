@@ -135,6 +135,14 @@ export {
 export { MCP_SERVER_PRESET_CATALOG, instantiateMcpPreset } from './mcp-presets';
 export type { McpServerPreset } from './mcp-presets';
 export {
+  AGENT_CATALOGUE,
+  agentCatalogueEntryStaleAt,
+  instantiateAgentCatalogueEntry,
+  isAgentCatalogueEntryStale,
+  StaleAgentCatalogueEntryError,
+} from './agent-catalogue';
+export type { AgentCatalogueEntry, AgentCatalogueVerification } from './agent-catalogue';
+export {
   PluginConfigError,
   parsePluginConfig,
   parsePluginConfigList,
