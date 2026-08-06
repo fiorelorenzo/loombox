@@ -183,6 +183,8 @@ import {
   type PrOpenRequest,
   type PrOpenRequestPayloadV1,
   type PrOpenResultPayloadV1,
+  type CiCheckStateV1,
+  type CiCheckStatusPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -264,7 +266,14 @@ import {
   turnIdForTurnNumber,
 } from './session-rewind';
 import { resolveSessionBranch } from './session-branch';
-import { openPr, previewPrOpen, PrOpenError } from './pr-open';
+import { openPr, previewPrOpen, PrOpenError, type OpenPrResult } from './pr-open';
+import {
+  CiCheckWatcher,
+  isFailingConclusion,
+  parseGithubPullRequestUrl,
+  type CiWatchEntry,
+} from './ci-check-watcher';
+import { CiWatchStore } from './ci-watch-store';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -685,6 +694,10 @@ export interface NodeDaemonOptions {
   trackerModeStore?: TrackerModeStore;
   /** Injectable for tests; defaults to each composed `GithubTrackerBackend`/`JiraTrackerBackend`'s own default (the global `fetch`) — see `resolveTrackerBackend`'s own `fetchImpl` doc comment. Issue #631's acceptance: a live-mode bridge test must stub this, never hit a real GitHub/Jira API. */
   trackerBackendFetchImpl?: typeof fetch;
+  /** SPEC §7.14, issue #239 — persists which sessions' open PRs `CiCheckWatcher` polls, across a restart. Defaults to `new CiWatchStore({stateDir: options.stateDir})`, same convention as `accountPinStore`/`spendCapStore` above. */
+  ciCheckWatchStore?: CiWatchStore;
+  /** SPEC §7.14, issue #239 — the whole polling engine, injectable wholesale (rather than just its `fetchImpl`, like `trackerBackendFetchImpl` above) so a test can fully control both the stubbed GitHub responses AND `resolveToken`, decoupled from this daemon's real `accountPinStore`/`githubConnectService` composition, which is proven separately by `resolveCiCheckGithubToken`'s own test. Defaults to a real `CiCheckWatcher` wired to `resolveCiCheckGithubToken`/`sendCiCheckStatus`/`handleCiCheckFailure`. */
+  ciCheckWatcher?: CiCheckWatcher;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1424,6 +1437,10 @@ export class NodeDaemon extends EventEmitter {
   private connectedAccounts: readonly ConnectedAccount[] = [];
   /** `NodeDaemonOptions.trackerBackendFetchImpl`'s stored value — see that field's own doc comment. */
   private readonly trackerBackendFetchImpl: typeof fetch | undefined;
+  /** SPEC §7.14, issue #239's persisted watch registry — see `NodeDaemonOptions.ciCheckWatchStore`'s doc comment. */
+  private readonly ciCheckWatchStore: CiWatchStore;
+  /** SPEC §7.14, issue #239's polling engine — see `NodeDaemonOptions.ciCheckWatcher`'s doc comment. */
+  private readonly ciCheckWatcher: CiCheckWatcher;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1559,6 +1576,42 @@ export class NodeDaemon extends EventEmitter {
       this.targetHealthSampler.start();
     }
 
+    // SPEC §7.14, issue #239: re-registers every session whose PR was
+    // still being watched before this node last restarted. A session no
+    // longer known to `sessionManager` (archived, or its record otherwise
+    // gone) has its stale watch entry dropped rather than re-registered —
+    // mirrors `SessionManager`'s own reload-then-prune convention for
+    // every other per-session store.
+    this.ciCheckWatchStore =
+      options.ciCheckWatchStore ?? new CiWatchStore({ stateDir: options.stateDir });
+    this.ciCheckWatcher =
+      options.ciCheckWatcher ??
+      new CiCheckWatcher({
+        resolveToken: (entry) => this.resolveCiCheckGithubToken(entry.projectPath),
+        onUpdate: (sessionId, state) => {
+          this.sendCiCheckStatus(sessionId, state).catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to send ci_check_status for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        },
+        onFailure: (sessionId, state) => {
+          this.handleCiCheckFailure(sessionId, state).catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to deliver CI failure prompt for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        },
+      });
+    for (const record of this.ciCheckWatchStore.list()) {
+      if (this.sessionManager.getSession(record.sessionId)) {
+        this.ciCheckWatcher.watch(record.sessionId, record);
+      } else {
+        this.ciCheckWatchStore.remove(record.sessionId);
+      }
+    }
+    this.ciCheckWatcher.start();
+
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
     // reconnects) must re-announce everything this node still holds.
@@ -1631,6 +1684,7 @@ export class NodeDaemon extends EventEmitter {
     }
     this.bridges.clear();
     this.targetHealthSampler.stop();
+    this.ciCheckWatcher.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
     // exiting does not kill it" — a later reattach still works), a
@@ -4271,6 +4325,14 @@ export class NodeDaemon extends EventEmitter {
       // and must still surface as outcome: 'error'.
       if (!(error instanceof InvalidSessionTransitionError)) throw error;
     }
+    // SPEC §7.14, issue #239: a session's CI watch is scoped to that
+    // session's own life — an archived session's open PR (if any) is no
+    // longer this node's concern to keep polling, and `unwatch` also
+    // clears its dedup state so a same-id session (never happens today,
+    // but nothing here relies on session ids never being reused) starts
+    // clean.
+    this.ciCheckWatcher.unwatch(sessionId);
+    this.ciCheckWatchStore.remove(sessionId);
     // Clean up this session's hidden checkpoint refs (issue #603) before
     // the record disappears below — `GitCheckpointStore.deleteAllCheckpoints()`
     // needs `worktreePath`, still readable from `sessionManager` right up
@@ -7712,7 +7774,20 @@ export class NodeDaemon extends EventEmitter {
     this.decryptPrOpenRequest(message)
       .then((payload) =>
         this.getExecutionTarget(routing.targetId, routing.session.projectPath).then((target) =>
-          openPr(target, routing.session, payload),
+          openPr(target, routing.session, payload).then((opened) =>
+            // SPEC §7.14, issue #239: once a PR is genuinely open, start
+            // watching its CI checks — best-effort, never lets a watch-
+            // registration failure (e.g. an unparseable PR URL) turn an
+            // otherwise-successful pr_open_request into a reported
+            // failure.
+            this.registerCiCheckWatch(routing.session, target, opened)
+              .catch((error: unknown) => {
+                console.warn(
+                  `NodeDaemon: failed to register CI check watch for session ${message.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              })
+              .then(() => opened),
+          ),
         ),
       )
       .then(

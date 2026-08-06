@@ -130,6 +130,7 @@ import {
 } from './tracker-records';
 import { prOpenPreviewRequest, prOpenPreviewResult, prOpenRequest, prOpenResult } from './pr';
 import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
+import { ciCheckStatus } from './ci-check';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -271,6 +272,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   prOpenResult,
   gitDiffRequest,
   gitDiffResponse,
+  ciCheckStatus,
   ping,
   pong,
 ]);
