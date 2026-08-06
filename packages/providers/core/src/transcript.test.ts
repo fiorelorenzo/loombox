@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ancestorChainForToolCall,
+  computeToolCallNesting,
   createTranscriptState,
   reduceResyncGap,
   reduceSessionEvent,
@@ -614,7 +615,7 @@ describe('ancestorChainForToolCall', () => {
     expect(ancestorChainForToolCall(state.items, 'root')).toEqual([]);
   });
 
-  it('returns [] for an unknown tool call id (v1 no-op: no bespoke provider populates parentToolCallId yet)', () => {
+  it('returns [] for an unknown tool call id', () => {
     const state = seedNested();
     expect(ancestorChainForToolCall(state.items, 'never-existed')).toEqual([]);
   });
@@ -624,6 +625,68 @@ describe('ancestorChainForToolCall', () => {
     state = reduceTranscript(state, { kind: 'tool_call', id: 'a', parentToolCallId: 'b' });
     state = reduceTranscript(state, { kind: 'tool_call', id: 'b', parentToolCallId: 'a' });
     expect(ancestorChainForToolCall(state.items, 'a')).toEqual(['b']);
+  });
+});
+
+describe('computeToolCallNesting (issue #200)', () => {
+  function seedNested(): TranscriptState {
+    let state = createTranscriptState();
+    const root: AcpToolCallUpdate = { kind: 'tool_call', id: 'root', title: 'Run subagent' };
+    const mid: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: 'mid',
+      parentToolCallId: 'root',
+      title: 'Bash',
+    };
+    const leaf: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: 'leaf',
+      parentToolCallId: 'mid',
+      title: 'Edit',
+    };
+    state = reduceTranscript(state, root);
+    state = reduceTranscript(state, mid);
+    state = reduceTranscript(state, leaf);
+    return state;
+  }
+
+  it('depth 0 for a root-level call with no parentToolCallId', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('root')).toEqual({ depth: 0, parentTitle: undefined });
+  });
+
+  it('depth 1 for a direct child, carrying the resolved parent title', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('mid')).toEqual({ depth: 1, parentTitle: 'Run subagent' });
+  });
+
+  it('depth 2+ for a grandchild — a tree deeper than two levels is defined, not capped', () => {
+    const state = seedNested();
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('leaf')).toEqual({ depth: 2, parentTitle: 'Bash' });
+  });
+
+  it('an orphan child — parentToolCallId set, but that id never arrived — renders at depth 0, same as a root call', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: 'orphan',
+      parentToolCallId: 'never-arrived',
+      title: 'Bash',
+    });
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('orphan')).toEqual({ depth: 0, parentTitle: undefined });
+  });
+
+  it('never throws or loops forever on a cyclic chain (defensive against malformed data)', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'a', parentToolCallId: 'b' });
+    state = reduceTranscript(state, { kind: 'tool_call', id: 'b', parentToolCallId: 'a' });
+    const nesting = computeToolCallNesting(state.items);
+    expect(nesting.get('a')?.depth).toBe(1);
+    expect(nesting.get('b')?.depth).toBe(1);
   });
 });
 

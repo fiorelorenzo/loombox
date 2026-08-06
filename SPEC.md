@@ -717,7 +717,10 @@ across providers rather than needing a bespoke per-provider transcript format.
   edit widget so streaming never briefly shows a duplicate placeholder. *A
   third tier — a summarized burst/group card for large tool-call bursts and
   subagent groups — is real but secondary to getting these two solid; it
-  ships in v2 alongside the subagent-tree work it's paired with (§12).*
+  remains v2 future work (§12) even though the subagent-TREE rendering it
+  was originally paired with has since shipped (§7.24's own subagent
+  bullet, issue #200) — flat-indented nesting turned out to not need this
+  card as a prerequisite.*
 - **Diffs.** ACP **v1**'s Diff is `{path, oldText, newText}` — render that with
   client-side line diffing and syntax-aware coloring; the richer structured `changes[]`
   (operation, old/new path) is an ACP **v2**-only shape, gated like the other v2 bullets
@@ -739,22 +742,46 @@ across providers rather than needing a bespoke per-provider transcript format.
   the same "N of M items left" figure into the attention inbox (§7.13). *The
   persistent sidebar ships in v2; inline plan rendering alone covers v1
   (§12).*
-- **Subagents and nested tool-call trees (v2).** ACP has no native subagent
-  concept — only a draft, unstable proxy-chains RFD exists. What is real today
-  (Claude Code) is a vendor `_meta` field (`_meta.claudeCode.parentToolUseId`)
-  that a provider adapter promotes into a first-class `parentToolCallId` via
-  its `enrich()` hook (§5.5). Any item referenced as another's parent renders
-  as a collapsible, recursively-nestable group: auto-collapsed with an
-  auto-scrolling preview while a child is running, full expand on demand, and
-  every child dispatches to its own native tier-1/2 renderer with no special-
+- **Subagents and nested tool-call trees.** ACP has no native subagent
+  concept — only a draft, unstable proxy-chains RFD exists. What is real
+  today, checked with live (Claude, `omp acp`) or source-verified (Codex —
+  no live run possible, no `codex` CLI/credentials available to check with)
+  runs against all three shipped providers (issue #199/#200, not inferred):
+  - **Claude Code** — a vendor `_meta` field
+    (`_meta.claudeCode.parentToolUseId`) on a subagent's own nested tool-call
+    updates, pointing at the launching Agent/Task call's own id (itself
+    marked `_meta.claudeCode.subagent: true`). Present regardless of client
+    capability opt-in; a separate `subagent-transcript` client capability
+    additionally unlocks forwarding the subagent's own message/thinking text
+    (not itself rendered as a tree yet — only tool calls are). The Claude
+    adapter's `enrich()` hook (§5.5) promotes it into a first-class
+    `parentToolCallId`.
+  - **Codex** — no equivalent. A spawned subagent surfaces as one
+    summarizing tool call carrying thread-scoped `_meta.codex.collaboration`/
+    `_meta.codex.subagent` metadata (a thread id, not a tool-call id); its
+    own individual tool calls are never forwarded as separate ACP events, so
+    there is nothing to attribute a `parentToolCallId` to.
+  - **`omp acp`, and the generic ACP tier generally** — no equivalent
+    either; a spawned subagent's activity is summarized inline inside the
+    spawning tool call's own output, never emitted as separate events.
+
+  Any item referenced as another's parent renders nested — indented, capped
+  at a bounded depth so an arbitrarily deep chain never squeezes the row
+  toward zero width (true depth is still tracked, just not still-growing the
+  indent past the cap), computed from the FULL transcript, never from what a
+  windowed transcript (§7.16/#755) currently has mounted, so a child renders
+  correctly even while its parent's own row is scrolled out of view — with
+  every child dispatching to its own native tier-1/2 renderer, no special-
   casing (a diff produced by a subagent looks exactly like a top-level diff,
-  just indented). A session/provider that never populates a parent link (the
-  generic ACP tier, and Codex until an equivalent signal is confirmed)
-  degrades to a flat list automatically — the tree view is a rendering of the
-  data, not a mode toggle. On a narrow viewport, replace inline nesting with a
-  terse "last 3 tool calls + N more" summary that opens a detail view, since
-  indentation does not scale under phone widths. *Ships in v2 (§12); v1 always
-  renders the flat list.*
+  just indented). A child whose parent link never resolves (the generic ACP
+  tier, Codex, or a Claude Code parent evicted by #729's resync ring) renders
+  at the top level, identical to a genuine root call, rather than
+  disappearing. *Not yet built:* the richer collapsible-group/auto-scrolling-
+  preview treatment and the narrow-viewport "last 3 + N more" summary an
+  earlier draft of this bullet described — real subagent nesting in
+  production is Claude-only today and typically shallow, and the flat-indent
+  rendering already satisfies the tree's core contract; a burst/group
+  summary card remains real but secondary future work (§12's tier-3 bullet).
 - **Tool-call permissions.** A FIFO queue, one focused card at a time,
   rendered inline at the tool call / composer site — never a blocking modal,
   since loombox is a multi-session cockpit and a modal on one session must not
@@ -1336,9 +1363,11 @@ Each milestone is a shippable increment; a fresh agent session builds them in or
   reconnect/resume hardening (resident-daemon semantics); PR & CI lifecycle; test &
   verification runner; agent guardrails/sandboxing; session templates + project
   instructions + prompt library; session history/search + fork/replay;
-  checkpoint/rollback; richer cross-project attention inbox & observability; subagent/nested tool-call tree rendering and the tier-3 tool-call burst/
-  group summary card (§7.24, Claude-adapter-specific, degrading to a flat list
-  elsewhere); a Gemini provider adapter module (§5.5); an expanded per-tool-name
+  checkpoint/rollback; richer cross-project attention inbox & observability;
+  the tier-3 tool-call burst/group summary card (§7.24, Claude-adapter-
+  specific, degrading to a flat list elsewhere — subagent/nested tool-call
+  tree rendering itself shipped ahead of this milestone, issue #200);
+  a Gemini provider adapter module (§5.5); an expanded per-tool-name
   bespoke widget registry; a persistent plan sidebar; client-side transcript
   search via the CSS Custom Highlight API (§7.19, §7.24).
 - **v3 — voice & reach.** BYO-key voice (clean-room); native mobile wrapper; more
