@@ -42,6 +42,62 @@ async function gotoCockpit(page: Page, loombox: LoomboxFixture): Promise<void> {
 }
 
 /**
+ * The shape `measureTerminalFit` below resolves to — a real, live-DOM
+ * measurement of whether xterm's own row count matches the pixel space
+ * `.xterm-container` actually gives it (issue #663), never a guess off a
+ * remembered CSS constant.
+ */
+interface TerminalFitMeasurement {
+  reportedRows: number;
+  cellHeightPx: number;
+  containerContentHeightPx: number;
+  xtermElementHeightPx: number;
+  overflowsContainer: boolean;
+  rowsThatFit: number;
+}
+
+/**
+ * Measures the terminal geometry issue #663 is about, straight off the
+ * live DOM of whichever tab is currently the VISIBLE one (`.terminal-pane-
+ * active`, since a second open tab leaves its own `[data-testid="xterm-
+ * container"]` mounted-but-hidden per this file's own "never unmount to
+ * hide" doc comment, and a plain testid lookup would silently grab
+ * whichever tab happens to be first in DOM order instead). `.xterm-rows`
+ * is xterm.js's own accessibility mirror — one real child `<div>` per row
+ * — which gives a genuine per-row pixel height without reaching into the
+ * private `Terminal`/`FitAddon` instances this file has no handle on.
+ */
+async function measureTerminalFit(page: Page): Promise<TerminalFitMeasurement> {
+  return page.evaluate(() => {
+    const container = document.querySelector('.terminal-pane-active .xterm-container');
+    if (!container) throw new Error('no active .xterm-container found');
+    const xtermRoot = container.querySelector('.xterm');
+    const xtermRows = container.querySelector('.xterm-rows');
+    if (!xtermRoot || !xtermRows) throw new Error('xterm has not mounted into the container yet');
+    const reportedRows = xtermRows.children.length;
+    const cellHeightPx = xtermRows.getBoundingClientRect().height / reportedRows;
+    const containerRect = container.getBoundingClientRect();
+    const containerStyle = getComputedStyle(container);
+    const containerContentHeightPx =
+      containerRect.height -
+      parseFloat(containerStyle.paddingTop) -
+      parseFloat(containerStyle.paddingBottom);
+    const xtermElementHeightPx = xtermRoot.getBoundingClientRect().height;
+    return {
+      reportedRows,
+      cellHeightPx,
+      containerContentHeightPx,
+      xtermElementHeightPx,
+      // Half a pixel of tolerance for subpixel layout rounding, never a
+      // whole row — real over-counting (issue #663) clips a row entirely,
+      // not by half a pixel.
+      overflowsContainer: xtermElementHeightPx > containerContentHeightPx + 0.5,
+      rowsThatFit: Math.floor(containerContentHeightPx / cellHeightPx),
+    };
+  });
+}
+
+/**
  * One agent turn plus one tool call: the two transcript row types that share
  * the timeline's role column with the composer, so a test can measure all
  * three against each other.
@@ -1425,6 +1481,145 @@ test.describe('cockpit shell', () => {
     // rather than one attribute both dimensions happen to bump together.
     const colsAfter = await terminal.evaluate((el) => Number(el.getAttribute('data-cols')));
     expect(colsAfter).toBe(colsBefore);
+  });
+
+  test("xterm's reported rows match the space `.xterm-container` actually gives it, at several dock heights including one that is not a whole multiple of the line height (issue #663)", async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId('terminal-dock-toggle').click();
+
+    const dock = page.getByTestId('terminal-dock');
+    const terminal = page.getByTestId('interactive-terminal');
+    const handle = page.getByTestId('terminal-dock-resize-handle');
+    await expect(dock).toBeVisible();
+    await expect(terminal).toBeVisible();
+    // Settles the FIRST fit (issue #572's own acceptance: real cols/rows
+    // from first paint, not the 80x24 seed) before measuring it.
+    await page.waitForTimeout(500);
+
+    const measurements: TerminalFitMeasurement[] = [];
+    const heights: number[] = [];
+    async function captureAt(): Promise<void> {
+      heights.push((await dock.boundingBox())?.height ?? 0);
+      measurements.push(await measureTerminalFit(page));
+    }
+
+    // Height one: the untouched default (320px) — no resize needed.
+    await captureAt();
+
+    // Height two: the dock's own documented minimum (issue #572's
+    // acceptance: "min around 12rem" = 192px). The keyboard step is a
+    // fixed 16px (`dock-panel.svelte.ts`'s own `keyboardStep` default),
+    // never a pixel-imprecise pointer drag, and `DockPanel.size`'s own
+    // `clamp()` makes overshooting past the minimum harmless.
+    await handle.focus();
+    for (let i = 0; i < 10; i += 1) await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(500);
+    await captureAt();
+
+    // Height three: grown well past the default from the minimum, a
+    // third value distinct from both of the above.
+    for (let i = 0; i < 25; i += 1) await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(500);
+    await captureAt();
+
+    // Three genuinely different heights were exercised, not the same one
+    // measured three times.
+    expect(new Set(heights.map((h) => Math.round(h))).size).toBe(3);
+
+    // xterm's real cell height (measured off `.xterm-rows` above, never
+    // assumed) is not an integer factor of a 16px keyboard step, so at
+    // least one of these three heights leaves a genuinely fractional
+    // rows-that-fit count — the issue's own "not a whole multiple of the
+    // line height" case, proven rather than asserted by construction.
+    const sawAFractionalHeight = measurements.some((m) => {
+      const rows = m.containerContentHeightPx / m.cellHeightPx;
+      return Math.abs(rows - Math.round(rows)) > 0.1;
+    });
+    expect(sawAFractionalHeight).toBe(true);
+
+    for (const measurement of measurements) {
+      // The real cause named with a measurement, not a guess (issue
+      // #663's own scope line): xterm's own rendered element must never
+      // be taller than the content box `.xterm-container` actually has,
+      // or the excess is clipped by that element's `overflow: hidden` —
+      // "over-counted rows exist in the buffer but have no pixels".
+      expect(measurement.overflowsContainer).toBe(false);
+      // ...and within one row of the count that geometrically fits, this
+      // issue's own stated tolerance for font-metric/subpixel rounding.
+      expect(Math.abs(measurement.reportedRows - measurement.rowsThatFit)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('switching terminal tabs and collapsing/reopening the dock never leaves a stale fit (issue #663)', async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const toggle = page.getByTestId('terminal-dock-toggle');
+    await toggle.click();
+
+    const dock = page.getByTestId('terminal-dock');
+    const terminal = page.getByTestId('interactive-terminal');
+    const handle = page.getByTestId('terminal-dock-resize-handle');
+    await expect(dock).toBeVisible();
+    await expect(terminal).toBeVisible();
+    await page.waitForTimeout(500);
+
+    // A second tab: `addTab()` makes it the active one, fitting it once
+    // against today's height, then switching straight back to tab one
+    // leaves it mounted at `display: none` (this file's own top doc
+    // comment: never torn down) for the rest of this test.
+    await page.getByTestId('terminal-new-tab').click();
+    const tabButtons = page.getByTestId('terminal-tab');
+    await expect(tabButtons).toHaveCount(2);
+    await tabButtons.nth(0).click();
+    await page.waitForTimeout(300);
+
+    const heightBeforeGrow = (await dock.boundingBox())?.height ?? 0;
+
+    // Grow the dock by a real amount WHILE tab two sits hidden — the
+    // exact case this test exists for: does tab two's own `ResizeObserver`
+    // (on its own container, disconnected only by `cleanupTab`, never by
+    // going invisible) fire once IT is shown again, re-fitting to the
+    // CURRENT height, or does it stay stuck at whatever it measured the
+    // moment before tab one took over?
+    await handle.focus();
+    for (let i = 0; i < 8; i += 1) await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(500);
+    const heightAfterGrow = (await dock.boundingBox())?.height ?? 0;
+    expect(heightAfterGrow).toBeGreaterThan(heightBeforeGrow + 40);
+
+    const tabOneAfterGrow = await measureTerminalFit(page);
+    expect(tabOneAfterGrow.overflowsContainer).toBe(false);
+
+    // Switching to tab two must re-fit IT to the height that is actually
+    // current now, not the height it was created at.
+    await tabButtons.nth(1).click();
+    await page.waitForTimeout(500);
+    const tabTwoAfterSwitch = await measureTerminalFit(page);
+    expect(tabTwoAfterSwitch.overflowsContainer).toBe(false);
+    expect(tabTwoAfterSwitch.reportedRows).toBe(tabOneAfterGrow.reportedRows);
+
+    // Collapse the dock (removes the whole subtree's layout — see
+    // `.terminal-dock`'s own CSS doc comment in `+page.svelte`) and
+    // reopen it. `InteractiveTerminal` itself is never unmounted across
+    // this (issue #572's own "no repeated terminal_open" test proves
+    // that), so this is the SAME hidden-container `ResizeObserver` path
+    // exercised above, taken the dock's own way instead of a tab switch.
+    await toggle.click();
+    await expect(dock).not.toBeVisible();
+    await toggle.click();
+    await expect(dock).toBeVisible();
+    await page.waitForTimeout(500);
+
+    const afterReopen = await measureTerminalFit(page);
+    expect(afterReopen.overflowsContainer).toBe(false);
+    expect(afterReopen.reportedRows).toBe(tabTwoAfterSwitch.reportedRows);
   });
 
   test('collapsing and reopening the terminal dock keeps the same terminal: no repeated terminal_open, no terminal_close (issue #572)', async ({
