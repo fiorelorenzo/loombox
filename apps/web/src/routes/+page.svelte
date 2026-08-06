@@ -52,6 +52,7 @@
   } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
+  import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -131,9 +132,13 @@
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
+  import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
-  import TranscriptTimeline from '$lib/components/TranscriptTimeline.svelte';
+  import TranscriptTimeline, {
+    type TranscriptJumpTarget,
+  } from '$lib/components/TranscriptTimeline.svelte';
+  import TurnEditsBar from '$lib/components/TurnEditsBar.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -702,6 +707,9 @@
   const projectStore = createProjectStore();
   let projects = $state<Project[]>([]);
   let transcript = $state<TranscriptState | undefined>(undefined);
+  /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
+  let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
+  let reviewChangesOpen = $state(false);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
   /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
@@ -1036,6 +1044,10 @@
   );
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
+  );
+  /** Issue #740's turn summary bar / Review Changes surface: the latest turn's aggregated edits, or `undefined` when it touched no files — see `TurnEditsBar`'s own doc comment for why this reads the full, unwindowed `transcript.items` rather than anything `TranscriptTimeline` mounts. */
+  const turnEditsSummary = $derived(
+    transcript ? latestTurnDiffSummary(transcript.items) : undefined,
   );
   // Issue #366: the project config surface is scoped to the selected
   // session's `projectPath` (v1 has no separate project entity yet, same
@@ -2018,6 +2030,19 @@
       selectedSessionId,
       !(planCollapsedBySession.get(selectedSessionId) ?? false),
     );
+  }
+
+  /** Issue #740: a `TurnEditsBar` per-file row click — brings that file's own diff card into the (possibly windowed-out) transcript and scrolls to it. Never mutates anything on disk; see `TranscriptJumpTarget`'s own doc comment for the token-bump reason. */
+  function jumpToTranscriptItem(toolCallId: string): void {
+    transcriptJumpTarget = { id: toolCallId, token: (transcriptJumpTarget?.token ?? 0) + 1 };
+  }
+
+  function openReviewChanges(): void {
+    reviewChangesOpen = true;
+  }
+
+  function closeReviewChanges(): void {
+    reviewChangesOpen = false;
   }
 
   function resolvePermission(requestId: string, option: AcpPermissionOption): void {
@@ -3788,6 +3813,7 @@
               turnActive={transcript?.turnActive ?? false}
               providerId={selectedSession?.provider}
               {permissionHead}
+              jumpTarget={transcriptJumpTarget}
               onFork={narrowViewport ? undefined : forkSessionFromTurn}
               {forkingTurnId}
             />
@@ -3832,6 +3858,20 @@
                 onResolve={resolvePermission}
                 onStop={stopSession}
                 narrow={narrowViewport}
+              />
+
+              <!-- Issue #740, settled pick C1-3: the turn summary bar sits
+                   here, in `.canvas-footer`, directly above the composer —
+                   not inside `TranscriptTimeline` (issue #755 windows that
+                   list to the visible range plus overscan, and this bar's
+                   totals need every diff-carrying tool call in the turn
+                   whether or not it's currently mounted) and not inside the
+                   composer's own A1-3 lift or the terminal dock (v7 D1-2) —
+                   neither settled surface is re-homed by this work. -->
+              <TurnEditsBar
+                summary={turnEditsSummary}
+                onJumpToFile={jumpToTranscriptItem}
+                onReviewChanges={openReviewChanges}
               />
 
               <form class="composer" onsubmit={submitPrompt}>
@@ -4265,6 +4305,12 @@
 />
 
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />
+
+<ReviewChangesDialog
+  open={reviewChangesOpen}
+  summary={turnEditsSummary}
+  onClose={closeReviewChanges}
+/>
 
 <style>
   /* The pre-cockpit screens (checking session / sign-in / onboarding) own
