@@ -113,7 +113,7 @@ test.describe('composer strip', () => {
     expect(box?.height ?? 999).toBeLessThanOrEqual(2);
   });
 
-  test('fits one row on a phone: pickers collapse, the figures stay, nothing overlaps', async ({
+  test('fits one row on a phone: pickers collapse, nothing overlaps, and the status bar keeps every figure without overflowing (issue #736 moved the meter off this row onto the status bar, which has room the composer never had)', async ({
     page,
     loombox,
   }) => {
@@ -128,20 +128,31 @@ test.describe('composer strip', () => {
 
     // The pickers fold behind the "···" — since E1-2 (issue #711) that's
     // one consolidated trigger, not a picker per category, but it still
-    // has to be one of the things that goes; the figures a user watches
-    // do not.
+    // has to be one of the things that goes.
     await expect(page.getByTestId('config-trigger')).toHaveCount(0);
     await expect(page.getByTestId('config-option-model')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'More composer options' })).toBeVisible();
+
+    // The meter itself (issue #736) is not in this row at all anymore — it
+    // is the status bar's own full-window-width row, which never had to
+    // fit against Send/attach/pickers the way the composer strip did, so
+    // nothing about it drops at phone width: both figures, the track, the
+    // cost, all still there.
     const meter = page.getByTestId('context-meter');
     await expect(meter).toContainText('191k');
+    await expect(meter).toContainText('200k');
     await expect(meter).toContainText('$1.40');
-    // Only the denominator goes, and the track still carries the ratio.
-    await expect(meter).not.toContainText('200k');
     await expect(page.getByTestId('context-track')).toHaveAttribute('data-fill', '96');
 
-    // The regression: the meter used to overflow its shrunk-to-nothing box and
-    // paint straight over the Send button.
+    // The regression this guards, now against the bar the meter actually
+    // lives in: it used to overflow its shrunk-to-nothing composer box and
+    // paint straight over Send (issue #248); the status bar must not
+    // overflow the viewport it spans either.
+    const statusBarOverflows = await page
+      .getByTestId('status-bar')
+      .evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+    expect(statusBarOverflows).toBe(false);
+
     const overlaps = await row.evaluate((el) => {
       const kids = [...el.children].map((child) => ({
         name: child.tagName.toLowerCase() + '.' + String(child.className).split(' ')[0],
@@ -166,8 +177,8 @@ test.describe('composer strip', () => {
     });
     expect(overlaps).toEqual([]);
 
-    // One row, not the three it took before the meter was shortened: every
-    // child shares the send button's line.
+    // One row, not the several it took before the meter left it entirely:
+    // every remaining child shares the send button's line.
     const send = page.getByRole('button', { name: 'Send prompt' });
     const sendBox = await send.boundingBox();
     const rowBox = await row.boundingBox();

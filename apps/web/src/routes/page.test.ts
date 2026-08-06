@@ -19,6 +19,7 @@ import type { SessionStatusV1 } from '@loombox/protocol';
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
+import { PROJECTS_STORAGE_KEY, type Project } from '$lib/projects';
 import {
   createLocalStorageConfigOptionDefaultsStorage,
   rememberConfigOptionValues,
@@ -527,6 +528,34 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.getAllByRole('heading', { name: 'Settings', level: 1 })).toHaveLength(1);
   });
 
+  it("the status bar (issue #736) is chrome for the whole window, not session-view furniture — it renders on inbox and settings too (Tracker is covered in `cockpit-shell.spec.ts`, whose fake node backs `trackerSnapshotFor`; this file's fake client does not), and its session segment reads the selection honestly rather than a placeholder", async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1', title: 'First session' })] });
+    await screen.findByTestId('destination-inbox');
+
+    // Selected session view: the bar's own session segment names the real
+    // status, not a placeholder.
+    expect(await screen.findByTestId('status-bar')).toBeTruthy();
+    expect(screen.getByTestId('status-bar-session').textContent).toContain('No status yet');
+
+    await fireEvent.click(screen.getByTestId('destination-inbox'));
+    expect(await screen.findByTestId('inbox-page')).toBeTruthy();
+    expect(screen.getByTestId('status-bar')).toBeTruthy();
+    // The session is still selected throughout (destinations never clear
+    // it, §3.3), so the bar's own session segment keeps reading it, never
+    // falling back to "No session selected" while one genuinely is.
+    expect(screen.getByTestId('status-bar-session').textContent).not.toContain(
+      'No session selected',
+    );
+
+    await fireEvent.click(screen.getByTestId('account-menu-toggle'));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+    expect(await screen.findByTestId('settings-page')).toBeTruthy();
+    expect(screen.getByTestId('status-bar')).toBeTruthy();
+    expect(screen.getByTestId('status-bar-session').textContent).not.toContain(
+      'No session selected',
+    );
+  });
+
   it('Nodes has no sidebar row or mobile tabbar item; Settings (reading "Settings", not "Appearance & settings") is reachable only from the account menu (issue #568, coherence v5 §2)', async () => {
     mountCockpit({ sessions: [makeSession()] });
     await screen.findByTestId('destination-inbox');
@@ -571,7 +600,7 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(row.className).toContain('focused');
   });
 
-  it('an unhealthy target is still discoverable without opening Settings: a dot on the account-menu trigger and its Settings entry (issue #568)', async () => {
+  it("an unhealthy target is discoverable without opening Settings: the status bar's target-health segment (issue #736, retiring #568's account-avatar dot)", async () => {
     mountCockpit({
       targets: [
         {
@@ -585,13 +614,18 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
       ],
     });
 
-    expect(await screen.findByTestId('account-health-badge')).toBeTruthy();
+    const targets = await screen.findByTestId('status-bar-targets');
+    expect(targets.textContent).toContain('1 unreachable');
+    expect(targets.getAttribute('data-tone')).toBe('danger');
 
+    // The retired dots (issue #736) are gone outright, not just hidden
+    // behind a different trigger.
+    expect(screen.queryByTestId('account-health-badge')).toBeNull();
     await fireEvent.click(screen.getByTestId('account-menu-toggle'));
-    expect(screen.getByTestId('settings-menu-health-badge')).toBeTruthy();
+    expect(screen.queryByTestId('settings-menu-health-badge')).toBeNull();
   });
 
-  it('the account-menu health dot clears once the target recovers, and is one dot, never one per poll (issue #568)', async () => {
+  it("the status bar's target-health segment clears back to healthy once the target recovers, reading the same live poll every other target-health surface does (issue #568, #736)", async () => {
     const target = {
       nodeId: 'node_1',
       targetId: 'local',
@@ -601,23 +635,39 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
       reachable: false,
     };
     const { client } = mountCockpit({ targets: [target] });
-    expect(await screen.findByTestId('account-health-badge')).toBeTruthy();
-    // Never more than one — the dot is a boolean-gated conditional render,
-    // not a list an item gets pushed onto per poll.
-    expect(screen.queryAllByTestId('account-health-badge')).toHaveLength(1);
+    const targets = await screen.findByTestId('status-bar-targets');
+    expect(targets.textContent).toContain('1 unreachable');
 
     // The same `listTargets()` poll `startTargetStatusPolling` already
-    // drives now reports the target healthy — a boolean derived off the
-    // latest snapshot, so recovery clears the one dot rather than leaving a
-    // stale alert (or, the failure mode this guards, ever accumulating a
-    // second one).
-    vi.mocked(client.listTargets).mockResolvedValue([{ ...target, reachable: true }]);
+    // drives now reports the target reachable and healthy — a summary
+    // derived off the latest snapshot, so recovery flips the one summary
+    // back to healthy rather than leaving a stale alert.
+    vi.mocked(client.listTargets).mockResolvedValue([
+      {
+        ...target,
+        reachable: true,
+        health: {
+          cpuPercent: 10,
+          loadPercent: 10,
+          memPercent: 20,
+          memUsedBytes: 1,
+          memTotalBytes: 10,
+          diskPercent: 30,
+          diskUsedBytes: 1,
+          diskTotalBytes: 10,
+          healthy: true,
+          sampledAt: Date.now(),
+        },
+      },
+    ]);
     await fireEvent.click(screen.getByTestId('account-menu-toggle'));
     await fireEvent.click(screen.getByRole('menuitem', { name: /^settings/i }));
     await fireEvent.click(screen.getByTestId('settings-nav-nodes'));
 
-    await vi.waitFor(() => expect(screen.queryByTestId('account-health-badge')).toBeNull());
-    expect(screen.queryAllByTestId('account-health-badge')).toHaveLength(0);
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('status-bar-targets').textContent).toContain('healthy'),
+    );
+    expect(screen.getByTestId('status-bar-targets').getAttribute('data-tone')).toBe('success');
   });
 
   it('the command palette can open Nodes and targets directly (issue #568)', async () => {
@@ -654,6 +704,102 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
 
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     expect(toggle.getAttribute('aria-label')).toBe('Collapse sidebar');
+  });
+});
+
+// ---------------------------------------------------------------------
+// The canvas zero state (Zed-parity B4-2, issue #739): recent sessions,
+// the last transcript's tail, and the registry's own bound shortcuts,
+// filling the void `+page.svelte` used to render as a bare `EmptyState`
+// for "no session selected". `CanvasZeroState.test.ts` covers the two
+// honest empty cases and the registry-sourced bindings exhaustively in
+// isolation; these cover the real wiring: what `+page.svelte` actually
+// feeds it, and that it steps out of the way once a session is open.
+// ---------------------------------------------------------------------
+
+describe('canvas zero state (Zed-parity B4-2, issue #739)', () => {
+  const LOCAL_TARGET: TargetListEntry = {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  };
+
+  /** `ProjectStore` is its own persisted registry, independent of `sessions` (`AddProjectDialog`'s `.add()`, not just `.adoptFromSessions()`) — this is what makes "a project exists, zero sessions in it yet" a real, reachable state rather than a contradiction. */
+  function seedProject(overrides: Partial<Project> = {}): void {
+    const project: Project = {
+      id: 'proj_1',
+      name: 'loombox',
+      nodeId: 'node_1',
+      targetId: 'local',
+      path: '/home/dev/loombox',
+      createdAt: Date.now(),
+      ...overrides,
+    };
+    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([project]));
+  }
+
+  it('a brand-new project with zero sessions renders the canvas zero state with honest "nothing yet" panels, not a blank region', async () => {
+    seedProject();
+    mountCockpit({ sessions: [], targets: [LOCAL_TARGET] });
+
+    const zeroState = await screen.findByTestId('canvas-zero-state');
+    expect(within(zeroState).getByTestId('canvas-zero-state-recent-empty').textContent).toMatch(
+      /nothing recent yet/i,
+    );
+    expect(within(zeroState).queryByTestId('canvas-zero-state-recent-item')).toBeNull();
+    expect(within(zeroState).getByTestId('canvas-zero-state-tail-empty').textContent).toMatch(
+      /no sessions yet/i,
+    );
+    // The primary "New session" CTA still unblocks the next step (design
+    // spec v4 §3.3) — B4-2 fills the void around it, it doesn't replace it.
+    expect(within(zeroState).getByTestId('empty-state-new-session')).toBeTruthy();
+  });
+
+  it("lists the action registry's own bound shortcuts (issue #758), not a hardcoded second list", async () => {
+    seedProject();
+    mountCockpit({ sessions: [], targets: [LOCAL_TARGET] });
+
+    const zeroState = await screen.findByTestId('canvas-zero-state');
+    const bindingRows = within(zeroState).getAllByTestId('canvas-zero-state-binding');
+    expect(
+      bindingRows.some(
+        (row) =>
+          row.textContent?.includes('Mod+B') &&
+          row.textContent?.includes('Toggle sessions sidebar'),
+      ),
+    ).toBe(true);
+    // 'open-inbox' is a real registered action with no shortcut — it must
+    // never show up in this shortcut-only panel.
+    expect(bindingRows.some((row) => row.textContent?.includes('Open attention inbox'))).toBe(
+      false,
+    );
+  });
+
+  it('does not appear once a session is selected and has content — the sole session is auto-selected on load', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          items: [
+            {
+              type: 'message',
+              id: 'm1',
+              kind: 'agent_message_chunk',
+              turnId: 'turn_1',
+              messageId: 'm1',
+              text: 'Done, the retry loop is fixed.',
+            },
+          ],
+        },
+      },
+    });
+
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.queryByTestId('canvas-zero-state')).toBeNull();
   });
 });
 
@@ -1144,7 +1290,11 @@ describe('session archive (SPEC §7.2 board archive; issue #512)', () => {
     client.sessions.set([]);
 
     await vi.waitFor(() => {
-      expect(screen.getByText('No session selected')).toBeTruthy();
+      // Both the topbar's own header and the status bar's session segment
+      // (issue #736) read "No session selected" once the sole session
+      // drops out — a deliberate duplication, not a collision: each is a
+      // legitimate, independent surface for the same true fact.
+      expect(screen.getAllByText('No session selected')).toHaveLength(2);
     });
     expect(screen.queryByTestId('cockpit-session-title')).toBeNull();
   });
@@ -1524,7 +1674,9 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
 
     await fireEvent.input(composer, { target: { value: '/security scan' } });
     await fireEvent.keyDown(composer, { key: 'Enter' });
-    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', []);
+    // The fourth argument is #742's mention list, empty here: this test
+    // types a command and nothing else.
+    expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/security scan', [], []);
   });
 
   it('Esc dismisses the picker without touching the composer text', async () => {
