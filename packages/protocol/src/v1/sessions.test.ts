@@ -255,4 +255,34 @@ describe('sessionPrivateMetaV1', () => {
       safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', branch: '' }).success,
     ).toBe(false);
   });
+
+  it('omitting projectEnvDecls behaves like an older client that predates it (issue #258)', () => {
+    const parsed = parseSessionPrivateMetaV1({ title: 't', projectPath: '/p' });
+    expect(parsed.projectEnvDecls).toBeUndefined();
+  });
+
+  it('carries a client-declared secret-reference env var and a literal value, never a secret value inline', () => {
+    const parsed = parseSessionPrivateMetaV1({
+      title: 't',
+      projectPath: '/p',
+      projectEnvDecls: [
+        { name: 'DB_PASSWORD', secret: 'db-password' },
+        { name: 'NODE_ENV', value: 'test' },
+      ],
+    });
+    expect(parsed.projectEnvDecls).toEqual([
+      { name: 'DB_PASSWORD', secret: 'db-password' },
+      { name: 'NODE_ENV', value: 'test' },
+    ]);
+  });
+
+  it('rejects a project env var decl carrying both a literal value and a secret name', () => {
+    expect(
+      safeParseSessionPrivateMetaV1({
+        title: 't',
+        projectPath: '/p',
+        projectEnvDecls: [{ name: 'A', value: 'literal', secret: 'also-a-secret' }],
+      }).success,
+    ).toBe(false);
+  });
 });

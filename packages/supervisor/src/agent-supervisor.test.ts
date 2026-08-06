@@ -48,6 +48,21 @@ const MCP_FIXTURE = path.join(
   'mcp-acp-agent.mjs',
 );
 
+// Echoes back one of its own real `process.env` entries when prompted with
+// "echo-env:<NAME>" (issue #258) — reused here to prove `AgentSupervisor.
+// start()`'s `env` option actually reaches the spawned child's real OS-level
+// environment, not just that `start()` accepts the option.
+const ENV_ECHO_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'env-echo-acp-agent.mjs',
+);
+
 const CRASH_FIXTURE = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -72,6 +87,14 @@ function mcpProvider(): AcpProvider {
   };
 }
 
+function envEchoProvider(): AcpProvider {
+  return {
+    id: 'test-env-echo',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [ENV_ECHO_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
 /** Prompts `session` with the fixture's magic "echo back what you got" text and parses its single reply chunk. Mirrors `packages/providers/core/src/mcp-servers.test.ts`'s own `echoMcpServers` helper, one layer up (through `AgentSession`, not a raw `AcpClient`). */
 async function echoMcpServers(session: AgentSession): Promise<unknown> {
   const updates: AcpUpdate[] = [];
@@ -80,6 +103,16 @@ async function echoMcpServers(session: AgentSession): Promise<unknown> {
   await session.prompt('echo-mcp-servers');
   session.off('update', handler);
   return JSON.parse(updates.at(-1)?.text ?? '[]');
+}
+
+/** Prompts `session` with the fixture's magic "echo one of my own real env vars" text and parses its single reply chunk (`null` when unset). Mirrors `echoMcpServers` above. */
+async function echoEnv(session: AgentSession, varName: string): Promise<string | null> {
+  const updates: AcpUpdate[] = [];
+  const handler = (update: AcpUpdate) => updates.push(update);
+  session.on('update', handler);
+  await session.prompt(`echo-env:${varName}`);
+  session.off('update', handler);
+  return JSON.parse(updates.at(-1)?.text ?? 'null');
 }
 
 function crashProvider(): AcpProvider {
@@ -404,6 +437,40 @@ describe('AgentSupervisor', () => {
       activeSessions.push(session);
 
       await expect(echoMcpServers(session)).resolves.toEqual(mcpServers);
+    });
+  });
+
+  describe('env (issue #258: per-project secret/env injection)', () => {
+    it('start() with no env leaves the spawned child with nothing extra beyond its own provider-declared env', async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+      const session = await supervisor.start({ workspacePath, providerId: 'test-env-echo' });
+      activeSessions.push(session);
+
+      await expect(echoEnv(session, 'PROJECT_SECRET')).resolves.toBeNull();
+    });
+
+    it("start() with env merges it into the spawned child's real OS-level environment, without replacing its own inherited env", async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+      const session = await supervisor.start({
+        workspacePath,
+        providerId: 'test-env-echo',
+        env: { PROJECT_SECRET: 'hunter2' },
+      });
+      activeSessions.push(session);
+
+      await expect(echoEnv(session, 'PROJECT_SECRET')).resolves.toBe('hunter2');
+    });
+
+    it("env merging never replaces the child's own inherited env (e.g. PATH)", async () => {
+      const supervisor = new AgentSupervisor({ providers: [envEchoProvider()], stateDir });
+      const session = await supervisor.start({
+        workspacePath,
+        providerId: 'test-env-echo',
+        env: { PROJECT_SECRET: 'hunter2' },
+      });
+      activeSessions.push(session);
+
+      await expect(echoEnv(session, 'PATH')).resolves.toBe(process.env.PATH ?? null);
     });
   });
 });

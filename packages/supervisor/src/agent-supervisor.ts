@@ -55,6 +55,18 @@ export interface AgentSupervisorStartOptions {
     readonly toolKind?: AcpToolKind;
     readonly title?: string;
   }) => ToolProfileDenial | undefined;
+  /**
+   * Extra env vars to merge into `provider.spawnConfig()`'s own `env`
+   * before spawning (SPEC.md §7.17, §8; issue #258) — a project's
+   * already-secret-resolved env-var injection (`@loombox/node`'s
+   * `NodeProjectEnvManager.resolveForSession`), never a raw client
+   * value. Merged on top of the provider's own `env` (a name collision
+   * lets this project-declared value win, since it's the more specific
+   * scope); `undefined`/`{}` behaves exactly like before this option
+   * existed. Never sent to the relay — this only ever reaches the local
+   * child-process spawn (`client.ts`'s `spawn()` call).
+   */
+  env?: Record<string, string>;
 }
 
 export interface AgentSupervisorOptions {
@@ -133,6 +145,7 @@ export class AgentSupervisor {
     providerId = 'claude',
     mcpServers,
     evaluateToolProfile,
+    env,
   }: AgentSupervisorStartOptions): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
@@ -140,11 +153,14 @@ export class AgentSupervisor {
     }
 
     const spawnConfig = provider.spawnConfig({ cwd: workspacePath });
-    const session = await AgentSession.spawn(provider, spawnConfig, workspacePath, {
-      store: this.store,
-      mcpServers,
-      evaluateToolProfile,
-    });
+    const session = await AgentSession.spawn(
+      provider,
+      env && Object.keys(env).length > 0
+        ? { ...spawnConfig, env: { ...spawnConfig.env, ...env } }
+        : spawnConfig,
+      workspacePath,
+      { store: this.store, mcpServers, evaluateToolProfile },
+    );
     this.sessions.set(session.id, session);
     return session;
   }

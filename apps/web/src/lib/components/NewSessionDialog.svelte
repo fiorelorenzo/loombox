@@ -100,6 +100,10 @@
     effectiveMcpServerConfigs,
     type McpServerConfigStorage,
   } from '$lib/mcp-server-store';
+  import {
+    createLocalStorageProjectEnvStorage,
+    type ProjectEnvDeclStorage,
+  } from '$lib/project-env-store';
   import type { Project } from '$lib/projects';
   import { PROVIDER_LABELS } from '$lib/providers';
   import {
@@ -187,6 +191,17 @@
      * for a hermetic component test, mirroring `customAgentStorage` above.
      */
     mcpStorage?: McpServerConfigStorage;
+    /**
+     * The Config panel's per-project declared env-var/secret injection
+     * list (issue #258) — mirrors `mcpStorage`'s own doc comment exactly:
+     * defaults to the same real `localStorage`-backed store
+     * `ProjectSecretsPanel` itself defaults to
+     * (`project-env-store.ts`'s `createLocalStorageProjectEnvStorage`,
+     * scoped to `project.path`), so a var declared there is read from the
+     * SAME record this dialog forwards, not a second copy; overridable
+     * for a hermetic component test.
+     */
+    projectEnvStorage?: ProjectEnvDeclStorage;
   }
 
   const {
@@ -199,6 +214,7 @@
     onCreated,
     customAgentStorage: customAgentStorageProp,
     mcpStorage: mcpStorageProp,
+    projectEnvStorage: projectEnvStorageProp,
   }: Props = $props();
 
   const agentStorage = $derived(
@@ -206,6 +222,9 @@
   );
   const mcpStorage = $derived(
     mcpStorageProp ?? createLocalStorageMcpServerConfigStorage(project.path),
+  );
+  const projectEnvStorage = $derived(
+    projectEnvStorageProp ?? createLocalStorageProjectEnvStorage(project.path),
   );
 
   const providerOptions: SelectOption[] = $derived(
@@ -311,6 +330,11 @@
       // and `[]` identically anyway, this just keeps the common "nothing
       // configured" call shape unchanged from before this field existed.
       const mcpServerConfigs = effectiveMcpServerConfigs(mcpStorage);
+      // Same discipline, for this project's declared env-var injection
+      // (issue #258) — `ProjectSecretsPanel` writes straight to
+      // `projectEnvStorage` and this dialog never re-reads it after mount
+      // otherwise, so every declared var is forwarded on every creation.
+      const projectEnvDecls = projectEnvStorage.get();
       const sessionId = await client.createSession({
         targetId: project.targetId,
         // A custom agent always travels as the `'custom'` wire sentinel
@@ -332,6 +356,7 @@
         // straight to `mcpStorage` and this dialog never re-reads it after
         // mount otherwise.
         ...(mcpServerConfigs.length > 0 ? { mcpServerConfigs } : {}),
+        ...(projectEnvDecls.length > 0 ? { projectEnvDecls } : {}),
       });
       onCreated(sessionId, customAgent ? 'custom' : selectedProvider);
       onClose();
