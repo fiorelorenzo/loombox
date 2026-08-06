@@ -2387,8 +2387,8 @@ export class RelayClient {
         },
       });
       const payload: PermissionPolicySetPayloadV1 = { policy };
-      this.getSessionKey(sessionId)
-        .then((key) => sealJson(sessionId, payload, key))
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
         .then((envelope) => {
           this.send({
             type: 'permission_policy_set',
@@ -4410,8 +4410,8 @@ export class RelayClient {
     if (!pending) return;
     this.pendingPermissionPolicyRequests.delete(message.requestId);
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) => pending.resolve(parsePermissionPolicyResultPayloadV1(decrypted).policy))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
@@ -4432,8 +4432,8 @@ export class RelayClient {
     const listeners = this.permissionPolicyViolationListeners.get(message.sessionId);
     if (!listeners || listeners.size === 0) return;
 
-    this.getSessionKey(message.sessionId)
-      .then((key) => openJson<unknown>(message.sessionId, message.envelope, key))
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) => {
         const violation = parsePermissionPolicyViolationPayloadV1(decrypted);
         for (const listener of listeners) listener(violation);
