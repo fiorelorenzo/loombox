@@ -20,6 +20,14 @@ describe('DiffViewer', () => {
     expect(screen.getByText('-1')).toBeTruthy();
   });
 
+  it('renders the file path and the +/- line counts — a tool row file name and numeric figures — in the shared mono identifier face (#735)', () => {
+    const { container } = render(DiffViewer, {
+      props: { path: 'src/foo.ts', oldText: 'a\nb\nc', newText: 'a\nB\nc' },
+    });
+    expect(container.querySelector('.diff-path')?.className).toContain('font-mono');
+    expect(container.querySelector('.diff-stats')?.className).toContain('font-mono');
+  });
+
   it('renders a structural-only card, not a blank one, when there is no patch text (binary/symlink change)', () => {
     render(DiffViewer, { props: { path: 'assets/logo.png', oldText: null, newText: '' } });
 
