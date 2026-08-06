@@ -57,7 +57,13 @@ export async function resolveSessionBranch(
     // Detached HEAD: `branch --show-current` succeeds with empty output
     // rather than failing, so there is a real branch-less state to name
     // here, not an error to swallow.
-    const sha = await target.exec('git', ['-C', session.worktreePath, 'rev-parse', '--short', 'HEAD']);
+    const sha = await target.exec('git', [
+      '-C',
+      session.worktreePath,
+      'rev-parse',
+      '--short',
+      'HEAD',
+    ]);
     const short = sha.exitCode === 0 ? sha.stdout.trim() : '';
     return short ? `detached@${short}` : undefined;
   } catch {

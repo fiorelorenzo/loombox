@@ -4394,9 +4394,7 @@
     <StatusBar
       connectionStatus={status}
       onRetryConnection={retryConnection}
-      selectedSessionTargetLabel={selectedSession
-        ? sessionTargetLabel(selectedSession)
-        : undefined}
+      selectedSessionTargetLabel={selectedSession ? sessionTargetLabel(selectedSession) : undefined}
       {targetHealthDots}
       {targetsBehindCount}
       onOpenNodes={openTargetStatus}

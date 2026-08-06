@@ -28,7 +28,7 @@ describe('resolveSessionBranch (issue #738, B3-3)', () => {
     expect(branch).toBe('loombox/session-abc123');
   });
 
-  describe('an in-place session (branch === \'\')', () => {
+  describe("an in-place session (branch === '')", () => {
     let projectPath: string;
 
     beforeEach(async () => {
