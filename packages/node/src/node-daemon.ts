@@ -86,6 +86,11 @@ import {
   type FsReadResponsePayloadV1,
   type GitDiffRequest,
   type GitDiffResponsePayloadV1,
+  type GitHunkActionRequest,
+  type GitHunkActionRequestPayloadV1,
+  type GitHunkActionResponsePayloadV1,
+  type GitHunkDiffRequest,
+  type GitHunkDiffResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -209,7 +214,13 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
-import { computeWorktreeDiff, GitDiffError } from './git-diff';
+import {
+  applyGitHunkAction,
+  computeHunkDiff,
+  computeWorktreeDiff,
+  GitDiffError,
+  GitHunkActionError,
+} from './git-diff';
 import {
   assertCustomAgentAllowed,
   createCustomAgentProvider,
@@ -3790,6 +3801,12 @@ export class NodeDaemon extends EventEmitter {
       case 'git_diff_request':
         this.handleGitDiffRequest(message);
         return;
+      case 'git_hunk_diff_request':
+        this.handleGitHunkDiffRequest(message);
+        return;
+      case 'git_hunk_action_request':
+        this.handleGitHunkActionRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -5145,6 +5162,148 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'git_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's current
+   * staged/unstaged hunk breakdown (SPEC §7.6; issue #232) —
+   * `handleGitDiffRequest`'s sibling, same "no live bridge needed, always
+   * a reply, never a silent drop" contract. No envelope on
+   * `git_hunk_diff_request` itself (see `@loombox/protocol`'s
+   * `git-hunks.ts` doc comment), so there is nothing to decrypt before
+   * computing the diff.
+   */
+  private handleGitHunkDiffRequest(message: GitHunkDiffRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.computeGitHunkDiffForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitHunkDiffResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_hunk_diff_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  /**
+   * Runs `computeHunkDiff` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like
+   * `computeGitDiffForBridge` above (both drive real `git` subcommands the
+   * same way). Never throws: a target that can't be resolved, or a
+   * `GitDiffError` from a genuinely uncomputable diff, both become an
+   * `outcome: 'error'` payload instead, so `handleGitHunkDiffRequest`
+   * always has a response to seal and send back.
+   */
+  private async computeGitHunkDiffForBridge(
+    routing: SessionRouting,
+  ): Promise<GitHunkDiffResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const files = await computeHunkDiff(target, routing.session.worktreePath);
+      return { outcome: 'ok', files };
+    } catch (error) {
+      if (error instanceof GitDiffError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitHunkDiffResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitHunkDiffResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to stage/unstage/discard one
+   * hunk (SPEC §7.6; issue #232) — `handleFsReadRequest`'s sibling in
+   * shape (an enveloped request, since `path` is real session content),
+   * but mutating: `applyGitHunkAction` really does write to the index
+   * and/or worktree rather than merely reading. The caller re-issues
+   * `git_hunk_diff_request` afterward to see the result — this reply
+   * itself carries no diff.
+   */
+  private handleGitHunkActionRequest(message: GitHunkActionRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitHunkActionRequest(message)
+      .then((payload) => this.applyGitHunkActionForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitHunkActionResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_hunk_action_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitHunkActionRequest(
+    message: GitHunkActionRequest,
+  ): Promise<GitHunkActionRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitHunkActionRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Runs `applyGitHunkAction` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like
+   * `computeGitHunkDiffForBridge` above. Never throws: a target that
+   * can't be resolved, a `GitHunkActionError` (a stale `hunkIndex`, an
+   * `unstage` with nothing staged, or the underlying git command
+   * failing), or any other error all become an `outcome: 'error'`
+   * payload instead, so `handleGitHunkActionRequest` always has a
+   * response to seal and send back.
+   */
+  private async applyGitHunkActionForBridge(
+    routing: SessionRouting,
+    payload: GitHunkActionRequestPayloadV1,
+  ): Promise<GitHunkActionResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await applyGitHunkAction(target, routing.session.worktreePath, payload);
+      return { outcome: 'ok' };
+    } catch (error) {
+      if (error instanceof GitHunkActionError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitHunkActionResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitHunkActionResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_hunk_action_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

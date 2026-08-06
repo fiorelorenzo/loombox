@@ -19,6 +19,10 @@ import {
   type FsReadResponse,
   type GitDiffRequest,
   type GitDiffResponse,
+  type GitHunkActionRequest,
+  type GitHunkActionResponse,
+  type GitHunkDiffRequest,
+  type GitHunkDiffResponse,
   type Initialize,
   type InitializeResult,
   type LeaseRelease,
@@ -1728,6 +1732,222 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as GitDiffResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('git_hunk_diff_request/git_hunk_diff_response (issue #232) — routed and fanned out exactly like git_diff_request/git_diff_response, always blind, no envelope on the request', () => {
+    it('routes a client git_hunk_diff_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_hunk_diff', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: GitHunkDiffRequest = {
+        type: 'git_hunk_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_hunk_diff',
+        requestId: 'req_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as GitHunkDiffRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a git_hunk_diff_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'git_hunk_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+      } satisfies GitHunkDiffRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans git_hunk_diff_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_hunk_diff_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_git_hunk_diff_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: GitHunkDiffResponse = {
+        type: 'git_hunk_diff_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_hunk_diff_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('[]'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as GitHunkDiffResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('git_hunk_action_request/git_hunk_action_response (issue #232) — routed and fanned out exactly like fs_read_request/fs_read_response, always blind, envelope on both request and response', () => {
+    it('routes a client git_hunk_action_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_hunk_action', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: GitHunkActionRequest = {
+        type: 'git_hunk_action_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_hunk_action',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('{"path":"src/index.ts","hunkIndex":0,"action":"stage"}'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as GitHunkActionRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('ignores a git_hunk_action_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'git_hunk_action_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('{"path":"src/index.ts","hunkIndex":0,"action":"stage"}'),
+      } satisfies GitHunkActionRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans git_hunk_action_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_git_hunk_action_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_git_hunk_action_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: GitHunkActionResponse = {
+        type: 'git_hunk_action_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_git_hunk_action_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('{"outcome":"ok"}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as GitHunkActionResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),

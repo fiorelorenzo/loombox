@@ -2496,6 +2496,248 @@ describe('NodeDaemon git-diff (working-tree diff viewer, issue #206)', () => {
   });
 });
 
+describe('NodeDaemon git-hunks (hunk-level stage/unstage/discard, issue #232)', () => {
+  it("reports a session's staged/unstaged hunks over the encrypted git_hunk_diff_request/git_hunk_diff_response pair, no envelope on the request", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-hunk-diff-1',
+      deviceId: 'device-node-git-hunk-diff-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'new-file.txt'), 'hello worktree\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-hunk-diff-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_hunk_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-hunk-diff',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_hunk_diff_response' &&
+        (m as { requestId?: string }).requestId === 'req-hunk-diff',
+    )) as { type: 'git_hunk_diff_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['hello worktree', 'new-file.txt', session.worktreePath]);
+    const payload = await phoneOpen<{
+      outcome: string;
+      files?: Array<{
+        path: string;
+        status: string;
+        staged: unknown[];
+        unstaged: Array<{ lines: Array<{ kind: string; text: string }> }>;
+      }>;
+    }>(session.id, response.envelope, key);
+    expect(payload.outcome).toBe('ok');
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files?.[0]?.path).toBe('new-file.txt');
+    expect(payload.files?.[0]?.status).toBe('added');
+    expect(payload.files?.[0]?.staged).toEqual([]);
+    expect(payload.files?.[0]?.unstaged).toHaveLength(1);
+    expect(payload.files?.[0]?.unstaged[0]?.lines).toEqual([{ kind: 'added', text: 'hello worktree' }]);
+  });
+
+  it('reports an empty file list for a clean worktree', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-clean';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-hunk-diff-2',
+      deviceId: 'device-node-git-hunk-diff-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-hunk-diff-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_hunk_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-hunk-diff-clean',
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_hunk_diff_response' &&
+        (m as { requestId?: string }).requestId === 'req-hunk-diff-clean',
+    )) as { type: 'git_hunk_diff_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; files?: unknown[] }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', files: [] });
+  });
+
+  it('stages an untracked file over the encrypted git_hunk_action_request/git_hunk_action_response pair, then the follow-up git_hunk_diff_request reports it staged', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-stage';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-hunk-action-1',
+      deviceId: 'device-node-git-hunk-action-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'staged.txt'), 'brand new\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-hunk-action-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const actionEnvelope = await phoneSeal(
+      session.id,
+      { path: 'staged.txt', hunkIndex: 0, action: 'stage' },
+      key,
+    );
+    phone.send({
+      type: 'git_hunk_action_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-hunk-action-stage',
+      envelope: actionEnvelope,
+    });
+
+    const actionResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_hunk_action_response' &&
+        (m as { requestId?: string }).requestId === 'req-hunk-action-stage',
+    )) as { type: 'git_hunk_action_response'; envelope: EncryptedEnvelope };
+    assertOpaque(actionResponse.envelope, ['staged.txt', session.worktreePath]);
+    const actionPayload = await phoneOpen<{ outcome: string }>(
+      session.id,
+      actionResponse.envelope,
+      key,
+    );
+    expect(actionPayload).toEqual({ outcome: 'ok' });
+
+    phone.send({
+      type: 'git_hunk_diff_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-hunk-diff-after-stage',
+    });
+    const diffResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_hunk_diff_response' &&
+        (m as { requestId?: string }).requestId === 'req-hunk-diff-after-stage',
+    )) as { type: 'git_hunk_diff_response'; envelope: EncryptedEnvelope };
+    const diffPayload = await phoneOpen<{
+      outcome: string;
+      files?: Array<{ path: string; staged: unknown[]; unstaged: unknown[] }>;
+    }>(session.id, diffResponse.envelope, key);
+    expect(diffPayload.files).toHaveLength(1);
+    expect(diffPayload.files?.[0]?.path).toBe('staged.txt');
+    expect(diffPayload.files?.[0]?.staged).toHaveLength(1);
+    expect(diffPayload.files?.[0]?.unstaged).toEqual([]);
+  });
+
+  it('reports outcome: error for an out-of-range hunkIndex rather than crashing or corrupting state', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-oob';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-hunk-action-2',
+      deviceId: 'device-node-git-hunk-action-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'oob.txt'), 'content\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-hunk-action-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const actionEnvelope = await phoneSeal(
+      session.id,
+      { path: 'oob.txt', hunkIndex: 7, action: 'stage' },
+      key,
+    );
+    phone.send({
+      type: 'git_hunk_action_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-hunk-action-oob',
+      envelope: actionEnvelope,
+    });
+
+    const actionResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_hunk_action_response' &&
+        (m as { requestId?: string }).requestId === 'req-hunk-action-oob',
+    )) as { type: 'git_hunk_action_response'; envelope: EncryptedEnvelope };
+    const actionPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      actionResponse.envelope,
+      key,
+    );
+    expect(actionPayload.outcome).toBe('error');
+    expect(actionPayload.message).toBeTruthy();
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();

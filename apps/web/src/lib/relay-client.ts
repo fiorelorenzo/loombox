@@ -94,6 +94,11 @@ import {
   type FsReadResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
+  type GitHunkActionRequestPayloadV1,
+  type GitHunkActionResponse,
+  type GitHunkActionResponsePayloadV1,
+  type GitHunkDiffResponse,
+  type GitHunkDiffResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
   type BuildIdentityV1,
@@ -1383,6 +1388,34 @@ export class RelayClient {
   private readonly pendingGitDiffRequests = new Map<
     string,
     { resolve: (payload: GitDiffResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link requestGitHunkDiff} call it belongs
+   * to (issue #232's hunk-level staging) — the exact same shape as
+   * {@link pendingGitDiffRequests} above, for the same "caller needs the
+   * outcome directly, one-shot, not an always-on subscription" reason.
+   * `git_hunk_diff_response` is fanned out the same way, so a requestId
+   * not in this map means the reply belongs to a sibling device's own
+   * request.
+   */
+  private readonly pendingGitHunkDiffRequests = new Map<
+    string,
+    { resolve: (payload: GitHunkDiffResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link applyGitHunkAction} call it belongs
+   * to (issue #232) — the exact same shape as {@link
+   * pendingFsReadRequests} above (enveloped, one-shot, resolves a
+   * `Promise` directly). `git_hunk_action_response` is fanned out the
+   * same way, so a requestId not in this map means the reply belongs to
+   * a sibling device's own request.
+   */
+  private readonly pendingGitHunkActionRequests = new Map<
+    string,
+    {
+      resolve: (payload: GitHunkActionResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
   >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
@@ -4356,6 +4389,116 @@ export class RelayClient {
   }
 
   /**
+   * The session's current staged/unstaged hunk breakdown (SPEC §7.6;
+   * issue #232's hunk-level staging) — `@loombox/protocol`'s
+   * `git-hunks.ts` `git_hunk_diff_request`/`git_hunk_diff_response` pair,
+   * {@link requestWorktreeDiff}'s own sibling for the staging surface:
+   * same one-shot request/response contract, same "no `path`/envelope on
+   * the request, asking carries no content" shape, same "resolves the
+   * node's own `ok`/`error` outcome either way, only REJECTS for a
+   * genuinely unusable call" behavior. A caller re-issues this (a fresh
+   * `requestId`) after every {@link applyGitHunkAction} to see the
+   * result, rather than reusing stale hunk indices from an earlier
+   * snapshot (that schema's own doc comment).
+   */
+  async requestGitHunkDiff(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitHunkDiffResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a hunk diff, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('githunkdiff');
+    return new Promise<GitHunkDiffResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitHunkDiffRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_hunk_diff_response'));
+      }, timeoutMs);
+      this.pendingGitHunkDiffRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_hunk_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Stages, unstages, or discards exactly one hunk (SPEC §7.6; issue
+   * #232) — {@link readFile}'s own sibling for the enveloped-request
+   * shape: `path` is real session content, so the whole request travels
+   * sealed (unlike {@link requestGitHunkDiff}'s envelope-less "asking
+   * carries no content" request). `hunkIndex` addresses a hunk
+   * positionally within whichever side `params.action` implies
+   * (`stage`/`discard` read the file's `unstaged[hunkIndex]`, `unstage`
+   * reads `staged[hunkIndex]`) against a diff the node computes fresh at
+   * action time — never trusting a stale index from an earlier {@link
+   * requestGitHunkDiff} snapshot. Resolves with the node's own
+   * `ok`/`error` outcome either way; only REJECTS for a genuinely
+   * unusable call — no open connection, an unknown session, or a timeout
+   * with no response at all — mirroring {@link readFile}'s identical
+   * contract. Carries no updated diff of its own; a caller re-issues
+   * {@link requestGitHunkDiff} to see the result.
+   */
+  async applyGitHunkAction(
+    sessionId: string,
+    params: { path: string; hunkIndex: number; action: 'stage' | 'unstage' | 'discard' },
+    timeoutMs = 10_000,
+  ): Promise<GitHunkActionResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot apply a hunk action, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitHunkActionRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('githunkaction');
+    return new Promise<GitHunkActionResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitHunkActionRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_hunk_action_response'));
+      }, timeoutMs);
+      this.pendingGitHunkActionRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_hunk_action_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -5549,6 +5692,12 @@ export class RelayClient {
       case 'git_diff_response':
         this.handleGitDiffResponse(message);
         return;
+      case 'git_hunk_diff_response':
+        this.handleGitHunkDiffResponse(message);
+        return;
+      case 'git_hunk_action_response':
+        this.handleGitHunkActionResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -5991,6 +6140,60 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<GitDiffResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * requestGitHunkDiff} calls (issue #232). `git_hunk_diff_response` is
+   * fanned out to every client subscribed to the session exactly like
+   * `git_diff_response`, so a `requestId` not in {@link
+   * pendingGitHunkDiffRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleGitDiffResponse}'s identical sibling-device awareness.
+   */
+  private handleGitHunkDiffResponse(message: GitHunkDiffResponse): void {
+    const pending = this.pendingGitHunkDiffRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitHunkDiffRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitHunkDiffResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * applyGitHunkAction} calls (issue #232). `git_hunk_action_response`
+   * is fanned out to every client subscribed to the session exactly
+   * like `fs_read_response`, so a `requestId` not in {@link
+   * pendingGitHunkActionRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleFsReadResponse}'s identical sibling-device awareness.
+   */
+  private handleGitHunkActionResponse(message: GitHunkActionResponse): void {
+    const pending = this.pendingGitHunkActionRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitHunkActionRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitHunkActionResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

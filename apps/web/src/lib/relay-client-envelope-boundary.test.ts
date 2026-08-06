@@ -55,21 +55,22 @@ describe('relay-client.ts never touches crypto.subtle directly (issue #756)', ()
   it('routes session/project/target envelope operations through `this.envelopeCrypto`', () => {
     // Matches both single-line (`this.envelopeCrypto.seal(...)`) and
     // wrapped multi-line (`this.envelopeCrypto\n  .open<T>(...)`) call
-    // sites, plus the one constructor assignment — 30 real call sites
+    // sites, plus the one constructor assignment — 31 real call sites
     // (session_update, permission_request, fs_list_response,
-    // fs_read_response, git_diff_response, tracker_snapshot/write_response,
-    // test_runner_config_result/detected, target_fs_list_response,
-    // terminal_opened/output/closed, run_started/output/exit,
-    // decryptSessionMeta = 17 opens; target_fs_list_request,
-    // test_runner_config_set, session_create, terminal_input/resize,
-    // prompt_inject, fs_list_request, fs_read_request, tracker_snapshot/
-    // write_request, terminal_open, run_start = 11 seals; blob_upload = 1
+    // fs_read_response, git_diff_response, git_hunk_action_response,
+    // tracker_snapshot/write_response, test_runner_config_result/detected,
+    // target_fs_list_response, terminal_opened/output/closed,
+    // run_started/output/exit, decryptSessionMeta = 18 opens;
+    // target_fs_list_request, test_runner_config_set, session_create,
+    // terminal_input/resize, prompt_inject, fs_list_request,
+    // fs_read_request, git_hunk_action_request, tracker_snapshot/
+    // write_request, terminal_open, run_start = 12 seals; blob_upload = 1
     // sealBytes; escrowAmk = 1 wrapAmkForEscrow) plus the constructor
     // assignment — a regression here means a new/changed call site
     // reached back into direct `@loombox/crypto` primitives instead.
-    // git_diff_request itself carries no envelope at all (see
-    // `@loombox/protocol`'s `git-diff.ts` doc comment), so it adds no seal
-    // call here.
+    // git_diff_request/git_hunk_diff_request themselves carry no envelope
+    // at all (see `@loombox/protocol`'s `git-diff.ts`/`git-hunks.ts` doc
+    // comments), so neither adds a seal call here.
     const matches = relayClientSource.match(/this\.envelopeCrypto\b/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBeGreaterThanOrEqual(25);

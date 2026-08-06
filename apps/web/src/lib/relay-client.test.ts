@@ -3773,6 +3773,461 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
   });
 });
 
+describe('RelayClient: hunk-level staging (issue #232)', () => {
+  it('requestGitHunkDiff sends a git_hunk_diff_request with no envelope, and resolves an ok outcome decrypted from the real git_hunk_diff_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-diff-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_hunk_diff_ok', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-diff-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestGitHunkDiff(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'git_hunk_diff_request')) as {
+      type: 'git_hunk_diff_request';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'ok',
+        files: [
+          {
+            path: 'src/foo.ts',
+            previousPath: null,
+            status: 'modified',
+            staged: [],
+            unstaged: [
+              {
+                header: '@@ -1,1 +1,1 @@',
+                oldStart: 1,
+                oldLines: 1,
+                newStart: 1,
+                newLines: 1,
+                lines: [{ kind: 'removed', text: 'old' }, { kind: 'added', text: 'new' }],
+              },
+            ],
+          },
+        ],
+      },
+      key,
+    );
+    node.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      files: [
+        {
+          path: 'src/foo.ts',
+          previousPath: null,
+          status: 'modified',
+          staged: [],
+          unstaged: [
+            {
+              header: '@@ -1,1 +1,1 @@',
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: [{ kind: 'removed', text: 'old' }, { kind: 'added', text: 'new' }],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('requestGitHunkDiff resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-diff-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_hunk_diff_error',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-diff-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestGitHunkDiff(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_hunk_diff_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'git is not available on this target' },
+      key,
+    );
+    node.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      message: 'git is not available on this target',
+    });
+  });
+
+  it("a client ignores a git_hunk_diff_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-diff-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_hunk_diff_sibling',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-diff-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client.requestGitHunkDiff(session.id).finally(() => {
+      settled = true;
+    });
+    await node.waitFor((m) => m.type === 'git_hunk_diff_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(session.id, { outcome: 'ok', files: [] }, key);
+    node.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'git_hunk_diff_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(session.id, { outcome: 'ok', files: [] }, key);
+    node.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('requestGitHunkDiff rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-diff-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-diff-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-diff-4',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.requestGitHunkDiff('sess_does_not_exist')).rejects.toThrow(
+      /unknown session/,
+    );
+  });
+
+  it('applyGitHunkAction seals path/hunkIndex/action into an envelope with no targetId, and resolves an ok outcome decrypted from the real git_hunk_action_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-action-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_hunk_action_ok',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-action-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.applyGitHunkAction(session.id, {
+      path: 'src/index.ts',
+      hunkIndex: 0,
+      action: 'stage',
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'git_hunk_action_request')) as {
+      type: 'git_hunk_action_request';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{
+      path: string;
+      hunkIndex: number;
+      action: string;
+    }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ path: 'src/index.ts', hunkIndex: 0, action: 'stage' });
+
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok' }, key);
+    node.send({
+      type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({ outcome: 'ok' });
+  });
+
+  it('applyGitHunkAction resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-action-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_hunk_action_error',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-action-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.applyGitHunkAction(session.id, {
+      path: 'src/index.ts',
+      hunkIndex: 3,
+      action: 'unstage',
+    });
+    const request = (await node.waitFor((m) => m.type === 'git_hunk_action_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'hunk index out of range' },
+      key,
+    );
+    node.send({
+      type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      message: 'hunk index out of range',
+    });
+  });
+
+  it("a client ignores a git_hunk_action_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-action-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_hunk_action_sibling',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-action-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client
+      .applyGitHunkAction(session.id, { path: 'src/index.ts', hunkIndex: 0, action: 'discard' })
+      .finally(() => {
+        settled = true;
+      });
+    await node.waitFor((m) => m.type === 'git_hunk_action_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(session.id, { outcome: 'ok' }, key);
+    node.send({
+      type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'git_hunk_action_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(session.id, { outcome: 'ok' }, key);
+    node.send({
+      type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('applyGitHunkAction rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-hunk-action-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-hunk-action-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-hunk-action-4',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(
+      client.applyGitHunkAction('sess_does_not_exist', {
+        path: 'x.ts',
+        hunkIndex: 0,
+        action: 'stage',
+      }),
+    ).rejects.toThrow(/unknown session/);
+  });
+});
+
 describe('RelayClient: native tracker (SPEC §7.10, §7.26; issues #212, #697)', () => {
   it('trackerSnapshotFor lazily loads a project\u2019s tracker snapshot with NO session anywhere \u2014 decrypting a real tracker_snapshot_response sealed to the project key, addressed by nodeId+projectPath alone', async () => {
     const amk = generateAmk();
