@@ -10,12 +10,15 @@
    * - `'awaiting_input'` — a session waiting on the user's next message.
    * - `'session_outcome'` — a session that finished (`outcome: 'exited'`) or
    *   errored (`outcome: 'error'`).
-   * - `'ci_failure'` / `'review_request'` — modeled and rendered here so the
-   *   inbox already has a distinct look for them, but `RelayClient` never
-   *   produces one in v1: neither has a live event source in this client
-   *   yet (that needs the git/CI/tracker integration work, SPEC §7.10/§7.14,
-   *   v2). This is a forward-looking extension point, not a fake stub — no
-   *   item of either kind is ever synthesized.
+   * - `'ci_failure'` — a session whose watched PR's latest CI check state
+   *   aggregates to failing (`RelayClient.attentionInbox()`, issue #243);
+   *   shows which check(s) failed and a link to the PR.
+   * - `'review_request'` — modeled and rendered here so the inbox already
+   *   has a distinct look for it, but `RelayClient` never produces one in
+   *   v1: it has no live event source in this client yet (that needs the
+   *   tracker integration work, SPEC §7.10, v2). This is a forward-looking
+   *   extension point, not a fake stub — no item of this kind is ever
+   *   synthesized.
    *
    * Every item has an Open action (`onOpenSession`) that jumps to its
    * originating session. A `'permission'` item is additionally actionable
@@ -181,7 +184,9 @@
           ? `Errored${item.stopReason ? `: ${item.stopReason}` : ''}`
           : `Finished${item.stopReason ? `: ${item.stopReason}` : ''}`;
       case 'ci_failure':
-        return 'CI check failed';
+        return item.failingChecks && item.failingChecks.length > 0
+          ? `CI check failed: ${item.failingChecks.join(', ')}`
+          : 'CI check failed';
       case 'review_request':
         return 'Review requested';
     }
@@ -209,9 +214,9 @@
    * corresponds to one of `AcpSessionStatus`'s five states — the same
    * "one wording, never re-derived" rule the sidebar and command palette
    * follow (redesign v3 design spec §3.6). `ci_failure`/`review_request`
-   * have no live session-status equivalent yet (`AttentionInboxItem`'s own
-   * doc comment: neither has a wire producer in v1), so those two keep a
-   * short label of their own rather than claiming a status they aren't.
+   * have no `AcpSessionStatus` equivalent at all (a PR's CI state and a
+   * review request are properties of the PR, not the session's own live
+   * status), so those two keep a short label of their own rather than
    */
   function itemStatus(item: AttentionInboxItem): { tone: StatusTone; label: string } {
     switch (item.kind) {
@@ -407,6 +412,17 @@
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html renderMarkdownToHtml(messageSource(item))}
             </div>
+            {#if item.kind === 'ci_failure' && item.prUrl}
+              <a
+                class="ci-pr-link"
+                href={item.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="attention-inbox-ci-pr-link"
+              >
+                View PR{item.prNumber ? ` #${item.prNumber}` : ''}
+              </a>
+            {/if}
             {#if answered}
               <div class="answer-outcome" data-testid="attention-inbox-answer-outcome">
                 <span>{outcomeFor(item)}</span>
@@ -582,6 +598,16 @@
      its own base rule). */
   .message {
     font-size: var(--text-small-size);
+  }
+
+  .ci-pr-link {
+    align-self: flex-start;
+    font-size: var(--text-small-size);
+    color: var(--color-accent);
+  }
+
+  .ci-pr-link:hover {
+    text-decoration: underline;
   }
 
   .answer-outcome {
