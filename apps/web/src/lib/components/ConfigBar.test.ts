@@ -312,7 +312,6 @@ describe('ConfigBar: the popover is keyboard-operable end to end (issue #711 acc
   });
 });
 
-
 describe('ConfigBar: the agent answering', () => {
   it('names the agent in front of the trigger, so the row says who is answering', () => {
     render(ConfigBar, {

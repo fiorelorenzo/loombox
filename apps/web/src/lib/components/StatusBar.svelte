@@ -153,7 +153,10 @@
     if (noData === dots.length) {
       return { tone: 'neutral', label: `${dots.length} target${dots.length === 1 ? '' : 's'}` };
     }
-    return { tone: 'success', label: `${dots.length} target${dots.length === 1 ? '' : 's'} healthy` };
+    return {
+      tone: 'success',
+      label: `${dots.length} target${dots.length === 1 ? '' : 's'} healthy`,
+    };
   }
   const targetSummary = $derived(summarizeTargetHealth(targetHealthDots));
 
@@ -163,7 +166,9 @@
       : 'No session selected',
   );
   const sessionTone = $derived(
-    hasSelectedSession && selectedSessionStatus ? SESSION_STATUS_TONES[selectedSessionStatus] : 'neutral',
+    hasSelectedSession && selectedSessionStatus
+      ? SESSION_STATUS_TONES[selectedSessionStatus]
+      : 'neutral',
   );
   const sessionPulse = $derived(hasSelectedSession && selectedSessionStatus === 'working');
 

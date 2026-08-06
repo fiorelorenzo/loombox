@@ -599,7 +599,7 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(row.className).toContain('focused');
   });
 
-  it('an unhealthy target is discoverable without opening Settings: the status bar\'s target-health segment (issue #736, retiring #568\'s account-avatar dot)', async () => {
+  it("an unhealthy target is discoverable without opening Settings: the status bar's target-health segment (issue #736, retiring #568's account-avatar dot)", async () => {
     mountCockpit({
       targets: [
         {
@@ -624,7 +624,7 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
     expect(screen.queryByTestId('settings-menu-health-badge')).toBeNull();
   });
 
-  it('the status bar\'s target-health segment clears back to healthy once the target recovers, reading the same live poll every other target-health surface does (issue #568, #736)', async () => {
+  it("the status bar's target-health segment clears back to healthy once the target recovers, reading the same live poll every other target-health surface does (issue #568, #736)", async () => {
     const target = {
       nodeId: 'node_1',
       targetId: 'local',

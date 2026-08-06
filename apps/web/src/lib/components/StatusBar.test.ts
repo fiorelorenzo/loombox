@@ -163,9 +163,7 @@ describe('StatusBar: session state (right zone, issue #736 acceptance)', () => {
     render(StatusBar, {
       props: { ...baseProps(), hasSelectedSession: false, selectedSessionStatus: undefined },
     });
-    expect(screen.getByTestId('status-bar-session').textContent).toContain(
-      'No session selected',
-    );
+    expect(screen.getByTestId('status-bar-session').textContent).toContain('No session selected');
   });
 
   it('renders every one of the eight SessionStatusV1 values distinctly', () => {
