@@ -311,6 +311,8 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     startRun: vi.fn(() => 'run-fake'),
     cancelRun: vi.fn(),
     onRunOutput: vi.fn(() => () => {}),
+    spendReportFor: () => makeStore({ status: 'loading' as const, rows: [] }),
+    reloadSpendReport: vi.fn(),
   };
 }
 
