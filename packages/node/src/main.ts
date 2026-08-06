@@ -378,10 +378,36 @@ export async function run(options: StartOptions = {}): Promise<StartedNode> {
   return started;
 }
 
+/**
+ * `--version`'s handler (issue #817): prints this build's identity — same
+ * `{ version, commit }` shape `start()` resolves and sends on every
+ * `initialize` (`readNodeBuildIdentity`'s own doc comment) — as JSON on
+ * stdout and exits, without ever calling `loadNodeConfig` or touching a
+ * relay/identity/AMK. That matters specifically for a versioned bundle
+ * (`~/.loombox/versions/<version>/node.mjs`, decision A1-2): it's the one
+ * way to prove a freshly unpacked bundle reports its real version+commit —
+ * baked in at bundle time, no git checkout required — before it's ever
+ * wired up with real relay credentials. Exit code 0 on success; a
+ * `readOwnVersion()` failure (a corrupt/missing co-located `package.json`)
+ * is a real startup failure, so it's left to propagate and exit non-zero
+ * like any other `run()` failure would.
+ */
+export async function printBuildIdentity(): Promise<void> {
+  const identity = await readNodeBuildIdentity();
+  console.log(JSON.stringify(identity));
+}
+
 const isMainModule = argv[1] !== undefined && import.meta.url === pathToFileURL(argv[1]).href;
 if (isMainModule) {
-  run().catch((error: unknown) => {
-    console.error('loombox node failed to start', error);
-    process.exitCode = 1;
-  });
+  if (argv.includes('--version') || argv.includes('-v')) {
+    printBuildIdentity().catch((error: unknown) => {
+      console.error('loombox node failed to resolve its build identity', error);
+      process.exitCode = 1;
+    });
+  } else {
+    run().catch((error: unknown) => {
+      console.error('loombox node failed to start', error);
+      process.exitCode = 1;
+    });
+  }
 }

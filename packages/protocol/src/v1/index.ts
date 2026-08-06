@@ -285,6 +285,41 @@ export {
 } from './git-diff';
 
 export type {
+  GitHunkActionRequest,
+  GitHunkActionRequestPayloadV1,
+  GitHunkActionResponse,
+  GitHunkActionResponsePayloadV1,
+  GitHunkActionV1,
+  GitHunkDiffRequest,
+  GitHunkDiffResponse,
+  GitHunkDiffResponsePayloadV1,
+  GitHunkFileV1,
+  GitHunkLineKindV1,
+  GitHunkLineV1,
+  GitHunkV1,
+} from './git-hunks';
+export {
+  gitHunkActionRequest,
+  gitHunkActionRequestPayloadV1,
+  gitHunkActionResponse,
+  gitHunkActionResponsePayloadV1,
+  gitHunkActionV1,
+  gitHunkDiffRequest,
+  gitHunkDiffResponse,
+  gitHunkDiffResponsePayloadV1,
+  gitHunkFileV1,
+  gitHunkLineKindV1,
+  gitHunkLineV1,
+  gitHunkV1,
+  parseGitHunkActionRequestPayloadV1,
+  parseGitHunkActionResponsePayloadV1,
+  parseGitHunkDiffResponsePayloadV1,
+  safeParseGitHunkActionRequestPayloadV1,
+  safeParseGitHunkActionResponsePayloadV1,
+  safeParseGitHunkDiffResponsePayloadV1,
+} from './git-hunks';
+
+export type {
   McpPromptGetErrorV1,
   McpPromptGetRequest,
   McpPromptGetRequestPayloadV1,
@@ -593,6 +628,20 @@ export {
   sessionSpendCapResume,
 } from './spend-cap';
 export type {
+  SpendReportRowV1,
+  SpendReportResponsePayloadV1,
+  SpendReportRequest,
+  SpendReportResponse,
+} from './spend-report';
+export {
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  parseSpendReportResponsePayloadV1,
+  safeParseSpendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
+} from './spend-report';
+export type {
   GitCheckpointV1,
   RestorePreviewV1,
   RestoreResultV1,
@@ -690,6 +739,22 @@ export {
   prOpenResult,
   prOpenOutcome,
 } from './pr';
+export type {
+  CiCheckRunV1,
+  CiCheckOverallStateV1,
+  CiCheckStateV1,
+  CiCheckStatusPayloadV1,
+  CiCheckStatus,
+} from './ci-check';
+export {
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  parseCiCheckStatusPayloadV1,
+  safeParseCiCheckStatusPayloadV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
+} from './ci-check';
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
@@ -1067,6 +1132,13 @@ import {
   prOpenOutcome,
 } from './pr';
 import {
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
+} from './ci-check';
+import {
   permissionPolicyGet,
   permissionPolicyResult,
   permissionPolicySet,
@@ -1108,6 +1180,12 @@ import {
   spendCapResult,
   sessionSpendCapResume,
 } from './spend-cap';
+import {
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
+} from './spend-report';
 import {
   accountPinErrorType,
   accountPinGetRequest,
@@ -1359,6 +1437,10 @@ export const schemasV1 = {
   spendCapSet,
   spendCapResult,
   sessionSpendCapResume,
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,
@@ -1420,4 +1502,9 @@ export const schemasV1 = {
   prOpenRequest,
   prOpenResult,
   prOpenOutcome,
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
 } as const;

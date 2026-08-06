@@ -24,6 +24,7 @@ import type {
   AcpMcpServerConfig,
   AcpPermissionOptionKind,
   AcpPlanEntry,
+  AcpPromptContentBlock,
   AcpSessionSummary,
   AcpSpawnConfig,
   AcpToolCallStatus,
@@ -715,18 +716,27 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
-   * ACP `session/prompt`: sends a plain-text user turn and awaits its
-   * response. Emits `'turn_end'` once the response (the turn's `StopReason`)
-   * arrives, carrying the id of the last `agent_message_chunk` message seen
-   * during this turn, if any.
+   * ACP `session/prompt`: sends a user turn and awaits its response. The
+   * required `text` becomes the first `ContentBlock::Text`; `extraContent`
+   * (SPEC.md §7.25 "Hand off to the agent"; issue #158) appends any further
+   * blocks a caller already resolved for this turn — an inline base64
+   * image, or a `resource_link` for the on-disk fallback — verbatim, after
+   * it. Defaults to `[]` so every existing plain-text caller is unaffected.
+   * Emits `'turn_end'` once the response (the turn's `StopReason`) arrives,
+   * carrying the id of the last `agent_message_chunk` message seen during
+   * this turn, if any.
    */
-  async prompt(sessionId: string, text: string): Promise<void> {
+  async prompt(
+    sessionId: string,
+    text: string,
+    extraContent: AcpPromptContentBlock[] = [],
+  ): Promise<void> {
     const session = this.ensureSession(sessionId);
     session.currentTurnId = `turn:${++session.turnCounter}`;
 
     const result = await this.sendRequest<{ stopReason?: string }>('session/prompt', {
       sessionId,
-      prompt: [{ type: 'text', text }],
+      prompt: [{ type: 'text', text }, ...extraContent],
     });
     this.emit('turn_end', {
       messageId: session.lastAgentMessageId,

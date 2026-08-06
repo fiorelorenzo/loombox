@@ -205,6 +205,22 @@ export {
   verifySshTarget,
 } from './ssh/verify-and-persist';
 
+// Issue #817 (decision A1-2): a real, filesystem-backed `SupervisorArtifactSource`
+// (network-fetch-from-GitHub-Releases is a follow-up — see this module's own
+// doc comment for why) plus the resolve/stage/activate/rollback primitives
+// for the `~/.loombox/versions/<version>/` + `current` install layout.
+export type { LocalFsSupervisorArtifactSourceOptions } from './ssh/local-fs-artifact-source';
+export { createLocalFsSupervisorArtifactSource } from './ssh/local-fs-artifact-source';
+export type { SupervisorArtifact, SupervisorArtifactSource } from './ssh/supervisor-artifact';
+export { verifySupervisorArtifact } from './ssh/supervisor-artifact';
+export type { InstallLayoutDriver } from './install-layout';
+export {
+  createLocalInstallLayoutDriver,
+  createRemoteInstallLayoutDriver,
+  createTarGzArchive,
+  rollbackVersion,
+} from './install-layout';
+
 // v2: composes every SPEC §7.23 ssh: provisioning primitive above into the
 // one "add this target and it provisions" flow, and its decommission
 // counterpart (issue #400) — the callable library operations a future

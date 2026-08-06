@@ -94,6 +94,11 @@ import {
   type FsReadResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
+  type GitHunkActionRequestPayloadV1,
+  type GitHunkActionResponse,
+  type GitHunkActionResponsePayloadV1,
+  type GitHunkDiffResponse,
+  type GitHunkDiffResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
   type BuildIdentityV1,
@@ -161,6 +166,9 @@ import {
   type TrackerWriteRequestPayloadV1,
   type TrackerWriteResponse,
   type TrackerWriteResponsePayloadV1,
+  type SpendReportRowV1,
+  type SpendReportResponse,
+  spendReportResponsePayloadV1,
   type TestRunnerKindV1,
   type PrOpenOutcome,
   type PrOpenPreviewOutcome,
@@ -441,6 +449,29 @@ export interface TrackerSnapshotState {
   error?: string;
   /** Set only when `error` came from a `resolveTrackerBackend` resolution failure (SPEC §7.10, issue #631) — never for a native-mode store failure, a decrypt/timeout failure, or a stale connection, none of which has a `TrackerMode` resolution to describe. `TrackerPage.svelte` switches on `errorReason.kind` for the cases it renders specially, falling back to the plain `error` message otherwise. */
   errorReason?: TrackerBackendResolutionErrorV1;
+}
+
+/**
+ * One project's spend-over-time read model (SPEC §7.9; issue #249), keyed
+ * by `projectPath` in {@link RelayClient.spendReportFor}'s returned store —
+ * same project-scoped shape as {@link TrackerSnapshotState} and for the
+ * identical reason (a project's spend ledger outlives any one session that
+ * added to it, reachable with none running at all). `rows` is exactly what
+ * `spend_report_response` carried, never re-derived or summed here — every
+ * caller (the spend view) reduces it through `@loombox/shared`'s
+ * `aggregateSpendLedgerRows`, the identical function `@loombox/node` itself
+ * filters `SpendLedgerStore` rows through before sealing the reply, so the
+ * client never runs a second, independently-written grouping. An empty
+ * `rows` array on `'loaded'` is a legitimate "nothing recorded in this
+ * period" answer, not a loading/error state — the view is the one that
+ * turns that into an honest "no data" reading (never a fabricated $0.00),
+ * per this file's own live-meter convention (`StatusBar.svelte`'s doc
+ * comment).
+ */
+export interface SpendReportState {
+  status: 'loading' | 'loaded' | 'error';
+  rows: SpendReportRowV1[];
+  error?: string;
 }
 
 /**
@@ -1384,12 +1415,46 @@ export class RelayClient {
     string,
     { resolve: (payload: GitDiffResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
+  /**
+   * requestId -> the pending {@link requestGitHunkDiff} call it belongs
+   * to (issue #232's hunk-level staging) — the exact same shape as
+   * {@link pendingGitDiffRequests} above, for the same "caller needs the
+   * outcome directly, one-shot, not an always-on subscription" reason.
+   * `git_hunk_diff_response` is fanned out the same way, so a requestId
+   * not in this map means the reply belongs to a sibling device's own
+   * request.
+   */
+  private readonly pendingGitHunkDiffRequests = new Map<
+    string,
+    { resolve: (payload: GitHunkDiffResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link applyGitHunkAction} call it belongs
+   * to (issue #232) — the exact same shape as {@link
+   * pendingFsReadRequests} above (enveloped, one-shot, resolves a
+   * `Promise` directly). `git_hunk_action_response` is fanned out the
+   * same way, so a requestId not in this map means the reply belongs to
+   * a sibling device's own request.
+   */
+  private readonly pendingGitHunkActionRequests = new Map<
+    string,
+    {
+      resolve: (payload: GitHunkActionResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
   /** Projects {@link trackerSnapshotFor} has already sent an initial `tracker_snapshot_request` for — mirrors `fileTreeFor`'s own `get(store).has('')` lazy-load-once check, without needing to inspect the store's current value to tell "never requested" apart from "requested and still loading". Keyed by `projectPath` (issue #697): two sessions bound to the same project now share one load instead of each firing (and racing) their own. */
   private readonly trackerSnapshotsRequested = new Set<string>();
   /** requestId -> the project an in-flight `tracker_snapshot_request` this client itself sent is about (issue #212, #697). `tracker_snapshot_response` is routed directly back to the requesting client alone (SPEC §7.10, issue #697 — `nodeId` addresses exactly one node and the relay answers exactly the requester, unlike the old session-fanned `fs_list_response`), so this map exists to decrypt under the right project key and to guard against a stray/duplicate reply arriving after this client's own timeout already cleaned the entry up — the same guard `pendingTargetFsListRequests` documents. */
   private readonly pendingTrackerSnapshotRequests = new Map<string, { projectPath: string }>();
+  /** Backs {@link spendReportFor} (SPEC §7.9; issue #249) — one reactive `SpendReportState` per project (`projectPath`), mirroring {@link trackerSnapshots} exactly (same project-not-session addressing, same reason). */
+  private readonly spendReports = new Map<string, Writable<SpendReportState>>();
+  /** Projects {@link spendReportFor} has already sent an initial `spend_report_request` for — mirrors {@link trackerSnapshotsRequested}'s own lazy-load-once check. */
+  private readonly spendReportsRequested = new Set<string>();
+  /** requestId -> the project an in-flight `spend_report_request` this client itself sent is about — mirrors {@link pendingTrackerSnapshotRequests} (decrypts under the right project key, ignores a stray/duplicate reply after this client's own reload already replaced the pending entry). */
+  private readonly pendingSpendReportRequests = new Map<string, { projectPath: string }>();
   /** requestId -> the pending {@link createTrackerRecord}/{@link updateTrackerRecord}/{@link defineTrackerType} call it belongs to (issue #212, #697) — resolves a `Promise` directly, exactly like `pendingTargetFsListRequests`, carrying `projectPath` for the same reason (decrypting the response under the right project key). */
   private readonly pendingTrackerWriteRequests = new Map<
     string,
@@ -4356,6 +4421,116 @@ export class RelayClient {
   }
 
   /**
+   * The session's current staged/unstaged hunk breakdown (SPEC §7.6;
+   * issue #232's hunk-level staging) — `@loombox/protocol`'s
+   * `git-hunks.ts` `git_hunk_diff_request`/`git_hunk_diff_response` pair,
+   * {@link requestWorktreeDiff}'s own sibling for the staging surface:
+   * same one-shot request/response contract, same "no `path`/envelope on
+   * the request, asking carries no content" shape, same "resolves the
+   * node's own `ok`/`error` outcome either way, only REJECTS for a
+   * genuinely unusable call" behavior. A caller re-issues this (a fresh
+   * `requestId`) after every {@link applyGitHunkAction} to see the
+   * result, rather than reusing stale hunk indices from an earlier
+   * snapshot (that schema's own doc comment).
+   */
+  async requestGitHunkDiff(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitHunkDiffResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a hunk diff, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('githunkdiff');
+    return new Promise<GitHunkDiffResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitHunkDiffRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_hunk_diff_response'));
+      }, timeoutMs);
+      this.pendingGitHunkDiffRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_hunk_diff_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Stages, unstages, or discards exactly one hunk (SPEC §7.6; issue
+   * #232) — {@link readFile}'s own sibling for the enveloped-request
+   * shape: `path` is real session content, so the whole request travels
+   * sealed (unlike {@link requestGitHunkDiff}'s envelope-less "asking
+   * carries no content" request). `hunkIndex` addresses a hunk
+   * positionally within whichever side `params.action` implies
+   * (`stage`/`discard` read the file's `unstaged[hunkIndex]`, `unstage`
+   * reads `staged[hunkIndex]`) against a diff the node computes fresh at
+   * action time — never trusting a stale index from an earlier {@link
+   * requestGitHunkDiff} snapshot. Resolves with the node's own
+   * `ok`/`error` outcome either way; only REJECTS for a genuinely
+   * unusable call — no open connection, an unknown session, or a timeout
+   * with no response at all — mirroring {@link readFile}'s identical
+   * contract. Carries no updated diff of its own; a caller re-issues
+   * {@link requestGitHunkDiff} to see the result.
+   */
+  async applyGitHunkAction(
+    sessionId: string,
+    params: { path: string; hunkIndex: number; action: 'stage' | 'unstage' | 'discard' },
+    timeoutMs = 10_000,
+  ): Promise<GitHunkActionResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot apply a hunk action, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitHunkActionRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('githunkaction');
+    return new Promise<GitHunkActionResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitHunkActionRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_hunk_action_response'));
+      }, timeoutMs);
+      this.pendingGitHunkActionRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_hunk_action_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * A project's native tracker snapshot (SPEC §7.10; issue #212, #697),
    * reactive — the kanban board and list view's own read model. Addressed
    * by `nodeId` + `projectPath` (issue #697), not a session: the project's
@@ -4390,6 +4565,41 @@ export class RelayClient {
         this.setTrackerSnapshotError(projectPath, errorMessage(error));
       },
     );
+  }
+
+  /**
+   * A project's spend-over-time history (SPEC §7.9; issue #249), reactive —
+   * the spend view's own read model. Addressed by `nodeId` + `projectPath`,
+   * not a session, mirroring {@link trackerSnapshotFor} exactly (see that
+   * method's own doc comment for why). Lazily sends one unbounded
+   * `spend_report_request` the first time this is called for a project;
+   * call again freely, it never re-requests on its own — use
+   * {@link reloadSpendReport} to change the requested date range or to
+   * retry after an `'error'`.
+   */
+  spendReportFor(nodeId: string, projectPath: string): Readable<SpendReportState> {
+    const store = this.spendReportStoreFor(projectPath);
+    if (!this.spendReportsRequested.has(projectPath)) {
+      this.reloadSpendReport(nodeId, projectPath);
+    }
+    return store;
+  }
+
+  /**
+   * Re-fetches a project's spend report from scratch, optionally bounded to
+   * `[sinceDate, untilDate]` (either/both omitted = unbounded on that side,
+   * matching `spend_report_request`'s own wire contract) — the period
+   * selector's own action, and the general-purpose manual reload/Retry
+   * {@link spendReportFor}'s doc comment points to.
+   */
+  reloadSpendReport(
+    nodeId: string,
+    projectPath: string,
+    filter: { sinceDate?: string; untilDate?: string } = {},
+  ): void {
+    this.spendReportsRequested.add(projectPath);
+    this.spendReportStoreFor(projectPath).update((state) => ({ ...state, status: 'loading' }));
+    this.sendSpendReportRequest(nodeId, projectPath, filter.sinceDate, filter.untilDate);
   }
 
   /**
@@ -5549,11 +5759,20 @@ export class RelayClient {
       case 'git_diff_response':
         this.handleGitDiffResponse(message);
         return;
+      case 'git_hunk_diff_response':
+        this.handleGitHunkDiffResponse(message);
+        return;
+      case 'git_hunk_action_response':
+        this.handleGitHunkActionResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
       case 'tracker_write_response':
         this.handleTrackerWriteResponse(message);
+        return;
+      case 'spend_report_response':
+        this.handleSpendReportResponse(message);
         return;
       case 'mcp_prompt_get_response':
         this.handleMcpPromptGetResponse(message);
@@ -6003,6 +6222,60 @@ export class RelayClient {
   }
 
   /**
+   * The owning node's reply to one of this client's own {@link
+   * requestGitHunkDiff} calls (issue #232). `git_hunk_diff_response` is
+   * fanned out to every client subscribed to the session exactly like
+   * `git_diff_response`, so a `requestId` not in {@link
+   * pendingGitHunkDiffRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleGitDiffResponse}'s identical sibling-device awareness.
+   */
+  private handleGitHunkDiffResponse(message: GitHunkDiffResponse): void {
+    const pending = this.pendingGitHunkDiffRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitHunkDiffRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitHunkDiffResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * applyGitHunkAction} calls (issue #232). `git_hunk_action_response`
+   * is fanned out to every client subscribed to the session exactly
+   * like `fs_read_response`, so a `requestId` not in {@link
+   * pendingGitHunkActionRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleFsReadResponse}'s identical sibling-device awareness.
+   */
+  private handleGitHunkActionResponse(message: GitHunkActionResponse): void {
+    const pending = this.pendingGitHunkActionRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitHunkActionRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitHunkActionResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
    * The addressed node's reply to one of this client's own
    * `tracker_snapshot_request`s (SPEC §7.10; issue #212, #697). Routed
    * directly back to this client alone (issue #697: `nodeId` addresses
@@ -6035,6 +6308,36 @@ export class RelayClient {
       })
       .catch((error: unknown) => {
         this.setTrackerSnapshotError(pending.projectPath, errorMessage(error));
+      });
+  }
+
+  /**
+   * The addressed node's reply to one of this client's own
+   * `spend_report_request`s (SPEC §7.9; issue #249). Routed directly back to
+   * this client alone, same addressing `handleTrackerSnapshotResponse`
+   * documents — `pending` guards against a stray/duplicate reply the same
+   * way. The decrypted payload is validated against
+   * `spendReportResponsePayloadV1` (issue #593's decrypt-boundary
+   * convention), not a bare generic cast. Always a `'loaded'` outcome —
+   * unlike `tracker_snapshot_response`, `spend_report_response` has no error
+   * union of its own (the node always answers, `rows: []` included; see
+   * `spend-report.ts`'s own doc comment) — a rejected/failed decrypt still
+   * lands in `'error'` through the `.catch` below, same as a lost
+   * connection or timeout would.
+   */
+  private handleSpendReportResponse(message: SpendReportResponse): void {
+    const pending = this.pendingSpendReportRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSpendReportRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
+      .then((raw) => spendReportResponsePayloadV1.parse(raw))
+      .then((payload) => {
+        this.spendReportStoreFor(pending.projectPath).set({ status: 'loaded', rows: payload.rows });
+      })
+      .catch((error: unknown) => {
+        this.setSpendReportError(pending.projectPath, errorMessage(error));
       });
   }
 
@@ -6556,6 +6859,26 @@ export class RelayClient {
     });
   }
 
+  /** Sends the `spend_report_request` (SPEC §7.9; issue #249), tracking it in {@link pendingSpendReportRequests} so the eventual `spend_report_response` decrypts under the right project key and a stray late reply is ignored. No envelope on this side — `spend-report.ts`'s own doc comment: a date range is a query parameter, not project content, exactly like `spend_cap_get`'s own reasoning. */
+  private sendSpendReportRequest(
+    nodeId: string,
+    projectPath: string,
+    sinceDate?: string,
+    untilDate?: string,
+  ): void {
+    const requestId = generateId('spendreport');
+    this.pendingSpendReportRequests.set(requestId, { projectPath });
+    this.send({
+      type: 'spend_report_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      projectPath,
+      requestId,
+      sinceDate,
+      untilDate,
+    });
+  }
+
   /**
    * Seals `payload` under `projectPath`'s project key and sends the
    * `tracker_write_request` (SPEC §7.10; issue #212, #697), resolving once
@@ -6900,6 +7223,24 @@ export class RelayClient {
       this.trackerSnapshots.set(projectPath, store);
     }
     return store;
+  }
+
+  private spendReportStoreFor(projectPath: string): Writable<SpendReportState> {
+    let store = this.spendReports.get(projectPath);
+    if (!store) {
+      store = writable<SpendReportState>({ status: 'loading', rows: [] });
+      this.spendReports.set(projectPath, store);
+    }
+    return store;
+  }
+
+  /** Sets a project's spend report store to `'error'`, same shape as {@link setTrackerSnapshotError} (no `reason` union to carry — `spend_report_response` has none). */
+  private setSpendReportError(projectPath: string, message: string): void {
+    this.spendReportStoreFor(projectPath).update((state) => ({
+      ...state,
+      status: 'error',
+      error: message,
+    }));
   }
 
   /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same project might have left behind. */

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, posix } from 'node:path';
 
 import {
+  buildInlineImageContentBlock,
   McpServerSecretMissingError,
   fetchMcpPromptText,
   fetchMcpServerPrompts,
@@ -13,6 +14,7 @@ import {
   type AcpMcpServerConfig,
   type AcpPermissionOption,
   type AcpProvider,
+  type AcpPromptContentBlock,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
   type AcpToolKind,
@@ -20,6 +22,7 @@ import {
   type AcpTurnEnd,
   type AvailableCommandsChangeEvent,
   type ConfigOptionChangeEvent,
+  type InlineImageHandoffFailureReason,
   type McpServerConfig,
   type McpServerPromptsResult,
   type ProjectEnvVarDecl,
@@ -86,6 +89,11 @@ import {
   type FsReadResponsePayloadV1,
   type GitDiffRequest,
   type GitDiffResponsePayloadV1,
+  type GitHunkActionRequest,
+  type GitHunkActionRequestPayloadV1,
+  type GitHunkActionResponsePayloadV1,
+  type GitHunkDiffRequest,
+  type GitHunkDiffResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -138,6 +146,8 @@ import {
   type SpendCapSetPayloadV1,
   type SpendCapResultPayloadV1,
   type SessionSpendCapResume,
+  type SpendReportRequest,
+  type SpendReportResponsePayloadV1,
   type CheckpointCreate,
   type CheckpointCreatePayloadV1,
   type CheckpointErrorTypeV1,
@@ -183,6 +193,8 @@ import {
   type PrOpenRequest,
   type PrOpenRequestPayloadV1,
   type PrOpenResultPayloadV1,
+  type CiCheckStateV1,
+  type CiCheckStatusPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -209,7 +221,13 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
-import { computeWorktreeDiff, GitDiffError } from './git-diff';
+import {
+  applyGitHunkAction,
+  computeHunkDiff,
+  computeWorktreeDiff,
+  GitDiffError,
+  GitHunkActionError,
+} from './git-diff';
 import {
   assertCustomAgentAllowed,
   createCustomAgentProvider,
@@ -234,6 +252,8 @@ import {
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
 import { SpendCapStore } from './spend-cap-store';
+import { SpendLedgerStore } from './spend-ledger-store';
+import { filterSpendLedgerRows } from '@loombox/shared';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,
@@ -265,7 +285,14 @@ import {
   turnIdForTurnNumber,
 } from './session-rewind';
 import { resolveSessionBranch } from './session-branch';
-import { openPr, previewPrOpen, PrOpenError } from './pr-open';
+import { openPr, previewPrOpen, PrOpenError, type OpenPrResult } from './pr-open';
+import {
+  CiCheckWatcher,
+  isFailingConclusion,
+  parseGithubPullRequestUrl,
+  type CiWatchEntry,
+} from './ci-check-watcher';
+import { CiWatchStore } from './ci-watch-store';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -634,6 +661,18 @@ export interface NodeDaemonOptions {
    */
   spendCapStore?: SpendCapStore;
   /**
+   * This node's persisted spend-over-time ledger (SPEC §7.9; issue
+   * #249): every `usage_update` cost increase this daemon has ever
+   * observed, grouped by day/project/provider, fed into
+   * `spend_report_request`'s reply — see `spend-ledger-store.ts`'s own
+   * doc comment for why this is a separate store from `spendCapStore`
+   * above rather than derived from it (a cap is a configured limit; this
+   * is the actual spend history, at a different granularity and with a
+   * different lifetime). Injectable for tests; defaults to a fresh
+   * `SpendLedgerStore({ stateDir })`.
+   */
+  spendLedgerStore?: SpendLedgerStore;
+  /**
    * This node's named agent-profile catalog (design spec
    * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752): the
    * account-scoped sibling of `permissionPolicyStore` above — see
@@ -716,6 +755,10 @@ export interface NodeDaemonOptions {
   trackerModeStore?: TrackerModeStore;
   /** Injectable for tests; defaults to each composed `GithubTrackerBackend`/`JiraTrackerBackend`'s own default (the global `fetch`) — see `resolveTrackerBackend`'s own `fetchImpl` doc comment. Issue #631's acceptance: a live-mode bridge test must stub this, never hit a real GitHub/Jira API. */
   trackerBackendFetchImpl?: typeof fetch;
+  /** SPEC §7.14, issue #239 — persists which sessions' open PRs `CiCheckWatcher` polls, across a restart. Defaults to `new CiWatchStore({stateDir: options.stateDir})`, same convention as `accountPinStore`/`spendCapStore` above. */
+  ciCheckWatchStore?: CiWatchStore;
+  /** SPEC §7.14, issue #239 — the whole polling engine, injectable wholesale (rather than just its `fetchImpl`, like `trackerBackendFetchImpl` above) so a test can fully control both the stubbed GitHub responses AND `resolveToken`, decoupled from this daemon's real `accountPinStore`/`githubConnectService` composition, which is proven separately by `resolveCiCheckGithubToken`'s own test. Defaults to a real `CiCheckWatcher` wired to `resolveCiCheckGithubToken`/`sendCiCheckStatus`/`handleCiCheckFailure`. */
+  ciCheckWatcher?: CiCheckWatcher;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1028,11 +1071,12 @@ async function deriveTargetKey(
  * Emitted once per attachment after {@link NodeDaemon.resolveAttachment}
  * fetches and decrypts it while handling an inbound `prompt_inject` (SPEC
  * §7.25 "Deliver to the executing host"; issue #156) — the plaintext bytes
- * made available on this host. Handing these to the agent as an ACP content
- * block ("Hand off to the agent", the next SPEC §7.25 bullet) is a separate,
- * provider-adapted concern out of this issue's scope: `AgentSession.prompt()`
- * is text-only in v1. This event is this wave's observable seam for that
- * future wiring (and for tests) rather than a silent no-op.
+ * made available on this host, before {@link NodeDaemon.deliverPrompt}
+ * hands them to `buildInlineImageContentBlock` (SPEC §7.25 "Hand off to the
+ * agent"; issue #158) for this turn's actual ACP content block. This event
+ * fires regardless of whether the inline hand-off succeeds — see
+ * {@link AttachmentHandoffDeclined} for the companion event when it
+ * doesn't.
  */
 export interface ResolvedAttachment {
   sessionId: string;
@@ -1040,6 +1084,28 @@ export interface ResolvedAttachment {
   mimeType: string;
   name: string | undefined;
   bytes: Uint8Array;
+}
+
+/**
+ * Emitted from {@link NodeDaemon.deliverPrompt} when a resolved
+ * attachment's bytes did NOT become an inline ACP image block for this
+ * turn (SPEC §7.25 "Hand off to the agent"; issue #158) —
+ * `buildInlineImageContentBlock`'s own `InlineImageHandoffFailureReason`
+ * (`@loombox/providers-core`), verbatim: `'capability-not-negotiated'` for
+ * a session whose agent never advertised the `image` prompt capability (the
+ * common, expected case for a provider without it — not itself an error),
+ * `'oversize'` for a payload over the inline cap, or `'unsupported-format'`
+ * for bytes that don't re-sniff as one of the four allowed image formats.
+ * Never blocks the turn: the prompt still reaches the agent as text (plus
+ * whatever other attachments DID build a block), and this attachment's
+ * `blob_ref` file event already went out to every other subscribed client
+ * regardless — only the live agent doesn't receive these particular bytes
+ * inline this turn.
+ */
+export interface AttachmentHandoffDeclined {
+  sessionId: string;
+  ref: string;
+  reason: InlineImageHandoffFailureReason;
 }
 
 interface SessionBridge {
@@ -1385,6 +1451,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly permissionPolicyStore: PermissionPolicyStore;
   /** SPEC §7.16; issue #251 — see `NodeDaemonOptions.spendCapStore`'s doc comment. */
   private readonly spendCapStore: SpendCapStore;
+  /** SPEC §7.9; issue #249 — see `NodeDaemonOptions.spendLedgerStore`'s doc comment. */
+  private readonly spendLedgerStore: SpendLedgerStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
   private readonly agentProfileStore: AgentProfileStore;
   /**
@@ -1457,6 +1525,10 @@ export class NodeDaemon extends EventEmitter {
   private connectedAccounts: readonly ConnectedAccount[] = [];
   /** `NodeDaemonOptions.trackerBackendFetchImpl`'s stored value — see that field's own doc comment. */
   private readonly trackerBackendFetchImpl: typeof fetch | undefined;
+  /** SPEC §7.14, issue #239's persisted watch registry — see `NodeDaemonOptions.ciCheckWatchStore`'s doc comment. */
+  private readonly ciCheckWatchStore: CiWatchStore;
+  /** SPEC §7.14, issue #239's polling engine — see `NodeDaemonOptions.ciCheckWatcher`'s doc comment. */
+  private readonly ciCheckWatcher: CiCheckWatcher;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1552,6 +1624,8 @@ export class NodeDaemon extends EventEmitter {
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
+    this.spendLedgerStore =
+      options.spendLedgerStore ?? new SpendLedgerStore({ stateDir: options.stateDir });
     this.agentProfileStore =
       options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
@@ -1592,6 +1666,42 @@ export class NodeDaemon extends EventEmitter {
     if (this.resourceSamplingEnabled) {
       this.targetHealthSampler.start();
     }
+
+    // SPEC §7.14, issue #239: re-registers every session whose PR was
+    // still being watched before this node last restarted. A session no
+    // longer known to `sessionManager` (archived, or its record otherwise
+    // gone) has its stale watch entry dropped rather than re-registered —
+    // mirrors `SessionManager`'s own reload-then-prune convention for
+    // every other per-session store.
+    this.ciCheckWatchStore =
+      options.ciCheckWatchStore ?? new CiWatchStore({ stateDir: options.stateDir });
+    this.ciCheckWatcher =
+      options.ciCheckWatcher ??
+      new CiCheckWatcher({
+        resolveToken: (entry) => this.resolveCiCheckGithubToken(entry.projectPath),
+        onUpdate: (sessionId, state) => {
+          this.sendCiCheckStatus(sessionId, state).catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to send ci_check_status for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        },
+        onFailure: (sessionId, state) => {
+          this.handleCiCheckFailure(sessionId, state).catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to deliver CI failure prompt for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        },
+      });
+    for (const record of this.ciCheckWatchStore.list()) {
+      if (this.sessionManager.getSession(record.sessionId)) {
+        this.ciCheckWatcher.watch(record.sessionId, record);
+      } else {
+        this.ciCheckWatchStore.remove(record.sessionId);
+      }
+    }
+    this.ciCheckWatcher.start();
 
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
@@ -1665,6 +1775,7 @@ export class NodeDaemon extends EventEmitter {
     }
     this.bridges.clear();
     this.targetHealthSampler.stop();
+    this.ciCheckWatcher.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
     // exiting does not kill it" — a later reattach still works), a
@@ -2815,21 +2926,43 @@ export class NodeDaemon extends EventEmitter {
     }
   }
 
+  /**
+   * The one place a `usage_update.costUsd` (already known non-`undefined`
+   * by the caller) becomes real state, for BOTH SPEC §7.16's spend-cap
+   * enforcement and SPEC §7.9's spend-over-time view (issue #249) — never
+   * two divergent computations of "how much did this session actually
+   * cost." `cost.amount` is documented as the session's own cumulative
+   * total to date, not a per-update delta (see `wireAgentSession`'s
+   * former inline comment, moved here), so:
+   *
+   * 1. `bridge.spendCumulativeCostUsd` becomes the running max of itself
+   *    and `reportedCostUsd` — unchanged from before this method existed,
+   *    still what `maybeApplySpendCap`/the live usage meter read.
+   * 2. The INCREASE over the previous running max (if any — a duplicate
+   *    or out-of-order report with no real increase writes nothing) is
+   *    persisted into `spendLedgerStore`, attributed to today's UTC
+   *    calendar date: ACP's `usage_update` carries no timestamp of its
+   *    own, so "today, wall-clock, on this node" is the one honest
+   *    attribution available — never a fabricated or backdated one.
+   */
+  private recordUsageCost(bridge: SessionBridge, reportedCostUsd: number): void {
+    const previousCostUsd = bridge.spendCumulativeCostUsd ?? 0;
+    bridge.spendCumulativeCostUsd = Math.max(previousCostUsd, reportedCostUsd);
+    const deltaUsd = reportedCostUsd - previousCostUsd;
+    if (deltaUsd > 0) {
+      this.spendLedgerStore.recordDelta(
+        new Date().toISOString().slice(0, 10),
+        bridge.session.projectPath,
+        bridge.session.provider,
+        deltaUsd,
+      );
+    }
+  }
+
   private wireAgentSession(bridge: SessionBridge): void {
     bridge.agentSession.on('transcript_update', (update: AcpTranscriptUpdate) => {
       if (update.kind === 'usage_update' && update.costUsd !== undefined) {
-        // SPEC §7.9/§7.16: the same cumulative-cost rollup the usage meter
-        // shows and a runaway subagent's own spend already folds into
-        // (issue #248's "still included in the cumulative cost figure")
-        // — a running max, never a sum, mirroring `@loombox/providers-core`'s
-        // `reduceUsage` exactly, since `cost.amount` is documented as the
-        // session's own cumulative total, not a per-update delta. Stays
-        // `undefined` until the agent reports a real cost at least once
-        // (see `maybeApplySpendCap`'s guard #3) — never seeded to 0.
-        bridge.spendCumulativeCostUsd = Math.max(
-          bridge.spendCumulativeCostUsd ?? 0,
-          update.costUsd,
-        );
+        this.recordUsageCost(bridge, update.costUsd);
         this.maybeApplySpendCap(bridge);
       }
       this.forwardSessionEvent(bridge.session.id, update);
@@ -3848,6 +3981,12 @@ export class NodeDaemon extends EventEmitter {
       case 'git_diff_request':
         this.handleGitDiffRequest(message);
         return;
+      case 'git_hunk_diff_request':
+        this.handleGitHunkDiffRequest(message);
+        return;
+      case 'git_hunk_action_request':
+        this.handleGitHunkActionRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -3901,6 +4040,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'session_spend_cap_resume':
         this.handleSessionSpendCapResume(message);
+        return;
+      case 'spend_report_request':
+        this.handleSpendReportRequest(message);
         return;
       case 'checkpoint_create':
         this.handleCheckpointCreate(message);
@@ -4329,6 +4471,14 @@ export class NodeDaemon extends EventEmitter {
       // and must still surface as outcome: 'error'.
       if (!(error instanceof InvalidSessionTransitionError)) throw error;
     }
+    // SPEC §7.14, issue #239: a session's CI watch is scoped to that
+    // session's own life — an archived session's open PR (if any) is no
+    // longer this node's concern to keep polling, and `unwatch` also
+    // clears its dedup state so a same-id session (never happens today,
+    // but nothing here relies on session ids never being reused) starts
+    // clean.
+    this.ciCheckWatcher.unwatch(sessionId);
+    this.ciCheckWatchStore.remove(sessionId);
     // Clean up this session's hidden checkpoint refs (issue #603) before
     // the record disappears below — `GitCheckpointStore.deleteAllCheckpoints()`
     // needs `worktreePath`, still readable from `sessionManager` right up
@@ -4710,12 +4860,29 @@ export class NodeDaemon extends EventEmitter {
    * side channel. `sendFileEvent` is on its own wire message type, never
    * `bridge.sendQueue`/`session_update` — see that method's doc comment.
    *
+   * "Hand off to the agent" (SPEC §7.25; issue #158): each resolved
+   * attachment is also run through `buildInlineImageContentBlock`
+   * (`@loombox/providers-core`), gated on this session's own negotiated
+   * `image` prompt capability (`agentSession.getFeatureFlags()
+   * .supportsImages` — the same capability-gated flag every other v1
+   * feature branches on, SPEC.md §5.5, never a provider-id check: Claude's
+   * and Codex's real ACP bridges build the identical inline base64 block,
+   * so there is nothing to special-case here). A successful build appends
+   * an ACP `ContentBlock::Image` to this turn's prompt, verbatim, after the
+   * text block; a declined one (no negotiated capability, an oversize
+   * payload, or bytes that don't re-sniff as a supported format) emits
+   * `'attachment_handoff_declined'` for observability and otherwise leaves
+   * this turn exactly as before this issue — the attachment's `blob_ref`
+   * metadata still went out above regardless, so every other subscribed
+   * client still sees it attached; only the live agent doesn't receive the
+   * bytes inline for this turn. Never throws: a declined hand-off degrades
+   * the turn, it does not fail it.
+   *
    * `payload.mentions` (issue #742's `@`-mention pills) needs no resolution
    * step of its own — each entry already IS the resolved reference (an ACP
    * `resource_link`'s `uri`/`name`, folded onto the wire's plaintext by the
    * client, never re-derived here) — `renderPromptTextWithMentions` just
-   * folds it into the text `agentSession.prompt()` takes, see that
-   * function's own doc comment for why text is still the only channel.
+   * folds it into the text `agentSession.prompt()` takes.
    */
   private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
     // Checkpoint first, before anything else this turn does (including
@@ -4727,7 +4894,15 @@ export class NodeDaemon extends EventEmitter {
     // this same worktree's `.git`) is still in flight — awaiting it here,
     // synchronously ahead of everything else, is what makes that true.
     await this.autoCheckpointBeforeTurn(bridge);
-    for (const attachment of payload.attachments ?? []) {
+    const attachments = payload.attachments ?? [];
+    // Read once, lazily: only an attachment-bearing prompt needs this
+    // session's negotiated capabilities, so a plain-text prompt on a
+    // replay-only bridge (were one ever routed here) never trips
+    // `getFeatureFlags()`'s live-session guard for no reason.
+    const imageCapabilityNegotiated =
+      attachments.length > 0 && bridge.agentSession.getFeatureFlags().supportsImages;
+    const contentBlocks: AcpPromptContentBlock[] = [];
+    for (const attachment of attachments) {
       const bytes = await this.supervisor.resolveAttachment(bridge.session.id, attachment.ref);
       const resolved: ResolvedAttachment = {
         sessionId: bridge.session.id,
@@ -4744,9 +4919,24 @@ export class NodeDaemon extends EventEmitter {
         dimensions: attachment.dimensions,
         thumbhash: attachment.thumbhash,
       });
+
+      const handoff = buildInlineImageContentBlock(bytes, { imageCapabilityNegotiated });
+      if (handoff.ok) {
+        contentBlocks.push(handoff.block);
+      } else {
+        const declined: AttachmentHandoffDeclined = {
+          sessionId: bridge.session.id,
+          ref: attachment.ref,
+          reason: handoff.reason,
+        };
+        this.emit('attachment_handoff_declined', declined);
+      }
     }
     this.beginTurn(bridge);
-    await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
+    await bridge.agentSession.prompt(
+      renderPromptTextWithMentions(payload.text, payload.mentions),
+      contentBlocks,
+    );
   }
 
   /**
@@ -5203,6 +5393,148 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'git_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's current
+   * staged/unstaged hunk breakdown (SPEC §7.6; issue #232) —
+   * `handleGitDiffRequest`'s sibling, same "no live bridge needed, always
+   * a reply, never a silent drop" contract. No envelope on
+   * `git_hunk_diff_request` itself (see `@loombox/protocol`'s
+   * `git-hunks.ts` doc comment), so there is nothing to decrypt before
+   * computing the diff.
+   */
+  private handleGitHunkDiffRequest(message: GitHunkDiffRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.computeGitHunkDiffForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitHunkDiffResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_hunk_diff_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  /**
+   * Runs `computeHunkDiff` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like
+   * `computeGitDiffForBridge` above (both drive real `git` subcommands the
+   * same way). Never throws: a target that can't be resolved, or a
+   * `GitDiffError` from a genuinely uncomputable diff, both become an
+   * `outcome: 'error'` payload instead, so `handleGitHunkDiffRequest`
+   * always has a response to seal and send back.
+   */
+  private async computeGitHunkDiffForBridge(
+    routing: SessionRouting,
+  ): Promise<GitHunkDiffResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const files = await computeHunkDiff(target, routing.session.worktreePath);
+      return { outcome: 'ok', files };
+    } catch (error) {
+      if (error instanceof GitDiffError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitHunkDiffResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitHunkDiffResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_hunk_diff_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to stage/unstage/discard one
+   * hunk (SPEC §7.6; issue #232) — `handleFsReadRequest`'s sibling in
+   * shape (an enveloped request, since `path` is real session content),
+   * but mutating: `applyGitHunkAction` really does write to the index
+   * and/or worktree rather than merely reading. The caller re-issues
+   * `git_hunk_diff_request` afterward to see the result — this reply
+   * itself carries no diff.
+   */
+  private handleGitHunkActionRequest(message: GitHunkActionRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitHunkActionRequest(message)
+      .then((payload) => this.applyGitHunkActionForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitHunkActionResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_hunk_action_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitHunkActionRequest(
+    message: GitHunkActionRequest,
+  ): Promise<GitHunkActionRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitHunkActionRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Runs `applyGitHunkAction` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like
+   * `computeGitHunkDiffForBridge` above. Never throws: a target that
+   * can't be resolved, a `GitHunkActionError` (a stale `hunkIndex`, an
+   * `unstage` with nothing staged, or the underlying git command
+   * failing), or any other error all become an `outcome: 'error'`
+   * payload instead, so `handleGitHunkActionRequest` always has a
+   * response to seal and send back.
+   */
+  private async applyGitHunkActionForBridge(
+    routing: SessionRouting,
+    payload: GitHunkActionRequestPayloadV1,
+  ): Promise<GitHunkActionResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await applyGitHunkAction(target, routing.session.worktreePath, payload);
+      return { outcome: 'ok' };
+    } catch (error) {
+      if (error instanceof GitHunkActionError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitHunkActionResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitHunkActionResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_hunk_action_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
@@ -6797,6 +7129,52 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /**
+   * A client asked for a project's spend-over-time history (SPEC §7.9;
+   * issue #249). Node-addressed by `nodeId` + `projectPath`, needing
+   * neither a live `SessionBridge` nor even a session that ever ran for
+   * this exact `sessionId` — mirrors `handleTrackerSnapshotRequest`'s own
+   * "reachable with no session running at all" reasoning (issue #697),
+   * for the identical reason: a project's spend history outlives every
+   * session that ever added to it. Always answered, `rows: []` included
+   * — a project with nothing recorded in the requested range is a real,
+   * representable answer, never a dropped request (issue #691's class of
+   * bug).
+   */
+  private handleSpendReportRequest(message: SpendReportRequest): void {
+    const rows = filterSpendLedgerRows(this.spendLedgerStore.all(), {
+      projectPath: message.projectPath,
+      sinceDate: message.sinceDate,
+      untilDate: message.untilDate,
+    });
+    this.sendSpendReportResponse(message.nodeId, message.projectPath, message.requestId, {
+      rows: rows.map(({ date, provider, costUsd }) => ({ date, provider, costUsd })),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send spend_report_response for project ${message.projectPath}: ${detail}`,
+      );
+    });
+  }
+
+  private async sendSpendReportResponse(
+    nodeId: string,
+    projectPath: string,
+    requestId: string,
+    payload: SpendReportResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getProjectKey(projectPath);
+    const envelope = await sealJson(projectPath, payload, key);
+    this.relay.send({
+      type: 'spend_report_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      projectPath,
+      requestId,
+      envelope,
+    });
+  }
+
   private async decryptCheckpointCreate(
     message: CheckpointCreate,
   ): Promise<CheckpointCreatePayloadV1> {
@@ -7770,7 +8148,20 @@ export class NodeDaemon extends EventEmitter {
     this.decryptPrOpenRequest(message)
       .then((payload) =>
         this.getExecutionTarget(routing.targetId, routing.session.projectPath).then((target) =>
-          openPr(target, routing.session, payload),
+          openPr(target, routing.session, payload).then((opened) =>
+            // SPEC §7.14, issue #239: once a PR is genuinely open, start
+            // watching its CI checks — best-effort, never lets a watch-
+            // registration failure (e.g. an unparseable PR URL) turn an
+            // otherwise-successful pr_open_request into a reported
+            // failure.
+            this.registerCiCheckWatch(routing.session, target, opened)
+              .catch((error: unknown) => {
+                console.warn(
+                  `NodeDaemon: failed to register CI check watch for session ${message.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              })
+              .then(() => opened),
+          ),
         ),
       )
       .then(
@@ -7805,6 +8196,121 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       envelope,
     });
+  }
+
+  /**
+   * SPEC §7.14, issue #239: once a session's PR is genuinely open, this
+   * starts (or replaces) that session's watched entry — `CiCheckWatcher`
+   * polls it from the very next pass, and `CiWatchStore` persists it so a
+   * later node restart re-registers it too (see this daemon's own
+   * constructor). Best-effort: `parseGithubPullRequestUrl` returning
+   * `undefined` (a non-`github.com` PR — out of this watcher's scope, see
+   * that function's own doc comment) or `resolveSessionBranch` resolving
+   * nothing usable both fall through as a silent no-op rather than an
+   * error, matching `handlePrOpenRequest`'s own "never lets a watch-
+   * registration failure turn an otherwise-successful pr_open_request
+   * into a reported failure" contract.
+   */
+  private async registerCiCheckWatch(
+    session: Session,
+    target: ExecutionTarget,
+    opened: OpenPrResult,
+  ): Promise<void> {
+    const parsed = parseGithubPullRequestUrl(opened.url);
+    if (!parsed) return;
+    const ref = await resolveSessionBranch(target, session);
+    if (!ref) return;
+    const entry: CiWatchEntry = {
+      owner: parsed.owner,
+      repo: parsed.repo,
+      ref,
+      prNumber: opened.number,
+      prUrl: opened.url,
+      projectPath: session.projectPath,
+    };
+    this.ciCheckWatchStore.set(session.id, entry);
+    this.ciCheckWatcher.watch(session.id, entry);
+  }
+
+  /**
+   * `CiCheckWatcher`'s only source of a GitHub bearer token (SPEC §7.14,
+   * issue #239) — reuses SPEC §7.26's connected-account pin resolution
+   * (`./account-pin.ts`'s `resolveAccountForRead`) rather than a new
+   * token path, the same composition `resolveTrackerBackend`'s own GitHub
+   * branch applies. `github.com` only (this watcher's own scope — see
+   * `parseGithubPullRequestUrl`'s doc comment): a GHES account pinned for
+   * a project's `github` capability is simply never a candidate here.
+   * Never throws: an ambiguous pin ({@link AmbiguousAccountError}) or any
+   * other resolution error is caught and treated exactly like "nothing
+   * configured" — `undefined` — so a project a person hasn't yet resolved
+   * their GitHub ambiguity for degrades this one watched session's state
+   * to `'unknown'` rather than crashing a poll pass.
+   */
+  private async resolveCiCheckGithubToken(projectPath: string): Promise<string | undefined> {
+    let account: ConnectedAccount | undefined;
+    try {
+      account = resolveAccountForRead({
+        pins: this.accountPinStore.get(projectPath),
+        capability: 'github',
+        accounts: this.connectedAccounts,
+        target: { provider: 'github', host: 'github.com' },
+      });
+    } catch {
+      return undefined;
+    }
+    if (!account) return undefined;
+    return this.githubConnectService.getAccessToken(account);
+  }
+
+  /**
+   * Pushes a session's latest `CiCheckWatcher` reading to its subscribed
+   * clients (SPEC §7.14, issue #239) — `CiCheckWatcher`'s own `onUpdate`,
+   * fired after every completed poll pass, whatever the resulting state.
+   * Session-scoped and envelope-sealed exactly like `sendFileEvent`/
+   * `sendPrOpenResult`: the relay only ever sees `sessionId` and
+   * ciphertext.
+   */
+  private async sendCiCheckStatus(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: CiCheckStatusPayloadV1 = { status: state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * `CiCheckWatcher`'s `onFailure` hook (SPEC §7.14, issue #239) — fired
+   * exactly once per NEW failing commit (see `ci-check-watcher.ts`'s own
+   * "exactly-once-per-failure dedup" doc comment; this method itself does
+   * no deduping of its own). Feeds the failure straight back to the
+   * session's own agent via `promptSession` — the "surfaced ... which can
+   * auto-iterate a fix" half of SPEC §7.14's PR & CI lifecycle bullet.
+   * This is only the hook: driving the resulting turn to a genuinely
+   * green re-run (re-pushing, watching the NEXT poll, deciding when to
+   * stop) is issue #246's job, not this one's. A session with no live
+   * agent (`promptSession`'s own "no session with id" — archived, or
+   * `'disconnected'` since a restart) rejects here and is caught by this
+   * method's own caller (the `onFailure` wiring in this daemon's
+   * constructor), exactly like every other best-effort hook in this file.
+   */
+  private async handleCiCheckFailure(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    const failing = state.checkRuns.filter((run) => isFailingConclusion(run.conclusion));
+    const lines = failing.map((run) => {
+      const detail = run.summary ? `: ${run.summary}` : '';
+      return `- ${run.name} (${run.conclusion ?? 'unknown'})${detail}`;
+    });
+    const text = [
+      `CI just went red on this session's open pull request (${state.prUrl}):`,
+      '',
+      ...(lines.length > 0 ? lines : ['- (no failing check run details available)']),
+      '',
+      'Please look into the failure above and push a fix.',
+    ].join('\n');
+    await this.promptSession(sessionId, text);
   }
 
   /**

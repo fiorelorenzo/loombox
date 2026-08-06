@@ -139,7 +139,7 @@ describe('NodeIdentityStore', () => {
   });
 
   describe('issue #118: OS-native keyring backend', () => {
-    it('uses the OS backend when available, never touching the fallback file', async () => {
+    it('uses the OS backend as a cache in front of the durable file, not instead of it', async () => {
       const osBackend = fakeOsBackend();
       const store = new NodeIdentityStore({
         stateDir,
@@ -148,10 +148,11 @@ describe('NodeIdentityStore', () => {
 
       const created = await store.create();
       await expect(store.exists()).resolves.toBe(true);
+      // Issue #815: the durable file is the source of truth, so create()
+      // always writes it too, even with a working OS backend available.
       expect(osBackend.data.size).toBe(1);
-
       const { existsSync } = await import('node:fs');
-      expect(existsSync(path.join(stateDir, 'identity.json'))).toBe(false);
+      expect(existsSync(path.join(stateDir, 'identity.json'))).toBe(true);
 
       const reloaded = await store.load();
       expect(reloaded!.publicKeyBase64).toBe(created.publicKeyBase64);
@@ -199,6 +200,64 @@ describe('NodeIdentityStore', () => {
 
       const reloaded = await store.load();
       expect(reloaded!.publicKeyBase64).toBe(created.publicKeyBase64);
+    });
+  });
+
+  describe('issue #815: the durable file wins over a volatile OS keyring cache', () => {
+    it('adopts the existing identity from the file when the OS keyring cache is empty, and logs adoption', async () => {
+      // Pre-seed the durable file directly — the exact shape
+      // `provision-and-pair.ts`'s `serializePersistedIdentityFile` produces
+      // for a not-yet-started remote node, and also what a reboot leaves
+      // behind after wiping a volatile Linux kernel keyring.
+      const seeded = await new NodeIdentityStore({
+        stateDir,
+        osKeyringBackendFactory: noOsKeyring,
+      }).create();
+
+      const volatileBackend = fakeOsBackend(); // empty: simulates the wiped cache
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const store = new NodeIdentityStore({
+        stateDir,
+        osKeyringBackendFactory: async () => volatileBackend,
+      });
+
+      const loaded = await store.load();
+      expect(loaded?.publicKeyBase64).toBe(seeded.publicKeyBase64);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('adopted'));
+      // The cache is reseeded from the file, not left empty.
+      expect(volatileBackend.data.size).toBe(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it('generates exactly once when both the file and the OS keyring cache start empty, then reuses it across a simulated reboot (the volatile backend cleared, the file untouched)', async () => {
+      const volatileBackend = fakeOsBackend();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const storeA = new NodeIdentityStore({
+        stateDir,
+        osKeyringBackendFactory: async () => volatileBackend,
+      });
+      const created = await storeA.loadOrCreate();
+
+      // Simulated reboot: the volatile keyring cache is wiped, the durable
+      // file survives on disk — the real behavior a kernel-keyring reboot
+      // produces (issue #815).
+      volatileBackend.data.clear();
+
+      const storeB = new NodeIdentityStore({
+        stateDir,
+        osKeyringBackendFactory: async () => volatileBackend,
+      });
+      const reloaded = await storeB.loadOrCreate();
+
+      expect(reloaded.publicKeyBase64).toBe(created.publicKeyBase64);
+      const generateLogs = warnSpy.mock.calls.filter(([msg]) =>
+        String(msg).includes('generating a new one'),
+      );
+      expect(generateLogs).toHaveLength(1);
+
+      warnSpy.mockRestore();
     });
   });
 });

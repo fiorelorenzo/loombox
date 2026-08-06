@@ -90,6 +90,10 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   fs_read_response: { routed: 'node' },
   git_diff_request: { routed: 'client' },
   git_diff_response: { routed: 'node' },
+  git_hunk_diff_request: { routed: 'client' },
+  git_hunk_diff_response: { routed: 'node' },
+  git_hunk_action_request: { routed: 'client' },
+  git_hunk_action_response: { routed: 'node' },
   target_fs_list_request: { routed: 'client' },
   target_fs_list_response: { routed: 'node' },
   custom_agent_probe_request: { routed: 'client' },
@@ -176,6 +180,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   spend_cap_set: { routed: 'client' },
   spend_cap_result: { routed: 'node' },
   session_spend_cap_resume: { routed: 'client' },
+  spend_report_request: { routed: 'client' },
+  spend_report_response: { routed: 'node' },
   keymap_get_request: { routed: 'client' },
   keymap_set_request: { routed: 'client' },
   keymap_result: {
@@ -205,6 +211,7 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   pr_open_preview_result: { routed: 'node' },
   pr_open_request: { routed: 'client' },
   pr_open_result: { routed: 'node' },
+  ci_check_status: { routed: 'node' },
   ping: { routed: 'device' },
   pong: {
     routed: 'not-routed',

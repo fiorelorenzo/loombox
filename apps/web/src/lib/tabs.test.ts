@@ -288,3 +288,49 @@ describe('CanvasTabsState: the working-tree diff tab (issue #206)', () => {
     expect(tabs.diffViewer).toBeUndefined();
   });
 });
+
+describe("CanvasTabsState: the working-tree diff tab's staging-mode hunk viewer (issue #232)", () => {
+  it('openDiff() also starts the hunk viewer loading, independently of diffViewer', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    expect(tabs.hunkViewer).toEqual({ status: 'loading' });
+  });
+
+  it('openDiff() called again does not reset an already-loaded hunk viewer back to loading', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setHunkViewer({ status: 'loaded', files: [] });
+    tabs.activate('transcript', []);
+
+    tabs.openDiff([]);
+    expect(tabs.hunkViewer).toEqual({ status: 'loaded', files: [] });
+  });
+
+  it('setHunkViewer updates independently of setDiffViewer — the two never overwrite each other', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setDiffViewer({ status: 'loaded', files: [] });
+    tabs.setHunkViewer({ status: 'error', message: 'not a repo' });
+
+    expect(tabs.diffViewer).toEqual({ status: 'loaded', files: [] });
+    expect(tabs.hunkViewer).toEqual({ status: 'error', message: 'not a repo' });
+  });
+
+  it('close() on the diff tab clears the hunk viewer along with the diff viewer', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setHunkViewer({ status: 'loaded', files: [] });
+
+    tabs.close('diff');
+    expect(tabs.hunkViewer).toBeUndefined();
+  });
+
+  it('reset() drops the hunk viewer along with everything else', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openDiff([]);
+    tabs.setHunkViewer({ status: 'error', message: 'boom' });
+
+    tabs.reset();
+    expect(tabs.hunkViewer).toBeUndefined();
+  });
+});

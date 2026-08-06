@@ -13,7 +13,8 @@
     "lint": "eslint src",
     "test": "vitest run",
     "start": "tsx src/main.ts",
-    "dev": "tsx watch src/main.ts"
+    "dev": "tsx watch src/main.ts",
+    "bundle": "node scripts/bundle.mjs"
   },
   "dependencies": {
     "@loombox/crypto": "workspace:*",

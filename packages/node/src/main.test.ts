@@ -21,7 +21,7 @@ import type { AdoptWrappedAmkFileOptions } from './amk-handoff-file';
 import { NodeIdentityStore } from './identity';
 import { ConfigError } from './config';
 import { DeviceTokenFileStore } from './device-token-store';
-import { installGracefulShutdown, start, type DeviceLoginRunner } from './main';
+import { installGracefulShutdown, printBuildIdentity, start, type DeviceLoginRunner } from './main';
 import type { AccountIdResolver } from './resolve-account-id';
 
 function envFor(relayUrl: string, stateDir: string, amk: Uint8Array, nodeId = 'main-test-node') {
@@ -705,5 +705,28 @@ describe('installGracefulShutdown (issue #63)', () => {
     process.emit('SIGINT');
     await new Promise((resolve) => setImmediate(resolve));
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('printBuildIdentity (issue #817 --version flag)', () => {
+  it("prints this build's version+commit as JSON without loading any node config, identity, or relay connection", async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let printedRaw: unknown;
+    try {
+      await printBuildIdentity();
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      const [firstCall] = logSpy.mock.calls;
+      printedRaw = JSON.parse(String(firstCall?.[0]));
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(
+      typeof printedRaw === 'object' &&
+        printedRaw !== null &&
+        'version' in printedRaw &&
+        typeof printedRaw.version === 'string' &&
+        printedRaw.version.length > 0,
+    ).toBe(true);
   });
 });

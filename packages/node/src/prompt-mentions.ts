@@ -1,14 +1,14 @@
 /**
  * Renders a `PromptPayload`'s structured `mentions` (issue #742's `@`-mention
  * pills, decisions doc C2-3) into the plain text `AgentSession.prompt()`
- * actually takes. `AgentSession.prompt()` is text-only in v1 — handing a
- * mention to the agent as a real ACP content block is a separate,
- * provider-adapted concern out of this issue's scope (see
- * `ResolvedAttachment`'s doc comment in `node-daemon.ts`, which already
- * carries this exact caveat for image attachments) — so a mention's
- * resolved reference reaches the agent by being appended to the prompt
- * text, not by growing a second content-block argument nothing downstream
- * of this node consumes yet.
+ * takes as its `text` argument. `AgentSession.prompt()` grew a second,
+ * content-block argument for the inline base64 image hand-off (SPEC.md
+ * §7.25 "Hand off to the agent"; issue #158, `node-daemon.ts`'s
+ * `deliverPrompt`) — but a mention is deliberately NOT folded into that
+ * array: unlike an attachment's bytes, a mention's `ResourceLink` needs no
+ * fetch/decrypt/re-sniff step of its own (see below), so there's nothing
+ * gained by routing it through the same capability-gated content-block
+ * path; it still reaches the agent by being appended to the prompt text.
  *
  * Each mention already carries the exact ACP baseline `ContentBlock::
  * ResourceLink` shape it was picked as on the client
