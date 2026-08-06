@@ -48,6 +48,19 @@ bump that drops or renames one of these capabilities fails CI instead of surpris
 that file's own header comment for how it's structured and why the version is pinned exactly
 rather than left as a caret range.
 
+**Install weight, checked (not assumed):** `@agentclientprotocol/codex-acp@1.1.10` pulls in exactly
+one new transitive dependency, `@agentclientprotocol/sdk` (its own bundled zod schema copy), for a
+combined `1.2 MB + 5.4 MB = 6.6 MB` under `packages/providers/codex/node_modules/.pnpm` — dev-only,
+scoped to this one package, invisible to every runtime bundle (`provider.ts` still shells out to
+Codex via `npx`, never imports this package). `pnpm install --frozen-lockfile` and a full
+`pnpm -r typecheck` (all 17 workspace projects) both stayed green with it in place. 6.6 MB of
+devDependency-only weight for a citation trail that's mechanically checkable against the real
+shipped source (versus hand-copied snippets nobody can `grep -c` against a version bump) is the
+right trade for a package this repo already spawns as its Codex runtime — vendoring snippets
+instead would trade that mechanical check for a doc a human has to remember to re-verify by hand,
+which is the exact failure mode described in the Method section above (the GitHub-`gh api`
+snapshot approach this spike replaced).
+
 ## Capability-by-capability findings
 
 ### 1. `initialize` — agent capabilities Codex actually advertises
@@ -83,7 +96,9 @@ value (agentclientprotocol.com/protocol/v1/schema: `agentCapabilities` defaults 
 `plans` field in either place). `mcpServerPicker`, `requestPermission`, and `plans` don't exist in
 the real schema at all, in any nesting (grepped the entire 31,611-line bundle: zero hits as
 capability fields — `requestPermission` appears only as the unrelated `session/request_permission`
-JSON-RPC method name, `dist/index.js:21092,21587,24320,24335,24350,24983,30436`).
+JSON-RPC method name (`dist/index.js:21092,21587,24320,24335,24350,24983,30436`) and once as a
+substring of the unrelated `"requestPermissions"` action-type case label (`dist/index.js:23318`,
+part of a `switch` over MCP-tool action kinds, nothing to do with agent capabilities).
 `additionalDirectories` and `sessionDelete` *do* exist, but nested under
 `sessionCapabilities.additionalDirectories` / `sessionCapabilities.delete`
 (`zSessionCapabilities`, `dist/index.js:18734-18742`) — a level `deriveFeatureFlags`
@@ -218,7 +233,8 @@ no new gap here.
 | [#821](https://github.com/fiorelorenzo/loombox/issues/821) | providers/core's AcpAgentCapabilities reads capability fields that don't exist in real ACP v1 (mcpServerPicker, requestPermission, plans; additionalDirectories/sessionDelete/resume mis-nested) | P1 | `packages/providers/core/src/{types,capabilities,client}.ts` |
 | [#822](https://github.com/fiorelorenzo/loombox/issues/822) | AcpToolKind is missing the real ACP switch_mode tool-call kind | P3 | `packages/providers/core/src/types.ts` |
 
-All four are sub-issues of epic #19 and linked from #182.
+All four are labeled `area:providers` and reference this spike; they still need parenting to epic
+#19 on the GitHub Project board (not yet done — a board-write step outside this spike's scope).
 
 ## Executable checks
 
@@ -228,3 +244,10 @@ package, plus a "real-shape conformance" section that feeds loombox's own adapte
 (`mapCodexPermissionOptions`, `hasCodexBespokeWidget`/`codexBespokeToolName`,
 `buildCodexImageContentBlock`, `deriveFeatureFlags`) the real label/title/capability shapes found
 here — proving today, not just documenting, which of loombox's Codex-facing assumptions hold.
+
+**Regression-proof, not just pass-today:** verified by hand once — temporarily flipping the
+`loadSession: true` assertion's expected string to `loadSession: false` turns the suite red (`1
+failed | 13 passed`, `AssertionError: expected '… loadSession: true, promptCapabilities: …' to
+contain '… loadSession: false, promptCapabilities: …'` at the exact assertion line); reverting the
+one-character edit turns it green again (`14 passed`). Full before/after output is in this PR's
+description, not committed here since it isn't a permanent fixture.

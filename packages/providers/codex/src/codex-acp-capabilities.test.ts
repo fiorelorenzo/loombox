@@ -3,7 +3,11 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { deriveFeatureFlags } from '@loombox/providers-core';
-import type { AcpAgentCapabilities, AcpPermissionOption, AcpToolCallUpdate } from '@loombox/providers-core';
+import type {
+  AcpAgentCapabilities,
+  AcpPermissionOption,
+  AcpToolCallUpdate,
+} from '@loombox/providers-core';
 import { describe, expect, it } from 'vitest';
 
 import { buildCodexImageContentBlock } from './image';
@@ -55,7 +59,9 @@ function hasNonEmptyStringVersion(value: unknown): value is { version: string } 
 
 function packageVersion(pkg: unknown): string {
   if (!hasNonEmptyStringVersion(pkg)) {
-    throw new Error('test fixture: @agentclientprotocol/codex-acp package.json has no valid "version" field');
+    throw new Error(
+      'test fixture: @agentclientprotocol/codex-acp package.json has no valid "version" field',
+    );
   }
   return pkg.version;
 }
