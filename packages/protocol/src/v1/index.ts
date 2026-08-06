@@ -557,6 +557,35 @@ export {
   permissionRuleSetV1,
   toolRefusalReasonV1,
 } from './permission-policy';
+export type {
+  PrOpenFailureCategory,
+  PrOpenFailure,
+  PrOpenPreviewOutcome,
+  PrOpenPreviewResultPayloadV1,
+  PrOpenPreviewRequest,
+  PrOpenPreviewResult,
+  PrOpenRequestPayloadV1,
+  PrOpenRequest,
+  PrOpenOutcome,
+  PrOpenResultPayloadV1,
+  PrOpenResult,
+} from './pr';
+export {
+  parsePrOpenPreviewResultPayloadV1,
+  parsePrOpenRequestPayloadV1,
+  parsePrOpenResultPayloadV1,
+  safeParsePrOpenPreviewResultPayloadV1,
+  safeParsePrOpenRequestPayloadV1,
+  safeParsePrOpenResultPayloadV1,
+  prOpenFailureCategory,
+  prOpenFailure,
+  prOpenPreviewOutcome,
+  prOpenPreviewRequest,
+  prOpenPreviewResult,
+  prOpenRequest,
+  prOpenResult,
+  prOpenOutcome,
+} from './pr';
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
@@ -924,6 +953,16 @@ import {
   testRunnerConfigSet,
 } from './test-runner-config';
 import {
+  prOpenFailureCategory,
+  prOpenFailure,
+  prOpenPreviewOutcome,
+  prOpenPreviewRequest,
+  prOpenPreviewResult,
+  prOpenRequest,
+  prOpenResult,
+  prOpenOutcome,
+} from './pr';
+import {
   permissionPolicyGet,
   permissionPolicyResult,
   permissionPolicySet,
@@ -1229,4 +1268,12 @@ export const schemasV1 = {
   keymapGetRequest,
   keymapSetRequest,
   keymapResult,
+  prOpenFailureCategory,
+  prOpenFailure,
+  prOpenPreviewOutcome,
+  prOpenPreviewRequest,
+  prOpenPreviewResult,
+  prOpenRequest,
+  prOpenResult,
+  prOpenOutcome,
 } as const;

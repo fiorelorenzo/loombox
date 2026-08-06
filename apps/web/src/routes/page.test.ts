@@ -226,6 +226,17 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     decommissionTarget: vi.fn(),
     updateTarget: vi.fn(),
     archiveSession: vi.fn().mockResolvedValue(undefined),
+    previewPrOpen: vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      branch: 'loombox/session-x',
+      base: 'main',
+      commitCount: 1,
+    }),
+    openPr: vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      url: 'https://github.com/example/repo/pull/1',
+      number: 1,
+    }),
     resolvePermission: vi.fn(),
     expandDirectory: vi.fn(),
     escrowAmk: vi.fn().mockResolvedValue(undefined),
@@ -1345,6 +1356,28 @@ describe('session archive (SPEC §7.2 board archive; issue #512)', () => {
       expect(screen.getAllByText('No session selected')).toHaveLength(2);
     });
     expect(screen.queryByTestId('cockpit-session-title')).toBeNull();
+  });
+});
+
+describe('session PR open (SPEC §7.14; issue #238)', () => {
+  it('the row menu offers "Open pull request…" alongside the other occasional, per-session actions', async () => {
+    mountCockpit({ sessions: [makeSession()] });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+
+    expect(screen.getByTestId('session-pr-open-link').textContent).toContain('Open pull request');
+  });
+
+  it('clicking "Open pull request…" opens a dialog naming the session and loads a real preview', async () => {
+    const { client } = mountCockpit({
+      sessions: [makeSession({ id: 'sess_pr', title: 'Refactor relay routing' })],
+    });
+    await fireEvent.click(await screen.findByTestId('session-row-more'));
+    await fireEvent.click(screen.getByTestId('session-pr-open-link'));
+
+    const context = (await screen.findByTestId('pr-open-context')).textContent ?? '';
+    expect(context).toContain('Refactor relay routing');
+    expect(client.previewPrOpen).toHaveBeenCalledWith('sess_pr');
+    await screen.findByTestId('pr-open-preview');
   });
 });
 
