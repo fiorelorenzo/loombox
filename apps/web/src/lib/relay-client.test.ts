@@ -22,6 +22,7 @@ import {
   type ConnectedAccount,
   type EncryptedEnvelope,
   type PermissionResponse,
+  type PermissionPolicyV1,
   type PromptInjectV1,
   type SessionMetaPublic,
   type WireMessageV1,
@@ -4256,6 +4257,201 @@ describe('RelayClient: test runner config (SPEC §7.15; issue #245)', () => {
   });
 });
 
+describe('RelayClient: permission policy (SPEC §7.17; issue #751)', () => {
+  it('getPermissionPolicy resolves with the decrypted saved policy the owning node replies with, sealed under the session key', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-get';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_permpolicy_get', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const getPromise = client.getPermissionPolicy(session.id);
+
+    const request = (await node.waitFor((m) => m.type === 'permission_policy_get')) as {
+      type: 'permission_policy_get';
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    // No envelope: a plain "which session am I asking about" request carries no content.
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const policy: PermissionPolicyV1 = {
+      command: { allow: [], deny: ['rm -rf *'] },
+      network: { allow: [], deny: [] },
+    };
+    const responseEnvelope = await nodeSeal(session.id, { policy }, key);
+    node.send({
+      type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(getPromise).resolves.toEqual(policy);
+  });
+
+  it('setPermissionPolicy seals the full policy (never a partial patch) and resolves with what the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-set';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_permpolicy_set', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const newPolicy: PermissionPolicyV1 = {
+      command: { allow: ['pnpm *'], deny: [] },
+      network: { allow: [], deny: ['*.internal'] },
+    };
+    const setPromise = client.setPermissionPolicy(session.id, newPolicy);
+
+    const request = (await node.waitFor((m) => m.type === 'permission_policy_set')) as {
+      type: 'permission_policy_set';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const requestPayload = await nodeOpen<{ policy: unknown }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ policy: newPolicy });
+
+    const responseEnvelope = await nodeSeal(session.id, { policy: newPolicy }, key);
+    node.send({
+      type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(setPromise).resolves.toEqual(newPolicy);
+  });
+
+  it('rejects immediately when there is no open connection, for both calls', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-permpolicy-no-conn',
+      deviceId: 'client-permpolicy-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.getPermissionPolicy('sess_x')).rejects.toThrow(/no open connection/);
+    await expect(
+      client.setPermissionPolicy('sess_x', {
+        command: { allow: [], deny: [] },
+        network: { allow: [], deny: [] },
+      }),
+    ).rejects.toThrow(/no open connection/);
+  });
+
+  it('onPermissionPolicyViolation fires with the decrypted violation, naming the deny rule (D3-4 attribution)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-permpolicy-violation';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-permpolicy-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_permpolicy_violation',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-permpolicy-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    // Establishes the relay subscription this client needs to receive a
+    // fanned-out permission_policy_violation — getPermissionPolicy is
+    // deliberately never answered here; only its subscribe side effect
+    // matters (mirrors how the real PermissionPolicyPanel already
+    // subscribes on mount via its own initial load).
+    client.getPermissionPolicy(session.id).catch(() => undefined);
+    await node.waitFor((m) => m.type === 'permission_policy_get');
+
+    const violationPromise = new Promise<unknown>((resolve) => {
+      const unsubscribe = client!.onPermissionPolicyViolation(session.id, (violation) => {
+        unsubscribe();
+        resolve(violation);
+      });
+    });
+
+    const violationPayload = {
+      reason: {
+        kind: 'permission_policy' as const,
+        dimension: 'command' as const,
+        rule: 'rm *',
+        matched: 'rm -rf /',
+      },
+      surface: 'terminal' as const,
+      command: 'rm -rf /',
+      timestamp: '2026-08-06T00:00:00.000Z',
+    };
+    const violationEnvelope = await nodeSeal(session.id, violationPayload, key);
+    node.send({
+      type: 'permission_policy_violation',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: violationEnvelope,
+    });
+
+    await expect(violationPromise).resolves.toEqual(violationPayload);
+  });
+});
+
 describe('RelayClient: discoverSshHosts (redesign v2 §3.2 add-target candidate picker; issue #475)', () => {
   it("resolves with the acting node's discovered SSH candidates, plain fields only (no envelope)", async () => {
     const amk = generateAmk();
@@ -6146,6 +6342,123 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
     await expect(
       client.createSession({ targetId: 'local', provider: 'claude', projectPath: '/proj' }),
     ).rejects.toThrow(/not connected/);
+  });
+
+  it("selecting a session before its own session_announce arrives still ends up 'error' with a reason, never stuck on 'awaiting you' (issue #730 — this method's own doc comment names the gap its \"remaining half\")", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-race';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-race',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-create-race',
+      // Real default is 300ms; a few ms keeps this test fast without
+      // changing what it proves (retry-until-acked, not the exact timing).
+      sessionResumeRetryMs: 20,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const sessionId = 'sess-race-1';
+    const key = await deriveNodeSessionKey(amk, accountId, sessionId);
+
+    // Subscribes to a session id the relay has never heard of yet — every
+    // real `session_resume` this sends is dropped with no ack
+    // (`relay.ts`'s own "resume for unknown/foreign session" branch),
+    // exactly the race `selectSession`'s own `ensureSubscribed` call hits
+    // right after `createSession` returns (that method's own doc comment,
+    // just above this describe block, names this issue).
+    const status = client.statusFor(sessionId);
+    const attentionInbox = client.attentionInbox();
+
+    // Proves the race is real, not accidentally already resolved: several
+    // retry intervals pass with the relay still not knowing this session,
+    // so status stays exactly `undefined` — never a stale/wrong guess.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(get(status)).toBeUndefined();
+
+    // The node "catches up": announces (same as a real node's
+    // `createSessionInternal` would, well after `session_create` reached
+    // it over the network), reports 'starting' immediately, then the
+    // spawn fails.
+    const session = makeSessionMeta({ id: sessionId, accountId, nodeId: 'node_create_race' });
+    const privateEnvelope = await nodeSeal(
+      sessionId,
+      { title: 'races the subscribe', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    const startingEnvelope = await nodeSeal(
+      sessionId,
+      { kind: 'session_status', status: 'starting', updatedAt: 't1' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 1,
+      envelope: startingEnvelope,
+    });
+    const errorEnvelope = await nodeSeal(
+      sessionId,
+      {
+        kind: 'session_status',
+        status: 'error',
+        updatedAt: 't2',
+        reason: 'agent spawn did not complete within 120000ms',
+      },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 2,
+      envelope: errorEnvelope,
+    });
+
+    // The retry-until-acked subscribe plus its one-time post-ack resync
+    // eventually catch up: 'error' — with its reason — actually arrives,
+    // whether by live fan-out (the retry's subscribe landed before these
+    // sends) or by the resync backfill (it landed after). Either way the
+    // client never stays stuck on `undefined`, and never guesses
+    // 'awaiting_input'.
+    await waitForStore(status, (value) => value === 'error');
+    const reason = await waitForStore(
+      client.statusReasonFor(sessionId),
+      (value) => value !== undefined,
+    );
+    expect(reason).toBe('agent spawn did not complete within 120000ms');
+
+    // The inbox's own half of the same acceptance criterion: never an
+    // 'awaiting_input' item for this session (it never WAS awaiting
+    // input), and the session_outcome item it does get carries the same
+    // reason as its stopReason (RelayClient's own fallback, for a session
+    // whose agent never got as far as a turn, in `recomputeAttentionInbox`).
+    const items = await waitForStore(attentionInbox, (value) =>
+      value.some((item) => item.sessionId === sessionId),
+    );
+    expect(items.filter((item) => item.sessionId === sessionId)).toEqual([
+      expect.objectContaining({
+        kind: 'session_outcome',
+        sessionId,
+        outcome: 'error',
+        stopReason: 'agent spawn did not complete within 120000ms',
+      }),
+    ]);
+    expect(
+      items.some((item) => item.sessionId === sessionId && item.kind === 'awaiting_input'),
+    ).toBe(false);
   });
 });
 

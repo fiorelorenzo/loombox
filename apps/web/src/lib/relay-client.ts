@@ -36,6 +36,8 @@ import {
   buildIdentityMismatch,
   initializeResult,
   newDeviceBootstrapResponse,
+  parsePermissionPolicyResultPayloadV1,
+  parsePermissionPolicyViolationPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   safeParseSessionLifecycleEventV1,
@@ -96,6 +98,11 @@ import {
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
   type TestRunnerCommandsV1,
+  type PermissionPolicyResult,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolation,
+  type PermissionPolicySetPayloadV1,
+  type PermissionPolicyViolationPayloadV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
@@ -126,6 +133,11 @@ export type {
   BuildIdentityV1,
   TargetHealth,
   TargetListEntry,
+} from '@loombox/protocol';
+export type {
+  PermissionPolicyV1,
+  PermissionRuleSetV1,
+  ToolRefusalReasonV1,
 } from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
@@ -432,7 +444,7 @@ export interface AttentionInboxItem {
   readonly permission?: PendingPermissionRequest;
   /** Set only for a `'session_outcome'` item: which live status this reflects. */
   readonly outcome?: 'exited' | 'error';
-  /** Set only for a `'session_outcome'` item, when the session's last settled turn carried one (`TranscriptState.lastStopReason`, SPEC §7.24) — extra context for why it stopped. */
+  /** Set for a `'session_outcome'` item when there's extra context for why it stopped: the session's last settled turn's own reason (`TranscriptState.lastStopReason`, SPEC §7.24), or — for one whose agent never got that far — the spawn failure/timeout the node reported instead (`TranscriptState.statusReason`, issue #730). At most one of those two is ever actually set for a given session. */
   readonly stopReason?: string;
   /**
    * Set for a `'permission'` or `'awaiting_input'` item: the agent's most
@@ -632,6 +644,20 @@ export interface RelayClientOptions {
    * anything. Defaults to 30s; tests override it to a few ms to stay fast.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * How often (ms) to retry `session_resume` for a session this client
+   * has never successfully subscribed to yet, until the relay's own
+   * `session_announce` reply confirms it landed (issue #730). Needed
+   * because a `session_resume` for a session the relay doesn't have a
+   * record for yet — the announce-vs-subscribe race a freshly created
+   * session's own {@link RelayClient.createSession} lands in — is
+   * dropped with no ack at all (`packages/relay/src/relay.ts`'s
+   * `session_resume` case), so a single fire-and-forget send can lose
+   * the subscription permanently. See {@link RelayClient.ensureSubscribed}'s
+   * doc comment for the full mechanism. Defaults to 300ms; tests override
+   * it to a few ms to stay fast.
+   */
+  sessionResumeRetryMs?: number;
 }
 
 /** Default for {@link RelayClientOptions.turnIdleMs}. */
@@ -642,6 +668,10 @@ const DEFAULT_INITIAL_BACKOFF_MS = 250;
 const DEFAULT_MAX_BACKOFF_MS = 10_000;
 /** Default for {@link RelayClientOptions.heartbeatIntervalMs}. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+/** Default for {@link RelayClientOptions.sessionResumeRetryMs}. */
+const DEFAULT_SESSION_RESUME_RETRY_MS = 300;
+/** Hard cap on {@link RelayClient.retrySessionResume}'s retry count (issue #730) — bounds how long this client keeps re-sending `session_resume` for a session that never gets announced (an unknown target, a bad decrypt, or a missing MCP grant on `handleSessionCreate` — none of which have a wire-level failure notice yet, see that doc comment) instead of retrying forever. At the default interval this is ~9s, comfortably past a real worktree-creation delay. */
+const SESSION_RESUME_MAX_ATTEMPTS = 30;
 
 function generateId(prefix: string): string {
   const hasRandomUUID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
@@ -1046,6 +1076,10 @@ export class RelayClient {
   /** Categories with an outstanding `config_option` this client itself sent, per session (issue #718) — {@link handleConfigOptionResult}'s "is this reply to my own request" guard, the `category`-keyed counterpart of {@link pendingFsListRequests}'s `requestId`-keyed one (`config_option` carries no request id — see that schema's own doc comment for why category alone is the correlation key). */
   private readonly pendingConfigOptions = new Map<string, Set<string>>();
   private readonly subscribed = new Set<string>();
+  /** Backs {@link retrySessionResume}'s pending retry timer, one per session currently mid-retry (issue #730) — cleared the moment `handleSessionAnnounce` acks the subscribe, or on {@link close}. */
+  private readonly pendingSessionResumeRetries = new Map<string, TimerHandle>();
+  /** Sessions that have already had their one-time post-subscribe `resync_request(sinceSeq: 0)` sent (issue #730) — see {@link acknowledgeSessionResume}'s doc comment for why this fires at most once per session, ever, per client instance. */
+  private readonly sessionResyncedOnSubscribe = new Set<string>();
   /** Backs {@link attentionInbox} — see that method's doc comment. */
   private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
   /** True once {@link attentionInbox} has been called at least once (it is lazily activated, like every other per-session subscription in this class). */
@@ -1160,6 +1194,21 @@ export class RelayClient {
     { resolve: (suggestions: TestRunnerCommandsV1) => void; reject: (error: Error) => void }
   >();
   /**
+   * requestId -> the pending {@link getPermissionPolicy}/{@link setPermissionPolicy}
+   * call it belongs to (SPEC §7.17; issue #751). Both resolve to the same
+   * `permission_policy_result` reply, mirrors {@link pendingTestRunnerConfigRequests}
+   * immediately above.
+   */
+  private readonly pendingPermissionPolicyRequests = new Map<
+    string,
+    { resolve: (policy: PermissionPolicyV1) => void; reject: (error: Error) => void }
+  >();
+  /** sessionId -> every listener registered via {@link onPermissionPolicyViolation}, fired with each decrypted `permission_policy_violation` as it arrives (SPEC §7.17; issue #751) — mirrors {@link terminalOutputListeners}, keyed by session alone since a violation isn't scoped to one terminal/run. */
+  private readonly permissionPolicyViolationListeners = new Map<
+    string,
+    Set<(violation: PermissionPolicyViolationPayloadV1) => void>
+  >();
+  /**
    * requestId -> the pending {@link discoverSshHosts} call it belongs to
    * (redesign v2 §3.2's add-target candidate picker; issue #475).
    * `ssh_discovery_response` carries plain fields only (no envelope — see
@@ -1233,6 +1282,8 @@ export class RelayClient {
   private readonly heartbeatIntervalMs: number;
   private heartbeatTimer: TimerHandle | undefined;
   private pendingPingNonce: string | undefined;
+  /** See `RelayClientOptions.sessionResumeRetryMs`'s doc comment (issue #730). */
+  private readonly sessionResumeRetryMs: number;
 
   constructor(options: RelayClientOptions) {
     this.options = options;
@@ -1248,6 +1299,7 @@ export class RelayClient {
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.backoffMs = this.initialBackoffMs;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.sessionResumeRetryMs = options.sessionResumeRetryMs ?? DEFAULT_SESSION_RESUME_RETRY_MS;
 
     const ctor = options.webSocketImpl ?? (globalThis.WebSocket as unknown as WebSocketConstructor);
     if (!ctor) {
@@ -1465,8 +1517,15 @@ export class RelayClient {
       this.reconnectTimer = undefined;
     }
     this.stopHeartbeat();
+    this.clearPendingSessionResumeRetries();
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  /** Cancels every still-pending {@link retrySessionResume} timer (issue #730) — called on {@link close} so a discarded client never keeps retrying into a socket nobody reads from again. */
+  private clearPendingSessionResumeRetries(): void {
+    for (const timer of this.pendingSessionResumeRetries.values()) clearTimeout(timer);
+    this.pendingSessionResumeRetries.clear();
   }
 
   /** Starts (or restarts) the heartbeat ping/pong-deadline cycle — see `RelayClientOptions.heartbeatIntervalMs`'s doc comment. Only ever called once a relay has proven it supports it. */
@@ -2283,6 +2342,124 @@ export class RelayClient {
   }
 
   /**
+   * Reads `sessionId`'s project's saved permission policy from the owning
+   * node (SPEC §7.17; issue #751) — the allow-all default for a project
+   * with nothing saved yet. No envelope on the request, same reasoning as
+   * {@link getTestRunnerConfig}. Requires an open connection and rejects
+   * on a timeout, mirroring {@link getTestRunnerConfig}'s own contract.
+   */
+  getPermissionPolicy(sessionId: string, timeoutMs = 5000): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (policy) => {
+          clearTimeout(timer);
+          resolve(policy);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch, mirrors
+   * `PermissionPolicyStore.save()`'s own contract) `sessionId`'s
+   * project's permission policy (SPEC §7.17; issue #751). Resolves with
+   * the saved result (the same `permission_policy_result` reply
+   * {@link getPermissionPolicy} gets), so a caller's UI can show the saved
+   * state without a separate follow-up read. Validating an individual
+   * glob rule (non-blank, per issue #751's "an invalid glob is rejected
+   * at entry") is the caller's job (`PermissionPolicyPanel.svelte`'s own
+   * form) — this method sends whatever `PermissionPolicyV1` it is given.
+   */
+  setPermissionPolicy(
+    sessionId: string,
+    policy: PermissionPolicyV1,
+    timeoutMs = 5000,
+  ): Promise<PermissionPolicyV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save permission policy, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('permpolicy');
+    return new Promise<PermissionPolicyV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissionPolicyRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
+      }, timeoutMs);
+      this.pendingPermissionPolicyRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: PermissionPolicySetPayloadV1 = { policy };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'permission_policy_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingPermissionPolicyRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Registers `listener` to be called with each decrypted
+   * `permission_policy_violation` this session receives (SPEC §7.17;
+   * issue #751, D3-4's own "the UI must say which of the three layers
+   * refused it") — mirrors {@link onTerminalOutput}. Returns an
+   * unsubscribe function; call it once the caller stops rendering
+   * `sessionId`'s violations (e.g. `PermissionPolicyPanel` unmounting).
+   */
+  onPermissionPolicyViolation(
+    sessionId: string,
+    listener: (violation: PermissionPolicyViolationPayloadV1) => void,
+  ): () => void {
+    let listeners = this.permissionPolicyViolationListeners.get(sessionId);
+    if (!listeners) {
+      listeners = new Set();
+      this.permissionPolicyViolationListeners.set(sessionId, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  /**
    * Reads `sessionId`'s project's saved test/lint/build commands from the
    * owning node (SPEC §7.15; issue #245) — `{}` for a project with nothing
    * saved yet. No envelope on the request (nothing to hide about "which
@@ -2530,6 +2707,21 @@ export class RelayClient {
     const store = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(store, (state) => state.status);
+  }
+
+  /**
+   * The reason behind {@link statusFor}'s current value, when it has one
+   * (issue #730) — only ever set alongside `'error'` (a spawn that failed
+   * or timed out, in words a user can read; see `@loombox/node`'s
+   * `sendSessionStatus` doc comment), `undefined` for every other status
+   * and before any status has arrived at all. A second `derived` over the
+   * exact same store {@link statusFor} already subscribes (see this
+   * class's own doc comment), not a heavier separate subscription.
+   */
+  statusReasonFor(sessionId: string): Readable<string | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.statusReason);
   }
 
   /**
@@ -3677,7 +3869,93 @@ export class RelayClient {
   private ensureSubscribed(sessionId: string): void {
     if (this.subscribed.has(sessionId)) return;
     this.subscribed.add(sessionId);
+    this.retrySessionResume(sessionId, 0);
+  }
+
+  /**
+   * Sends `session_resume` for `sessionId` and, unless this is already its
+   * `SESSION_RESUME_MAX_ATTEMPTS`th attempt, arms a `sessionResumeRetryMs`
+   * timer to try again — cancelled the moment {@link acknowledgeSessionResume}
+   * observes the relay's own `session_announce` reply (issue #730).
+   *
+   * Exists because a `session_resume` for a session the relay has no
+   * record for yet is dropped with no ack at all
+   * (`packages/relay/src/relay.ts`'s `session_resume` case: `if (!record
+   * || ...) { app.log.warn(...); return; }`) — and a freshly created
+   * session's very first subscribe lands in exactly that window:
+   * `RelayClient.createSession` sends `session_create` and returns the id
+   * it generated locally the instant that's on the wire (issue #761/#763),
+   * so `selectSession`'s own `ensureSubscribed` call can easily win the
+   * race against the owning node's slower `session_announce` round trip.
+   * A single fire-and-forget `session_resume` in that state subscribes to
+   * nothing and never retries (`subscribed` is already marked) — the
+   * session then sits on `undefined` status forever, which is #730's
+   * "the client either does not receive them or does not use them" (it's
+   * the former): the node's own `'starting'`/`'queued'`/`'error'` pushes
+   * (`node-daemon.ts`'s `createSessionInternal`/`launchLocalSession`) go
+   * out to a relay fan-out this connection was never registered for.
+   *
+   * Deliberately scoped to a session's FIRST subscribe only —
+   * {@link resubscribeSessionsOnReconnect} (an already-subscribed session
+   * surviving a reconnect) is untouched, no retry, exactly as before.
+   * General reconnect-time resync (tracked `sinceSeq`, `resync_marker`
+   * surfacing, live/replay dedup) is issue #729's, not this one's.
+   */
+  private retrySessionResume(sessionId: string, attempt: number): void {
     this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+    if (attempt >= SESSION_RESUME_MAX_ATTEMPTS) {
+      console.warn(
+        `RelayClient: gave up waiting for session ${sessionId} to be announced after ${attempt} attempts (issue #730) — the owning node may never have announced it at all (see handleSessionCreate's doc comment for the unnotified failure modes this can't distinguish from "just slow")`,
+      );
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.pendingSessionResumeRetries.delete(sessionId);
+      this.retrySessionResume(sessionId, attempt + 1);
+    }, this.sessionResumeRetryMs);
+    this.pendingSessionResumeRetries.set(sessionId, timer);
+  }
+
+  /**
+   * `session_announce` reaches this client in exactly one way — the
+   * direct reply `relay.ts`'s `session_resume` case sends back, which it
+   * only does AFTER `subscribeClientToSession` — so receiving one here is
+   * this connection's ack that a `session_resume` it sent actually
+   * subscribed it (issue #730). Cancels {@link retrySessionResume}'s
+   * pending timer for this session, and — the first time only, ever, per
+   * session, per client instance, guarded by
+   * {@link sessionResyncedOnSubscribe} — asks the relay to replay
+   * whatever this session's resync ring already buffered
+   * (`resync_request` with `sinceSeq: 0`).
+   *
+   * That backfill closes the OTHER half of the same race
+   * {@link retrySessionResume} closes: even once subscribed, this
+   * connection only receives fan-out from that moment forward
+   * (`session_resume` itself replays nothing — `relay.ts:1668-1685`), so
+   * a `'starting'`/`'queued'`/`'error'` status the node already pushed
+   * (right after its own `announce`, the identical race from the node's
+   * side) would otherwise never arrive at all. `resync_request` and a
+   * live `session_update` share one wire shape and one client-side
+   * handler (`handleSessionUpdate`), so replaying needs no separate code
+   * path here.
+   *
+   * NOT #729's general resync: no `sinceSeq` tracking across reconnects,
+   * no `resync_marker` surfacing, no live/replay dedup — this fires once
+   * per session, right after its first-ever successful subscribe, when
+   * there is provably nothing yet applied locally to duplicate. A
+   * `session_announce` received again later (this same first subscribe's
+   * retry catching up after the ack already arrived, or a later
+   * reconnect's `resubscribeSessionsOnReconnect`) is a no-op here.
+   */
+  private acknowledgeSessionResume(sessionId: string): void {
+    const timer = this.pendingSessionResumeRetries.get(sessionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.pendingSessionResumeRetries.delete(sessionId);
+    }
+    if (!this.subscribed.has(sessionId) || this.sessionResyncedOnSubscribe.has(sessionId)) return;
+    this.sessionResyncedOnSubscribe.add(sessionId);
+    this.send({ type: 'resync_request', protocolVersion: PROTOCOL_V1, sessionId, sinceSeq: 0 });
   }
 
   /**
@@ -3743,7 +4021,15 @@ export class RelayClient {
           nodeId: session.nodeId,
           waitingSince: parseStatusTimestamp(transcript.statusUpdatedAt),
           outcome: transcript.status,
-          stopReason: transcript.lastStopReason,
+          // `lastStopReason` is set by a real `turn_ended` (SPEC §7.24) —
+          // never fired for a session whose agent never got as far as a
+          // turn at all. `statusReason` (issue #730) is the OTHER source
+          // of "why did this stop": the node's own spawn-failure/timeout
+          // message. At most one is ever set for a given session (a turn
+          // that ran far enough to end implies the agent started fine),
+          // so falling back rather than picking one is never a real
+          // choice between two live values.
+          stopReason: transcript.lastStopReason ?? transcript.statusReason,
         });
       }
     }
@@ -3923,6 +4209,12 @@ export class RelayClient {
       case 'run_exit':
         this.handleRunExit(message);
         return;
+      case 'permission_policy_result':
+        this.handlePermissionPolicyResult(message);
+        return;
+      case 'permission_policy_violation':
+        this.handlePermissionPolicyViolation(message);
+        return;
       case 'test_runner_config_result':
         this.handleTestRunnerConfigResult(message);
         return;
@@ -4036,6 +4328,10 @@ export class RelayClient {
   }
 
   private handleSessionAnnounce(message: SessionAnnounceV1): void {
+    // Independent of whether the private meta below decrypts cleanly:
+    // the subscribe itself already succeeded the moment this arrived at
+    // all (issue #730 — see `acknowledgeSessionResume`'s doc comment).
+    this.acknowledgeSessionResume(message.session.id);
     this.decryptSessionMeta(message.session, message.privateEnvelope)
       .then((session) => {
         this.sessionsStore.update((sessions) => {
@@ -4243,6 +4539,54 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link getPermissionPolicy}/{@link setPermissionPolicy} calls (SPEC
+   * §7.17; issue #751). `permission_policy_result` is fanned out to
+   * every client subscribed to the session (mirrors `fs_list_response`),
+   * so the same "requestId not pending means it isn't mine" guard as
+   * {@link handleFsListResponse} applies. Validated (not just cast — issue
+   * #593's own boundary discipline), same as `handleTestRunnerConfigResult`.
+   */
+  private handlePermissionPolicyResult(message: PermissionPolicyResult): void {
+    const pending = this.pendingPermissionPolicyRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPermissionPolicyRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePermissionPolicyResultPayloadV1(decrypted).policy))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * One live policy denial (SPEC §7.17; issue #751, D3-4's own "the UI
+   * must say which of the three layers refused it") — decrypted and
+   * fanned out to every listener {@link onPermissionPolicyViolation}
+   * registered for this exact `sessionId`, mirroring
+   * {@link handleTerminalOutput}. Never buffered by this class itself: a
+   * caller mounting after this fired simply never sees it, exactly like
+   * `terminalOutputListeners`' own contract (`TerminalClientState`'s doc
+   * comment).
+   */
+  private handlePermissionPolicyViolation(message: PermissionPolicyViolation): void {
+    const listeners = this.permissionPolicyViolationListeners.get(message.sessionId);
+    if (!listeners || listeners.size === 0) return;
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        const violation = parsePermissionPolicyViolationPayloadV1(decrypted);
+        for (const listener of listeners) listener(violation);
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`RelayClient: failed to decrypt permission_policy_violation: ${detail}`);
+      });
   }
 
   /**

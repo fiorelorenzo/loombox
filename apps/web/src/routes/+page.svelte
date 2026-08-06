@@ -5,6 +5,7 @@
   import type { TransitionConfig } from 'svelte/transition';
   import { env as publicEnv } from '$env/dynamic/public';
   import type {
+    AcpAvailableCommand,
     AcpConfigOption,
     AcpPermissionOption,
     AcpSessionStatus,
@@ -43,6 +44,12 @@
     type DockPanelState,
   } from '$lib/dock-panel.svelte';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
+  import {
+    getAvailableActions,
+    matchShortcut,
+    type ActionContext,
+    type ActionHandlers,
+  } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
@@ -65,6 +72,24 @@
     type NotificationPreferences as NotificationPreferencesData,
     type NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
+  import {
+    createLocalStorageConfigOptionDefaultsStorage,
+    rememberConfigOptionValues,
+    rememberedConfigOptionsFor,
+    type ConfigOptionDefaultsStorage,
+    type RememberedConfigOptionValues,
+  } from '$lib/config-option-defaults';
+  import {
+    clearConfigOptionOverride,
+    configOptionOverridesFor,
+    createLocalStorageConfigOptionOverrideStorage,
+    setConfigOptionOverride,
+  } from '$lib/config-option-overrides';
+  import {
+    resolveConfigOptionDefaults,
+    resolveConfigOptionSources,
+    type ConfigOptionSource,
+  } from '$lib/config-option-resolution';
   import {
     createProjectStore,
     projectKey,
@@ -109,6 +134,7 @@
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
+  import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
   import TranscriptTimeline, {
     type TranscriptJumpTarget,
   } from '$lib/components/TranscriptTimeline.svelte';
@@ -143,6 +169,11 @@
   // `routes/page.test.ts`, where `window`/`localStorage` don't exist.
   let authStore: AuthStore | undefined;
   let amkStorage: ReturnType<typeof createLocalStorageAmkStorage> | undefined;
+  // Account-wide remembered config-option values (issue #753, D4-2/D4-3) —
+  // same "only ever constructed client-side" reasoning as `amkStorage`
+  // above: `localStorage` doesn't exist during `routes/page.test.ts`'s SSR
+  // render.
+  let configOptionDefaultsStorage: ConfigOptionDefaultsStorage | undefined;
   // This browser's own stable device id (issue #163's presence check needs
   // the push subscription and the live WS connection to agree on one id —
   // see `device-id-store.ts`'s doc comment), loaded once in `onMount` below.
@@ -681,6 +712,21 @@
   let reviewChangesOpen = $state(false);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
+  /** The selected session's agent-declared `/`-command catalog (Zed-parity C2-4, issue #743), mirrored off `client.commandsFor(id)` exactly like `configOptions` above — `[]` until the agent's first `available_commands_update`, and whenever it declares none at all. */
+  let commands = $state<AcpAvailableCommand[]>([]);
+  /**
+   * The selected session's own agent's remembered account-wide values and
+   * this project's pinned overrides (issue #753, D4-2/D4-3) — refreshed by
+   * `selectSession` on every session switch, by `rememberConfigOptionValues`
+   * every time `configOptions` itself changes, and by
+   * `pinConfigOptionToProject`/`unpinConfigOptionFromProject` on a pin
+   * action. `$state`, not read live off `localStorage` inside a `$derived`,
+   * because a `localStorage` write is not itself a Svelte reactivity
+   * source — see this file's own `configOptionSources` derived below,
+   * which reacts to `configOptions` AND these two together.
+   */
+  let configOptionAccountDefaults = $state<RememberedConfigOptionValues>({});
+  let configOptionProjectOverrides = $state<RememberedConfigOptionValues>({});
   let attachments = $state<ComposerAttachment[]>([]);
   let queuedPrompts = $state<QueuedPrompt[]>([]);
   let draft = $state('');
@@ -836,6 +882,13 @@
   // rather than being appended blindly. `undefined` means "no active
   // trigger" (the picker was opened some other way, or was never opened).
   let atTriggerStart = $state<number | undefined>(undefined);
+  let slashPickerOpen = $state(false);
+  // The index in `draft` where the triggering '/' sits — see
+  // `atTriggerStart` just above, same contract, scoped to the `/`-command
+  // picker (issue #743). Only ever set when `/` is the very first
+  // character of the composer (slash commands are a whole-message
+  // convention, never embedded mid-sentence like `@file`).
+  let slashTriggerStart = $state<number | undefined>(undefined);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -895,8 +948,11 @@
   // visible for every session in the list, not just the one currently open.
   const sessionStatuses = new SvelteMap<string, AcpSessionStatus | undefined>();
   const sessionStatusUnsubscribers = new SvelteMap<string, () => void>();
+  /** Parallels {@link sessionStatuses}, one `RelayClient.statusReasonFor` subscription per listed session (issue #730) — why a `'error'` status happened, when the node said so (a spawn that failed or timed out); `undefined` for every other status. Kept as a separate map/subscription pair rather than widening `sessionStatuses`' value type, since every existing reader of that map (severity ranking, row/selvage labels) only ever needed the bare status. */
+  const sessionStatusReasons = new SvelteMap<string, string | undefined>();
+  const sessionStatusReasonUnsubscribers = new SvelteMap<string, () => void>();
 
-  /** (Re)syncs `sessionStatuses`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
+  /** (Re)syncs `sessionStatuses`'/`sessionStatusReasons`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
   function syncSessionStatusSubscriptions(list: ClientSessionMeta[]): void {
     if (!client) return;
     const activeClient = client;
@@ -907,12 +963,25 @@
       sessionStatusUnsubscribers.delete(id);
       sessionStatuses.delete(id);
     }
+    for (const [id, unsubscribe] of sessionStatusReasonUnsubscribers) {
+      if (currentIds.has(id)) continue;
+      unsubscribe();
+      sessionStatusReasonUnsubscribers.delete(id);
+      sessionStatusReasons.delete(id);
+    }
     for (const session of list) {
-      if (sessionStatusUnsubscribers.has(session.id)) continue;
-      const unsubscribe = activeClient
-        .statusFor(session.id)
-        .subscribe((value) => sessionStatuses.set(session.id, value));
-      sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      if (!sessionStatusUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusFor(session.id)
+          .subscribe((value) => sessionStatuses.set(session.id, value));
+        sessionStatusUnsubscribers.set(session.id, unsubscribe);
+      }
+      if (!sessionStatusReasonUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusReasonFor(session.id)
+          .subscribe((value) => sessionStatusReasons.set(session.id, value));
+        sessionStatusReasonUnsubscribers.set(session.id, unsubscribe);
+      }
     }
   }
 
@@ -920,6 +989,9 @@
     for (const unsubscribe of sessionStatusUnsubscribers.values()) unsubscribe();
     sessionStatusUnsubscribers.clear();
     sessionStatuses.clear();
+    for (const unsubscribe of sessionStatusReasonUnsubscribers.values()) unsubscribe();
+    sessionStatusReasonUnsubscribers.clear();
+    sessionStatusReasons.clear();
   }
 
   // Persistence for the client-side UI preferences below (relay URL,
@@ -1024,20 +1096,62 @@
       : undefined,
   );
   /**
-   * Whether the selected session survived a node restart with no agent
-   * behind it (`session-manager.ts`'s `SessionLifecycleState` doc
-   * comment). Files and the terminal still work on one of these (issue
-   * #702 part 3 — neither ever needed the agent), but a new prompt
-   * genuinely cannot be delivered (no agent process to hand it to, and
-   * `prompt_inject` has no reply channel to report that failure on), so
-   * the composer is disabled rather than silently swallowing a send that
-   * would otherwise sit unanswered for 10s exactly like the bug this
-   * issue fixed.
+   * Whether the selected session currently has a live agent that is
+   * definitely NOT there to send a prompt to — issue #730, widening
+   * #702's `'disconnected'`-only check (a session that survived a node
+   * restart with no agent behind it, `session-manager.ts`'s
+   * `SessionLifecycleState` doc comment) to every other `SessionStatusV1`
+   * that means the same thing for the composer: `'queued'`/`'starting'`
+   * (the agent hasn't spawned, or hasn't finished spawning, yet) and
+   * `'error'`/`'exited'` (the spawn failed, or the agent already
+   * stopped). In every one of these a new prompt genuinely has nowhere to
+   * go (no agent process to hand it to, and `prompt_inject` has no reply
+   * channel to report that failure on), so the composer says so instead
+   * of looking ready and silently doing nothing — the same reasoning
+   * #702 already established, just for five states instead of one.
+   *
+   * Deliberately does NOT include `undefined` (no `session_status` has
+   * arrived yet): that is absence of information, not proof there is
+   * nothing to send to, and this client's own resync ring is bounded
+   * (`packages/relay/src/relay.ts`'s prune/quota machinery) — a long-
+   * running session's true status can have aged out of it by the time a
+   * reload re-subscribes, well before it or its agent did anything wrong.
+   * Gating the composer on `undefined` too would block a perfectly
+   * healthy, already-populated session's composer indefinitely after
+   * every ordinary reload whenever that happens, trading #730's narrow
+   * "freshly created session" bug for a much more common false negative.
+   * The row/inbox already treat `undefined` as "unknown" rather than
+   * "awaiting you" (`SESSION_STATUS_UNKNOWN_LABEL`,
+   * `RelayClient.attentionInbox`'s own live-status gate) without needing
+   * the composer to match.
    */
-  const selectedSessionDisconnected = $derived(selectedSessionStatus === 'disconnected');
-  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #702's: disabled for a disconnected session's dead composer.
+  const selectedSessionAgentless = $derived(
+    selectedSessionStatus === 'disconnected' ||
+      selectedSessionStatus === 'queued' ||
+      selectedSessionStatus === 'starting' ||
+      selectedSessionStatus === 'error' ||
+      selectedSessionStatus === 'exited',
+  );
+  /** What the composer's disabled placeholder reads for {@link selectedSessionAgentless}'s current reason (issue #730) — `undefined` while a live agent could actually receive a prompt (including "status genuinely unknown"), so the composer keeps its ordinary placeholder. */
+  const composerUnavailableReason = $derived.by((): string | undefined => {
+    switch (selectedSessionStatus) {
+      case 'disconnected':
+        return "This session's agent isn't running — it disconnected when the node last restarted.";
+      case 'queued':
+        return 'Waiting for a concurrency slot to free up before this session can start…';
+      case 'starting':
+        return "This session's agent is still starting…";
+      case 'error':
+        return `This session's agent failed to start${transcript?.statusReason ? `: ${transcript.statusReason}` : '.'}`;
+      case 'exited':
+        return "This session's agent has already exited.";
+      default:
+        return undefined;
+    }
+  });
+  // Issue #155's send-gate: disabled while any attachment is mid-upload or failed; issue #730's (widening #702's disconnected-only check): disabled while there is no live agent to send to.
   const sendDisabled = $derived(
-    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionDisconnected,
+    draft.trim() === '' || hasBlockingAttachments(attachments) || selectedSessionAgentless,
   );
 
   /**
@@ -1088,6 +1202,15 @@
 
   /** The selected session itself — the header's breadcrumb needs its project/target, not just its title. */
   const selectedSession = $derived(sessions.find((session) => session.id === selectedSessionId));
+
+  /** Every category's current source (issue #753, D4-3 — `ConfigBar`'s own acceptance: "shows the source of the current value"), recomputed off `configOptions` and the two remembered maps `selectSession`/`rememberConfigOptionValues`/the pin actions keep current. */
+  const configOptionSources: Record<string, ConfigOptionSource> = $derived(
+    resolveConfigOptionSources(
+      configOptions,
+      configOptionProjectOverrides,
+      configOptionAccountDefaults,
+    ),
+  );
 
   /**
    * What the sidebar's account row calls the signed-in person (spec §3.1 /
@@ -1167,6 +1290,7 @@
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
   let unsubscribeConfigOptions: (() => void) | undefined;
+  let unsubscribeCommands: (() => void) | undefined;
   let unsubscribeAttachments: (() => void) | undefined;
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
@@ -1201,6 +1325,96 @@
     pendingPushActionFromUrl = undefined;
   }
 
+  /**
+   * `sessionId -> {provider, projectPath}` for a session `handleSessionCreated`
+   * just reported (issue #753), consumed by `handleConfigOptionsUpdate`
+   * below the moment that session's first real (non-empty) catalog
+   * arrives — the ONE signal that tells it "apply this session's
+   * remembered defaults now", and, until `sessions` itself catches up
+   * (the exact same gap `handleSessionCreated`'s own doc comment already
+   * calls out), a `provider`/`projectPath` fallback. Never cleaned up
+   * beyond that one consume — a leftover entry for a long-closed session
+   * is inert.
+   */
+  let recentSessionCreationHints: Record<string, { provider: string; projectPath: string }> = {};
+
+  /**
+   * `sessionId -> categories` awaiting the ack of a `changeConfigOption`
+   * call this device just made (issue #753) — the ONE signal
+   * `handleConfigOptionsUpdate` uses to tell a genuine user pick apart
+   * from every other reason `configOptions` can change: a brand-new
+   * session's raw, untouched catalog; this session's own remembered
+   * defaults being applied (`applyRememberedConfigOptions`, driven by
+   * `recentSessionCreationHints` above); or an unprompted agent-initiated
+   * change. Only a category in this set gets remembered as the agent's
+   * new account-wide "last used" once its push lands, and it is cleared
+   * unconditionally at that point — even a push that leaves `current`
+   * exactly where it already was (the agent rejected the pick, issue
+   * #718) still resolves it, so a refusal never leaves a category
+   * "pending" forever waiting for a value that will never arrive. Without
+   * this, a session that just had a PROJECT override applied would
+   * immediately re-remember that same value as the ACCOUNT'S last used
+   * the moment the ack landed — exactly the cross-project bleed D4-3
+   * exists to prevent, just one layer removed.
+   */
+  let pendingUserConfigOptionChanges: Record<string, SvelteSet<string>> = {};
+
+  /**
+   * The live config-option catalog changed for the selected session
+   * (issue #753, D4-2/D4-3). `configOptions` itself is always replaced
+   * wholesale (unchanged behavior). Two things happen on top, in order:
+   *
+   * 1. If `recentSessionCreationHints` still has an entry for
+   *    `sessionId` — this is that brand-new session's FIRST real catalog
+   *    — consume it and call `applyRememberedConfigOptions`, which may
+   *    issue `setConfigOption` for whichever categories resolve to
+   *    something other than the agent's own current selection. This
+   *    never itself counts as a "last used" pick (see
+   *    `pendingUserConfigOptionChanges`'s own doc comment).
+   * 2. Any category named in `pendingUserConfigOptionChanges` for this
+   *    session — a real `changeConfigOption` call awaiting its ack — is
+   *    remembered as this agent's new account-wide "last used"
+   *    (`rememberConfigOptionValues`) and cleared from the pending set.
+   *
+   * Either way, `configOptionAccountDefaults`/`configOptionProjectOverrides`
+   * are refreshed from storage so `configOptionSources` (`ConfigBar`'s own
+   * source badge) always matches, even on a push that wrote nothing. A
+   * still-empty catalog (a session that hasn't heard from its agent yet)
+   * does none of this.
+   */
+  function handleConfigOptionsUpdate(sessionId: string, value: AcpConfigOption[]): void {
+    configOptions = value;
+    if (value.length === 0) return;
+    const session = sessions.find((entry) => entry.id === sessionId);
+    const hint = recentSessionCreationHints[sessionId];
+    const provider = session?.provider ?? hint?.provider;
+    const projectPath = session?.projectPath ?? hint?.projectPath;
+    if (!provider) return;
+
+    if (hint) {
+      delete recentSessionCreationHints[sessionId];
+      applyRememberedConfigOptions(sessionId, provider, projectPath, value);
+    }
+
+    const pendingCategories = pendingUserConfigOptionChanges[sessionId];
+    if (pendingCategories && pendingCategories.size > 0 && configOptionDefaultsStorage) {
+      const changed = value.filter((option) => pendingCategories.has(option.category));
+      if (changed.length > 0)
+        rememberConfigOptionValues(configOptionDefaultsStorage, provider, changed);
+      pendingCategories.clear();
+    }
+
+    configOptionAccountDefaults = configOptionDefaultsStorage
+      ? rememberedConfigOptionsFor(configOptionDefaultsStorage, provider)
+      : {};
+    configOptionProjectOverrides = projectPath
+      ? configOptionOverridesFor(
+          createLocalStorageConfigOptionOverrideStorage(projectPath),
+          provider,
+        )
+      : {};
+  }
+
   function selectSession(id: string): void {
     selectedSessionId = id;
     const session = sessions.find((entry) => entry.id === id);
@@ -1216,6 +1430,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
@@ -1223,6 +1438,9 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
+    configOptionAccountDefaults = {};
+    configOptionProjectOverrides = {};
     attachments = [];
     queuedPrompts = [];
     staleNotice = undefined;
@@ -1236,7 +1454,8 @@
     });
     unsubscribeConfigOptions = client
       .configOptionsFor(id)
-      .subscribe((value) => (configOptions = value));
+      .subscribe((value) => handleConfigOptionsUpdate(id, value));
+    unsubscribeCommands = client.commandsFor(id).subscribe((value) => (commands = value));
     unsubscribeAttachments = client.attachmentsFor(id).subscribe((value) => (attachments = value));
     unsubscribeQueuedPrompts = client
       .queuedPromptsFor(id)
@@ -1514,8 +1733,54 @@
     }
   }
 
-  /** `NewSessionDialog`'s success callback (issue #385): opening it is just the same `selectSession` any other session click uses. Issue #761 removed `RelayClient.createSession`'s wait for the node's own `session_announce` (it only ever existed to safely time the since-removed starting prompt), so unlike before, the session is not guaranteed to be in `sessions` yet when this fires — `selectSession` doesn't need that: it subscribes regardless and shows the session's live status the moment the announce actually arrives. Making that brief pre-announce window read honestly instead of "Awaiting you" is issue #730's remaining half. */
-  function handleSessionCreated(sessionId: string): void {
+  /**
+   * A brand-new session's remembered config-option defaults (issue #753,
+   * D4-2/D4-3): project override beats account beats the agent's own
+   * default. Called exactly once, by `handleConfigOptionsUpdate`, the
+   * moment this session's real catalog (`catalog`) first arrives — never
+   * a subscription of its own (an earlier version of this function was;
+   * see `handleConfigOptionsUpdate`'s own doc comment for why folding it
+   * in was the fix, not just a simplification: two independent
+   * subscriptions to the same session both trying to be the one that
+   * decides what counts as a "last used" pick raced each other). A
+   * category whose resolved value already equals the agent's own current
+   * selection is skipped — no redundant round trip — and
+   * `resolveConfigOptionDefaults` has already dropped anything stale
+   * (issue #718: never send a value the agent doesn't offer).
+   */
+  function applyRememberedConfigOptions(
+    sessionId: string,
+    provider: string,
+    projectPath: string | undefined,
+    catalog: AcpConfigOption[],
+  ): void {
+    if (!client) return;
+    const projectOverrides = projectPath
+      ? configOptionOverridesFor(
+          createLocalStorageConfigOptionOverrideStorage(projectPath),
+          provider,
+        )
+      : {};
+    const accountDefaults = configOptionDefaultsStorage
+      ? rememberedConfigOptionsFor(configOptionDefaultsStorage, provider)
+      : {};
+    for (const resolution of resolveConfigOptionDefaults(
+      catalog,
+      projectOverrides,
+      accountDefaults,
+    )) {
+      if (resolution.source === 'default' || resolution.optionId === undefined) continue;
+      const option = catalog.find((entry) => entry.category === resolution.category);
+      if (option && option.current !== resolution.optionId) {
+        client.setConfigOption(sessionId, resolution.category, resolution.optionId);
+      }
+    }
+  }
+
+  /** `NewSessionDialog`'s success callback (issue #385): opening it is just the same `selectSession` any other session click uses. Issue #761 removed `RelayClient.createSession`'s wait for the node's own `session_announce` (it only ever existed to safely time the since-removed starting prompt), so unlike before, the session is not guaranteed to be in `sessions` yet when this fires — `selectSession` doesn't need that: it subscribes regardless and shows the session's live status the moment the announce actually arrives. Making that brief pre-announce window read honestly instead of "Awaiting you" is issue #730's remaining half. `provider` (issue #753) is `NewSessionDialog`'s own selection, recorded into `recentSessionCreationHints` here (alongside the project path this dialog was opened for) rather than looked up from `sessions` — the exact same "not guaranteed to be there yet" gap; `handleConfigOptionsUpdate` is what actually applies the remembered defaults once the real catalog arrives. */
+  function handleSessionCreated(sessionId: string, provider: string): void {
+    const projectPath = newSessionProject?.path;
+    if (projectPath) recentSessionCreationHints[sessionId] = { provider, projectPath };
     selectSession(sessionId);
   }
 
@@ -1527,6 +1792,7 @@
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
     unsubscribeConfigOptions?.();
+    unsubscribeCommands?.();
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
@@ -1543,6 +1809,7 @@
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
+    commands = [];
     attachments = [];
     queuedPrompts = [];
     attentionInboxItems = [];
@@ -1551,6 +1818,8 @@
     fileTree = new Map();
     filePickerOpen = false;
     atTriggerStart = undefined;
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
     configControlsExpanded = false;
     newSessionOpen = false;
     newSessionProject = undefined;
@@ -1676,6 +1945,54 @@
       filePickerOpen = false;
       atTriggerStart = undefined;
     }
+
+    // Detects a `/`-command trigger (Zed-parity C2-4; issue #743): unlike
+    // `@file`, a slash command is a whole-message convention, not
+    // something embedded mid-sentence, so this only fires when `/` sits at
+    // the very start of the composer (nothing but `/` plus a run of
+    // non-whitespace before the caret). Never a hardcoded loombox command
+    // list — `commands` is exactly what the connected agent declared
+    // (`RelayClient.commandsFor`, issue #741), so an agent that has
+    // declared none leaves this branch permanently closed: `/` does
+    // nothing.
+    const slashMatch = /^\/(\S*)$/.exec(beforeCaret);
+    if (slashMatch && commands.length > 0) {
+      slashTriggerStart = 0;
+      slashPickerOpen = true;
+    } else {
+      slashPickerOpen = false;
+      slashTriggerStart = undefined;
+    }
+  }
+
+  /**
+   * Inserts `/name ` into the composer for the selected declared command
+   * (Zed-parity C2-4; issue #743) — `/name` plus a trailing space, ready
+   * for the user's own argument text, exactly the same "plain text in the
+   * draft, sent as an ordinary prompt on submit" shape
+   * {@link insertFileReference} already uses for `@path`. No loombox
+   * schema parses or validates the argument: `command.input?.hint` is
+   * rendered by `SlashCommandPicker` purely as on-screen guidance, never
+   * inserted as literal text, since the actual argument is whatever the
+   * agent itself expects the user to type next. Always replaces the
+   * triggering `/partial-query` text at `slashTriggerStart` — this picker
+   * only ever opens via `/`-typing (unlike the `@file` picker, there is no
+   * other entry point), so `slashTriggerStart` is always defined here.
+   */
+  function insertSlashCommand(command: AcpAvailableCommand): void {
+    if (slashTriggerStart !== undefined) {
+      const before = draft.slice(0, slashTriggerStart);
+      const afterTrigger = draft.slice(slashTriggerStart);
+      const afterQuery = /^\/\S*/.exec(afterTrigger)?.[0] ?? '/';
+      const rest = draft.slice(slashTriggerStart + afterQuery.length).replace(/^\s+/, '');
+      draft = `${before}/${command.name} ${rest}`;
+    }
+    closeSlashPicker();
+  }
+
+  function closeSlashPicker(): void {
+    slashPickerOpen = false;
+    slashTriggerStart = undefined;
   }
 
   /**
@@ -1739,29 +2056,39 @@
     client.interruptTurn(selectedSessionId);
   }
 
-  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the palette's action list, rebuilt from current state so it always reflects what's actually doable right now (e.g. Stop only appears while a turn is active). */
-  const paletteActions = $derived.by((): CommandPaletteAction[] => {
-    const actions: CommandPaletteAction[] = [];
-    if (selectedSessionId && transcript?.turnActive) {
-      actions.push({
-        id: 'stop-turn',
-        label: 'Stop current turn',
-        shortcut: 'Mod+.',
-        run: stopSession,
-      });
-    }
-    actions.push({
-      id: 'open-inbox',
-      label: 'Open attention inbox',
-      run: () => (mainView = 'inbox'),
-    });
-    actions.push({
-      id: 'open-nodes',
-      label: 'Open nodes and targets',
-      run: () => openTargetStatus(),
-    });
-    return actions;
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
+  const actionContext = $derived<ActionContext>({
+    turnActive: turnIsActive,
+    sessionCount: sessions.length,
   });
+
+  /** Cycles `selectedSessionId` through `sessions` in its existing list order, wrapping — the handler behind the registry's `next-session`/`previous-session` actions (issue #758). No-ops with fewer than two sessions or nothing selected, which is also exactly when those two actions are unavailable, so this is never reached in a state where it would do nothing; kept defensive anyway since `isAvailable` and `run` are independent functions. */
+  function selectAdjacentSession(direction: 1 | -1): void {
+    if (sessions.length < 2 || !selectedSessionId) return;
+    const index = sessions.findIndex((session) => session.id === selectedSessionId);
+    if (index === -1) return;
+    selectSession(sessions[(index + direction + sessions.length) % sessions.length].id);
+  }
+
+  /** Wires each registry action's effect to this component's own state and the live `client` (issue #758) — the registry module itself stays a plain, framework-free array so `action-registry.test.ts` can exercise its predicates without mounting Svelte. */
+  const actionHandlers: ActionHandlers = {
+    stopTurn: stopSession,
+    toggleSessionsSidebar: () => sessionsDock.toggle(),
+    openInbox: () => (mainView = 'inbox'),
+    openNodes: () => openTargetStatus(),
+    selectNextSession: () => selectAdjacentSession(1),
+    selectPreviousSession: () => selectAdjacentSession(-1),
+  };
+
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — a pure view over `actionRegistry` (issue #758): every entry whose `isAvailable` predicate accepts `actionContext` becomes a row, so the palette never lists something that would no-op if picked right now. */
+  const paletteActions = $derived.by((): CommandPaletteAction[] =>
+    getAvailableActions(actionContext).map((action) => ({
+      id: action.id,
+      label: action.label,
+      shortcut: action.shortcut,
+      run: () => action.run(actionHandlers),
+    })),
+  );
 
   const paletteSessions = $derived(
     sessions.map((session) => ({
@@ -1964,6 +2291,23 @@
     disconnected: 1,
     exited: 0,
   };
+
+  /**
+   * The row/selvage badge's status text (issue #730): the plain
+   * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
+   * for `'error'` with a `reason` the node sent (`RelayClient.
+   * statusReasonFor` — a spawn that failed or timed out), where the
+   * reason is appended so a hover/hold on the row's own tooltip or the
+   * dot's accessible name reads WHY, not just that it failed.
+   */
+  function sessionStatusLabelWithReason(
+    status: SessionStatusV1 | undefined,
+    reason: string | undefined,
+  ): string {
+    if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
+    const label = SESSION_STATUS_LABELS[status];
+    return status === 'error' && reason ? `${label}: ${reason}` : label;
+  }
 
   /**
    * The project tree (design spec v4 §3.2), replacing v3's target-based
@@ -2194,7 +2538,7 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  /** The global shortcut dispatcher (issue #132): Escape closes an open sidebar menu; Mod+K opens the palette from anywhere, including mid-typing — deliberately, so jumping sessions doesn't require clearing focus first; every other shortcut is matched against `actionRegistry` (issue #758) and gated by the same "not typing" guard the old ad hoc `Mod+.`/`Mod+B` checks used to apply by hand. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
     // menu has no business dimming the app), so Escape is handled here
@@ -2210,15 +2554,11 @@
       paletteOpen = true;
       return;
     }
-    if (isModShortcut(event, '.') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      stopSession();
-      return;
-    }
-    if (isModShortcut(event, 'b') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      sessionsDock.toggle();
-    }
+    if (isTypingTarget(event.target)) return;
+    const action = matchShortcut(event, actionContext);
+    if (!action) return;
+    event.preventDefault();
+    action.run(actionHandlers);
   }
 
   /** The attention inbox's approve/deny action (issue #168) — the exact same `RelayClient.resolvePermission` call the session's own `PermissionQueueBar` makes, so both resolve the one shared queue store (issue #169). */
@@ -2242,9 +2582,31 @@
     client.sendPrompt(sessionId, text);
   }
 
+  /** `ConfigBar`'s value pickers (a genuine user pick, unlike `applyRememberedConfigOptions`'s automatic one) — flags `category` as pending in `pendingUserConfigOptionChanges` so `handleConfigOptionsUpdate` remembers whatever value its ack actually lands with as this agent's new account-wide "last used" (issue #753, D4-2), whether or not it's the value requested here (the agent's own ack, never an optimistic local guess, is still the only source of truth — see `RelayClient.setConfigOption`'s own doc comment). */
   function changeConfigOption(category: string, optionId: string): void {
     if (!client || !selectedSessionId) return;
+    const pending = pendingUserConfigOptionChanges[selectedSessionId] ?? new SvelteSet<string>();
+    pending.add(category);
+    pendingUserConfigOptionChanges[selectedSessionId] = pending;
     client.setConfigOption(selectedSessionId, category, optionId);
+  }
+
+  /** `ConfigBar`'s "pin to project" action (issue #753, D4-3): pins `category`'s CURRENT choice as the selected session's project's override for its agent — a plain client-local write, no wire round trip at all (unlike `changeConfigOption`, nothing here needs the agent's own ack; the value is already live). Refreshes `configOptionProjectOverrides` immediately so the badge/pin state reflects it without waiting on the next `configOptions` push. A no-op if the category has no current selection yet. */
+  function pinConfigOptionToProject(category: string): void {
+    if (!selectedSession) return;
+    const option = configOptions.find((entry) => entry.category === category);
+    if (!option || option.current === undefined) return;
+    const storage = createLocalStorageConfigOptionOverrideStorage(selectedSession.projectPath);
+    setConfigOptionOverride(storage, selectedSession.provider, category, option.current);
+    configOptionProjectOverrides = configOptionOverridesFor(storage, selectedSession.provider);
+  }
+
+  /** The inverse of {@link pinConfigOptionToProject} — clears `category`'s project override, falling back to the account default or the agent's own. */
+  function unpinConfigOptionFromProject(category: string): void {
+    if (!selectedSession) return;
+    const storage = createLocalStorageConfigOptionOverrideStorage(selectedSession.projectPath);
+    clearConfigOptionOverride(storage, selectedSession.provider, category);
+    configOptionProjectOverrides = configOptionOverridesFor(storage, selectedSession.provider);
   }
 
   async function exportTranscript(): Promise<void> {
@@ -2262,6 +2624,7 @@
     });
 
     amkStorage = createLocalStorageAmkStorage();
+    configOptionDefaultsStorage = createLocalStorageConfigOptionDefaultsStorage();
     deviceIdStorage = createLocalStorageDeviceIdStorage();
     deviceId = loadOrCreateDeviceId(deviceIdStorage);
 
@@ -2462,7 +2825,7 @@
         <ErrorNotice message={authError} />
       {/if}
       {#snippet footer()}
-        <span class="account">{session.accountId}</span>
+        <span class="account font-mono">{session.accountId}</span>
         <span class="status" data-status={status}>
           {#if status === 'connecting'}
             <WovenLoader label="Connecting to the relay" />
@@ -2485,9 +2848,10 @@
     {#snippet sessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
       {@const needsAttention = sessionsNeedingAttention.has(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
         class="session-row"
@@ -2544,7 +2908,7 @@
                  (the group header now carries it) and picks up the
                  relative activity time that used to sit in its own grid
                  column on the right. -->
-            <span class="session-meta" data-testid="session-activity">
+            <span class="session-meta font-mono" data-testid="session-activity">
               {sessionTargetLabel(session)}
               <span aria-hidden="true">·</span>
               {formatSessionActivity(session.createdAt)}
@@ -2632,9 +2996,10 @@
     <!-- The collapsed sidebar's icon-only row: avatar + status dot only. -->
     {#snippet selvageSessionRow(session: ClientSessionMeta)}
       {@const sessionStatus = sessionStatuses.get(session.id)}
-      {@const statusLabel = sessionStatus
-        ? SESSION_STATUS_LABELS[sessionStatus]
-        : SESSION_STATUS_UNKNOWN_LABEL}
+      {@const statusLabel = sessionStatusLabelWithReason(
+        sessionStatus,
+        sessionStatusReasons.get(session.id),
+      )}
       <li>
         <button
           type="button"
@@ -3113,7 +3478,11 @@
                 <h1 class="topbar-title" data-testid="cockpit-session-title">
                   {selectedSession.title}
                 </h1>
-                <span class="topbar-breadcrumb" title={selectedSession.projectPath}>
+                <span
+                  class="topbar-breadcrumb font-mono"
+                  data-testid="topbar-breadcrumb"
+                  title={selectedSession.projectPath}
+                >
                   {projectDisplayName(selectedSession)}
                   <span aria-hidden="true">·</span>
                   {selectedSession.targetId}
@@ -3391,6 +3760,27 @@
               {/snippet}
             </EmptyState>
           {:else}
+            <!-- Issue #730: a session with no live agent behind it must not
+                 sit as a blank transcript with no explanation — the
+                 original bug's exact symptom ("the optimistically echoed
+                 user turn sitting in an otherwise empty transcript,
+                 forever"). Shares `selectedSessionAgentless`/
+                 `composerUnavailableReason` with the composer's own gate
+                 just below, so the two surfaces never disagree. -->
+            {#if selectedSessionAgentless}
+              <div class="workspace-notice" data-testid="session-agentless-notice">
+                {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
+                  <ErrorNotice message={composerUnavailableReason ?? ''} />
+                {:else}
+                  <Card elevation="raised" padding="sm">
+                    <div class="escrow-inflight-row">
+                      <WovenLoader label={composerUnavailableReason ?? 'Waiting…'} />
+                      <span>{composerUnavailableReason}</span>
+                    </div>
+                  </Card>
+                {/if}
+              </div>
+            {/if}
             <TranscriptTimeline
               sessionKey={selectedSessionId}
               items={transcript?.items ?? []}
@@ -3499,10 +3889,8 @@
                           bind:value={draft}
                           oninput={handleComposerInput}
                           onkeydown={handleComposerKeydown}
-                          disabled={selectedSessionDisconnected}
-                          placeholder={selectedSessionDisconnected
-                            ? "This session's agent isn't running — it disconnected when the node last restarted."
-                            : 'Send a follow-up prompt…'}
+                          disabled={selectedSessionAgentless}
+                          placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
                           aria-label="Follow-up prompt"
                           aria-describedby="composer-hint"
                           rows="1"
@@ -3539,6 +3927,9 @@
                             onChange={changeConfigOption}
                             providerId={selectedSession?.provider}
                             compact={!configControlsVisible}
+                            sources={configOptionSources}
+                            onPinToProject={pinConfigOptionToProject}
+                            onUnpinFromProject={unpinConfigOptionFromProject}
                           />
                           <div class="composer-actions">
                             <!-- A3-2 (issue #666): one button in one slot —
@@ -3850,6 +4241,13 @@
   onClose={closeFilePicker}
 />
 
+<SlashCommandPicker
+  open={slashPickerOpen}
+  {commands}
+  onSelect={insertSlashCommand}
+  onClose={closeSlashPicker}
+/>
+
 {#if newSessionProject}
   <NewSessionDialog
     open={newSessionOpen}
@@ -3975,7 +4373,6 @@
   }
 
   .account {
-    font-family: var(--font-mono);
     font-size: var(--text-small-size);
     opacity: 0.8;
   }
@@ -4976,7 +5373,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-small-size);
-    font-family: var(--font-mono);
     color: var(--color-text-muted);
   }
 

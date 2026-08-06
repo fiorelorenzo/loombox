@@ -279,11 +279,11 @@
       fontFamily: readToken('--font-mono', 'ui-monospace, monospace'),
       fontSize: 13,
       theme: {
-        background: readToken('--color-bg', '#0b0d10'),
+        background: readToken('--color-bg', '#1a2732'),
         foreground: readToken('--color-text-primary', '#eef0f2'),
-        cursor: readToken('--color-accent', '#3b9df7'),
-        cursorAccent: readToken('--color-bg', '#0b0d10'),
-        selectionBackground: readToken('--color-accent-subtle', 'rgba(59, 157, 247, 0.35)'),
+        cursor: readToken('--color-accent', '#64baff'),
+        cursorAccent: readToken('--color-bg', '#1a2732'),
+        selectionBackground: readToken('--color-accent-subtle', 'rgba(100, 186, 255, 0.35)'),
       },
     });
     runtimes.set(tabId, { terminal });

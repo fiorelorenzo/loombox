@@ -60,9 +60,9 @@
 
 <Card elevation="raised" padding="none" class="diff-viewer">
   <div class="diff-header">
-    <span class="diff-path">{path}</span>
+    <span class="diff-path font-mono">{path}</span>
     {#if hasText}
-      <span class="diff-stats">
+      <span class="diff-stats font-mono">
         <span class="added">+{added}</span>
         <span class="removed">-{removed}</span>
       </span>
@@ -85,7 +85,8 @@
     </ol>
   {:else}
     <p class="structural-only" data-testid="structural-diff">
-      Binary or symlink change — no line-level diff available for {path}.
+      Binary or symlink change — no line-level diff available for
+      <span class="font-mono">{path}</span>.
     </p>
   {/if}
 </Card>

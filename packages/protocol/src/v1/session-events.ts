@@ -123,11 +123,12 @@ export const sessionStatusV1 = z.enum([
 ]);
 export type SessionStatusV1 = z.infer<typeof sessionStatusV1>;
 
-/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). */
+/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). `reason` is set only for `'error'` (issue #730): a spawn that failed or timed out, in words a user can read — never populated for any other status, and never required (a status push predating this field, or one with nothing more specific to say, omits it). */
 export const sessionStatusEventV1 = z.object({
   kind: z.literal('session_status'),
   status: sessionStatusV1,
   updatedAt: z.string().min(1),
+  reason: z.string().min(1).optional(),
 });
 export type SessionStatusEventV1 = z.infer<typeof sessionStatusEventV1>;
 

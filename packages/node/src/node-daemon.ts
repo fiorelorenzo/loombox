@@ -96,6 +96,12 @@ import {
   type TerminalOpenResultPayloadV1,
   type TerminalResize,
   type TerminalResizePayloadV1,
+  type PermissionPolicyGet,
+  type PermissionPolicyResultPayloadV1,
+  type PermissionPolicySet,
+  type PermissionPolicySetPayloadV1,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolationPayloadV1,
   type TestRunnerConfigDetect,
   type TestRunnerConfigDetectedPayloadV1,
   type TestRunnerConfigGet,
@@ -136,7 +142,12 @@ import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
 import { NodeMcpSecretManager } from './mcp-secrets';
-import { evaluateCommandLine, logPolicyViolation, type PolicyViolation } from './permission-policy';
+import {
+  evaluateCommandLine,
+  logPolicyViolation,
+  type PermissionPolicy,
+  type PolicyViolation,
+} from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
 import {
   PolicyEnforcedExecutionTarget,
@@ -869,6 +880,14 @@ function toWireAccountPinMap(map: AccountPinMap): AccountPinMapV1 {
   return result;
 }
 
+/** `PermissionPolicy`'s allow/deny arrays are `readonly` (its own module's own immutability contract); `PermissionPolicyV1`'s are plain wire arrays — this is the one place that boundary gets crossed, so it's named rather than reasserted inline at both call sites in `handlePermissionPolicyGet`/`handlePermissionPolicySet`. */
+function toPermissionPolicyV1(policy: PermissionPolicy): PermissionPolicyV1 {
+  return {
+    command: { allow: [...policy.command.allow], deny: [...policy.command.deny] },
+    network: { allow: [...policy.network.allow], deny: [...policy.network.deny] },
+  };
+}
+
 /**
  * Ties `SessionManager` + `AgentSupervisor` + the v1 `RelayConnection`
  * together into one E2E-encrypted node (SPEC.md §5.1, §5.6, §8, §12 v1;
@@ -1427,7 +1446,7 @@ export class NodeDaemon extends EventEmitter {
       this.concurrencyGate.release(opts.targetId);
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`NodeDaemon: session ${session.id} failed to start: ${message}`);
-      await this.sendSessionStatus(session.id, 'error').catch((sendError: unknown) => {
+      await this.sendSessionStatus(session.id, 'error', message).catch((sendError: unknown) => {
         console.warn(
           `NodeDaemon: failed to report session ${session.id}'s start failure to the relay: ${
             sendError instanceof Error ? sendError.message : String(sendError)
@@ -1641,14 +1660,23 @@ export class NodeDaemon extends EventEmitter {
    * a `local` one: {@link finishSessionCreation} is the same shared tail
    * both paths use to wire transcript forwarding and announce to the relay.
    *
-   * On failure, releases this session's concurrency slot (handing it to the
-   * next queued session on this target, if any), its lease heartbeat, and
-   * its same-folder reservation — matching what the pre-#252 single-phase
-   * version of this method used to unwind in its own `catch` — before
-   * rethrowing (for an immediate launch) or logging (for a dequeued one,
-   * via {@link scheduleSshSession}'s own `.catch`). Its actual cross-node
-   * lease is deliberately left alone on failure, unchanged from before this
-   * split: it simply expires on its own TTL, exactly as it always has.
+   * Sends `'starting'` right after entering the `try` (issue #730 parity
+   * with {@link launchLocalSession} — this path used to report neither
+   * `'starting'` nor a spawn failure at all, so an `ssh:` session that
+   * never came up looked exactly as "Awaiting you" as a `local` one did).
+   *
+   * On failure, reports `'error'` with the underlying message as `reason`
+   * (issue #730 — best effort; a failure to even send that is logged and
+   * swallowed, same as {@link launchLocalSession}'s own catch, since the
+   * unwind below must still run either way) and releases this session's
+   * concurrency slot (handing it to the next queued session on this
+   * target, if any), its lease heartbeat, and its same-folder reservation
+   * — matching what the pre-#252 single-phase version of this method used
+   * to unwind in its own `catch` — before rethrowing (for an immediate
+   * launch) or logging (for a dequeued one, via {@link scheduleSshSession}'s
+   * own `.catch`). Its actual cross-node lease is deliberately left alone
+   * on failure, unchanged from before this split: it simply expires on its
+   * own TTL, exactly as it always has.
    */
   private async launchReservedSshSession(
     opts: {
@@ -1664,6 +1692,8 @@ export class NodeDaemon extends EventEmitter {
     const { sessionId, targetId } = opts;
     const inPlace = !opts.worktree;
     const sameFolderKey = `${targetId}:${opts.projectPath}`;
+
+    await this.sendSessionStatus(sessionId, 'starting');
 
     try {
       const provider = this.supervisor.getProvider(opts.provider);
@@ -1732,6 +1762,14 @@ export class NodeDaemon extends EventEmitter {
         remoteChild,
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.sendSessionStatus(sessionId, 'error', message).catch((sendError: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to report ssh: session ${sessionId}'s start failure to the relay: ${
+            sendError instanceof Error ? sendError.message : String(sendError)
+          }`,
+        );
+      });
       this.concurrencyGate.release(targetId);
       this.stopLeaseHeartbeat(sessionId);
       if (inPlace) {
@@ -2170,21 +2208,32 @@ export class NodeDaemon extends EventEmitter {
    * usable before one does. Needed for the three transitions that fall
    * outside a bridge's lifetime: `'starting'`, sent right after
    * {@link announce} while the agent is still spawning; an `'error'`
-   * reported when that spawn times out (issue #516); and `'disconnected'`
-   * (issue #702), re-sent on every reconnect (see {@link reannounceAll})
-   * for every session `SessionManager` reports in that state — a
-   * disconnected session never gets a bridge again on its own, so nothing
-   * else would ever push this one. Every other status transition rides
-   * `wireAgentSession`'s `'attention'` listener once a bridge exists. The
-   * relay reassigns the authoritative `seq` on receipt (see
-   * `SessionBridge.seq`'s doc comment), so the placeholder `0` here never
-   * needs to agree with a bridge's own counter.
+   * reported when that spawn fails or times out (issue #516), with
+   * `reason` set to something a user can read (issue #730 — previously
+   * only ever reached `console.warn`, never the client); and
+   * `'disconnected'` (issue #702), re-sent on every reconnect (see
+   * {@link reannounceAll}) for every session `SessionManager` reports in
+   * that state — a disconnected session never gets a bridge again on its
+   * own, so nothing else would ever push this one. Every other status
+   * transition rides `wireAgentSession`'s `'attention'` listener once a
+   * bridge exists. The relay reassigns the authoritative `seq` on receipt
+   * (see `SessionBridge.seq`'s doc comment), so the placeholder `0` here
+   * never needs to agree with a bridge's own counter.
    */
-  private async sendSessionStatus(sessionId: string, status: SessionStatusV1): Promise<void> {
+  private async sendSessionStatus(
+    sessionId: string,
+    status: SessionStatusV1,
+    reason?: string,
+  ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(
       sessionId,
-      { kind: 'session_status', status, updatedAt: new Date().toISOString() },
+      {
+        kind: 'session_status',
+        status,
+        updatedAt: new Date().toISOString(),
+        ...(reason === undefined ? {} : { reason }),
+      },
       key,
     );
     this.relay.send({
@@ -2493,6 +2542,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'terminal_close':
         this.handleTerminalClose(message);
+        return;
+      case 'permission_policy_get':
+        this.handlePermissionPolicyGet(message);
+        return;
+      case 'permission_policy_set':
+        this.handlePermissionPolicySet(message);
         return;
       case 'test_runner_config_get':
         this.handleTestRunnerConfigGet(message);
@@ -4253,9 +4308,22 @@ export class NodeDaemon extends EventEmitter {
       throw new Error(`NodeDaemon: no target with id "${routing.targetId}"`);
     }
 
-    const policy = this.permissionPolicyStore.get(routing.session.projectPath);
     const gate = (pty: PtyLike): PtyLike =>
-      new PolicyEnforcedPty({ inner: pty, projectPath: routing.session.projectPath, policy });
+      new PolicyEnforcedPty({
+        inner: pty,
+        projectPath: routing.session.projectPath,
+        policy: () => this.permissionPolicyStore.get(routing.session.projectPath),
+        onViolation: (violation) => {
+          this.sendPermissionPolicyViolation(routing.session.id, violation).catch(
+            (error: unknown) => {
+              const detail = error instanceof Error ? error.message : String(error);
+              console.warn(
+                `NodeDaemon: failed to send permission_policy_violation for session ${routing.session.id}: ${detail}`,
+              );
+            },
+          );
+        },
+      });
 
     let session: TerminalSession;
     let shell: string | undefined;
@@ -4461,6 +4529,117 @@ export class NodeDaemon extends EventEmitter {
 
     this.clientInitiatedTerminalCloses.add(message.terminalId);
     this.terminalSupervisor.close(message.terminalId);
+  }
+
+  /** A client asked for a session's project's saved permission policy (SPEC §7.17; issue #751). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only `projectPath`, never the live agent, mirrors `handleTestRunnerConfigGet`. */
+  private handlePermissionPolicyGet(message: PermissionPolicyGet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    const policy = this.permissionPolicyStore.get(routing.session.projectPath);
+    this.sendPermissionPolicyResult(message.sessionId, message.requestId, {
+      policy: toPermissionPolicyV1(policy),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send permission_policy_result for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked to save (fully replace) a session's project's
+   * permission policy (SPEC §7.17; issue #751) — a whole-policy replace,
+   * never a partial patch, mirroring `PermissionPolicyStore.save()`'s own
+   * contract (unlike `handleTestRunnerConfigSet`'s per-key merge). Takes
+   * effect on the very next command/terminal-line check with no restart
+   * (issue #751's own acceptance line): `getExecutionTarget` and
+   * `openTerminalForBridge` both call `this.permissionPolicyStore.get()`
+   * fresh, never caching a policy across calls. Ignored if `sessionId`
+   * isn't one of this node's sessions at all. Replies with the same
+   * `permission_policy_result` `handlePermissionPolicyGet` does, carrying
+   * the saved result, so "save" and "read the current value" are one
+   * client-side code path.
+   */
+  private handlePermissionPolicySet(message: PermissionPolicySet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptPermissionPolicySet(message)
+      .then((payload) => {
+        this.permissionPolicyStore.save(routing.session.projectPath, payload.policy);
+        const policy = this.permissionPolicyStore.get(routing.session.projectPath);
+        return this.sendPermissionPolicyResult(message.sessionId, message.requestId, {
+          policy: toPermissionPolicyV1(policy),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle permission_policy_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptPermissionPolicySet(
+    message: PermissionPolicySet,
+  ): Promise<PermissionPolicySetPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<PermissionPolicySetPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendPermissionPolicyResult(
+    sessionId: string,
+    requestId: string,
+    payload: PermissionPolicyResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'permission_policy_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * Reports one live policy denial to every client subscribed to
+   * `sessionId` (SPEC §7.17; issue #751, D3-4's own "the UI must say
+   * which of the three layers refused it") — the `onViolation` hook
+   * `openTerminalForBridge`/`executeRun` already pass to
+   * `PolicyEnforcedPty`/build from `evaluateCommandLine` funnels through
+   * here, in addition to (never instead of) the existing
+   * `logPolicyViolation` console line and, for the terminal surface, the
+   * ANSI banner written straight into `terminal_output`. Best-effort: a
+   * failure to seal/send is logged, never thrown back into the caller
+   * that already denied the command — the command staying blocked is the
+   * part that must never fail silently, not this notification.
+   */
+  private async sendPermissionPolicyViolation(
+    sessionId: string,
+    violation: PolicyViolation,
+  ): Promise<void> {
+    const payload: PermissionPolicyViolationPayloadV1 = {
+      reason: {
+        kind: 'permission_policy',
+        dimension: violation.dimension,
+        rule: violation.rule,
+        matched: violation.matched,
+      },
+      surface: violation.surface,
+      command: violation.command,
+      timestamp: violation.timestamp,
+    };
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'permission_policy_violation',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
   }
 
   /** A client asked for a session's project's saved test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only `projectPath` (issue #702), never the live agent, so this keeps working for a `'disconnected'` session exactly like a live one. */
@@ -4682,6 +4861,12 @@ export class NodeDaemon extends EventEmitter {
         timestamp: new Date().toISOString(),
       };
       logPolicyViolation(violation);
+      this.sendPermissionPolicyViolation(routing.session.id, violation).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send permission_policy_violation for session ${routing.session.id}: ${detail}`,
+        );
+      });
       await this.sendRunExit(routing.session.id, runId, {
         outcome: 'could_not_start',
         exitCode: null,

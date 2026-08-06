@@ -10,6 +10,7 @@ import type { AcpProvider } from '@loombox/providers-core';
 import {
   PROTOCOL_V1,
   type EncryptedEnvelope,
+  type PermissionPolicyViolationPayloadV1,
   type RunCancel,
   type RunExit,
   type RunOutput,
@@ -438,6 +439,25 @@ describe('NodeDaemon test/lint/build runner (SPEC §7.15; issue #244)', () => {
       expect(exit.outcome).toBe('could_not_start');
       expect(exit.exitCode).toBeNull();
       expect(exit.reason).toMatch(/policy denied/);
+
+      // The same denial also reaches the client as a structured
+      // permission_policy_violation (D3-4 attribution, issue #751) —
+      // never only the free-text run_exit.reason above.
+      const violationMessage = (await phone!.waitFor(
+        (m) => m.type === 'permission_policy_violation',
+      )) as { envelope: EncryptedEnvelope };
+      const violation = await phoneOpen<PermissionPolicyViolationPayloadV1>(
+        sessionId,
+        violationMessage.envelope,
+        key,
+      );
+      expect(violation.reason).toEqual({
+        kind: 'permission_policy',
+        dimension: 'command',
+        rule: 'touch *',
+        matched: `touch ${marker}`,
+      });
+      expect(violation.surface).toBe('exec');
 
       // The command never actually ran.
       await new Promise((resolve) => setTimeout(resolve, 200));
