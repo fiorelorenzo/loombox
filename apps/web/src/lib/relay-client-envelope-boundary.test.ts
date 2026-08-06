@@ -55,17 +55,18 @@ describe('relay-client.ts never touches crypto.subtle directly (issue #756)', ()
   it('routes session/project/target envelope operations through `this.envelopeCrypto`', () => {
     // Matches both single-line (`this.envelopeCrypto.seal(...)`) and
     // wrapped multi-line (`this.envelopeCrypto\n  .open<T>(...)`) call
-    // sites, plus the one constructor assignment — 27 real call sites
+    // sites, plus the one constructor assignment — 29 real call sites
     // (session_update, permission_request, fs_list_response,
-    // tracker_snapshot/write_response, test_runner_config_result/detected,
-    // target_fs_list_response, terminal_opened/output/closed,
-    // run_started/output/exit, decryptSessionMeta = 15 opens;
-    // target_fs_list_request, test_runner_config_set, session_create,
-    // terminal_input/resize, prompt_inject, fs_list_request,
-    // tracker_snapshot/write_request, terminal_open, run_start = 10 seals;
-    // blob_upload = 1 sealBytes; escrowAmk = 1 wrapAmkForEscrow) plus the
-    // constructor assignment — a regression here means a new/changed call
-    // site reached back into direct `@loombox/crypto` primitives instead.
+    // fs_read_response, tracker_snapshot/write_response,
+    // test_runner_config_result/detected, target_fs_list_response,
+    // terminal_opened/output/closed, run_started/output/exit,
+    // decryptSessionMeta = 16 opens; target_fs_list_request,
+    // test_runner_config_set, session_create, terminal_input/resize,
+    // prompt_inject, fs_list_request, fs_read_request, tracker_snapshot/
+    // write_request, terminal_open, run_start = 11 seals; blob_upload = 1
+    // sealBytes; escrowAmk = 1 wrapAmkForEscrow) plus the constructor
+    // assignment — a regression here means a new/changed call site
+    // reached back into direct `@loombox/crypto` primitives instead.
     const matches = relayClientSource.match(/this\.envelopeCrypto\b/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBeGreaterThanOrEqual(25);

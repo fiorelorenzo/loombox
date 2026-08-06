@@ -30,6 +30,8 @@
   import { diffStats } from '$lib/diff';
   import Card from './ui/Card.svelte';
   import CopyButton from './CopyButton.svelte';
+  import Icon from './icons/Icon.svelte';
+  import IconButton from './ui/IconButton.svelte';
 
   interface Props {
     path: string;
@@ -37,9 +39,11 @@
     oldText: string | null;
     /** ACP v1's `Diff.newText` (always a string on the wire). Empty + `oldText === null` together mean "no patch text at all" — a binary/symlink change. */
     newText: string;
+    /** Opens `path` in the canvas tab strip's read-only file viewer (issue #737). Omitted renders no "Open" affordance — `ReviewChangesDialog` wires this the same way `EditWriteWidget` does, one shared button on this shared component rather than two call sites each growing their own. */
+    onOpen?: () => void;
   }
 
-  const { path, oldText, newText }: Props = $props();
+  const { path, oldText, newText, onOpen }: Props = $props();
 
   // Structural-only fallback: neither side carries any patch text at all —
   // ACP's shape for a binary/symlink change (SPEC.md §7.24). A genuinely
@@ -66,6 +70,17 @@
         <span class="added">+{added}</span>
         <span class="removed">-{removed}</span>
       </span>
+    {/if}
+    {#if onOpen}
+      <IconButton
+        label={`Open ${path}`}
+        size="sm"
+        onclick={onOpen}
+        class="copy-button-reveal"
+        dataTestId="diff-viewer-open"
+      >
+        <Icon name="file" />
+      </IconButton>
     {/if}
     <CopyButton text={copyText} label={`Copy diff for ${path}`} revealOnHover />
   </div>

@@ -137,6 +137,20 @@ describe('fetchMcpPromptText (issue #754, D5-2)', () => {
  * convention for a real dependency this devbox has but CI might not) —
  * skipped rather than failing CI red when it isn't.
  *
+ * Detected honestly: an actual `npx -y … --help` spawn/resolve attempt,
+ * not an env var. `--help` isn't a transport this launcher recognizes, so
+ * it exits `1` and prints its own usage/"Unknown transport" text
+ * immediately (verified directly: `status: 1`, not `0`) — checked by
+ * content, not exit code, since that text is what actually proves "the
+ * package resolved and the binary ran" without the complexity (or the
+ * hang-then-kill-then-check-partial-stdout shape a live JSON-RPC probe
+ * needs) of actually talking to a running server; the exact same signal
+ * with far less to go wrong. Each real test below still gets its own
+ * generous timeout (a first invocation forced this probe to cold-fetch
+ * the package, but every following `npx` in this file still pays real
+ * subprocess-spawn overhead per call, observed to exceed vitest's 5s
+ * default on a slower/colder CI runner even with a warm npm cache).
+ *
  * `stdio` only, deliberately: the `streamableHttp` transport was also
  * hand-verified against this same real server (raw `fetch` probes
  * recorded in this issue's own PR — `initialize`'s `Mcp-Session-Id`
@@ -151,13 +165,19 @@ describe('fetchMcpPromptText (issue #754, D5-2)', () => {
  * committed test that would turn CI red on this box's own noise.
  */
 const everythingServerAvailable = (() => {
-  const result = spawnSync('npx', ['-y', '@modelcontextprotocol/server-everything', 'stdio'], {
-    input: `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe', version: '0.0.1' } } })}\n`,
+  const result = spawnSync('npx', ['-y', '@modelcontextprotocol/server-everything', '--help'], {
     encoding: 'utf8',
-    timeout: 30_000,
+    timeout: 20_000,
   });
-  return result.status === 0 || result.stdout.includes('"protocolVersion"');
+  // `--help` isn't a recognized transport, so this launcher exits `1` —
+  // its own usage/"Unknown transport" text on stdout+stderr is the real
+  // "the package resolved and the binary ran" signal, not the exit code.
+  if (result.error) return false;
+  return `${result.stdout}${result.stderr}`.includes('Everything Server Launcher');
 })();
+
+/** Generous per-test bound (vitest's own 5s default is too tight for a real `npx` cold-spawn on a slower CI runner) — each test still spawns a fresh process, even once the availability probe above has warmed the npm cache. */
+const REAL_SERVER_TEST_TIMEOUT_MS = 45_000;
 
 describe.skipIf(!everythingServerAvailable)(
   'real-server verification: @modelcontextprotocol/server-everything (issue #754 acceptance)',
@@ -168,44 +188,56 @@ describe.skipIf(!everythingServerAvailable)(
       args: ['-y', '@modelcontextprotocol/server-everything', 'stdio'],
     };
 
-    it("reads the real server's own declared prompt catalogue over stdio, including its two-argument args-prompt", async () => {
-      const results = await fetchMcpServerPrompts([stdioEverything], { timeoutMs: 30_000 });
-      expect(results).toHaveLength(1);
-      const names = results[0]!.prompts.map((p) => p.name);
-      expect(names).toEqual(
-        expect.arrayContaining(['simple-prompt', 'args-prompt', 'completable-prompt']),
-      );
-      const argsPrompt = results[0]!.prompts.find((p) => p.name === 'args-prompt')!;
-      expect(argsPrompt.arguments).toEqual([
-        { name: 'city', description: 'Name of the city', required: true },
-        { name: 'state', description: undefined, required: false },
-      ]);
-    });
+    it(
+      "reads the real server's own declared prompt catalogue over stdio, including its two-argument args-prompt",
+      async () => {
+        const results = await fetchMcpServerPrompts([stdioEverything], { timeoutMs: 30_000 });
+        expect(results).toHaveLength(1);
+        const names = results[0]!.prompts.map((p) => p.name);
+        expect(names).toEqual(
+          expect.arrayContaining(['simple-prompt', 'args-prompt', 'completable-prompt']),
+        );
+        const argsPrompt = results[0]!.prompts.find((p) => p.name === 'args-prompt')!;
+        expect(argsPrompt.arguments).toEqual([
+          { name: 'city', description: 'Name of the city', required: true },
+          { name: 'state', description: undefined, required: false },
+        ]);
+      },
+      REAL_SERVER_TEST_TIMEOUT_MS,
+    );
 
-    it("renders the real server's simple-prompt (no arguments) over stdio", async () => {
-      const text = await fetchMcpPromptText(
-        stdioEverything,
-        'simple-prompt',
-        {},
-        {
-          timeoutMs: 30_000,
-        },
-      );
-      expect(text).toBe('This is a simple prompt without arguments.');
-    });
+    it(
+      "renders the real server's simple-prompt (no arguments) over stdio",
+      async () => {
+        const text = await fetchMcpPromptText(
+          stdioEverything,
+          'simple-prompt',
+          {},
+          {
+            timeoutMs: 30_000,
+          },
+        );
+        expect(text).toBe('This is a simple prompt without arguments.');
+      },
+      REAL_SERVER_TEST_TIMEOUT_MS,
+    );
 
-    it('renders args-prompt with its required argument, and rejects when it is missing, over stdio', async () => {
-      const text = await fetchMcpPromptText(
-        stdioEverything,
-        'args-prompt',
-        { city: 'Berlin' },
-        { timeoutMs: 30_000 },
-      );
-      expect(text).toContain('Berlin');
+    it(
+      'renders args-prompt with its required argument, and rejects when it is missing, over stdio',
+      async () => {
+        const text = await fetchMcpPromptText(
+          stdioEverything,
+          'args-prompt',
+          { city: 'Berlin' },
+          { timeoutMs: 30_000 },
+        );
+        expect(text).toContain('Berlin');
 
-      await expect(
-        fetchMcpPromptText(stdioEverything, 'args-prompt', {}, { timeoutMs: 30_000 }),
-      ).rejects.toThrow(McpPromptClientError);
-    });
+        await expect(
+          fetchMcpPromptText(stdioEverything, 'args-prompt', {}, { timeoutMs: 30_000 }),
+        ).rejects.toThrow(McpPromptClientError);
+      },
+      REAL_SERVER_TEST_TIMEOUT_MS,
+    );
   },
 );

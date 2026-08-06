@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import DiffViewer from './DiffViewer.svelte';
 
 afterEach(() => cleanup());
@@ -50,5 +50,23 @@ describe('DiffViewer: copy affordance (redesign v3 §3.4)', () => {
     });
     const button = getByRole('button', { name: 'Copy diff for src/foo.ts' });
     expect(button.className).toContain('copy-button-reveal');
+  });
+});
+
+describe('DiffViewer: open affordance (issue #737)', () => {
+  it('renders no "Open" button when onOpen is omitted', () => {
+    render(DiffViewer, { props: { path: 'src/foo.ts', oldText: 'a', newText: 'b' } });
+    expect(screen.queryByTestId('diff-viewer-open')).toBeNull();
+  });
+
+  it('renders an "Open" button wired to onOpen when provided, revealed on hover like the copy button', async () => {
+    const onOpen = vi.fn();
+    render(DiffViewer, {
+      props: { path: 'src/foo.ts', oldText: 'a', newText: 'b', onOpen },
+    });
+    const button = screen.getByTestId('diff-viewer-open');
+    expect(button.className).toContain('copy-button-reveal');
+    await fireEvent.click(button);
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

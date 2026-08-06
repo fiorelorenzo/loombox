@@ -228,6 +228,12 @@ export type {
   FsListResponse,
   FsListResponsePayloadV1,
   FsListResultV1,
+  FsReadErrorV1,
+  FsReadRequest,
+  FsReadRequestPayloadV1,
+  FsReadResponse,
+  FsReadResponsePayloadV1,
+  FsReadResultV1,
 } from './fs';
 export {
   fsEntryKindV1,
@@ -238,10 +244,20 @@ export {
   fsListResponse,
   fsListResponsePayloadV1,
   fsListResultV1,
+  fsReadErrorV1,
+  fsReadRequest,
+  fsReadRequestPayloadV1,
+  fsReadResponse,
+  fsReadResponsePayloadV1,
+  fsReadResultV1,
   parseFsListRequestPayloadV1,
   parseFsListResponsePayloadV1,
+  parseFsReadRequestPayloadV1,
+  parseFsReadResponsePayloadV1,
   safeParseFsListRequestPayloadV1,
   safeParseFsListResponsePayloadV1,
+  safeParseFsReadRequestPayloadV1,
+  safeParseFsReadResponsePayloadV1,
 } from './fs';
 
 export type {
