@@ -503,5 +503,20 @@
     .status-bar-right :global([data-testid='status-bar-queued']) {
       display: none;
     }
+
+    /* The selected session's own target chip (issue #738) is the least
+       useful LEFT-zone segment at phone width: a phone user is rarely
+       picking between targets mid-session, unlike the connection/target-
+       health segments this bar exists to surface at a glance. Dropping it
+       here (issue #736's own composer-strip e2e spec pins this bar's
+       phone budget — `composer-strip.spec.ts`'s "fits one row on a
+       phone") still leaves it discoverable at this width: the sessions
+       sheet's own row for the open session already carries the identical
+       label (`+page.svelte`'s `session-activity`, reachable from the
+       bottom tab bar), so nothing here becomes undiscoverable, only
+       un-glanceable while composing. */
+    .status-bar-left :global([data-testid='status-bar-session-target']) {
+      display: none;
+    }
   }
 </style>
