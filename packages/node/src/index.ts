@@ -41,6 +41,12 @@ export { McpConfigError, McpConfigStore } from './mcp-config-store';
 export type { NodeMcpSecretManagerOptions } from './mcp-secrets';
 export { NodeMcpSecretManager } from './mcp-secrets';
 
+// v1: node-side per-project direct-agent-env-injection grants + session-
+// start resolution, reusing NodeMcpSecretManager's own secret-value
+// storage (SPEC §7.17, §8; issue #258).
+export type { NodeProjectEnvManagerOptions, ProjectSecretValueSource } from './project-env-secrets';
+export { NodeProjectEnvManager } from './project-env-secrets';
+
 // v2: node-side persistence for loombox's native tracker data model
 // (`@loombox/shared`'s `TrackerRecord`/`TrackerTypeDefinition`; SPEC
 // §7.10 "Native mode"; issue #210).

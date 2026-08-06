@@ -22,6 +22,7 @@ import {
   resolvePermissionRequest,
   type AcpAvailableCommand,
   type AcpMcpServerPromptsEntry,
+  type ProjectEnvVarDecl,
   type AcpConfigOption,
   type AcpMcpServerStatusEntry,
   type AcpPermissionOption,
@@ -1027,6 +1028,20 @@ export interface CreateSessionOptions {
    * like any other session error).
    */
   customAgent?: CustomAgentRecordV1;
+  /**
+   * This project's declared env-var injection for the spawned agent
+   * process itself (SPEC §7.17, §8; issue #258) — `apps/web`'s
+   * `project-env-store.ts`'s `localStorage` list for `projectPath`, at
+   * the moment of creation. Travels inside the SAME private envelope as
+   * `title`/`projectPath`/`customAgent` — never in the clear — and never
+   * carries a secret *value*, only a secret *name* reference
+   * (`ProjectEnvVarDecl`'s `{ secret }` arm); resolving that into a
+   * value stays exclusively node-side (SPEC §7.17), unchanged and
+   * unweakened by this field's existence. Omitted or `[]` (an older
+   * client, or a project with nothing declared) behaves exactly like
+   * before this field existed: no extra env is injected.
+   */
+  projectEnvDecls?: ProjectEnvVarDecl[];
   /**
    * This client's own per-project, currently-enabled MCP server
    * declarations (issue #750, D2-2; #794) — `apps/web`'s
@@ -3277,6 +3292,9 @@ export class RelayClient {
       ...(options.mcpServerConfigs === undefined || options.mcpServerConfigs.length === 0
         ? {}
         : { mcpServerConfigs: options.mcpServerConfigs }),
+      ...(options.projectEnvDecls === undefined || options.projectEnvDecls.length === 0
+        ? {}
+        : { projectEnvDecls: options.projectEnvDecls }),
     };
     const privateEnvelope = await this.envelopeCrypto.seal(
       'session',

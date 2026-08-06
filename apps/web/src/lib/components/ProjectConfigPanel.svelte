@@ -57,12 +57,14 @@
    */
   import type { McpServerConfigStorage } from '$lib/mcp-server-store';
   import type { PluginConfigStorage } from '$lib/plugin-store';
+  import type { ProjectEnvDeclStorage } from '$lib/project-env-store';
   import type { AcpMcpServerStatusEntry } from '@loombox/providers-core/browser';
   import McpServerConfigPanel from './McpServerConfigPanel.svelte';
   import PermissionPolicyPanel, {
     type PermissionPolicyClient,
   } from './PermissionPolicyPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
+  import ProjectSecretsPanel from './ProjectSecretsPanel.svelte';
   import TestRunnerConfigPanel, {
     type TestRunnerConfigClient,
   } from './TestRunnerConfigPanel.svelte';
@@ -74,8 +76,11 @@
     sessionId?: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
+    projectEnvStorage?: ProjectEnvDeclStorage;
     relayClient?: ProjectConfigRelayClient;
     onSecretRequired?: (serverName: string, secretName: string) => void;
+    /** Same seam as `onSecretRequired`, scoped to a project's directly-declared env-var injection (issue #258) rather than an MCP server's — kept as its own prop since the two are a genuinely distinct grant/trust boundary (see `ProjectSecretsPanel`'s doc comment). */
+    onEnvSecretRequired?: (envVarName: string, secretName: string) => void;
     /**
      * The selected session's latest `mcp_server_status` push (issue #750,
      * D2-2; #794), forwarded straight through to `McpServerConfigPanel`'s
@@ -93,8 +98,10 @@
     sessionId,
     mcpStorage,
     pluginStorage,
+    projectEnvStorage,
     relayClient,
     onSecretRequired,
+    onEnvSecretRequired,
     mcpServerStatuses,
   }: Props = $props();
 </script>
@@ -107,6 +114,14 @@
       storage={mcpStorage}
       {onSecretRequired}
       {mcpServerStatuses}
+    />
+  </section>
+  <section class="project-config-section">
+    <h3>Env vars &amp; secrets</h3>
+    <ProjectSecretsPanel
+      {projectPath}
+      storage={projectEnvStorage}
+      onSecretRequired={onEnvSecretRequired}
     />
   </section>
   <section class="project-config-section">

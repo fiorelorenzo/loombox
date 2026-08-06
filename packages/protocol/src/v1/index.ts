@@ -118,6 +118,13 @@ export {
   safeParseMcpServerConfigV1,
 } from './mcp-servers';
 
+export type { ProjectEnvVarDeclV1 } from './project-env';
+export {
+  parseProjectEnvVarDeclV1,
+  projectEnvVarDeclV1,
+  safeParseProjectEnvVarDeclV1,
+} from './project-env';
+
 export type {
   SessionArchiveRequest,
   SessionArchiveResponse,
