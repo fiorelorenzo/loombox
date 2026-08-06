@@ -87,6 +87,19 @@ import {
   type FsReadRequest,
   type FsReadRequestPayloadV1,
   type FsReadResponsePayloadV1,
+  type GitBranchCreateRequest,
+  type GitBranchCreateRequestPayloadV1,
+  type GitBranchCreateResponsePayloadV1,
+  type GitBranchListRequest,
+  type GitBranchListResponsePayloadV1,
+  type GitBranchMergeAbortRequest,
+  type GitBranchMergeAbortResponsePayloadV1,
+  type GitBranchMergeRequest,
+  type GitBranchMergeRequestPayloadV1,
+  type GitBranchMergeResponsePayloadV1,
+  type GitBranchSwitchRequest,
+  type GitBranchSwitchRequestPayloadV1,
+  type GitBranchSwitchResponsePayloadV1,
   type GitDiffRequest,
   type GitDiffResponsePayloadV1,
   type GitHunkActionRequest,
@@ -94,6 +107,17 @@ import {
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffRequest,
   type GitHunkDiffResponsePayloadV1,
+  type GitStashDropRequest,
+  type GitStashDropRequestPayloadV1,
+  type GitStashDropResponsePayloadV1,
+  type GitStashListRequest,
+  type GitStashListResponsePayloadV1,
+  type GitStashPopRequest,
+  type GitStashPopRequestPayloadV1,
+  type GitStashPopResponsePayloadV1,
+  type GitStashSaveRequest,
+  type GitStashSaveRequestPayloadV1,
+  type GitStashSaveResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -222,11 +246,26 @@ import {
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
 import {
+  abortMerge,
   applyGitHunkAction,
   computeHunkDiff,
   computeWorktreeDiff,
+  createBranch,
+  GitBranchAlreadyExistsError,
+  GitBranchNotFoundError,
   GitDiffError,
+  GitDirtyWorktreeError,
   GitHunkActionError,
+  GitMergeConflictError,
+  GitStashNotFoundError,
+  GitStashPopConflictError,
+  listBranches,
+  listStashes,
+  mergeBranch,
+  stashDrop,
+  stashPop,
+  stashSave,
+  switchBranch,
 } from './git-diff';
 import {
   assertCustomAgentAllowed,
@@ -3987,6 +4026,33 @@ export class NodeDaemon extends EventEmitter {
       case 'git_hunk_action_request':
         this.handleGitHunkActionRequest(message);
         return;
+      case 'git_branch_list_request':
+        this.handleGitBranchListRequest(message);
+        return;
+      case 'git_branch_create_request':
+        this.handleGitBranchCreateRequest(message);
+        return;
+      case 'git_branch_switch_request':
+        this.handleGitBranchSwitchRequest(message);
+        return;
+      case 'git_branch_merge_request':
+        this.handleGitBranchMergeRequest(message);
+        return;
+      case 'git_branch_merge_abort_request':
+        this.handleGitBranchMergeAbortRequest(message);
+        return;
+      case 'git_stash_save_request':
+        this.handleGitStashSaveRequest(message);
+        return;
+      case 'git_stash_list_request':
+        this.handleGitStashListRequest(message);
+        return;
+      case 'git_stash_pop_request':
+        this.handleGitStashPopRequest(message);
+        return;
+      case 'git_stash_drop_request':
+        this.handleGitStashDropRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -5535,6 +5601,611 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'git_hunk_action_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's current
+   * local branches (SPEC §7.6; issue #234) — `handleGitDiffRequest`'s
+   * sibling, same "no live bridge needed, always a reply, never a silent
+   * drop" contract. No envelope on `git_branch_list_request` itself (see
+   * `@loombox/protocol`'s `git-branch.ts` doc comment).
+   */
+  private handleGitBranchListRequest(message: GitBranchListRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.listBranchesForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitBranchListResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_branch_list_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async listBranchesForBridge(
+    routing: SessionRouting,
+  ): Promise<GitBranchListResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const branches = await listBranches(target, routing.session.worktreePath);
+      return { outcome: 'ok', branches };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitBranchListResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitBranchListResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_branch_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to create a branch, and
+   * optionally switch onto it (SPEC §7.6; issue #234) — `handleGitHunkActionRequest`'s
+   * sibling in shape (an enveloped request; `name` is real session
+   * content).
+   */
+  private handleGitBranchCreateRequest(message: GitBranchCreateRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitBranchCreateRequest(message)
+      .then((payload) => this.createBranchForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitBranchCreateResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_branch_create_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitBranchCreateRequest(
+    message: GitBranchCreateRequest,
+  ): Promise<GitBranchCreateRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitBranchCreateRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Creates `payload.name` (`./git-diff.ts`'s `createBranch`), then —
+   * only when `payload.checkout` — switches onto it exactly like
+   * `switchBranchForBridge` below, guarded by the identical
+   * worktree-isolated-session check FIRST: a session whose branch is
+   * fixed for its whole life (`session-manager.ts`'s own doc comment)
+   * never has this create-and-switch path move it either — see
+   * `@loombox/protocol`'s `git-branch.ts` file doc comment. Never throws:
+   * every expected failure becomes its own outcome instead.
+   */
+  private async createBranchForBridge(
+    routing: SessionRouting,
+    payload: GitBranchCreateRequestPayloadV1,
+  ): Promise<GitBranchCreateResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await createBranch(target, routing.session.worktreePath, {
+        name: payload.name,
+        startPoint: payload.startPoint,
+      });
+      if (!payload.checkout) {
+        return { outcome: 'ok', branch: payload.name, checkedOut: false };
+      }
+      if (routing.session.branch) {
+        return {
+          outcome: 'session_branch_fixed',
+          message: `this session's worktree is fixed to "${routing.session.branch}" for its whole life — start a new session on "${payload.name}" instead of switching this one`,
+        };
+      }
+      await switchBranch(target, routing.session.worktreePath, { name: payload.name });
+      return { outcome: 'ok', branch: payload.name, checkedOut: true };
+    } catch (error) {
+      if (error instanceof GitBranchAlreadyExistsError) {
+        return { outcome: 'already_exists', message: error.message };
+      }
+      if (error instanceof GitDirtyWorktreeError) {
+        return { outcome: 'dirty_worktree', message: error.message, paths: error.paths };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitBranchCreateResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitBranchCreateResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_branch_create_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to switch this session's
+   * worktree onto another branch (SPEC §7.6; issue #234) —
+   * `handleGitBranchCreateRequest`'s sibling in shape.
+   */
+  private handleGitBranchSwitchRequest(message: GitBranchSwitchRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitBranchSwitchRequest(message)
+      .then((payload) => this.switchBranchForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitBranchSwitchResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_branch_switch_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitBranchSwitchRequest(
+    message: GitBranchSwitchRequest,
+  ): Promise<GitBranchSwitchRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitBranchSwitchRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Refuses before touching git at all for a worktree-isolated session
+   * (`routing.session.branch !== ''`) — that worktree's branch never
+   * moves for the session's whole life (`session-manager.ts`'s own doc
+   * comment: it's created on `loombox/session-<id>` and stays there).
+   * Switching it out from under the session would silently break
+   * `resolveSessionBranch`'s cached report (it trusts `session.branch`
+   * directly for an isolated session, never re-probing) and
+   * `SessionManager.removeSession`'s own `git worktree remove` + `git
+   * branch -D session.branch` teardown — exactly the "session's own
+   * worktree left in a state the user can't get out of from the UI"
+   * failure mode issue #234 calls out by name. A work-in-place or `ssh:`
+   * session (`branch === ''`) has no such invariant and switches freely.
+   */
+  private async switchBranchForBridge(
+    routing: SessionRouting,
+    payload: GitBranchSwitchRequestPayloadV1,
+  ): Promise<GitBranchSwitchResponsePayloadV1> {
+    if (routing.session.branch) {
+      return {
+        outcome: 'session_branch_fixed',
+        message: `this session's worktree is fixed to "${routing.session.branch}" for its whole life — start a new session on "${payload.name}" instead of switching this one`,
+      };
+    }
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await switchBranch(target, routing.session.worktreePath, { name: payload.name });
+      return { outcome: 'ok', branch: payload.name };
+    } catch (error) {
+      if (error instanceof GitDirtyWorktreeError) {
+        return { outcome: 'dirty_worktree', message: error.message, paths: error.paths };
+      }
+      if (error instanceof GitBranchNotFoundError) {
+        return { outcome: 'not_found', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitBranchSwitchResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitBranchSwitchResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_branch_switch_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to merge a branch into this
+   * session's current branch (SPEC §7.6; issue #234) —
+   * `handleGitBranchSwitchRequest`'s sibling in shape. Never moves which
+   * branch is checked out, so — unlike switch/create-with-checkout —
+   * this carries no worktree-isolated-session guard: merging upstream
+   * INTO an isolated session's own branch is the intended use.
+   */
+  private handleGitBranchMergeRequest(message: GitBranchMergeRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitBranchMergeRequest(message)
+      .then((payload) => this.mergeBranchForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitBranchMergeResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_branch_merge_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitBranchMergeRequest(
+    message: GitBranchMergeRequest,
+  ): Promise<GitBranchMergeRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitBranchMergeRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async mergeBranchForBridge(
+    routing: SessionRouting,
+    payload: GitBranchMergeRequestPayloadV1,
+  ): Promise<GitBranchMergeResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const result = await mergeBranch(target, routing.session.worktreePath, {
+        name: payload.name,
+      });
+      return { outcome: 'ok', branch: payload.name, fastForward: result.fastForward };
+    } catch (error) {
+      if (error instanceof GitMergeConflictError) {
+        return {
+          outcome: 'conflict',
+          message: error.message,
+          conflictedPaths: error.conflictedPaths,
+        };
+      }
+      if (error instanceof GitBranchNotFoundError) {
+        return { outcome: 'not_found', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitBranchMergeResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitBranchMergeResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_branch_merge_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to abort a merge stopped on
+   * conflicts (SPEC §7.6; issue #234) — the other half of
+   * `git_branch_merge_response`'s `'conflict'` outcome's "resolve or
+   * abort" (this issue's own acceptance bar). No envelope on
+   * `git_branch_merge_abort_request` itself (nothing to carry beyond
+   * session/request id).
+   */
+  private handleGitBranchMergeAbortRequest(message: GitBranchMergeAbortRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.abortMergeForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitBranchMergeAbortResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_branch_merge_abort_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async abortMergeForBridge(
+    routing: SessionRouting,
+  ): Promise<GitBranchMergeAbortResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await abortMerge(target, routing.session.worktreePath);
+      return { outcome: 'ok' };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitBranchMergeAbortResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitBranchMergeAbortResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_branch_merge_abort_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to save the current
+   * worktree onto the stash stack (SPEC §7.6; issue #234) —
+   * `handleGitBranchCreateRequest`'s sibling in shape.
+   */
+  private handleGitStashSaveRequest(message: GitStashSaveRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitStashSaveRequest(message)
+      .then((payload) => this.stashSaveForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitStashSaveResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_stash_save_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitStashSaveRequest(
+    message: GitStashSaveRequest,
+  ): Promise<GitStashSaveRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitStashSaveRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async stashSaveForBridge(
+    routing: SessionRouting,
+    payload: GitStashSaveRequestPayloadV1,
+  ): Promise<GitStashSaveResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const result = await stashSave(target, routing.session.worktreePath, {
+        message: payload.message,
+      });
+      return { outcome: 'ok', created: result.created };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitStashSaveResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitStashSaveResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_stash_save_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node for one session's current
+   * stash stack (SPEC §7.6; issue #234) — `handleGitBranchListRequest`'s
+   * sibling in shape (no envelope on the request either).
+   */
+  private handleGitStashListRequest(message: GitStashListRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.listStashesForBridge(routing)
+      .then((responsePayload) =>
+        this.sendGitStashListResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_stash_list_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async listStashesForBridge(
+    routing: SessionRouting,
+  ): Promise<GitStashListResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const stashes = await listStashes(target, routing.session.worktreePath);
+      return { outcome: 'ok', stashes };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitStashListResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitStashListResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_stash_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to pop a stash entry (SPEC
+   * §7.6; issue #234) — `handleGitStashSaveRequest`'s sibling in shape.
+   */
+  private handleGitStashPopRequest(message: GitStashPopRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitStashPopRequest(message)
+      .then((payload) => this.stashPopForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitStashPopResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_stash_pop_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitStashPopRequest(
+    message: GitStashPopRequest,
+  ): Promise<GitStashPopRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitStashPopRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Runs `stashPop` (`./git-diff.ts`) — issue #234's own named failure
+   * mode, "a stash that cannot pop", surfaces here as `'conflict'` with
+   * `stashKept: true`: real git conflict-markers the worktree and keeps
+   * the stash entry rather than dropping it, so nothing is lost either
+   * way (a caller resolves the conflicts and calls `git_stash_drop_request`,
+   * or discards the conflict-marked changes and tries again).
+   */
+  private async stashPopForBridge(
+    routing: SessionRouting,
+    payload: GitStashPopRequestPayloadV1,
+  ): Promise<GitStashPopResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await stashPop(target, routing.session.worktreePath, { index: payload.index });
+      return { outcome: 'ok' };
+    } catch (error) {
+      if (error instanceof GitStashPopConflictError) {
+        return {
+          outcome: 'conflict',
+          message: error.message,
+          conflictedPaths: error.conflictedPaths,
+          stashKept: true,
+        };
+      }
+      if (error instanceof GitStashNotFoundError) {
+        return { outcome: 'not_found', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitStashPopResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitStashPopResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_stash_pop_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to drop a stash entry for
+   * good (SPEC §7.6; issue #234) — the way out of a resolved (or
+   * abandoned) `git_stash_pop_response`'s `'conflict'` outcome, or of an
+   * entry no longer wanted. `handleGitStashPopRequest`'s sibling in
+   * shape.
+   */
+  private handleGitStashDropRequest(message: GitStashDropRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitStashDropRequest(message)
+      .then((payload) => this.stashDropForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitStashDropResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_stash_drop_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitStashDropRequest(
+    message: GitStashDropRequest,
+  ): Promise<GitStashDropRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitStashDropRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async stashDropForBridge(
+    routing: SessionRouting,
+    payload: GitStashDropRequestPayloadV1,
+  ): Promise<GitStashDropResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      await stashDrop(target, routing.session.worktreePath, { index: payload.index });
+      return { outcome: 'ok' };
+    } catch (error) {
+      if (error instanceof GitStashNotFoundError) {
+        return { outcome: 'not_found', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitStashDropResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitStashDropResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_stash_drop_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
