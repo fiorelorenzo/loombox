@@ -144,15 +144,17 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
-     coarse-pointer convention every other primitive in this package uses.
-     `font-size: 1rem` (not a `--text-*` token) is deliberate too: iOS
-     Safari auto-zooms the viewport on focusing a text input whose computed
-     font-size is under 16px, so this is a platform minimum exactly like
-     the 44px `min-height` beside it, not a gap in the type scale
-     (issue #508 token-hygiene audit: considered and kept literal). */
+     coarse-pointer convention every other primitive in this package uses
+     — `var(--touch-target-min)`, not a `2.75rem` literal (A2-1, issue
+     #734: see that token's own note in `tokens.css`). `font-size: 1rem`
+     (not a `--text-*` token) is deliberate too: iOS Safari auto-zooms the
+     viewport on focusing a text input whose computed font-size is under
+     16px, so this is a platform minimum exactly like the 44px
+     `min-height` beside it, not a gap in the type scale (issue #508
+     token-hygiene audit: considered and kept literal). */
   @media (pointer: coarse) {
     .ui-input {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
       font-size: 1rem;
     }
   }

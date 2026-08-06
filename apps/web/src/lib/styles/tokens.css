@@ -68,7 +68,17 @@
   --gutter: 2.5rem;
   --sidebar-width: 17rem; /* the sidebar's default, drag-resizable width */
   --sidebar-width-collapsed: 3.5rem;
-  --nav-row-height: 2.5rem; /* 40px — v4 primary destination row height, spec 3.1 */
+  /* A2-1 tightening (issue #734, `2026-08-05-zed-parity-decisions.md`):
+     30px, was `2.5rem` (40px nominal / ~38px actual against the root
+     this file's own `html` rule sets — see the note on `--topbar-height`
+     below). Expressed directly in `rem` computed against the REAL post-
+     tightening root (`--text-body-size: 0.9rem` makes `html`'s own
+     font-size 14.4px — `rem`'s one spec exception: on the root element's
+     OWN `font-size`, `rem` resolves against the UA initial value, 16px,
+     never against itself), not the naive 16px assumption the pre-A2-1
+     value's own "40px" comment made and the "38px" it actually rendered
+     as. `2.0833rem * 14.4px ≈ 30.0px`. */
+  --nav-row-height: 2.0833rem; /* 30px — v4 primary destination row height, spec 3.1, tightened for A2-1 */
   --nav-icon-size: 1.25rem; /* 20px — same rows' icon size */
   /* `StatusDot`'s two diameters. A token because callers have to reserve the
      dot's slot without it: the sidebar's session rows only draw a dot for the
@@ -87,9 +97,15 @@
   --tabbar-height: 3.5rem;
   /* The cockpit topbar's own height, for the same reason `--tabbar-height`
      above is a token: the overlay Drawer has to start below the topbar
-     rather than covering the controls that open it, and a literal `3rem`
-     repeated there drifts from the one rule that actually sets the height. */
-  --topbar-height: 3rem;
+     rather than covering the controls that open it, and a literal `2.5rem`
+     repeated there drifts from the one rule that actually sets the height.
+     A2-1 tightening (issue #734): 36px, was `3rem`. `2.5rem` against the
+     14.4px root `--text-body-size` sets (see `--nav-row-height`'s own note
+     just above for why `rem` here, and why the multiplier isn't the naive
+     16px-based one the pre-A2-1 value's own math used) lands exactly on
+     36px — the one case in this pass where the tightened multiplier came
+     out clean. */
+  --topbar-height: 2.5rem; /* 36px, tightened for A2-1 */
   /* `Overlay`'s backdrop top edge — a per-caller hook, not a scale value:
      declared here so the token-hygiene test below has a definition to
      resolve, and so the default (a full-viewport scrim) is stated in the
@@ -146,6 +162,26 @@
      chrome, per the redesign brief's discipline — see that file). */
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
+
+  /* Touch-target floor (SPEC.md §7.3, issue #133): the `@media (pointer:
+     coarse)` enlargement every interactive control in this package
+     applies — Button, IconButton, Input, Select, Checkbox, ConfigBar's
+     trigger/mode-choice, PermissionCard's answer buttons, PlanCard's
+     header, TurnEditsBar's rows, AppearanceSettings' option rows, and
+     (from A2-1, issue #734) `.destination-row`. A plain `px` pair, not
+     `rem`, and that is load-bearing, not stylistic: every one of these
+     rules used to write its own `2.75rem`/`2.5rem` literal, which put a
+     PHYSICAL minimum hit-target size — a platform contract, same
+     reasoning as `Input.svelte`'s own `font-size: 1rem` iOS-zoom note —
+     at the mercy of `--text-body-size`, since `rem` resolves against
+     `html`'s computed font-size and that token IS `html`'s font-size
+     (see `typography.css`'s own note on `--text-body-size`). A2-1's
+     tightening of that token would have silently shrunk every one of
+     these floors from ~41.8px actual to ~39.6px, a real regression this
+     token set (added by #734) closes by making the floor a fixed
+     physical size instead of a multiple of the prose type scale. */
+  --touch-target-min: 44px;
+  --touch-target-compact: 40px; /* Button/Select's own smaller `sm` floor */
 
   /* ---------------------------------------------------------------- */
   /* Breakpoints (redesign brief §1, issue #427). Documented here as one  */
