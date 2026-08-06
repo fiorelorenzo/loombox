@@ -70,7 +70,9 @@
     type TestRunnerConfigClient,
   } from './TestRunnerConfigPanel.svelte';
 
-  type ProjectConfigRelayClient = TestRunnerConfigClient & PermissionPolicyClient & SpendReportClient;
+  type ProjectConfigRelayClient = TestRunnerConfigClient &
+    PermissionPolicyClient &
+    SpendReportClient;
 
   interface Props {
     projectPath: string;

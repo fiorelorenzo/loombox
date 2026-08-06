@@ -80,7 +80,12 @@ function validateRow(raw: unknown, context: string): SpendLedgerRow {
   if (typeof obj.costUsd !== 'number' || !Number.isFinite(obj.costUsd) || obj.costUsd <= 0) {
     throw new SpendLedgerError(`${context}: "costUsd" must be a positive finite number`);
   }
-  return { date: obj.date, projectPath: obj.projectPath, provider: obj.provider, costUsd: obj.costUsd };
+  return {
+    date: obj.date,
+    projectPath: obj.projectPath,
+    provider: obj.provider,
+    costUsd: obj.costUsd,
+  };
 }
 
 function validateFile(parsed: unknown, filePath: string): SpendLedgerFileV1 {
@@ -126,7 +131,9 @@ export class SpendLedgerStore {
       throw new SpendLedgerError(`recordDelta: "date" must be a YYYY-MM-DD string, got "${date}"`);
     }
     if (!(Number.isFinite(deltaUsd) && deltaUsd > 0)) {
-      throw new SpendLedgerError(`recordDelta: "deltaUsd" must be a positive finite number, got ${deltaUsd}`);
+      throw new SpendLedgerError(
+        `recordDelta: "deltaUsd" must be a positive finite number, got ${deltaUsd}`,
+      );
     }
     const file = this.readFile();
     const existing = file.rows.find(

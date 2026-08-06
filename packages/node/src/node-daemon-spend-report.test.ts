@@ -330,13 +330,15 @@ describe('spend_report_request / spend_report_response (SPEC §7.9; issue #249)'
       },
     });
 
-    await phone.waitFor(
-      (m) =>
-        m.type === 'session_update' &&
-        (m as { sessionId: string }).sessionId === session.id &&
-        false, // never matches; real assertion below polls the store instead
-      50,
-    ).catch(() => undefined);
+    await phone
+      .waitFor(
+        (m) =>
+          m.type === 'session_update' &&
+          (m as { sessionId: string }).sessionId === session.id &&
+          false, // never matches; real assertion below polls the store instead
+        50,
+      )
+      .catch(() => undefined);
 
     // Poll the ledger directly rather than decrypting `session_update`
     // notifications — this test's only claim is "the write landed",
@@ -350,7 +352,12 @@ describe('spend_report_request / spend_report_response (SPEC §7.9; issue #249)'
     }
 
     expect(rows).toEqual([
-      { date: new Date().toISOString().slice(0, 10), projectPath, provider: 'test-spend-report', costUsd: 3.25 },
+      {
+        date: new Date().toISOString().slice(0, 10),
+        projectPath,
+        provider: 'test-spend-report',
+        costUsd: 3.25,
+      },
     ]);
   });
 });

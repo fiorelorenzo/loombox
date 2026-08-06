@@ -152,9 +152,7 @@
 
   /** Attaches `projectPath` back onto every wire row (the response omits it — it's already the single project the request addressed, see `spend-report.ts`'s own doc comment) so `aggregateSpendLedgerRows` sees the same row shape `@loombox/node` feeds it. */
   const aggregate = $derived(
-    aggregateSpendLedgerRows(
-      report.rows.map((row: SpendReportRowV1) => ({ ...row, projectPath })),
-    ),
+    aggregateSpendLedgerRows(report.rows.map((row: SpendReportRowV1) => ({ ...row, projectPath }))),
   );
 
   const providerBreakdown = $derived(

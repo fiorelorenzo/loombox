@@ -49,9 +49,7 @@ describe('SpendLedgerStore', () => {
 
   it('rejects a zero, negative, or non-finite delta — there is nothing to persist for a day nothing increased', () => {
     const store = new SpendLedgerStore({ stateDir });
-    expect(() => store.recordDelta('2026-08-01', '/proj-a', 'claude', 0)).toThrow(
-      SpendLedgerError,
-    );
+    expect(() => store.recordDelta('2026-08-01', '/proj-a', 'claude', 0)).toThrow(SpendLedgerError);
     expect(() => store.recordDelta('2026-08-01', '/proj-a', 'claude', -1)).toThrow(
       SpendLedgerError,
     );
@@ -63,9 +61,7 @@ describe('SpendLedgerStore', () => {
 
   it('rejects a malformed date', () => {
     const store = new SpendLedgerStore({ stateDir });
-    expect(() => store.recordDelta('08/01/2026', '/proj-a', 'claude', 1)).toThrow(
-      SpendLedgerError,
-    );
+    expect(() => store.recordDelta('08/01/2026', '/proj-a', 'claude', 1)).toThrow(SpendLedgerError);
   });
 
   it('persists across a simulated restart (a fresh store instance over the same stateDir)', () => {

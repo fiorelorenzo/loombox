@@ -1122,7 +1122,12 @@ import {
   spendCapResult,
   sessionSpendCapResume,
 } from './spend-cap';
-import { spendReportRowV1, spendReportResponsePayloadV1, spendReportRequest, spendReportResponse } from './spend-report';
+import {
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
+} from './spend-report';
 import {
   accountPinErrorType,
   accountPinGetRequest,

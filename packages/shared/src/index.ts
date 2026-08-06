@@ -47,9 +47,5 @@ export {
 // before sealing the reply) and `@loombox/web` (aggregating the
 // decrypted response into the spend-over-time view). See
 // `spend-aggregation.ts`'s own doc comment.
-export type {
-  SpendAggregationRow,
-  SpendLedgerFilter,
-  SpendAggregateV1,
-} from './spend-aggregation';
+export type { SpendAggregationRow, SpendLedgerFilter, SpendAggregateV1 } from './spend-aggregation';
 export { filterSpendLedgerRows, aggregateSpendLedgerRows } from './spend-aggregation';

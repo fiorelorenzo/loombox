@@ -4449,7 +4449,11 @@ export class RelayClient {
    * selector's own action, and the general-purpose manual reload/Retry
    * {@link spendReportFor}'s doc comment points to.
    */
-  reloadSpendReport(nodeId: string, projectPath: string, filter: { sinceDate?: string; untilDate?: string } = {}): void {
+  reloadSpendReport(
+    nodeId: string,
+    projectPath: string,
+    filter: { sinceDate?: string; untilDate?: string } = {},
+  ): void {
     this.spendReportsRequested.add(projectPath);
     this.spendReportStoreFor(projectPath).update((state) => ({ ...state, status: 'loading' }));
     this.sendSpendReportRequest(nodeId, projectPath, filter.sinceDate, filter.untilDate);
@@ -7029,7 +7033,11 @@ export class RelayClient {
 
   /** Sets a project's spend report store to `'error'`, same shape as {@link setTrackerSnapshotError} (no `reason` union to carry — `spend_report_response` has none). */
   private setSpendReportError(projectPath: string, message: string): void {
-    this.spendReportStoreFor(projectPath).update((state) => ({ ...state, status: 'error', error: message }));
+    this.spendReportStoreFor(projectPath).update((state) => ({
+      ...state,
+      status: 'error',
+      error: message,
+    }));
   }
 
   /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same project might have left behind. */

@@ -125,8 +125,6 @@ test.describe('Spend-over-time view at 390px (issue #249)', () => {
     // this same page (a genuinely-zero-so-far live session total, per
     // that meter's own convention), which a page-wide text search would
     // otherwise collide with.
-    await expect(
-      page.getByTestId('spend-report-panel').getByText('$0.00'),
-    ).not.toBeVisible();
+    await expect(page.getByTestId('spend-report-panel').getByText('$0.00')).not.toBeVisible();
   });
 });
