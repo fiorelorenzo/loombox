@@ -222,6 +222,10 @@ export interface AcpAvailableCommand {
   name: string;
   description: string | undefined;
   input: AcpAvailableCommandInput | undefined;
+  /** Set only for a command synthesized from an MCP server's own declared prompt (Zed-parity D5-2, issue #754) — that server's name, so a caller can attribute this row distinctly from an agent-native command and route its send through `mcp_prompt_get_request` instead of sending `/name ...` verbatim. `undefined` for every ordinary agent-declared command. */
+  mcpServer?: string;
+  /** The MCP prompt's own declared argument schema (issue #754), carried alongside `input.hint`'s display-only string so a caller can build the `{name: value}` map an `mcp_prompt_get_request` sends, without re-deriving it from the hint text. Only ever set together with `mcpServer`. */
+  mcpArguments?: AcpMcpServerPromptArgument[];
   readonly [key: string]: unknown;
 }
 
@@ -444,7 +448,44 @@ export type AcpSessionLifecycleEvent =
   | AcpAvailableCommandsUpdateEvent
   | AcpTurnStartedEvent
   | AcpTurnEndedEvent
-  | AcpMcpServerStatusEvent;
+  | AcpMcpServerStatusEvent
+  | AcpMcpServerPromptsEvent;
+
+/** One argument an MCP prompt declared (MCP's own `PromptArgument` shape — mirrors `@loombox/protocol`'s `mcpServerPromptArgumentV1`). `required` is a display/best-effort-mapping hint only; the MCP server itself is the actual enforcement point (a missing required argument surfaces as `mcp_prompt_get_response`'s `outcome: 'error'`). */
+export interface AcpMcpServerPromptArgument {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+/** One prompt one MCP server declared via `prompts/list` (issue #754) — name, description and argument schema, never the rendered content itself (that's `prompts/get`, fetched live per-selection through `mcp_prompt_get_request`). */
+export interface AcpMcpServerPrompt {
+  name: string;
+  description?: string;
+  arguments?: AcpMcpServerPromptArgument[];
+}
+
+/** One MCP server's declared prompt catalogue, keyed by that server's own name (the same `name` {@link AcpMcpServerStatusEntry} reports against). */
+export interface AcpMcpServerPromptsEntry {
+  name: string;
+  prompts: AcpMcpServerPrompt[];
+}
+
+/**
+ * Pushed once per session, right alongside `mcp_server_status` (Zed-parity
+ * D5-2, issue #754), after this session's launched MCP servers' own
+ * `prompts/list` has actually been read. Only a server that both started
+ * AND declared at least one prompt is listed here — a server with no
+ * prompts contributes nothing, and an unreachable server never breaks this
+ * for the others (see `@loombox/protocol`'s `mcpServerPromptsEventV1` doc
+ * comment for the full "ride the same shape as `mcp_server_status`"
+ * reasoning).
+ */
+export interface AcpMcpServerPromptsEvent {
+  kind: 'mcp_server_prompts';
+  servers: AcpMcpServerPromptsEntry[];
+  updatedAt: string;
+}
 
 /**
  * Everything that can travel inside one `session_update` encrypted envelope
