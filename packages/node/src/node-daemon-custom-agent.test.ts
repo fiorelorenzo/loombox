@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -287,114 +287,134 @@ afterEach(async () => {
  * refused with a reason the client can show, with no field on the wire able
  * to talk the node out of that refusal.
  */
+/**
+ * The real-binary acceptance test needs `omp` on PATH. It is there on the
+ * devbox this was written on, and it is NOT there on a GitHub-hosted CI
+ * runner, where the test spent 60s timing out and turned `main` red (issue
+ * #748's own merge). Skipping when the binary is absent keeps the test
+ * meaningful where it can run and honest where it cannot: every other test
+ * in this file drives the same code path with a fixture agent, so the
+ * allowlist gate itself is never left unverified.
+ */
+const ompOnPath = (() => {
+  const result = spawnSync('sh', ['-c', 'command -v omp'], { encoding: 'utf8' });
+  return result.status === 0 && result.stdout.trim().length > 0;
+})();
+
 describe('NodeDaemon custom ACP agents, local: (issue #748)', () => {
-  it('a custom ACP binary on the local allowlist runs a full session, verified against the real `omp acp` binary (issue #748 acceptance)', async () => {
-    const amk = generateAmk();
-    const accountId = 'acct-custom-agent-real-binary';
-    // `--profile` isolates this run's auth/session/cache state from every
-    // other `omp` process this box may have running concurrently (this
-    // harness's own agents are themselves `omp acp` processes) — without
-    // it, a fresh `omp acp` invocation can block for a long time on
-    // profile-level contention with those, which is a resource-contention
-    // artifact of running inside `omp`, not anything this test is
-    // actually asserting. Confirmed directly against the real binary
-    // before writing this test: `omp acp` alone (default profile) hung
-    // past a minute on `session/new` in this environment; `omp acp
-    // --profile=<isolated>` answered in under a second.
-    const profileId = `loombox-custom-agent-test-${randomUUID()}`;
+  it.skipIf(!ompOnPath)(
+    'a custom ACP binary on the local allowlist runs a full session, verified against the real `omp acp` binary (issue #748 acceptance)',
+    async () => {
+      const amk = generateAmk();
+      const accountId = 'acct-custom-agent-real-binary';
+      // `--profile` isolates this run's auth/session/cache state from every
+      // other `omp` process this box may have running concurrently (this
+      // harness's own agents are themselves `omp acp` processes) — without
+      // it, a fresh `omp acp` invocation can block for a long time on
+      // profile-level contention with those, which is a resource-contention
+      // artifact of running inside `omp`, not anything this test is
+      // actually asserting. Confirmed directly against the real binary
+      // before writing this test: `omp acp` alone (default profile) hung
+      // past a minute on `session/new` in this environment; `omp acp
+      // --profile=<isolated>` answered in under a second.
+      const profileId = `loombox-custom-agent-test-${randomUUID()}`;
 
-    node = createNode({
-      relayUrl: relay.url,
-      stateDir: nodeStateDir,
-      nodeId: 'node-custom-real',
-      deviceId: 'device-node-custom-real',
-      devicePublicKey: randomBase64(),
-      authToken: accountId,
-      accountId,
-      amk,
-      customAgentAllowlist: ['omp'],
-      supervisor: new AgentSupervisor({ providers: [] }),
-    });
-    await waitForConnected(node);
+      node = createNode({
+        relayUrl: relay.url,
+        stateDir: nodeStateDir,
+        nodeId: 'node-custom-real',
+        deviceId: 'device-node-custom-real',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+        accountId,
+        amk,
+        customAgentAllowlist: ['omp'],
+        supervisor: new AgentSupervisor({ providers: [] }),
+      });
+      await waitForConnected(node);
 
-    const sessionId = 'sess-custom-real-1';
-    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
-    const privateEnvelope = await phoneSeal(
-      sessionId,
-      {
-        title: 'real omp custom agent',
-        projectPath,
-        customAgent: {
-          name: 'Test Oh My Pi',
-          command: 'omp',
-          args: ['acp', `--profile=${profileId}`],
+      const sessionId = 'sess-custom-real-1';
+      const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+      const privateEnvelope = await phoneSeal(
+        sessionId,
+        {
+          title: 'real omp custom agent',
+          projectPath,
+          customAgent: {
+            name: 'Test Oh My Pi',
+            command: 'omp',
+            args: ['acp', `--profile=${profileId}`],
+          },
         },
-      },
-      key,
-    );
+        key,
+      );
 
-    phone = new TestPhone(relay.url, {
-      deviceId: 'device-phone-custom-real',
-      devicePublicKey: randomBase64(),
-      authToken: accountId,
-    });
-    await phone.ready;
-    phone.send({
-      type: 'session_create',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId: 'local',
-      // D1-3's convention (`sessions.ts`'s `customAgent` doc comment):
-      // `'custom'` names this a custom-agent session for a human reading
-      // the wire; the node itself gates on the presence of `customAgent`
-      // in the envelope, never on this string (proven by the
-      // "cannot be bypassed" test below).
-      provider: 'custom',
-      privateEnvelope,
-    });
+      phone = new TestPhone(relay.url, {
+        deviceId: 'device-phone-custom-real',
+        devicePublicKey: randomBase64(),
+        authToken: accountId,
+      });
+      await phone.ready;
+      phone.send({
+        type: 'session_create',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId: 'local',
+        // D1-3's convention (`sessions.ts`'s `customAgent` doc comment):
+        // `'custom'` names this a custom-agent session for a human reading
+        // the wire; the node itself gates on the presence of `customAgent`
+        // in the envelope, never on this string (proven by the
+        // "cannot be bypassed" test below).
+        provider: 'custom',
+        privateEnvelope,
+      });
 
-    const entry = await waitForSessionInList(phone, sessionId, 10000);
-    expect(entry.session.provider).toBe('custom');
+      const entry = await waitForSessionInList(phone, sessionId, 10000);
+      expect(entry.session.provider).toBe('custom');
 
-    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
-    await phone.waitFor((m) => m.type === 'session_announce');
+      phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+      await phone.waitFor((m) => m.type === 'session_announce');
 
-    // Proof this is a FULL session, not just a spawned process: the
-    // node only ever reaches `forwardInitialSessionState` (the source of
-    // both events below) once `AgentSession.spawn()` completed the real
-    // ACP `initialize` handshake AND `session/new` against the real
-    // binary — never on a bare process start. `'awaiting_input'` is the
-    // real agent's own reported attention state; `config_options`
-    // carries the catalog `session/new`'s own wire result seeded
-    // (verified above, live, to include `omp`'s real `mode`/`model`
-    // categories — never faked/assumed here).
-    const [status] = await waitForDecryptedKinds(
-      phone,
-      sessionId,
-      key,
-      ['session_status'],
-      1,
-      20000,
-    );
-    expect(status?.status).toBe('awaiting_input');
+      // Proof this is a FULL session, not just a spawned process: the
+      // node only ever reaches `forwardInitialSessionState` (the source of
+      // both events below) once `AgentSession.spawn()` completed the real
+      // ACP `initialize` handshake AND `session/new` against the real
+      // binary — never on a bare process start. `'awaiting_input'` is the
+      // real agent's own reported attention state; `config_options`
+      // carries the catalog `session/new`'s own wire result seeded
+      // (verified above, live, to include `omp`'s real `mode`/`model`
+      // categories — never faked/assumed here).
+      const [status] = await waitForDecryptedKinds(
+        phone,
+        sessionId,
+        key,
+        ['session_status'],
+        1,
+        20000,
+      );
+      expect(status?.status).toBe('awaiting_input');
 
-    const [configEvent] = await waitForDecryptedKinds(
-      phone,
-      sessionId,
-      key,
-      ['config_options'],
-      1,
-      5000,
-    );
-    expect(Array.isArray(configEvent?.options)).toBe(true);
-    expect((configEvent?.options as Array<{ category?: string }>).length).toBeGreaterThan(0);
-    expect(
-      (configEvent?.options as Array<{ category?: string }>).some((o) => o.category === 'mode'),
-    ).toBe(true);
+      const [configEvent] = await waitForDecryptedKinds(
+        phone,
+        sessionId,
+        key,
+        ['config_options'],
+        1,
+        5000,
+      );
+      expect(Array.isArray(configEvent?.options)).toBe(true);
+      expect((configEvent?.options as Array<{ category?: string }>).length).toBeGreaterThan(0);
+      expect(
+        (configEvent?.options as Array<{ category?: string }>).some((o) => o.category === 'mode'),
+      ).toBe(true);
 
-    // Never refused, never errored: the allowlisted binary ran clean.
-    expect(phone.messages.some((m) => m.type === 'session_update' && 'sessionId' in m)).toBe(true);
-  }, 30000);
+      // Never refused, never errored: the allowlisted binary ran clean.
+      expect(phone.messages.some((m) => m.type === 'session_update' && 'sessionId' in m)).toBe(
+        true,
+      );
+    },
+    30000,
+  );
 
   it('a custom agent whose command is NOT on the local allowlist is refused with a reason naming the allowlist, through the real handleSessionCreate wire path (not just the pure-function gate)', async () => {
     const amk = generateAmk();
