@@ -138,6 +138,85 @@ describe('TranscriptTimeline: mounts a bounded window, not the whole transcript 
   });
 });
 
+describe('TranscriptTimeline: subagent/nested tool-call tree rendering (issue #200)', () => {
+  it('a nested tool call renders indented, with its own row shape unchanged', () => {
+    renderTimeline([
+      toolCallItem('root', { title: 'Run subagent' }),
+      toolCallItem('child', { parentToolCallId: 'root', title: 'Bash' }),
+    ]);
+
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.className).not.toContain('tool-call-nested');
+    expect(rows[1]!.className).toContain('tool-call-nested');
+
+    // The child's own row shape — the tier-1/2 widget dispatcher — mounts
+    // completely unchanged: still exactly one `tool-call-row`, same as the
+    // root's.
+    expect(screen.getAllByTestId('tool-call-row')).toHaveLength(2);
+
+    // A caption names the resolved immediate parent, so a reader still has
+    // context even if the parent's own row later scrolls out of the
+    // mounted window (see the next test).
+    const label = screen.getByTestId('tool-call-nesting-label');
+    expect(label.textContent).toContain('Run subagent');
+  });
+
+  it('an orphan child — parentToolCallId set, but that id never arrived — still renders, at the top level', () => {
+    renderTimeline([toolCallItem('orphan', { parentToolCallId: 'never-arrived' })]);
+
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.className).not.toContain('tool-call-nested');
+    expect(screen.queryByTestId('tool-call-nesting-label')).toBeNull();
+  });
+
+  it('a tree deeper than two levels renders every level, with the indent capped rather than unbounded', () => {
+    renderTimeline([
+      toolCallItem('root'),
+      toolCallItem('a', { parentToolCallId: 'root' }),
+      toolCallItem('b', { parentToolCallId: 'a' }),
+      toolCallItem('c', { parentToolCallId: 'b' }),
+    ]);
+
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows).toHaveLength(4);
+    const leaf = rows.find((row) => row.dataset.itemId === 'c')!;
+    // True depth (3) is preserved in the data attribute...
+    expect(leaf.dataset.nestingDepth).toBe('3');
+    // ...but the indent itself is capped, so a pathologically deep chain
+    // never squeezes the row toward zero width.
+    expect(leaf.getAttribute('style')).toContain('calc(var(--space-lg) * 3)');
+
+    const deeper = [
+      toolCallItem('root2'),
+      toolCallItem('d1', { parentToolCallId: 'root2' }),
+      toolCallItem('d2', { parentToolCallId: 'd1' }),
+      toolCallItem('d3', { parentToolCallId: 'd2' }),
+      toolCallItem('d4', { parentToolCallId: 'd3' }),
+    ];
+    cleanup();
+    renderTimeline(deeper);
+    const deepRows = screen.getAllByTestId('transcript-row');
+    const deepLeaf = deepRows.find((row) => row.dataset.itemId === 'd4')!;
+    expect(deepLeaf.dataset.nestingDepth).toBe('4');
+    expect(deepLeaf.getAttribute('style')).toContain('calc(var(--space-lg) * 3)');
+  });
+
+  it('windowing still holds on a long transcript that includes nesting: mounted-row count stays bounded', () => {
+    const items: TranscriptToolCallItem[] = [];
+    for (let i = 0; i < 1000; i += 1) {
+      items.push(toolCallItem(`root${i}`));
+      items.push(toolCallItem(`child${i}`, { parentToolCallId: `root${i}` }));
+    }
+    renderTimeline(items);
+
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows.length).toBeLessThan(60);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+});
+
 describe('TranscriptTimeline: follow/pin-to-bottom (issue #508, extended by #755)', () => {
   it('a later chunk that grows real scrollHeight keeps following rather than landing below the fold', async () => {
     const { rerender } = renderTimeline(toolCalls(30));
