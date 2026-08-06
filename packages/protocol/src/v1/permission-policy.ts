@@ -42,14 +42,16 @@ import { PROTOCOL_V1 } from './handshake';
  *   `permission_policy_result` reply as `_get`.
  * - `permission_policy_violation` — node-to-client only, no request half
  *   (mirrors `run_output`/`terminal_output`): fired the instant a live
- *   command/terminal-line is actually denied, so a client can name the
- *   rule without scraping a terminal's ANSI banner or a run's free-text
+ *   command/terminal-line is actually denied OR a tool call is refused by
+ *   an agent profile (issue #752), so a client can name the rule without
+ *   scraping a terminal's ANSI banner or a run's free-text
  *   `run_exit.reason`. Carries {@link ToolRefusalReasonV1}, a
- *   discriminated union with exactly one member today
- *   (`kind: 'permission_policy'`) — the seam D3-4's "the UI must say
- *   which of the three layers refused it" needs: the profiles half
- *   (issue #752) adds its own `kind: 'profile'` member alongside this one
- *   rather than this file growing a second, parallel "why" field.
+ *   discriminated union — `kind: 'permission_policy'` (this issue) and
+ *   `kind: 'profile'` (issue #752, `@loombox/protocol`'s `agent-profile.ts`)
+ *   share this one notification and this one union rather than each
+ *   growing its own parallel "why" mechanism; see that type's own doc
+ *   comment for the D3-4 "which of the three layers" framing this seam
+ *   exists for.
  *
  * Addressed by `sessionId` (the node resolves that session's `projectPath`
  * itself, exactly like `test-runner-config.ts`'s own doc comment already
@@ -154,12 +156,22 @@ export type PermissionPolicyResult = z.infer<typeof permissionPolicyResult>;
 /**
  * Why a live tool call was refused (D3-4's "the UI must say which of the
  * three layers refused it" — see this file's own doc comment). A
- * discriminated union with exactly one member today rather than a bare
- * string, so the profiles half (issue #752) can add a `kind: 'profile'`
- * member alongside this one without reshaping it; a request-time
- * `reject_always` answer needs no member here at all, since that is
- * already a real, rendered ACP `permission_response`, never routed
- * through this type.
+ * discriminated union rather than a bare string, so a caller (e.g.
+ * `PermissionPolicyPanel.svelte`'s `ATTRIBUTION_LABEL`) is forced to
+ * handle every member; a request-time `reject_always` answer needs no
+ * member here at all, since that is already a real, rendered ACP
+ * `permission_response`, never routed through this type.
+ *
+ * - `kind: 'permission_policy'` — issue #751's project-scoped glob policy,
+ *   gating *approval mode* for a command/network destination.
+ * - `kind: 'profile'` — issue #752's account-scoped named profile, gating
+ *   *existence*: which tools a session may use at all. `matchedBy`/`rule`
+ *   mirror `@loombox/node`'s `agent-profile.ts`'s own `ProfileToolDenial`
+ *   (`'tool-kind'` carries the ACP `toolKind` string as `rule`,
+ *   `'tool-name'` carries the glob pattern that matched as `rule`) —
+ *   kept as opaque strings here rather than a typed `AcpToolKind` enum,
+ *   the same "this package never re-declares ACP's own vocabulary"
+ *   boundary `transcript.ts`'s doc comment already establishes.
  */
 export const toolRefusalReasonV1 = z.discriminatedUnion('kind', [
   z.object({
@@ -170,15 +182,24 @@ export const toolRefusalReasonV1 = z.discriminatedUnion('kind', [
     /** The specific candidate string the rule matched against — mirrors `PolicyViolation.matched`. */
     matched: z.string(),
   }),
+  z.object({
+    kind: z.literal('profile'),
+    profileId: z.string().min(1),
+    /** The profile's own human-chosen name, carried alongside the id so a client can attribute a refusal without a separate catalog lookup — mirrors why `rule`/`matched` above are inlined rather than looked up. */
+    profileName: z.string().min(1),
+    matchedBy: z.enum(['tool-kind', 'tool-name']),
+    /** Either the ACP tool-kind string (`matchedBy: 'tool-kind'`) or the glob pattern that matched (`matchedBy: 'tool-name'`) — see this schema's own doc comment. */
+    rule: z.string().min(1),
+  }),
 ]);
 export type ToolRefusalReasonV1 = z.infer<typeof toolRefusalReasonV1>;
 
-/** The plaintext a `permission_policy_violation` envelope decrypts to — one denied command/line, reported live. Mirrors `PolicyViolation`, minus `projectPath` (already implied by `sessionId`). */
+/** The plaintext a `permission_policy_violation` envelope decrypts to — one denied command/line or refused tool call, reported live. Mirrors `PolicyViolation` for a `kind: 'permission_policy'` reason (minus `projectPath`, already implied by `sessionId`); for a `kind: 'profile'` reason (issue #752), `command` carries the refused tool call's own `title` (or its `id` when the agent gave no title) — the same "what got blocked, in one string" role it plays for a policy violation's command line. */
 export const permissionPolicyViolationPayloadV1 = z.object({
   reason: toolRefusalReasonV1,
-  /** Which real chokepoint produced this — mirrors `PolicyViolation.surface`. */
-  surface: z.enum(['exec', 'terminal']),
-  /** The full original command/line, for the same reason `PolicyViolation.command` carries it node-side. */
+  /** Which real chokepoint produced this — mirrors `PolicyViolation.surface`. `'tool_call'` (issue #752) is the one `session/request_permission` interception this package's own doc comment for `ToolRefusalReasonV1` documents; `'exec'`/`'terminal'` stay #751's own two. */
+  surface: z.enum(['exec', 'terminal', 'tool_call']),
+  /** The full original command/line, or (for a `'tool_call'` surface) the refused tool call's own label — see this schema's own doc comment. */
   command: z.string(),
   timestamp: z.string(),
 });

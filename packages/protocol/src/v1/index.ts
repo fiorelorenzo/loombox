@@ -506,6 +506,35 @@ export {
   toolRefusalReasonV1,
 } from './permission-policy';
 export type {
+  AgentProfileV1,
+  AgentProfileListResultPayloadV1,
+  AgentProfileListSetPayloadV1,
+  AgentProfileListGet,
+  AgentProfileListSet,
+  AgentProfileListResult,
+  AgentProfileSessionPayloadV1,
+  AgentProfileSessionGet,
+  AgentProfileSessionSet,
+  AgentProfileSessionResult,
+  AgentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+export {
+  agentProfileV1,
+  parseAgentProfileListResultPayloadV1,
+  safeParseAgentProfileListResultPayloadV1,
+  parseAgentProfileListSetPayloadV1,
+  safeParseAgentProfileListSetPayloadV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  parseAgentProfileSessionPayloadV1,
+  safeParseAgentProfileSessionPayloadV1,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+export type {
   AccountPinErrorType,
   AccountPinGetRequest,
   AccountPinMapV1,
@@ -838,6 +867,16 @@ import {
   toolRefusalReasonV1,
 } from './permission-policy';
 import {
+  agentProfileV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
+} from './agent-profile';
+import {
   accountPinErrorType,
   accountPinGetRequest,
   accountPinMapV1,
@@ -1052,6 +1091,14 @@ export const schemasV1 = {
   permissionPolicyResult,
   toolRefusalReasonV1,
   permissionPolicyViolation,
+  agentProfileV1,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
+  agentProfileSessionErrorPayloadV1,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,

@@ -212,4 +212,40 @@ describe('PermissionPolicyPanel (SPEC §7.17; issue #751)', () => {
       expect(row.textContent).toContain('rm -rf /');
     });
   });
+
+  it('a refusal caused by an agent profile names that profile in the UI, distinguishable from a policy refusal (D3-4 attribution, issue #752)', async () => {
+    let deliverViolation: (violation: PermissionPolicyViolationPayloadV1) => void = () => {};
+    const client = fakeClient({
+      onPermissionPolicyViolation: vi.fn((_sessionId, listener) => {
+        deliverViolation = listener;
+        return () => {};
+      }),
+    });
+    render(PermissionPolicyPanel, {
+      props: { projectPath: '/proj-a', sessionId: 'sess-1', client },
+    });
+
+    await waitFor(() => expect(client.onPermissionPolicyViolation).toHaveBeenCalled());
+
+    deliverViolation({
+      reason: {
+        kind: 'profile',
+        profileId: 'prof_ask',
+        profileName: 'Ask First',
+        matchedBy: 'tool-kind',
+        rule: 'execute',
+      },
+      surface: 'tool_call',
+      command: 'Bash',
+      timestamp: '2026-08-06T00:00:00.000Z',
+    });
+
+    await waitFor(() => {
+      const row = screen.getByTestId('permission-policy-violation-0');
+      expect(row.textContent).toContain('Profile');
+      expect(row.textContent).not.toContain('Policy');
+      expect(row.textContent).toContain('Ask First');
+      expect(row.textContent).toContain('execute');
+    });
+  });
 });
