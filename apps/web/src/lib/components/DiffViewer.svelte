@@ -27,7 +27,7 @@
    * the card scrolls its own long lines horizontally (`.diff-lines`'s
    * `overflow-x: auto`) rather than overflowing the page on a narrow one.
    */
-  import { computeLineDiff, type DiffLine } from '$lib/diff';
+  import { diffStats } from '$lib/diff';
   import Card from './ui/Card.svelte';
   import CopyButton from './CopyButton.svelte';
 
@@ -45,10 +45,16 @@
   // ACP's shape for a binary/symlink change (SPEC.md §7.24). A genuinely
   // emptied text file (oldText non-null, newText === '') is still a real
   // diff (every old line renders as removed), not this fallback.
-  const hasText = $derived(!(oldText === null && newText === ''));
-  const lines: DiffLine[] = $derived(hasText ? computeLineDiff(oldText, newText) : []);
-  const added = $derived(lines.filter((l) => l.kind === 'added').length);
-  const removed = $derived(lines.filter((l) => l.kind === 'removed').length);
+  //
+  // `diffStats` (issue #740) is the one place this hasText/lines/added/
+  // removed derivation happens — `$lib/transcript/turn-review.ts`'s
+  // per-turn aggregator calls the same function, so this card's own stat
+  // line and the turn summary bar's total can never drift apart.
+  const stats = $derived(diffStats(oldText, newText));
+  const hasText = $derived(stats.hasText);
+  const lines = $derived(stats.lines);
+  const added = $derived(stats.added);
+  const removed = $derived(stats.removed);
   const copyText = $derived(hasText ? newText : `${path} (binary/symlink change)`);
 </script>
 
