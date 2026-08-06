@@ -19,8 +19,8 @@
    * to `AddProjectDialog`, which fixes them ONCE per folder. This dialog
    * now only ever reads them off `project`, shown as a muted read-only
    * context line rather than form fields, and asks what's genuinely
-   * per-session: an agent, SPEC §7.1's per-session worktree choice, a
-   * title, and a starting prompt. That split is also what unblocks the
+   * per-session: an agent, SPEC §7.1's per-session worktree choice, and a
+   * title. That split is also what unblocks the
    * worktree choice at all: it had no `session_create` field to travel in
    * before this change (closed in the same change, `packages/protocol`'s
    * `sessionPrivateMetaV1.worktree`), and it only ever makes sense
@@ -56,13 +56,13 @@
    * now leads and is the field the dialog focuses on open (`Dialog`'s own
    * focus trap always moves focus to the panel's first focusable element -
    * see `Dialog.svelte` - so putting Title first in the DOM is the whole
-   * mechanism, no explicit `autofocus` needed). The starting prompt trails
-   * last and shrinks: both are optional, since creating a session with
-   * neither filled in is a legitimate "open it and talk to the agent from
-   * the composer later" flow. Title's "defaults to the project folder"
-   * copy stays in `Field`'s persistent `help` slot, since that is still
-   * exactly what the node does with an empty title
-   * (`packages/node/src/node-daemon.ts:921`).
+   * mechanism, no explicit `autofocus` needed). Title itself stays optional
+   * (creating a session with nothing typed is a legitimate "open it and talk
+   * to the agent from the composer later" flow — issue #761 later made that
+   * the ONLY flow, removing the starting-prompt field this paragraph used to
+   * also describe), and its "defaults to the project folder" copy stays in
+   * `Field`'s persistent `help` slot, since that is still exactly what the
+   * node does with an empty title (`packages/node/src/node-daemon.ts:921`).
    *
    * Deck migration (redesign v2 §2 "One button language", issue #464):
    * every hand-rolled `.btn*` gives way to the shared `Button` primitive.
@@ -70,13 +70,13 @@
    * field's native `<select>` gives way to the shared `ui/Select` primitive.
    *
    * Coherence v5 migration (design spec §1, issue #508): the Agent,
-   * Workspace, Title, and Starting-prompt fields, and the actions row,
-   * now go through the shared `Field`/`Input`/`TextArea`/`RadioGroup`/
-   * `FormActions` primitives instead of each hand-rolling its own label,
-   * input/textarea styling, radio-card markup, and action-row layout —
-   * see `Field.svelte`'s own doc comment, which cites this file's
-   * pre-migration Agent-field-vs-Title-field inconsistency as its
-   * motivating example.
+   * Workspace, and Title fields, and the actions row, now go through the
+   * shared `Field`/`Input`/`RadioGroup`/`FormActions` primitives instead of
+   * each hand-rolling its own label, input styling, radio-card markup, and
+   * action-row layout — see `Field.svelte`'s own doc comment, which cites
+   * this file's pre-migration Agent-field-vs-Title-field inconsistency as
+   * its motivating example. (The starting-prompt field this migration also
+   * touched, via `ui/TextArea`, is gone — issue #761.)
    */
   import type { CreateSessionOptions } from '$lib/relay-client';
   import type { Project } from '$lib/projects';
@@ -89,7 +89,6 @@
   import Input from './ui/Input.svelte';
   import RadioGroup, { type RadioOption } from './ui/RadioGroup.svelte';
   import Select, { type SelectOption } from './ui/Select.svelte';
-  import TextArea from './ui/TextArea.svelte';
 
   export interface NewSessionClient {
     createSession: (options: CreateSessionOptions) => Promise<string>;
@@ -140,7 +139,6 @@
   ];
 
   let title = $state('');
-  let prompt = $state('');
   let creating = $state(false);
   let createError = $state<string | undefined>(undefined);
 
@@ -160,7 +158,7 @@
   // effect used to depend on `providers` too. That prop's identity churns
   // constantly in production - `+page.svelte` derives it from issue #269's
   // polled target list - so the reset re-ran on ordinary re-renders. Driving the
-  // built app against the deployed relay, a prompt typed into the open dialog
+  // built app against the deployed relay, text typed into the open dialog
   // was wiped within one second, repeatedly, which made the field unusable.
   //
   // Gating on the transition fixes that at the root, and covers the sibling case
@@ -192,27 +190,21 @@
         // choice to send (see the file doc comment).
         ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
-        prompt: prompt.trim() || undefined,
       });
       onCreated(sessionId);
       onClose();
     } catch (error) {
       // Same wire-identifier leak issue #505 fixed in `DirectoryPicker` and
-      // `ArchiveSessionDialog`, but the honest wording is the opposite one.
-      // A timeout here does NOT mean nothing happened: the node creates the
-      // session's worktree first and only announces it once the agent is
-      // ready, and bringing an agent up can outlast this wait (a cold
-      // `npm exec` of the provider package, a loaded machine). So the
-      // session is quite likely on its way and will appear on the board by
-      // itself - telling the user it failed would be the wrong lie in the
-      // other direction. Every other error is written for a human by the
-      // node already and is shown verbatim; the real message still reaches a
-      // developer via `console.warn`.
+      // `ArchiveSessionDialog`: every error `RelayClient.createSession` can
+      // reject with today is already written for a human (or, before this
+      // ever reaches a user, a loud "not connected" thrown synchronously),
+      // so this shows it verbatim; the real error still reaches a developer
+      // via `console.warn`. (Issue #761 removed the only case that needed
+      // rephrasing here: `createSession` used to wait for the node's own
+      // announce purely to time the starting prompt it also sent, and could
+      // time out doing so — that wait is gone along with the prompt.)
       console.warn('NewSessionDialog: createSession failed', error);
-      const raw = error instanceof Error ? error.message : String(error);
-      createError = raw.includes('timed out waiting')
-        ? 'The agent is taking a while to start. The session may still appear on its own in a moment; if it does not, the node may be offline.'
-        : raw;
+      createError = error instanceof Error ? error.message : String(error);
     } finally {
       creating = false;
     }
@@ -222,7 +214,6 @@
     selectedProvider = providers[0] ?? '';
     workspaceChoice = 'worktree';
     title = '';
-    prompt = '';
     creating = false;
     createError = undefined;
   }
@@ -288,25 +279,6 @@
         {/snippet}
       </Field>
     {/if}
-
-    <Field
-      label="Starting prompt"
-      help="Optional - you can also say something later from the composer"
-    >
-      {#snippet children({ id, describedBy, errorId, invalid, required })}
-        <TextArea
-          {id}
-          {describedBy}
-          {errorId}
-          {invalid}
-          {required}
-          bind:value={prompt}
-          rows={3}
-          placeholder="What should the agent do first?"
-          dataTestId="new-session-prompt"
-        />
-      {/snippet}
-    </Field>
 
     {#if createError}
       <ErrorNotice message={createError} />

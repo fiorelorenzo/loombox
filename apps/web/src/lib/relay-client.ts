@@ -939,16 +939,9 @@ export interface CreateSessionOptions {
   worktree?: boolean;
   /** This session's display title (SPEC §7.24's session list). Defaults to `projectPath` itself when omitted — unlike `NodeDaemon.createSession`'s own node-direct API, the relay's `session_create` handler uses this title verbatim with no server-side default. */
   title?: string;
-  /** An optional starting prompt (SPEC §7.1): sent as an ordinary follow-up (the same path {@link sendPrompt} uses) once the session is confirmed created — `session_create`'s wire schema has no inline prompt field of its own. Omit to create an empty session with nothing said yet. */
-  prompt?: string;
   /** Overrides the generated session id — an escape hatch for a test asserting a fixed id; real callers should omit this and let this method generate one. */
   sessionId?: string;
-  /** How long to wait for the created session to actually appear in {@link sessions} (see this method's doc comment for why a wait is needed at all) before giving up. Defaults to 10s. */
-  timeoutMs?: number;
 }
-
-/** Default for {@link CreateSessionOptions.timeoutMs}. */
-const DEFAULT_CREATE_SESSION_TIMEOUT_MS = 10_000;
 
 /**
  * Owns one outbound WebSocket connection from the PWA to the v1 relay (SPEC
@@ -2505,19 +2498,22 @@ export class RelayClient {
    * (`packages/relay/src/relay.ts`'s `session_create` case), so this method
    * never needs to know which node owns it.
    *
-   * `session_create` has no direct acknowledgement on the wire (mirrors
-   * `packages/node/src/node-daemon.test.ts`'s `waitForSessionInList` helper,
-   * which this polling loop is the client-side counterpart of): the node
+   * `session_create` has no direct acknowledgement on the wire: the node
    * creates the session asynchronously (after its own decrypt), then
-   * announces it, but only to clients already subscribed — which this one
-   * isn't yet for a session id it just invented. So this method polls
-   * `session_list_request` (the same account-scoped snapshot `connect()`
-   * itself requests on open) until the new session shows up in
-   * {@link sessions}, and only then, if `prompt` was given, sends it as an
-   * ordinary follow-up via {@link sendPrompt} — sending it any earlier risks
-   * the relay's `prompt_inject` handler silently dropping it for a session
-   * id it doesn't know about yet (`packages/relay/src/relay.ts` warns and
-   * returns, exactly like an unknown/foreign session_resume).
+   * announces it via `session_announce` to every client subscribed to this
+   * account, this one included once its own subscription catches up. This
+   * method itself never waits for that announce — it used to poll
+   * `session_list_request` until the new id showed up in {@link sessions},
+   * but the only reason was timing a starting prompt sent right after
+   * (`sendPrompt` on a session id the relay's `prompt_inject` handler
+   * doesn't know about yet is silently dropped, `packages/relay/src/relay.ts`).
+   * Issue #761 removed that starting prompt — a session is always created
+   * empty now, the first thing typed goes through the composer's ordinary
+   * {@link sendPrompt} path like any follow-up — so there is nothing left to
+   * time, and this method simply returns the id it generated the moment
+   * `session_create` is on the wire. A session opened before its own
+   * `session_announce` arrives is issue #730's remaining half to fix, not
+   * this method's concern.
    *
    * Requires an open connection, same as {@link escrowAmk}/{@link listTargets}:
    * a deliberate one-shot action a caller awaits, not best-effort live
@@ -2548,34 +2544,7 @@ export class RelayClient {
       privateEnvelope,
     });
 
-    await this.waitForSessionCreated(
-      sessionId,
-      options.timeoutMs ?? DEFAULT_CREATE_SESSION_TIMEOUT_MS,
-    );
-
-    if (options.prompt && options.prompt.trim() !== '') {
-      this.sendPrompt(sessionId, options.prompt);
-    }
-
     return sessionId;
-  }
-
-  /** Polls the account-scoped snapshot until `sessionId` appears in {@link sessions}, or times out — see {@link createSession}'s doc comment for why a just-created session can't simply be awaited off a direct response. */
-  private async waitForSessionCreated(sessionId: string, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      if (get(this.sessionsStore).some((session) => session.id === sessionId)) return;
-      if (!this.isSocketOpen()) {
-        throw new Error(
-          `RelayClient.createSession: connection closed while waiting for session ${sessionId} to appear`,
-        );
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`RelayClient.createSession: timed out waiting for session ${sessionId}`);
-      }
-      this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
   }
 
   /**

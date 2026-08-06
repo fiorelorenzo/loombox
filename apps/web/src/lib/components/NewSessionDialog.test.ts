@@ -47,13 +47,7 @@ function fakeClient(overrides: Partial<NewSessionClient> = {}): NewSessionClient
   };
 }
 
-async function fillPrompt(): Promise<void> {
-  await fireEvent.input(screen.getByTestId('new-session-prompt'), {
-    target: { value: 'get started' },
-  });
-}
-
-describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507; forms + real providers design spec §2/§3; title-first, optional-prompt reorder, issue #563)', () => {
+describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, design spec §3.4, issue #507; forms + real providers design spec §2/§3; title-first field order, issue #563; starting prompt removed, issue #761)', () => {
   it('is not rendered while closed', () => {
     render(NewSessionDialog, {
       props: {
@@ -88,7 +82,7 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     expect(screen.queryByTestId('directory-picker')).toBeNull();
   });
 
-  it('the submit button is enabled with an empty form, since both the title and the starting prompt are optional', () => {
+  it('the submit button is enabled with an empty form, since the title is optional', () => {
     render(NewSessionDialog, {
       props: {
         open: true,
@@ -105,35 +99,24 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     expect(submit.disabled).toBe(false);
   });
 
-  it('submitting an empty form omits prompt entirely (not an empty string), and lets title default via title: undefined', async () => {
-    const client = fakeClient();
-    const onCreated = vi.fn();
+  it('has no starting-prompt field at all (issue #761): a session is always created empty, and the first thing said goes through the composer afterwards', () => {
     render(NewSessionDialog, {
       props: {
         open: true,
         project: PROJECT,
-        client,
+        client: fakeClient(),
         providers: PROVIDERS,
         targetLabel: TARGET_LABEL,
-        onCreated,
+        onCreated: vi.fn(),
         onClose: vi.fn(),
       },
     });
 
-    await fireEvent.click(screen.getByTestId('new-session-submit'));
-
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1'));
-    expect(client.createSession).toHaveBeenCalledWith({
-      targetId: 'local',
-      provider: 'claude',
-      projectPath: '/home/dev/loombox',
-      worktree: true,
-      title: undefined,
-      prompt: undefined,
-    });
+    expect(screen.queryByTestId('new-session-prompt')).toBeNull();
+    expect(screen.queryByText(/starting prompt/i)).toBeNull();
   });
 
-  it('orders the fields Title, Agent, Workspace, Starting prompt (issue #563: the task, not the first thing said, identifies a session)', () => {
+  it('orders the fields Title, Agent, Workspace (issue #563: the task, not the first thing said, identifies a session)', () => {
     render(NewSessionDialog, {
       props: {
         open: true,
@@ -149,16 +132,12 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     const title = screen.getByTestId('new-session-title');
     const agent = screen.getByTestId('new-session-provider');
     const workspace = screen.getByTestId('new-session-workspace');
-    const prompt = screen.getByTestId('new-session-prompt');
 
     expect(title.compareDocumentPosition(agent) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(agent.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(workspace.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
-      0,
-    );
   });
 
-  it('focuses the title field when the dialog opens, not the (now-optional, no-longer-first) starting prompt', async () => {
+  it('focuses the title field when the dialog opens (issue #563)', async () => {
     render(NewSessionDialog, {
       props: {
         open: true,
@@ -175,7 +154,7 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
     expect(document.activeElement).toBe(screen.getByTestId('new-session-title'));
   });
 
-  it("submitting calls client.createSession with the project's target/path, provider claude, the default isolated-worktree choice, and the prompt, then reports the new session and closes", async () => {
+  it("submitting an empty form calls client.createSession with the project's target/path, provider claude, the default isolated-worktree choice, and lets title default via title: undefined (never a prompt — issue #761), then reports the new session and closes", async () => {
     const client = fakeClient();
     const onCreated = vi.fn();
     const onClose = vi.fn();
@@ -191,7 +170,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       },
     });
 
-    await fillPrompt();
     await fireEvent.click(screen.getByTestId('new-session-submit'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1'));
@@ -201,7 +179,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       projectPath: '/home/dev/loombox',
       worktree: true,
       title: undefined,
-      prompt: 'get started',
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -223,43 +200,10 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       },
     });
 
-    await fillPrompt();
     await fireEvent.click(screen.getByTestId('new-session-submit'));
 
     await waitFor(() => expect(screen.getByText('relay unreachable')).toBeTruthy());
     expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('rephrases a transport timeout instead of leaking the wire identifier, and does not claim the session failed (issue #505 precedent)', async () => {
-    const client = fakeClient({
-      createSession: vi
-        .fn()
-        .mockRejectedValue(
-          new Error('RelayClient.createSession: timed out waiting for session sess_abc'),
-        ),
-    });
-    render(NewSessionDialog, {
-      props: {
-        open: true,
-        project: PROJECT,
-        client,
-        providers: PROVIDERS,
-        targetLabel: TARGET_LABEL,
-        onCreated: vi.fn(),
-        onClose: vi.fn(),
-      },
-    });
-
-    await fillPrompt();
-    await fireEvent.click(screen.getByTestId('new-session-submit'));
-
-    // The node creates the worktree before the agent is up and only announces
-    // afterwards, so a timeout here is not evidence the session failed - the
-    // copy must not say it did, and must not name a wire message either.
-    const notice = await screen.findByTestId('ui-error-notice');
-    expect(notice.textContent).not.toContain('sess_abc');
-    expect(notice.textContent).not.toContain('RelayClient');
-    expect(notice.textContent).toContain('may still appear');
   });
 
   it('shows the woven-thread loading motif on the submit button while creating', async () => {
@@ -284,7 +228,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       },
     });
 
-    await fillPrompt();
     await fireEvent.click(screen.getByTestId('new-session-submit'));
 
     expect(screen.getByTestId('woven-loader')).toBeTruthy();
@@ -331,7 +274,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       },
     });
 
-    await fillPrompt();
     await fireEvent.click(screen.getByTestId('new-session-submit'));
 
     await waitFor(() => expect(client.createSession).toHaveBeenCalled());
@@ -404,7 +346,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      await fillPrompt();
       await fireEvent.click(screen.getByTestId('new-session-workspace-in-place'));
       await fireEvent.click(screen.getByTestId('new-session-submit'));
 
@@ -415,7 +356,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
           projectPath: '/home/dev/loombox',
           worktree: false,
           title: undefined,
-          prompt: 'get started',
         }),
       );
     });
@@ -452,7 +392,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      await fillPrompt();
       await fireEvent.click(screen.getByTestId('new-session-submit'));
 
       await waitFor(() =>
@@ -486,7 +425,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       );
 
       await fireEvent.click(screen.getByTestId('new-session-provider-option-codex'));
-      await fillPrompt();
       await fireEvent.click(screen.getByTestId('new-session-submit'));
 
       await waitFor(() =>
@@ -510,7 +448,6 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      await fillPrompt();
       const submit = screen.getByTestId('new-session-submit') as HTMLButtonElement;
       expect(submit.disabled).toBe(true);
       expect(screen.queryByTestId('new-session-provider')).toBeNull();
@@ -530,8 +467,12 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
      * `untrack` the reset effect depended on it and wiped whatever was typed -
      * within one second, over and over, driving the built app against the
      * deployed relay. Same contents, new identity, is the whole scenario.
+     *
+     * Originally measured against the starting-prompt field. Issue #761
+     * removed that field, but `resetForm()` still resets Title the exact
+     * same way, so these now exercise the same effect through Title instead.
      */
-    it('keeps a typed prompt when providers arrives as a new array with identical contents', async () => {
+    it('keeps a typed title when providers arrives as a new array with identical contents', async () => {
       const { rerender } = render(NewSessionDialog, {
         props: {
           open: true,
@@ -544,20 +485,20 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      const prompt = screen.getByTestId('new-session-prompt') as HTMLTextAreaElement;
-      await fireEvent.input(prompt, { target: { value: 'do not lose this' } });
-      expect(prompt.value).toBe('do not lose this');
+      const title = screen.getByTestId('new-session-title') as HTMLInputElement;
+      await fireEvent.input(title, { target: { value: 'do not lose this' } });
+      expect(title.value).toBe('do not lose this');
 
       for (let i = 0; i < 3; i += 1) {
         await rerender({ providers: ['claude'] });
       }
 
-      expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(
+      expect((screen.getByTestId('new-session-title') as HTMLInputElement).value).toBe(
         'do not lose this',
       );
     });
 
-    it('keeps a typed prompt even when the provider list genuinely changes under it', async () => {
+    it('keeps a typed title even when the provider list genuinely changes under it', async () => {
       const { rerender } = render(NewSessionDialog, {
         props: {
           open: true,
@@ -570,13 +511,13 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      const prompt = screen.getByTestId('new-session-prompt') as HTMLTextAreaElement;
-      await fireEvent.input(prompt, { target: { value: 'still here' } });
+      const title = screen.getByTestId('new-session-title') as HTMLInputElement;
+      await fireEvent.input(title, { target: { value: 'still here' } });
       // A second agent finishing installation on the target is not a reason to
       // throw away the sentence the operator is halfway through.
       await rerender({ providers: ['claude', 'ohmypi'] });
 
-      expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(
+      expect((screen.getByTestId('new-session-title') as HTMLInputElement).value).toBe(
         'still here',
       );
     });
@@ -594,14 +535,14 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
         },
       });
 
-      await fireEvent.input(screen.getByTestId('new-session-prompt'), {
+      await fireEvent.input(screen.getByTestId('new-session-title'), {
         target: { value: 'from the previous session' },
       });
       await rerender({ open: false });
       await rerender({ open: true });
 
       await waitFor(() =>
-        expect((screen.getByTestId('new-session-prompt') as HTMLTextAreaElement).value).toBe(''),
+        expect((screen.getByTestId('new-session-title') as HTMLInputElement).value).toBe(''),
       );
     });
   });

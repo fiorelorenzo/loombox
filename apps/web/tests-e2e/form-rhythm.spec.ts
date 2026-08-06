@@ -115,7 +115,7 @@ test.describe('form rhythm (Field stacking contract)', () => {
     await page.goto('/');
     await expect(page.getByTestId('sessions-column')).toBeVisible({ timeout: 60_000 });
     await page.getByTestId('project-new-session-row').first().click();
-    await expect(page.getByTestId('new-session-prompt')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('new-session-title')).toBeVisible({ timeout: 30_000 });
 
     assertFieldsGroup(await measure(page, '[data-testid="dialog"]'));
   });

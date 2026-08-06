@@ -5946,7 +5946,7 @@ describe('RelayClient: recovery-code AMK escrow + new-device bootstrap (SPEC §8
 });
 
 describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
-  it('sends a session_create matching the wire schema, waits for the node-created session to appear, then sends the starting prompt as a follow-up', async () => {
+  it('sends a session_create matching the wire schema and resolves with the generated session id without waiting for the node to create/announce it', async () => {
     const amk = generateAmk();
     const accountId = 'acct-create-session-1';
 
@@ -5968,12 +5968,15 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
 
-    const createPromise = client.createSession({
+    // Deliberately never sends `session_announce` back: this method must not
+    // need it to resolve (issue #761 removed the poll-until-announced wait,
+    // which only ever existed to time the starting prompt this method used
+    // to send right after — see its own doc comment).
+    const sessionId = await client.createSession({
       targetId: 'local',
       provider: 'claude',
       projectPath: '/home/dev/project',
       title: 'my new session',
-      prompt: 'get started please',
     });
 
     const createMessage = (await node.waitFor((m) => m.type === 'session_create')) as {
@@ -5984,6 +5987,7 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
       provider: string;
       privateEnvelope: EncryptedEnvelope;
     };
+    expect(createMessage.sessionId).toBe(sessionId);
     expect(Object.keys(createMessage).sort()).toEqual(
       ['privateEnvelope', 'protocolVersion', 'provider', 'sessionId', 'targetId', 'type'].sort(),
     );
@@ -5997,38 +6001,9 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
       sessionKey,
     );
     expect(decryptedMeta).toEqual({ title: 'my new session', projectPath: '/home/dev/project' });
-
-    // Simulate the node: creates the session, then announces it (mirrors
-    // `NodeDaemon.handleSessionCreate`/`announce`).
-    node.send({
-      type: 'session_announce',
-      protocolVersion: PROTOCOL_V1,
-      session: makeSessionMeta({
-        id: createMessage.sessionId,
-        nodeId: 'node_create_1',
-        targetId: 'local',
-        accountId,
-        provider: 'claude',
-      }),
-      privateEnvelope: createMessage.privateEnvelope,
-    });
-
-    const sessionId = await createPromise;
-    expect(sessionId).toBe(createMessage.sessionId);
-    expect(get(client.sessions).some((session) => session.id === sessionId)).toBe(true);
-
-    const promptMessage = (await node.waitFor(
-      (m) => m.type === 'prompt_inject' && (m as PromptInjectV1).sessionId === sessionId,
-    )) as PromptInjectV1;
-    const promptPayload = await nodeOpen<{ text: string }>(
-      sessionId,
-      promptMessage.envelope,
-      sessionKey,
-    );
-    expect(promptPayload.text).toBe('get started please');
   });
 
-  it('creates a promptless session when no starting prompt is given', async () => {
+  it('never sends a follow-up prompt after creating a session', async () => {
     const amk = generateAmk();
     const accountId = 'acct-create-session-2';
 
@@ -6075,6 +6050,9 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
 
     await createPromise;
     // Give any errant send a beat to arrive, then confirm none did.
+    // `CreateSessionOptions` no longer has a `prompt` field at all (issue
+    // #761): a session is always created empty, and the first thing typed
+    // goes through the composer's ordinary `sendPrompt` path instead.
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(node.messages.some((m) => m.type === 'prompt_inject')).toBe(false);
   });
@@ -6090,27 +6068,6 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
     await expect(
       client.createSession({ targetId: 'local', provider: 'claude', projectPath: '/proj' }),
     ).rejects.toThrow(/not connected/);
-  });
-
-  it('times out with a clear error if the node never creates/announces the session', async () => {
-    const amk = generateAmk();
-    client = new RelayClient({
-      relayUrl: relay.url,
-      amk,
-      accountId: 'acct-create-session-timeout',
-      deviceId: 'client-create-timeout',
-    });
-    client.connect();
-    await waitForStore(client.status, (status) => status === 'open');
-
-    await expect(
-      client.createSession({
-        targetId: 'nonexistent-target',
-        provider: 'claude',
-        projectPath: '/proj',
-        timeoutMs: 300,
-      }),
-    ).rejects.toThrow(/timed out/);
   });
 });
 
