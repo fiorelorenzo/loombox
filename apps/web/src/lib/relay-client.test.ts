@@ -2473,6 +2473,84 @@ describe('RelayClient: session-lifecycle wire events (SPEC §7.13/§7.24/§8; is
     expect(get(options)).toEqual(fallback);
   });
 
+  it('decrypts available_commands_update into commandsFor, replacing the whole catalogue wholesale and preserving an unrecognized field on a command (issue #741)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-commands-wire';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-commands-wire',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_commands_wire', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-commands-wire',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const initialSessions = await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const commands = client.commandsFor(session.id);
+    await waitForStoreChange(client.sessions, initialSessions);
+
+    // An agent that has not declared any commands yet starts empty, not an
+    // error (issue #741 acceptance).
+    expect(get(commands)).toEqual([]);
+
+    const catalog = [
+      { name: 'model', description: 'Show current model selection' },
+      {
+        name: 'security',
+        description: 'Run a security scan',
+        input: { hint: '<plan|scan|status>' },
+        // Unrecognized/future field — must survive decryption + zod
+        // validation + the reducer, all the way into the store (#741).
+        icon: 'shield',
+      },
+    ];
+    const commandsEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'available_commands_update', commands: catalog },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: commandsEnvelope,
+    });
+    await waitForStore(commands, (value) => value.length > 0);
+    expect(get(commands)).toEqual(catalog);
+
+    // A later available_commands_update fully replaces the catalogue too —
+    // never appended to or patched per-command.
+    const redeclared = [{ name: 'jobs', description: 'Show background jobs' }];
+    const redeclaredEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'available_commands_update', commands: redeclared },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 2,
+      envelope: redeclaredEnvelope,
+    });
+    await waitForStore(commands, (value) => value[0]?.name === 'jobs');
+    expect(get(commands)).toEqual(redeclared);
+  });
+
   it('flushes a queued prompt immediately on turn_ended, without waiting out the idle-timeout fallback', async () => {
     const amk = generateAmk();
     const accountId = 'acct-turn-ended';

@@ -28,6 +28,7 @@ import {
   listPermissionRequests,
   reduceSessionEvent,
   resolvePermissionRequest,
+  type AcpAvailableCommand,
   type AcpConfigOption,
   type AcpPermissionOption,
   type AcpSessionStatus,
@@ -970,10 +971,11 @@ const DEFAULT_CREATE_SESSION_TIMEOUT_MS = 10_000;
  * of truth uses, additive to the transcript-only `reduceTranscript`: the
  * same `TranscriptState` also carries the session's live `status`
  * (SPEC §7.13/§7.24; issue #126), its `configOptions` catalog (issue #149,
- * `configOptionsFor` below just reads that field), and `turnActive`/
- * `lastStopReason` (issue #128) — one reduced state per session, not
- * several parallel stores that could drift out of sync. `sendPrompt` seals
- * the composer's text into a `prompt_inject`
+ * `configOptionsFor` below just reads that field), its `commands`
+ * catalogue (issue #741, `commandsFor` below just reads that field), and
+ * `turnActive`/`lastStopReason` (issue #128) — one reduced state per
+ * session, not several parallel stores that could drift out of sync.
+ * `sendPrompt` seals the composer's text into a `prompt_inject`
  * envelope and, since the relay never echoes it back, optimistically reduces
  * the user's own turn into the local transcript so it shows immediately —
  * unless a turn is already considered in flight for that session, or there
@@ -2796,6 +2798,25 @@ export class RelayClient {
     const transcript = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(transcript, (state) => state.configOptions);
+  }
+
+  /**
+   * The session's agent-declared `/`-command catalogue (SPEC §7.24's
+   * slash-command surface; issue #741), always the complete current list.
+   * Backed by the same reduced `TranscriptState` `transcriptFor` exposes
+   * (its `commands` field, populated by the node's `available_commands_update`
+   * session-lifecycle event — see this class's own doc comment), not a
+   * separate parallel store, exactly like `configOptionsFor` above. Starts
+   * `[]` until the agent's own first `available_commands_update` arrives (a
+   * connected agent that declares no commands at all, or a subscription
+   * that hasn't received one yet — issue #741's "declares none" acceptance:
+   * an empty list, not an error). Plumbing only: no composer UI reads this
+   * yet (issue #743).
+   */
+  commandsFor(sessionId: string): Readable<AcpAvailableCommand[]> {
+    const transcript = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(transcript, (state) => state.commands);
   }
 
   /**

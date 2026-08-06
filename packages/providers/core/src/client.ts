@@ -7,6 +7,7 @@ import type { Readable, Writable } from 'node:stream';
 
 import { deriveFeatureFlags } from './capabilities';
 import type { AcpFeatureFlags } from './capabilities';
+import { AvailableCommandsStore } from './available-commands';
 import { ConfigOptionStore } from './config-options';
 import { PermissionQueue } from './permission-queue';
 import { McpServerSecretMissingError } from './mcp-secret-grants';
@@ -16,6 +17,7 @@ import { createTranscriptState, reduceTranscript } from './transcript';
 import type { TranscriptState } from './transcript';
 import type {
   AcpAgentCapabilities,
+  AcpAvailableCommand,
   AcpConfigOption,
   AcpDiff,
   AcpInitializeResult,
@@ -77,9 +79,10 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
 /**
  * The wire shape of a `session/update` notification's `update` object,
  * widened (additive to v0's narrower inline type) to cover every
- * `sessionUpdate` kind the v1 transcript reducer and config-option store
- * understand: message/thought chunks, `tool_call`/`tool_call_update`,
- * `plan`, `usage_update`, and `config_option_update`.
+ * `sessionUpdate` kind the v1 transcript reducer and config-option/
+ * available-command stores understand: message/thought chunks,
+ * `tool_call`/`tool_call_update`, `plan`, `usage_update`,
+ * `config_option_update`, and `available_commands_update`.
  *
  * Field-by-field audit against the real ACP v1 schema
  * (agentclientprotocol.com/protocol/v1/schema,
@@ -128,6 +131,9 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
  *    place this translation happens for every source (`initialize`,
  *    `session/new`, and this notification) — issue #705, closing the
  *    follow-up this comment used to flag.
+ *  - `availableCommands` (`available_commands_update`): ACP's real field
+ *    name, `[{name, description, input: {hint} | null}]` — see
+ *    `mapAvailableCommands`'s own doc comment (issue #741).
  */
 interface RawSessionUpdate {
   sessionUpdate?: string;
@@ -156,6 +162,7 @@ interface RawSessionUpdate {
   size?: number;
   cost?: { amount?: number; currency?: string } | null;
   configOptions?: RawConfigOption[];
+  availableCommands?: RawAvailableCommand[];
 }
 
 interface SessionUpdateParams {
@@ -399,6 +406,60 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
   return options;
 }
 
+/**
+ * ACP's real `AvailableCommand` wire shape (agentclientprotocol.com's
+ * schema), carried by an `available_commands_update` notification's own
+ * `availableCommands` field: `{name, description, input: {hint} | null}`,
+ * verified directly against a real `omp acp` binary (issue #741; see
+ * `test/fixtures/omp-acp-available-commands-update.json` for the
+ * recording, trimmed from the real one). Named fields, not
+ * `Record<string, unknown>` wholesale, so `mapAvailableCommands` stays
+ * honest about what it actually validates; the index signature still lets
+ * a field this interface hasn't named through, and `mapAvailableCommands`
+ * spreads (not reconstructs) each entry so that field survives onto
+ * `AcpAvailableCommand` rather than being read and then dropped.
+ */
+interface RawAvailableCommandInput {
+  hint?: string;
+  [key: string]: unknown;
+}
+
+interface RawAvailableCommand {
+  name?: string;
+  description?: string;
+  input?: RawAvailableCommandInput | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Maps ACP's real `available_commands_update` wire shape onto this
+ * client's internal `AcpAvailableCommand[]` (issue #741) — the one place
+ * this translation happens, exported for direct unit testing, same
+ * convention as `mapConfigOptions` above. An entry missing a `name` is
+ * dropped (there is nothing to key it by); everything else about an
+ * entry — including a field this interface has never named — survives via
+ * the `...raw`/`...raw.input` spreads, per `AcpAvailableCommand`'s own
+ * "never drop what you don't recognize" doc comment.
+ */
+export function mapAvailableCommands(
+  wire: RawAvailableCommand[] | undefined,
+): AcpAvailableCommand[] {
+  const commands: AcpAvailableCommand[] = [];
+  for (const raw of wire ?? []) {
+    if (typeof raw.name !== 'string') continue;
+    commands.push({
+      ...raw,
+      name: raw.name,
+      description: typeof raw.description === 'string' ? raw.description : undefined,
+      input:
+        raw.input && typeof raw.input === 'object'
+          ? { ...raw.input, hint: typeof raw.input.hint === 'string' ? raw.input.hint : undefined }
+          : undefined,
+    });
+  }
+  return commands;
+}
+
 /** Maps one wire `session/update` payload into the v1 transcript reducer's input shape; `undefined` for a kind this reducer doesn't cover (e.g. `config_option_update`, handled separately) or a malformed payload. Exported for direct unit testing of the wire-mapping logic (issue #248) without spinning up a fixture process for every edge case; not part of the package's public `index.ts`/`browser.ts` surface. */
 export function mapToTranscriptUpdate(
   kind: string,
@@ -489,6 +550,7 @@ export class AcpClient extends EventEmitter {
   private readonly permissionQueue = new PermissionQueue();
   private readonly pendingPermissionRpcIds = new Map<string, number>();
   private readonly configOptionStore = new ConfigOptionStore();
+  private readonly availableCommandsStore = new AvailableCommandsStore();
 
   private lastAgentCapabilities: AcpAgentCapabilities | undefined;
   private lastConfigCatalog: AcpConfigOption[] = [];
@@ -657,6 +719,11 @@ export class AcpClient extends EventEmitter {
   /** Per-session config-option state (`model`/`mode`/`thought_level`/...; SPEC.md §7.24; issue #179). */
   get configOptions(): ConfigOptionStore {
     return this.configOptionStore;
+  }
+
+  /** Per-session available-command state — the `/`-command catalogue the connected agent declared via `available_commands_update` (SPEC.md §7.24; issue #741). */
+  get availableCommands(): AvailableCommandsStore {
+    return this.availableCommandsStore;
   }
 
   /**
@@ -884,6 +951,17 @@ export class AcpClient extends EventEmitter {
         mapConfigOptions({ configOptions: update.configOptions }),
         { unprompted: true },
       );
+      return;
+    }
+
+    // available_commands_update (issue #741): same "agent-pushed, wire-mapped,
+    // never touches the transcript reducer" shape as config_option_update
+    // just above — there is no separate "seeded at session/new" variant to
+    // distinguish here (unlike config options), since a real agent only ever
+    // sends this notification, never as part of `session/new`'s own result
+    // (verified directly against a real `omp acp` binary).
+    if (kind === 'available_commands_update') {
+      this.availableCommandsStore.setAll(sessionId, mapAvailableCommands(update.availableCommands));
       return;
     }
 

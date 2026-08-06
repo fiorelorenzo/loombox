@@ -179,6 +179,16 @@ describe('AgentSupervisor', () => {
     expect(session.configOptions.get(session.id)).toEqual([]);
   });
 
+  it("exposes the live session's available-command store (SPEC.md §7.24; issue #741) — empty for a provider that has not declared any", async () => {
+    const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
+    const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });
+    activeSessions.push(session);
+
+    // The echo fixture never sends an available_commands_update at all, so
+    // the store starts genuinely empty rather than throwing.
+    expect(session.availableCommands.get(session.id)).toEqual([]);
+  });
+
   it('streams agent_message_chunk updates on prompt and buffers them in the transcript', async () => {
     const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });
     const session = await supervisor.start({ workspacePath, providerId: 'test-echo' });

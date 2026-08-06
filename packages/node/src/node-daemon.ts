@@ -10,6 +10,7 @@ import type {
   AcpToolCallUpdate,
   AcpTranscriptUpdate,
   AcpTurnEnd,
+  AvailableCommandsChangeEvent,
   ConfigOptionChangeEvent,
 } from '@loombox/providers-core';
 import {
@@ -1998,6 +1999,16 @@ export class NodeDaemon extends EventEmitter {
       });
     });
 
+    bridge.agentSession.availableCommands.on('changed', (event: AvailableCommandsChangeEvent) => {
+      // Same ACP-level-vs-loombox-level session id distinction as the
+      // configOptions 'changed' listener just above (issue #741).
+      if (event.sessionId !== bridge.agentSession.id) return;
+      this.forwardSessionEvent(bridge.session.id, {
+        kind: 'available_commands_update',
+        commands: event.commands,
+      });
+    });
+
     // Error/exit stay node-local observability (the session's terminal
     // status already reaches the wire via the 'attention' handler above,
     // which fires 'error'/'exited' too — see AgentSession.handleTerminal()).
@@ -2077,6 +2088,15 @@ export class NodeDaemon extends EventEmitter {
     if (options.length > 0) {
       this.forwardSessionEvent(bridge.session.id, { kind: 'config_options', options });
     }
+    // No equivalent initial `available_commands_update` snapshot here
+    // (issue #741): unlike config options, ACP has no `session/new`-seeded
+    // command catalog to read at creation time — `AvailableCommandsStore`
+    // is genuinely empty until the agent's own first
+    // `available_commands_update` notification arrives (verified directly
+    // against a real `omp acp` binary: it arrives with the first
+    // `session/prompt` reply, not before), so there is nothing yet for this
+    // method to forward; the `'changed'` listener `wireAgentSession` just
+    // registered is what delivers it once the agent actually declares one.
   }
 
   /** Encrypts and pumps one session-lifecycle/transcript event to the relay, preserving arrival order (see `SessionBridge.sendQueue`'s doc comment). */

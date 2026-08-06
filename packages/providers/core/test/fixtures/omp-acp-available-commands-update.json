@@ -1,0 +1,37 @@
+{
+  "note": "Real omp acp binary (v17.2.9), recorded directly over stdio: initialize -> session/new -> session/prompt. The first session/prompt reply carries an available_commands_update notification (never session/new itself, unlike configOptions) with dozens of commands; trimmed here to five representative entries covering every shape actually seen (no input, an input.hint usage string, and a subcommand hint), same 'readable fixture, real field shapes' convention omp-acp-session-new-response.json already uses (issue #741).",
+  "availableCommandsUpdate": {
+    "sessionUpdate": "available_commands_update",
+    "availableCommands": [
+      {
+        "name": "model",
+        "description": "Show current model selection"
+      },
+      {
+        "name": "fast",
+        "description": "Toggle fast mode",
+        "input": {
+          "hint": "[on|off|status]"
+        }
+      },
+      {
+        "name": "mcp",
+        "description": "Manage MCP servers",
+        "input": {
+          "hint": "<subcommand>"
+        }
+      },
+      {
+        "name": "jobs",
+        "description": "Show background jobs"
+      },
+      {
+        "name": "rename",
+        "description": "Rename the current session",
+        "input": {
+          "hint": "<title>"
+        }
+      }
+    ]
+  }
+}

@@ -7,7 +7,7 @@ import { z } from 'zod';
  * `tool_call`, `plan_update`, `usage_update`, ...), which are `@loombox/
  * providers-core`'s to own and this package deliberately never re-declares
  * (`transcript.ts`'s doc comment: "this package does NOT re-declare that
- * union; to the wire and the relay it is opaque ciphertext") — these five
+ * union; to the wire and the relay it is opaque ciphertext") — these six
  * kinds are loombox's OWN invention layered on top of ACP, synthesized by
  * the node from the supervisor's `AgentSession` attention/turn-lifecycle
  * state, not raw passthrough of anything the agent process itself sends. So
@@ -162,6 +162,53 @@ export const configOptionUpdateEventV1 = z.object({
 export type ConfigOptionUpdateEventV1 = z.infer<typeof configOptionUpdateEventV1>;
 
 /**
+ * ACP's `AvailableCommand.input` sub-shape — `{hint}` is the only variant
+ * ACP documents today (mirrors `@loombox/providers-core`'s
+ * `AcpAvailableCommandInput`). `.passthrough()`, not plain `z.object()`: a
+ * future ACP variant this schema has never seen must still validate rather
+ * than being rejected, and any field on it beyond `hint` must still reach
+ * the client rather than being silently zod-stripped (issue #741).
+ */
+export const acpAvailableCommandInputV1 = z.object({ hint: z.string().optional() }).passthrough();
+export type AcpAvailableCommandInputV1 = z.infer<typeof acpAvailableCommandInputV1>;
+
+/**
+ * One command the connected agent declared (mirrors `@loombox/
+ * providers-core`'s `AcpAvailableCommand`; issue #741). `.passthrough()`,
+ * not `.strict()`/plain `z.object()`: an ACP `AvailableCommand` field this
+ * schema has never seen must still reach the client rather than being
+ * silently zod-stripped — the same "never drop what you don't recognize"
+ * rule `acpConfigOptionV1`'s open `category` string already carries above,
+ * just applied at the object-key level instead of a closed-enum level,
+ * since `AvailableCommand` has no analogous closed-set field to leave open.
+ */
+export const acpAvailableCommandV1 = z
+  .object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    input: acpAvailableCommandInputV1.optional(),
+  })
+  .passthrough();
+export type AcpAvailableCommandV1 = z.infer<typeof acpAvailableCommandV1>;
+
+/**
+ * The session's complete, agent-declared command catalogue (SPEC §7.24's
+ * slash-command surface; issue #741), pushed as a full wholesale
+ * replacement whenever the agent (re)declares it. Unlike
+ * `configOptionsEventV1`/`configOptionUpdateEventV1` above there is only
+ * one `kind` here, not two: ACP's `available_commands_update` has no
+ * `session/new`-seeded counterpart to distinguish a first push from a
+ * later unprompted one — a real agent only ever sends this as a
+ * notification, verified directly against a real `omp acp` binary — so
+ * there is nothing for a second kind to distinguish.
+ */
+export const availableCommandsUpdateEventV1 = z.object({
+  kind: z.literal('available_commands_update'),
+  commands: z.array(acpAvailableCommandV1),
+});
+export type AvailableCommandsUpdateEventV1 = z.infer<typeof availableCommandsUpdateEventV1>;
+
+/**
  * A new turn began (SPEC §7.24's turn-lifecycle bullet) — sent by the node
  * right before it hands a prompt to the agent's `session/prompt`, regardless
  * of which device's composer originated it, so every subscribed client
@@ -194,6 +241,7 @@ export const sessionLifecycleEventV1 = z.discriminatedUnion('kind', [
   sessionStatusEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  availableCommandsUpdateEventV1,
   turnStartedEventV1,
   turnEndedEventV1,
 ]);
