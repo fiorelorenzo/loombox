@@ -2672,6 +2672,147 @@ describe('RelayClient: session-lifecycle wire events (SPEC §7.13/§7.24/§8; is
     expect(get(commands)).toEqual(redeclared);
   });
 
+  it('decrypts mcp_server_prompts into mcpPromptCommandsFor, attributed to the declaring server, and getMcpPromptText round-trips a real mcp_prompt_get_request/response (Zed-parity D5-2, issue #754)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-prompts-wire';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-mcp-prompts-wire',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_mcp_prompts_wire', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-mcp-prompts-wire',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const mcpPromptCommands = client.mcpPromptCommandsFor(session.id);
+    expect(get(mcpPromptCommands)).toEqual([]);
+
+    const promptsEnvelope = await nodeSeal(
+      session.id,
+      {
+        kind: 'mcp_server_prompts',
+        servers: [
+          {
+            name: 'linear-server',
+            prompts: [
+              {
+                name: 'review',
+                description: 'Review the current diff',
+                arguments: [{ name: 'focus', description: 'What to focus on', required: false }],
+              },
+            ],
+          },
+        ],
+        updatedAt: 't1',
+      },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: promptsEnvelope,
+    });
+    await waitForStore(mcpPromptCommands, (value) => value.length > 0);
+    expect(get(mcpPromptCommands)).toEqual([
+      {
+        name: 'review',
+        description: 'Review the current diff',
+        input: { hint: '<focus>' },
+        mcpServer: 'linear-server',
+        mcpArguments: [{ name: 'focus', description: 'What to focus on', required: false }],
+      },
+    ]);
+
+    // getMcpPromptText sends a real mcp_prompt_get_request and resolves
+    // once the matching mcp_prompt_get_response arrives.
+    const pending = client.getMcpPromptText(session.id, 'linear-server', 'review', {
+      focus: 'error handling',
+    });
+    const request = (await node.waitFor((m) => m.type === 'mcp_prompt_get_request')) as unknown as {
+      type: 'mcp_prompt_get_request';
+      requestId: string;
+      sessionId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', text: 'Please review the current diff, focusing on error handling.' },
+      key,
+    );
+    node.send({
+      type: 'mcp_prompt_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+    await expect(pending).resolves.toBe(
+      'Please review the current diff, focusing on error handling.',
+    );
+  });
+
+  it('getMcpPromptText rejects when the node reports outcome: error (Zed-parity D5-2, issue #754)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-mcp-prompts-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-mcp-prompts-error',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_mcp_prompts_error', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-mcp-prompts-error',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const pending = client.getMcpPromptText(session.id, 'unreachable', 'anything', {});
+    const request = (await node.waitFor((m) => m.type === 'mcp_prompt_get_request')) as unknown as {
+      type: 'mcp_prompt_get_request';
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'MCP server "unreachable" is not part of this session' },
+      key,
+    );
+    node.send({
+      type: 'mcp_prompt_get_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+    await expect(pending).rejects.toThrow(/not part of this session/);
+  });
+
   it('flushes a queued prompt immediately on turn_ended, without waiting out the idle-timeout fallback', async () => {
     const amk = generateAmk();
     const accountId = 'acct-turn-ended';
