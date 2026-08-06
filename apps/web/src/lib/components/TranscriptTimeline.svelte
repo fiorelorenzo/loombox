@@ -57,6 +57,7 @@
   import Icon from './icons/Icon.svelte';
   import MessageItem from './MessageItem.svelte';
   import ToolCallRow from './ToolCallRow.svelte';
+  import TranscriptGap from './TranscriptGap.svelte';
 
   interface Props {
     /** Resets the window on change — see the doc comment above. Typically `+page.svelte`'s `selectedSessionId`. */
@@ -251,6 +252,8 @@
           {onFork}
           forking={forkingTurnId === item.turnId}
         />
+      {:else if item.type === 'gap'}
+        <TranscriptGap {item} />
       {:else}
         <ToolCallRow
           {item}

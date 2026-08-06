@@ -17,6 +17,7 @@ import {
   enqueuePermissionRequest,
   headPermissionRequest,
   listPermissionRequests,
+  reduceResyncGap,
   reduceSessionEvent,
   resolvePermissionRequest,
   type AcpAvailableCommand,
@@ -67,6 +68,7 @@ import {
   type ProvisionProgress,
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
+  type ResyncMarker,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
   type SessionForkResponse,
@@ -1079,8 +1081,66 @@ export class RelayClient {
   private readonly subscribed = new Set<string>();
   /** Backs {@link retrySessionResume}'s pending retry timer, one per session currently mid-retry (issue #730) — cleared the moment `handleSessionAnnounce` acks the subscribe, or on {@link close}. */
   private readonly pendingSessionResumeRetries = new Map<string, TimerHandle>();
-  /** Sessions that have already had their one-time post-subscribe `resync_request(sinceSeq: 0)` sent (issue #730) — see {@link acknowledgeSessionResume}'s doc comment for why this fires at most once per session, ever, per client instance. */
-  private readonly sessionResyncedOnSubscribe = new Set<string>();
+  /**
+   * The highest `session_update.seq` this client has applied to a
+   * session's transcript so far, per session (issue #729) — the resync
+   * high-water mark: every `resync_request` this client sends (first
+   * subscribe and every reconnect alike, see {@link acknowledgeSessionResume})
+   * uses this as `sinceSeq`, so a reconnect only ever asks the relay to
+   * replay what happened after the last thing this client instance
+   * actually applied, never the whole ring again. Absent (falls back to
+   * `0`, "everything") until this session's first `session_update` is
+   * applied.
+   */
+  private readonly lastAppliedSeqBySession = new Map<string, number>();
+  /**
+   * Every `session_update.seq` already applied to a session's transcript
+   * this client instance, per session (issue #729) — the live/replay
+   * dedupe guard. A reconnect's `resync_request` reply and this
+   * connection's own live fan-out can both deliver the identical `seq`
+   * once `session_resume` re-subscribes this connection before the
+   * resync round trip completes (`relay.ts`'s `subscribeClientToSession`
+   * runs, and live fan-out starts, before the reply is even sent) —
+   * {@link handleSessionUpdate} checks membership here before ever
+   * running the reducer, so whichever delivery (live or replayed) arrives
+   * first wins and the second is a no-op, regardless of which one that
+   * is or how their async decrypts happen to resolve. Unbounded, same
+   * tradeoff `TranscriptState.items` itself already accepts (issue #755's
+   * windowing keeps that cheap to RENDER, not to hold, in memory) — a
+   * `seq` is a plain number, orders of magnitude cheaper per entry than
+   * the transcript item it guards.
+   */
+  private readonly appliedSeqsBySession = new Map<string, Set<number>>();
+  /**
+   * Per-session promise chain backing {@link handleSessionUpdate}'s
+   * strict receipt-order application (issue #729) — never awaited by
+   * anything outside that method and {@link processSessionUpdate}; a
+   * settled (or never-created) entry is equivalent to `Promise.resolve()`.
+   */
+  private readonly sessionUpdateQueue = new Map<string, Promise<void>>();
+  /**
+   * Bumped on every successful handshake — first connect and every
+   * reconnect alike (issue #729; incremented right where
+   * `statusStore.set('open')` is, the same "a real handshake, not just a
+   * transport-level 'open'" moment {@link resubscribeSessionsOnReconnect}
+   * already keys off). Backs {@link resyncedConnectionGenerationBySession}:
+   * "resync on reconnect" means once per (session, connection), not once
+   * per `session_announce` — a session's FIRST subscribe can rack up
+   * several announces in quick succession (its own retry loop keeps
+   * resending `session_resume` every `sessionResumeRetryMs` until one
+   * lands, and more than one attempt can land before the client
+   * processes the first reply) all on the SAME still-open connection;
+   * resyncing on every one of those needlessly multiplies concurrent
+   * decrypt races for the identical content instead of the one genuine
+   * race issue #729 exists to close.
+   */
+  private connectionGeneration = 0;
+  /**
+   * The {@link connectionGeneration} a session was last resynced under —
+   * see that field's doc comment. Read/written only by
+   * {@link acknowledgeSessionResume}.
+   */
+  private readonly resyncedConnectionGenerationBySession = new Map<string, number>();
   /** Backs {@link attentionInbox} — see that method's doc comment. */
   private readonly attentionInboxStore: Writable<AttentionInboxItem[]> = writable([]);
   /** True once {@link attentionInbox} has been called at least once (it is lazily activated, like every other per-session subscription in this class). */
@@ -1407,6 +1467,7 @@ export class RelayClient {
           // connection but keeps rejecting the handshake still backs off,
           // instead of hot-looping at `initialBackoffMs` forever.
           this.backoffMs = this.initialBackoffMs;
+          this.connectionGeneration += 1;
           this.statusStore.set('open');
           // Issue #655: this relay's own build identity, so a node's row
           // can be compared against "what is actually being served" — set
@@ -3985,11 +4046,14 @@ export class RelayClient {
    * (`node-daemon.ts`'s `createSessionInternal`/`launchLocalSession`) go
    * out to a relay fan-out this connection was never registered for.
    *
-   * Deliberately scoped to a session's FIRST subscribe only —
-   * {@link resubscribeSessionsOnReconnect} (an already-subscribed session
-   * surviving a reconnect) is untouched, no retry, exactly as before.
-   * General reconnect-time resync (tracked `sinceSeq`, `resync_marker`
-   * surfacing, live/replay dedup) is issue #729's, not this one's.
+   * Deliberately scoped to a session's FIRST subscribe only — retrying
+   * the initial `session_resume` until it lands is #730's own race, not
+   * #729's. {@link resubscribeSessionsOnReconnect} (an already-subscribed
+   * session surviving a reconnect) sends exactly one `session_resume`, no
+   * retry loop, on every reconnect: the relay already knows this session
+   * by then, so the only race left is the resync recovering whatever was
+   * missed while disconnected — {@link acknowledgeSessionResume}'s job,
+   * fired by the `session_announce` this always gets back.
    */
   private retrySessionResume(sessionId: string, attempt: number): void {
     this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
@@ -4012,30 +4076,43 @@ export class RelayClient {
    * only does AFTER `subscribeClientToSession` — so receiving one here is
    * this connection's ack that a `session_resume` it sent actually
    * subscribed it (issue #730). Cancels {@link retrySessionResume}'s
-   * pending timer for this session, and — the first time only, ever, per
-   * session, per client instance, guarded by
-   * {@link sessionResyncedOnSubscribe} — asks the relay to replay
-   * whatever this session's resync ring already buffered
-   * (`resync_request` with `sinceSeq: 0`).
+   * pending timer for this session, then asks the relay to replay
+   * everything since the highest `seq` this client has already applied
+   * for it (`resync_request`, `sinceSeq` from
+   * {@link lastAppliedSeqBySession} — `0`, "everything buffered", the
+   * first time, since nothing is applied yet).
    *
-   * That backfill closes the OTHER half of the same race
-   * {@link retrySessionResume} closes: even once subscribed, this
-   * connection only receives fan-out from that moment forward
-   * (`session_resume` itself replays nothing — `relay.ts:1668-1685`), so
-   * a `'starting'`/`'queued'`/`'error'` status the node already pushed
-   * (right after its own `announce`, the identical race from the node's
-   * side) would otherwise never arrive at all. `resync_request` and a
-   * live `session_update` share one wire shape and one client-side
-   * handler (`handleSessionUpdate`), so replaying needs no separate code
-   * path here.
+   * That backfill closes the OTHER half of the race
+   * {@link retrySessionResume} closes for a session's first-ever
+   * subscribe: even once subscribed, this connection only receives
+   * fan-out from that moment forward (`session_resume` itself replays
+   * nothing — `relay.ts`'s own handler), so a `'starting'`/`'queued'`/
+   * `'error'` status the node already pushed (right after its own
+   * `announce`, the identical race from the node's side) would otherwise
+   * never arrive at all (issue #730). `resync_request` and a live
+   * `session_update` share one wire shape and one client-side handler
+   * (`handleSessionUpdate`), so replaying needs no separate code path
+   * here — {@link appliedSeqsBySession} is what keeps a duplicate
+   * delivery (live AND replayed) from ever being applied twice.
    *
-   * NOT #729's general resync: no `sinceSeq` tracking across reconnects,
-   * no `resync_marker` surfacing, no live/replay dedup — this fires once
-   * per session, right after its first-ever successful subscribe, when
-   * there is provably nothing yet applied locally to duplicate. A
-   * `session_announce` received again later (this same first subscribe's
-   * retry catching up after the ack already arrived, or a later
-   * reconnect's `resubscribeSessionsOnReconnect`) is a no-op here.
+   * Fires at most once per (session, connection) — not once per
+   * `session_announce` (issue #729's reconnect-resync — this used to be
+   * a one-shot, `sinceSeq: 0` only, guarded by a "have I ever resynced
+   * this session" set; #772's own doc comment named that as this issue's
+   * remaining scope, not its own — but firing on literally every
+   * announce over-fired: a session's first-ever subscribe can rack up
+   * several announces in quick succession, one per `retrySessionResume`
+   * attempt that lands before the client processes the first reply, all
+   * on the SAME connection, and resyncing the identical content on every
+   * one of those needlessly multiplied concurrent decrypt races for it —
+   * see {@link connectionGeneration}'s doc comment). Guarded instead by
+   * {@link resyncedConnectionGenerationBySession}: once resynced under
+   * the CURRENT connection, further acks on that same connection are a
+   * no-op, but a genuine reconnect (a new connection, a new generation)
+   * resyncs again. This is what makes reconnect-resync work with ZERO
+   * changes to {@link resubscribeSessionsOnReconnect}: every
+   * `session_resume` a reconnect sends gets its own `session_announce`
+   * reply, and that reply's generation has never been resynced yet.
    */
   private acknowledgeSessionResume(sessionId: string): void {
     const timer = this.pendingSessionResumeRetries.get(sessionId);
@@ -4043,9 +4120,13 @@ export class RelayClient {
       clearTimeout(timer);
       this.pendingSessionResumeRetries.delete(sessionId);
     }
-    if (!this.subscribed.has(sessionId) || this.sessionResyncedOnSubscribe.has(sessionId)) return;
-    this.sessionResyncedOnSubscribe.add(sessionId);
-    this.send({ type: 'resync_request', protocolVersion: PROTOCOL_V1, sessionId, sinceSeq: 0 });
+    if (!this.subscribed.has(sessionId)) return;
+    if (this.resyncedConnectionGenerationBySession.get(sessionId) === this.connectionGeneration) {
+      return;
+    }
+    this.resyncedConnectionGenerationBySession.set(sessionId, this.connectionGeneration);
+    const sinceSeq = this.lastAppliedSeqBySession.get(sessionId) ?? 0;
+    this.send({ type: 'resync_request', protocolVersion: PROTOCOL_V1, sessionId, sinceSeq });
   }
 
   /**
@@ -4269,6 +4350,9 @@ export class RelayClient {
       case 'session_update':
         this.handleSessionUpdate(message);
         return;
+      case 'resync_marker':
+        this.handleResyncMarker(message);
+        return;
       case 'permission_request':
         this.handlePermissionRequest(message);
         return;
@@ -4482,30 +4566,104 @@ export class RelayClient {
     }
   }
 
+  /** Records `seq` as applied for `sessionId` — see {@link appliedSeqsBySession}/{@link lastAppliedSeqBySession}'s doc comments. */
+  private markSessionUpdateApplied(sessionId: string, seq: number): void {
+    let seen = this.appliedSeqsBySession.get(sessionId);
+    if (!seen) {
+      seen = new Set<number>();
+      this.appliedSeqsBySession.set(sessionId, seen);
+    }
+    seen.add(seq);
+    if (seq > (this.lastAppliedSeqBySession.get(sessionId) ?? -1)) {
+      this.lastAppliedSeqBySession.set(sessionId, seq);
+    }
+  }
+
+  /**
+   * Decrypts and reduces one `session_update`, one session at a time in
+   * the order each was RECEIVED (issue #729). Chained off
+   * {@link sessionUpdateQueue} rather than firing its decrypt
+   * fire-and-forget: reconnect-resync means more than one
+   * `session_update` for the same session can be in flight
+   * concurrently (a live delivery racing its own resync-replayed
+   * duplicate), and an unserialized decrypt+apply pipeline lets whichever
+   * one's crypto happens to resolve first win — fine for an append-style
+   * update (a message chunk, keyed by its own id), but wrong for a
+   * REPLACE-style one (`session_status`, `config_options`, ...): an
+   * older status arriving after a newer one was already applied would
+   * silently regress it (e.g. a stale `'starting'` clobbering an
+   * already-applied `'error'`). Queuing here guarantees application
+   * order matches receipt order regardless of decrypt timing, which a
+   * per-`seq` dedupe check alone cannot. Deduped by `seq`
+   * ({@link appliedSeqsBySession}'s doc comment): a reconnect's resync
+   * reply and this connection's own live fan-out can both deliver the
+   * identical `seq` once `session_resume` re-subscribes this connection
+   * before the resync round trip completes.
+   */
   private handleSessionUpdate(message: SessionUpdateEnvelopeV1): void {
-    this.envelopeCrypto
-      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
-      .then((raw) => parseSessionWireEvent(raw))
-      .then((event) => {
-        this.applyUpdate(message.sessionId, event);
-        this.discardStalePermissionForToolCall(message.sessionId, event);
-        if (event.kind === 'turn_ended') {
-          // The deterministic signal (SPEC §7.24; issue #128): settle and
-          // flush right now instead of waiting out the idle-timeout fallback.
-          this.settleTurnNow(message.sessionId);
-        } else {
-          // Any other live activity on this session — this client's own
-          // turn, or another device's — is evidence a turn is still in
-          // flight (issue #128's idle-timeout fallback; see
-          // `markTurnActive`'s doc comment).
-          this.markTurnActive(message.sessionId);
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn(
-          `RelayClient: failed to decrypt/validate session_update for ${message.sessionId}: ${errorMessage(error)}`,
-        );
-      });
+    if (this.appliedSeqsBySession.get(message.sessionId)?.has(message.seq)) return;
+    const previous = this.sessionUpdateQueue.get(message.sessionId) ?? Promise.resolve();
+    const next = previous.then(() => this.processSessionUpdate(message));
+    this.sessionUpdateQueue.set(message.sessionId, next);
+  }
+
+  private async processSessionUpdate(message: SessionUpdateEnvelopeV1): Promise<void> {
+    // Re-checked after waiting for this session's own queue turn: a
+    // duplicate delivery queued behind this one, or this exact message
+    // re-queued by a stray retry, may already have been applied by the
+    // time its turn comes up.
+    if (this.appliedSeqsBySession.get(message.sessionId)?.has(message.seq)) return;
+    let event: AcpSessionWireEvent;
+    try {
+      const raw = await this.envelopeCrypto.open<unknown>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      );
+      event = parseSessionWireEvent(raw);
+    } catch (error: unknown) {
+      console.warn(
+        `RelayClient: failed to decrypt/validate session_update for ${message.sessionId}: ${errorMessage(error)}`,
+      );
+      return;
+    }
+    if (this.appliedSeqsBySession.get(message.sessionId)?.has(message.seq)) return;
+    this.markSessionUpdateApplied(message.sessionId, message.seq);
+    this.applyUpdate(message.sessionId, event);
+    this.discardStalePermissionForToolCall(message.sessionId, event);
+    if (event.kind === 'turn_ended') {
+      // The deterministic signal (SPEC §7.24; issue #128): settle and
+      // flush right now instead of waiting out the idle-timeout fallback.
+      this.settleTurnNow(message.sessionId);
+    } else {
+      // Any other live activity on this session — this client's own
+      // turn, or another device's — is evidence a turn is still in
+      // flight (issue #128's idle-timeout fallback; see
+      // `markTurnActive`'s doc comment).
+      this.markTurnActive(message.sessionId);
+    }
+  }
+
+  /**
+   * A relay `resync_marker` (issue #729, SPEC.md §7.16's bounded-ring
+   * drop notice) — surfaced only when `dropped: true` (the only shape
+   * `relay.ts` ever actually sends; the schema leaves room for a future
+   * non-dropped use it does not yet have). Carries no `seq` of its own
+   * (unlike `session_update`), so it bypasses {@link handleSessionUpdate}'s
+   * dedupe entirely and needs none of its own:
+   * {@link reduceResyncGap}'s `[fromSeq, toSeq]`-keyed idempotent insert
+   * already makes a duplicate marker for the identical still-evicted
+   * range a no-op. Applied synchronously — a marker is never ciphertext,
+   * so there is nothing to decrypt — which is what keeps it ordered
+   * ahead of the (async-decrypting) replayed entries that follow it on
+   * the wire.
+   */
+  private handleResyncMarker(message: ResyncMarker): void {
+    if (!message.dropped) return;
+    this.transcriptStoreFor(message.sessionId).update((state) =>
+      reduceResyncGap(state, { fromSeq: message.fromSeq, toSeq: message.toSeq }),
+    );
   }
 
   /**
