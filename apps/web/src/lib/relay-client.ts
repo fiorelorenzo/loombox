@@ -3643,6 +3643,9 @@ export class RelayClient {
     const transcript = this.transcriptStoreFor(sessionId);
     this.ensureSubscribed(sessionId);
     return derived(transcript, (state) => state.mcpServerStatuses);
+  }
+
+  /**
    * Every MCP server's own declared prompts (Zed-parity D5-2; issue #754),
    * flattened into the same `AcpAvailableCommand[]` shape {@link commandsFor}
    * returns so `SlashCommandPicker` can render one merged `/`-list — each
