@@ -759,6 +759,19 @@
     }
   }
 
+  /* Below `--bp-mobile` the fork control leaves the row entirely rather than
+     narrowing the prose column: at 390px the copy row and the text share the
+     same line, and a second always-visible button costs the measure ~19px,
+     which breaks v7's turn-delimitation guarantee that prose stays wider
+     than 300px on a phone (`cockpit-shell.spec.ts`'s own bar, issue #667).
+     Forking from a phone belongs in the session row menu, where v7's D3-3
+     already put export, not in the transcript row. */
+  @media (max-width: 479px) {
+    :global(.fork-button) {
+      display: none;
+    }
+  }
+
   /* Below `--bp-mobile` the role column collapses and moves above the turn
      (Lorenzo's ask, 2026-07-31) — still true post-v7 even though nothing
      paints in the column anymore: it survives purely as the shared
