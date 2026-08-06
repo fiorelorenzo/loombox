@@ -19,6 +19,10 @@ function editItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptToolCa
     rawInput: undefined,
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
     ...extra,
   };
 }

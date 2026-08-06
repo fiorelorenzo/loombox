@@ -1,5 +1,10 @@
-import type { AcpToolCallStatus, TranscriptToolCallItem } from '@loombox/providers-core/browser';
+import type {
+  AcpToolCallStatus,
+  AcpToolKind,
+  TranscriptToolCallItem,
+} from '@loombox/providers-core/browser';
 import { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
+import type { IconName } from '$lib/components/icons/icon-paths';
 
 /**
  * The tier-1 bespoke tool-call widget table (SPEC.md §7.24 "Tool calls, two
@@ -43,6 +48,78 @@ export function resolveToolWidgetKind(item: TranscriptToolCallItem): ToolWidgetK
   if (item.toolKind === 'edit' && item.diff !== undefined) return 'edit-write';
   if (item.toolKind === 'execute') return 'bash';
   return 'generic';
+}
+
+/**
+ * The per-`ToolKind` glyph a tool-call row's `ToolCallGutter` draws (issue
+ * #744, decisions doc C3-3): every kind ACP's wire schema enumerates
+ * (`packages/providers/core/src/acp-wire-schema.ts`) gets its own icon now
+ * instead of `search`/`read`/`fetch`/`delete`/`move` all sharing the
+ * `tool-generic` wrench. `edit` and `execute` reuse the glyphs their own
+ * bespoke widgets (`EditWriteWidget`/`BashWidget`) already draw, so a call
+ * that resolves to `GenericToolRow` (mid-stream, before the bespoke
+ * widget's data has arrived) still shows the SAME icon that widget will
+ * draw once it takes over — no icon swap at the hand-off.
+ *
+ * `undefined` and `'other'` — plus, via the `default` branch, any future
+ * `AcpToolKind` this switch doesn't know about yet — all fall back to
+ * `tool-generic`, so an unrecognized future kind degrades gracefully
+ * rather than rendering nothing (issue #744's acceptance bullet).
+ */
+export function toolKindIcon(toolKind: AcpToolKind | undefined): IconName {
+  switch (toolKind) {
+    case 'edit':
+      return 'tool-edit';
+    case 'execute':
+      return 'tool-bash';
+    case 'read':
+      return 'tool-read';
+    case 'delete':
+      return 'tool-delete';
+    case 'move':
+      return 'tool-move';
+    case 'search':
+      return 'tool-search';
+    case 'think':
+      return 'tool-think';
+    case 'fetch':
+      return 'tool-fetch';
+    case 'other':
+    case undefined:
+    default:
+      return 'tool-generic';
+  }
+}
+
+/**
+ * `TranscriptToolCallItem.elapsedMs` formatted for a one-line row: whole
+ * milliseconds under a second (`"420ms"`), one decimal of seconds under a
+ * minute (`"3.2s"`), otherwise minutes plus zero-padded seconds
+ * (`"1m 04s"`) — issue #744. The caller only invokes this when `elapsedMs`
+ * is already known; there is no "unknown" rendering here, see
+ * `TranscriptToolCallItem.elapsedMs`'s own doc comment for when it's
+ * `undefined` instead of calling this at all.
+ */
+export function formatToolCallElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+/**
+ * `TranscriptToolCallItem.attributedCostUsd` formatted for a one-line row
+ * (issue #744): two decimal places down to a cent, four below it — plain
+ * `toFixed(2)` would round every sub-cent figure (the common case for a
+ * single tool call) to the misleading `"$0.00"`, indistinguishable from
+ * the "nothing to attribute" case this whole heuristic exists to keep
+ * honest. Same "only called once the value is known" contract as
+ * `formatToolCallElapsed`.
+ */
+export function formatAttributedCost(usd: number): string {
+  return `$${usd.toFixed(usd < 0.01 ? 4 : 2)}`;
 }
 
 /** Best-effort extraction of the shell command a Bash-kind tool call ran, for `BashWidget`. */

@@ -20,6 +20,12 @@ export interface OutboxAttachmentRef {
   name?: string;
 }
 
+/** Mirrors `relay-client.ts`'s private `PromptMentionRef` field-for-field (issue #742) — the same shape a `prompt_inject` envelope's plaintext carries for a still-live `@`-mention pill. */
+export interface OutboxMentionRef {
+  uri: string;
+  name: string;
+}
+
 /**
  * One prompt sitting in the local outbox: composed but not yet delivered to
  * the node, either because a prior turn on this session is still considered
@@ -34,6 +40,8 @@ export interface QueuedPrompt {
   text: string;
   /** Only ever an attachment whose upload had already confirmed at compose time — mirrors `sendPrompt`'s existing "never send a broken ref" rule (SPEC §7.25). */
   attachments: OutboxAttachmentRef[];
+  /** Still-live `@`-mention pills at compose time (issue #742) — a mention that had already degraded to plain text by send time never reaches here, it is folded into `text` instead (`$lib/mentions.ts`'s `resolveMentionsForSend`). */
+  mentions: OutboxMentionRef[];
   /** `Date.now()` at compose time — the flush order within a session (oldest first). */
   queuedAt: number;
 }

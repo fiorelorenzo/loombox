@@ -57,6 +57,7 @@ import {
   type OutboxStorage,
   type QueuedPrompt,
 } from './outbox';
+import { fileMention } from './mentions';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -2147,6 +2148,80 @@ describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', (
 
     // Sent attachments are cleared from the composer's pending list — they now belong to the sent prompt.
     expect(get(attachments)).toEqual([]);
+  });
+
+  it('sendPrompt embeds a still-live @-mention as a PromptMentionRef the node decrypts (issue #742)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-send-mention';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-send-mention',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_send_mention', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-send-mention',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const mention = fileMention('apps/web/src/lib/relay-client.ts');
+    client.sendPrompt(session.id, 'check this out', [], [mention]);
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    const decrypted = await nodeOpen<{
+      text: string;
+      mentions?: { uri: string; name: string }[];
+    }>(session.id, routed.envelope, key);
+    expect(decrypted).toEqual({
+      text: 'check this out',
+      mentions: [{ uri: 'file:apps/web/src/lib/relay-client.ts', name: 'relay-client.ts' }],
+    });
+  });
+
+  it('sendPrompt with no mentions omits the field entirely, not an empty array', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-send-no-mention';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-send-no-mention',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_send_no_mention', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-send-no-mention',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    client.sendPrompt(session.id, 'plain prompt, nothing attached');
+
+    const routed = (await node.waitFor((m) => m.type === 'prompt_inject')) as PromptInjectV1;
+    const decrypted = await nodeOpen<Record<string, unknown>>(session.id, routed.envelope, key);
+    expect(decrypted).toEqual({ text: 'plain prompt, nothing attached' });
+    expect(Object.keys(decrypted)).not.toContain('mentions');
   });
 
   it('sendPrompt never references a still-uploading attachment — a broken ref must never reach the agent (SPEC §7.25)', async () => {

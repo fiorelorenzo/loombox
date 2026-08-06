@@ -212,3 +212,45 @@ describe('TranscriptWindow: measured heights feed the offsets engine', () => {
     expect(win.totalPx).toBe(TRANSCRIPT_ROW_ESTIMATE_PX * 3 + TRANSCRIPT_ROW_GAP_PX * 2);
   });
 });
+
+describe('TranscriptWindow.focusIndex (issue #740: jump to an item outside the mounted window)', () => {
+  it('brings a far-scrolled-out-of-range index into range, pinned or not', () => {
+    const win = new TranscriptWindow();
+    win.items = toolCalls(2000);
+    win.viewportPx = 600;
+    // Still pinned to the tail (the default) — the target near the start
+    // is nowhere near the mounted range.
+    expect(win.range.start).toBeGreaterThan(100);
+
+    win.focusIndex(50);
+
+    expect(win.pinToTail).toBe(false);
+    expect(win.range.start).toBeLessThanOrEqual(50);
+    expect(win.range.end).toBeGreaterThanOrEqual(50);
+  });
+
+  it('includes the target even with no reported viewport height yet (a fresh, unmeasured container)', () => {
+    const win = new TranscriptWindow();
+    win.items = toolCalls(500);
+    // `viewportPx` left at its default 0 — the exact jsdom-first-render case.
+
+    win.focusIndex(200);
+
+    expect(win.range.start).toBeLessThanOrEqual(200);
+    expect(win.range.end).toBeGreaterThanOrEqual(200);
+  });
+
+  it('does nothing for an out-of-range index', () => {
+    const win = new TranscriptWindow();
+    win.items = toolCalls(10);
+    win.pinToTail = false;
+    win.scrollTop = 0;
+    win.viewportPx = 600;
+    const before = win.range;
+
+    win.focusIndex(-1);
+    win.focusIndex(10);
+
+    expect(win.range).toEqual(before);
+  });
+});

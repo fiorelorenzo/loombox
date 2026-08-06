@@ -19,6 +19,10 @@ function todoItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptToolCa
     rawInput: { todos: [{ content: 'ship it', status: 'in_progress' }] },
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
     ...extra,
   };
 }

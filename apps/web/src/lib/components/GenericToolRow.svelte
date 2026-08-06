@@ -49,10 +49,17 @@
    * formatted text, same as before.
    *
    * Deck icon migration (redesign v2 design spec §2 "Icon system", issue
-   * #468): every tool call that lands here (tier-2, no bespoke widget) is
-   * by definition the "any other tool" case, so it always draws the
-   * shared `tool-generic` glyph via `ToolCallGutter` — decorative, the
-   * kind is carried by the `sr-only` label right beside it.
+   * #468), extended per-`ToolKind` for issue #744: `ToolCallGutter` draws
+   * `$lib/tool-widgets.ts`'s `toolKindIcon(item.toolKind)` — a distinct
+   * glyph per ACP tool kind (search/read/fetch/delete/move used to all
+   * share the generic wrench; `edit`/`execute` reuse the exact glyph their
+   * own bespoke widgets draw, so there's no icon swap at the bespoke
+   * hand-off) — decorative, the kind is carried by the `sr-only` label
+   * right beside it. `ToolCallMeta` draws elapsed time and an attributed
+   * cost figure next to `ToolCallStatus`, both `undefined`-means-"nothing
+   * to show" per their own doc comments on `TranscriptToolCallItem`
+   * (`packages/providers/core/src/transcript.ts`), never a fabricated
+   * zero.
    *
    * Resting state and its one override (v7 decisions §3, issue #668):
    * C1-1 — a completed call rests collapsed to this header's single line
@@ -70,12 +77,14 @@
   import {
     classifyRawInput,
     toolCallOutputText,
+    toolKindIcon,
     type RawInputEntry,
     type RawInputRender,
   } from '$lib/tool-widgets';
   import CopyButton from './CopyButton.svelte';
   import Icon from './icons/Icon.svelte';
   import ToolCallGutter from './ToolCallGutter.svelte';
+  import ToolCallMeta from './ToolCallMeta.svelte';
   import ToolCallStatus from './ToolCallStatus.svelte';
   import ToolCard from './tool-widgets/ToolCard.svelte';
 
@@ -160,7 +169,7 @@
   data-tool-kind={item.toolKind ?? 'other'}
   data-testid="generic-tool-row"
 >
-  <ToolCallGutter icon="tool-generic" />
+  <ToolCallGutter icon={toolKindIcon(item.toolKind)} />
   <ToolCard surface={showBlock}>
     <div class="header-line">
       {#snippet headerContent()}
@@ -186,6 +195,7 @@
             </span>
           {/if}
         </span>
+        <ToolCallMeta elapsedMs={item.elapsedMs} attributedCostUsd={item.attributedCostUsd} />
         <ToolCallStatus status={item.status} />
       {/snippet}
       {#if locked}

@@ -621,15 +621,70 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('session-filter')).toBeVisible();
   });
 
-  test('the header shows no connection chip while the relay connection is healthy', async ({
+  // A2-1 (issue #734) tightened `--nav-row-height` from 40px to 30px, which
+  // is the first time `.destination-row` has ever been narrower than the
+  // 44px `(pointer: coarse)` floor every OTHER clickable primitive in this
+  // package carries — at the old 40px there was no visible gap to catch,
+  // so nothing here needed a floor of its own until now. Scoped to its own
+  // `describe` (real `hasTouch`, not just a narrow viewport) so this is the
+  // one test in the file running under a coarse pointer; every other test
+  // above and below keeps the suite's default fine-pointer emulation.
+  test.describe('coarse-pointer touch targets at the tablet breakpoint (A2-1, issue #734)', () => {
+    test.use({ hasTouch: true, viewport: { width: 768, height: 900 } });
+
+    test('the named break: .destination-row grows to the same 44px floor Button/IconButton/Input already carry', async ({
+      page,
+      loombox,
+    }) => {
+      await gotoCockpit(page, loombox);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+
+      const touchTargetMin = await page.evaluate(() =>
+        parseFloat(
+          getComputedStyle(document.documentElement).getPropertyValue('--touch-target-min'),
+        ),
+      );
+      expect(touchTargetMin).toBeGreaterThanOrEqual(44);
+
+      // The row itself: no coarse-pointer rule at all before this issue, so
+      // its box used to just be `--nav-row-height` (now 30px) unconditionally
+      // — a real 14px shortfall against the floor every other clickable
+      // primitive in this package (`Button`, `IconButton`, `Input`) already
+      // grows to under `(pointer: coarse)`.
+      const inboxRow = page.getByTestId('destination-inbox');
+      await expect(inboxRow).toBeVisible();
+      const rowBox = await inboxRow.boundingBox();
+      expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(touchTargetMin);
+
+      // Its fine-pointer sibling, `--nav-row-height` itself, is unaffected
+      // by the coarse floor (it's a `min-height` override, not a
+      // replacement) — asserted here so a future edit can't satisfy the
+      // line above by quietly raising the base row height instead of
+      // adding a real coarse-pointer floor.
+      const navRowHeight = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-row-height')),
+      );
+      const remPx = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.documentElement).fontSize),
+      );
+      expect(navRowHeight * remPx).toBeLessThan(touchTargetMin);
+    });
+  });
+
+  test('the retired topbar connection chip is gone outright; the permanent status bar reads the connection instead (issue #736)', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
     await expect(page.getByTestId('composer-input')).toBeVisible();
     // v2 spent the header's highest-attention corner on a permanently green
-    // dot. A healthy connection is now silent.
+    // dot; the conditional chip that replaced it (issue #428/#568) is
+    // itself retired now, not merely hidden — issue #736's status bar is
+    // the one place connection health reads, on every page, always.
     await expect(page.getByTestId('connection-status-chip')).toHaveCount(0);
+    const connection = page.getByTestId('status-bar-connection');
+    await expect(connection).toBeVisible();
+    await expect(connection).toContainText('Connected');
   });
 
   test('a session row spends a dot only on a status worth showing, and reserves its slot either way', async ({
@@ -1339,11 +1394,24 @@ test.describe('cockpit shell', () => {
     // drag, one real resize outcome once it settles.
     for (let step = 1; step <= 8; step += 1) {
       await page.mouse.move(startX, startY - step * 10);
+      // One frame between moves: the dock coalesces pointermoves to a single
+      // `ResizeObserver` notification per render frame (its own doc comment),
+      // so eight moves issued inside one frame can collapse into one that the
+      // drag never applies. Under CI load that is what made this assertion
+      // flake (issue #649), landing on the untouched default height.
+      await page.evaluate(async () => {
+        const framePassed = Promise.withResolvers<void>();
+        requestAnimationFrame(() => framePassed.resolve());
+        await framePassed.promise;
+      });
     }
     await page.mouse.up();
 
-    const heightAfter = (await dock.boundingBox())?.height ?? 0;
-    expect(heightAfter).toBeGreaterThan(heightBefore + 40);
+    // Polled, not read once: the last frame of a drag settles after
+    // `mouse.up` returns.
+    await expect
+      .poll(async () => (await dock.boundingBox())?.height ?? 0, { timeout: 5_000 })
+      .toBeGreaterThan(heightBefore + 40);
 
     // The real effect of the resize, not just the CSS box (issue #572's
     // own acceptance line: "xterm reflows to the new rows/cols").

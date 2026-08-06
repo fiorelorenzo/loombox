@@ -59,6 +59,12 @@
   import ToolCallRow from './ToolCallRow.svelte';
   import TranscriptGap from './TranscriptGap.svelte';
 
+  /** A request to bring one specific item into the mounted window and scroll it into view (issue #740's turn-review "jump to this file's diff"), even when it's currently outside the range `windowing.svelte.ts` mounts. `token` must be bumped on every request, including a repeat click on an already-visible row's `id` — a bare `id` prop wouldn't re-trigger the `$effect` below on an unchanged value. */
+  export interface TranscriptJumpTarget {
+    id: string;
+    token: number;
+  }
+
   interface Props {
     /** Resets the window on change — see the doc comment above. Typically `+page.svelte`'s `selectedSessionId`. */
     sessionKey: string | undefined;
@@ -67,6 +73,8 @@
     turnActive: boolean;
     providerId: string | undefined;
     permissionHead: PendingPermissionRequest | undefined;
+    /** See {@link TranscriptJumpTarget}. `undefined` — the common case — does nothing. */
+    jumpTarget: TranscriptJumpTarget | undefined;
     /** Fork the open session from a message row's own turn (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — forwarded to `MessageItem`'s own `onFork`. Omitted renders no fork button on any row. */
     onFork?: (turnId: string) => void;
     /** The turn currently mid-fork, if any — forwarded to `MessageItem`'s own `forking` so only that turn's row shows the busy state. */
@@ -80,6 +88,7 @@
     turnActive,
     providerId,
     permissionHead,
+    jumpTarget,
     onFork,
     forkingTurnId,
   }: Props = $props();
@@ -143,6 +152,44 @@
       el.scrollTop = el.scrollHeight;
     }
   }
+
+  /** CSS attribute-selector escaping for `jumpItemEl` below — only `"` and `\` are meaningful inside a quoted attribute value; a transcript item id is agent/client-generated and has no other reason to be escaped. */
+  function escapeAttributeValue(value: string): string {
+    return value.replace(/["\\]/g, '\\$&');
+  }
+
+  function jumpItemEl(id: string): HTMLElement | null {
+    return (
+      containerEl?.querySelector<HTMLElement>(`[data-item-id="${escapeAttributeValue(id)}"]`) ??
+      null
+    );
+  }
+
+  /**
+   * Handles a `jumpTarget` request (issue #740's turn-review "jump to this
+   * file's diff"). `id` is very likely NOT currently mounted — that's the
+   * whole reason this exists rather than a caller just calling
+   * `scrollIntoView` itself — so this is a three-step version of
+   * `jumpToLatest` above: detach from following, force the window to
+   * include the target row (`TranscriptWindow.focusIndex`, which only
+   * needs the row's INDEX, not its real DOM), flush so that row actually
+   * mounts, then scroll the now-real element into view. A target id this
+   * transcript doesn't contain (a stale click racing a session switch) is
+   * silently ignored, same as `win.focusIndex`'s own out-of-range guard.
+   */
+  $effect(() => {
+    const target = jumpTarget;
+    if (!target) return;
+    const index = items.findIndex((item) => item.id === target.id);
+    if (index === -1) return;
+    following = false;
+    win.focusIndex(index);
+    flushSync();
+    const rowEl = jumpItemEl(target.id);
+    if (typeof rowEl?.scrollIntoView === 'function') {
+      rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
 
   /** Both initialized from the first effect run, before either branch below could compare against a stale/mismatched window. */
   let previousLeadPx = win.range.leadPx;
@@ -240,6 +287,7 @@
         itemIndex,
       )}
       data-testid="transcript-row"
+      data-item-id={item.id}
     >
       {#if item.type === 'message'}
         <MessageItem

@@ -4,6 +4,7 @@ import {
   availableCommandsUpdateEventV1,
   configOptionsEventV1,
   configOptionUpdateEventV1,
+  mcpServerStatusEventV1,
   parseSessionLifecycleEventV1,
   safeParseSessionLifecycleEventV1,
   sessionStatusEventV1,
@@ -174,8 +175,48 @@ describe('turnStartedEventV1 / turnEndedEventV1', () => {
   });
 });
 
+describe('mcpServerStatusEventV1', () => {
+  it('accepts a server that started fine, with no category/reason', () => {
+    const result = mcpServerStatusEventV1.safeParse({
+      kind: 'mcp_server_status',
+      servers: [{ name: 'filesystem', ok: true }],
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a distinct category+reason for each of the three failure kinds', () => {
+    for (const category of ['missing_binary', 'handshake_failed', 'secret_missing'] as const) {
+      const result = mcpServerStatusEventV1.safeParse({
+        kind: 'mcp_server_status',
+        servers: [{ name: 'x', ok: false, category, reason: 'some detail' }],
+        updatedAt: 't',
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects an unknown failure category', () => {
+    const result = mcpServerStatusEventV1.safeParse({
+      kind: 'mcp_server_status',
+      servers: [{ name: 'x', ok: false, category: 'network_error', reason: 'r' }],
+      updatedAt: 't',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty server list entry name', () => {
+    const result = mcpServerStatusEventV1.safeParse({
+      kind: 'mcp_server_status',
+      servers: [{ name: '', ok: false }],
+      updatedAt: 't',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('sessionLifecycleEventV1 (the discriminated union)', () => {
-  it('parses every one of the six kinds', () => {
+  it('parses every one of the seven kinds', () => {
     const samples: unknown[] = [
       { kind: 'session_status', status: 'working', updatedAt: 't' },
       { kind: 'config_options', options: [] },
@@ -183,13 +224,14 @@ describe('sessionLifecycleEventV1 (the discriminated union)', () => {
       { kind: 'available_commands_update', commands: [] },
       { kind: 'turn_started', turnId: 'turn:1' },
       { kind: 'turn_ended', stopReason: 'end_turn' },
+      { kind: 'mcp_server_status', servers: [], updatedAt: 't' },
     ];
     for (const sample of samples) {
       expect(() => parseSessionLifecycleEventV1(sample)).not.toThrow();
     }
   });
 
-  it('rejects a payload whose kind is not one of the six', () => {
+  it('rejects a payload whose kind is not one of the seven', () => {
     const result = safeParseSessionLifecycleEventV1({ kind: 'agent_message_chunk' });
     expect(result.success).toBe(false);
   });
