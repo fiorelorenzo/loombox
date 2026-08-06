@@ -43,6 +43,12 @@
     type DockPanelState,
   } from '$lib/dock-panel.svelte';
   import { isModShortcut, isTypingTarget } from '$lib/keyboard';
+  import {
+    getAvailableActions,
+    matchShortcut,
+    type ActionContext,
+    type ActionHandlers,
+  } from '$lib/action-registry';
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import {
@@ -1958,29 +1964,39 @@
     client.interruptTurn(selectedSessionId);
   }
 
-  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the palette's action list, rebuilt from current state so it always reflects what's actually doable right now (e.g. Stop only appears while a turn is active). */
-  const paletteActions = $derived.by((): CommandPaletteAction[] => {
-    const actions: CommandPaletteAction[] = [];
-    if (selectedSessionId && transcript?.turnActive) {
-      actions.push({
-        id: 'stop-turn',
-        label: 'Stop current turn',
-        shortcut: 'Mod+.',
-        run: stopSession,
-      });
-    }
-    actions.push({
-      id: 'open-inbox',
-      label: 'Open attention inbox',
-      run: () => (mainView = 'inbox'),
-    });
-    actions.push({
-      id: 'open-nodes',
-      label: 'Open nodes and targets',
-      run: () => openTargetStatus(),
-    });
-    return actions;
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
+  const actionContext = $derived<ActionContext>({
+    turnActive: turnIsActive,
+    sessionCount: sessions.length,
   });
+
+  /** Cycles `selectedSessionId` through `sessions` in its existing list order, wrapping — the handler behind the registry's `next-session`/`previous-session` actions (issue #758). No-ops with fewer than two sessions or nothing selected, which is also exactly when those two actions are unavailable, so this is never reached in a state where it would do nothing; kept defensive anyway since `isAvailable` and `run` are independent functions. */
+  function selectAdjacentSession(direction: 1 | -1): void {
+    if (sessions.length < 2 || !selectedSessionId) return;
+    const index = sessions.findIndex((session) => session.id === selectedSessionId);
+    if (index === -1) return;
+    selectSession(sessions[(index + direction + sessions.length) % sessions.length].id);
+  }
+
+  /** Wires each registry action's effect to this component's own state and the live `client` (issue #758) — the registry module itself stays a plain, framework-free array so `action-registry.test.ts` can exercise its predicates without mounting Svelte. */
+  const actionHandlers: ActionHandlers = {
+    stopTurn: stopSession,
+    toggleSessionsSidebar: () => sessionsDock.toggle(),
+    openInbox: () => (mainView = 'inbox'),
+    openNodes: () => openTargetStatus(),
+    selectNextSession: () => selectAdjacentSession(1),
+    selectPreviousSession: () => selectAdjacentSession(-1),
+  };
+
+  /** SPEC §7.3 "Keyboard & command palette" (issue #132) — a pure view over `actionRegistry` (issue #758): every entry whose `isAvailable` predicate accepts `actionContext` becomes a row, so the palette never lists something that would no-op if picked right now. */
+  const paletteActions = $derived.by((): CommandPaletteAction[] =>
+    getAvailableActions(actionContext).map((action) => ({
+      id: action.id,
+      label: action.label,
+      shortcut: action.shortcut,
+      run: () => action.run(actionHandlers),
+    })),
+  );
 
   const paletteSessions = $derived(
     sessions.map((session) => ({
@@ -2430,7 +2446,7 @@
     syncNotificationPreferencesToServiceWorker();
   }
 
-  /** The global shortcut dispatcher (issue #132): Mod+K opens the palette from anywhere except while the user is already typing somewhere else; Mod+. stops the current turn; Mod+B (issue #438) toggles the Sessions column's collapsed-to-selvage state. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
+  /** The global shortcut dispatcher (issue #132): Escape closes an open sidebar menu; Mod+K opens the palette from anywhere, including mid-typing — deliberately, so jumping sessions doesn't require clearing focus first; every other shortcut is matched against `actionRegistry` (issue #758) and gated by the same "not typing" guard the old ad hoc `Mod+.`/`Mod+B` checks used to apply by hand. The palette itself owns Esc/Arrow/Enter once open (`CommandPalette.svelte`). */
   function handleGlobalKeydown(event: KeyboardEvent): void {
     // The sidebar's anchored popovers are not `Overlay`s (spec §3.1 — a
     // menu has no business dimming the app), so Escape is handled here
@@ -2446,15 +2462,11 @@
       paletteOpen = true;
       return;
     }
-    if (isModShortcut(event, '.') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      stopSession();
-      return;
-    }
-    if (isModShortcut(event, 'b') && !isTypingTarget(event.target)) {
-      event.preventDefault();
-      sessionsDock.toggle();
-    }
+    if (isTypingTarget(event.target)) return;
+    const action = matchShortcut(event, actionContext);
+    if (!action) return;
+    event.preventDefault();
+    action.run(actionHandlers);
   }
 
   /** The attention inbox's approve/deny action (issue #168) — the exact same `RelayClient.resolvePermission` call the session's own `PermissionQueueBar` makes, so both resolve the one shared queue store (issue #169). */
