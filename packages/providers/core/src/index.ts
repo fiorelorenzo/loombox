@@ -74,7 +74,7 @@ export type { AcpSessionSummary } from './types';
 // v1: capability-negotiation-gated feature flags (SPEC.md §5.5; issue #180).
 export { deriveFeatureFlags } from './capabilities';
 export type { AcpFeatureFlags } from './capabilities';
-export type { AcpAgentCapabilities, AcpPromptCapabilities } from './types';
+export type { AcpAgentCapabilities, AcpPromptCapabilities, AcpSessionCapabilities } from './types';
 
 // v1: the session/request_permission FIFO queue state machine (SPEC.md
 // §7.24; issue #178).
@@ -266,3 +266,10 @@ export {
   acpToolCallUpdateSchema,
   acpTranscriptUpdateSchema,
 } from './acp-wire-schema';
+
+// v1: the type-level proof a spawn config really went through a sandbox
+// wrapper before this package's `AcpClient` ever spawns it (SPEC §7.17;
+// issue #257) — see `SandboxedSpawnConfig`'s own doc comment for why a
+// caller cannot satisfy it with a no-op wrapper.
+export { markSandboxed } from './sandboxed-spawn-config';
+export type { SandboxedSpawnConfig } from './sandboxed-spawn-config';
