@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { codexProviderModule } from './provider';
+import { buildCodexImageContentBlock } from './image';
 import { mapCodexPermissionOptions } from './permissions';
 import { hasCodexBespokeWidget } from './tool-widgets';
 
@@ -182,6 +183,68 @@ describe('codexProviderModule conformance', () => {
     const state = client.getTranscriptState(sessionId);
     expect(state.items.map((i) => (i.type === 'message' ? i.text : undefined))).toContain(
       'Hello world',
+    );
+  });
+
+  it('an attached image reaches the Codex agent turn as an inline base64 content block (SPEC.md §7.25; issue #158)', async () => {
+    workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-codex-conformance-'));
+
+    const registry = new ProviderRegistry();
+    registry.register(codexProviderModule);
+    const client = new AcpClient(
+      { command: process.execPath, args: [FIXTURE_PATH], cwd: workDir },
+      { registry, providerId: 'codex' },
+    );
+    activeClient = client;
+
+    const initResult = await client.initialize();
+    expect(client.getFeatureFlags().supportsImages).toBe(true);
+    const sessionId = await client.newSession(workDir);
+
+    // A tiny real PNG (8-byte magic + a couple of IHDR-shaped bytes) run
+    // through the exact same builder `@loombox/node`'s `deliverPrompt`
+    // calls once an attachment resolves — this proves the payload it hands
+    // to `AcpClient.prompt()` is exactly what the Codex-shaped fixture
+    // receives over the real JSON-RPC wire, not just what the builder
+    // produces in isolation (already covered by `image.test.ts`).
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+    const handoff = buildCodexImageContentBlock(pngBytes, {
+      imageCapabilityNegotiated: initResult.agentCapabilities?.promptCapabilities?.image ?? false,
+    });
+    expect(handoff.ok).toBe(true);
+    if (!handoff.ok) throw new Error('expected the image hand-off to succeed');
+
+    const turnEnd = new Promise<void>((resolve) => client.once('turn_end', () => resolve()));
+    await client.prompt(sessionId, 'describe-image', [handoff.block]);
+    await turnEnd;
+
+    const state = client.getTranscriptState(sessionId);
+    const expectedBase64Length = Buffer.from(pngBytes).toString('base64').length;
+    expect(state.items.map((i) => (i.type === 'message' ? i.text : undefined))).toContain(
+      `received image: image/png ${expectedBase64Length}b64`,
+    );
+  });
+
+  it('surfaces the agent declining an attached image as a rejected prompt (same JSON-RPC error path as any other declined turn)', async () => {
+    workDir = await mkdtemp(path.join(tmpdir(), 'loombox-providers-codex-conformance-'));
+
+    const registry = new ProviderRegistry();
+    registry.register(codexProviderModule);
+    const client = new AcpClient(
+      { command: process.execPath, args: [FIXTURE_PATH], cwd: workDir },
+      { registry, providerId: 'codex' },
+    );
+    activeClient = client;
+
+    await client.initialize();
+    const sessionId = await client.newSession(workDir);
+
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+    const handoff = buildCodexImageContentBlock(pngBytes, { imageCapabilityNegotiated: true });
+    if (!handoff.ok) throw new Error('expected the image hand-off to succeed');
+
+    await expect(client.prompt(sessionId, 'reject-image', [handoff.block])).rejects.toThrow(
+      /declined attached image/,
     );
   });
 });

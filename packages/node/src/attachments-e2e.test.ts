@@ -26,7 +26,12 @@ import {
 } from '@loombox/crypto';
 
 import { attachmentResourceId, type BlobSource } from './attachments';
-import { createNode, type NodeDaemon, type ResolvedAttachment } from './node-daemon';
+import {
+  createNode,
+  type AttachmentHandoffDeclined,
+  type NodeDaemon,
+  type ResolvedAttachment,
+} from './node-daemon';
 import {
   openRemoteSessionsSandbox,
   type RemoteSessionsSandbox,
@@ -48,10 +53,36 @@ const ECHO_FIXTURE = path.join(
   'echo-acp-agent.mjs',
 );
 
+// Advertises `promptCapabilities.image: true` and echoes back the exact
+// image content block it received (SPEC §7.25, issue #158) — this is what
+// lets a node-level test prove the inline base64 hand-off reaches a
+// Codex-shaped agent over the real JSON-RPC/stdio wire, not just that
+// `buildInlineImageContentBlock` produces the right shape in isolation
+// (already covered by `packages/providers/codex/src/image.test.ts` and
+// `conformance.test.ts`).
+const CODEX_LIKE_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'providers',
+  'core',
+  'test',
+  'fixtures',
+  'codex-like-acp-agent.mjs',
+);
+
 function echoProvider(): AcpProvider {
   return {
     id: 'test-echo',
     spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [ECHO_FIXTURE], cwd }),
+    enrich: (update) => update,
+  };
+}
+
+function codexLikeProvider(): AcpProvider {
+  return {
+    id: 'test-codex-like',
+    spawnConfig: ({ cwd }) => ({ command: process.execPath, args: [CODEX_LIKE_FIXTURE], cwd }),
     enrich: (update) => update,
   };
 }
@@ -532,6 +563,157 @@ describe('NodeDaemon attachment fetch-and-decrypt (SPEC §7.25, issue #156)', ()
     expect(phone.count((m) => m.type === 'blob_ref')).toBe(0);
 
     warnSpy.mockRestore();
+  });
+
+  it('hands off a resolved attachment to the agent as an inline base64 ACP image content block when the session negotiated the image capability (SPEC §7.25 "Hand off to the agent"; issue #158)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attach-image-handoff';
+    const blobSource = new FakeBlobSource();
+
+    node = createNode({
+      stateDir: nodeStateDir,
+      relayUrl: relay.url,
+      nodeId: 'node-attach-image-handoff',
+      deviceId: 'device-node-attach-image-handoff',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      blobSource,
+      supervisor: new AgentSupervisor({ providers: [codexLikeProvider()] }),
+    });
+
+    const declinedEvents: AttachmentHandoffDeclined[] = [];
+    node.on('attachment_handoff_declined', (event: AttachmentHandoffDeclined) =>
+      declinedEvents.push(event),
+    );
+
+    const session = await node.createSession({ projectPath, provider: 'test-codex-like' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    // Genuinely PNG-shaped magic bytes: `buildInlineImageContentBlock`
+    // re-sniffs rather than trusting the declared mimeType below.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+    blobSource.seed(
+      session.id,
+      'ref-image',
+      await phoneSealAttachment(session.id, 'ref-image', pngBytes, key),
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-attach-image-handoff',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    // The fixture's "describe-image" text (see `codex-like-acp-agent.mjs`)
+    // echoes back the mimeType and base64 length of the FIRST `type:
+    // 'image'` block it finds in the full `prompt` content array — the
+    // only way to prove `deliverPrompt` actually appended the block Codex
+    // expects onto the real JSON-RPC turn, not just that the builder
+    // produces the right shape in isolation.
+    const envelope = await phoneSeal(
+      session.id,
+      { text: 'describe-image', attachments: [{ ref: 'ref-image', mimeType: 'image/png' }] },
+      key,
+    );
+    phone.send({
+      type: 'prompt_inject',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: 'prompt-image-handoff',
+      envelope,
+    });
+
+    const expectedBase64Length = Buffer.from(pngBytes).toString('base64').length;
+    await vi.waitFor(async () => {
+      const sessionUpdates = phone!.messages.filter(
+        (m) => m.type === 'session_update',
+      ) as unknown as SessionUpdateEnvelopeV1[];
+      expect(sessionUpdates.length).toBeGreaterThan(0);
+      const decoded = await Promise.all(
+        sessionUpdates.map((update) => openJson<unknown>(session.id, update.envelope, key)),
+      );
+      const serialized = decoded.map((d) => JSON.stringify(d)).join('\n');
+      expect(serialized).toContain(`received image: image/png ${expectedBase64Length}b64`);
+    });
+
+    // The capability WAS negotiated (the fixture advertises `image: true`),
+    // so this attachment's hand-off must never have been declined.
+    expect(declinedEvents).toHaveLength(0);
+  });
+
+  it('emits attachment_handoff_declined with "capability-not-negotiated" (never blocking the turn) when the session\'s agent never advertised the image capability (SPEC §7.25; issue #158)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attach-image-declined';
+    const blobSource = new FakeBlobSource();
+
+    node = createNode({
+      stateDir: nodeStateDir,
+      relayUrl: relay.url,
+      nodeId: 'node-attach-image-declined',
+      deviceId: 'device-node-attach-image-declined',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      blobSource,
+      // The plain echo fixture advertises `promptCapabilities.image: false`.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const declinedEvents: AttachmentHandoffDeclined[] = [];
+    node.on('attachment_handoff_declined', (event: AttachmentHandoffDeclined) =>
+      declinedEvents.push(event),
+    );
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x03, 0x04]);
+    blobSource.seed(
+      session.id,
+      'ref-declined',
+      await phoneSealAttachment(session.id, 'ref-declined', pngBytes, key),
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-attach-image-declined',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const envelope = await phoneSeal(
+      session.id,
+      { text: 'look at this', attachments: [{ ref: 'ref-declined', mimeType: 'image/png' }] },
+      key,
+    );
+    phone.send({
+      type: 'prompt_inject',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: 'prompt-image-declined',
+      envelope,
+    });
+
+    await vi.waitFor(() => expect(declinedEvents).toHaveLength(1));
+    expect(declinedEvents[0]).toEqual({
+      sessionId: session.id,
+      ref: 'ref-declined',
+      reason: 'capability-not-negotiated',
+    });
+
+    // A declined hand-off degrades the turn, it never fails it: the prompt
+    // still reaches the agent as plain text and the turn completes.
+    await phone.waitFor(
+      (m) => m.type === 'session_update' && (m as SessionUpdateEnvelopeV1).sessionId === session.id,
+    );
   });
 });
 
