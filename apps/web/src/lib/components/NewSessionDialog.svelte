@@ -81,6 +81,13 @@
   import type { CreateSessionOptions } from '$lib/relay-client';
   import type { Project } from '$lib/projects';
   import { PROVIDER_LABELS } from '$lib/providers';
+  import {
+    addCustomAgent,
+    createLocalStorageCustomAgentStorage,
+    CustomAgentStoreError,
+    type CustomAgentStorage,
+  } from '$lib/custom-agent-store';
+  import { customAgentRecordV1, type CustomAgentRecordV1 } from '@loombox/protocol';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
@@ -89,6 +96,7 @@
   import Input from './ui/Input.svelte';
   import RadioGroup, { type RadioOption } from './ui/RadioGroup.svelte';
   import Select, { type SelectOption } from './ui/Select.svelte';
+  import TextArea from './ui/TextArea.svelte';
 
   export interface NewSessionClient {
     createSession: (options: CreateSessionOptions) => Promise<string>;
@@ -111,16 +119,54 @@
     /** `project`'s own target, named for a human where possible — used only to name it in the zero-providers message below. Mirrors `+page.svelte`'s own `sessionTargetLabel` label-with-id-fallback idiom. */
     targetLabel: string;
     onClose: () => void;
-    /** The provider id (agent) the session was actually created with — the caller uses this to resolve which agent's remembered config-option defaults/overrides apply (issue #753, D4-2/D4-3); it is not surfaced back any other way once the dialog closes. */
+    /** The provider id (agent) the session was actually created with — the caller uses this to resolve which agent's remembered config-option defaults/overrides apply (issue #753, D4-2/D4-3); it is not surfaced back any other way once the dialog closes. `'custom'` when a custom agent (issue #748) was picked, exactly like `session_create`'s own `provider` field. */
     onCreated: (sessionId: string, provider: string) => void;
+    /**
+     * D1-3's per-project custom-agent list (`docs/superpowers/specs/
+     * 2026-08-05-zed-parity-decisions.md` §4; issue #748) — defaults to a
+     * real `localStorage`-backed store scoped to `project.path`
+     * (`custom-agent-store.ts`, mirrors `McpServerConfigPanel`'s identical
+     * default-storage pattern); overridable for a hermetic component test.
+     */
+    customAgentStorage?: CustomAgentStorage;
   }
 
-  const { open, project, client, providers, targetLabel, onClose, onCreated }: Props = $props();
+  const {
+    open,
+    project,
+    client,
+    providers,
+    targetLabel,
+    onClose,
+    onCreated,
+    customAgentStorage: customAgentStorageProp,
+  }: Props = $props();
+
+  const agentStorage = $derived(
+    customAgentStorageProp ?? createLocalStorageCustomAgentStorage(project.path),
+  );
 
   const providerOptions: SelectOption[] = $derived(
     providers.map((id) => ({ id, label: PROVIDER_LABELS[id]?.name ?? id })),
   );
+  /** Prefixes a custom agent's `Select` option id so it can never collide with a real, registered provider id — including one a project happens to name its custom agent after. */
+  const CUSTOM_AGENT_PREFIX = 'custom-agent:';
+  let customAgents = $state<CustomAgentRecordV1[]>([]);
+  const customAgentOptions: SelectOption[] = $derived(
+    customAgents.map((agent) => ({
+      id: `${CUSTOM_AGENT_PREFIX}${agent.name}`,
+      label: `${agent.name} (custom)`,
+    })),
+  );
+  /** Every pickable agent for this project: the target's real registered providers, plus this project's own custom agents — one combined list, one `Select`, exactly like the issue's "next to the existing agent picker" asks for. */
+  const agentOptions: SelectOption[] = $derived([...providerOptions, ...customAgentOptions]);
   let selectedProvider = $state('');
+  let showCustomAgentForm = $state(false);
+  let newAgentName = $state('');
+  let newAgentCommand = $state('');
+  let newAgentArgs = $state('');
+  let newAgentEnv = $state('');
+  let customAgentError = $state<string | undefined>(undefined);
   type WorkspaceChoice = 'worktree' | 'in-place';
   let workspaceChoice = $state<WorkspaceChoice>('worktree');
 
@@ -174,7 +220,7 @@
     wasOpen = isOpen;
   });
 
-  const canSubmit = $derived(!creating && client !== undefined && providers.length > 0);
+  const canSubmit = $derived(!creating && client !== undefined && agentOptions.length > 0);
 
   async function handleSubmit(event: Event): Promise<void> {
     event.preventDefault();
@@ -182,17 +228,24 @@
     creating = true;
     createError = undefined;
     try {
+      const customAgent = customAgentFor(selectedProvider);
       const sessionId = await client.createSession({
         targetId: project.targetId,
-        provider: selectedProvider,
+        // A custom agent always travels as the `'custom'` wire sentinel
+        // (`sessionPrivateMetaV1.customAgent`'s doc comment) — the node
+        // gates on the presence of `customAgent` itself, never on this
+        // string, but it's what lets a human reading `session_list` tell
+        // the two kinds of session apart.
+        provider: customAgent ? 'custom' : selectedProvider,
         projectPath: project.path,
         // Only a CONFIRMED git repo ever gets a `worktree` value at all:
         // when the folder isn't a repo, there is no genuine per-session
         // choice to send (see the file doc comment).
         ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
         title: title.trim() || undefined,
+        ...(customAgent ? { customAgent } : {}),
       });
-      onCreated(sessionId, selectedProvider);
+      onCreated(sessionId, customAgent ? 'custom' : selectedProvider);
       onClose();
     } catch (error) {
       // Same wire-identifier leak issue #505 fixed in `DirectoryPicker` and
@@ -211,12 +264,72 @@
     }
   }
 
+  /** Resolves a `Select` value back to its `CustomAgentRecordV1`, or `undefined` for an ordinary registered-provider id — the one place that decides which kind of session `handleSubmit` builds. */
+  function customAgentFor(id: string): CustomAgentRecordV1 | undefined {
+    if (!id.startsWith(CUSTOM_AGENT_PREFIX)) return undefined;
+    const name = id.slice(CUSTOM_AGENT_PREFIX.length);
+    return customAgents.find((agent) => agent.name === name);
+  }
+
+  /** `KEY=VALUE`, one per line — blank lines and lines with no `=` are skipped rather than rejected, so a stray trailing newline never blocks the whole form. `undefined` (not `{}`) when nothing parsed, matching `customAgentRecordV1.env`'s own "no overrides" contract. */
+  function parseEnvLines(text: string): Record<string, string> | undefined {
+    const entries: Array<[string, string]> = [];
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) continue;
+      entries.push([trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1).trim()]);
+    }
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+
+  /**
+   * The "+ Define a custom agent" form's own submit (issue #748) — validates
+   * through the exact same `customAgentRecordV1` schema the wire itself
+   * parses against, then `addCustomAgent` (which adds the one extra rule
+   * beyond that schema: no two agents sharing this project sharing a
+   * name). Never touches the node's allowlist — that's a separate,
+   * later decision (`RelayClient.probeCustomAgent`), not this form's job.
+   */
+  function handleAddCustomAgent(): void {
+    const parsed = customAgentRecordV1.safeParse({
+      name: newAgentName.trim(),
+      command: newAgentCommand.trim(),
+      args: newAgentArgs.split(/\s+/).filter((arg) => arg.length > 0),
+      env: parseEnvLines(newAgentEnv),
+    });
+    if (!parsed.success) {
+      customAgentError = 'Name and command are required.';
+      return;
+    }
+    try {
+      customAgents = addCustomAgent(agentStorage, parsed.data);
+      selectedProvider = `${CUSTOM_AGENT_PREFIX}${parsed.data.name}`;
+      newAgentName = '';
+      newAgentCommand = '';
+      newAgentArgs = '';
+      newAgentEnv = '';
+      customAgentError = undefined;
+      showCustomAgentForm = false;
+    } catch (err) {
+      customAgentError = err instanceof CustomAgentStoreError ? err.message : String(err);
+    }
+  }
+
   function resetForm(): void {
-    selectedProvider = providers[0] ?? '';
+    customAgents = agentStorage.get();
+    selectedProvider = agentOptions[0]?.id ?? '';
     workspaceChoice = 'worktree';
     title = '';
     creating = false;
     createError = undefined;
+    showCustomAgentForm = false;
+    newAgentName = '';
+    newAgentCommand = '';
+    newAgentArgs = '';
+    newAgentEnv = '';
+    customAgentError = undefined;
   }
 
   function handleClose(): void {
@@ -228,9 +341,9 @@
   <p class="project-context" data-testid="new-session-project-context">
     <span class="project-context-name">{project.name}</span>
     <span class="project-context-path font-mono">{project.path}</span>
-    {#if providers.length === 1}
+    {#if agentOptions.length === 1}
       <span class="project-context-agent" data-testid="new-session-agent-fact">
-        {PROVIDER_LABELS[providers[0]]?.name ?? providers[0]}
+        {agentOptions[0]?.label}
       </span>
     {/if}
   </p>
@@ -251,21 +364,111 @@
       {/snippet}
     </Field>
 
-    {#if providers.length >= 2}
+    {#if agentOptions.length >= 2}
       <Field label="Agent" grouped>
         <Select
           value={selectedProvider}
-          options={providerOptions}
+          options={agentOptions}
           onChange={(id) => (selectedProvider = id)}
           label="Agent"
           dataTestId="new-session-provider"
         />
       </Field>
-    {:else if providers.length === 0}
+    {:else if agentOptions.length === 0}
       <ErrorNotice
         message={`No agent CLI was found on ${targetLabel}. Install claude, codex, or omp there and try again.`}
       />
     {/if}
+
+    <div class="custom-agent-section">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onclick={() => (showCustomAgentForm = !showCustomAgentForm)}
+        dataTestId="new-session-custom-agent-toggle"
+      >
+        {showCustomAgentForm ? 'Cancel custom agent' : '+ Define a custom agent'}
+      </Button>
+      {#if showCustomAgentForm}
+        <div class="custom-agent-form">
+          {#if customAgentError}
+            <ErrorNotice message={customAgentError} />
+          {/if}
+          <Field label="Name">
+            {#snippet children({ id, describedBy, errorId, invalid, required })}
+              <Input
+                {id}
+                {describedBy}
+                {errorId}
+                {invalid}
+                {required}
+                bind:value={newAgentName}
+                placeholder="e.g. My internal agent"
+                dataTestId="new-session-custom-agent-name"
+              />
+            {/snippet}
+          </Field>
+          <Field
+            label="Command"
+            help="Checked against the node's own allowlist before it ever runs"
+          >
+            {#snippet children({ id, describedBy, errorId, invalid, required })}
+              <Input
+                {id}
+                {describedBy}
+                {errorId}
+                {invalid}
+                {required}
+                monospace
+                bind:value={newAgentCommand}
+                placeholder="e.g. omp"
+                dataTestId="new-session-custom-agent-command"
+              />
+            {/snippet}
+          </Field>
+          <Field label="Arguments (space separated)" help="e.g. acp">
+            {#snippet children({ id, describedBy, errorId, invalid, required })}
+              <Input
+                {id}
+                {describedBy}
+                {errorId}
+                {invalid}
+                {required}
+                monospace
+                bind:value={newAgentArgs}
+                placeholder="acp"
+                dataTestId="new-session-custom-agent-args"
+              />
+            {/snippet}
+          </Field>
+          <Field label="Environment variables (optional)" help="One KEY=VALUE per line">
+            {#snippet children({ id, describedBy, errorId, invalid })}
+              <TextArea
+                {id}
+                {describedBy}
+                {errorId}
+                {invalid}
+                monospace
+                rows={3}
+                bind:value={newAgentEnv}
+                placeholder="FOO=bar"
+                dataTestId="new-session-custom-agent-env"
+              />
+            {/snippet}
+          </Field>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onclick={handleAddCustomAgent}
+            dataTestId="new-session-custom-agent-submit"
+          >
+            Add custom agent
+          </Button>
+        </div>
+      {/if}
+    </div>
 
     {#if project.isGitRepo === true}
       <Field label="Workspace" grouped>
@@ -345,5 +548,20 @@
        label reads as belonging to the box beneath it rather than floating
        between two of them. See `ui/Field.svelte`'s note on that contract. */
     gap: var(--space-md);
+  }
+
+  .custom-agent-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .custom-agent-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
   }
 </style>

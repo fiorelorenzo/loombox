@@ -1700,7 +1700,16 @@ export class NodeDaemon extends EventEmitter {
       // below releases the same-folder reservation, so nothing leaks.
       await this.acquireRelayLeaseOrRollback(sessionId, targetId);
 
-      if (!this.supervisor.getProvider(opts.provider)) {
+      // D1-3 (issue #748): a custom-agent session's `opts.provider` is the
+      // `'custom'` wire sentinel, never a registered provider id —
+      // `launchReservedSshSession` registers its own session-scoped
+      // provider (`custom:${sessionId}`) only once its allowlist check
+      // clears, so there is nothing to look up here yet. Skipping this
+      // check for that case is not itself a security gap: the actual
+      // allowlist enforcement is `launchReservedSshSession`'s
+      // `assertCustomAgentAllowed` call, which still runs unconditionally
+      // before any spawn recipe is ever built for either session kind.
+      if (!opts.customAgent && !this.supervisor.getProvider(opts.provider)) {
         throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
       }
     } catch (error) {

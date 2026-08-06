@@ -4,6 +4,7 @@ import { fireEvent } from '@testing-library/dom';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '$lib/projects';
+import { addCustomAgent, createInMemoryCustomAgentStorage } from '$lib/custom-agent-store';
 import NewSessionDialog, { type NewSessionClient } from './NewSessionDialog.svelte';
 
 afterEach(() => cleanup());
@@ -456,6 +457,206 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
 
       await fireEvent.click(submit);
       expect(client.createSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('custom ACP agents (D1-3, issue #748)', () => {
+    it('renders the "+ Define a custom agent" affordance even in the zero-provider state, and it never blocks submission of an ordinary provider session', () => {
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: [],
+          targetLabel: 'Build server',
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: createInMemoryCustomAgentStorage(),
+        },
+      });
+      expect(screen.getByTestId('new-session-custom-agent-toggle')).toBeTruthy();
+      expect(screen.queryByTestId('new-session-custom-agent-name')).toBeNull();
+    });
+
+    it('defining a custom agent adds it to the (now real) Agent Select, selects it, and hides the form again', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-toggle'));
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-name'), {
+        target: { value: 'My internal agent' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-command'), {
+        target: { value: 'omp' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-args'), {
+        target: { value: 'acp' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-submit'));
+
+      // Persisted (mirrors mcp-server-store's CRUD contract)…
+      expect(storage.get()).toEqual([{ name: 'My internal agent', command: 'omp', args: ['acp'] }]);
+      // …and it is now the sole pickable agent: the fact line, not a Select
+      // (agentOptions.length === 1, same rule an ordinary sole provider gets).
+      await waitFor(() =>
+        expect(screen.getByTestId('new-session-agent-fact').textContent).toContain(
+          'My internal agent (custom)',
+        ),
+      );
+      expect(screen.queryByTestId('new-session-custom-agent-name')).toBeNull();
+    });
+
+    it('submitting a session with a custom agent selected sends provider: "custom" and the full customAgent record, including parsed env', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const client = fakeClient();
+      const onCreated = vi.fn();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: [],
+          targetLabel: TARGET_LABEL,
+          onCreated,
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-toggle'));
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-name'), {
+        target: { value: 'My internal agent' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-command'), {
+        target: { value: 'omp' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-args'), {
+        target: { value: 'acp --profile=work' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-env'), {
+        target: { value: 'FOO=bar\n\nBAZ=qux\nignored-line-with-no-equals' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-submit'));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('sess_new_1', 'custom'));
+      expect(client.createSession).toHaveBeenCalledWith({
+        targetId: 'local',
+        provider: 'custom',
+        projectPath: '/home/dev/loombox',
+        worktree: true,
+        title: undefined,
+        customAgent: {
+          name: 'My internal agent',
+          command: 'omp',
+          args: ['acp', '--profile=work'],
+          env: { FOO: 'bar', BAZ: 'qux' },
+        },
+      });
+    });
+
+    it('a name shared with a registered provider option cannot collide: the two entries stay independently selectable and independently submittable', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const client = fakeClient();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-toggle'));
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-name'), {
+        target: { value: 'claude' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-command'), {
+        target: { value: 'omp' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-submit'));
+
+      await fireEvent.click(screen.getByTestId('new-session-provider-trigger'));
+      expect(screen.getByTestId('new-session-provider-option-claude').textContent).toContain(
+        'Claude Code',
+      );
+      expect(
+        screen.getByTestId('new-session-provider-option-custom-agent:claude').textContent,
+      ).toContain('claude (custom)');
+
+      await fireEvent.click(screen.getByTestId('new-session-provider-option-claude'));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+      await waitFor(() =>
+        expect(client.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'claude' }),
+        ),
+      );
+    });
+
+    it('rejects an empty name or command with a visible error, without touching storage', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-toggle'));
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-submit'));
+
+      expect(screen.getByText(/name and command are required/i)).toBeTruthy();
+      expect(storage.get()).toEqual([]);
+    });
+
+    it('rejects a duplicate custom agent name with a visible error naming the duplicate', async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      addCustomAgent(storage, { name: 'My internal agent', command: 'omp', args: [] });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-toggle'));
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-name'), {
+        target: { value: 'My internal agent' },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-custom-agent-command'), {
+        target: { value: 'omp' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-custom-agent-submit'));
+
+      expect(screen.getByText(/duplicate/i)).toBeTruthy();
+      expect(storage.get()).toEqual([{ name: 'My internal agent', command: 'omp', args: [] }]);
     });
   });
 

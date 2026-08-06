@@ -52,7 +52,7 @@ describe('assertCustomAgentAllowed (the security-boundary gate every launch path
     // through. Only `command`, compared to the node's own local list, ever
     // decides the outcome.
     expect(() =>
-      assertCustomAgentAllowed('/bin/sh', ['omp'], /* args/env are irrelevant */),
+      assertCustomAgentAllowed('/bin/sh', ['omp'] /* args/env are irrelevant */),
     ).toThrow(CustomAgentNotAllowedError);
   });
 });
