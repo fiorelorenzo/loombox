@@ -9,6 +9,7 @@ import {
   parseMcpServerConfig,
   type AcpMcpServerConfig,
   type AcpPermissionOption,
+  type AcpProvider,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
   type AcpToolKind,
@@ -43,6 +44,7 @@ import {
   connectedAccountSecretRef,
   parseConnectedAccountId,
   parseSessionPrivateMetaV1,
+  parseCustomAgentProbeRequestPayloadV1,
   type AccountPinGetRequest,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
@@ -57,6 +59,10 @@ import {
   type ConnectedAccount,
   type ConnectedAccountDisconnectRequest,
   type ConnectedAccountList,
+  type CustomAgentProbeRequest,
+  type CustomAgentProbeRequestPayloadV1,
+  type CustomAgentProbeResultV1,
+  type CustomAgentRecordV1,
   type DecommissionResultV1,
   type DecommissionTargetRequest,
   type FileEventPayloadV1,
@@ -154,6 +160,12 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import {
+  assertCustomAgentAllowed,
+  createCustomAgentProvider,
+  CustomAgentNotAllowedError,
+  isCustomAgentCommandAllowed,
+} from './custom-agent';
 import { renderPromptTextWithMentions, type PromptMentionRef } from './prompt-mentions';
 import { GithubDeviceFlowError } from './github-device-flow';
 import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
@@ -355,6 +367,16 @@ export interface NodeDaemonOptions {
    * legitimate, empty-but-reachable result) and no target is ever probed.
    */
   providerCandidates?: ProviderAvailabilityCandidate[];
+  /**
+   * D1-3's node-side security boundary for custom ACP agents (`docs/
+   * superpowers/specs/2026-08-05-zed-parity-decisions.md` §4; issue #748)
+   * — see `./config.ts`'s `NodeCliConfig.customAgentAllowlist` for the full
+   * "how it is edited" story (`main.ts`'s `start()` is what actually
+   * threads that config field through to here). Defaults to `[]`: a fresh
+   * `NodeDaemon` refuses every custom agent until an operator explicitly
+   * allowlists one, never trust-on-first-use.
+   */
+  customAgentAllowlist?: readonly string[];
   /**
    * Per-target CPU/RAM/disk sampling (SPEC §7.16/§7.21; issues #253/#269).
    * `enabled` defaults to `false`: constructing a `NodeDaemon` never spins up
@@ -613,6 +635,8 @@ export interface CreateNodeSessionOptions {
    * per-target default this option applies when omitted here.
    */
   worktree?: boolean;
+  /** D1-3's custom ACP agent for this session (issue #748) — mirrors `SessionPrivateMetaV1.customAgent`'s doc comment; still gated by this node's own `customAgentAllowlist` at spawn time, exactly like the relay-driven `session_create` path. */
+  customAgent?: CustomAgentRecordV1;
   /**
    * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) gates this
    * session's tool set, applied from the moment it spawns. `undefined`
@@ -1191,6 +1215,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly targetUpdateMonitor?: TargetUpdateMonitor;
   /** See `NodeDaemonOptions.providerCandidates`'s doc comment. */
   private readonly providerCandidates: ProviderAvailabilityCandidate[];
+  /** See `NodeDaemonOptions.customAgentAllowlist`'s doc comment. */
+  private readonly customAgentAllowlist: readonly string[];
   /**
    * Latest probed `TargetDescriptor.providers` per target id (SPEC §5.5) —
    * refreshed by {@link refreshProviderAvailability} on this node's first
@@ -1323,6 +1349,7 @@ export class NodeDaemon extends EventEmitter {
       ? new TargetUpdateMonitor({ pinnedVersion: options.targetUpdate.pinnedVersion })
       : undefined;
     this.providerCandidates = options.providerCandidates ?? [];
+    this.customAgentAllowlist = options.customAgentAllowlist ?? [];
     this.githubConnectService =
       options.githubConnectService ?? new GithubConnectService({ stateDir: options.stateDir });
     this.githubConnectClientId = options.githubConnectClientId ?? resolveGithubConnectClientId();
@@ -1461,6 +1488,7 @@ export class NodeDaemon extends EventEmitter {
       title: options.title ?? basename(options.projectPath),
       worktree: options.worktree,
       profileId: options.profileId,
+      customAgent: options.customAgent,
       mcpServerConfigs: options.mcpServerConfigs,
     });
   }
@@ -1563,6 +1591,7 @@ export class NodeDaemon extends EventEmitter {
     title: string;
     worktree?: boolean;
     profileId?: string;
+    customAgent?: CustomAgentRecordV1;
     /** The client's own per-project `localStorage` MCP server declarations (issue #750, D2-2), merged into resolution alongside this node's own `McpConfigStore` — see {@link resolveMcpServers}'s doc comment. Omitted/`[]` behaves exactly like before this option existed. */
     mcpServerConfigs?: readonly McpServerConfig[];
   }): Promise<Session> {
@@ -1672,7 +1701,12 @@ export class NodeDaemon extends EventEmitter {
    */
   private async launchLocalSession(
     session: Session,
-    opts: { provider: string; targetId: string; title: string },
+    opts: {
+      provider: string;
+      targetId: string;
+      title: string;
+      customAgent?: CustomAgentRecordV1;
+    },
     mcpServers: AcpMcpServerConfig[],
     seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
@@ -1681,13 +1715,14 @@ export class NodeDaemon extends EventEmitter {
     let agentSession: AgentSession;
     let failedMcpServers: McpServerStatusEntryV1[];
     try {
+      const providerId = this.resolveLaunchProviderId(session.id, opts.provider, opts.customAgent);
       const outcome = await this.startAgentWithMcpFallback(
         session.projectPath,
         mcpServers,
         (servers) =>
           this.startAgentWithTimeout({
             workspacePath: session.worktreePath,
-            providerId: opts.provider,
+            providerId,
             mcpServers: servers,
             evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
           }),
@@ -1716,6 +1751,36 @@ export class NodeDaemon extends EventEmitter {
       undefined,
       seedTranscriptUpdates,
     );
+  }
+
+  /**
+   * Resolves the `providerId` `AgentSupervisor.start()`/`startWithChild()`
+   * should spawn for this session (D1-3, issue #748): the registered id
+   * verbatim for an ordinary catalogue agent, or — when `customAgent` is
+   * set — a freshly-registered, session-scoped provider once this node's
+   * own allowlist accepts its `command`. Registered under
+   * `` `custom:${sessionId}` `` rather than a shared id, so two concurrent
+   * custom-agent sessions can never clobber each other's spawn recipe on
+   * `AgentSupervisor`'s single provider map.
+   *
+   * Throws {@link CustomAgentNotAllowedError} — never silently falls back
+   * to `provider` — when `command` isn't allowlisted: this is the one call
+   * every custom-agent launch path (`local` and `ssh:` alike) makes before
+   * ever touching `AgentSupervisor`, which is what makes the allowlist the
+   * actual security boundary rather than a client-trusted hint. A
+   * disallowed command never reaches `AgentSupervisor.registerProvider`/
+   * `spawnConfig()` at all — nothing here ever executes it "to check".
+   */
+  private resolveLaunchProviderId(
+    sessionId: string,
+    provider: string,
+    customAgent: CustomAgentRecordV1 | undefined,
+  ): string {
+    if (!customAgent) return provider;
+    assertCustomAgentAllowed(customAgent.command, this.customAgentAllowlist);
+    const providerId = `custom:${sessionId}`;
+    this.supervisor.registerProvider(createCustomAgentProvider(providerId, customAgent));
+    return providerId;
   }
 
   /**
@@ -1909,6 +1974,7 @@ export class NodeDaemon extends EventEmitter {
       targetId: string;
       title: string;
       worktree?: boolean;
+      customAgent?: CustomAgentRecordV1;
     },
     mcpServers: AcpMcpServerConfig[],
   ): Promise<Session> {
@@ -1942,7 +2008,16 @@ export class NodeDaemon extends EventEmitter {
       // below releases the same-folder reservation, so nothing leaks.
       await this.acquireRelayLeaseOrRollback(sessionId, targetId);
 
-      if (!this.supervisor.getProvider(opts.provider)) {
+      // D1-3 (issue #748): a custom-agent session's `opts.provider` is the
+      // `'custom'` wire sentinel, never a registered provider id —
+      // `launchReservedSshSession` registers its own session-scoped
+      // provider (`custom:${sessionId}`) only once its allowlist check
+      // clears, so there is nothing to look up here yet. Skipping this
+      // check for that case is not itself a security gap: the actual
+      // allowlist enforcement is `launchReservedSshSession`'s
+      // `assertCustomAgentAllowed` call, which still runs unconditionally
+      // before any spawn recipe is ever built for either session kind.
+      if (!opts.customAgent && !this.supervisor.getProvider(opts.provider)) {
         throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
       }
     } catch (error) {
@@ -2039,6 +2114,7 @@ export class NodeDaemon extends EventEmitter {
       targetId: string;
       title: string;
       worktree?: boolean;
+      customAgent?: CustomAgentRecordV1;
     },
     mcpServers: AcpMcpServerConfig[],
   ): Promise<Session> {
@@ -2049,9 +2125,26 @@ export class NodeDaemon extends EventEmitter {
     await this.sendSessionStatus(sessionId, 'starting');
 
     try {
-      const provider = this.supervisor.getProvider(opts.provider);
+      // D1-3 (issue #748): a custom agent is registered on this node's
+      // supervisor (under a session-scoped id) only after this node's own
+      // allowlist accepts its `command` — an ordinary catalogue provider
+      // keeps the pre-#748 lookup unchanged. Same gate `resolveLaunchProviderId`
+      // enforces for a `local` session; duplicated here (not shared) because
+      // this path needs the `AcpProvider` object itself, not just its id, to
+      // build the remote shell command below.
+      let providerId: string;
+      let provider: AcpProvider | undefined;
+      if (opts.customAgent) {
+        assertCustomAgentAllowed(opts.customAgent.command, this.customAgentAllowlist);
+        providerId = `custom:${sessionId}`;
+        provider = createCustomAgentProvider(providerId, opts.customAgent);
+        this.supervisor.registerProvider(provider);
+      } else {
+        providerId = opts.provider;
+        provider = this.supervisor.getProvider(providerId);
+      }
       if (!provider) {
-        throw new Error(`NodeDaemon: no provider registered for id "${opts.provider}"`);
+        throw new Error(`NodeDaemon: no provider registered for id "${providerId}"`);
       }
 
       // `ssh:` defaults to `worktree: false` (unchanged from before this
@@ -2104,7 +2197,7 @@ export class NodeDaemon extends EventEmitter {
           remoteChild.start();
           const agentSession = await this.supervisor.startWithChild({
             workspacePath: worktreePath,
-            providerId: opts.provider,
+            providerId,
             child: asAcpChildProcess(remoteChild),
             mcpServers: servers,
             evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(sessionId, toolCall),
@@ -2131,7 +2224,7 @@ export class NodeDaemon extends EventEmitter {
       return await this.finishSessionCreation(
         session,
         agentSession,
-        { targetId, title: opts.title },
+        { targetId, title: opts.title, customAgent: opts.customAgent },
         remoteChild,
       );
     } catch (error) {
@@ -2148,6 +2241,17 @@ export class NodeDaemon extends EventEmitter {
       if (inPlace) {
         this.sshSameFolderGuard.release(sameFolderKey, sessionId);
       }
+      // D1-3 (issue #748): mirrors `launchLocalSession`'s own reason
+      // forwarding — a custom-agent allowlist refusal is the one failure on
+      // this path the client must see verbatim rather than a bare "error".
+      const reason = error instanceof CustomAgentNotAllowedError ? error.message : undefined;
+      await this.sendSessionStatus(sessionId, 'error', reason).catch((sendError: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to report ssh session ${sessionId}'s start failure to the relay: ${
+            sendError instanceof Error ? sendError.message : String(sendError)
+          }`,
+        );
+      });
       throw error;
     }
   }
@@ -2328,7 +2432,7 @@ export class NodeDaemon extends EventEmitter {
   private async finishSessionCreation(
     session: Session,
     agentSession: AgentSession,
-    opts: { targetId: string; title: string },
+    opts: { targetId: string; title: string; customAgent?: CustomAgentRecordV1 },
     remoteChild?: RemoteAgentChildProcess,
     seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
   ): Promise<Session> {
@@ -2365,7 +2469,49 @@ export class NodeDaemon extends EventEmitter {
       }
     }
 
+    // D1-3 (issue #748): a custom agent's optional `defaultMode`/
+    // `defaultConfigOptions` are applied best-effort, fire-and-forget —
+    // never blocking session creation on an agent that rejects one of them
+    // (see `applyCustomAgentDefaults`'s own doc comment).
+    if (opts.customAgent) {
+      this.applyCustomAgentDefaults(bridge, opts.customAgent).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to apply custom agent defaults for session ${session.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
     return session;
+  }
+
+  /**
+   * Applies a custom agent's optional `defaultMode`/`defaultConfigOptions`
+   * (issue #748) via the same live `session/set_config_option` mechanism a
+   * user-driven config change already uses (`AgentSession.setConfigOption`,
+   * issue #718) — one call per entry, sequentially (never raced against
+   * each other on the same ACP connection). Best-effort only: an agent
+   * that rejects an unknown mode/option id throws from `setConfigOption`,
+   * which is caught by this method's own caller and logged — it never
+   * fails the session itself, since a stale/typo'd default shouldn't take
+   * down an otherwise-working agent. The resulting change (or lack of one)
+   * reaches every client the ordinary way, through `wireAgentSession`'s
+   * `configOptions.on('changed', ...)` listener — nothing here forwards
+   * anything to the relay directly.
+   */
+  private async applyCustomAgentDefaults(
+    bridge: SessionBridge,
+    customAgent: CustomAgentRecordV1,
+  ): Promise<void> {
+    if (customAgent.defaultMode) {
+      await bridge.agentSession.setConfigOption('mode', customAgent.defaultMode);
+    }
+    if (customAgent.defaultConfigOptions) {
+      for (const [category, optionId] of Object.entries(customAgent.defaultConfigOptions)) {
+        await bridge.agentSession.setConfigOption(category, optionId);
+      }
+    }
   }
 
   private wireAgentSession(bridge: SessionBridge): void {
@@ -2611,17 +2757,18 @@ export class NodeDaemon extends EventEmitter {
    * usable before one does. Needed for the three transitions that fall
    * outside a bridge's lifetime: `'starting'`, sent right after
    * {@link announce} while the agent is still spawning; an `'error'`
-   * reported when that spawn fails or times out (issue #516), with
-   * `reason` set to something a user can read (issue #730 — previously
-   * only ever reached `console.warn`, never the client); and
-   * `'disconnected'` (issue #702), re-sent on every reconnect (see
-   * {@link reannounceAll}) for every session `SessionManager` reports in
-   * that state — a disconnected session never gets a bridge again on its
-   * own, so nothing else would ever push this one. Every other status
-   * transition rides `wireAgentSession`'s `'attention'` listener once a
-   * bridge exists. The relay reassigns the authoritative `seq` on receipt
-   * (see `SessionBridge.seq`'s doc comment), so the placeholder `0` here
-   * never needs to agree with a bridge's own counter.
+   * reported when that spawn fails or times out (issue #516) or is
+   * refused by the custom-agent allowlist (issue #748), with `reason` set
+   * to something a user can read (issue #730 — previously only ever
+   * reached `console.warn`, never the client); and `'disconnected'`
+   * (issue #702), re-sent on every reconnect (see {@link reannounceAll})
+   * for every session `SessionManager` reports in that state — a
+   * disconnected session never gets a bridge again on its own, so nothing
+   * else would ever push this one. Every other status transition rides
+   * `wireAgentSession`'s `'attention'` listener once a bridge exists. The
+   * relay reassigns the authoritative `seq` on receipt (see
+   * `SessionBridge.seq`'s doc comment), so the placeholder `0` here never
+   * needs to agree with a bridge's own counter.
    */
   private async sendSessionStatus(
     sessionId: string,
@@ -3085,6 +3232,9 @@ export class NodeDaemon extends EventEmitter {
       case 'target_fs_list_request':
         this.handleTargetFsListRequest(message);
         return;
+      case 'custom_agent_probe_request':
+        this.handleCustomAgentProbeRequest(message);
+        return;
       case 'ssh_discovery_request':
         this.handleSshDiscoveryRequest(message);
         return;
@@ -3217,6 +3367,12 @@ export class NodeDaemon extends EventEmitter {
           // comment for the full default-mapping story.
           worktree: privateMeta.worktree,
           profileId: privateMeta.profileId,
+          // D1-3 (issue #748): the same encrypted envelope carries this
+          // session's custom agent, when the client picked one — a
+          // `message.provider` of anything else (an ordinary catalogue id)
+          // simply carries no `customAgent`, and this field is `undefined`
+          // exactly as it was before this issue.
+          customAgent: privateMeta.customAgent,
           // issue #750, D2-2: the client's own per-project `localStorage`
           // MCP server declarations, merged by `resolveMcpServers` into
           // this node's own `McpConfigStore` — see
@@ -4497,6 +4653,83 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(targetId, payload, key);
     this.relay.send({
       type: 'target_fs_list_response',
+      protocolVersion: PROTOCOL_V1,
+      targetId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to check whether a custom
+   * agent's `command` could actually run on one of its targets (issue
+   * #748's provider-availability-probing bullet) — `handleTargetFsListRequest`'s
+   * sibling, same "no session yet" routing (`nodeId`+`targetId` directly).
+   * Reports TWO independent facts rather than one boolean: `available`
+   * (this node's own PATH probe on that target, `probeProviderAvailability`
+   * — the exact mechanism a registered provider's `requiredCommand` is
+   * checked with today) and `allowed` (this node's own allowlist verdict,
+   * `isCustomAgentCommandAllowed`) — a command can be installed but not
+   * allowlisted, or the reverse, and the client should be able to tell
+   * those apart rather than see one undifferentiated "no". Never a silent
+   * drop: an unknown target or a decrypt/exec failure still replies, with
+   * `outcome: 'error'`, exactly like `handleTargetFsListRequest`'s own
+   * contract.
+   */
+  private handleCustomAgentProbeRequest(message: CustomAgentProbeRequest): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(
+        `NodeDaemon: custom_agent_probe_request for unknown target "${message.targetId}"`,
+      );
+      return;
+    }
+
+    this.decryptCustomAgentProbeRequest(message)
+      .then(async (payload): Promise<CustomAgentProbeResultV1> => {
+        const executionTarget = await this.getExecutionTarget(message.targetId);
+        const found = await probeProviderAvailability(
+          executionTarget,
+          [{ id: payload.command, requiredCommand: payload.command }],
+          message.targetId,
+        );
+        return {
+          outcome: 'ok',
+          available: found.includes(payload.command),
+          allowed: isCustomAgentCommandAllowed(payload.command, this.customAgentAllowlist),
+        };
+      })
+      .catch((error: unknown): CustomAgentProbeResultV1 => ({
+        outcome: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      }))
+      .then((result) =>
+        this.sendCustomAgentProbeResponse(message.targetId, message.requestId, result),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle custom_agent_probe_request for target ${message.targetId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptCustomAgentProbeRequest(
+    message: CustomAgentProbeRequest,
+  ): Promise<CustomAgentProbeRequestPayloadV1> {
+    const key = await this.getTargetKey(message.targetId);
+    const raw = await openJson<unknown>(message.targetId, message.envelope, key);
+    return parseCustomAgentProbeRequestPayloadV1(raw);
+  }
+
+  private async sendCustomAgentProbeResponse(
+    targetId: string,
+    requestId: string,
+    result: CustomAgentProbeResultV1,
+  ): Promise<void> {
+    const key = await this.getTargetKey(targetId);
+    const envelope = await sealJson(targetId, { result }, key);
+    this.relay.send({
+      type: 'custom_agent_probe_response',
       protocolVersion: PROTOCOL_V1,
       targetId,
       requestId,

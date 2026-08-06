@@ -258,6 +258,27 @@ export {
 } from './target-fs';
 
 export type {
+  CustomAgentProbeRequest,
+  CustomAgentProbeRequestPayloadV1,
+  CustomAgentProbeResponse,
+  CustomAgentProbeResponsePayloadV1,
+  CustomAgentProbeResultV1,
+  CustomAgentRecordV1,
+} from './custom-agent';
+export {
+  customAgentProbeRequest,
+  customAgentProbeRequestPayloadV1,
+  customAgentProbeResponse,
+  customAgentProbeResponsePayloadV1,
+  customAgentProbeResultV1,
+  customAgentRecordV1,
+  parseCustomAgentProbeRequestPayloadV1,
+  parseCustomAgentProbeResponsePayloadV1,
+  safeParseCustomAgentProbeRequestPayloadV1,
+  safeParseCustomAgentProbeResponsePayloadV1,
+} from './custom-agent';
+
+export type {
   TerminalClose,
   TerminalClosed,
   TerminalClosedPayloadV1,
@@ -751,6 +772,14 @@ import {
   targetFsListResponsePayloadV1,
   targetFsListResultV1,
 } from './target-fs';
+import {
+  customAgentProbeRequest,
+  customAgentProbeRequestPayloadV1,
+  customAgentProbeResponse,
+  customAgentProbeResponsePayloadV1,
+  customAgentProbeResultV1,
+  customAgentRecordV1,
+} from './custom-agent';
 import { presence, resyncMarker, resyncRequest } from './presence';
 import {
   leaseDenial,
@@ -988,6 +1017,12 @@ export const schemasV1 = {
   targetFsListResponsePayloadV1,
   targetFsListRequest,
   targetFsListResponse,
+  customAgentRecordV1,
+  customAgentProbeRequestPayloadV1,
+  customAgentProbeResultV1,
+  customAgentProbeResponsePayloadV1,
+  customAgentProbeRequest,
+  customAgentProbeResponse,
   terminalOpenPayloadV1,
   terminalOpenResultPayloadV1,
   terminalDataPayloadV1,

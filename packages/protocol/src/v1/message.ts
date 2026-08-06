@@ -45,6 +45,7 @@ import {
 } from './terminal';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import { targetFsListRequest, targetFsListResponse } from './target-fs';
+import { customAgentProbeRequest, customAgentProbeResponse } from './custom-agent';
 import { sshDiscoveryRequest, sshDiscoveryResponse } from './ssh-discovery';
 import {
   decommissionTargetRequest,
@@ -150,6 +151,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   fsListResponse,
   targetFsListRequest,
   targetFsListResponse,
+  customAgentProbeRequest,
+  customAgentProbeResponse,
   terminalOpen,
   terminalOpened,
   terminalInput,

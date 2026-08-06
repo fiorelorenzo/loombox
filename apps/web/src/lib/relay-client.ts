@@ -51,6 +51,11 @@ import {
   type ConnectedAccount,
   type ConnectedAccountDisconnectResponse,
   type ConnectedAccountList,
+  type CustomAgentProbeRequestPayloadV1,
+  type CustomAgentProbeResponse,
+  type CustomAgentProbeResponsePayloadV1,
+  type CustomAgentProbeResultV1,
+  type CustomAgentRecordV1,
   trackerSnapshotResponsePayloadV1,
   trackerWriteResponsePayloadV1,
   type DecommissionTargetResponse,
@@ -181,6 +186,7 @@ export type {
   GithubConnectOutcome,
   JiraConnectOutcome,
 } from '@loombox/protocol';
+export type { CustomAgentProbeResultV1, CustomAgentRecordV1 } from '@loombox/protocol';
 
 /**
  * The relay serves its WebSocket only on `RELAY_WS_PATH` (`/ws`), and both this
@@ -958,6 +964,28 @@ export interface CreateSessionOptions {
   title?: string;
   /** Overrides the generated session id — an escape hatch for a test asserting a fixed id; real callers should omit this and let this method generate one. */
   sessionId?: string;
+  /**
+   * D1-3's per-project custom ACP agent (`docs/superpowers/specs/
+   * 2026-08-05-zed-parity-decisions.md` §4; issue #748): a client-defined
+   * binary/args/env, sealed into the SAME private envelope as
+   * `title`/`projectPath` — never in the clear `provider` field — and
+   * opened by the owning node under the session's derived key exactly
+   * like every other piece of session-private metadata. Convention
+   * (`@loombox/protocol`'s `sessionPrivateMetaV1.customAgent` doc
+   * comment): pair this with `provider: 'custom'` so a human reading the
+   * clear routing metadata can tell a custom-agent session apart from a
+   * catalogue one — the node itself gates on this field's mere presence,
+   * never on the `provider` string.
+   *
+   * This is convenience only, never a trust decision made here: the node
+   * alone decides whether `customAgent.command` may actually run, against
+   * its own local allowlist (`@loombox/node`'s `custom-agent.ts`) — a
+   * disallowed command still seals and sends cleanly, and is refused later
+   * with a `session_status: 'error'` whose `reason` names the allowlist
+   * (`RelayClient`'s `transcriptFor`/`sessions` stores surface it exactly
+   * like any other session error).
+   */
+  customAgent?: CustomAgentRecordV1;
 }
 
 /**
@@ -1260,6 +1288,22 @@ export class RelayClient {
     {
       targetId: string;
       resolve: (payload: TargetFsListResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  /**
+   * requestId -> the pending {@link probeCustomAgent} call it belongs to
+   * (D1-3, issue #748's provider-availability-probing bullet) — the
+   * custom-agent counterpart of {@link pendingTargetFsListRequests} above,
+   * same shape and same reason: one caller, one answer, resolved directly
+   * rather than through a reactive store, keyed by `targetId` for the
+   * eventual reply's `'target'`-keyed decrypt.
+   */
+  private readonly pendingCustomAgentProbeRequests = new Map<
+    string,
+    {
+      targetId: string;
+      resolve: (result: CustomAgentProbeResultV1) => void;
       reject: (error: Error) => void;
     }
   >();
@@ -2458,6 +2502,68 @@ export class RelayClient {
   }
 
   /**
+   * D1-3's provider-availability probe for a custom agent (issue #748's
+   * "provider availability probing for a custom agent on each target, the
+   * way registered providers are probed today"): before ever attempting a
+   * session, checks whether `command` is both installed on `targetId`'s
+   * PATH (`available`) and permitted to run there at all (`allowed`, the
+   * owning node's own allowlist) — so `NewSessionDialog`'s custom-agent
+   * form can show "not installed" separately from "blocked by this node's
+   * operator" rather than a session simply failing later with one
+   * undifferentiated error. Mirrors {@link browseDirectory} exactly:
+   * `nodeId`+`targetId` routing (no session exists yet to derive a key
+   * from), sealed under the same per-target key family, one-shot promise,
+   * loud rejection on a closed connection or a timeout.
+   */
+  probeCustomAgent(
+    options: { nodeId: string; targetId: string; command: string },
+    timeoutMs = 10_000,
+  ): Promise<CustomAgentProbeResultV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot probe a custom agent, no open connection'),
+      );
+    }
+    const { nodeId, targetId, command } = options;
+    const requestId = generateId('customagentprobe');
+    const { promise, resolve, reject } = Promise.withResolvers<CustomAgentProbeResultV1>();
+    const timer = setTimeout(() => {
+      this.pendingCustomAgentProbeRequests.delete(requestId);
+      reject(new Error('RelayClient: timed out waiting for custom_agent_probe_response'));
+    }, timeoutMs);
+    this.pendingCustomAgentProbeRequests.set(requestId, {
+      targetId,
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+    const payload: CustomAgentProbeRequestPayloadV1 = { command };
+    this.envelopeCrypto
+      .seal('target', targetId, targetId, payload)
+      .then((envelope) => {
+        this.send({
+          type: 'custom_agent_probe_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId,
+          targetId,
+          requestId,
+          envelope,
+        });
+      })
+      .catch((error: unknown) => {
+        this.pendingCustomAgentProbeRequests.delete(requestId);
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    return promise;
+  }
+
+  /**
    * Reads `sessionId`'s project's saved permission policy from the owning
    * node (SPEC §7.17; issue #751) — the allow-all default for a project
    * with nothing saved yet. No envelope on the request, same reasoning as
@@ -2952,6 +3058,11 @@ export class RelayClient {
       // that its absence means "use the node's per-target default", and
       // `JSON.stringify` would drop an explicit `undefined` anyway.
       ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
+      // Same omit-rather-than-undefined discipline (D1-3, issue #748): a
+      // session with no custom agent must carry no `customAgent` key at
+      // all, not an explicit `undefined`, so an older node's schema (which
+      // predates this field) parses the envelope unchanged.
+      ...(options.customAgent === undefined ? {} : { customAgent: options.customAgent }),
     };
     const privateEnvelope = await this.envelopeCrypto.seal(
       'session',
@@ -4644,6 +4755,9 @@ export class RelayClient {
       case 'target_fs_list_response':
         this.handleTargetFsListResponse(message);
         return;
+      case 'custom_agent_probe_response':
+        this.handleCustomAgentProbeResponse(message);
+        return;
       case 'provision_progress':
         this.handleProvisionProgress(message);
         return;
@@ -5207,6 +5321,32 @@ export class RelayClient {
         message.envelope,
       )
       .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link probeCustomAgent}
+   * calls (issue #748). Mirrors {@link handleTargetFsListResponse} exactly:
+   * answers a single client's own request (the "requestId not pending
+   * means it isn't mine" guard), decrypted under the request's own
+   * per-target key. Unwraps `customAgentProbeResponsePayloadV1`'s
+   * `{ result }` envelope down to the bare {@link CustomAgentProbeResultV1}
+   * a caller actually wants.
+   */
+  private handleCustomAgentProbeResponse(message: CustomAgentProbeResponse): void {
+    const pending = this.pendingCustomAgentProbeRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingCustomAgentProbeRequests.delete(message.requestId);
+    this.envelopeCrypto
+      .open<CustomAgentProbeResponsePayloadV1>(
+        'target',
+        pending.targetId,
+        pending.targetId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload.result))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });

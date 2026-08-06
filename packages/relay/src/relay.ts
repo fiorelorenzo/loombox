@@ -276,6 +276,16 @@ export interface CreateRelayOptions {
    */
   targetFsListRequestTtlMs?: number;
   /**
+   * How long a `custom_agent_probe_request`'s per-requestId routing entry
+   * (issue #748 — see the `pendingCustomAgentProbeRequests` doc comment
+   * below) survives without a `custom_agent_probe_response`, before the
+   * relay drops it on its own to avoid leaking it forever. Defaults to
+   * {@link DEFAULT_CUSTOM_AGENT_PROBE_REQUEST_TTL_MS}; tests lower it to
+   * keep expiry-then-reuse assertions fast, exactly like
+   * `targetFsListRequestTtlMs`.
+   */
+  customAgentProbeRequestTtlMs?: number;
+  /**
    * How long an `ssh_discovery_request`'s per-requestId routing entry (#475
    * — see the `pendingSshDiscoveryRequests` doc comment below) survives
    * without an `ssh_discovery_response`, before the relay drops it on its
@@ -350,6 +360,8 @@ export const DEFAULT_MAX_LEASE_TTL_MS = 5 * 60_000;
 export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
 /** Sane default for {@link CreateRelayOptions.targetFsListRequestTtlMs} — 30s, generous for a slow `ssh:` directory listing; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#474), not normal picker latency. */
 export const DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS = 30_000;
+/** Sane default for {@link CreateRelayOptions.customAgentProbeRequestTtlMs} — 15s, generous for a `command -v` probe over `ssh:`; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (issue #748), not normal probe latency. */
+export const DEFAULT_CUSTOM_AGENT_PROBE_REQUEST_TTL_MS = 15_000;
 /** Sane default for {@link CreateRelayOptions.sshDiscoveryRequestTtlMs} — 15s, generous for `~/.ssh/config` parsing + an ssh-agent probe on the acting node; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#475), not normal discovery latency. */
 export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 /** Sane default for {@link CreateRelayOptions.decommissionTargetRequestTtlMs} — 60s, generous for the systemd stop/disable + optional file cleanup `decommissionSshTarget` runs over `ssh:`; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal decommission latency. */
@@ -446,6 +458,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const provisionRequestTtlMs = opts.provisionRequestTtlMs ?? DEFAULT_PROVISION_REQUEST_TTL_MS;
   const targetFsListRequestTtlMs =
     opts.targetFsListRequestTtlMs ?? DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS;
+  const customAgentProbeRequestTtlMs =
+    opts.customAgentProbeRequestTtlMs ?? DEFAULT_CUSTOM_AGENT_PROBE_REQUEST_TTL_MS;
   const sshDiscoveryRequestTtlMs =
     opts.sshDiscoveryRequestTtlMs ?? DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS;
   const decommissionTargetRequestTtlMs =
@@ -506,6 +520,32 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (!pending) return;
     clearTimeout(pending.timeout);
     pendingTargetFsListRequests.delete(requestId);
+  }
+
+  /**
+   * Issue #748: routes a node's `custom_agent_probe_response` back to the
+   * client whose `custom_agent_probe_request` this requestId belongs to —
+   * the same small in-memory routing table `pendingTargetFsListRequests`
+   * is, and for the same reason (there is no session, and often no
+   * project, to fan this out through — a custom agent can be probed
+   * before any session using it ever exists). Populated in the
+   * `custom_agent_probe_request` handler below, consumed in the
+   * `custom_agent_probe_response` handler, and cleaned up in exactly three
+   * places so it never leaks: the response itself, the requesting
+   * client's own disconnect (`dropConnection`), and the TTL timer set here
+   * (`customAgentProbeRequestTtlMs`). Never persisted — purely routing
+   * metadata for a request currently in flight.
+   */
+  const pendingCustomAgentProbeRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingCustomAgentProbeRequest(requestId: string): void {
+    const pending = pendingCustomAgentProbeRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingCustomAgentProbeRequests.delete(requestId);
   }
 
   /**
@@ -642,6 +682,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     for (const requestId of [...pendingTargetFsListRequests.keys()]) {
       clearPendingTargetFsListRequest(requestId);
+    }
+    for (const requestId of [...pendingCustomAgentProbeRequests.keys()]) {
+      clearPendingCustomAgentProbeRequest(requestId);
     }
     for (const requestId of [...pendingSshDiscoveryRequests.keys()]) {
       clearPendingSshDiscoveryRequest(requestId);
@@ -1507,6 +1550,22 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingTargetFsListRequest(message.requestId);
         return;
       }
+      case 'custom_agent_probe_response': {
+        // Issue #748: a single-shot reply, delivered directly to the
+        // requesting client and then retired — same shape as
+        // `target_fs_list_response` above, via `pendingCustomAgentProbeRequests`.
+        const pending = pendingCustomAgentProbeRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: custom_agent_probe_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingCustomAgentProbeRequest(message.requestId);
+        return;
+      }
       case 'ssh_discovery_response': {
         // #475's add-target wizard: a single-shot reply, delivered directly
         // to the requesting client and then retired — via the same
@@ -1869,6 +1928,33 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         sendDirect(nodeConnection, message);
         return;
       }
+      case 'custom_agent_probe_request': {
+        // Issue #748: routed directly by `nodeId`, exactly like
+        // `target_fs_list_request` above — there is no session (and often
+        // no project) yet to resolve the owning node through.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: custom_agent_probe_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingCustomAgentProbeRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: custom_agent_probe_request routing entry expired before a response arrived',
+          );
+          pendingCustomAgentProbeRequests.delete(message.requestId);
+        }, customAgentProbeRequestTtlMs);
+        pendingCustomAgentProbeRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
       case 'ssh_discovery_request': {
         // #475's add-target wizard candidate picker: routed directly by
         // `nodeId`, scoped to the requester's account, exactly like
@@ -2192,6 +2278,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // target_fs_list_response.
       for (const [requestId, pending] of pendingTargetFsListRequests) {
         if (pending.clientConnection === connection) clearPendingTargetFsListRequest(requestId);
+      }
+      // Issue #748: same reasoning as the cleanup above — a disconnected
+      // client can never receive a still-pending custom_agent_probe_response.
+      for (const [requestId, pending] of pendingCustomAgentProbeRequests) {
+        if (pending.clientConnection === connection) {
+          clearPendingCustomAgentProbeRequest(requestId);
+        }
       }
       // #475: same reasoning as the two cleanups above — a disconnected
       // client can never receive a still-pending ssh_discovery_response.
