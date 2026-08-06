@@ -126,10 +126,23 @@ export { ProviderRegistry, RESERVED_PROVIDER_IDS } from './provider-registry';
 export type { AcpProviderModule } from './provider-registry';
 
 // v1: image hand-off content blocks + shared magic-byte sniffing (SPEC.md
-// §7.25; issues #157/#159).
-export { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
-export type { SniffedImageMimeType } from './image';
-export type { AcpImageContentBlock, AcpResourceLinkContentBlock } from './types';
+// §7.25; issues #157/#158/#159).
+export {
+  buildInlineImageContentBlock,
+  IMAGE_EXTENSION_BY_MIME_TYPE,
+  MAX_INLINE_IMAGE_BYTES,
+  sniffImageMimeType,
+} from './image';
+export type {
+  InlineImageHandoffFailureReason,
+  InlineImageHandoffResult,
+  SniffedImageMimeType,
+} from './image';
+export type {
+  AcpImageContentBlock,
+  AcpPromptContentBlock,
+  AcpResourceLinkContentBlock,
+} from './types';
 
 // v1: configured MCP servers fed into `session/new` (SPEC.md §7.7; issue
 // #190).

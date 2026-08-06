@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
+import { buildInlineImageContentBlock, IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
 
 function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values);
@@ -58,5 +58,66 @@ describe('IMAGE_EXTENSION_BY_MIME_TYPE', () => {
     expect(IMAGE_EXTENSION_BY_MIME_TYPE['image/jpeg']).toBe('jpg');
     expect(IMAGE_EXTENSION_BY_MIME_TYPE['image/gif']).toBe('gif');
     expect(IMAGE_EXTENSION_BY_MIME_TYPE['image/webp']).toBe('webp');
+  });
+});
+
+describe('buildInlineImageContentBlock (SPEC.md §7.25; issue #158)', () => {
+  const PNG_BYTES = bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xaa, 0xbb);
+
+  it('declines when the session has not negotiated the image capability', () => {
+    const result = buildInlineImageContentBlock(PNG_BYTES, { imageCapabilityNegotiated: false });
+    expect(result).toEqual({ ok: false, reason: 'capability-not-negotiated' });
+  });
+
+  it('builds an inline base64 image block when the capability is negotiated', () => {
+    const result = buildInlineImageContentBlock(PNG_BYTES, { imageCapabilityNegotiated: true });
+    expect(result).toEqual({
+      ok: true,
+      block: {
+        type: 'image',
+        data: Buffer.from(PNG_BYTES).toString('base64'),
+        mimeType: 'image/png',
+      },
+    });
+  });
+
+  it('re-sniffs the bytes rather than trusting a declared mime type', () => {
+    // These bytes are genuinely JPEG; the caller has no way to pass a
+    // "declared" mimeType at all — the function only ever emits the sniffed
+    // one.
+    const jpegBytes = bytes(0xff, 0xd8, 0xff, 0xe0);
+    const result = buildInlineImageContentBlock(jpegBytes, { imageCapabilityNegotiated: true });
+    expect(result).toEqual({ ok: true, block: expect.objectContaining({ mimeType: 'image/jpeg' }) });
+  });
+
+  it('declines with "unsupported-format" for bytes that do not sniff as a supported image', () => {
+    const notAnImage = bytes(0x00, 0x01, 0x02, 0x03);
+    const result = buildInlineImageContentBlock(notAnImage, { imageCapabilityNegotiated: true });
+    expect(result).toEqual({ ok: false, reason: 'unsupported-format' });
+  });
+
+  it('declines with "oversize" for a payload over the default 10 MB cap, even when the capability is negotiated and the format is valid', () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const result = buildInlineImageContentBlock(oversized, { imageCapabilityNegotiated: true });
+    expect(result).toEqual({ ok: false, reason: 'oversize' });
+  });
+
+  it('accepts a payload right at the cap, and honors a caller-supplied maxBytes override', () => {
+    const atCap = new Uint8Array(16);
+    atCap.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(
+      buildInlineImageContentBlock(atCap, { imageCapabilityNegotiated: true, maxBytes: 16 }).ok,
+    ).toBe(true);
+    expect(
+      buildInlineImageContentBlock(atCap, { imageCapabilityNegotiated: true, maxBytes: 15 }),
+    ).toEqual({ ok: false, reason: 'oversize' });
+  });
+
+  it('checks capability before size: an oversized image with no negotiated capability still reports the capability reason', () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const result = buildInlineImageContentBlock(oversized, { imageCapabilityNegotiated: false });
+    expect(result).toEqual({ ok: false, reason: 'capability-not-negotiated' });
   });
 });

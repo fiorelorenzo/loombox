@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, posix } from 'node:path';
 
 import {
+  buildInlineImageContentBlock,
   McpServerSecretMissingError,
   fetchMcpPromptText,
   fetchMcpServerPrompts,
@@ -13,6 +14,7 @@ import {
   type AcpMcpServerConfig,
   type AcpPermissionOption,
   type AcpProvider,
+  type AcpPromptContentBlock,
   type AcpSessionWireEvent,
   type AcpToolCallUpdate,
   type AcpToolKind,
@@ -20,6 +22,7 @@ import {
   type AcpTurnEnd,
   type AvailableCommandsChangeEvent,
   type ConfigOptionChangeEvent,
+  type InlineImageHandoffFailureReason,
   type McpServerConfig,
   type McpServerPromptsResult,
   type ProjectEnvVarDecl,
@@ -997,11 +1000,12 @@ async function deriveTargetKey(
  * Emitted once per attachment after {@link NodeDaemon.resolveAttachment}
  * fetches and decrypts it while handling an inbound `prompt_inject` (SPEC
  * §7.25 "Deliver to the executing host"; issue #156) — the plaintext bytes
- * made available on this host. Handing these to the agent as an ACP content
- * block ("Hand off to the agent", the next SPEC §7.25 bullet) is a separate,
- * provider-adapted concern out of this issue's scope: `AgentSession.prompt()`
- * is text-only in v1. This event is this wave's observable seam for that
- * future wiring (and for tests) rather than a silent no-op.
+ * made available on this host, before {@link NodeDaemon.deliverPrompt}
+ * hands them to `buildInlineImageContentBlock` (SPEC §7.25 "Hand off to the
+ * agent"; issue #158) for this turn's actual ACP content block. This event
+ * fires regardless of whether the inline hand-off succeeds — see
+ * {@link AttachmentHandoffDeclined} for the companion event when it
+ * doesn't.
  */
 export interface ResolvedAttachment {
   sessionId: string;
@@ -1009,6 +1013,28 @@ export interface ResolvedAttachment {
   mimeType: string;
   name: string | undefined;
   bytes: Uint8Array;
+}
+
+/**
+ * Emitted from {@link NodeDaemon.deliverPrompt} when a resolved
+ * attachment's bytes did NOT become an inline ACP image block for this
+ * turn (SPEC §7.25 "Hand off to the agent"; issue #158) —
+ * `buildInlineImageContentBlock`'s own `InlineImageHandoffFailureReason`
+ * (`@loombox/providers-core`), verbatim: `'capability-not-negotiated'` for
+ * a session whose agent never advertised the `image` prompt capability (the
+ * common, expected case for a provider without it — not itself an error),
+ * `'oversize'` for a payload over the inline cap, or `'unsupported-format'`
+ * for bytes that don't re-sniff as one of the four allowed image formats.
+ * Never blocks the turn: the prompt still reaches the agent as text (plus
+ * whatever other attachments DID build a block), and this attachment's
+ * `blob_ref` file event already went out to every other subscribed client
+ * regardless — only the live agent doesn't receive these particular bytes
+ * inline this turn.
+ */
+export interface AttachmentHandoffDeclined {
+  sessionId: string;
+  ref: string;
+  reason: InlineImageHandoffFailureReason;
 }
 
 interface SessionBridge {
@@ -4652,12 +4678,29 @@ export class NodeDaemon extends EventEmitter {
    * side channel. `sendFileEvent` is on its own wire message type, never
    * `bridge.sendQueue`/`session_update` — see that method's doc comment.
    *
+   * "Hand off to the agent" (SPEC §7.25; issue #158): each resolved
+   * attachment is also run through `buildInlineImageContentBlock`
+   * (`@loombox/providers-core`), gated on this session's own negotiated
+   * `image` prompt capability (`agentSession.getFeatureFlags()
+   * .supportsImages` — the same capability-gated flag every other v1
+   * feature branches on, SPEC.md §5.5, never a provider-id check: Claude's
+   * and Codex's real ACP bridges build the identical inline base64 block,
+   * so there is nothing to special-case here). A successful build appends
+   * an ACP `ContentBlock::Image` to this turn's prompt, verbatim, after the
+   * text block; a declined one (no negotiated capability, an oversize
+   * payload, or bytes that don't re-sniff as a supported format) emits
+   * `'attachment_handoff_declined'` for observability and otherwise leaves
+   * this turn exactly as before this issue — the attachment's `blob_ref`
+   * metadata still went out above regardless, so every other subscribed
+   * client still sees it attached; only the live agent doesn't receive the
+   * bytes inline for this turn. Never throws: a declined hand-off degrades
+   * the turn, it does not fail it.
+   *
    * `payload.mentions` (issue #742's `@`-mention pills) needs no resolution
    * step of its own — each entry already IS the resolved reference (an ACP
    * `resource_link`'s `uri`/`name`, folded onto the wire's plaintext by the
    * client, never re-derived here) — `renderPromptTextWithMentions` just
-   * folds it into the text `agentSession.prompt()` takes, see that
-   * function's own doc comment for why text is still the only channel.
+   * folds it into the text `agentSession.prompt()` takes.
    */
   private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
     // Checkpoint first, before anything else this turn does (including
@@ -4669,7 +4712,15 @@ export class NodeDaemon extends EventEmitter {
     // this same worktree's `.git`) is still in flight — awaiting it here,
     // synchronously ahead of everything else, is what makes that true.
     await this.autoCheckpointBeforeTurn(bridge);
-    for (const attachment of payload.attachments ?? []) {
+    const attachments = payload.attachments ?? [];
+    // Read once, lazily: only an attachment-bearing prompt needs this
+    // session's negotiated capabilities, so a plain-text prompt on a
+    // replay-only bridge (were one ever routed here) never trips
+    // `getFeatureFlags()`'s live-session guard for no reason.
+    const imageCapabilityNegotiated =
+      attachments.length > 0 && bridge.agentSession.getFeatureFlags().supportsImages;
+    const contentBlocks: AcpPromptContentBlock[] = [];
+    for (const attachment of attachments) {
       const bytes = await this.supervisor.resolveAttachment(bridge.session.id, attachment.ref);
       const resolved: ResolvedAttachment = {
         sessionId: bridge.session.id,
@@ -4686,9 +4737,24 @@ export class NodeDaemon extends EventEmitter {
         dimensions: attachment.dimensions,
         thumbhash: attachment.thumbhash,
       });
+
+      const handoff = buildInlineImageContentBlock(bytes, { imageCapabilityNegotiated });
+      if (handoff.ok) {
+        contentBlocks.push(handoff.block);
+      } else {
+        const declined: AttachmentHandoffDeclined = {
+          sessionId: bridge.session.id,
+          ref: attachment.ref,
+          reason: handoff.reason,
+        };
+        this.emit('attachment_handoff_declined', declined);
+      }
     }
     this.beginTurn(bridge);
-    await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
+    await bridge.agentSession.prompt(
+      renderPromptTextWithMentions(payload.text, payload.mentions),
+      contentBlocks,
+    );
   }
 
   /**
