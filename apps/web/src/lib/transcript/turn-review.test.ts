@@ -20,6 +20,10 @@ function editCall(
     rawInput: undefined,
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
   };
 }
 
@@ -35,6 +39,10 @@ function readCall(id: string, turnId: string | undefined): TranscriptToolCallIte
     rawInput: undefined,
     content: undefined,
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
   };
 }
 
