@@ -18,6 +18,7 @@
   } from '@loombox/providers-core/browser';
   import type { SessionStatusV1 } from '@loombox/protocol';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
+  import { transcriptTail } from '$lib/transcript-tail';
   import {
     RelayClient,
     bootstrapAmkFromRecoveryCode,
@@ -102,6 +103,7 @@
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
   import BrandLockup from '$lib/components/BrandLockup.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
+  import CanvasZeroState from '$lib/components/CanvasZeroState.svelte';
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import FileReferencePicker from '$lib/components/FileReferencePicker.svelte';
@@ -2204,6 +2206,75 @@
   }
 
   /**
+   * B4-2 (Zed-parity, issue #739): the canvas zero state's "recent
+   * sessions" panel. Reuses this exact `sessions` array plus the sidebar's
+   * own `projectDisplayName`/`sessionTargetLabel`/`formatSessionActivity`
+   * helpers above — no new subscription or data source, matching the
+   * decision's own text ("reuse the sidebar's own derivation"). Newest
+   * first by `createdAt`, capped: this is a hint block, not the sidebar's
+   * own exhaustive, filterable list.
+   */
+  const CANVAS_ZERO_STATE_RECENT_SESSIONS_LIMIT = 5;
+  const recentSessions = $derived(
+    [...sessions]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, CANVAS_ZERO_STATE_RECENT_SESSIONS_LIMIT)
+      .map((session) => ({
+        id: session.id,
+        title: session.title,
+        projectLabel: projectDisplayName(session),
+        targetLabel: sessionTargetLabel(session),
+        activityLabel: formatSessionActivity(session.createdAt),
+      })),
+  );
+
+  /**
+   * B4-2 (issue #739): the canvas zero state's own tiny transcript
+   * subscription for its "last transcript" panel — deliberately separate
+   * from `transcript`/`unsubscribeTranscript` above (which only ever
+   * tracks the SELECTED session), so this preview's own lifecycle never
+   * fights `selectSession`'s teardown/setup timing. Active only while the
+   * zero state itself is showing (`mainView === 'session' &&
+   * !selectedSessionId`) and there is a most-recent session to preview;
+   * torn down the instant either stops being true, including the moment a
+   * session gets selected.
+   */
+  let zeroStateTailTranscript = $state<TranscriptState | undefined>(undefined);
+  let unsubscribeZeroStateTail: (() => void) | undefined;
+  const zeroStateLastSession = $derived(
+    mainView === 'session' && !selectedSessionId ? recentSessions[0] : undefined,
+  );
+  $effect(() => {
+    const session = zeroStateLastSession;
+    unsubscribeZeroStateTail?.();
+    unsubscribeZeroStateTail = undefined;
+    zeroStateTailTranscript = undefined;
+    if (!session || !client) return;
+    unsubscribeZeroStateTail = client.transcriptFor(session.id).subscribe((value) => {
+      zeroStateTailTranscript = value;
+    });
+  });
+
+  /**
+   * `CanvasZeroState`'s `lastTranscript` prop: `undefined` when there is no
+   * session anywhere to preview (an account/project with zero sessions,
+   * B4-2's first honest empty case) — distinct from a real session whose
+   * tail is `[]` because it genuinely has zero turns yet (the second).
+   * `TRANSCRIPT_TAIL_LIMIT` mirrors `TranscriptTimeline`'s own reasoning
+   * for a short, readable slice — this is a hint block, not a reader.
+   */
+  const TRANSCRIPT_TAIL_LIMIT = 3;
+  const zeroStateTranscriptPreview = $derived(
+    zeroStateLastSession
+      ? {
+          sessionId: zeroStateLastSession.id,
+          sessionTitle: zeroStateLastSession.title,
+          items: transcriptTail(zeroStateTailTranscript?.items ?? [], TRANSCRIPT_TAIL_LIMIT),
+        }
+      : undefined,
+  );
+
+  /**
    * The sessions the sidebar actually lists (design spec v4 §3.2's filter
    * row, extending v3's §3.1). Matched over title + target + the session's
    * own registered PROJECT NAME (not the raw path, since a renamed project
@@ -3715,16 +3786,16 @@
           {:else if !selectedSessionId}
             <!-- Design spec v4 §3.3: the primary "New session" CTA now
                  lives here instead of the sidebar's old split button,
-                 always the one action that unblocks the next step. -->
-            <EmptyState
-              message={emptyStateCta === 'connect-node'
-                ? 'Connect a node to run agents on your machines.'
-                : emptyStateCta === 'add-project'
-                  ? 'Add a project to start a session in it.'
-                  : 'Pick a session on the left to follow its live transcript, or start a new one.'}
-            >
-              {#snippet cta()}
-                {#if emptyStateCta === 'connect-node'}
+                 always the one action that unblocks the next step.
+                 Zed-parity B4-2 (issue #739): once a project AND a target
+                 both exist (`emptyStateCta === 'new-session'`), this void
+                 is `CanvasZeroState` instead of the bare `EmptyState` the
+                 other two prerequisite gaps still use — "connect a node"
+                 and "add a project" have no session/transcript history to
+                 show yet by definition, so they keep the plain primitive. -->
+            {#if emptyStateCta === 'connect-node'}
+              <EmptyState message="Connect a node to run agents on your machines.">
+                {#snippet cta()}
                   <Button
                     variant="primary"
                     onclick={openAddTargetWizard}
@@ -3732,7 +3803,11 @@
                   >
                     Connect a node
                   </Button>
-                {:else if emptyStateCta === 'add-project'}
+                {/snippet}
+              </EmptyState>
+            {:else if emptyStateCta === 'add-project'}
+              <EmptyState message="Add a project to start a session in it.">
+                {#snippet cta()}
                   <Button
                     variant="primary"
                     onclick={openAddProjectDialog}
@@ -3740,7 +3815,15 @@
                   >
                     Add project
                   </Button>
-                {:else}
+                {/snippet}
+              </EmptyState>
+            {:else}
+              <CanvasZeroState
+                {recentSessions}
+                lastTranscript={zeroStateTranscriptPreview}
+                onSelectSession={selectSession}
+              >
+                {#snippet cta()}
                   {@const defaultProject = projects[0]}
                   {#if defaultProject}
                     <Button
@@ -3751,9 +3834,9 @@
                       New session
                     </Button>
                   {/if}
-                {/if}
-              {/snippet}
-            </EmptyState>
+                {/snippet}
+              </CanvasZeroState>
+            {/if}
           {:else}
             {#if forkError}
               <p class="fork-error" role="alert" data-testid="fork-error">

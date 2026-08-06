@@ -19,6 +19,7 @@ import type { SessionStatusV1 } from '@loombox/protocol';
 import { APP_NAME } from '$lib/constants';
 import { exportTranscriptText } from '$lib/copy';
 import { createLocalStorageAmkStorage } from '$lib/amk-store';
+import { PROJECTS_STORAGE_KEY, type Project } from '$lib/projects';
 import {
   createLocalStorageConfigOptionDefaultsStorage,
   rememberConfigOptionValues,
@@ -654,6 +655,102 @@ describe('cockpit shell (design spec v4, issue #507)', () => {
 
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     expect(toggle.getAttribute('aria-label')).toBe('Collapse sidebar');
+  });
+});
+
+// ---------------------------------------------------------------------
+// The canvas zero state (Zed-parity B4-2, issue #739): recent sessions,
+// the last transcript's tail, and the registry's own bound shortcuts,
+// filling the void `+page.svelte` used to render as a bare `EmptyState`
+// for "no session selected". `CanvasZeroState.test.ts` covers the two
+// honest empty cases and the registry-sourced bindings exhaustively in
+// isolation; these cover the real wiring: what `+page.svelte` actually
+// feeds it, and that it steps out of the way once a session is open.
+// ---------------------------------------------------------------------
+
+describe('canvas zero state (Zed-parity B4-2, issue #739)', () => {
+  const LOCAL_TARGET: TargetListEntry = {
+    nodeId: 'node_1',
+    targetId: 'local',
+    label: 'This machine',
+    kind: 'local',
+    reachable: true,
+    providers: ['claude'],
+  };
+
+  /** `ProjectStore` is its own persisted registry, independent of `sessions` (`AddProjectDialog`'s `.add()`, not just `.adoptFromSessions()`) — this is what makes "a project exists, zero sessions in it yet" a real, reachable state rather than a contradiction. */
+  function seedProject(overrides: Partial<Project> = {}): void {
+    const project: Project = {
+      id: 'proj_1',
+      name: 'loombox',
+      nodeId: 'node_1',
+      targetId: 'local',
+      path: '/home/dev/loombox',
+      createdAt: Date.now(),
+      ...overrides,
+    };
+    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([project]));
+  }
+
+  it('a brand-new project with zero sessions renders the canvas zero state with honest "nothing yet" panels, not a blank region', async () => {
+    seedProject();
+    mountCockpit({ sessions: [], targets: [LOCAL_TARGET] });
+
+    const zeroState = await screen.findByTestId('canvas-zero-state');
+    expect(within(zeroState).getByTestId('canvas-zero-state-recent-empty').textContent).toMatch(
+      /nothing recent yet/i,
+    );
+    expect(within(zeroState).queryByTestId('canvas-zero-state-recent-item')).toBeNull();
+    expect(within(zeroState).getByTestId('canvas-zero-state-tail-empty').textContent).toMatch(
+      /no sessions yet/i,
+    );
+    // The primary "New session" CTA still unblocks the next step (design
+    // spec v4 §3.3) — B4-2 fills the void around it, it doesn't replace it.
+    expect(within(zeroState).getByTestId('empty-state-new-session')).toBeTruthy();
+  });
+
+  it("lists the action registry's own bound shortcuts (issue #758), not a hardcoded second list", async () => {
+    seedProject();
+    mountCockpit({ sessions: [], targets: [LOCAL_TARGET] });
+
+    const zeroState = await screen.findByTestId('canvas-zero-state');
+    const bindingRows = within(zeroState).getAllByTestId('canvas-zero-state-binding');
+    expect(
+      bindingRows.some(
+        (row) =>
+          row.textContent?.includes('Mod+B') &&
+          row.textContent?.includes('Toggle sessions sidebar'),
+      ),
+    ).toBe(true);
+    // 'open-inbox' is a real registered action with no shortcut — it must
+    // never show up in this shortcut-only panel.
+    expect(bindingRows.some((row) => row.textContent?.includes('Open attention inbox'))).toBe(
+      false,
+    );
+  });
+
+  it('does not appear once a session is selected and has content — the sole session is auto-selected on load', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Refactor relay routing' })],
+      transcripts: {
+        sess_1: {
+          ...createTranscriptState(),
+          items: [
+            {
+              type: 'message',
+              id: 'm1',
+              kind: 'agent_message_chunk',
+              turnId: 'turn_1',
+              messageId: 'm1',
+              text: 'Done, the retry loop is fixed.',
+            },
+          ],
+        },
+      },
+    });
+
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.queryByTestId('canvas-zero-state')).toBeNull();
   });
 });
 
