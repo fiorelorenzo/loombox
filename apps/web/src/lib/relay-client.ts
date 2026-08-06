@@ -161,6 +161,9 @@ import {
   type TrackerWriteRequestPayloadV1,
   type TrackerWriteResponse,
   type TrackerWriteResponsePayloadV1,
+  type SpendReportRowV1,
+  type SpendReportResponse,
+  spendReportResponsePayloadV1,
   type TestRunnerKindV1,
   type PrOpenOutcome,
   type PrOpenPreviewOutcome,
@@ -441,6 +444,29 @@ export interface TrackerSnapshotState {
   error?: string;
   /** Set only when `error` came from a `resolveTrackerBackend` resolution failure (SPEC §7.10, issue #631) — never for a native-mode store failure, a decrypt/timeout failure, or a stale connection, none of which has a `TrackerMode` resolution to describe. `TrackerPage.svelte` switches on `errorReason.kind` for the cases it renders specially, falling back to the plain `error` message otherwise. */
   errorReason?: TrackerBackendResolutionErrorV1;
+}
+
+/**
+ * One project's spend-over-time read model (SPEC §7.9; issue #249), keyed
+ * by `projectPath` in {@link RelayClient.spendReportFor}'s returned store —
+ * same project-scoped shape as {@link TrackerSnapshotState} and for the
+ * identical reason (a project's spend ledger outlives any one session that
+ * added to it, reachable with none running at all). `rows` is exactly what
+ * `spend_report_response` carried, never re-derived or summed here — every
+ * caller (the spend view) reduces it through `@loombox/shared`'s
+ * `aggregateSpendLedgerRows`, the identical function `@loombox/node` itself
+ * filters `SpendLedgerStore` rows through before sealing the reply, so the
+ * client never runs a second, independently-written grouping. An empty
+ * `rows` array on `'loaded'` is a legitimate "nothing recorded in this
+ * period" answer, not a loading/error state — the view is the one that
+ * turns that into an honest "no data" reading (never a fabricated $0.00),
+ * per this file's own live-meter convention (`StatusBar.svelte`'s doc
+ * comment).
+ */
+export interface SpendReportState {
+  status: 'loading' | 'loaded' | 'error';
+  rows: SpendReportRowV1[];
+  error?: string;
 }
 
 /**
@@ -1390,6 +1416,12 @@ export class RelayClient {
   private readonly trackerSnapshotsRequested = new Set<string>();
   /** requestId -> the project an in-flight `tracker_snapshot_request` this client itself sent is about (issue #212, #697). `tracker_snapshot_response` is routed directly back to the requesting client alone (SPEC §7.10, issue #697 — `nodeId` addresses exactly one node and the relay answers exactly the requester, unlike the old session-fanned `fs_list_response`), so this map exists to decrypt under the right project key and to guard against a stray/duplicate reply arriving after this client's own timeout already cleaned the entry up — the same guard `pendingTargetFsListRequests` documents. */
   private readonly pendingTrackerSnapshotRequests = new Map<string, { projectPath: string }>();
+  /** Backs {@link spendReportFor} (SPEC §7.9; issue #249) — one reactive `SpendReportState` per project (`projectPath`), mirroring {@link trackerSnapshots} exactly (same project-not-session addressing, same reason). */
+  private readonly spendReports = new Map<string, Writable<SpendReportState>>();
+  /** Projects {@link spendReportFor} has already sent an initial `spend_report_request` for — mirrors {@link trackerSnapshotsRequested}'s own lazy-load-once check. */
+  private readonly spendReportsRequested = new Set<string>();
+  /** requestId -> the project an in-flight `spend_report_request` this client itself sent is about — mirrors {@link pendingTrackerSnapshotRequests} (decrypts under the right project key, ignores a stray/duplicate reply after this client's own reload already replaced the pending entry). */
+  private readonly pendingSpendReportRequests = new Map<string, { projectPath: string }>();
   /** requestId -> the pending {@link createTrackerRecord}/{@link updateTrackerRecord}/{@link defineTrackerType} call it belongs to (issue #212, #697) — resolves a `Promise` directly, exactly like `pendingTargetFsListRequests`, carrying `projectPath` for the same reason (decrypting the response under the right project key). */
   private readonly pendingTrackerWriteRequests = new Map<
     string,
@@ -4393,6 +4425,37 @@ export class RelayClient {
   }
 
   /**
+   * A project's spend-over-time history (SPEC §7.9; issue #249), reactive —
+   * the spend view's own read model. Addressed by `nodeId` + `projectPath`,
+   * not a session, mirroring {@link trackerSnapshotFor} exactly (see that
+   * method's own doc comment for why). Lazily sends one unbounded
+   * `spend_report_request` the first time this is called for a project;
+   * call again freely, it never re-requests on its own — use
+   * {@link reloadSpendReport} to change the requested date range or to
+   * retry after an `'error'`.
+   */
+  spendReportFor(nodeId: string, projectPath: string): Readable<SpendReportState> {
+    const store = this.spendReportStoreFor(projectPath);
+    if (!this.spendReportsRequested.has(projectPath)) {
+      this.reloadSpendReport(nodeId, projectPath);
+    }
+    return store;
+  }
+
+  /**
+   * Re-fetches a project's spend report from scratch, optionally bounded to
+   * `[sinceDate, untilDate]` (either/both omitted = unbounded on that side,
+   * matching `spend_report_request`'s own wire contract) — the period
+   * selector's own action, and the general-purpose manual reload/Retry
+   * {@link spendReportFor}'s doc comment points to.
+   */
+  reloadSpendReport(nodeId: string, projectPath: string, filter: { sinceDate?: string; untilDate?: string } = {}): void {
+    this.spendReportsRequested.add(projectPath);
+    this.spendReportStoreFor(projectPath).update((state) => ({ ...state, status: 'loading' }));
+    this.sendSpendReportRequest(nodeId, projectPath, filter.sinceDate, filter.untilDate);
+  }
+
+  /**
    * Creates a native tracker record against `projectPath` on `nodeId`
    * (SPEC §7.10; issue #212, #697) — the create dialog's submit action,
    * going through the real `NativeTrackerStore` on the node exactly like
@@ -5555,6 +5618,9 @@ export class RelayClient {
       case 'tracker_write_response':
         this.handleTrackerWriteResponse(message);
         return;
+      case 'spend_report_response':
+        this.handleSpendReportResponse(message);
+        return;
       case 'mcp_prompt_get_response':
         this.handleMcpPromptGetResponse(message);
         return;
@@ -6035,6 +6101,36 @@ export class RelayClient {
       })
       .catch((error: unknown) => {
         this.setTrackerSnapshotError(pending.projectPath, errorMessage(error));
+      });
+  }
+
+  /**
+   * The addressed node's reply to one of this client's own
+   * `spend_report_request`s (SPEC §7.9; issue #249). Routed directly back to
+   * this client alone, same addressing `handleTrackerSnapshotResponse`
+   * documents — `pending` guards against a stray/duplicate reply the same
+   * way. The decrypted payload is validated against
+   * `spendReportResponsePayloadV1` (issue #593's decrypt-boundary
+   * convention), not a bare generic cast. Always a `'loaded'` outcome —
+   * unlike `tracker_snapshot_response`, `spend_report_response` has no error
+   * union of its own (the node always answers, `rows: []` included; see
+   * `spend-report.ts`'s own doc comment) — a rejected/failed decrypt still
+   * lands in `'error'` through the `.catch` below, same as a lost
+   * connection or timeout would.
+   */
+  private handleSpendReportResponse(message: SpendReportResponse): void {
+    const pending = this.pendingSpendReportRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSpendReportRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('project', pending.projectPath, pending.projectPath, message.envelope)
+      .then((raw) => spendReportResponsePayloadV1.parse(raw))
+      .then((payload) => {
+        this.spendReportStoreFor(pending.projectPath).set({ status: 'loaded', rows: payload.rows });
+      })
+      .catch((error: unknown) => {
+        this.setSpendReportError(pending.projectPath, errorMessage(error));
       });
   }
 
@@ -6556,6 +6652,26 @@ export class RelayClient {
     });
   }
 
+  /** Sends the `spend_report_request` (SPEC §7.9; issue #249), tracking it in {@link pendingSpendReportRequests} so the eventual `spend_report_response` decrypts under the right project key and a stray late reply is ignored. No envelope on this side — `spend-report.ts`'s own doc comment: a date range is a query parameter, not project content, exactly like `spend_cap_get`'s own reasoning. */
+  private sendSpendReportRequest(
+    nodeId: string,
+    projectPath: string,
+    sinceDate?: string,
+    untilDate?: string,
+  ): void {
+    const requestId = generateId('spendreport');
+    this.pendingSpendReportRequests.set(requestId, { projectPath });
+    this.send({
+      type: 'spend_report_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      projectPath,
+      requestId,
+      sinceDate,
+      untilDate,
+    });
+  }
+
   /**
    * Seals `payload` under `projectPath`'s project key and sends the
    * `tracker_write_request` (SPEC §7.10; issue #212, #697), resolving once
@@ -6900,6 +7016,20 @@ export class RelayClient {
       this.trackerSnapshots.set(projectPath, store);
     }
     return store;
+  }
+
+  private spendReportStoreFor(projectPath: string): Writable<SpendReportState> {
+    let store = this.spendReports.get(projectPath);
+    if (!store) {
+      store = writable<SpendReportState>({ status: 'loading', rows: [] });
+      this.spendReports.set(projectPath, store);
+    }
+    return store;
+  }
+
+  /** Sets a project's spend report store to `'error'`, same shape as {@link setTrackerSnapshotError} (no `reason` union to carry — `spend_report_response` has none). */
+  private setSpendReportError(projectPath: string, message: string): void {
+    this.spendReportStoreFor(projectPath).update((state) => ({ ...state, status: 'error', error: message }));
   }
 
   /** `reason` mirrors `trackerSnapshotErrorV1`'s own optional `reason` (SPEC §7.10, issue #631) — set only for a `resolveTrackerBackend` resolution failure. Every field here is assigned explicitly (never spread from a possibly-stale prior value), so an error with no `reason` of its own (a decrypt failure, a timeout, a corrupt native store) correctly clears any `errorReason` a PRIOR error on this same project might have left behind. */

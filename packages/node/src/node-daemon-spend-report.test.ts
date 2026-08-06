@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import type { webcrypto } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -20,8 +19,6 @@ import { decryptEnvelope, deriveProjectKey, generateAmk } from '@loombox/crypto'
 
 import { createNode, type NodeDaemon } from './node-daemon';
 import { SpendLedgerStore } from './spend-ledger-store';
-
-type CryptoKey = webcrypto.CryptoKey;
 
 const execFileAsync = promisify(execFile);
 

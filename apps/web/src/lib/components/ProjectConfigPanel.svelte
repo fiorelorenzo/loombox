@@ -65,15 +65,18 @@
   } from './PermissionPolicyPanel.svelte';
   import PluginConfigPanel from './PluginConfigPanel.svelte';
   import ProjectSecretsPanel from './ProjectSecretsPanel.svelte';
+  import SpendReportPanel, { type SpendReportClient } from './SpendReportPanel.svelte';
   import TestRunnerConfigPanel, {
     type TestRunnerConfigClient,
   } from './TestRunnerConfigPanel.svelte';
 
-  type ProjectConfigRelayClient = TestRunnerConfigClient & PermissionPolicyClient;
+  type ProjectConfigRelayClient = TestRunnerConfigClient & PermissionPolicyClient & SpendReportClient;
 
   interface Props {
     projectPath: string;
     sessionId?: string;
+    /** The project's owning node (SPEC §7.9; issue #249) — forwarded straight through to `SpendReportPanel`, which is node+project addressed rather than session-addressed (see that panel's own doc comment). `undefined` only for the one render frame before a session's `nodeId` is known, mirroring `sessionId`'s own optionality just above. */
+    nodeId?: string;
     mcpStorage?: McpServerConfigStorage;
     pluginStorage?: PluginConfigStorage;
     projectEnvStorage?: ProjectEnvDeclStorage;
@@ -96,6 +99,7 @@
   const {
     projectPath,
     sessionId,
+    nodeId,
     mcpStorage,
     pluginStorage,
     projectEnvStorage,
@@ -135,6 +139,10 @@
   <section class="project-config-section">
     <h3>Permission policy</h3>
     <PermissionPolicyPanel {projectPath} {sessionId} client={relayClient} />
+  </section>
+  <section class="project-config-section">
+    <h3>Spend over time</h3>
+    <SpendReportPanel {projectPath} {nodeId} client={relayClient} />
   </section>
 </div>
 
