@@ -310,4 +310,27 @@ export const migrations: readonly Migration[] = [
     `,
     down: `DROP TABLE IF EXISTS connected_accounts;`,
   },
+  {
+    // Zed-parity F3-3, issue #760: the user-editable keymap, one opaque
+    // envelope per account — same single-row-per-account shape as
+    // `amk_escrow` (`0006_amk_escrow`), reusing the envelope column
+    // convention `amk_rotation_pending` (`0007_amk_rotation`) already
+    // established (`envelope_resource_id`/`envelope_iv`/
+    // `envelope_ciphertext`/`envelope_alg`) rather than inventing a new
+    // one. No node, no session, no project column at all: a keymap is a
+    // pure account/UI concern the relay stores blind ciphertext for,
+    // exactly like every other content family.
+    id: '0012_keymaps',
+    up: `
+      CREATE TABLE keymaps (
+        account_id TEXT PRIMARY KEY,
+        envelope_resource_id TEXT NOT NULL,
+        envelope_iv TEXT NOT NULL,
+        envelope_ciphertext TEXT NOT NULL,
+        envelope_alg TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `,
+    down: `DROP TABLE IF EXISTS keymaps;`,
+  },
 ];

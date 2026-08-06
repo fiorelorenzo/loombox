@@ -17,6 +17,7 @@ import {
   type DeviceTokenRecord,
   type DeviceTokenStore,
   type EscrowStore,
+  type KeymapStore,
   type LeaseGrantOutcome,
   type LeaseRecord,
   type LeaseStore,
@@ -62,6 +63,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     deviceAuth: createPostgresDeviceAuthStore(pg),
     deviceTokens: createPostgresDeviceTokenStore(pg),
     connectedAccounts: createPostgresConnectedAccountStore(pg),
+    keymaps: createPostgresKeymapStore(pg),
   };
 }
 
@@ -996,6 +998,48 @@ function createPostgresConnectedAccountStore(pg: PgLike): ConnectedAccountStore 
         accountId,
         id,
       ]);
+    },
+  };
+}
+
+interface KeymapRow {
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
+}
+
+/**
+ * Postgres-backed `KeymapStore` (Zed-parity F3-3, issue #760) — one opaque
+ * `EncryptedEnvelope` row per account, upserted whole on every save, exactly
+ * like {@link createPostgresEscrowStore} above (`amk_escrow`'s own single-row-
+ * per-account shape), reusing this file's own `envelopeColumns`/
+ * `rowToEnvelope` helpers the same way {@link createPostgresAmkRotationStore}
+ * already does for `amk_rotation_pending`.
+ */
+function createPostgresKeymapStore(pg: PgLike): KeymapStore {
+  return {
+    async set(accountId, envelope) {
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(envelope);
+      await pg.query(
+        `INSERT INTO keymaps (account_id, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (account_id) DO UPDATE SET
+           envelope_resource_id = EXCLUDED.envelope_resource_id,
+           envelope_iv = EXCLUDED.envelope_iv,
+           envelope_ciphertext = EXCLUDED.envelope_ciphertext,
+           envelope_alg = EXCLUDED.envelope_alg,
+           updated_at = EXCLUDED.updated_at`,
+        [accountId, resourceId, iv, ciphertext, alg, Date.now()],
+      );
+    },
+    async get(accountId) {
+      const { rows } = await pg.query<KeymapRow>(
+        `SELECT envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg
+         FROM keymaps WHERE account_id = $1`,
+        [accountId],
+      );
+      return rows[0] ? rowToEnvelope(rows[0]) : undefined;
     },
   };
 }

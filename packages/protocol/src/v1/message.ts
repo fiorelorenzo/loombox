@@ -77,6 +77,7 @@ import {
   permissionPolicySet,
   permissionPolicyViolation,
 } from './permission-policy';
+import { keymapGetRequest, keymapResult, keymapSetRequest } from './keymap';
 import {
   accountPinGetRequest,
   accountPinResolveRequest,
@@ -207,6 +208,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   permissionPolicySet,
   permissionPolicyResult,
   permissionPolicyViolation,
+  keymapGetRequest,
+  keymapSetRequest,
+  keymapResult,
   ping,
   pong,
 ]);

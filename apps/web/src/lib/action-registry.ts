@@ -60,6 +60,7 @@
  * a hand-added `if (matchesShortcut(...))` slipped in elsewhere would
  * leave that guarantee failing rather than silently working.
  */
+import type { KeymapV1 } from '@loombox/protocol';
 import { isDesktopShell, isMacPlatform, matchesShortcut, type KeyboardEventLike } from './keyboard';
 
 /** The live state every registered action's `isAvailable` predicate reads. `+page.svelte` rebuilds this from its own state on every change (`$derived`); nothing here is Svelte-specific, which is what keeps this whole module testable without mounting anything. */
@@ -124,11 +125,26 @@ export interface ActionDefinition {
   readonly run: (handlers: ActionHandlers) => void;
 }
 
-/** `action.shortcutFor(context)` when present, else the plain `action.shortcut` — the one place both are resolved to a single value, read by both {@link matchShortcut} and `+page.svelte`'s `paletteActions` mapping, so the keyboard dispatcher and the palette's displayed hint can never disagree about which chord (if any) is live right now. */
+/**
+ * `overrides?.[action.id]` (issue #760's user keymap — a saved remap wins
+ * unconditionally, in every environment, replacing {@link ActionDefinition.shortcutFor}'s
+ * environment-conditional resolution entirely rather than layering on top
+ * of it: a remap only ever changes WHICH chord triggers an action, it
+ * never needs its own copy of the environment gating `shortcutFor` already
+ * encodes) when present, else `action.shortcutFor(context)` when present,
+ * else the plain `action.shortcut` — the one place all three are resolved
+ * to a single value, read by {@link matchShortcut}, `+page.svelte`'s
+ * `paletteActions` mapping, and `CanvasZeroState.svelte`, so the keyboard
+ * dispatcher and every displayed hint can never disagree about which
+ * chord (if any) is live right now.
+ */
 export function effectiveShortcut(
   action: ActionDefinition,
   context: ActionContext,
+  overrides?: KeymapV1,
 ): string | undefined {
+  const override = overrides?.[action.id];
+  if (override !== undefined) return override;
   return action.shortcutFor ? action.shortcutFor(context) : action.shortcut;
 }
 
@@ -314,19 +330,20 @@ export function getAvailableActions(context: ActionContext): ActionDefinition[] 
 
 /**
  * The registry's own keydown dispatcher: the first currently-available
- * action whose {@link effectiveShortcut} matches `event`'s chord, or
- * `undefined`. Only `Mod+…` shortcuts are considered — bare keys, arrow
- * keys and `Escape` are Dialog/Overlay/component-local concerns (see this
- * module's top doc comment for why the inbox's `j`/`k`/digits and the dock
- * resize handles are never registered here), not registry actions, so they
- * never reach this function at all.
+ * action whose {@link effectiveShortcut} (issue #760's `overrides` folded
+ * in) matches `event`'s chord, or `undefined`. Only `Mod+…` shortcuts are
+ * considered — bare keys, arrow keys and `Escape` are Dialog/Overlay/
+ * component-local concerns (see this module's top doc comment for why the
+ * inbox's `j`/`k`/digits and the dock resize handles are never registered
+ * here), not registry actions, so they never reach this function at all.
  */
 export function matchShortcut(
   event: KeyboardEventLike,
   context: ActionContext,
+  overrides?: KeymapV1,
 ): ActionDefinition | undefined {
   return getAvailableActions(context).find((action) => {
-    const shortcut = effectiveShortcut(action, context);
+    const shortcut = effectiveShortcut(action, context, overrides);
     return shortcut !== undefined && matchesShortcut(event, shortcut);
   });
 }

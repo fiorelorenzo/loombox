@@ -204,6 +204,21 @@ describe.each(cases)('Postgres RelayStore (#96, #99, #112) — %s', (_label, mak
     expect(await store.escrow.get('acct_1')).toBe('opaque-wrapped-amk-v2');
   });
 
+  it('round-trips a saved keymap envelope per account, and re-saving overwrites (Zed-parity F3-3, #760)', async () => {
+    const store = await makeStore();
+    expect(await store.keymaps.get('acct_1')).toBeUndefined();
+
+    const first = fakeEnvelope('keymap-v1', 'acct_1');
+    await store.keymaps.set('acct_1', first);
+    expect(await store.keymaps.get('acct_1')).toEqual(first);
+    // a different account never sees acct_1's keymap
+    expect(await store.keymaps.get('acct_2')).toBeUndefined();
+
+    const second = fakeEnvelope('keymap-v2', 'acct_1');
+    await store.keymaps.set('acct_1', second);
+    expect(await store.keymaps.get('acct_1')).toEqual(second);
+  });
+
   it('AMK epoch rotation (#116): epoch advances only by exactly one, and pending envelopes are per (account, device)', async () => {
     const store = await makeStore();
     expect(await store.amkRotation.getCurrentEpoch('acct_1')).toBe(0);

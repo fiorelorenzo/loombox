@@ -195,6 +195,8 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     status: statusStore,
     sessions: sessionsStore,
     connectedAccounts: makeStore(scenario.connectedAccounts ?? []),
+    keymap: makeStore<Record<string, string>>({}),
+    setKeymap: vi.fn(async (candidate: Record<string, string>) => candidate),
     sessionDecryptFailures: makeStore(0),
     /** Issue #655: `undefined` (no relay handshake identity opinion) is the correct default here — this file asserts on navigation/structure, never on the build-identity badge (covered in `TargetStatusView.test.ts`/`relay-client.test.ts`). */
     relayBuildIdentity: makeStore<BuildIdentityV1 | undefined>(undefined),

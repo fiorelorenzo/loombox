@@ -1,5 +1,6 @@
 import type { webcrypto } from 'node:crypto';
 import {
+  deriveKeymapKey,
   deriveKeyTree,
   deriveProjectKey,
   deriveSessionKey,
@@ -57,6 +58,7 @@ export class EnvelopeCryptoEngine {
   private readonly sessionKeys = new Map<string, Promise<CryptoKey>>();
   private readonly projectKeys = new Map<string, Promise<CryptoKey>>();
   private readonly targetKeys = new Map<string, Promise<CryptoKey>>();
+  private readonly keymapKeys = new Map<string, Promise<CryptoKey>>();
 
   constructor(amk: Uint8Array, accountId: string) {
     this.amk = amk;
@@ -90,6 +92,8 @@ export class EnvelopeCryptoEngine {
         return this.cached(this.targetKeys, keyId, () =>
           deriveTargetKey(this.amk, this.accountId, keyId),
         );
+      case 'keymap':
+        return this.cached(this.keymapKeys, keyId, () => deriveKeymapKey(this.amk, this.accountId));
     }
   }
 
