@@ -16,8 +16,21 @@
  * here regardless of whether the target node's operator has allowlisted its
  * `command`; `RelayClient.probeCustomAgent` is the separate, explicit check
  * for that, run against a specific target only when a caller asks.
+ *
+ * `addCustomAgentFromCatalogueEntry` (issue #749) is the curated-catalogue
+ * counterpart of `mcp-server-store.ts`'s own `addMcpServerFromPreset`: it
+ * calls `@loombox/providers-core`'s `instantiateAgentCatalogueEntry` and
+ * then this exact same `addCustomAgent`, so a catalogue pick can never
+ * take a different path through this store — or a different trust
+ * posture — than a hand-typed custom agent. It surfaces
+ * `StaleAgentCatalogueEntryError` unchanged for a caller to show, rather
+ * than swallowing it.
  */
 
+import {
+  instantiateAgentCatalogueEntry,
+  type AgentCatalogueEntry,
+} from '@loombox/providers-core/browser';
 import { customAgentRecordV1, type CustomAgentRecordV1 } from '@loombox/protocol';
 
 export interface CustomAgentStorage {
@@ -96,6 +109,22 @@ export function addCustomAgent(
   const next = [...current, record];
   storage.set(next);
   return next;
+}
+
+/**
+ * Quick-add (issue #749): expands `entry` into a plain `CustomAgentRecordV1`
+ * via `instantiateAgentCatalogueEntry` and adds it through `addCustomAgent` —
+ * the identical path a hand-typed custom agent takes, including its
+ * duplicate-name rule. `instantiateAgentCatalogueEntry`'s own
+ * `StaleAgentCatalogueEntryError` (an entry past its verified-against
+ * window) propagates unchanged; this function adds no staleness policy of
+ * its own.
+ */
+export function addCustomAgentFromCatalogueEntry(
+  storage: CustomAgentStorage,
+  entry: AgentCatalogueEntry,
+): CustomAgentRecordV1[] {
+  return addCustomAgent(storage, instantiateAgentCatalogueEntry(entry));
 }
 
 /** Removes a custom agent record by name. A no-op if no record with that name exists. */
