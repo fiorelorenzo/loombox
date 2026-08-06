@@ -6293,6 +6293,123 @@ describe('RelayClient: createSession (SPEC §7.1; issue #385)', () => {
       client.createSession({ targetId: 'local', provider: 'claude', projectPath: '/proj' }),
     ).rejects.toThrow(/not connected/);
   });
+
+  it("selecting a session before its own session_announce arrives still ends up 'error' with a reason, never stuck on 'awaiting you' (issue #730 — this method's own doc comment names the gap its \"remaining half\")", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-create-session-race';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-create-race',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-create-race',
+      // Real default is 300ms; a few ms keeps this test fast without
+      // changing what it proves (retry-until-acked, not the exact timing).
+      sessionResumeRetryMs: 20,
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const sessionId = 'sess-race-1';
+    const key = await deriveNodeSessionKey(amk, accountId, sessionId);
+
+    // Subscribes to a session id the relay has never heard of yet — every
+    // real `session_resume` this sends is dropped with no ack
+    // (`relay.ts`'s own "resume for unknown/foreign session" branch),
+    // exactly the race `selectSession`'s own `ensureSubscribed` call hits
+    // right after `createSession` returns (that method's own doc comment,
+    // just above this describe block, names this issue).
+    const status = client.statusFor(sessionId);
+    const attentionInbox = client.attentionInbox();
+
+    // Proves the race is real, not accidentally already resolved: several
+    // retry intervals pass with the relay still not knowing this session,
+    // so status stays exactly `undefined` — never a stale/wrong guess.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(get(status)).toBeUndefined();
+
+    // The node "catches up": announces (same as a real node's
+    // `createSessionInternal` would, well after `session_create` reached
+    // it over the network), reports 'starting' immediately, then the
+    // spawn fails.
+    const session = makeSessionMeta({ id: sessionId, accountId, nodeId: 'node_create_race' });
+    const privateEnvelope = await nodeSeal(
+      sessionId,
+      { title: 'races the subscribe', projectPath: '/proj' },
+      key,
+    );
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    const startingEnvelope = await nodeSeal(
+      sessionId,
+      { kind: 'session_status', status: 'starting', updatedAt: 't1' },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 1,
+      envelope: startingEnvelope,
+    });
+    const errorEnvelope = await nodeSeal(
+      sessionId,
+      {
+        kind: 'session_status',
+        status: 'error',
+        updatedAt: 't2',
+        reason: 'agent spawn did not complete within 120000ms',
+      },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 2,
+      envelope: errorEnvelope,
+    });
+
+    // The retry-until-acked subscribe plus its one-time post-ack resync
+    // eventually catch up: 'error' — with its reason — actually arrives,
+    // whether by live fan-out (the retry's subscribe landed before these
+    // sends) or by the resync backfill (it landed after). Either way the
+    // client never stays stuck on `undefined`, and never guesses
+    // 'awaiting_input'.
+    await waitForStore(status, (value) => value === 'error');
+    const reason = await waitForStore(
+      client.statusReasonFor(sessionId),
+      (value) => value !== undefined,
+    );
+    expect(reason).toBe('agent spawn did not complete within 120000ms');
+
+    // The inbox's own half of the same acceptance criterion: never an
+    // 'awaiting_input' item for this session (it never WAS awaiting
+    // input), and the session_outcome item it does get carries the same
+    // reason as its stopReason (RelayClient's own fallback, for a session
+    // whose agent never got as far as a turn, in `recomputeAttentionInbox`).
+    const items = await waitForStore(attentionInbox, (value) =>
+      value.some((item) => item.sessionId === sessionId),
+    );
+    expect(items.filter((item) => item.sessionId === sessionId)).toEqual([
+      expect.objectContaining({
+        kind: 'session_outcome',
+        sessionId,
+        outcome: 'error',
+        stopReason: 'agent spawn did not complete within 120000ms',
+      }),
+    ]);
+    expect(
+      items.some((item) => item.sessionId === sessionId && item.kind === 'awaiting_input'),
+    ).toBe(false);
+  });
 });
 
 describe('RelayClient: sessionDecryptFailures (issue #384 mismatched-AMK state)', () => {
