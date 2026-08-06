@@ -95,6 +95,30 @@ export const sessionPrivateMetaV1 = z.object({
    * above already establish.
    */
   forkFromTurnId: z.string().min(1).optional(),
+  /**
+   * The git branch this session's own state is actually on right now
+   * (Zed-parity decision B3-3, issue #738: the topbar's old `project ·
+   * target` breadcrumb had nowhere on the wire to read a branch from at
+   * all). Node-computed only — never sent by a client's `session_create`,
+   * only ever set by `@loombox/node`'s own `announce()` — so an incoming
+   * value here from a client is simply ignored rather than trusted.
+   *
+   * Two distinct sources, both resolved node-side: a worktree-isolated
+   * session (`Session.branch` non-empty, `session-manager.ts`) already
+   * knows its own `loombox/session-<id>` branch with no git call at all,
+   * since it never moves off it for the session's whole life; an in-place
+   * session (`Session.branch === ''`) has no such guarantee, so the node
+   * probes the project folder's actual `HEAD` fresh on every `announce()`
+   * call instead (creation, a fork, and every reconnect's re-announce) —
+   * see `@loombox/node`'s `resolveSessionBranch`.
+   *
+   * Omitted for a project that isn't a git repository at all (SPEC §6
+   * allows a plain folder) — genuinely nothing to report, not an error.
+   * Optional for the same versioning reason every other field here past
+   * `title`/`projectPath` is: an older peer that has never heard of this
+   * field must keep parsing every other field unchanged.
+   */
+  branch: z.string().min(1).optional(),
 });
 export type SessionPrivateMetaV1 = z.infer<typeof sessionPrivateMetaV1>;
 

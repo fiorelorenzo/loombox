@@ -1520,17 +1520,63 @@ describe('session export moved into the row menu (D3-3; issue #670)', () => {
 });
 
 describe('structural identifiers render in the shared mono face (#735)', () => {
-  it("the topbar breadcrumb (project path + target) and the session row's own target are mono", async () => {
-    mountCockpit({ sessions: [makeSession()] });
+  it("the topbar breadcrumb (project path + branch) and the status bar's own session-target segment are mono", async () => {
+    mountCockpit({ sessions: [makeSession({ branch: 'feature/mono-branch' })] });
     await screen.findByTestId('cockpit-session-title');
 
     const breadcrumb = screen.getByTestId('topbar-breadcrumb');
     expect(breadcrumb.className).toContain('font-mono');
-    expect(breadcrumb.textContent).toContain('local');
+    expect(breadcrumb.textContent).toContain('feature/mono-branch');
+
+    const sessionTarget = screen.getByTestId('status-bar-session-target');
+    expect(sessionTarget.innerHTML).toContain('font-mono');
+    expect(sessionTarget.textContent).toContain('local');
 
     const sessionMeta = screen.getByTestId('session-activity');
     expect(sessionMeta.className).toContain('font-mono');
     expect(sessionMeta.textContent).toContain('local');
+  });
+});
+
+describe('topbar shows project / branch, the target moved to the status bar (issue #738, B3-3)', () => {
+  it('shows project / branch when the session has a known branch', async () => {
+    mountCockpit({ sessions: [makeSession({ branch: 'main' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const breadcrumb = screen.getByTestId('topbar-breadcrumb');
+    expect(breadcrumb.textContent).toContain('main');
+  });
+
+  it('omits the branch segment entirely for a non-git project, rather than showing a blank trail — the branch field is simply absent', async () => {
+    mountCockpit({ sessions: [makeSession({ branch: undefined })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    expect(screen.getByTestId('topbar-breadcrumb').textContent).not.toContain('/');
+  });
+
+  it('renders a detached HEAD sensibly, as the marker the node itself resolved', async () => {
+    mountCockpit({ sessions: [makeSession({ branch: 'detached@a1b2c3d' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    expect(screen.getByTestId('topbar-breadcrumb').textContent).toContain('detached@a1b2c3d');
+  });
+
+  it('carries a long branch name in full in the title attribute, so the ellipsis-truncated span still has a real answer on hover', async () => {
+    const longBranch = 'feature/a-very-long-branch-name-that-a-real-team-actually-used-once';
+    mountCockpit({ sessions: [makeSession({ branch: longBranch })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    const breadcrumb = screen.getByTestId('topbar-breadcrumb');
+    expect(breadcrumb.textContent).toContain(longBranch);
+    expect(breadcrumb.getAttribute('title')).toContain(longBranch);
+  });
+
+  it("the target appears exactly once in the window: the status bar's own segment, never the old topbar duplicate", async () => {
+    mountCockpit({ sessions: [makeSession({ branch: 'main' })] });
+    await screen.findByTestId('cockpit-session-title');
+
+    expect(screen.getByTestId('topbar-breadcrumb').textContent).not.toContain('local');
+    expect(screen.getByTestId('status-bar-session-target').textContent).toContain('local');
   });
 });
 
