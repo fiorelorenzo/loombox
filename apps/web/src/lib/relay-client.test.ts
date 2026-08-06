@@ -3773,6 +3773,560 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
   });
 });
 
+describe('RelayClient: branch create/switch/merge and stash save/pop (SPEC §7.6; issue #234)', () => {
+  it('requestBranches sends a git_branch_list_request with no envelope, and resolves an ok outcome decrypted from the real response', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-list';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-list',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_branch_list', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-list',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestBranches(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_branch_list_request')) as {
+      sessionId: string;
+      requestId: string;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', branches: [{ name: 'main', current: true }] },
+      key,
+    );
+    node.send({
+      type: 'git_branch_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      branches: [{ name: 'main', current: true }],
+    });
+  });
+
+  it('createBranch seals name/startPoint/checkout into the request envelope, and resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-create';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-create',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_branch_create', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-create',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.createBranch(session.id, { name: 'feature', checkout: true });
+    const request = (await node.waitFor((m) => m.type === 'git_branch_create_request')) as {
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const decrypted = await decryptEnvelope(
+      session.id,
+      {
+        resourceId: request.envelope.resourceId,
+        iv: Uint8Array.from(atob(request.envelope.iv), (c) => c.charCodeAt(0)),
+        ciphertext: Uint8Array.from(atob(request.envelope.ciphertext), (c) => c.charCodeAt(0)),
+      },
+      key,
+    );
+    expect(JSON.parse(new TextDecoder().decode(decrypted))).toEqual({
+      name: 'feature',
+      startPoint: null,
+      checkout: true,
+    });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', branch: 'feature', checkedOut: true },
+      key,
+    );
+    node.send({
+      type: 'git_branch_create_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      branch: 'feature',
+      checkedOut: true,
+    });
+  });
+
+  it('switchBranch resolves (not rejects) a dirty_worktree outcome with the real conflicting paths', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-switch-dirty';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-switch-dirty',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_branch_switch_dirty',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-switch-dirty',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.switchBranch(session.id, { name: 'other' });
+    const request = (await node.waitFor((m) => m.type === 'git_branch_switch_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'dirty_worktree',
+        message: 'switching to "other" would overwrite local changes',
+        paths: ['f.txt'],
+      },
+      key,
+    );
+    node.send({
+      type: 'git_branch_switch_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'dirty_worktree',
+      message: 'switching to "other" would overwrite local changes',
+      paths: ['f.txt'],
+    });
+  });
+
+  it('switchBranch resolves a session_branch_fixed outcome for a worktree-isolated session', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-switch-fixed';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-switch-fixed',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_branch_switch_fixed',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-switch-fixed',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.switchBranch(session.id, { name: 'main' });
+    const request = (await node.waitFor((m) => m.type === 'git_branch_switch_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'session_branch_fixed',
+        message: 'this session\'s worktree is fixed to "loombox/session-1" for its whole life',
+      },
+      key,
+    );
+    node.send({
+      type: 'git_branch_switch_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const result = await resultPromise;
+    expect(result.outcome).toBe('session_branch_fixed');
+  });
+
+  it('mergeBranch resolves (not rejects) a conflict outcome with the real conflicted paths', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-merge-conflict';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-merge-conflict',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_branch_merge_conflict',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-merge-conflict',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.mergeBranch(session.id, { name: 'feature' });
+    const request = (await node.waitFor((m) => m.type === 'git_branch_merge_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'conflict', message: 'merging "feature" produced conflicts', conflictedPaths: ['f.txt'] },
+      key,
+    );
+    node.send({
+      type: 'git_branch_merge_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'conflict',
+      message: 'merging "feature" produced conflicts',
+      conflictedPaths: ['f.txt'],
+    });
+  });
+
+  it('abortBranchMerge sends a git_branch_merge_abort_request with no envelope, and resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-merge-abort';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-merge-abort',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_branch_merge_abort',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-merge-abort',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.abortBranchMerge(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_branch_merge_abort_request')) as {
+      requestId: string;
+    };
+    expect(Object.keys(request).sort()).toEqual(
+      ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok' }, key);
+    node.send({
+      type: 'git_branch_merge_abort_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({ outcome: 'ok' });
+  });
+
+  it('saveStash resolves an ok outcome with created: false when there was nothing to stash', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-stash-save';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-stash-save',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_stash_save', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-stash-save',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.saveStash(session.id, { message: 'wip' });
+    const request = (await node.waitFor((m) => m.type === 'git_stash_save_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok', created: false }, key);
+    node.send({
+      type: 'git_stash_save_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({ outcome: 'ok', created: false });
+  });
+
+  it('requestStashes sends a git_stash_list_request with no envelope, and resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-stash-list';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-stash-list',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_stash_list', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-stash-list',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestStashes(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_stash_list_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', stashes: [{ index: 0, message: 'On main: wip' }] },
+      key,
+    );
+    node.send({
+      type: 'git_stash_list_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      stashes: [{ index: 0, message: 'On main: wip' }],
+    });
+  });
+
+  it('popStash resolves (not rejects) a conflict outcome with stashKept: true — issue #234\'s own named failure mode', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-stash-pop-conflict';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-stash-pop-conflict',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_stash_pop_conflict',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-stash-pop-conflict',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.popStash(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_stash_pop_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'conflict',
+        message: 'popping "stash@{0}" produced conflicts',
+        conflictedPaths: ['f.txt'],
+        stashKept: true,
+      },
+      key,
+    );
+    node.send({
+      type: 'git_stash_pop_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'conflict',
+      message: 'popping "stash@{0}" produced conflicts',
+      conflictedPaths: ['f.txt'],
+      stashKept: true,
+    });
+  });
+
+  it('dropStash resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-stash-drop';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-stash-drop',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_stash_drop', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-stash-drop',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.dropStash(session.id, { index: 0 });
+    const request = (await node.waitFor((m) => m.type === 'git_stash_drop_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(session.id, { outcome: 'ok' }, key);
+    node.send({
+      type: 'git_stash_drop_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({ outcome: 'ok' });
+  });
+
+  it('rejects requestBranches for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-branch-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-branch-unknown',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-branch-unknown',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.requestBranches('no-such-session')).rejects.toThrow(/unknown session/);
+  });
+});
+
 describe('RelayClient: hunk-level staging (issue #232)', () => {
   it('requestGitHunkDiff sends a git_hunk_diff_request with no envelope, and resolves an ok outcome decrypted from the real git_hunk_diff_response the node opaquely routed back', async () => {
     const amk = generateAmk();
