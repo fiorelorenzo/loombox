@@ -74,6 +74,10 @@
     permissionHead: PendingPermissionRequest | undefined;
     /** See {@link TranscriptJumpTarget}. `undefined` — the common case — does nothing. */
     jumpTarget: TranscriptJumpTarget | undefined;
+    /** Fork the open session from a message row's own turn (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — forwarded to `MessageItem`'s own `onFork`. Omitted renders no fork button on any row. */
+    onFork?: (turnId: string) => void;
+    /** The turn currently mid-fork, if any — forwarded to `MessageItem`'s own `forking` so only that turn's row shows the busy state. */
+    forkingTurnId?: string;
   }
 
   const {
@@ -84,6 +88,8 @@
     providerId,
     permissionHead,
     jumpTarget,
+    onFork,
+    forkingTurnId,
   }: Props = $props();
 
   /**
@@ -290,6 +296,8 @@
             : false}
           {turnActive}
           {providerId}
+          {onFork}
+          forking={forkingTurnId === item.turnId}
         />
       {:else}
         <ToolCallRow

@@ -295,6 +295,29 @@ export class AgentSession extends EventEmitter {
     return [...this.transcriptUpdates];
   }
 
+  /**
+   * Seeds this session's transcript with pre-existing updates it never
+   * actually produced — a forked session's copied history (design spec
+   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746). Pushed
+   * onto the in-memory cache {@link getTranscriptUpdates} reads, and
+   * persisted to `store` exactly like a normal arrival
+   * ({@link appendTranscriptUpdate}'s own best-effort contract — never
+   * throws), so a later restart's `fromPersisted()` reconstruction sees
+   * them too. Never emits `'transcript_update'`: nothing here is "just
+   * arriving" live, and a caller replaying this same history onward to a
+   * client (`@loombox/node`'s `forwardSessionEvent`) drives that itself,
+   * in whatever order it needs — this only makes the seeded updates part
+   * of this session's own recorded history from here on.
+   */
+  seedTranscriptUpdates(updates: readonly AcpTranscriptUpdate[]): void {
+    for (const update of updates) {
+      this.transcriptUpdates.push(update);
+      if (this.sessionId && !this.closed) {
+        this.store?.appendTranscriptUpdate(this.sessionId, update);
+      }
+    }
+  }
+
   /** This session's latest attention snapshot (SPEC.md §7.13; issue #79) — recorded regardless of whether any caller is currently listening for the `'attention'` event, and readable by a caller that only just attached. */
   getAttentionState(): AttentionState {
     return this.attentionState;

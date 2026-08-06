@@ -2614,6 +2614,26 @@
     await copyToClipboard(exportTranscriptText(transcript));
   }
 
+  /** The turn currently being forked, if any (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — drives the fork button's busy state on that one row (`TranscriptTimeline`'s own `forkingTurnId`). */
+  let forkingTurnId = $state<string | undefined>(undefined);
+  /** The most recent fork request's refusal reason, if any — cleared on the next attempt. Rendered inline above the transcript (see the template below); mirrors this file's own `rePairError`/`escrowError`/`targetStatusError` convention for a lightweight, non-dialog async action. */
+  let forkError = $state<string | undefined>(undefined);
+
+  /** The turn's own fork affordance (`MessageItem`'s hover-revealed icon, v7 B3's row convention — see design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2). On success, navigates straight to the new session, exactly like `handleSessionCreated` already does for an ordinary creation. */
+  async function forkSessionFromTurn(turnId: string): Promise<void> {
+    if (!client || !selectedSessionId || forkingTurnId) return;
+    forkingTurnId = turnId;
+    forkError = undefined;
+    try {
+      const newSessionId = await client.forkSession(selectedSessionId, turnId);
+      selectSession(newSessionId);
+    } catch (error) {
+      forkError = error instanceof Error ? error.message : String(error);
+    } finally {
+      forkingTurnId = undefined;
+    }
+  }
+
   onMount(() => {
     // Design spec v4 §4.2: mirrors the project registry's store into
     // `projects`, created eagerly at module scope above (its default storage
@@ -3760,6 +3780,11 @@
               {/snippet}
             </EmptyState>
           {:else}
+            {#if forkError}
+              <p class="fork-error" role="alert" data-testid="fork-error">
+                {forkError}
+              </p>
+            {/if}
             <!-- Issue #730: a session with no live agent behind it must not
                  sit as a blank transcript with no explanation — the
                  original bug's exact symptom ("the optimistically echoed
@@ -3789,6 +3814,8 @@
               providerId={selectedSession?.provider}
               {permissionHead}
               jumpTarget={transcriptJumpTarget}
+              onFork={narrowViewport ? undefined : forkSessionFromTurn}
+              {forkingTurnId}
             />
 
             <div class="canvas-footer">
@@ -6209,5 +6236,19 @@
     .panel-word {
       display: inline;
     }
+  }
+
+  /* The fork-from-turn action's refusal reason (design spec
+     `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — a
+     lightweight inline banner above the transcript, the same
+     `--color-danger` token every other inline error in this file uses,
+     no dialog needed for a single-line, dismiss-by-retrying message. */
+  .fork-error {
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-subtle);
+    color: var(--color-danger);
+    font-size: 0.875rem;
   }
 </style>

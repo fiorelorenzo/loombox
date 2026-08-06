@@ -69,6 +69,7 @@ import {
   type ProvisionTargetResult,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
+  type SessionForkResponse,
   type SessionListV1,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
@@ -1256,6 +1257,20 @@ export class RelayClient {
    * is guarded by `requestId`, exactly like every sibling map here.
    */
   private readonly pendingArchiveRequests = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link forkSession} call it belongs to
+   * (design spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue
+   * #746). Same account-wide broadcast shape `session_archive_response`
+   * carries (`packages/relay/src/relay.ts`), but a fork's outcome needs no
+   * store-wide side effect on `'ok'` — the new session already reaches
+   * every device the ordinary way, via `session_announce` — so unlike
+   * {@link pendingArchiveRequests} this map's own resolve/reject is the
+   * entire job of {@link handleSessionForkResponse}.
+   */
+  private readonly pendingForkRequests = new Map<
     string,
     { resolve: () => void; reject: (error: Error) => void }
   >();
@@ -2680,6 +2695,81 @@ export class RelayClient {
       targetId: options.targetId,
       provider: options.provider,
       privateEnvelope,
+    });
+
+    return sessionId;
+  }
+
+  /**
+   * Forks `sourceSessionId` from `forkFromTurnId` (inclusive) into a
+   * brand-new session (design spec `2026-08-05-zed-parity-decisions.md`
+   * §3's C6-2; issue #746) — the transcript row/turn action's own call
+   * site. `title`/`projectPath`/`targetId`/`provider` are read straight
+   * off `sourceSessionId`'s own already-known {@link ClientSessionMeta}
+   * (this client already decrypted it to render the source session at
+   * all), so a caller only ever names the source and the turn to diverge
+   * from — never re-supplies data it never had reason to duplicate.
+   *
+   * Unlike {@link createSession} (fire-and-forget, no ack), this awaits
+   * `session_fork_response`: forking has real, foreseeable refusal cases
+   * — the source has no active agent, or the requested turn was never
+   * produced — that must reach the caller as a visible reason, never a
+   * silently-dropped request the caller only learns failed by its own
+   * timeout guess.
+   */
+  async forkSession(
+    sourceSessionId: string,
+    forkFromTurnId: string,
+    options: { title?: string } = {},
+    timeoutMs = 30_000,
+  ): Promise<string> {
+    if (!this.isSocketOpen()) {
+      throw new Error('RelayClient.forkSession: not connected to the relay');
+    }
+    const source = get(this.sessionsStore).find((session) => session.id === sourceSessionId);
+    if (!source) {
+      throw new Error(`RelayClient.forkSession: unknown source session "${sourceSessionId}"`);
+    }
+
+    const sessionId = generateId('session');
+    const privateMeta: SessionPrivateMeta = {
+      title: options.title?.trim() || `${source.title} (fork)`,
+      projectPath: source.projectPath,
+      forkFromTurnId,
+    };
+    const privateEnvelope = await this.envelopeCrypto.seal(
+      'session',
+      sessionId,
+      sessionId,
+      privateMeta,
+    );
+
+    const requestId = generateId('fork');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingForkRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_fork_response'));
+      }, timeoutMs);
+      this.pendingForkRequests.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'session_fork_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        sessionId,
+        sourceSessionId,
+        targetId: source.targetId,
+        provider: source.provider,
+        privateEnvelope,
+      });
     });
 
     return sessionId;
@@ -4173,6 +4263,9 @@ export class RelayClient {
       case 'session_archive_response':
         this.handleSessionArchiveResponse(message);
         return;
+      case 'session_fork_response':
+        this.handleSessionForkResponse(message);
+        return;
       case 'session_update':
         this.handleSessionUpdate(message);
         return;
@@ -4370,6 +4463,18 @@ export class RelayClient {
     const pending = this.pendingArchiveRequests.get(message.requestId);
     if (!pending) return;
     this.pendingArchiveRequests.delete(message.requestId);
+    if (message.result.outcome === 'ok') {
+      pending.resolve();
+    } else {
+      pending.reject(new Error(message.result.message));
+    }
+  }
+
+  /** No `sessionsStore` side effect on `'ok'` unlike {@link handleSessionArchiveResponse}: the fork's new session reaches every device the ordinary way, via `session_announce`. This response only ever settles {@link pendingForkRequests}' own promise. */
+  private handleSessionForkResponse(message: SessionForkResponse): void {
+    const pending = this.pendingForkRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingForkRequests.delete(message.requestId);
     if (message.result.outcome === 'ok') {
       pending.resolve();
     } else {
