@@ -1,6 +1,6 @@
 /*
  * loombox color palette (redesign v3 design spec §3.7, issue #502).
- * Mission-control/terminal register: cool near-black in dark, a cool
+ * Mission-control/terminal register: a blue-grey layered ground in dark, a
  * crisp paper in light, azure as the default "thread" accent. This is
  * the ONLY palette the app ships — the earlier "Style" axis (Deck/Loom/
  * Studio, a picker that only ever changed hue, never density or shape)
@@ -19,66 +19,106 @@
  * comment). Light is independently art-directed (not a lightened copy
  * of dark); see its own block's doc comment below for the redesign v3
  * contrast work.
+ *
+ * Dark's ground was inverted for Zed-parity A1-2 (issue #733,
+ * `docs/superpowers/specs/2026-08-05-zed-parity-decisions.md`): the old
+ * ramp ran chrome (`--color-rail`) darkest at near-zero chroma, all four
+ * neutrals within six hex points of each other. It now runs the other
+ * way — chrome (`--color-rail`) lightest, the content well
+ * (`--color-bg`, i.e. `.canvas` in `routes/+page.svelte`) darkest, each
+ * step ~7 L* apart, hue ~258° (blue-grey, loombox's own register, not
+ * Zed's hex) instead of near-zero chroma. `--color-surface`/
+ * `--color-surface-raised` keep the existing "higher tier reads
+ * lighter" elevation ordering between those two ends.
+ *
+ * A3-1 (kept alongside A1-2, see the spec doc) means the hairline and
+ * shadow *model* didn't change, only the alpha numbers: the old
+ * 9/16/28% (subtle/border/strong) white overlays produced a much
+ * smaller lightness step on this lighter ground (measured: ~10/18/30
+ * old Lab-L* points of separation fell to ~7/13/22 at the same
+ * percentages), so they're retuned to 13/23/40% (fill 8/17%) to hold
+ * that same separation against `--color-surface-raised`, the lightest
+ * of the three tiers hairlines actually sit on.
+ *
+ * Status colors and accent presets (`$lib/accent-presets.ts`) that fell
+ * under `accent-color.ts`'s `AA_CONTRAST_MIN` (4.5:1) against the new,
+ * lighter `--color-surface-raised` were re-lightened in-hue (danger,
+ * info, and all six accent-preset dark values).
+ * `--color-text-secondary`/`--color-text-muted` were re-lightened too,
+ * anchored against `--color-rail` — the lightest and hardest of the
+ * four grounds, and the one most of the sidebar's own text sits
+ * directly on with no card background under it — so the AA/large-text
+ * claims in `/style-reference`'s own copy stay true everywhere, not
+ * just against `--color-bg`/`--color-surface`. All of the above was
+ * measured with the relative-luminance/contrast-ratio helpers already
+ * in `accent-color.ts`, not eyeballed.
  */
 
 :root {
   color-scheme: dark;
 
   /* -------------------------------------------------------------- */
-  /* Neutral / surface ramp ("ink" — dark, default)                  */
+  /* Neutral / surface ramp ("ink" — dark, default). Zed-parity A1-2    */
+  /* (issue #733): chrome lightest, content well darkest, ~7 L* apart,  */
+  /* hue ~258°. See this file's top doc comment for the full rationale. */
   /* -------------------------------------------------------------- */
-  --color-bg: #0a0c0f;
-  --color-surface: #0e1114;
-  --color-surface-raised: #101418;
-  --color-rail: #08090b;
+  --color-bg: #1a2732;
+  --color-surface: #2a3642;
+  --color-surface-raised: #394652;
+  --color-rail: #495663;
   --color-overlay: rgb(5 6 8 / 72%);
 
-  /* Hairline scale — "9%/16%" whites over the near-black bg, extended
-     with a third, stronger tier at the same rate of increase
-     tokens.css's old slate scale used (each tier ~1.7-1.8x the previous). */
-  --color-border-subtle: rgb(255 255 255 / 9%);
-  --color-border: rgb(255 255 255 / 16%);
-  --color-border-strong: rgb(255 255 255 / 28%);
-  --color-fill-subtle: rgb(255 255 255 / 6%);
-  --color-fill: rgb(255 255 255 / 12%);
+  /* Hairline scale — re-tuned for A1-2's lighter ground (issue #733,
+     A3-1 kept the model, only these numbers moved): "13%/23%" whites
+     over the new mid-tone bg, extended with a third, stronger tier at
+     the same rate of increase the old 9/16/28 scale used (each tier
+     ~1.7-1.8x the previous). */
+  --color-border-subtle: rgb(255 255 255 / 13%);
+  --color-border: rgb(255 255 255 / 23%);
+  --color-border-strong: rgb(255 255 255 / 40%);
+  --color-fill-subtle: rgb(255 255 255 / 8%);
+  --color-fill: rgb(255 255 255 / 17%);
 
   /* -------------------------------------------------------------- */
-  /* Text ramp ("ink")                                               */
+  /* Text ramp ("ink"). Secondary/muted re-lightened for A1-2 (#733) —  */
+  /* see this file's top doc comment for the contrast rationale.        */
   /* -------------------------------------------------------------- */
   --color-text-primary: #e6e9ec;
-  --color-text-secondary: #8b9299;
-  --color-text-muted: #5a6167;
+  --color-text-secondary: #c3cbd2;
+  --color-text-muted: #9fa6ad;
   --color-text-inverse: #0a0c0f;
 
   /* -------------------------------------------------------------- */
   /* Brand accent — the "thread" (SPEC §4). Azure is the default       */
   /* preset ground (issue #376); these five values are the pre-JS/no-  */
   /* choice-yet fallback only — `$lib/accent.ts` overrides them at      */
-  /* runtime via `deriveAccentPalette`, same mechanism as before.        */
+  /* runtime via `deriveAccentPalette`, same mechanism as before. Kept  */
+  /* in sync with `accent-presets.ts`'s `azure.dark` by hand (#733).    */
   /* -------------------------------------------------------------- */
-  --color-accent: #3b9df7;
-  --color-accent-hover: #3690e3;
-  --color-accent-active: #3387d4;
-  --color-accent-subtle: rgb(59 157 247 / 16%);
+  --color-accent: #64baff;
+  --color-accent-hover: #5cabeb;
+  --color-accent-active: #56a0db;
+  --color-accent-subtle: rgb(100 186 255 / 16%);
   --color-accent-contrast: #0a0a0a;
 
   /* A glow, not a flat fill — for accent-lit chrome (active nav indicator,
      focus glow, working-state pulses). A raw translucent color rather than
      a full `box-shadow` value so a consumer composes it freely, e.g.
      `box-shadow: 0 0 20px var(--azure-glow);`. Unused until wave 2/3. */
-  --azure-glow: rgb(59 157 247 / 45%);
+  --azure-glow: rgb(100 186 255 / 45%);
 
   /* -------------------------------------------------------------- */
-  /* Semantic status                                                  */
+  /* Semantic status. Danger/info re-lightened for A1-2 (#733); success/ */
+  /* warning already cleared AA against the new ground unchanged.        */
   /* -------------------------------------------------------------- */
   --color-success: #34d399;
   --color-success-subtle: rgb(52 211 153 / 16%);
   --color-warning: #f5b942;
   --color-warning-subtle: rgb(245 185 66 / 16%);
-  --color-danger: #f26565;
-  --color-danger-subtle: rgb(242 101 101 / 16%);
-  --color-info: #5aa2e0;
-  --color-info-subtle: rgb(90 162 224 / 16%);
+  --color-danger: #ff9692;
+  --color-danger-subtle: rgb(255 150 146 / 16%);
+  --color-info: #73b9f8;
+  --color-info-subtle: rgb(115 185 248 / 16%);
 
   /* Focus ring color: a hairline shift, deliberately NOT the accent color
      (see tokens.css's doc comment on `--focus-ring-width`/`-offset`). */
@@ -143,6 +183,18 @@
  *    `$lib/accent-presets.ts`'s `azure.light` preset exactly, so the
  *    pre-hydration fallback never flashes a different blue than the
  *    preset JS applies a moment later.
+ *
+ * Reviewed (not changed) for Zed-parity A1-2 (issue #733): light isn't
+ * being inverted, only dark's ground is. Left alone deliberately, not by
+ * omission — light's own hue already sits at ~267-272° (Lab LCh) across
+ * `--color-bg`/`--color-rail`, within ~10-14° of the new dark ground's
+ * ~258°, so the two themes already read as the same blue-grey family
+ * without any change here; light's own chrome-darker-than-canvas relation
+ * (the opposite of dark's new chrome-lightest ordering, see two bullets
+ * up) is untouched, staying the deliberate "shell" reading #502 gave it.
+ * Status/accent light values are untouched too and unaffected by dark's
+ * ground change (their own grounds didn't move), still clearing the same
+ * ratios #502 measured.
  *
  * Two ways in on purpose, same as `tokens.css`'s own dark/light split:
  *  - `prefers-color-scheme: light` covers a first-ever visit before any
