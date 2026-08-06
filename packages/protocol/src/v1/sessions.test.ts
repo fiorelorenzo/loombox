@@ -242,4 +242,17 @@ describe('sessionPrivateMetaV1', () => {
       safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', forkFromTurnId: '' }).success,
     ).toBe(false);
   });
+
+  it('carries the node-computed branch (issue #738), and leaves it undefined on a client-sent create with no opinion', () => {
+    expect(parseSessionPrivateMetaV1({ title: 't', projectPath: '/p' }).branch).toBeUndefined();
+    expect(
+      parseSessionPrivateMetaV1({ title: 't', projectPath: '/p', branch: 'main' }).branch,
+    ).toBe('main');
+  });
+
+  it('rejects an empty branch rather than accepting a meaningless value', () => {
+    expect(
+      safeParseSessionPrivateMetaV1({ title: 't', projectPath: '/p', branch: '' }).success,
+    ).toBe(false);
+  });
 });

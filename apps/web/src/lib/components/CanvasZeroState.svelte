@@ -41,6 +41,7 @@
     type ActionContext,
     type ActionDefinition,
   } from '$lib/action-registry';
+  import type { KeymapV1 } from '@loombox/protocol';
   import type { TranscriptTailEntry, TranscriptTailSpeaker } from '$lib/transcript-tail';
 
   /** One row of the "recent sessions" panel — a plain view model `+page.svelte` builds from `ClientSessionMeta` plus the sidebar's own `projectDisplayName`/`sessionTargetLabel`/`formatSessionActivity` helpers, so this component never needs to know about `Project`, target lists, or how "3m ago" gets computed. */
@@ -78,9 +79,12 @@
      * they DO have a real, working chord.
      */
     context: ActionContext;
+    /** This account's saved keymap (issue #760), `undefined` before `+page.svelte`'s `RelayClient` has fetched one — threaded into `effectiveShortcut` below so a remapped binding shows up here too, never a second stale copy of the built-in defaults; see that module's own doc comment for why a remap replaces `shortcutFor`'s resolution outright rather than layering on it. */
+    overrides?: KeymapV1;
   }
 
-  const { recentSessions, lastTranscript, onSelectSession, cta, context }: Props = $props();
+  const { recentSessions, lastTranscript, onSelectSession, cta, context, overrides }: Props =
+    $props();
 
   const TAIL_SPEAKER_LABEL: Record<TranscriptTailSpeaker, string> = {
     user: 'You',
@@ -109,7 +113,7 @@
   }
   const boundActions = $derived(
     actionRegistry
-      .map((action) => ({ action, shortcut: effectiveShortcut(action, context) }))
+      .map((action) => ({ action, shortcut: effectiveShortcut(action, context, overrides) }))
       .filter((entry): entry is BoundAction => entry.shortcut !== undefined),
   );
 

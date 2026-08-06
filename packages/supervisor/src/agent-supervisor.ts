@@ -1,10 +1,15 @@
-import type { AcpChildProcess, AcpMcpServerConfig, AcpProvider } from '@loombox/providers-core';
+import type {
+  AcpChildProcess,
+  AcpMcpServerConfig,
+  AcpProvider,
+  AcpToolKind,
+} from '@loombox/providers-core';
 import { claudeProvider, claudeProviderModule } from '@loombox/providers-claude';
 import { codexProvider, codexProviderModule } from '@loombox/providers-codex';
 import { ohmypiProvider, ohmypiProviderModule } from '@loombox/providers-ohmypi';
 
 import type { AttachmentChannel } from './attachment-channel';
-import { AgentSession } from './agent-session';
+import { AgentSession, type ToolProfileDenial } from './agent-session';
 import { TranscriptStore } from './transcript-store';
 
 /**
@@ -45,6 +50,11 @@ export interface AgentSupervisorStartOptions {
   providerId?: string;
   /** This session's effective, already-secret-resolved MCP server set (SPEC.md §7.7; issues #187/#189) — see `AgentSessionSpawnOptions.mcpServers`'s doc comment for exactly what "resolved" means and whose job it is. */
   mcpServers?: AcpMcpServerConfig[];
+  /** See `AgentSessionSpawnOptions.evaluateToolProfile`'s doc comment (design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) — passed straight through to `AgentSession.spawn()`. */
+  evaluateToolProfile?: (toolCall: {
+    readonly toolKind?: AcpToolKind;
+    readonly title?: string;
+  }) => ToolProfileDenial | undefined;
 }
 
 export interface AgentSupervisorOptions {
@@ -122,6 +132,7 @@ export class AgentSupervisor {
     workspacePath,
     providerId = 'claude',
     mcpServers,
+    evaluateToolProfile,
   }: AgentSupervisorStartOptions): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
@@ -132,6 +143,7 @@ export class AgentSupervisor {
     const session = await AgentSession.spawn(provider, spawnConfig, workspacePath, {
       store: this.store,
       mcpServers,
+      evaluateToolProfile,
     });
     this.sessions.set(session.id, session);
     return session;
@@ -152,12 +164,18 @@ export class AgentSupervisor {
     providerId = 'claude',
     child,
     mcpServers,
+    evaluateToolProfile,
   }: {
     workspacePath: string;
     providerId?: string;
     child: AcpChildProcess;
     /** See `AgentSupervisorStartOptions.mcpServers`'s doc comment. */
     mcpServers?: AcpMcpServerConfig[];
+    /** See `AgentSupervisorStartOptions.evaluateToolProfile`'s doc comment. */
+    evaluateToolProfile?: (toolCall: {
+      readonly toolKind?: AcpToolKind;
+      readonly title?: string;
+    }) => ToolProfileDenial | undefined;
   }): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
@@ -167,6 +185,7 @@ export class AgentSupervisor {
     const session = await AgentSession.spawn(provider, child, workspacePath, {
       store: this.store,
       mcpServers,
+      evaluateToolProfile,
     });
     this.sessions.set(session.id, session);
     return session;

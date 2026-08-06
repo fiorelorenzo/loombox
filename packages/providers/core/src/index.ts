@@ -201,6 +201,19 @@ export type {
   AcpMcpServerPromptsEntry,
   AcpMcpServerPromptsEvent,
 } from './types';
+// v1: curated catalogue of known-good ACP agents that speak ACP but have
+// no registered loombox provider (D1-3's second half; issue #749) — a
+// quick-add convenience over the custom-agent path (issue #748), never a
+// second trust tier: the node's own allowlist is what decides whether
+// anything actually runs.
+export {
+  AGENT_CATALOGUE,
+  agentCatalogueEntryStaleAt,
+  instantiateAgentCatalogueEntry,
+  isAgentCatalogueEntryStale,
+  StaleAgentCatalogueEntryError,
+} from './agent-catalogue';
+export type { AgentCatalogueEntry, AgentCatalogueVerification } from './agent-catalogue';
 
 // v1: agent plugin/extension management, independent of the MCP-server
 // list — data model, parser/validator, and the global-plus-project-

@@ -609,12 +609,16 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     expect(entry?.session.provider).toBe('test-echo');
 
     const key = await derivePhoneSessionKey(amk, accountId, session.id);
-    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string }>(
+    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string; branch?: string }>(
       session.id,
       entry!.privateEnvelope,
       key,
     );
-    expect(decryptedMeta).toEqual({ title: 'my session', projectPath: session.projectPath });
+    expect(decryptedMeta).toEqual({
+      title: 'my session',
+      projectPath: session.projectPath,
+      branch: `loombox/session-${session.id}`,
+    });
     // The relay only ever carried this ciphertext: the title/path are not recoverable from it.
     assertOpaque(entry!.privateEnvelope, ['my session', session.projectPath]);
 
@@ -1040,12 +1044,16 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     const entry = await waitForSessionInList(phone, sessionId);
     expect(entry.session.nodeId).toBe('node-3');
     expect(entry.session.provider).toBe('test-echo');
-    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string }>(
+    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string; branch?: string }>(
       sessionId,
       entry.privateEnvelope,
       key,
     );
-    expect(decryptedMeta).toEqual({ title: 'client session', projectPath });
+    expect(decryptedMeta).toEqual({
+      title: 'client session',
+      projectPath,
+      branch: `loombox/session-${sessionId}`,
+    });
 
     // The session is a real, working one: prompting it directly produces output.
     await node.promptSession(sessionId, 'hi');
@@ -1401,6 +1409,60 @@ describe('NodeDaemon (protocol v1, E2E encrypted)', () => {
     await expect(
       node.createSession({ projectPath, provider: 'test-echo', worktree: false }),
     ).rejects.toThrow(/already running/i);
+  });
+
+  it('resolves and threads the actual current branch for an in-place session, live off disk (issue #738, B3-3)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-session-create-inplace-branch';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-inplace-branch',
+      deviceId: 'device-node-inplace-branch',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    // The project folder is on a real, non-default branch — never a
+    // client-supplied value, this only ever reaches the wire because the
+    // node itself probed `projectPath`'s own `HEAD`.
+    await git(projectPath, ['checkout', '-b', 'feature/wire-the-branch']);
+
+    const sessionId = 'sess-inplace-branch';
+    const key = await derivePhoneSessionKey(amk, accountId, sessionId);
+    const privateEnvelope = await phoneSeal(
+      sessionId,
+      { title: 'in place, real branch', projectPath, worktree: false },
+      key,
+    );
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-inplace-branch',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({
+      type: 'session_create',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      targetId: 'local',
+      provider: 'test-echo',
+      privateEnvelope,
+    });
+
+    const entry = await waitForSessionInList(phone, sessionId);
+    const decryptedMeta = await phoneOpen<{ title: string; projectPath: string; branch?: string }>(
+      sessionId,
+      entry.privateEnvelope,
+      key,
+    );
+    expect(decryptedMeta.branch).toBe('feature/wire-the-branch');
   });
 
   it("threads the private envelope's worktree: true into an isolated worktree session (issue #507)", async () => {
