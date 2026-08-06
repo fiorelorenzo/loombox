@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildInlineImageContentBlock, IMAGE_EXTENSION_BY_MIME_TYPE, sniffImageMimeType } from './image';
+import {
+  buildInlineImageContentBlock,
+  IMAGE_EXTENSION_BY_MIME_TYPE,
+  sniffImageMimeType,
+} from './image';
 
 function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values);
@@ -87,7 +91,10 @@ describe('buildInlineImageContentBlock (SPEC.md §7.25; issue #158)', () => {
     // one.
     const jpegBytes = bytes(0xff, 0xd8, 0xff, 0xe0);
     const result = buildInlineImageContentBlock(jpegBytes, { imageCapabilityNegotiated: true });
-    expect(result).toEqual({ ok: true, block: expect.objectContaining({ mimeType: 'image/jpeg' }) });
+    expect(result).toEqual({
+      ok: true,
+      block: expect.objectContaining({ mimeType: 'image/jpeg' }),
+    });
   });
 
   it('declines with "unsupported-format" for bytes that do not sniff as a supported image', () => {

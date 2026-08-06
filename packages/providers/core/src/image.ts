@@ -82,9 +82,7 @@ export const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 
 /** Why {@link buildInlineImageContentBlock} declined to build an inline block — never thrown, always returned, so a caller can degrade (SPEC.md §7.25's on-disk `resource_link` fallback) instead of failing the whole turn. */
 export type InlineImageHandoffFailureReason =
-  | 'capability-not-negotiated'
-  | 'oversize'
-  | 'unsupported-format';
+  'capability-not-negotiated' | 'oversize' | 'unsupported-format';
 
 export type InlineImageHandoffResult =
   | { ok: true; block: AcpImageContentBlock }

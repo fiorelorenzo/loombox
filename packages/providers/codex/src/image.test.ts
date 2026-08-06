@@ -28,7 +28,10 @@ describe('buildCodexImageContentBlock (SPEC.md §7.25; issue #158)', () => {
     // one.
     const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
     const result = buildCodexImageContentBlock(jpegBytes, { imageCapabilityNegotiated: true });
-    expect(result).toEqual({ ok: true, block: expect.objectContaining({ mimeType: 'image/jpeg' }) });
+    expect(result).toEqual({
+      ok: true,
+      block: expect.objectContaining({ mimeType: 'image/jpeg' }),
+    });
   });
 
   it('declines with "unsupported-format" for bytes that do not sniff as a supported image format', () => {
