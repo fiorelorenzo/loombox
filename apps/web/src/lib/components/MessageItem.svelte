@@ -19,16 +19,19 @@
    * content is never held up behind it. Every message/thought gets the
    * shared copy affordance (issue #150).
    *
-   * `item.text` itself is also revealed at a smoothed, bounded rate rather
-   * than dumped straight into the DOM (SPEC.md §7.24 "Streaming mechanics",
-   * issue #137) via `$lib/text-pacer.ts`'s `TextPacer` — see that module's
-   * doc comment for the reveal-rate rationale. A history/replay item (the
-   * common case: `turnActive` defaults to `false`) renders in full
-   * immediately, never "typed out"; only a genuinely live item (the caller
-   * passes `turnActive={true}` for the session's current turn) paces its
-   * reveal, and always flushes to the full text the instant `turnActive`
-   * goes false — the real `turn_ended` signal, so nothing is ever left
-   * partially revealed once a turn settles.
+   * `item.text` itself renders exactly as it arrives, with no pacing and
+   * no per-tick reveal (issue #757, design spec
+   * `2026-08-05-zed-parity-decisions.md` §0/§5 E2): the `TextPacer` that
+   * used to throttle reveal to a fixed rate (issue #137) is gone entirely,
+   * now that #755's windowing keeps an unbounded transcript cheap to mount
+   * and #756 moved decryption off the main thread — the two preconditions
+   * the pacer existed to wait for; removing it before them would have
+   * recreated the exact same-thread jank it was built to avoid.
+   * `turnActive` still gates one thing below: `splitStreamingMarkdown`'s
+   * `finalized` flag, which decides whether a still-open Markdown
+   * construct (an unterminated fence, a building list) renders as its
+   * plain, un-finalized form — independent of reveal timing, so it stays
+   * a prop read straight off `item.text`.
    *
    * Redesign v3 (`docs/superpowers/specs/2026-07-25-redesign-v3-design.md`
    * §3.4 "Canvas and transcript" — one timeline metaphor): the root
@@ -106,7 +109,6 @@
    * without turning the mode itself back into per-component state, since
    * the override sets no default for any other, future thought.
    */
-  import { untrack } from 'svelte';
   import type { TranscriptMessageItem } from '@loombox/providers-core/browser';
   import { itemCopyText } from '$lib/copy';
   import { expandThoughtsStore } from '$lib/expand-thoughts';
@@ -116,7 +118,6 @@
     splitStreamingMarkdown,
   } from '$lib/markdown';
   import { PROVIDER_LABELS } from '$lib/providers';
-  import { TextPacer } from '$lib/text-pacer';
   import CopyButton from './CopyButton.svelte';
   import WovenLoader from './WovenLoader.svelte';
   import Icon from './icons/Icon.svelte';
@@ -125,7 +126,7 @@
     item: TranscriptMessageItem;
     /** True while this thought's turn is still streaming with no message content yet (issue #136); meaningless for a non-thought item. Defaults false so every other caller/test is unaffected. */
     thinking?: boolean;
-    /** True while this item's own turn is still live (issue #137's flush-on-`turn_ended` trigger). Defaults false, which flushes immediately — the correct behavior for replayed history and for every caller that doesn't pass it. */
+    /** True while this item's own turn is still live — gates `splitStreamingMarkdown`'s `finalized` flag below (a still-open Markdown construct renders as its plain, un-finalized form only while the turn is live). Defaults false, the correct behavior for replayed history and for every caller that doesn't pass it. */
     turnActive?: boolean;
     /** The session's `ClientSessionMeta.provider` (e.g. `'claude'`) — only meaningful for an agent/thought row's `.sr-only` accessible label; a user row's label is always "You" regardless. Omitted falls back to the generic "Agent" label rather than guessing. */
     providerId?: string;
@@ -133,34 +134,20 @@
 
   const { item, thinking = false, turnActive = false, providerId }: Props = $props();
 
-  // Deliberately a one-time read of `item.text.length` at mount (`untrack`
-  // opts out of the reactive dependency Svelte would otherwise warn about),
-  // not a reactive binding: the actual reactive catch-up as `item.text`
-  // grows happens through the `$effect` below calling `pacer.setTarget`,
-  // which is the whole point of pacing it rather than mirroring it
-  // directly.
-  const initialTextLength = untrack(() => item.text.length);
-  let revealedLength = $state(initialTextLength);
-  const pacer = new TextPacer({
-    initialLength: initialTextLength,
-    onReveal: (length) => (revealedLength = length),
-  });
-  const displayText = $derived(item.text.slice(0, revealedLength));
-
   // Markdown (issue #574, design spec §3.4; async highlighting issue #600):
-  // re-parsing the whole message through remark/rehype on every 32ms reveal
-  // tick does not hold up on a long turn, so `splitStreamingMarkdown`
-  // (`$lib/markdown`) finds the last position in `displayText` that is safe
+  // re-parsing the whole message through remark/rehype on every chunk that
+  // arrives does not hold up on a long turn, so `splitStreamingMarkdown`
+  // (`$lib/markdown`) finds the last position in `item.text` that is safe
   // to fully parse — every block opened so far has also closed — and only
   // that "stable" prefix goes through the real Markdown pipeline; a
   // still-forming block after it (`tailText`) renders as plain text, and a
   // still-open fenced code block (`openFence`) renders as a plain monospace
   // box, never syntax-highlighted until its closing fence actually arrives.
   // `lastStableSource`/`lastStableHtml` are plain (non-reactive) locals,
-  // not `$state`: most ticks only grow `tailText`, so this cache is what
-  // keeps the expensive parse+sanitize call from re-running on every one of
-  // them — it only reruns when the stable boundary itself actually
-  // advances.
+  // not `$state`: most chunk arrivals only grow `tailText`, so this cache
+  // is what keeps the expensive parse+sanitize call from re-running on
+  // every one of them — it only reruns when the stable boundary itself
+  // actually advances.
   //
   // Highlighting (issue #600) is a second, independent, async trigger
   // layered on top: `renderMarkdownToHtml` never highlights any more, so
@@ -194,7 +181,7 @@
   }
 
   const rendered = $derived.by(() => {
-    const split = splitStreamingMarkdown(displayText, !turnActive);
+    const split = splitStreamingMarkdown(item.text, !turnActive);
     if (split.stable !== lastStableSource) {
       lastStableSource = split.stable;
       lastStableHtml = renderMarkdownToHtml(split.stable);
@@ -218,18 +205,6 @@
     return () => {
       destroyed = true;
     };
-  });
-
-  $effect(() => {
-    pacer.setTarget(item.text.length);
-  });
-
-  $effect(() => {
-    if (!turnActive) pacer.flush();
-  });
-
-  $effect(() => {
-    return () => pacer.stop();
   });
 
   const role = $derived(

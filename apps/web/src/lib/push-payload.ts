@@ -5,8 +5,8 @@
  * `ServiceWorkerGlobalScope` (`self.registration.showNotification`,
  * `clients.matchAll`/`openWindow`, ...) — the same "logic in a plain
  * module, glue in the thin wrapper" split this package uses throughout
- * (`attachments.ts` vs `AttachmentBar.svelte`, `text-pacer.ts` vs the
- * transcript rendering it drives).
+ * (`attachments.ts` vs `AttachmentBar.svelte`, `windowing.svelte.ts` vs
+ * `TranscriptTimeline.svelte`).
  *
  * The payload shape mirrors `packages/relay/src/push.ts`'s `PushPayload`
  * exactly (mirrored, not imported — the same deliberate E2E-boundary

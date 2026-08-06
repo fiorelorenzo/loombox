@@ -163,53 +163,56 @@ describe('MessageItem: thinking/reasoning display (#136)', () => {
   });
 });
 
-describe('MessageItem: streaming render pacing (#137)', () => {
-  afterEach(() => vi.useRealTimers());
-
+describe('MessageItem: streamed text renders as it arrives, no pacer (issue #757)', () => {
   it('renders replayed/settled history (turnActive omitted) in full immediately, never "typed out"', () => {
     render(MessageItem, { props: { item: messageItem({ text: 'a full historical message' }) } });
     expect(screen.getByTestId('message-text').textContent).toBe('a full historical message');
   });
 
-  it('reveals a live item incrementally rather than dumping the whole burst at once, and never drops content', async () => {
-    vi.useFakeTimers();
+  it('renders a live burst in full the instant it arrives, with no timer anywhere in this test to catch it up', async () => {
     const { getByTestId, rerender } = render(MessageItem, {
       props: { item: messageItem({ text: '' }), turnActive: true },
     });
 
     const longBurst = 'x'.repeat(400);
+    // No `vi.useFakeTimers`/`advanceTimersByTime` call anywhere in this
+    // test: if a pacer (or any other timer) still sat between the chunk
+    // and the DOM, this assertion would see a partial string here, not
+    // the full burst, on the very next microtask.
     await rerender({ item: messageItem({ text: longBurst }), turnActive: true });
-    await vi.advanceTimersByTimeAsync(32);
-
-    const midway = getByTestId('message-text').textContent ?? '';
-    expect(midway.length).toBeGreaterThan(0);
-    expect(midway.length).toBeLessThan(longBurst.length);
-    expect(longBurst.startsWith(midway)).toBe(true);
-
-    await vi.advanceTimersByTimeAsync(32 * 200);
     expect(getByTestId('message-text').textContent).toBe(longBurst);
   });
 
-  it('flushes fully the instant turnActive goes false (the turn_ended guarantee)', async () => {
-    vi.useFakeTimers();
-    const longText = 'y'.repeat(300);
+  it('turn_ended still settles the turn correctly with the flush path gone: text that grew while the turn was live is already the full final text the instant turnActive flips false', async () => {
     const { getByTestId, rerender } = render(MessageItem, {
-      props: { item: messageItem({ text: longText }), turnActive: true },
+      props: { item: messageItem({ text: '' }), turnActive: true },
     });
-    await vi.advanceTimersByTimeAsync(32); // still mid-reveal
 
+    const longText = 'y'.repeat(300);
+    // Growth via a synchronous prop update, the same way the reducer
+    // appends chunks onto a live item — proves the text is never left
+    // partially revealed while the turn is still active, which is what
+    // used to require `TextPacer.flush()` on `turn_ended`.
+    await rerender({ item: messageItem({ text: longText }), turnActive: true });
+    expect(getByTestId('message-text').textContent).toBe(longText);
+
+    // The turn settles (`turn_ended`): the only turn_ended-specific
+    // behavior the old code had here — `pacer.flush()` — is gone
+    // entirely. Text was already full before this rerender and stays
+    // full after it, proving turn_ended still settles the turn with no
+    // flush step required. A regression that reintroduced any lag
+    // between chunk arrival and render would already have failed the
+    // assertion above, before turnActive even goes false.
     await rerender({ item: messageItem({ text: longText }), turnActive: false });
     expect(getByTestId('message-text').textContent).toBe(longText);
   });
 
-  it('a mid-stream rerender does not remount the item — the DOM node stays the same instance across ticks', async () => {
-    vi.useFakeTimers();
+  it('a mid-stream rerender does not remount the item — the DOM node stays the same instance as the item grows', async () => {
     const item = messageItem({ text: '' });
     const { getByTestId, rerender } = render(MessageItem, { props: { item, turnActive: true } });
     const before = getByTestId('message-item');
 
     await rerender({ item: { ...item, text: 'growing text' }, turnActive: true });
-    await vi.advanceTimersByTimeAsync(32);
     const after = getByTestId('message-item');
 
     expect(after).toBe(before);
@@ -283,8 +286,6 @@ describe('MessageItem: turn delimitation v7 (design spec §2, issue #667 — B1-
 });
 
 describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decisions.md, issue #709)', () => {
-  afterEach(() => vi.useRealTimers());
-
   it('B2-1: the disclosure toggle carries no visible text — the label moved above the thought, the accessible name lives in aria-label alone', () => {
     render(MessageItem, {
       props: {
@@ -343,7 +344,6 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
   });
 
   it('C4-2 x #660: under automatic (the default), a thought producing text stays visible and keeps growing, then collapses back once real content settles', async () => {
-    vi.useFakeTimers();
     const item = messageItem({ kind: 'agent_thought_chunk', text: '' });
     const { getByTestId, queryByTestId, rerender } = render(MessageItem, {
       props: { item, thinking: true, turnActive: true },
@@ -356,12 +356,14 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
     expect(queryByTestId('thought-body')).toBeTruthy();
 
     const full = 'reasoning about the empty-table edge case in some detail';
+    const partial = full.slice(0, 20);
+    // A real chunk arrival, not a timer tick: the body shows exactly what
+    // has arrived so far, immediately (issue #757 — no pacing).
+    await rerender({ item: { ...item, text: partial }, thinking: true, turnActive: true });
+    expect(getByTestId('thought-body').textContent).toBe(partial);
+
     await rerender({ item: { ...item, text: full }, thinking: true, turnActive: true });
-    await vi.advanceTimersByTimeAsync(32);
-    const midway = getByTestId('thought-body').textContent ?? '';
-    expect(midway.length).toBeGreaterThan(0);
-    expect(midway.length).toBeLessThan(full.length);
-    expect(full.startsWith(midway)).toBe(true);
+    expect(getByTestId('thought-body').textContent).toBe(full);
 
     // Once thinking ends, automatic collapses right back — "collapses to
     // one line the moment real content starts" is C4-2's own wording.
@@ -396,8 +398,6 @@ describe('MessageItem: v8 §2 decisions (design spec 2026-08-05-cockpit-v8-decis
 });
 
 describe('MessageItem: Markdown rendering (issue #574)', () => {
-  afterEach(() => vi.useRealTimers());
-
   it('renders a fenced ts block as a code block with no visible backticks, plain first then highlighted (#600 async highlighter)', async () => {
     const { container } = render(MessageItem, {
       props: { item: messageItem({ text: '```ts\nconst x: number = 1;\n```' }) },
@@ -435,26 +435,25 @@ describe('MessageItem: Markdown rendering (issue #574)', () => {
     expect(wrap?.querySelectorAll('th').length).toBe(3);
   });
 
-  it('renders a still-open fence as a plain, unhighlighted monospace box at several intermediate reveal states, then highlights it once closed with no flicker between two layouts', async () => {
-    vi.useFakeTimers();
+  it('renders a still-open fence as a plain, unhighlighted monospace box at several intermediate arrival points, then highlights it once closed with no flicker between two layouts', async () => {
     const opening = 'Explain:\n\n```ts\nconst x: number = 1;\nconsole.lo';
-    const item = messageItem({ text: opening });
+    const item = messageItem({ text: '' });
     const { getByTestId, queryByTestId, rerender } = render(MessageItem, {
       props: { item, turnActive: true },
     });
 
-    // Several intermediate reveal states while the fence is still open: it
-    // always renders as the plain monospace box, never with token spans,
-    // and never disappears.
-    for (const advanceMs of [32, 64, 32 * 20]) {
-      await vi.advanceTimersByTimeAsync(advanceMs);
+    // Several intermediate arrival points while the fence is still open —
+    // real chunk growth, not a timer of any kind: it always renders as
+    // the plain monospace box, never with token spans, and never
+    // disappears.
+    for (const cut of [10, 25, opening.length]) {
+      await rerender({ item: { ...item, text: opening.slice(0, cut) }, turnActive: true });
       const openFence = queryByTestId('md-open-fence');
       if (openFence) {
         expect(openFence.querySelector('.hljs-keyword')).toBeNull();
         expect(openFence.tagName).toBe('PRE');
       }
     }
-    await vi.advanceTimersByTimeAsync(32 * 200); // fully caught up to the (still-open) target
     const openFence = getByTestId('md-open-fence');
     expect(openFence.textContent).toContain('const x: number = 1;');
     expect(openFence.querySelector('.hljs-keyword')).toBeNull();
@@ -470,7 +469,6 @@ describe('MessageItem: Markdown rendering (issue #574)', () => {
     expect(queryByTestId('md-open-fence')).toBeNull();
     expect(getByTestId('message-text').textContent).not.toContain('```');
     expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeNull();
-    vi.useRealTimers();
     await vi.waitFor(() => {
       expect(getByTestId('message-text').querySelector('.hljs-keyword')).toBeTruthy();
     });
