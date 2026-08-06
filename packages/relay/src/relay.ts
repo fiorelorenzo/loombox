@@ -1545,6 +1545,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // (SPEC §8's metadata boundary).
         fanOutDirect(message.sessionId, message);
         return;
+      case 'ci_check_status':
+        // The owning node's periodic CI check-run reading for a session
+        // whose branch has an open PR (SPEC §7.14; issue #239) — fanned
+        // out exactly like run_output/pr_open_result above; the relay
+        // never opens the envelope, so it never sees a check's name,
+        // conclusion, or failure output.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'lease_request':
         // SPEC §9; issues #82/#104: a session is owned by a node, never a
         // client — only a node connection ever sends this.

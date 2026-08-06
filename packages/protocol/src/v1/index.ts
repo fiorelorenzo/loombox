@@ -690,6 +690,22 @@ export {
   prOpenResult,
   prOpenOutcome,
 } from './pr';
+export type {
+  CiCheckRunV1,
+  CiCheckOverallStateV1,
+  CiCheckStateV1,
+  CiCheckStatusPayloadV1,
+  CiCheckStatus,
+} from './ci-check';
+export {
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  parseCiCheckStatusPayloadV1,
+  safeParseCiCheckStatusPayloadV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
+} from './ci-check';
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
@@ -1067,6 +1083,13 @@ import {
   prOpenOutcome,
 } from './pr';
 import {
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
+} from './ci-check';
+import {
   permissionPolicyGet,
   permissionPolicyResult,
   permissionPolicySet,
@@ -1420,4 +1443,9 @@ export const schemasV1 = {
   prOpenRequest,
   prOpenResult,
   prOpenOutcome,
+  ciCheckRunV1,
+  ciCheckOverallStateV1,
+  ciCheckStateV1,
+  ciCheckStatusPayloadV1,
+  ciCheckStatus,
 } as const;
