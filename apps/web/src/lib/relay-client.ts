@@ -51,6 +51,9 @@ import {
   type ConnectedAccount,
   type ConnectedAccountDisconnectResponse,
   type ConnectedAccountList,
+  type KeymapResult,
+  type KeymapV1,
+  keymapV1,
   type CustomAgentProbeRequestPayloadV1,
   type CustomAgentProbeResponse,
   type CustomAgentProbeResponsePayloadV1,
@@ -1059,6 +1062,21 @@ export class RelayClient {
   /** SPEC §7.26's connected-accounts registry (issue #221; the connect/pin/disconnect write path is issue #230) — every `ConnectedAccount` synced under this account, across every node. Requested once alongside `session_list_request` on every fresh `attemptOpen()` (including a reconnect); a full-replace snapshot, never a delta — see {@link handleConnectedAccountList}. Call {@link refreshConnectedAccounts} to re-request it (e.g. right after a connect/disconnect this client itself drove). */
   readonly connectedAccounts: Readable<ConnectedAccount[]>;
   /**
+   * Zed-parity F3-3, issue #760: this account's user-editable keymap —
+   * `{}` (nothing remapped) until the first `keymap_result` lands. Fetched
+   * proactively on every fresh `attemptOpen()` (including a reconnect),
+   * alongside `session_list_request`/`connected_account_list_request`, so
+   * a brand-new device sees it from first paint. Also updated live
+   * whenever ANY tab/device on this account saves a change — see
+   * {@link handleKeymapResult}'s own doc comment for why this is a
+   * stronger guarantee than {@link connectedAccounts}'s "re-request it
+   * yourself" contract. `+page.svelte` threads this straight into
+   * `effectiveShortcut`/`matchShortcut`'s `overrides` param, so a remap
+   * takes effect the instant this store updates — no reload, and no
+   * separate "apply" step.
+   */
+  readonly keymap: Readable<KeymapV1>;
+  /**
    * This RELAY's own build identity (issue #655), from the most recent
    * `initialize_result` — "what is actually being served", the baseline a
    * node's row compares its own `TargetListEntry.build` against
@@ -1081,6 +1099,7 @@ export class RelayClient {
   private readonly sessionsStore: Writable<ClientSessionMeta[]>;
   private readonly sessionDecryptFailuresStore: Writable<number> = writable(0);
   private readonly connectedAccountsStore: Writable<ConnectedAccount[]> = writable([]);
+  private readonly keymapStore: Writable<KeymapV1> = writable({});
   private readonly relayBuildIdentityStore: Writable<BuildIdentityV1 | undefined> =
     writable(undefined);
   /** requestId -> the pending `startGithubConnect` call it belongs to (SPEC §7.26, issue #230). `github_connect_device_code` streams once via `onDeviceCode` (kept in the map, not deleted — the terminal `github_connect_result` is what settles and removes it), mirroring `pendingProvisionRequests`' `onProgress`/final-result split. Plain fields only (no envelope), so like `pendingSshDiscoveryRequests` this resolves a Promise directly. */
@@ -1091,6 +1110,11 @@ export class RelayClient {
       resolve: (outcome: GithubConnectOutcome) => void;
       reject: (error: Error) => void;
     }
+  >();
+  /** requestId -> the pending {@link getKeymap}/{@link setKeymap} call it belongs to (issue #760). Resolved/rejected by {@link handleKeymapResult}, which — unlike this pattern elsewhere in this class — ALSO applies the payload to {@link keymapStore} even when no pending entry matches, since a `keymap_result` this class never asked for is exactly the "another tab/device just saved a change" push (see that method's own doc comment). */
+  private readonly pendingKeymapRequests = new Map<
+    string,
+    { resolve: (keymap: KeymapV1) => void; reject: (error: Error) => void }
   >();
   /** requestId -> the pending `connectJiraAccount` call it belongs to (SPEC §7.26, issue #230) — one round trip, no progress step. */
   private readonly pendingJiraConnectRequests = new Map<
@@ -1472,6 +1496,7 @@ export class RelayClient {
     this.sessions = this.sessionsStore;
     this.sessionDecryptFailures = this.sessionDecryptFailuresStore;
     this.connectedAccounts = this.connectedAccountsStore;
+    this.keymap = this.keymapStore;
     this.relayBuildIdentity = this.relayBuildIdentityStore;
 
     // Reloads whatever this account's outbox already had persisted (issue
@@ -1566,6 +1591,18 @@ export class RelayClient {
           // snapshot, requested alongside the session list above so a
           // picker renders from the first paint of any fresh connection.
           this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
+          // Zed-parity F3-3, issue #760: fire-and-forget — nothing awaits
+          // this specific `requestId` (not registered in
+          // `pendingKeymapRequests`), since {@link handleKeymapResult}
+          // applies whatever comes back straight to `keymapStore`
+          // regardless of a pending match. This is what lets a brand-new
+          // device see the account's saved keymap from first paint, with
+          // no explicit `getKeymap()` call anywhere in `+page.svelte`.
+          this.send({
+            type: 'keymap_get_request',
+            protocolVersion: PROTOCOL_V1,
+            requestId: generateId('keymap'),
+          });
           // Issue #660: a session already `ensureSubscribed` on a prior
           // connection (or subscribed before this very first handshake
           // finished) lost that relay-side subscription the moment its
@@ -2845,6 +2882,95 @@ export class RelayClient {
         })
         .catch((error: unknown) => {
           this.pendingAgentProfileSessionRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * Re-requests this account's saved keymap (Zed-parity F3-3, issue #760)
+   * — no session/project involved at all, unlike every `get*` method
+   * around this one. Resolves with `{}` (never rejects on "nothing saved
+   * yet") the moment `keymap_result` lands; `{@link keymap}` itself
+   * already reflects the answer by the time this promise settles, since
+   * {@link handleKeymapResult} updates the store first. Mostly for tests
+   * and an explicit "refresh" affordance — `+page.svelte` never needs to
+   * call this itself, since the handshake handler already fetches this
+   * proactively on every fresh connection.
+   */
+  getKeymap(timeoutMs = 5000): Promise<KeymapV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot get keymap, no open connection'));
+    }
+    const requestId = generateId('keymap');
+    return new Promise<KeymapV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingKeymapRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for keymap_result'));
+      }, timeoutMs);
+      this.pendingKeymapRequests.set(requestId, {
+        resolve: (keymap) => {
+          clearTimeout(timer);
+          resolve(keymap);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ type: 'keymap_get_request', protocolVersion: PROTOCOL_V1, requestId });
+    });
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch, mirrors
+   * `setPermissionPolicy`'s own contract) this account's keymap
+   * (Zed-parity F3-3, issue #760). Sealed under `@loombox/crypto`'s
+   * `deriveKeymapKey` (the `'keymap'` envelope family, `crypto-worker-
+   * engine.ts`) — no sessionId, no node, no project anywhere in this
+   * path. Validating `candidate` against the live registry (unknown
+   * action id, malformed chord, a conflict) is the CALLER's job
+   * (`KeymapPanel.svelte`'s own pre-send `validateKeymapCandidate` call,
+   * `$lib/keymap.ts`) — this method sends whatever `KeymapV1` it is
+   * given, exactly like `setPermissionPolicy` sends whatever policy it is
+   * given. Resolves with the saved result once `keymap_result` lands,
+   * same as {@link getKeymap} — by then `{@link keymap}` (and every other
+   * open tab/device on this account, per the relay's own fan-out) already
+   * reflects it too.
+   */
+  setKeymap(candidate: KeymapV1, timeoutMs = 5000): Promise<KeymapV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save keymap, no open connection'));
+    }
+    const requestId = generateId('keymap');
+    return new Promise<KeymapV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingKeymapRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for keymap_result'));
+      }, timeoutMs);
+      this.pendingKeymapRequests.set(requestId, {
+        resolve: (keymap) => {
+          clearTimeout(timer);
+          resolve(keymap);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.envelopeCrypto
+        .seal('keymap', this.accountId, this.accountId, candidate)
+        .then((envelope) => {
+          this.send({
+            type: 'keymap_set_request',
+            protocolVersion: PROTOCOL_V1,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingKeymapRequests.delete(requestId);
           clearTimeout(timer);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
@@ -4734,6 +4860,9 @@ export class RelayClient {
       case 'permission_policy_result':
         this.handlePermissionPolicyResult(message);
         return;
+      case 'keymap_result':
+        this.handleKeymapResult(message);
+        return;
       case 'permission_policy_violation':
         this.handlePermissionPolicyViolation(message);
         return;
@@ -5156,6 +5285,50 @@ export class RelayClient {
     if (!pending) return;
     this.pendingTargetListRequests.delete(message.requestId);
     pending.resolve(message.targets);
+  }
+
+  /**
+   * The relay's reply to this client's own {@link getKeymap}/
+   * {@link setKeymap} call — OR an unprompted live push from a
+   * `keymap_set_request` some OTHER tab/device on this same account just
+   * sent (issue #760's "two tabs" merge story: the relay fans the winning
+   * write to every account connection, not just the one that sent it —
+   * `packages/relay/src/relay.ts`'s own doc comment on the
+   * `keymap_set_request` handler). Unlike {@link handlePermissionPolicyResult}'s
+   * "requestId not pending means it isn't mine, drop it" guard, THIS
+   * handler always applies the payload to {@link keymapStore} regardless
+   * of whether `message.requestId` has a pending entry — deliberately, so
+   * a losing tab corrects its live view the instant it is out-voted,
+   * rather than silently pressing a chord the UI no longer shows as
+   * bound. Only resolves/rejects a pending {@link getKeymap}/
+   * {@link setKeymap} promise when this connection actually sent that
+   * request.
+   */
+  private handleKeymapResult(message: KeymapResult): void {
+    const pending = this.pendingKeymapRequests.get(message.requestId);
+    this.pendingKeymapRequests.delete(message.requestId);
+
+    if (message.envelope === null) {
+      this.keymapStore.set({});
+      pending?.resolve({});
+      return;
+    }
+
+    this.envelopeCrypto
+      .open<unknown>('keymap', this.accountId, this.accountId, message.envelope)
+      .then((decrypted) => {
+        const parsed = keymapV1.safeParse(decrypted);
+        if (!parsed.success) {
+          throw new Error('RelayClient: received a malformed keymap envelope');
+        }
+        this.keymapStore.set(parsed.data);
+        pending?.resolve(parsed.data);
+      })
+      .catch((error: unknown) => {
+        const err = error instanceof Error ? error : new Error(String(error));
+        console.warn(`RelayClient: failed to decrypt keymap_result: ${err.message}`);
+        pending?.reject(err);
+      });
   }
 
   /**

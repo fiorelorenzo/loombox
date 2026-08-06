@@ -30,10 +30,13 @@
     NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
   import type { BuildIdentityV1, ConnectedAccount, TargetListEntry } from '$lib/relay-client';
+  import type { KeymapV1 } from '@loombox/protocol';
+  import { isNarrowViewport } from '$lib/viewport';
   import AppearanceSettings from '../AppearanceSettings.svelte';
   import ConnectedAccountsSection, {
     type ConnectedAccountsClient,
   } from '../ConnectedAccountsSection.svelte';
+  import KeymapPanel, { type KeymapClient } from '../KeymapPanel.svelte';
   import NotificationPreferences from '../NotificationPreferences.svelte';
   import PushNotificationToggle from '../PushNotificationToggle.svelte';
   import TargetStatusView, { type FocusTarget } from '../TargetStatusView.svelte';
@@ -41,7 +44,8 @@
   import Card from '../ui/Card.svelte';
   import PageLayout from './PageLayout.svelte';
 
-  export type SettingsSection = 'appearance' | 'notifications' | 'push' | 'nodes' | 'accounts';
+  export type SettingsSection =
+    'appearance' | 'notifications' | 'push' | 'nodes' | 'accounts' | 'keyboard';
 
   interface Props {
     /** `undefined` until `+page.svelte`'s `onMount` constructs the real, localStorage-backed store (SSR has no `localStorage`); mirrors that mount site's own `{#if notificationPreferencesStorage}` guard. */
@@ -63,10 +67,12 @@
     /** Opens the zero-touch provision-and-pair wizard (`AddTargetWizard`); moved onto this section from the old `NodesPage`'s own page actions. */
     onAddTarget: () => void;
     onConnectNode: () => void;
-    /** SPEC §7.26's connected-accounts write path (issue #230) — `undefined` before `+page.svelte`'s `RelayClient` is constructed, mirroring `deviceId`'s own "gate the whole section on prerequisite readiness" pattern. */
-    client?: ConnectedAccountsClient;
+    /** SPEC §7.26's connected-accounts write path (issue #230) plus F3-3's keymap write path (issue #760) — `undefined` before `+page.svelte`'s `RelayClient` is constructed, mirroring `deviceId`'s own "gate the whole section on prerequisite readiness" pattern. Widened to both narrowed interfaces rather than accepting two separate client props, since `RelayClient` satisfies both structurally and every caller only ever has the one real instance anyway. */
+    client?: ConnectedAccountsClient & KeymapClient;
     /** `RelayClient.connectedAccounts`'s latest snapshot — always an array (empty before the first sync), never gates the section on its own. */
     connectedAccounts?: ConnectedAccount[];
+    /** `RelayClient.keymap`'s latest snapshot (issue #760) — `{}` (nothing remapped) until the first `keymap_result` lands, same "always current, never gates the section" contract `connectedAccounts` already follows. */
+    keymap?: KeymapV1;
     /** Which section is showing; defaults to `'appearance'` so a caller that never sets it (every current test but the ones that care) still renders a complete page. */
     section?: SettingsSection;
     /** Fired when the sub-nav/segmented control picks a different section — `+page.svelte` owns `section` itself, this is how a click here reaches that state (see this component's own doc comment for why it isn't `$bindable`). */
@@ -90,16 +96,28 @@
     onConnectNode,
     client,
     connectedAccounts = [],
+    keymap = {},
     section = 'appearance',
     onSectionChange,
   }: Props = $props();
+
+  /**
+   * Zed-parity F3-3, issue #760's mobile answer: the "Keyboard" section
+   * never appears at all on a narrow viewport — recording a chord has
+   * nothing to attach to with no physical keyboard to press (the design
+   * mockup's own words). Not a read-only fallback: nothing this section
+   * shows isn't already visible in the palette on every viewport. Reuses
+   * `viewport.ts`'s existing narrow-viewport breakpoint, the same one
+   * `+page.svelte`'s own mobile layout decisions already key off.
+   */
+  const narrowViewport = isNarrowViewport();
 
   interface SectionItem {
     id: SettingsSection;
     label: string;
   }
 
-  /** Notifications/Push/Accounts only ever show up once their own prerequisite is ready (mirrors the old Drawer tab guards verbatim), so the nav never offers a section with nothing behind it. Nodes has no such gate: it's always there, same as Appearance. */
+  /** Notifications/Push/Accounts/Keyboard only ever show up once their own prerequisite is ready (mirrors the old Drawer tab guards verbatim), so the nav never offers a section with nothing behind it. Nodes has no such gate: it's always there, same as Appearance. */
   const visibleSections = $derived(
     (
       [
@@ -110,6 +128,7 @@
         deviceId ? { id: 'push', label: 'Push' } : undefined,
         { id: 'nodes', label: 'Nodes' },
         client ? { id: 'accounts', label: 'Accounts' } : undefined,
+        client && !$narrowViewport ? { id: 'keyboard', label: 'Keyboard' } : undefined,
       ] satisfies Array<SectionItem | undefined>
     ).filter((item): item is SectionItem => item !== undefined),
   );
@@ -219,6 +238,11 @@
         <section class="settings-section" data-testid="settings-section-accounts">
           <h2>Connected accounts</h2>
           <ConnectedAccountsSection {client} {connectedAccounts} {targets} {projectPaths} />
+        </section>
+      {:else if activeSection === 'keyboard' && client}
+        <section class="settings-section" data-testid="settings-section-keyboard">
+          <h2>Keyboard</h2>
+          <KeymapPanel {client} {keymap} />
         </section>
       {/if}
     </div>

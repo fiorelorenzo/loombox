@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CryptoKey } from './webcrypto-types';
 import { deriveKeyTree } from './key-tree';
 import { importAesGcmKey } from './aead';
-import { deriveProjectKey, deriveSessionKey } from './session-keys';
+import { deriveKeymapKey, deriveProjectKey, deriveSessionKey } from './session-keys';
 
 describe('deriveSessionKey', () => {
   it('derives the documented ["session", accountId, sessionId] path (matches deriveKeyTree + importAesGcmKey directly)', async () => {
@@ -130,5 +130,53 @@ describe('deriveProjectKey', () => {
 
     const sealed = await seal(projectKey, 'project content');
     await expect(crypto.subtle.decrypt(IV, sessionKey, sealed)).rejects.toThrow();
+  });
+});
+
+describe('deriveKeymapKey', () => {
+  const IV = { name: 'AES-GCM', iv: new Uint8Array(12), tagLength: 128 } as const;
+  const seal = (key: CryptoKey, text: string) =>
+    crypto.subtle.encrypt(IV, key, new TextEncoder().encode(text));
+
+  it('derives the documented ["keymap", accountId] path — no third segment, unlike session/project', async () => {
+    const amk = crypto.getRandomValues(new Uint8Array(32));
+
+    const key = await deriveKeymapKey(amk, 'acct-1');
+    const expectedNode = await deriveKeyTree(amk, ['keymap', 'acct-1']);
+    const expected = await importAesGcmKey(expectedNode.key);
+
+    const plaintext = new TextEncoder().encode('same key material');
+    const sealed = await crypto.subtle.encrypt(IV, key, plaintext);
+    expect(new Uint8Array(await crypto.subtle.decrypt(IV, expected, sealed))).toEqual(plaintext);
+  });
+
+  it('is deterministic across calls, which is what lets two devices holding the same AMK derive it independently', async () => {
+    const amk = crypto.getRandomValues(new Uint8Array(32));
+    const onDeviceA = await deriveKeymapKey(amk, 'acct-1');
+    const onDeviceB = await deriveKeymapKey(amk, 'acct-1');
+
+    const plaintext = new TextEncoder().encode('round trip');
+    const sealed = await crypto.subtle.encrypt(IV, onDeviceA, plaintext);
+    expect(new Uint8Array(await crypto.subtle.decrypt(IV, onDeviceB, sealed))).toEqual(plaintext);
+  });
+
+  it('scopes independently by accountId — two accounts never share a keymap key', async () => {
+    const amk = crypto.getRandomValues(new Uint8Array(32));
+    const base = await deriveKeymapKey(amk, 'acct-1');
+    const sealed = await seal(base, 'scoped');
+
+    const other = await deriveKeymapKey(amk, 'acct-2');
+    await expect(crypto.subtle.decrypt(IV, other, sealed)).rejects.toThrow();
+  });
+
+  it('never collides with the session or project families, which is the whole reason the path is namespaced', async () => {
+    const amk = crypto.getRandomValues(new Uint8Array(32));
+    const keymapKey = await deriveKeymapKey(amk, 'acct-1');
+    const sessionKey = await deriveSessionKey(amk, 'acct-1', 'acct-1');
+    const projectKey = await deriveProjectKey(amk, 'acct-1', 'acct-1');
+
+    const sealed = await seal(keymapKey, 'keymap content');
+    await expect(crypto.subtle.decrypt(IV, sessionKey, sealed)).rejects.toThrow();
+    await expect(crypto.subtle.decrypt(IV, projectKey, sealed)).rejects.toThrow();
   });
 });

@@ -225,6 +225,7 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
       unsetAccountPin: vi.fn(),
       resolveAccountPin: vi.fn(),
       refreshConnectedAccounts: vi.fn(),
+      setKeymap: vi.fn(async (candidate: Record<string, string>) => candidate),
     };
   }
 
@@ -256,5 +257,64 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
     render(SettingsPage, { props: { ...baseProps(), section: 'accounts' as const } });
     expect(screen.getByRole('heading', { name: 'Appearance', level: 2 })).toBeTruthy();
     expect(screen.queryByTestId('connected-accounts-section')).toBeNull();
+  });
+
+  // -----------------------------------------------------------------
+  // Keyboard section (Zed-parity F3-3, issue #760): gated on `client`
+  // like Accounts, PLUS never offered at all on a narrow viewport — the
+  // issue's own "the phone" answer, implemented here (not merely
+  // documented): recording a chord has nothing to attach to with no
+  // physical keyboard to press.
+  // -----------------------------------------------------------------
+
+  function stubMatchMedia(narrow: boolean): void {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({
+        matches: narrow,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+  }
+
+  it('offers no Keyboard section at all, in either nav, without a client (even on a wide viewport)', () => {
+    stubMatchMedia(false);
+    render(SettingsPage, { props: baseProps() });
+    expect(screen.queryByTestId('settings-nav-keyboard')).toBeNull();
+    expect(screen.queryByTestId('settings-tab-keyboard')).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('lists Keyboard in both navs on a wide viewport once a client is passed', () => {
+    stubMatchMedia(false);
+    render(SettingsPage, { props: { ...baseProps(), client: fakeAccountsClient() } });
+    expect(screen.getByTestId('settings-nav-keyboard')).toBeTruthy();
+    expect(screen.getByTestId('settings-tab-keyboard')).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
+
+  it("issue #760's mobile answer, implemented: a narrow viewport never offers Keyboard, even with a client", () => {
+    stubMatchMedia(true);
+    render(SettingsPage, { props: { ...baseProps(), client: fakeAccountsClient() } });
+    expect(screen.queryByTestId('settings-nav-keyboard')).toBeNull();
+    expect(screen.queryByTestId('settings-tab-keyboard')).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('renders KeymapPanel, reading the live action registry, once the Keyboard section is selected', () => {
+    stubMatchMedia(false);
+    render(SettingsPage, {
+      props: {
+        ...baseProps(),
+        client: fakeAccountsClient(),
+        keymap: { 'stop-turn': 'Mod+Shift+X' },
+        section: 'keyboard' as const,
+      },
+    });
+    expect(screen.getByTestId('settings-section-keyboard')).toBeTruthy();
+    expect(screen.getByTestId('keymap-panel')).toBeTruthy();
+    expect(screen.getByTestId('keymap-row-stop-turn').textContent).toContain('Mod+Shift+X');
+    vi.unstubAllGlobals();
   });
 });

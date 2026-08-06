@@ -505,6 +505,8 @@ export {
   permissionRuleSetV1,
   toolRefusalReasonV1,
 } from './permission-policy';
+export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
+export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
   AgentProfileV1,
   AgentProfileListResultPayloadV1,
@@ -866,6 +868,7 @@ import {
   permissionRuleSetV1,
   toolRefusalReasonV1,
 } from './permission-policy';
+import { keymapGetRequest, keymapResult, keymapSetRequest, keymapV1 } from './keymap';
 import {
   agentProfileV1,
   agentProfileListGet,
@@ -1148,4 +1151,8 @@ export const schemasV1 = {
   runOutput,
   runExit,
   runCancel,
+  keymapV1,
+  keymapGetRequest,
+  keymapSetRequest,
+  keymapResult,
 } as const;

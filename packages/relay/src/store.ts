@@ -463,6 +463,23 @@ export interface ConnectedAccountStore {
   remove(accountId: string, id: string): Awaitable<void>;
 }
 
+/**
+ * The account's single saved keymap envelope (Zed-parity F3-3, issue #760),
+ * one opaque `EncryptedEnvelope` per account — the relay-side counterpart of
+ * `EscrowStore` above, structurally: one row, keyed by `accountId`, fully
+ * replaced on every save, never parsed or decrypted here. Unlike
+ * `ConnectedAccountStore`/every project-scoped store elsewhere in this
+ * package, there is no node in this path at all: a client seals the
+ * candidate keymap directly under `@loombox/crypto`'s `deriveKeymapKey`
+ * and talks to the relay, so a keymap edit works with zero nodes online.
+ */
+export interface KeymapStore {
+  /** `accountId` is the already-authenticated connection's own `accountId`, never client-supplied. Fully replaces any previously saved envelope (never a partial patch — same whole-document contract `EscrowStore.put`/`ConnectedAccountStore.upsert` already follow). */
+  set(accountId: string, envelope: EncryptedEnvelope): Awaitable<void>;
+  /** Returns `undefined` if this account has never saved a keymap — `keymap_get_request`'s "every action still uses its built-in default" case. */
+  get(accountId: string): Awaitable<EncryptedEnvelope | undefined>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -477,6 +494,7 @@ export interface RelayStore {
   deviceAuth: DeviceAuthStore;
   deviceTokens: DeviceTokenStore;
   connectedAccounts: ConnectedAccountStore;
+  keymaps: KeymapStore;
 }
 
 export interface RelayStoreOptions {
@@ -532,6 +550,11 @@ interface SyncQuotaStore extends QuotaStore {
 interface SyncEscrowStore extends EscrowStore {
   put(accountId: string, wrappedAmk: string): void;
   get(accountId: string): string | undefined;
+}
+
+interface SyncKeymapStore extends KeymapStore {
+  set(accountId: string, envelope: EncryptedEnvelope): void;
+  get(accountId: string): EncryptedEnvelope | undefined;
 }
 
 interface SyncAmkRotationStore extends AmkRotationStore {
@@ -620,6 +643,7 @@ export interface SyncRelayStore extends RelayStore {
   deviceAuth: SyncDeviceAuthStore;
   deviceTokens: SyncDeviceTokenStore;
   connectedAccounts: SyncConnectedAccountStore;
+  keymaps: SyncKeymapStore;
 }
 
 /**
@@ -1117,6 +1141,19 @@ function createConnectedAccountStore(): SyncConnectedAccountStore {
   };
 }
 
+/** In-memory `KeymapStore` (Zed-parity F3-3, issue #760) — one opaque envelope per account, fully replaced on every `set`, exactly like {@link createEscrowStore} above. */
+function createKeymapStore(): SyncKeymapStore {
+  const envelopes = new Map<string, EncryptedEnvelope>();
+  return {
+    set(accountId, envelope) {
+      envelopes.set(accountId, envelope);
+    },
+    get(accountId) {
+      return envelopes.get(accountId);
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -1134,5 +1171,6 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     deviceAuth: createDeviceAuthStore(),
     deviceTokens: createDeviceTokenStore(),
     connectedAccounts: createConnectedAccountStore(),
+    keymaps: createKeymapStore(),
   };
 }

@@ -20,6 +20,7 @@ import {
   type BuildIdentityV1,
   type ConfigOption,
   type ConnectedAccount,
+  type KeymapV1,
   type EncryptedEnvelope,
   type PermissionResponse,
   type PermissionPolicyV1,
@@ -4568,6 +4569,130 @@ describe('RelayClient: permission policy (SPEC §7.17; issue #751)', () => {
     });
 
     await expect(violationPromise).resolves.toEqual(violationPayload);
+  });
+});
+
+describe('RelayClient: keymap (Zed-parity F3-3, issue #760)', () => {
+  it('keymap starts as {} before any keymap_result has ever landed', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-keymap-initial';
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-keymap-0' });
+    expect(get(client.keymap)).toEqual({});
+  });
+
+  it('getKeymap resolves with {} for an account that has never saved one — no node, session or project involved at all', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-keymap-empty';
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-keymap-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.getKeymap()).resolves.toEqual({});
+    expect(get(client.keymap)).toEqual({});
+  });
+
+  it('setKeymap fully replaces the saved keymap, resolves with the saved result, and updates the keymap store immediately — no reload needed', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-keymap-set';
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-keymap-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const remapped: KeymapV1 = { 'stop-turn': 'Mod+Shift+X', 'toggle-sessions-sidebar': 'Mod+B' };
+    await expect(client.setKeymap(remapped)).resolves.toEqual(remapped);
+    // The store already reflects it by the time the promise settles — the
+    // acceptance criterion this proves: a remapped binding takes effect
+    // without a reload, since `+page.svelte` reads this store directly.
+    expect(get(client.keymap)).toEqual(remapped);
+  });
+
+  it('a saved keymap survives a brand-new device sign-in: a fresh RelayClient with the same amk/accountId sees it from first paint, with no explicit getKeymap call', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-keymap-new-device';
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'laptop-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    const remapped: KeymapV1 = { 'open-inbox': 'Mod+Shift+I' };
+    await client.setKeymap(remapped);
+
+    // A brand-new device, same account, that never called setKeymap or
+    // getKeymap itself — the handshake handler's own proactive fetch is
+    // what has to deliver this.
+    const newDevice = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'phone-1',
+    });
+    try {
+      newDevice.connect();
+      await waitForStore(newDevice.status, (status) => status === 'open');
+      await waitForStore(newDevice.keymap, (value) => Object.keys(value).length > 0);
+      expect(get(newDevice.keymap)).toEqual(remapped);
+    } finally {
+      newDevice.close();
+    }
+  });
+
+  it('two tabs on the same account: the second tab\u2019s keymap store corrects itself live the instant the first tab saves, with zero calls of its own', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-keymap-two-tabs';
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'laptop-tab-a',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const tabB = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'laptop-tab-a',
+    });
+    try {
+      tabB.connect();
+      await waitForStore(tabB.status, (status) => status === 'open');
+      expect(get(tabB.keymap)).toEqual({});
+
+      const remapped: KeymapV1 = { 'stop-turn': 'Mod+Shift+Z' };
+      await client.setKeymap(remapped);
+
+      await waitForStore(tabB.keymap, (value) => Object.keys(value).length > 0);
+      expect(get(tabB.keymap)).toEqual(remapped);
+    } finally {
+      tabB.close();
+    }
+  });
+
+  it('getKeymap rejects when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-keymap-offline',
+      deviceId: 'client-keymap-offline',
+    });
+    await expect(client.getKeymap()).rejects.toThrow(/no open connection/);
   });
 });
 

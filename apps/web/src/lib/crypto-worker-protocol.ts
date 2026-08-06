@@ -9,16 +9,19 @@ import type { EncryptedEnvelope } from '@loombox/protocol';
  * either plain JSON or a `Uint8Array`/`ArrayBuffer`, so it structured-clones
  * across `postMessage` with no manual (de)serialization.
  *
- * Three key families, matching `@loombox/crypto/session-keys.ts`'s
+ * Four key families, matching `@loombox/crypto/session-keys.ts`'s
  * documented derivation paths plus this app's own `['target', ...]` family
  * (`crypto-worker-engine.ts`'s `deriveTargetKey`): `'session'`, `'project'`,
- * `'target'`. `keyId` picks which key within that family (sessionId /
- * projectPath / targetId); `resourceId` is what the envelope's AAD is bound
- * to — almost always equal to `keyId`, except an attachment upload binds to
- * `attachmentResourceId(sessionId, ref)` while still deriving the *session*
- * key (see `crypto-worker-engine.ts`'s `sealBytes`).
+ * `'target'`, `'keymap'` (Zed-parity F3-3, issue #760 — the account-scoped
+ * family, no third path segment). `keyId` picks which key within that
+ * family (sessionId / projectPath / targetId / accountId for `'keymap'`,
+ * which has only the one key per account); `resourceId` is what the
+ * envelope's AAD is bound to — almost always equal to `keyId`, except an
+ * attachment upload binds to `attachmentResourceId(sessionId, ref)` while
+ * still deriving the *session* key (see `crypto-worker-engine.ts`'s
+ * `sealBytes`).
  */
-export type EnvelopeKeyKind = 'session' | 'project' | 'target';
+export type EnvelopeKeyKind = 'session' | 'project' | 'target' | 'keymap';
 
 /**
  * Sent exactly once, synchronously, before any other message (guaranteed by

@@ -345,3 +345,71 @@ describe('matchShortcut (issue #758, extended by #759)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------
+// Issue #760: `effectiveShortcut`/`matchShortcut`'s new `overrides` param
+// (the user keymap). A saved remap wins unconditionally, in every
+// environment, over both a plain `shortcut` and an environment-
+// conditional `shortcutFor` — see `action-registry.ts`'s own doc comment
+// on `effectiveShortcut` for why a remap replaces `shortcutFor` entirely
+// rather than layering on top of it.
+// ---------------------------------------------------------------------
+describe('effectiveShortcut / matchShortcut: user keymap overrides (issue #760)', () => {
+  it('an override wins over a plain shortcut', () => {
+    const stopTurn = actionRegistry.find((a) => a.id === 'stop-turn');
+    expect(stopTurn).toBeTruthy();
+    expect(effectiveShortcut(stopTurn!, AT_REST, { 'stop-turn': 'Mod+Shift+X' })).toBe(
+      'Mod+Shift+X',
+    );
+  });
+
+  it('no entry for an action in the keymap falls back to its built-in default, unchanged', () => {
+    const stopTurn = actionRegistry.find((a) => a.id === 'stop-turn');
+    expect(stopTurn).toBeTruthy();
+    expect(
+      effectiveShortcut(stopTurn!, AT_REST, { 'toggle-sessions-sidebar': 'Mod+Shift+X' }),
+    ).toBe(effectiveShortcut(stopTurn!, AT_REST));
+  });
+
+  it('an override wins over shortcutFor unconditionally — even in an environment where the built-in default would be withheld', () => {
+    const nextSession = actionRegistry.find((a) => a.id === 'next-session');
+    expect(nextSession).toBeTruthy();
+    // Mod+Alt+Right is withheld on Windows/Linux web by shortcutFor, but a
+    // user remap still fires there — the whole point of "every action
+    // remappable": a remap is not itself subject to the built-in
+    // environment gate that produced the default it replaces.
+    expect(
+      effectiveShortcut(nextSession!, WINDOWS_LINUX_WEB, { 'next-session': 'Mod+Shift+]' }),
+    ).toBe('Mod+Shift+]');
+  });
+
+  it('matchShortcut fires on the remapped chord, not the built-in default', () => {
+    const remapped = { 'stop-turn': 'Mod+Shift+X' };
+    expect(
+      matchShortcut(
+        { key: 'x', metaKey: true, ctrlKey: false, shiftKey: true },
+        { ...AT_REST, turnActive: true },
+        remapped,
+      )?.id,
+    ).toBe('stop-turn');
+  });
+
+  it('matchShortcut no longer fires on the old default chord once remapped away from it', () => {
+    const remapped = { 'stop-turn': 'Mod+Shift+X' };
+    expect(
+      matchShortcut(
+        { key: '.', metaKey: true, ctrlKey: false },
+        { ...AT_REST, turnActive: true },
+        remapped,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('undefined overrides (no keymap saved yet) behaves identically to omitting the param entirely', () => {
+    const stopTurn = actionRegistry.find((a) => a.id === 'stop-turn');
+    expect(stopTurn).toBeTruthy();
+    expect(effectiveShortcut(stopTurn!, AT_REST, undefined)).toBe(
+      effectiveShortcut(stopTurn!, AT_REST),
+    );
+  });
+});

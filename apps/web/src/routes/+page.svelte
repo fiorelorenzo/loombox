@@ -17,7 +17,7 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
-  import type { SessionStatusV1 } from '@loombox/protocol';
+  import type { KeymapV1, SessionStatusV1 } from '@loombox/protocol';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { transcriptTail } from '$lib/transcript-tail';
   import {
@@ -696,6 +696,8 @@
   let sessions = $state<ClientSessionMeta[]>([]);
   /** `RelayClient.connectedAccounts`'s latest snapshot (SPEC §7.26, issue #221) — fed straight through to `ProjectConfigPanel`'s tracker section (issue #220), same "own no fetching, just mirror the store" split every other prop here already follows. */
   let connectedAccounts = $state<ConnectedAccount[]>([]);
+  /** `RelayClient.keymap`'s latest snapshot (Zed-parity F3-3, issue #760) — `{}` (nothing remapped) until the first `keymap_result` lands. Threaded into `effectiveShortcut`/`matchShortcut`'s `overrides` param below, so a remap takes effect the instant this updates, no reload. */
+  let keymap = $state<KeymapV1>({});
   let selectedSessionId = $state<string | undefined>(undefined);
   /**
    * The project the Tracker destination currently points at (issue #697)
@@ -1321,6 +1323,7 @@
   let unsubscribeStatus: (() => void) | undefined;
   let unsubscribeSessions: (() => void) | undefined;
   let unsubscribeConnectedAccounts: (() => void) | undefined;
+  let unsubscribeKeymap: (() => void) | undefined;
   let unsubscribeSessionDecryptFailures: (() => void) | undefined;
   let unsubscribeTranscript: (() => void) | undefined;
   let unsubscribePermissionQueue: (() => void) | undefined;
@@ -1585,6 +1588,9 @@
     unsubscribeConnectedAccounts = client.connectedAccounts.subscribe((value) => {
       connectedAccounts = value;
     });
+    unsubscribeKeymap = client.keymap.subscribe((value) => {
+      keymap = value;
+    });
     // Issue #384's mismatched-AMK state: today's silent decrypt-drop gets a
     // real, distinguishable count instead of just an ever-empty `sessions`.
     unsubscribeSessionDecryptFailures = client.sessionDecryptFailures.subscribe(
@@ -1823,6 +1829,7 @@
     unsubscribeStatus?.();
     unsubscribeSessions?.();
     unsubscribeConnectedAccounts?.();
+    unsubscribeKeymap?.();
     unsubscribeSessionDecryptFailures?.();
     unsubscribeTranscript?.();
     unsubscribePermissionQueue?.();
@@ -2178,7 +2185,7 @@
     getAvailableActions(actionContext).map((action) => ({
       id: action.id,
       label: action.label,
-      shortcut: effectiveShortcut(action, actionContext),
+      shortcut: effectiveShortcut(action, actionContext, keymap),
       run: () => action.run(actionHandlers),
     })),
   );
@@ -2733,7 +2740,7 @@
       return;
     }
     if (isTypingTarget(event.target)) return;
-    const action = matchShortcut(event, actionContext);
+    const action = matchShortcut(event, actionContext, keymap);
     if (!action) return;
     event.preventDefault();
     action.run(actionHandlers);
@@ -3877,6 +3884,7 @@
                   onConnectNode={openAddTargetWizard}
                   {client}
                   {connectedAccounts}
+                  {keymap}
                   section={settingsSection}
                   onSectionChange={selectSettingsSection}
                 />
@@ -3927,6 +3935,7 @@
               <CanvasZeroState
                 {recentSessions}
                 lastTranscript={zeroStateTranscriptPreview}
+                overrides={keymap}
                 onSelectSession={selectSession}
                 context={actionContext}
               >
