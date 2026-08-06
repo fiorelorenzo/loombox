@@ -113,10 +113,7 @@ describe('computeWorktreeDiff against a real local git repo (issue #206)', () =>
   });
 
   it('reports a clean rename with previousPath set and the original content as oldText — never crashes on a moved path', async () => {
-    await writeFile(
-      join(worktreePath, 'original.txt'),
-      'line1\nline2\nline3\nline4\nline5\n',
-    );
+    await writeFile(join(worktreePath, 'original.txt'), 'line1\nline2\nline3\nline4\nline5\n');
     await execGit(['add', 'original.txt']);
     await execGit(['commit', '-q', '-m', 'initial']);
     await execGit(['mv', 'original.txt', 'renamed.txt']);
@@ -193,8 +190,6 @@ describe('computeWorktreeDiff when git itself cannot be run (issue #206)', () =>
       readdirDetailed: () => Promise.reject(new Error('not implemented')),
     };
 
-    await expect(computeWorktreeDiff(brokenTarget, '/some/worktree')).rejects.toThrow(
-      GitDiffError,
-    );
+    await expect(computeWorktreeDiff(brokenTarget, '/some/worktree')).rejects.toThrow(GitDiffError);
   });
 });

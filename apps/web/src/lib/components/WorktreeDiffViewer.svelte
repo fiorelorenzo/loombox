@@ -183,7 +183,8 @@
         </Button>
       </div>
       <span class="worktree-diff-count">
-        {viewer.files.length} {viewer.files.length === 1 ? 'file' : 'files'}
+        {viewer.files.length}
+        {viewer.files.length === 1 ? 'file' : 'files'}
       </span>
     </div>
 

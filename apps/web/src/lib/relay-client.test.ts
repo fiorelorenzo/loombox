@@ -3574,7 +3574,12 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
     const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
     node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
 
-    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-git-diff-1' });
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-diff-1',
+    });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
     await waitForStore(client.sessions, (value) => value.length > 0);
@@ -3645,7 +3650,12 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
     const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
     node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
 
-    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-git-diff-2' });
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-diff-2',
+    });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
     await waitForStore(client.sessions, (value) => value.length > 0);
@@ -3689,7 +3699,12 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
     const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
     node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
 
-    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-git-diff-3' });
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-diff-3',
+    });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
     await waitForStore(client.sessions, (value) => value.length > 0);
@@ -3739,7 +3754,12 @@ describe('RelayClient: working-tree diff viewer (issue #206)', () => {
     });
     await node.ready;
 
-    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-git-diff-4' });
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-diff-4',
+    });
     client.connect();
     await waitForStore(client.status, (status) => status === 'open');
 

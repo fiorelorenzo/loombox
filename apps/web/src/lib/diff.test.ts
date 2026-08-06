@@ -142,8 +142,14 @@ describe('pairDiffLinesForSplitView', () => {
   it('a brand-new file (every line added) pairs every row with an undefined left side', () => {
     const rows = pairDiffLinesForSplitView(computeLineDiff(null, 'a\nb'));
     expect(rows).toEqual([
-      { left: undefined, right: { kind: 'added', text: 'a', oldLineNumber: undefined, newLineNumber: 1 } },
-      { left: undefined, right: { kind: 'added', text: 'b', oldLineNumber: undefined, newLineNumber: 2 } },
+      {
+        left: undefined,
+        right: { kind: 'added', text: 'a', oldLineNumber: undefined, newLineNumber: 1 },
+      },
+      {
+        left: undefined,
+        right: { kind: 'added', text: 'b', oldLineNumber: undefined, newLineNumber: 2 },
+      },
     ]);
   });
 

@@ -88,6 +88,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   mcp_prompt_get_response: { routed: 'node' },
   fs_read_request: { routed: 'client' },
   fs_read_response: { routed: 'node' },
+  git_diff_request: { routed: 'client' },
+  git_diff_response: { routed: 'node' },
   target_fs_list_request: { routed: 'client' },
   target_fs_list_response: { routed: 'node' },
   custom_agent_probe_request: { routed: 'client' },

@@ -2489,7 +2489,9 @@ describe('NodeDaemon git-diff (working-tree diff viewer, issue #206)', () => {
     }>(session.id, response.envelope, key);
     expect(payload).toEqual({
       outcome: 'ok',
-      files: [{ path: 'logo.png', previousPath: null, status: 'modified', oldText: null, newText: '' }],
+      files: [
+        { path: 'logo.png', previousPath: null, status: 'modified', oldText: null, newText: '' },
+      ],
     });
   });
 });

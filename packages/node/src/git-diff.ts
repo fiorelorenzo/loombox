@@ -137,7 +137,13 @@ async function readDiffFile(
   // `status` — reused as-is rather than a second "this is binary"
   // rendering (see this module's own file doc comment).
   if (isBinaryChange(oldText, worktreeFile.content)) {
-    return { path: entry.path, previousPath: entry.previousPath, status, oldText: null, newText: '' };
+    return {
+      path: entry.path,
+      previousPath: entry.previousPath,
+      status,
+      oldText: null,
+      newText: '',
+    };
   }
 
   return {
