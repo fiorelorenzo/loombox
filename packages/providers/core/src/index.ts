@@ -74,7 +74,7 @@ export type { AcpSessionSummary } from './types';
 // v1: capability-negotiation-gated feature flags (SPEC.md §5.5; issue #180).
 export { deriveFeatureFlags } from './capabilities';
 export type { AcpFeatureFlags } from './capabilities';
-export type { AcpAgentCapabilities, AcpPromptCapabilities } from './types';
+export type { AcpAgentCapabilities, AcpPromptCapabilities, AcpSessionCapabilities } from './types';
 
 // v1: the session/request_permission FIFO queue state machine (SPEC.md
 // §7.24; issue #178).
