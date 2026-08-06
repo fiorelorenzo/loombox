@@ -179,8 +179,10 @@
     text-align: left;
   }
 
+  /* No `flex-shrink` here: `Icon`'s own scoped root rule already sets it,
+     and a call-site declaration for a primitive-bound class loses the
+     specificity fight and is silently dropped (issue #665's own test). */
   :global(.disclosure-icon) {
-    flex-shrink: 0;
     color: var(--color-text-muted);
     transition: transform var(--duration-fast) var(--ease-beat);
   }
@@ -195,7 +197,6 @@
 
   :global(.edits-icon) {
     color: var(--color-text-secondary);
-    flex-shrink: 0;
   }
 
   .label {
