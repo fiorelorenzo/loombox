@@ -271,11 +271,13 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133 — same convention
-     `PlanCard`'s own header uses). */
+     `PlanCard`'s own header uses). `var(--touch-target-min)`, not a
+     `2.75rem` literal (A2-1, issue #734: see that token's own note in
+     `tokens.css`). */
   @media (pointer: coarse) {
     .turn-edits-header,
     .turn-edits-file-row {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
   }
 

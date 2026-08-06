@@ -621,6 +621,56 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('session-filter')).toBeVisible();
   });
 
+  // A2-1 (issue #734) tightened `--nav-row-height` from 40px to 30px, which
+  // is the first time `.destination-row` has ever been narrower than the
+  // 44px `(pointer: coarse)` floor every OTHER clickable primitive in this
+  // package carries — at the old 40px there was no visible gap to catch,
+  // so nothing here needed a floor of its own until now. Scoped to its own
+  // `describe` (real `hasTouch`, not just a narrow viewport) so this is the
+  // one test in the file running under a coarse pointer; every other test
+  // above and below keeps the suite's default fine-pointer emulation.
+  test.describe('coarse-pointer touch targets at the tablet breakpoint (A2-1, issue #734)', () => {
+    test.use({ hasTouch: true, viewport: { width: 768, height: 900 } });
+
+    test('the named break: .destination-row grows to the same 44px floor Button/IconButton/Input already carry', async ({
+      page,
+      loombox,
+    }) => {
+      await gotoCockpit(page, loombox);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+
+      const touchTargetMin = await page.evaluate(() =>
+        parseFloat(
+          getComputedStyle(document.documentElement).getPropertyValue('--touch-target-min'),
+        ),
+      );
+      expect(touchTargetMin).toBeGreaterThanOrEqual(44);
+
+      // The row itself: no coarse-pointer rule at all before this issue, so
+      // its box used to just be `--nav-row-height` (now 30px) unconditionally
+      // — a real 14px shortfall against the floor every other clickable
+      // primitive in this package (`Button`, `IconButton`, `Input`) already
+      // grows to under `(pointer: coarse)`.
+      const inboxRow = page.getByTestId('destination-inbox');
+      await expect(inboxRow).toBeVisible();
+      const rowBox = await inboxRow.boundingBox();
+      expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(touchTargetMin);
+
+      // Its fine-pointer sibling, `--nav-row-height` itself, is unaffected
+      // by the coarse floor (it's a `min-height` override, not a
+      // replacement) — asserted here so a future edit can't satisfy the
+      // line above by quietly raising the base row height instead of
+      // adding a real coarse-pointer floor.
+      const navRowHeight = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-row-height')),
+      );
+      const remPx = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.documentElement).fontSize),
+      );
+      expect(navRowHeight * remPx).toBeLessThan(touchTargetMin);
+    });
+  });
+
   test('the retired topbar connection chip is gone outright; the permanent status bar reads the connection instead (issue #736)', async ({
     page,
     loombox,

@@ -265,11 +265,13 @@
 
   /* Touch-optimized plan controls (SPEC.md §7.3, issue #133): the plan
      header (its only tap target — the individual entries below are a
-     read-only, agent-driven checklist, not user-interactive in v1) grows to
-     a larger hit target on a coarse (touch) pointer. */
+     read-only, agent-driven checklist, not user-interactive in v1) grows
+     to a larger hit target on a coarse (touch) pointer —
+     `var(--touch-target-min)`, not a `2.75rem` literal (A2-1, issue #734:
+     see that token's own note in `tokens.css`). */
   @media (pointer: coarse) {
     .plan-header {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
       padding: var(--space-md) var(--space-lg);
     }
   }

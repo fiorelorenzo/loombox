@@ -4630,7 +4630,13 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-xs);
-    height: 3rem;
+    /* Matches `.topbar`'s own `height: var(--topbar-height)` (below), not
+       a coincidence: this row sits beside the topbar at the same y, and a
+       literal `3rem` here is exactly the duplicate-of-a-token case A2-1
+       (issue #734) went hunting for — it happened to equal the OLD
+       `--topbar-height` and would have silently stopped matching once
+       that token tightened. */
+    height: var(--topbar-height);
     padding: 0 var(--space-sm) 0 var(--space-md);
     flex-shrink: 0;
   }
@@ -4722,6 +4728,24 @@
     transition:
       background-color var(--duration-fast) var(--ease-beat),
       transform var(--duration-instant) var(--ease-beat);
+  }
+
+  /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
+     coarse-pointer convention `Button`/`IconButton`/`Input` already use
+     (`Button.svelte:328-337`). `.destination-row` never had one (A2-1,
+     issue #734): at the old 40px `--nav-row-height` that was slack, not a
+     gap, since 40px already cleared the 44px floor's own neighbourhood
+     closely enough that nothing caught it missing — at the new 30px it
+     is a real 14px shortfall on the tablet session sheet with nothing to
+     catch it, so this row gets the same floor every other clickable
+     surface has under `(pointer: coarse)`. `min-height`, not `height`:
+     the row's own `height: var(--nav-row-height)` above stays the fine-
+     pointer value, and `min-height` only overrides it upward when the
+     coarse floor is taller. */
+  @media (pointer: coarse) {
+    .destination-row {
+      min-height: var(--touch-target-min);
+    }
   }
 
   .destination-row:hover {

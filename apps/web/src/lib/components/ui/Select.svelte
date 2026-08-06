@@ -359,18 +359,21 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
-     coarse-pointer convention `Button`/`IconButton` already use. */
+     coarse-pointer convention `Button`/`IconButton` already use —
+     `var(--touch-target-min)`/`var(--touch-target-compact)`, not a
+     `2.75rem`/`2.5rem` literal (A2-1, issue #734: see that token's own
+     note in `tokens.css`). */
   @media (pointer: coarse) {
     .ui-select-trigger-md {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
 
     .ui-select-trigger-sm {
-      min-height: 2.5rem;
+      min-height: var(--touch-target-compact);
     }
 
     .ui-select-option {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
   }
 </style>
