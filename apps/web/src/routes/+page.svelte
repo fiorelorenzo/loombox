@@ -4630,6 +4630,7 @@
                 <ProjectConfigPanel
                   projectPath={selectedProjectPath}
                   sessionId={selectedSessionId}
+                  nodeId={selectedSession?.nodeId}
                   relayClient={client}
                   {mcpServerStatuses}
                 />

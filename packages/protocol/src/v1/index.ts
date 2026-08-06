@@ -628,6 +628,20 @@ export {
   sessionSpendCapResume,
 } from './spend-cap';
 export type {
+  SpendReportRowV1,
+  SpendReportResponsePayloadV1,
+  SpendReportRequest,
+  SpendReportResponse,
+} from './spend-report';
+export {
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  parseSpendReportResponsePayloadV1,
+  safeParseSpendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
+} from './spend-report';
+export type {
   GitCheckpointV1,
   RestorePreviewV1,
   RestoreResultV1,
@@ -1167,6 +1181,12 @@ import {
   sessionSpendCapResume,
 } from './spend-cap';
 import {
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
+} from './spend-report';
+import {
   accountPinErrorType,
   accountPinGetRequest,
   accountPinMapV1,
@@ -1417,6 +1437,10 @@ export const schemasV1 = {
   spendCapSet,
   spendCapResult,
   sessionSpendCapResume,
+  spendReportRowV1,
+  spendReportResponsePayloadV1,
+  spendReportRequest,
+  spendReportResponse,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,

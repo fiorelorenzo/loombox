@@ -4738,6 +4738,159 @@ describe('RelayClient: native tracker (SPEC §7.10, §7.26; issues #212, #697)',
   });
 });
 
+describe('RelayClient: spend-over-time report (SPEC §7.9; issue #249)', () => {
+  it('spendReportFor lazily loads a project’s spend report with no envelope on the request and decrypts a real spend_report_response sealed to the project key, addressed by nodeId+projectPath alone', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-spend-report-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-spend-report-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_spend_report_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-spend-report-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const projectPath = '/workspace/spend-proj-1';
+    const report = client.spendReportFor('node_spend_report_1', projectPath);
+
+    const request = (await node.waitFor((m) => m.type === 'spend_report_request')) as {
+      type: 'spend_report_request';
+      nodeId: string;
+      projectPath: string;
+      requestId: string;
+      sinceDate?: string;
+      untilDate?: string;
+    };
+    expect(request.nodeId).toBe('node_spend_report_1');
+    expect(request.projectPath).toBe(projectPath);
+    // No envelope on the request — `spend-report.ts`'s own doc comment: a
+    // date range travels in the clear, unlike `tracker_snapshot_request`. An
+    // unbounded request never even carries `sinceDate`/`untilDate` keys —
+    // `undefined` values are dropped by `JSON.stringify` on the wire.
+    expect(Object.keys(request).sort()).toEqual(
+      ['nodeId', 'projectPath', 'protocolVersion', 'requestId', 'type'].sort(),
+    );
+    expect(request.sinceDate).toBeUndefined();
+    expect(request.untilDate).toBeUndefined();
+
+    const key = await deriveNodeProjectKey(amk, accountId, projectPath);
+    const rows = [
+      { date: '2026-08-01', provider: 'claude', costUsd: 1.5 },
+      { date: '2026-08-02', provider: 'codex', costUsd: 0.75 },
+    ];
+    const responseEnvelope = await nodeSeal(projectPath, { rows }, key);
+    node.send({
+      type: 'spend_report_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_spend_report_1',
+      projectPath,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    const loaded = await waitForStore(report, (value) => value.status === 'loaded');
+    expect(loaded.rows).toEqual(rows);
+  });
+
+  it('is keyed by projectPath, not a session: a second call for the same project reuses the one store and never fires a second request', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-spend-report-dedupe';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-spend-report-dedupe',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_spend_report_dedupe',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-spend-report-dedupe',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const projectPath = '/workspace/spend-proj-dedupe';
+    const first = client.spendReportFor('node_spend_report_dedupe', projectPath);
+    await node.waitFor((m) => m.type === 'spend_report_request');
+
+    const second = client.spendReportFor('node_spend_report_dedupe', projectPath);
+    expect(second).toBe(first);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const requests = node.messages.filter((m) => m.type === 'spend_report_request');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('reloadSpendReport carries an explicit sinceDate/untilDate through to the wire request', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-spend-report-range';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-spend-report-range',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_spend_report_range',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-spend-report-range',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const projectPath = '/workspace/spend-proj-range';
+    client.spendReportFor('node_spend_report_range', projectPath);
+    await node.waitFor((m) => m.type === 'spend_report_request');
+
+    client.reloadSpendReport('node_spend_report_range', projectPath, {
+      sinceDate: '2026-07-01',
+      untilDate: '2026-08-01',
+    });
+    const reload = (await node.waitFor((m) => {
+      if (m.type !== 'spend_report_request') return false;
+      return (m as { sinceDate?: string }).sinceDate === '2026-07-01';
+    })) as { sinceDate?: string; untilDate?: string };
+    expect(reload.sinceDate).toBe('2026-07-01');
+    expect(reload.untilDate).toBe('2026-08-01');
+  });
+});
+
 describe('RelayClient: listTargets (issue #383)', () => {
   it("resolves with the account's targets, marked reachable while the announcing node stays connected", async () => {
     const amk = generateAmk();

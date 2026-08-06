@@ -180,6 +180,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   spend_cap_set: { routed: 'client' },
   spend_cap_result: { routed: 'node' },
   session_spend_cap_resume: { routed: 'client' },
+  spend_report_request: { routed: 'client' },
+  spend_report_response: { routed: 'node' },
   keymap_get_request: { routed: 'client' },
   keymap_set_request: { routed: 'client' },
   keymap_result: {

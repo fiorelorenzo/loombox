@@ -146,6 +146,8 @@ import {
   type SpendCapSetPayloadV1,
   type SpendCapResultPayloadV1,
   type SessionSpendCapResume,
+  type SpendReportRequest,
+  type SpendReportResponsePayloadV1,
   type CheckpointCreate,
   type CheckpointCreatePayloadV1,
   type CheckpointErrorTypeV1,
@@ -250,6 +252,8 @@ import {
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
 import { SpendCapStore } from './spend-cap-store';
+import { SpendLedgerStore } from './spend-ledger-store';
+import { filterSpendLedgerRows } from '@loombox/shared';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,
@@ -625,6 +629,18 @@ export interface NodeDaemonOptions {
    * Injectable for tests; defaults to a fresh `SpendCapStore({ stateDir })`.
    */
   spendCapStore?: SpendCapStore;
+  /**
+   * This node's persisted spend-over-time ledger (SPEC §7.9; issue
+   * #249): every `usage_update` cost increase this daemon has ever
+   * observed, grouped by day/project/provider, fed into
+   * `spend_report_request`'s reply — see `spend-ledger-store.ts`'s own
+   * doc comment for why this is a separate store from `spendCapStore`
+   * above rather than derived from it (a cap is a configured limit; this
+   * is the actual spend history, at a different granularity and with a
+   * different lifetime). Injectable for tests; defaults to a fresh
+   * `SpendLedgerStore({ stateDir })`.
+   */
+  spendLedgerStore?: SpendLedgerStore;
   /**
    * This node's named agent-profile catalog (design spec
    * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752): the
@@ -1404,6 +1420,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly permissionPolicyStore: PermissionPolicyStore;
   /** SPEC §7.16; issue #251 — see `NodeDaemonOptions.spendCapStore`'s doc comment. */
   private readonly spendCapStore: SpendCapStore;
+  /** SPEC §7.9; issue #249 — see `NodeDaemonOptions.spendLedgerStore`'s doc comment. */
+  private readonly spendLedgerStore: SpendLedgerStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
   private readonly agentProfileStore: AgentProfileStore;
   /**
@@ -1573,6 +1591,8 @@ export class NodeDaemon extends EventEmitter {
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
+    this.spendLedgerStore =
+      options.spendLedgerStore ?? new SpendLedgerStore({ stateDir: options.stateDir });
     this.agentProfileStore =
       options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
@@ -2848,21 +2868,43 @@ export class NodeDaemon extends EventEmitter {
     }
   }
 
+  /**
+   * The one place a `usage_update.costUsd` (already known non-`undefined`
+   * by the caller) becomes real state, for BOTH SPEC §7.16's spend-cap
+   * enforcement and SPEC §7.9's spend-over-time view (issue #249) — never
+   * two divergent computations of "how much did this session actually
+   * cost." `cost.amount` is documented as the session's own cumulative
+   * total to date, not a per-update delta (see `wireAgentSession`'s
+   * former inline comment, moved here), so:
+   *
+   * 1. `bridge.spendCumulativeCostUsd` becomes the running max of itself
+   *    and `reportedCostUsd` — unchanged from before this method existed,
+   *    still what `maybeApplySpendCap`/the live usage meter read.
+   * 2. The INCREASE over the previous running max (if any — a duplicate
+   *    or out-of-order report with no real increase writes nothing) is
+   *    persisted into `spendLedgerStore`, attributed to today's UTC
+   *    calendar date: ACP's `usage_update` carries no timestamp of its
+   *    own, so "today, wall-clock, on this node" is the one honest
+   *    attribution available — never a fabricated or backdated one.
+   */
+  private recordUsageCost(bridge: SessionBridge, reportedCostUsd: number): void {
+    const previousCostUsd = bridge.spendCumulativeCostUsd ?? 0;
+    bridge.spendCumulativeCostUsd = Math.max(previousCostUsd, reportedCostUsd);
+    const deltaUsd = reportedCostUsd - previousCostUsd;
+    if (deltaUsd > 0) {
+      this.spendLedgerStore.recordDelta(
+        new Date().toISOString().slice(0, 10),
+        bridge.session.projectPath,
+        bridge.session.provider,
+        deltaUsd,
+      );
+    }
+  }
+
   private wireAgentSession(bridge: SessionBridge): void {
     bridge.agentSession.on('transcript_update', (update: AcpTranscriptUpdate) => {
       if (update.kind === 'usage_update' && update.costUsd !== undefined) {
-        // SPEC §7.9/§7.16: the same cumulative-cost rollup the usage meter
-        // shows and a runaway subagent's own spend already folds into
-        // (issue #248's "still included in the cumulative cost figure")
-        // — a running max, never a sum, mirroring `@loombox/providers-core`'s
-        // `reduceUsage` exactly, since `cost.amount` is documented as the
-        // session's own cumulative total, not a per-update delta. Stays
-        // `undefined` until the agent reports a real cost at least once
-        // (see `maybeApplySpendCap`'s guard #3) — never seeded to 0.
-        bridge.spendCumulativeCostUsd = Math.max(
-          bridge.spendCumulativeCostUsd ?? 0,
-          update.costUsd,
-        );
+        this.recordUsageCost(bridge, update.costUsd);
         this.maybeApplySpendCap(bridge);
       }
       this.forwardSessionEvent(bridge.session.id, update);
@@ -3940,6 +3982,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'session_spend_cap_resume':
         this.handleSessionSpendCapResume(message);
+        return;
+      case 'spend_report_request':
+        this.handleSpendReportRequest(message);
         return;
       case 'checkpoint_create':
         this.handleCheckpointCreate(message);
@@ -7021,6 +7066,52 @@ export class NodeDaemon extends EventEmitter {
       type: 'spend_cap_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked for a project's spend-over-time history (SPEC §7.9;
+   * issue #249). Node-addressed by `nodeId` + `projectPath`, needing
+   * neither a live `SessionBridge` nor even a session that ever ran for
+   * this exact `sessionId` — mirrors `handleTrackerSnapshotRequest`'s own
+   * "reachable with no session running at all" reasoning (issue #697),
+   * for the identical reason: a project's spend history outlives every
+   * session that ever added to it. Always answered, `rows: []` included
+   * — a project with nothing recorded in the requested range is a real,
+   * representable answer, never a dropped request (issue #691's class of
+   * bug).
+   */
+  private handleSpendReportRequest(message: SpendReportRequest): void {
+    const rows = filterSpendLedgerRows(this.spendLedgerStore.all(), {
+      projectPath: message.projectPath,
+      sinceDate: message.sinceDate,
+      untilDate: message.untilDate,
+    });
+    this.sendSpendReportResponse(message.nodeId, message.projectPath, message.requestId, {
+      rows: rows.map(({ date, provider, costUsd }) => ({ date, provider, costUsd })),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send spend_report_response for project ${message.projectPath}: ${detail}`,
+      );
+    });
+  }
+
+  private async sendSpendReportResponse(
+    nodeId: string,
+    projectPath: string,
+    requestId: string,
+    payload: SpendReportResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getProjectKey(projectPath);
+    const envelope = await sealJson(projectPath, payload, key);
+    this.relay.send({
+      type: 'spend_report_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      projectPath,
       requestId,
       envelope,
     });

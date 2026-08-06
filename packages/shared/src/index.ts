@@ -41,3 +41,11 @@ export {
   TRACKER_ROLES,
   UNRESOLVED_WORKFLOW_STATUS,
 } from './tracker-record';
+
+// Pure per-project/per-provider spend rollup (SPEC §7.9; issue #249) —
+// shared between `@loombox/node` (filtering a `spend_report_request`
+// before sealing the reply) and `@loombox/web` (aggregating the
+// decrypted response into the spend-over-time view). See
+// `spend-aggregation.ts`'s own doc comment.
+export type { SpendAggregationRow, SpendLedgerFilter, SpendAggregateV1 } from './spend-aggregation';
+export { filterSpendLedgerRows, aggregateSpendLedgerRows } from './spend-aggregation';
