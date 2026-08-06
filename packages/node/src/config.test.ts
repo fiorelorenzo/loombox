@@ -248,6 +248,31 @@ describe('loadNodeConfig', () => {
         }),
       ).toThrow(/positive integer/);
     });
+
+    it('sandboxEnabled defaults to true (SPEC §7.17: "optional must not mean off by default"; issue #257) when LOOMBOX_SANDBOX is unset', () => {
+      const config = loadNodeConfig({ env: BASE_ENV, argv: [] });
+      expect(config.sandboxEnabled).toBe(true);
+    });
+
+    it('LOOMBOX_SANDBOX=off is the operator kill switch (issue #257)', () => {
+      const config = loadNodeConfig({ env: { ...BASE_ENV, LOOMBOX_SANDBOX: 'off' }, argv: [] });
+      expect(config.sandboxEnabled).toBe(false);
+    });
+
+    it('LOOMBOX_SANDBOX is case-insensitive and trims surrounding whitespace', () => {
+      const config = loadNodeConfig({ env: { ...BASE_ENV, LOOMBOX_SANDBOX: ' OFF ' }, argv: [] });
+      expect(config.sandboxEnabled).toBe(false);
+    });
+
+    it('LOOMBOX_SANDBOX=on is accepted explicitly (a no-op, since that is already the default)', () => {
+      const config = loadNodeConfig({ env: { ...BASE_ENV, LOOMBOX_SANDBOX: 'on' }, argv: [] });
+      expect(config.sandboxEnabled).toBe(true);
+    });
+
+    it('rejects a LOOMBOX_SANDBOX value that is neither "on" nor "off" rather than silently picking a side', () => {
+      const env = { ...BASE_ENV, LOOMBOX_SANDBOX: 'disabled' };
+      expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/sandbox.*"on" or "off"/);
+    });
   });
 
   describe('from a config file', () => {
@@ -357,6 +382,35 @@ describe('loadNodeConfig', () => {
         argv: [],
       });
       expect(config.localMaxConcurrentSessions).toBe(5);
+    });
+
+    it('loads sandboxEnabled: false from the config file (issue #257)', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        sandboxEnabled: false,
+      });
+
+      const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
+      expect(config.sandboxEnabled).toBe(false);
+    });
+
+    it('lets LOOMBOX_SANDBOX override sandboxEnabled set in the config file', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        sandboxEnabled: false,
+      });
+
+      const config = loadNodeConfig({
+        env: { LOOMBOX_NODE_CONFIG: filePath, LOOMBOX_SANDBOX: 'on' },
+        argv: [],
+      });
+      expect(config.sandboxEnabled).toBe(true);
     });
 
     it('lets an env var override the same field set in the config file', async () => {

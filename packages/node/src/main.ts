@@ -199,6 +199,27 @@ export interface StartedNode {
 export async function start(options: StartOptions = {}): Promise<StartedNode> {
   const config = loadNodeConfig(options);
 
+  // Issue #257: the ONE place a `local` session's agent process running
+  // unsandboxed is ever an expected, deliberate state rather than a bug —
+  // `LOOMBOX_SANDBOX=off`/the config file's `sandboxEnabled: false`
+  // overrode the default-on kill switch (`NodeCliConfig.sandboxEnabled`'s
+  // doc comment). Logged loudly, unconditionally, and as early as this
+  // function can (right after config resolves, before the device-login/
+  // AMK-bootstrap flow — either of which can take a while, or even prompt
+  // an operator interactively) every single time this node runs with it
+  // off, so this can never be the silent reason an operator's sessions
+  // turn out unconfined: a stray env var left over from debugging a
+  // `bwrap`-unavailable box stays visible in this node's own startup log,
+  // not just in whatever set it.
+  if (!config.sandboxEnabled) {
+    console.warn(
+      `loombox node "${config.nodeId}": SANDBOX DISABLED (LOOMBOX_SANDBOX=off) — every ` +
+        "local session's agent process will run UNCONFINED, with full access to this " +
+        'account rather than just its own worktree. Remove LOOMBOX_SANDBOX/sandboxEnabled ' +
+        "to restore SPEC §7.17's default-on containment.",
+    );
+  }
+
   const deviceLogin = options.runDeviceLogin ?? runDeviceLogin;
   const authToken = await resolveAuthToken(config, deviceLogin);
 
@@ -256,6 +277,17 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
     // doc comment for why).
     resourceSampling: { enabled: true },
+    // Issue #257: same on-for-every-real-node, off-in-tests shape as
+    // `resourceSampling` just above, and for the same reason — see
+    // `NodeDaemonOptions.sessionSandbox`'s doc comment. `config.sandboxEnabled`
+    // (default `true`; `LOOMBOX_SANDBOX=off` is the operator kill switch,
+    // see `NodeCliConfig.sandboxEnabled`'s doc comment) decides whether it's
+    // actually on, not a hardcoded `true` — the loud warning right below
+    // fires whenever that override actually takes effect. Safe to pass
+    // `enabled: true` through on a non-Linux host too: `resolveSessionSandbox`
+    // itself is the platform gate (a no-op off Linux today, SPEC §7.17's
+    // documented weaker macOS fallback not being built yet), not this flag.
+    sessionSandbox: { enabled: config.sandboxEnabled },
     // Same convention as `identityStore` above: MCP config/secret storage
     // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
     // silently defaulting to `~/.loombox/node` regardless of what the

@@ -157,6 +157,21 @@ export interface NodeCliConfig {
   localMaxConcurrentSessions?: number;
   /** Overrides where this node's persisted identity keypair (`identity.ts`'s `NodeIdentityStore`) and other on-disk state lives; `undefined` uses that store's own default (`~/.loombox/node`). */
   stateDir?: string;
+  /**
+   * Whether `main.ts`'s `start()` turns on `NodeDaemonOptions.sessionSandbox`
+   * for this node (SPEC §7.17; issue #257) — the operator's kill switch
+   * (`LOOMBOX_SANDBOX=off`/the config file's `sandboxEnabled: false`), not a
+   * normal per-deployment opt-in: sandboxing defaults to `true` (SPEC §7.17's
+   * "optional must not mean off by default once it ships"), and this exists
+   * so a resident node whose host unexpectedly can't sandbox (`bwrap`
+   * missing, or a kernel/AppArmor policy refusing unprivileged user
+   * namespaces after an OS update, say) can get sessions running again by
+   * editing an env file and restarting, rather than needing a code change —
+   * see `main.ts`'s `start()` for the loud startup log this produces when it
+   * actually takes effect, so an operator turning every session unsandboxed
+   * off can never be a silent, easy-to-miss state.
+   */
+  sandboxEnabled: boolean;
 }
 
 /** The JSON shape a config file may provide (all fields optional — env vars can fill in the rest, or override a value the file also sets). Field names match {@link NodeCliConfig} exactly, except `amk`, which is base64 text here (decoded by {@link loadNodeConfig}). */
@@ -181,6 +196,8 @@ interface NodeConfigFile {
   /** See {@link NodeCliConfig.localMaxConcurrentSessions}. */
   localMaxConcurrentSessions?: number;
   stateDir?: string;
+  /** See {@link NodeCliConfig.sandboxEnabled}. */
+  sandboxEnabled?: boolean;
 }
 
 const AMK_BYTES = 32;
@@ -303,6 +320,32 @@ function parseCustomAgentAllowlist(
     .filter((command) => command.length > 0);
 }
 
+/**
+ * Parses `LOOMBOX_SANDBOX`/the config file's `sandboxEnabled` (SPEC §7.17;
+ * issue #257) — the operator kill switch for `NodeDaemonOptions.
+ * sessionSandbox`, not a normal opt-in toggle (see `NodeCliConfig.
+ * sandboxEnabled`'s own doc comment for why). The env var wins outright
+ * over the file when both are set, same precedence as every other field in
+ * this loader; neither set at all defaults to `true` — sandboxing on,
+ * matching SPEC §7.17's "optional must not mean off by default once it
+ * ships". Only the literal string `"off"` (case-insensitive, surrounding
+ * whitespace trimmed) turns it off; anything else — including a typo like
+ * `"of"` or `"flase"` — throws rather than being silently ignored, since a
+ * mistyped value here landing on the WRONG side (silently staying on, or
+ * silently turning off) is exactly the ambiguity a kill switch can't
+ * afford to have.
+ */
+function parseSandboxEnabled(
+  envValue: string | undefined,
+  fileValue: boolean | undefined,
+): boolean {
+  if (envValue === undefined) return fileValue ?? true;
+  const normalized = envValue.trim().toLowerCase();
+  if (normalized === 'off') return false;
+  if (normalized === 'on') return true;
+  throw new ConfigError(`sandbox (LOOMBOX_SANDBOX) must be "on" or "off"; got "${envValue}"`);
+}
+
 export interface LoadNodeConfigOptions {
   /** Defaults to `process.env`; tests inject a plain object instead. */
   env?: NodeJS.ProcessEnv;
@@ -357,6 +400,11 @@ export interface LoadNodeConfigOptions {
  *   persisted identity keypair — lives on disk)
  * - `LOOMBOX_NODE_CONFIG` (optional; path to a JSON config file, same as
  *   `--config`)
+ * - `LOOMBOX_SANDBOX` (optional; `"on"` or `"off"`, defaults to `"on"` —
+ *   SPEC §7.17, issue #257. The operator kill switch for `local` session
+ *   sandboxing, not a normal opt-in — see {@link NodeCliConfig.sandboxEnabled}'s
+ *   doc comment for why. `main.ts`'s `start()` logs loudly at startup
+ *   whenever this actually turns sandboxing off.)
  *
  * `sshTargets` (each `ssh:` target's connection recipe) is deliberately
  * file-only: it's structured enough (host/user/port/key path/...) that
@@ -421,6 +469,7 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     env.LOOMBOX_CUSTOM_AGENT_ALLOWLIST,
     file.customAgentAllowlist,
   );
+  const sandboxEnabled = parseSandboxEnabled(env.LOOMBOX_SANDBOX, file.sandboxEnabled);
 
   return {
     relayUrl: withRelayWsPath(relayUrl!),
@@ -439,5 +488,6 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     customAgentAllowlist,
     localMaxConcurrentSessions,
     stateDir,
+    sandboxEnabled,
   };
 }

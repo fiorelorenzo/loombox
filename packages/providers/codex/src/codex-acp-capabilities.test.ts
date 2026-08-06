@@ -145,15 +145,30 @@ describe("real-shape conformance: loombox's Codex adapter functions against actu
     ]);
   });
 
-  it('[known gap, issue #819] hasCodexBespokeWidget does not fire for a real Codex edit tool call titled "Editing files"', () => {
-    const realEditToolCall: Pick<AcpToolCallUpdate, 'title'> = { title: 'Editing files' };
-    expect(hasCodexBespokeWidget(realEditToolCall)).toBe(false);
-    expect(codexBespokeToolName(realEditToolCall)).toBeUndefined();
+  it('[fixed, issue #819] hasCodexBespokeWidget fires for a real Codex edit tool call titled "Editing files"', () => {
+    const realEditToolCall: Pick<AcpToolCallUpdate, 'title' | 'toolKind'> = {
+      title: 'Editing files',
+      toolKind: 'edit',
+    };
+    expect(hasCodexBespokeWidget(realEditToolCall)).toBe(true);
+    expect(codexBespokeToolName(realEditToolCall)).toBe('edit');
   });
 
-  it('[known gap, issue #819] hasCodexBespokeWidget does not fire for a real Codex command tool call (its bash prefix is already stripped)', () => {
-    const realCommandToolCall: Pick<AcpToolCallUpdate, 'title'> = { title: 'ls -la' };
-    expect(hasCodexBespokeWidget(realCommandToolCall)).toBe(false);
+  it('[fixed, issue #819] hasCodexBespokeWidget fires for a real Codex command tool call by toolKind alone (its bash prefix is already stripped from the title)', () => {
+    const realCommandToolCall: Pick<AcpToolCallUpdate, 'title' | 'toolKind'> = {
+      title: 'ls -la',
+      toolKind: 'execute',
+    };
+    expect(hasCodexBespokeWidget(realCommandToolCall)).toBe(true);
+    expect(codexBespokeToolName(realCommandToolCall)).toBe('bash');
+  });
+
+  it('[fixed, issue #819] hasCodexBespokeWidget does not fire for a real Codex sub-action tool call outside the bespoke set', () => {
+    const realReadToolCall: Pick<AcpToolCallUpdate, 'title' | 'toolKind'> = {
+      title: "Read file 'src/foo.ts'",
+      toolKind: 'read',
+    };
+    expect(hasCodexBespokeWidget(realReadToolCall)).toBe(false);
   });
 
   it('buildCodexImageContentBlock is gated on the real negotiated image capability, which Codex does advertise', () => {
