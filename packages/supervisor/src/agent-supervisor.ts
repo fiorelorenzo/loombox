@@ -2,7 +2,9 @@ import type {
   AcpChildProcess,
   AcpMcpServerConfig,
   AcpProvider,
+  AcpSpawnConfig,
   AcpToolKind,
+  SandboxedSpawnConfig,
 } from '@loombox/providers-core';
 import { claudeProvider, claudeProviderModule } from '@loombox/providers-claude';
 import { codexProvider, codexProviderModule } from '@loombox/providers-codex';
@@ -67,6 +69,27 @@ export interface AgentSupervisorStartOptions {
    * child-process spawn (`client.ts`'s `spawn()` call).
    */
   env?: Record<string, string>;
+  /**
+   * Optional sandboxing hook, applied last — after the `env` merge above
+   * — to the exact `AcpSpawnConfig` this supervisor is about to hand to
+   * `AgentSession.spawn()` (SPEC §7.17; issue #257). `@loombox/node`'s
+   * `session-sandbox.ts` `resolveSessionSandbox()` is the real
+   * implementation: on Linux it rewrites `command`/`args` into a `bwrap`
+   * invocation confining the process to the session's worktree, or
+   * throws rather than returning an unsandboxed config (fail-closed —
+   * see `SandboxUnavailableError`'s own doc comment).
+   *
+   * Typed to return `SandboxedSpawnConfig`, not `AcpSpawnConfig` — see
+   * that type's own doc comment (`@loombox/providers-core`) for why a
+   * no-op `(config) => config` hook fails to typecheck here rather than
+   * silently "sandboxing" nothing. Left `undefined` (the default) this
+   * behaves exactly like before this option existed: `start()` hands
+   * `AgentSession.spawn()` the provider's own `spawnConfig()` output
+   * unchanged.
+   */
+  wrapSpawnConfig?: (
+    config: AcpSpawnConfig,
+  ) => SandboxedSpawnConfig | Promise<SandboxedSpawnConfig>;
 }
 
 export interface AgentSupervisorOptions {
@@ -146,21 +169,30 @@ export class AgentSupervisor {
     mcpServers,
     evaluateToolProfile,
     env,
+    wrapSpawnConfig,
   }: AgentSupervisorStartOptions): Promise<AgentSession> {
     const provider = this.providers.get(providerId);
     if (!provider) {
       throw new Error(`AgentSupervisor: no provider registered for id "${providerId}"`);
     }
 
-    const spawnConfig = provider.spawnConfig({ cwd: workspacePath });
-    const session = await AgentSession.spawn(
-      provider,
-      env && Object.keys(env).length > 0
-        ? { ...spawnConfig, env: { ...spawnConfig.env, ...env } }
-        : spawnConfig,
-      workspacePath,
-      { store: this.store, mcpServers, evaluateToolProfile },
-    );
+    let spawnConfig: AcpSpawnConfig = provider.spawnConfig({ cwd: workspacePath });
+    if (env && Object.keys(env).length > 0) {
+      spawnConfig = { ...spawnConfig, env: { ...spawnConfig.env, ...env } };
+    }
+    // Sandboxing runs last, over the fully-merged config (issue #257):
+    // whatever `wrapSpawnConfig` returns — including its rewritten
+    // `command`/`args` — is exactly what actually gets spawned below, so
+    // the env merge above can never end up wrapped inside a stale,
+    // pre-sandbox config.
+    if (wrapSpawnConfig) {
+      spawnConfig = await wrapSpawnConfig(spawnConfig);
+    }
+    const session = await AgentSession.spawn(provider, spawnConfig, workspacePath, {
+      store: this.store,
+      mcpServers,
+      evaluateToolProfile,
+    });
     this.sessions.set(session.id, session);
     return session;
   }
