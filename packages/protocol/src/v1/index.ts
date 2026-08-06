@@ -428,6 +428,34 @@ export {
   testRunnerConfigSet,
 } from './test-runner-config';
 export type {
+  PermissionRuleSetV1,
+  PermissionPolicyV1,
+  PermissionPolicyResultPayloadV1,
+  PermissionPolicySetPayloadV1,
+  PermissionPolicyGet,
+  PermissionPolicySet,
+  PermissionPolicyResult,
+  ToolRefusalReasonV1,
+  PermissionPolicyViolationPayloadV1,
+  PermissionPolicyViolation,
+} from './permission-policy';
+export {
+  EMPTY_PERMISSION_POLICY_V1,
+  parsePermissionPolicyResultPayloadV1,
+  parsePermissionPolicySetPayloadV1,
+  parsePermissionPolicyViolationPayloadV1,
+  safeParsePermissionPolicyResultPayloadV1,
+  safeParsePermissionPolicySetPayloadV1,
+  safeParsePermissionPolicyViolationPayloadV1,
+  permissionPolicyGet,
+  permissionPolicySet,
+  permissionPolicyResult,
+  permissionPolicyViolation,
+  permissionPolicyV1,
+  permissionRuleSetV1,
+  toolRefusalReasonV1,
+} from './permission-policy';
+export type {
   AccountPinErrorType,
   AccountPinGetRequest,
   AccountPinMapV1,
@@ -730,6 +758,15 @@ import {
   testRunnerConfigSet,
 } from './test-runner-config';
 import {
+  permissionPolicyGet,
+  permissionPolicyResult,
+  permissionPolicySet,
+  permissionPolicyV1,
+  permissionPolicyViolation,
+  permissionRuleSetV1,
+  toolRefusalReasonV1,
+} from './permission-policy';
+import {
   accountPinErrorType,
   accountPinGetRequest,
   accountPinMapV1,
@@ -920,6 +957,13 @@ export const schemasV1 = {
   testRunnerConfigResult,
   testRunnerConfigDetect,
   testRunnerConfigDetected,
+  permissionRuleSetV1,
+  permissionPolicyV1,
+  permissionPolicyGet,
+  permissionPolicySet,
+  permissionPolicyResult,
+  toolRefusalReasonV1,
+  permissionPolicyViolation,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,

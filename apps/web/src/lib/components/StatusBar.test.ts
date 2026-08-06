@@ -221,6 +221,15 @@ describe('StatusBar: context/cost meter (ported from ConfigBar, issue #248 corre
     );
   });
 
+  it('renders the token counts and the cost — numeric figures — in the shared mono identifier face (issue #735, ported from ConfigBar)', () => {
+    const { container } = render(StatusBar, {
+      props: { ...baseProps(), usage: usageAt(50_000), cumulativeCostUsd: 1.23 },
+    });
+    expect(container.querySelector('.meter-primary')?.className).toContain('font-mono');
+    expect(container.querySelector('.meter-max')?.className).toContain('font-mono');
+    expect(container.querySelector('.meter-cost')?.className).toContain('font-mono');
+  });
+
   it('fills the track to the percentage used', () => {
     render(StatusBar, { props: { ...baseProps(), usage: usageAt(50_000) } });
     const track = screen.getByTestId('context-track');

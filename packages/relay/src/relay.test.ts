@@ -56,6 +56,10 @@ import {
   type TerminalOpened,
   type TerminalOutput,
   type TerminalResize,
+  type PermissionPolicyGet,
+  type PermissionPolicyResult,
+  type PermissionPolicySet,
+  type PermissionPolicyViolation,
   type RunCancel,
   type RunExit,
   type RunOutput,
@@ -2881,6 +2885,120 @@ describe('relay v1', () => {
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('permission_policy_get/_set and their replies/violations (SPEC §7.17; issue #751) — routed and fanned out exactly like fs_list_request/fs_list_response, always blind', () => {
+    /** Same shared setup the terminal/test_runner_config describe blocks above use. */
+    async function bootstrapAnnouncedSession(
+      sessionId: string,
+    ): Promise<{ url: string; node: WebSocket; client: WebSocket }> {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: sessionId, accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId,
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      return { url, node, client };
+    }
+
+    it('routes a client permission_policy_get to the owning node — no envelope, since asking carries no content', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_permpolicy_get');
+
+      const request: PermissionPolicyGet = {
+        type: 'permission_policy_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_permpolicy_get',
+        requestId: 'req_get_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as PermissionPolicyGet;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('routes a client permission_policy_set to the owning node, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_permpolicy_set');
+
+      const request: PermissionPolicySet = {
+        type: 'permission_policy_set',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_permpolicy_set',
+        requestId: 'req_set_1',
+        envelope: fakeEnvelope('{"policy":{"command":{"allow":[],"deny":["rm -rf *"]}}}'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as PermissionPolicySet;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans permission_policy_result out to the subscribed client, byte-for-byte, never inspecting the envelope', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_permpolicy_result');
+
+      const response: PermissionPolicyResult = {
+        type: 'permission_policy_result',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_permpolicy_result',
+        requestId: 'req_get_1',
+        envelope: fakeEnvelope('{"policy":{"command":{"allow":[],"deny":[]}}}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as PermissionPolicyResult;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+
+    it('fans permission_policy_violation out to the subscribed client, byte-for-byte, never inspecting the envelope — no requestId, node-initiated', async () => {
+      const { node, client } = await bootstrapAnnouncedSession('sess_permpolicy_violation');
+
+      const response: PermissionPolicyViolation = {
+        type: 'permission_policy_violation',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_permpolicy_violation',
+        envelope: fakeEnvelope(
+          '{"reason":{"kind":"permission_policy","dimension":"command","rule":"rm *","matched":"rm -rf /"}}',
+        ),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as PermissionPolicyViolation;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'sessionId', 'type'].sort(),
       );
     });
   });

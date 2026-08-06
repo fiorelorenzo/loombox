@@ -560,6 +560,7 @@
       </div>
     {/if}
   {/if}
+
 </div>
 
 <style>

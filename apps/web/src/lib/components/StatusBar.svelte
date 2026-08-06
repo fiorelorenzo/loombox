@@ -263,7 +263,9 @@
     {#if queuedSessionCount > 0}
       <span class="status-bar-segment" data-testid="status-bar-queued">
         <span class="status-bar-label"
-          >{queuedSessionCount} session{queuedSessionCount === 1 ? '' : 's'} queued</span
+          ><span class="font-mono">{queuedSessionCount}</span> session{queuedSessionCount === 1
+            ? ''
+            : 's'} queued</span
         >
       </span>
     {/if}
@@ -295,9 +297,9 @@
         >
           <span class="track-fill" style:width={`${contextPercent}%`}></span>
         </span>
-        <span class="meter-primary">{formatTokens(contextTokens.used)}</span>
+        <span class="meter-primary font-mono">{formatTokens(contextTokens.used)}</span>
         <span class="meter-sep" aria-hidden="true">/</span>
-        <span class="meter-max">{formatTokens(contextTokens.max)}</span>
+        <span class="meter-max font-mono">{formatTokens(contextTokens.max)}</span>
         <span class="meter-sep" aria-hidden="true">·</span>
         {#if isNearLimit}
           <span class="sr-only" data-testid="context-warning"
@@ -305,7 +307,7 @@
           >
         {/if}
       {/if}
-      <span class="meter-cost">${cumulativeCostUsd.toFixed(2)}</span>
+      <span class="meter-cost font-mono">${cumulativeCostUsd.toFixed(2)}</span>
     </span>
   </div>
 </div>

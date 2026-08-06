@@ -62,9 +62,9 @@ function policy(overrides: Partial<PermissionPolicy> = {}): PermissionPolicy {
   };
 }
 
-/** Spawns a real hermetic `bash` (issue #503's `--noprofile --norc`, matching `terminal-supervisor.test.ts`) wrapped in a {@link PolicyEnforcedPty}, adopted via `TerminalSupervisor.openWithPty` — the exact seam `NodeDaemon.openTerminalForBridge` itself uses for both the `local` and `ssh:` backends. */
+/** Spawns a real hermetic `bash` (issue #503's `--noprofile --norc`, matching `terminal-supervisor.test.ts`) wrapped in a {@link PolicyEnforcedPty}, adopted via `TerminalSupervisor.openWithPty` — the exact seam `NodeDaemon.openTerminalForBridge` itself uses for both the `local` and `ssh:` backends. `policyValue` accepts either a static `PermissionPolicy` (wrapped in a resolver that always returns it — every existing call site's fixed-policy shape) or a resolver directly, for a test that mutates what the terminal enforces mid-session (issue #751's "no restart" acceptance). */
 function openPolicyEnforcedTerminal(
-  policyValue: PermissionPolicy,
+  policyValue: PermissionPolicy | (() => PermissionPolicy),
   onViolation?: (violation: PolicyViolation) => void,
 ): TerminalSession {
   supervisor = new TerminalSupervisor();
@@ -79,7 +79,7 @@ function openPolicyEnforcedTerminal(
   const gated = new PolicyEnforcedPty({
     inner: realPty,
     projectPath: '/proj-a',
-    policy: policyValue,
+    policy: typeof policyValue === 'function' ? policyValue : () => policyValue,
     onViolation,
   });
   return supervisor.openWithPty('term-1', gated);
@@ -176,6 +176,26 @@ describe('PolicyEnforcedPty — real bash over a real PTY', () => {
     });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('re-reads the policy on every submitted line, never a construction-time snapshot: a policy mutated after this terminal opened blocks the very next line, no reconnect (issue #751)', async () => {
+    const marker = path.join(workDir, 'marker');
+    let currentPolicy = policy();
+    const session = openPolicyEnforcedTerminal(() => currentPolicy);
+    let output = '';
+    session.onData((chunk) => {
+      output += Buffer.from(chunk).toString('utf8');
+    });
+
+    session.write('echo before-policy\n');
+    await waitFor(() => output.includes('before-policy'));
+
+    // Mutate what the resolver returns — no new terminal, no reconnect.
+    currentPolicy = policy({ command: { allow: [], deny: ['touch *'] } });
+
+    session.write(`touch ${marker}\n`);
+    await waitFor(() => output.includes('blocked by permission policy'));
+    expect(existsSync(marker)).toBe(false);
   });
 
   describe('network dimension — a real local TCP listener', () => {
