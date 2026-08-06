@@ -172,6 +172,10 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   permission_policy_set: { routed: 'client' },
   permission_policy_result: { routed: 'node' },
   permission_policy_violation: { routed: 'node' },
+  spend_cap_get: { routed: 'client' },
+  spend_cap_set: { routed: 'client' },
+  spend_cap_result: { routed: 'node' },
+  session_spend_cap_resume: { routed: 'client' },
   keymap_get_request: { routed: 'client' },
   keymap_set_request: { routed: 'client' },
   keymap_result: {

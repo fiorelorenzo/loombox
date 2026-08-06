@@ -133,6 +133,11 @@ import {
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
   type PermissionPolicyViolationPayloadV1,
+  type SpendCapGet,
+  type SpendCapSet,
+  type SpendCapSetPayloadV1,
+  type SpendCapResultPayloadV1,
+  type SessionSpendCapResume,
   type CheckpointCreate,
   type CheckpointCreatePayloadV1,
   type CheckpointErrorTypeV1,
@@ -228,6 +233,7 @@ import {
   type PolicyViolation,
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
+import { SpendCapStore } from './spend-cap-store';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,
@@ -588,6 +594,14 @@ export interface NodeDaemonOptions {
    * `PermissionPolicyStore({ stateDir })`.
    */
   permissionPolicyStore?: PermissionPolicyStore;
+  /**
+   * This node's per-project spend cap store (SPEC §7.16; issue #251):
+   * the project-scoped half of the two-scope resolution
+   * `effectiveSpendCapUsd` performs — the session-scoped half lives
+   * directly on `SessionManager`'s own `Session.spendCapUsd`, not here.
+   * Injectable for tests; defaults to a fresh `SpendCapStore({ stateDir })`.
+   */
+  spendCapStore?: SpendCapStore;
   /**
    * This node's named agent-profile catalog (design spec
    * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752): the
@@ -1051,6 +1065,28 @@ interface SessionBridge {
    * still-running remote agent process.
    */
   remoteChild?: RemoteAgentChildProcess;
+  /**
+   * This session's live cumulative cost in USD (SPEC §7.9/§7.16; issue
+   * #251), accumulated from every `usage_update.costUsd` this bridge has
+   * seen (`wireAgentSession`'s `'transcript_update'` listener), as a
+   * running max — mirrors `@loombox/providers-core`'s `reduceUsage`
+   * exactly, since ACP's `cost.amount` is the agent's own cumulative
+   * total, not a delta. `undefined` until the agent reports a real cost
+   * at least once — see `maybeApplySpendCap`'s own doc comment for why
+   * that silence must never be read as $0 spend.
+   */
+  spendCumulativeCostUsd?: number;
+  /**
+   * The highest `spendCumulativeCostUsd` this session has been explicitly
+   * resumed through (SPEC §7.16; issue #251) — `undefined` (treated as
+   * `0`) until the first spend-cap pause/resume cycle. `maybeApplySpendCap`
+   * only re-fires the SAME cap once spend grows past this watermark
+   * again, so an explicit resume (`handleSessionSpendCapResume`) or a
+   * cap-raise that covers current spend (`maybeAutoResumeAfterCapChange`)
+   * — both of which advance it to the spend at that moment — never
+   * immediately re-triggers the pause it just resolved.
+   */
+  spendCapAcknowledgedThroughUsd?: number;
 }
 
 /**
@@ -1316,6 +1352,8 @@ export class NodeDaemon extends EventEmitter {
   private static readonly MCP_AUTO_DISABLE_THRESHOLD = 3;
   /** SPEC §7.17; issue #256 — see `NodeDaemonOptions.permissionPolicyStore`'s doc comment. */
   private readonly permissionPolicyStore: PermissionPolicyStore;
+  /** SPEC §7.16; issue #251 — see `NodeDaemonOptions.spendCapStore`'s doc comment. */
+  private readonly spendCapStore: SpendCapStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
   private readonly agentProfileStore: AgentProfileStore;
   /**
@@ -1480,6 +1518,7 @@ export class NodeDaemon extends EventEmitter {
       new NodeProjectEnvManager({ stateDir: options.stateDir, secrets: this.mcpSecretManager });
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
+    this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
     this.agentProfileStore =
       options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
@@ -2232,6 +2271,7 @@ export class NodeDaemon extends EventEmitter {
       state: 'running',
       nodeId: this.nodeId,
       targetId,
+      spendCapUsd: undefined,
     };
     await this.announce(provisional, targetId, opts.title);
 
@@ -2403,6 +2443,7 @@ export class NodeDaemon extends EventEmitter {
         state: 'running',
         nodeId: this.nodeId,
         targetId,
+        spendCapUsd: undefined,
       };
 
       await this.sendMcpServerStatus(sessionId, failedMcpServers);
@@ -2718,6 +2759,21 @@ export class NodeDaemon extends EventEmitter {
 
   private wireAgentSession(bridge: SessionBridge): void {
     bridge.agentSession.on('transcript_update', (update: AcpTranscriptUpdate) => {
+      if (update.kind === 'usage_update' && update.costUsd !== undefined) {
+        // SPEC §7.9/§7.16: the same cumulative-cost rollup the usage meter
+        // shows and a runaway subagent's own spend already folds into
+        // (issue #248's "still included in the cumulative cost figure")
+        // — a running max, never a sum, mirroring `@loombox/providers-core`'s
+        // `reduceUsage` exactly, since `cost.amount` is documented as the
+        // session's own cumulative total, not a per-update delta. Stays
+        // `undefined` until the agent reports a real cost at least once
+        // (see `maybeApplySpendCap`'s guard #3) — never seeded to 0.
+        bridge.spendCumulativeCostUsd = Math.max(
+          bridge.spendCumulativeCostUsd ?? 0,
+          update.costUsd,
+        );
+        this.maybeApplySpendCap(bridge);
+      }
       this.forwardSessionEvent(bridge.session.id, update);
     });
 
@@ -2764,6 +2820,12 @@ export class NodeDaemon extends EventEmitter {
         // `sendAttentionHint`'s doc comment.
         this.sendAttentionHint(bridge.session.id, state.status);
       }
+      // SPEC §7.16; issue #251: re-checks a cap that was crossed while
+      // this turn was still `'working'`/`'permission_required'` (deferred
+      // by `maybeApplySpendCap`'s own doc comment) the instant the turn
+      // actually settles — a no-op every other time (session not over
+      // cap, or already paused).
+      this.maybeApplySpendCap(bridge);
     });
 
     bridge.agentSession.on('turn_end', (turnEnd: AcpTurnEnd) => {
@@ -2890,6 +2952,155 @@ export class NodeDaemon extends EventEmitter {
     // `session/prompt` reply, not before), so there is nothing yet for this
     // method to forward; the `'changed'` listener `wireAgentSession` just
     // registered is what delivers it once the agent actually declares one.
+  }
+
+  /**
+   * The winning spend cap for `session` (SPEC §7.16; issue #251): its own
+   * `spendCapUsd` when set, else its project's `spendCapStore` value,
+   * else `undefined` (nothing to enforce) — the more-specific-wins
+   * resolution issue #251 asks for, mirroring issue #753's identical
+   * "project override beats the remembered value" shape for config
+   * options. Deliberately returns only the raw number, never a
+   * `{value, source}` pair — a caller that needs to know WHICH scope won
+   * (a UI showing "why is this session capped at $10") re-derives that
+   * itself from the same two raw values `spend_cap_result` already
+   * carries, exactly like `spend-cap.ts`'s own doc comment explains for
+   * why the wire payload carries no derived field either.
+   */
+  private effectiveSpendCapUsd(session: Session): number | undefined {
+    return session.spendCapUsd ?? this.spendCapStore.get(session.projectPath);
+  }
+
+  /**
+   * Auto-pauses `bridge`'s session the moment its cumulative cost crosses
+   * its effective spend cap (SPEC §7.16; issue #251) — called on every
+   * `usage_update` (after {@link SessionBridge.spendCumulativeCostUsd} is
+   * updated, see `wireAgentSession`'s `'transcript_update'` listener) and
+   * on every `'attention'` transition (so a cap crossed mid-turn is
+   * re-checked the instant the turn actually settles, see below).
+   *
+   * Five guards, in order, each a real reason this does nothing:
+   * 1. Already not `'running'` (paused, ended, or disconnected) — nothing
+   *    to (re-)apply; a paused session doesn't get paused again, an ended
+   *    one is moot.
+   * 2. No effective cap at all — nothing to enforce.
+   * 3. `spendCumulativeCostUsd` is `undefined` — THIS agent has never
+   *    reported a single `usage_update` with a real `cost.amount` for
+   *    this session (SPEC §7.9's rollup has nothing to roll up yet).
+   *    Treating that silence as $0 real spend would let a provider that
+   *    simply never reports cost trip a cap it never actually reached —
+   *    the exact fabrication issue #251's acceptance line rules out. No
+   *    usage reported, full stop, regardless of how low the cap is.
+   * 4. Not yet over the cap.
+   * 5. Already resumed through this exact spend level (`spendCapAcknowledgedThroughUsd`)
+   *    — see {@link handleSessionSpendCapResume}/{@link
+   *    maybeAutoResumeAfterCapChange}'s own doc comments for why a
+   *    resume doesn't itself lower the spend, only raises the watermark
+   *    past which the SAME cap is allowed to fire again.
+   *
+   * The interesting decision is the one AFTER every guard above passes:
+   * whether a cap crossed mid-turn interrupts that turn or lets it
+   * finish. This lets it finish — "mid-turn" meaning
+   * `bridge.agentSession.getAttentionState().status` still reads
+   * `'working'` OR `'permission_required'`, not just `'working'`: a
+   * pending tool-call approval is still part of the SAME open turn (the
+   * agent is blocked on the user, not idle), and pausing out from under
+   * it would leave a genuinely confusing state — a `'paused'` session
+   * with a still-live, still-answerable permission card, whose approval
+   * would let the agent keep running while the UI insists it's paused.
+   * Two concrete reasons for "let it finish" at all, not just caution:
+   * - There is no ACP-level turn-interrupt wire message today —
+   *   `apps/web`'s `RelayClient.interruptTurn` (the real Stop button)
+   *   documents this directly: "There is no v1 wire message for the
+   *   ACP-level turn interrupt itself yet." Building one specifically
+   *   for this cap, before the Stop button that actually needs it has
+   *   one, would be new protocol surface out of proportion to this issue
+   *   and would risk disagreeing with however #147/#129's real interrupt
+   *   eventually lands.
+   * - Issue #251's own acceptance line requires "agent process
+   *   paused/suspended, not silently killed" — yanking control away from
+   *   a tool call already in flight (a diff mid-write, a command
+   *   mid-execution) is closer to that ruled-out "kill" than to a clean
+   *   pause, and ACP gives no way to resume a half-interrupted turn
+   *   cleanly even if the process itself survives.
+   *
+   * So a cap crossed mid-turn does NOT set some "pausing soon" status and
+   * wait: this guard simply returns, and the SAME check runs again —
+   * still over the cap, since cost only grows — the instant `'attention'`
+   * next settles to `'awaiting_input'`/`'error'`/`'exited'`, which is what
+   * actually pauses it. The UI stays honest the whole time: the session's
+   * live status keeps reading `'working'`/`'permission_required'` (it
+   * genuinely still is) right up until it pauses — never `'paused'` a
+   * turn early, and never silently stuck `'working'` forever with no
+   * visible consequence of having crossed the cap.
+   */
+  private maybeApplySpendCap(bridge: SessionBridge): void {
+    if (bridge.session.state !== 'running') return;
+    const capUsd = this.effectiveSpendCapUsd(bridge.session);
+    if (capUsd === undefined) return;
+    if (bridge.spendCumulativeCostUsd === undefined) return;
+    if (bridge.spendCumulativeCostUsd <= capUsd) return;
+    if ((bridge.spendCapAcknowledgedThroughUsd ?? 0) >= bridge.spendCumulativeCostUsd) return;
+    const liveStatus = bridge.agentSession.getAttentionState().status;
+    if (liveStatus === 'working' || liveStatus === 'permission_required') return;
+    this.pauseForSpendCap(bridge, capUsd, bridge.spendCumulativeCostUsd);
+  }
+
+  /** Applies the auto-pause itself once every guard in {@link maybeApplySpendCap} has passed: transitions the session to `'paused'` (the agent process is untouched — see `session-manager.ts`'s own `SessionLifecycleState` doc comment for why that's "independent of the supervisor's own process-level concerns" by design) and pushes the `'paused'` status with a `reason` a user can read, in the same field #730 added for a spawn failure. Uses {@link forwardSessionEvent}, not the bridge-less `sendSessionStatus` helper (SPEC §7.24's ordering rule) — this session has a live bridge, and its own `sendQueue` is what guarantees this push lands strictly after the `'attention'`-driven status change that triggered it, never racing an independent unqueued encrypt-and-send. */
+  private pauseForSpendCap(bridge: SessionBridge, capUsd: number, spentUsd: number): void {
+    this.sessionManager.pauseSession(bridge.session.id);
+    const reason = `Spend cap reached: $${spentUsd.toFixed(2)} of $${capUsd.toFixed(2)} — raise the cap or resume to continue.`;
+    this.forwardSessionEvent(bridge.session.id, {
+      kind: 'session_status',
+      // `AcpSessionWireEvent`'s `session_status` variant types `status` as
+      // the narrow, ACP-native `AttentionStatus` (5 values) — 'paused' is
+      // a `SessionStatusV1` (protocol-side) widening with no
+      // `AttentionStatus` counterpart, same category as 'queued'/
+      // 'starting'/'disconnected' (`session-events.ts`'s own doc comment:
+      // "deliberately NOT added to AcpSessionStatus... protocol-side, not
+      // there"). This is the one case among those four that DOES have a
+      // live bridge to push through, so it rides `forwardSessionEvent`
+      // rather than the bridge-less `sendSessionStatus` — the explicit
+      // widening cast here is the node-side mirror of `apps/web`'s
+      // `parseSessionWireEvent`, which documents the identical tolerance
+      // client-side.
+      status: 'paused' as unknown as AttentionStatus,
+      updatedAt: new Date().toISOString(),
+      reason,
+    });
+  }
+
+  /**
+   * Issue #251's "raising the cap is one of the ways to resume": called
+   * right after a `spend_cap_set` write lands (either scope), while the
+   * session is still `'paused'`. Auto-resumes ONLY when the newly-
+   * effective cap now actually covers the session's current spend —
+   * raising a project cap to a number still below what this session has
+   * already spent changes the limit without making the old pause any
+   * less correct, so it stays paused. Advances {@link
+   * SessionBridge.spendCapAcknowledgedThroughUsd} to the current spend on
+   * resume, exactly like {@link handleSessionSpendCapResume}'s explicit
+   * path does, so the cap doesn't immediately re-fire on the very next
+   * `usage_update` for a spend that never actually changed.
+   */
+  private maybeAutoResumeAfterCapChange(bridge: SessionBridge): void {
+    if (bridge.session.state !== 'paused') return;
+    const capUsd = this.effectiveSpendCapUsd(bridge.session);
+    const spentUsd = bridge.spendCumulativeCostUsd;
+    if (capUsd === undefined || spentUsd === undefined || spentUsd > capUsd) return;
+    this.sessionManager.resumeSession(bridge.session.id);
+    bridge.spendCapAcknowledgedThroughUsd = spentUsd;
+    this.pushResumedStatus(bridge);
+  }
+
+  /** Pushes the session's real, current attention status right after a spend-cap resume (either path) — never a hardcoded `'working'`/`'awaiting_input'` guess, since a resumed session's agent was idle the whole time it was paused and may have settled anywhere in `AttentionStatus` while it waited. */
+  private pushResumedStatus(bridge: SessionBridge): void {
+    const attention = bridge.agentSession.getAttentionState();
+    this.forwardSessionEvent(bridge.session.id, {
+      kind: 'session_status',
+      status: attention.status,
+      updatedAt: attention.updatedAt,
+    });
   }
 
   /** Encrypts and pumps one session-lifecycle/transcript event to the relay, preserving arrival order (see `SessionBridge.sendQueue`'s doc comment). */
@@ -3624,6 +3835,15 @@ export class NodeDaemon extends EventEmitter {
       case 'permission_policy_set':
         this.handlePermissionPolicySet(message);
         return;
+      case 'spend_cap_get':
+        this.handleSpendCapGet(message);
+        return;
+      case 'spend_cap_set':
+        this.handleSpendCapSet(message);
+        return;
+      case 'session_spend_cap_resume':
+        this.handleSessionSpendCapResume(message);
+        return;
       case 'checkpoint_create':
         this.handleCheckpointCreate(message);
         return;
@@ -4285,6 +4505,14 @@ export class NodeDaemon extends EventEmitter {
    *   wire message here would be a protocol change of its own. Once part 2
    *   of #702 reaches the client, the composer for a `disconnected`
    *   session is disabled and this branch stops firing in practice.
+   * - `sessionId` IS one of this node's sessions with a live bridge, but
+   *   the session is `'paused'` (SPEC §7.16; issue #251 — a spend cap):
+   *   the agent process is alive (pausing never touches it — see
+   *   `SessionLifecycleState`'s own doc comment), but this node refuses to
+   *   hand it another prompt until an explicit resume, same "no reply
+   *   channel" logged-and-dropped treatment as the disconnected case
+   *   above, since giving `prompt_inject` one is #706's job, not this
+   *   issue's.
    */
   private handlePromptInject(message: PromptInjectV1): void {
     const bridge = this.bridges.get(message.sessionId);
@@ -4295,6 +4523,12 @@ export class NodeDaemon extends EventEmitter {
         );
       }
       // else: not one of this node's sessions at all; ignore per SPEC.md §12
+      return;
+    }
+    if (bridge.session.state === 'paused') {
+      console.warn(
+        `NodeDaemon: dropped prompt_inject for session ${message.sessionId}: it is paused on a spend cap, and prompt_inject has no reply channel to report that on — see issue #706`,
+      );
       return;
     }
 
@@ -6403,6 +6637,63 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /** A client asked for a session's current project and session spend caps (SPEC §7.16; issue #251). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only the session record and `projectPath`, never the live agent, mirrors `handlePermissionPolicyGet`. */
+  private handleSpendCapGet(message: SpendCapGet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.sendSpendCapResult(message.sessionId, message.requestId, {
+      projectCapUsd: this.spendCapStore.get(routing.session.projectPath) ?? null,
+      sessionCapUsd: routing.session.spendCapUsd ?? null,
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send spend_cap_result for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked to save (or, with `capUsd: null`, clear) one scope's
+   * spend cap (SPEC §7.16; issue #251) — `scope: 'project'` writes
+   * `spendCapStore`, keyed by `routing.session.projectPath` exactly like
+   * `handlePermissionPolicySet`; `scope: 'session'` writes this session's
+   * own `SessionManager.setSpendCapUsd`. Takes effect on this session's
+   * very next `usage_update`/attention transition, same "no restart"
+   * contract `handlePermissionPolicySet` already documents. Ignored if
+   * `sessionId` isn't one of this node's sessions at all. Replies with the
+   * same `spend_cap_result` `handleSpendCapGet` does, so "save" and "read
+   * the current value" are one client-side code path — and, per issue
+   * #251's "raising the cap is one of the ways to resume" design decision,
+   * a live bridge whose new effective cap now covers its current spend is
+   * auto-resumed as a side effect ({@link maybeAutoResumeAfterCapChange}).
+   */
+  private handleSpendCapSet(message: SpendCapSet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptSpendCapSet(message)
+      .then((payload) => {
+        if (payload.scope === 'project') {
+          this.spendCapStore.save(routing.session.projectPath, payload.capUsd ?? undefined);
+        } else {
+          this.sessionManager.setSpendCapUsd(routing.session.id, payload.capUsd ?? undefined);
+        }
+        const bridge = this.bridges.get(routing.session.id);
+        if (bridge) this.maybeAutoResumeAfterCapChange(bridge);
+        return this.sendSpendCapResult(message.sessionId, message.requestId, {
+          projectCapUsd: this.spendCapStore.get(routing.session.projectPath) ?? null,
+          sessionCapUsd: routing.session.spendCapUsd ?? null,
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle spend_cap_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
   /**
    * A client asked to take a checkpoint of a session's worktree right now
    * (issue #268's "named or auto-labeled checkpoint on demand", issue
@@ -6425,6 +6716,27 @@ export class NodeDaemon extends EventEmitter {
           `NodeDaemon: failed to handle checkpoint_create for session ${message.sessionId}: ${detail}`,
         );
       });
+  }
+
+  private async decryptSpendCapSet(message: SpendCapSet): Promise<SpendCapSetPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<SpendCapSetPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendSpendCapResult(
+    sessionId: string,
+    requestId: string,
+    payload: SpendCapResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'spend_cap_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
   }
 
   private async decryptCheckpointCreate(
@@ -6585,6 +6897,35 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       envelope,
     });
+  }
+
+  /**
+   * A client explicitly confirms continuing a session that auto-paused on
+   * a spend cap, without changing the cap itself (SPEC §7.16; issue #251's
+   * OTHER deliberate way to resume, alongside a `spend_cap_set` that
+   * raises the cap back above current spend — see {@link
+   * maybeAutoResumeAfterCapChange}). A silent no-op, mirroring `run_cancel`'s
+   * own "already exited or unknown" contract, when there is no live bridge
+   * to resume (session unknown to this node, or reloaded `'disconnected'`
+   * after a restart) or the session isn't actually `'paused'`
+   * (`InvalidSessionTransitionError`, e.g. a double-click, or the cap was
+   * already raised out from under it by a concurrent `spend_cap_set`).
+   */
+  private handleSessionSpendCapResume(message: SessionSpendCapResume): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) return;
+    try {
+      this.sessionManager.resumeSession(bridge.session.id);
+    } catch (error) {
+      if (error instanceof InvalidSessionTransitionError) return;
+      throw error;
+    }
+    // The cap re-arms only once spend grows past what the user just
+    // explicitly resumed through (issue #251's "resuming ... must be a
+    // deliberate act") — never immediately, on the very next `usage_update`
+    // for a session whose cumulative cost never actually dropped.
+    bridge.spendCapAcknowledgedThroughUsd = bridge.spendCumulativeCostUsd;
+    this.pushResumedStatus(bridge);
   }
 
   /**

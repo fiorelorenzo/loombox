@@ -102,14 +102,29 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
  *   `'disconnected'` — so a client that was offline for the actual
  *   transition still learns the true state the moment it (or its node)
  *   reconnects, not just the client that happened to be subscribed live.
+ * - `'paused'` (SPEC §7.16's spend caps, issue #251) is the wire
+ *   counterpart of `SessionLifecycleState`'s own `'paused'` value, same
+ *   relationship `'disconnected'` already has to that type — but unlike
+ *   `'disconnected'`, a paused session's agent process is alive and idle
+ *   (`SessionManager.pauseSession` is, by issue #67's own design,
+ *   "independent of the supervisor's own process-level concerns": it
+ *   never touches the process, it only stops this node from handing it
+ *   another prompt). Today's one producer is `NodeDaemon.
+ *   pauseForSpendCap`, once a session's cumulative cost crosses its
+ *   effective spend cap; always carries a `reason` (below) naming the
+ *   cap and the spend that crossed it, which is what lets a client
+ *   distinguish this from a future, differently-caused pause. Resuming
+ *   is always a deliberate client act — `session_spend_cap_resume`, or a
+ *   `spend_cap_set` that raises the cap back above current spend — never
+ *   automatic just because time passed or a new `usage_update` arrived.
  *
- * All three are enum *widenings*: an older peer's zod validation on this
+ * All four are enum *widenings*: an older peer's zod validation on this
  * field simply rejects/drops a `session_status` envelope carrying
- * `'queued'`, `'starting'`, or `'disconnected'` (none reaches a value that
- * peer's own schema would have accepted before), degrading to "no status
- * update yet" rather than crashing — acceptable because the very next
- * transition (to `'working'`/`'awaiting_input'`/`'error'`) is a value every
- * peer, old or new, already understands.
+ * `'queued'`, `'starting'`, `'disconnected'`, or `'paused'` (none reaches
+ * a value that peer's own schema would have accepted before), degrading
+ * to "no status update yet" rather than crashing — acceptable because
+ * the very next transition (to `'working'`/`'awaiting_input'`/`'error'`)
+ * is a value every peer, old or new, already understands.
  */
 export const sessionStatusV1 = z.enum([
   'queued',
@@ -120,20 +135,26 @@ export const sessionStatusV1 = z.enum([
   'error',
   'exited',
   'disconnected',
+  'paused',
 ]);
 export type SessionStatusV1 = z.infer<typeof sessionStatusV1>;
 
-/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). `reason` is set only for `'error'` (issue #730): a spawn that failed or timed out, in words a user can read — never populated for any other status, and never required (a status push predating this field, or one with nothing more specific to say, omits it). */
+/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). `reason` is set for `'error'` (issue #730) or `'paused'` (issue #251): a spawn that failed or timed out, or a spend cap that was crossed, in words a user can read — never populated for any other status, and never required (a status push predating this field, or one with nothing more specific to say, omits it). */
 export const sessionStatusEventV1 = z.object({
   kind: z.literal('session_status'),
   status: sessionStatusV1,
   updatedAt: z.string().min(1),
   /**
-   * Set only alongside an `'error'` status the node wants the client to
-   * show VERBATIM rather than a generic "session failed" — today the one
-   * producer is a custom-agent allowlist refusal (issue #748's "a request
-   * to run a binary outside it is refused with a reason the client
-   * shows"), naming the disallowed command and where the allowlist lives.
+   * Set alongside an `'error'` status the node wants the client to show
+   * VERBATIM rather than a generic "session failed" — today one producer
+   * is a custom-agent allowlist refusal (issue #748's "a request to run
+   * a binary outside it is refused with a reason the client shows"),
+   * naming the disallowed command and where the allowlist lives. Also
+   * set, always, alongside a `'paused'` status (issue #251): which cap
+   * (project or session) fired and the spend that crossed it, e.g.
+   * `"Spend cap reached: $12.50 of $10.00"` — a `'paused'` status with no
+   * reason would be indistinguishable from a future, differently-caused
+   * pause, which is exactly what this field exists to prevent.
    * `undefined` for every other status transition and for an ordinary
    * spawn failure with nothing more specific to add than "error" — this is
    * additive, so an older peer's schema simply drops an unrecognized field

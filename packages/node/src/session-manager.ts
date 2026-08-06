@@ -38,6 +38,8 @@ export interface Session {
   nodeId: string | undefined;
   /** The specific `TargetDescriptor.id` (e.g. `'local'`, or an `ssh:` target's id) this session runs on — distinct from `target`, which only records the target *kind*. `undefined` when the caller didn't supply one. */
   targetId: string | undefined;
+  /** This session's own spend cap in USD (SPEC §7.16; issue #251) — the more specific of the two scopes `NodeDaemon.effectiveSpendCapUsd` resolves, beating the project-wide `SpendCapStore` value when both are set. `undefined` means this session has no cap of its own (falls back to the project cap, if any). Set via {@link SessionManager.setSpendCapUsd}; persisted through `SessionStore` exactly like every other `Session` field. */
+  spendCapUsd: number | undefined;
 }
 
 /**
@@ -394,6 +396,7 @@ export class SessionManager {
       state: 'running',
       nodeId,
       targetId: targetId ?? 'local',
+      spendCapUsd: undefined,
     };
 
     this.sessions.set(id, session);
@@ -463,6 +466,11 @@ export class SessionManager {
       state: 'running',
       nodeId: options.nodeId,
       targetId: options.targetId ?? 'local',
+      // Deliberately NOT inherited from `source` — a fork is "a brand-new,
+      // independent session" (this method's own doc comment); its spend
+      // cap starts unset (falling back to the project cap, if any) rather
+      // than silently carrying the source's own session-scoped limit.
+      spendCapUsd: undefined,
     };
 
     this.sessions.set(id, session);
@@ -490,6 +498,19 @@ export class SessionManager {
   resumeSession(id: string): Session {
     const session = this.requireSession(id);
     applyTransition(session, 'resume');
+    this.persist();
+    return session;
+  }
+
+  /** Sets or clears (via `undefined`) this session's own spend cap in USD (SPEC §7.16; issue #251) — the session-scoped half of the two-scope resolution `NodeDaemon.effectiveSpendCapUsd` performs. Throws a plain `Error` (mirrors {@link requireSession}'s own unchecked-id contract) for an unknown session id, or for a `capUsd` that isn't a positive, finite number — a $0 or negative cap is not a real spend limit, same validation `SpendCapStore.save()` applies to the project scope. Setting a cap never itself pauses or resumes a session; `NodeDaemon` re-evaluates the effective cap against the session's live cost on its own next `usage_update`/attention transition, and separately auto-resumes a cap-paused session when the newly-set cap now exceeds its current spend (see `NodeDaemon.maybeAutoResumeAfterCapChange`). */
+  setSpendCapUsd(id: string, capUsd: number | undefined): Session {
+    const session = this.requireSession(id);
+    if (capUsd !== undefined && !(Number.isFinite(capUsd) && capUsd > 0)) {
+      throw new Error(
+        `SessionManager: cannot set spend cap for session ${id}: ${capUsd} is not a positive, finite number`,
+      );
+    }
+    session.spendCapUsd = capUsd;
     this.persist();
     return session;
   }

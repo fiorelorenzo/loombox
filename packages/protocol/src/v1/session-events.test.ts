@@ -15,7 +15,7 @@ import {
 } from './session-events';
 
 describe('sessionStatusEventV1', () => {
-  it('accepts every valid session status value, including "queued" (issue #252), "starting" (issue #516), and "disconnected" (issue #702)', () => {
+  it('accepts every valid session status value, including "queued" (issue #252), "starting" (issue #516), "disconnected" (issue #702), and "paused" (issue #251)', () => {
     for (const status of [
       'queued',
       'starting',
@@ -25,6 +25,7 @@ describe('sessionStatusEventV1', () => {
       'error',
       'exited',
       'disconnected',
+      'paused',
     ] as const) {
       const result = sessionStatusEventV1.safeParse({
         kind: 'session_status',
@@ -46,6 +47,17 @@ describe('sessionStatusEventV1', () => {
     expect(result.success && result.data.reason).toBe(
       'agent spawn did not complete within 120000ms',
     );
+  });
+
+  it('accepts a "reason" alongside "paused" (issue #251: which cap fired and the spend that crossed it)', () => {
+    const result = sessionStatusEventV1.safeParse({
+      kind: 'session_status',
+      status: 'paused',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      reason: 'Spend cap reached: $12.50 of $10.00',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.reason).toBe('Spend cap reached: $12.50 of $10.00');
   });
 
   it('parses fine with "reason" omitted (every status predating issue #730, and every non-error status)', () => {

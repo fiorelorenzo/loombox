@@ -575,6 +575,24 @@ export {
   toolRefusalReasonV1,
 } from './permission-policy';
 export type {
+  SpendCapSetPayloadV1,
+  SpendCapResultPayloadV1,
+  SpendCapGet,
+  SpendCapSet,
+  SpendCapResult,
+  SessionSpendCapResume,
+} from './spend-cap';
+export {
+  parseSpendCapSetPayloadV1,
+  safeParseSpendCapSetPayloadV1,
+  parseSpendCapResultPayloadV1,
+  safeParseSpendCapResultPayloadV1,
+  spendCapGet,
+  spendCapSet,
+  spendCapResult,
+  sessionSpendCapResume,
+} from './spend-cap';
+export type {
   GitCheckpointV1,
   RestorePreviewV1,
   RestoreResultV1,
@@ -1083,6 +1101,14 @@ import {
   agentProfileSessionErrorPayloadV1,
 } from './agent-profile';
 import {
+  spendCapSetPayloadV1,
+  spendCapResultPayloadV1,
+  spendCapGet,
+  spendCapSet,
+  spendCapResult,
+  sessionSpendCapResume,
+} from './spend-cap';
+import {
   accountPinErrorType,
   accountPinGetRequest,
   accountPinMapV1,
@@ -1327,6 +1353,12 @@ export const schemasV1 = {
   agentProfileSessionSet,
   agentProfileSessionResult,
   agentProfileSessionErrorPayloadV1,
+  spendCapSetPayloadV1,
+  spendCapResultPayloadV1,
+  spendCapGet,
+  spendCapSet,
+  spendCapResult,
+  sessionSpendCapResume,
   githubConnectStartRequest,
   githubConnectCancelRequest,
   githubConnectDeviceCode,
