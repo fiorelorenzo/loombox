@@ -37,6 +37,8 @@ import {
   initializeResult,
   newDeviceBootstrapResponse,
   parsePermissionPolicyResultPayloadV1,
+  parseAgentProfileListResultPayloadV1,
+  parseAgentProfileSessionPayloadV1,
   parsePermissionPolicyViolationPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
@@ -104,6 +106,11 @@ import {
   type PermissionPolicyViolation,
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyViolationPayloadV1,
+  type AgentProfileV1,
+  type AgentProfileListResult,
+  type AgentProfileListSetPayloadV1,
+  type AgentProfileSessionResult,
+  type AgentProfileSessionPayloadV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
@@ -139,6 +146,7 @@ export type {
   PermissionPolicyV1,
   PermissionRuleSetV1,
   ToolRefusalReasonV1,
+  AgentProfileV1,
 } from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
@@ -1208,6 +1216,21 @@ export class RelayClient {
   private readonly permissionPolicyViolationListeners = new Map<
     string,
     Set<(violation: PermissionPolicyViolationPayloadV1) => void>
+  >();
+  /**
+   * requestId -> the pending {@link listAgentProfiles}/{@link saveAgentProfiles}
+   * call it belongs to (design spec `2026-08-05-zed-parity-decisions.md`'s
+   * D3-4; issue #752). Both resolve to the same `agent_profile_list_result`
+   * reply, mirrors {@link pendingPermissionPolicyRequests} immediately above.
+   */
+  private readonly pendingAgentProfileListRequests = new Map<
+    string,
+    { resolve: (profiles: AgentProfileV1[]) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link getSessionAgentProfile}/{@link setSessionAgentProfile} call it belongs to (issue #752). Both resolve to the same `agent_profile_session_result` reply. */
+  private readonly pendingAgentProfileSessionRequests = new Map<
+    string,
+    { resolve: (profileId: string | null) => void; reject: (error: Error) => void }
   >();
   /**
    * requestId -> the pending {@link discoverSshHosts} call it belongs to
@@ -2472,6 +2495,176 @@ export class RelayClient {
     }
     listeners.add(listener);
     return () => listeners.delete(listener);
+  }
+
+  /** Reads this account's saved agent-profile catalog from the owning node (design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) — `[]` for a node with nothing saved yet. No envelope on the request, mirrors {@link getPermissionPolicy}. Requires an open connection and a session to route through; rejects on a timeout. */
+  listAgentProfiles(sessionId: string, timeoutMs = 5000): Promise<AgentProfileV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot list agent profiles, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('agentprofiles');
+    return new Promise<AgentProfileV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentProfileListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_profile_list_result'));
+      }, timeoutMs);
+      this.pendingAgentProfileListRequests.set(requestId, {
+        resolve: (profiles) => {
+          clearTimeout(timer);
+          resolve(profiles);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_profile_list_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /** Saves (fully replaces — never a partial patch) this account's agent-profile catalog (issue #752). Resolves with the saved result, mirrors {@link setPermissionPolicy}. */
+  saveAgentProfiles(
+    sessionId: string,
+    profiles: AgentProfileV1[],
+    timeoutMs = 5000,
+  ): Promise<AgentProfileV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save agent profiles, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('agentprofiles');
+    return new Promise<AgentProfileV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentProfileListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_profile_list_result'));
+      }, timeoutMs);
+      this.pendingAgentProfileListRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: AgentProfileListSetPayloadV1 = { profiles };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'agent_profile_list_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingAgentProfileListRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /** Reads which profile is currently active for `sessionId` (issue #752) — `null` means unrestricted. No envelope on the request. */
+  getSessionAgentProfile(sessionId: string, timeoutMs = 5000): Promise<string | null> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get session profile, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('sessionprofile');
+    return new Promise<string | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentProfileSessionRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_profile_session_result'));
+      }, timeoutMs);
+      this.pendingAgentProfileSessionRequests.set(requestId, {
+        resolve: (profileId) => {
+          clearTimeout(timer);
+          resolve(profileId);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_profile_session_get',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Switches `sessionId`'s active profile (`profileId: null` clears it
+   * back to unrestricted) — issue #752's "switching profile mid-session
+   * applies from the next call, never half-applied" decision: the owning
+   * node's `evaluateProfileForSession` resolver reads the new value fresh
+   * on the very next `session/request_permission`, never retroactively.
+   * Rejects with the node's own reason (via `outcome: 'error'`) when the
+   * session has no live agent to apply this to.
+   */
+  setSessionAgentProfile(
+    sessionId: string,
+    profileId: string | null,
+    timeoutMs = 5000,
+  ): Promise<string | null> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot set session profile, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('sessionprofile');
+    return new Promise<string | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentProfileSessionRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_profile_session_result'));
+      }, timeoutMs);
+      this.pendingAgentProfileSessionRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: AgentProfileSessionPayloadV1 = { profileId };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'agent_profile_session_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingAgentProfileSessionRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
   }
 
   /**
@@ -4308,6 +4501,12 @@ export class RelayClient {
       case 'permission_policy_violation':
         this.handlePermissionPolicyViolation(message);
         return;
+      case 'agent_profile_list_result':
+        this.handleAgentProfileListResult(message);
+        return;
+      case 'agent_profile_session_result':
+        this.handleAgentProfileSessionResult(message);
+        return;
       case 'test_runner_config_result':
         this.handleTestRunnerConfigResult(message);
         return;
@@ -4663,6 +4862,54 @@ export class RelayClient {
     this.envelopeCrypto
       .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
       .then((decrypted) => pending.resolve(parsePermissionPolicyResultPayloadV1(decrypted).policy))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link listAgentProfiles}/{@link saveAgentProfiles} calls (issue #752). Mirrors {@link handlePermissionPolicyResult}. */
+  private handleAgentProfileListResult(message: AgentProfileListResult): void {
+    const pending = this.pendingAgentProfileListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentProfileListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) =>
+        pending.resolve(parseAgentProfileListResultPayloadV1(decrypted).profiles),
+      )
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link getSessionAgentProfile}/{@link setSessionAgentProfile} calls
+   * (issue #752). An `{outcome:'error', message}` payload (no live agent
+   * to apply a `_set` to) rejects the pending promise with that message
+   * rather than resolving it — `setSessionAgentProfile`'s own doc comment.
+   */
+  private handleAgentProfileSessionResult(message: AgentProfileSessionResult): void {
+    const pending = this.pendingAgentProfileSessionRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentProfileSessionRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        if (
+          decrypted &&
+          typeof decrypted === 'object' &&
+          'outcome' in decrypted &&
+          decrypted.outcome === 'error'
+        ) {
+          const errorPayload = decrypted as { outcome: 'error'; message?: string };
+          pending.reject(new Error(errorPayload.message ?? 'agent_profile_session_set failed'));
+          return;
+        }
+        pending.resolve(parseAgentProfileSessionPayloadV1(decrypted).profileId);
+      })
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });

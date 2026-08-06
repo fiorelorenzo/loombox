@@ -77,6 +77,14 @@ import {
   permissionPolicyViolation,
 } from './permission-policy';
 import {
+  agentProfileListGet,
+  agentProfileListResult,
+  agentProfileListSet,
+  agentProfileSessionGet,
+  agentProfileSessionResult,
+  agentProfileSessionSet,
+} from './agent-profile';
+import {
   accountPinGetRequest,
   accountPinResolveRequest,
   accountPinResolveResponse,
@@ -204,6 +212,12 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   permissionPolicySet,
   permissionPolicyResult,
   permissionPolicyViolation,
+  agentProfileListGet,
+  agentProfileListSet,
+  agentProfileListResult,
+  agentProfileSessionGet,
+  agentProfileSessionSet,
+  agentProfileSessionResult,
   ping,
   pong,
 ]);

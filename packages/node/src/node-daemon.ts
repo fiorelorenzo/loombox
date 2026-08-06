@@ -8,6 +8,7 @@ import type {
   AcpPermissionOption,
   AcpSessionWireEvent,
   AcpToolCallUpdate,
+  AcpToolKind,
   AcpTranscriptUpdate,
   AcpTurnEnd,
   AvailableCommandsChangeEvent,
@@ -23,6 +24,7 @@ import {
   type AttentionStatus,
   type PtyLike,
   type TerminalSession,
+  type ToolProfileDenial,
 } from '@loombox/supervisor';
 import {
   deriveKeyTree,
@@ -104,6 +106,15 @@ import {
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
   type PermissionPolicyViolationPayloadV1,
+  type AgentProfileListGet,
+  type AgentProfileV1,
+  type AgentProfileListResultPayloadV1,
+  type AgentProfileListSet,
+  type AgentProfileListSetPayloadV1,
+  type AgentProfileSessionErrorPayloadV1,
+  type AgentProfileSessionGet,
+  type AgentProfileSessionPayloadV1,
+  type AgentProfileSessionSet,
   type TestRunnerConfigDetect,
   type TestRunnerConfigDetectedPayloadV1,
   type TestRunnerConfigGet,
@@ -151,6 +162,12 @@ import {
   type PolicyViolation,
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
+import {
+  evaluateAgentProfile,
+  filterMcpServersForProfile,
+  type AgentProfile,
+} from './agent-profile';
+import { AgentProfileStore } from './agent-profile-store';
 import {
   PolicyEnforcedExecutionTarget,
   resolveRealBasename,
@@ -477,6 +494,16 @@ export interface NodeDaemonOptions {
    */
   permissionPolicyStore?: PermissionPolicyStore;
   /**
+   * This node's named agent-profile catalog (design spec
+   * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752): the
+   * account-scoped sibling of `permissionPolicyStore` above — see
+   * `./agent-profile.ts`'s doc comment for the "profiles gate existence,
+   * the glob policy gates approval mode" split, and `./agent-profile-store.ts`'s
+   * for why this is one flat catalog with no `projectPath` key at all.
+   * Injectable for tests; defaults to a fresh `AgentProfileStore({ stateDir })`.
+   */
+  agentProfileStore?: AgentProfileStore;
+  /**
    * This node's per-project test/lint/build command config store (SPEC
    * §7.15; issue #245): what `test_runner_config_get`/`_set`/`_detect`
    * read/write, keyed by `bridge.session.projectPath` exactly like
@@ -578,6 +605,16 @@ export interface CreateNodeSessionOptions {
    * per-target default this option applies when omitted here.
    */
   worktree?: boolean;
+  /**
+   * Which named agent profile (design spec
+   * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) gates this
+   * session's tool set, applied from the moment it spawns. `undefined`
+   * (every existing caller) means unrestricted, unchanged from before
+   * this option existed. An id this account has no profile for degrades
+   * quietly to unrestricted rather than failing session creation — see
+   * `./agent-profile.ts`'s doc comment.
+   */
+  profileId?: string;
 }
 
 /**
@@ -892,6 +929,28 @@ function toPermissionPolicyV1(policy: PermissionPolicy): PermissionPolicyV1 {
   };
 }
 
+/** `AgentProfile`'s three denied-lists are `readonly AcpToolKind[]`/`readonly string[]` (its own module's immutability + ACP-typed contract); `AgentProfileV1`'s are plain, ACP-agnostic wire `string[]`s (`@loombox/protocol` never re-declares ACP's own vocabulary — see that module's doc comment). Named, mirroring `toPermissionPolicyV1` immediately above, rather than reasserted inline at both `handleAgentProfileListGet`/`Set` call sites. */
+function toAgentProfileV1(profile: AgentProfile): AgentProfileV1 {
+  return {
+    id: profile.id,
+    name: profile.name,
+    deniedToolKinds: [...profile.deniedToolKinds],
+    deniedToolNamePatterns: [...profile.deniedToolNamePatterns],
+    deniedMcpServers: [...profile.deniedMcpServers],
+  };
+}
+
+/** The inverse of {@link toAgentProfileV1} — narrows the wire's opaque `string[]` back down to `AcpToolKind[]` for `deniedToolKinds`. Deliberately NOT validated against the real `AcpToolKind` enum here: an unrecognized value (a future ACP kind this build predates, or a client typo) is kept as-is and simply never matches anything at evaluation time — `evaluateAgentProfile`'s own "quiet degrade, never an error" contract, not a place for `agent_profile_list_set` to start rejecting requests. */
+function fromAgentProfileV1(profile: AgentProfileV1): AgentProfile {
+  return {
+    id: profile.id,
+    name: profile.name,
+    deniedToolKinds: profile.deniedToolKinds as AcpToolKind[],
+    deniedToolNamePatterns: [...profile.deniedToolNamePatterns],
+    deniedMcpServers: [...profile.deniedMcpServers],
+  };
+}
+
 /**
  * Ties `SessionManager` + `AgentSupervisor` + the v1 `RelayConnection`
  * together into one E2E-encrypted node (SPEC.md §5.1, §5.6, §8, §12 v1;
@@ -996,6 +1055,22 @@ export class NodeDaemon extends EventEmitter {
   private readonly mcpSecretManager: NodeMcpSecretManager;
   /** SPEC §7.17; issue #256 — see `NodeDaemonOptions.permissionPolicyStore`'s doc comment. */
   private readonly permissionPolicyStore: PermissionPolicyStore;
+  /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
+  private readonly agentProfileStore: AgentProfileStore;
+  /**
+   * A live session's currently active profile id, `undefined` for
+   * "unrestricted" (issue #752). Set at session-create time from
+   * `CreateNodeSessionOptions.profileId`, and mutable thereafter via
+   * `agent_profile_session_set` — the resolver closure
+   * {@link evaluateProfileForSession} passes into `AgentSession.spawn()`
+   * reads this map fresh on every call, so a mid-session switch applies
+   * starting with the very next tool call (never cached, mirrors
+   * `PolicyEnforcedPty`'s own policy-resolver contract). Only ever holds
+   * an entry for a session with a LIVE bridge — deleted alongside the
+   * bridge itself in `wireAgentSession`'s `'exit'` handler, so a
+   * reloaded-`'disconnected'` session has nothing stale to read.
+   */
+  private readonly sessionProfiles = new Map<string, string | undefined>();
   /** SPEC §7.15; issue #245 — see `NodeDaemonOptions.testRunnerConfigStore`'s doc comment. */
   private readonly testRunnerConfigStore: TestRunnerConfigStore;
   /** SPEC §7.10; issue #212 — see `NodeDaemonOptions.nativeTrackerStore`'s doc comment. */
@@ -1139,6 +1214,8 @@ export class NodeDaemon extends EventEmitter {
       options.mcpSecretManager ?? new NodeMcpSecretManager({ stateDir: options.stateDir });
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
+    this.agentProfileStore =
+      options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
       options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
     this.nativeTrackerStore =
@@ -1289,6 +1366,7 @@ export class NodeDaemon extends EventEmitter {
       targetId: options.targetId ?? 'local',
       title: options.title ?? basename(options.projectPath),
       worktree: options.worktree,
+      profileId: options.profileId,
     });
   }
 
@@ -1389,6 +1467,7 @@ export class NodeDaemon extends EventEmitter {
     targetId: string;
     title: string;
     worktree?: boolean;
+    profileId?: string;
   }): Promise<Session> {
     const target = this.targets.find((candidate) => candidate.id === opts.targetId);
     if (!target) {
@@ -1401,9 +1480,20 @@ export class NodeDaemon extends EventEmitter {
     // that would fail on a missing MCP secret grant fails right here, not
     // after this node created a worktree, acquired an ssh: lease, or made
     // some other queued session wait behind a request that was always
-    // going to fail.
-    const mcpServers = await this.resolveMcpServers(opts.projectPath);
+    // going to fail. An unknown/deleted `profileId` degrades quietly to
+    // `undefined` (unrestricted) here — see `./agent-profile.ts`'s doc
+    // comment — rather than failing session creation over a stale id.
+    const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
+    const mcpServers = filterMcpServersForProfile(
+      await this.resolveMcpServers(opts.projectPath),
+      profile,
+    );
     const sessionId = opts.sessionId ?? randomUUID();
+    // Recorded before any launch path below, so `evaluateProfileForSession`
+    // (the resolver `launchLocalSession`/`launchReservedSshSession` pass
+    // into `AgentSession.spawn()`) already has an answer the moment this
+    // session's first `session/request_permission` can possibly arrive.
+    this.sessionProfiles.set(sessionId, opts.profileId);
 
     if (target.kind === 'ssh') {
       return this.scheduleSshSession({ ...opts, sessionId }, mcpServers);
@@ -1480,6 +1570,7 @@ export class NodeDaemon extends EventEmitter {
         workspacePath: session.worktreePath,
         providerId: opts.provider,
         mcpServers,
+        evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
       });
     } catch (error) {
       this.concurrencyGate.release(opts.targetId);
@@ -1576,6 +1667,36 @@ export class NodeDaemon extends EventEmitter {
     const effective = this.mcpConfigStore.effectiveServers(projectPath);
     if (effective.length === 0) return [];
     return this.mcpSecretManager.resolveForSession(projectPath, effective);
+  }
+
+  /**
+   * The `AgentSessionSpawnOptions.evaluateToolProfile` closure every live
+   * session's `AgentSession.spawn()` call is given (issue #752) — called
+   * fresh on every incoming `session/request_permission`, so it re-reads
+   * {@link sessionProfiles} and {@link agentProfileStore} from scratch each
+   * time rather than closing over a snapshot; that's what makes a
+   * mid-session `agent_profile_session_set` apply starting with the very
+   * next call. A missing `sessionId` entry, or an id `agentProfileStore`
+   * no longer has, both resolve to "no profile" (unrestricted) — the same
+   * quiet-degrade contract `evaluateAgentProfile` itself already
+   * documents, one layer up.
+   */
+  private evaluateProfileForSession(
+    sessionId: string,
+    toolCall: { readonly toolKind?: AcpToolKind; readonly title?: string },
+  ): ToolProfileDenial | undefined {
+    const profileId = this.sessionProfiles.get(sessionId);
+    if (!profileId) return undefined;
+    const profile = this.agentProfileStore.get(profileId);
+    if (!profile) return undefined;
+    const denial = evaluateAgentProfile(profile, toolCall);
+    if (!denial) return undefined;
+    return {
+      profileId: profile.id,
+      profileName: profile.name,
+      matchedBy: denial.matchedBy,
+      rule: denial.matchedBy === 'tool-kind' ? denial.toolKind : denial.rule,
+    };
   }
 
   /**
@@ -1785,6 +1906,7 @@ export class NodeDaemon extends EventEmitter {
         providerId: opts.provider,
         child: asAcpChildProcess(remoteChild),
         mcpServers,
+        evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(sessionId, toolCall),
       });
 
       const session: Session = {
@@ -2044,6 +2166,22 @@ export class NodeDaemon extends EventEmitter {
     bridge.agentSession.on('transcript_update', (update: AcpTranscriptUpdate) => {
       this.forwardSessionEvent(bridge.session.id, update);
     });
+
+    // D3-4's profile-refusal attribution (issue #752): fed by
+    // `AgentSession`'s own `evaluateToolProfile` gate, fired instead of
+    // (never alongside) `'attention'`'s `permission_required` — see
+    // `AgentSessionSpawnOptions.evaluateToolProfile`'s doc comment.
+    bridge.agentSession.on(
+      'tool_profile_refusal',
+      (payload: { toolCall: AcpToolCallUpdate; denial: ToolProfileDenial }) => {
+        this.sendToolProfileRefusal(bridge.session.id, payload).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `NodeDaemon: failed to send tool_profile_refusal for ${bridge.session.id}: ${message}`,
+          );
+        });
+      },
+    );
 
     // v1: session_status / config_options / turn_ended (SPEC §7.13/§7.24/§8;
     // issues #126/#128/#149) — additive to the transcript_update path above,
@@ -2611,6 +2749,18 @@ export class NodeDaemon extends EventEmitter {
       case 'permission_policy_set':
         this.handlePermissionPolicySet(message);
         return;
+      case 'agent_profile_list_get':
+        this.handleAgentProfileListGet(message);
+        return;
+      case 'agent_profile_list_set':
+        this.handleAgentProfileListSet(message);
+        return;
+      case 'agent_profile_session_get':
+        this.handleAgentProfileSessionGet(message);
+        return;
+      case 'agent_profile_session_set':
+        this.handleAgentProfileSessionSet(message);
+        return;
       case 'test_runner_config_get':
         this.handleTestRunnerConfigGet(message);
         return;
@@ -2703,6 +2853,7 @@ export class NodeDaemon extends EventEmitter {
           // (issue #507) — see `CreateNodeSessionOptions.worktree`'s doc
           // comment for the full default-mapping story.
           worktree: privateMeta.worktree,
+          profileId: privateMeta.profileId,
         }),
       )
       .catch((error: unknown) => {
@@ -4833,6 +4984,168 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /** A client asked for its account's saved agent-profile catalog (design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs no live agent, mirrors `handlePermissionPolicyGet`. */
+  private handleAgentProfileListGet(message: AgentProfileListGet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.sendAgentProfileListResult(message.sessionId, message.requestId, {
+      profiles: this.agentProfileStore.list().map(toAgentProfileV1),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send agent_profile_list_result for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /** A client asked to save (fully replace) its account's agent-profile catalog (issue #752) — mirrors `handlePermissionPolicySet`'s "whole value, never a partial patch" contract. Replies with the same `agent_profile_list_result` `handleAgentProfileListGet` does. */
+  private handleAgentProfileListSet(message: AgentProfileListSet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptAgentProfileListSet(message)
+      .then((payload) => {
+        this.agentProfileStore.saveAll(payload.profiles.map(fromAgentProfileV1));
+        return this.sendAgentProfileListResult(message.sessionId, message.requestId, {
+          profiles: this.agentProfileStore.list().map(toAgentProfileV1),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle agent_profile_list_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptAgentProfileListSet(
+    message: AgentProfileListSet,
+  ): Promise<AgentProfileListSetPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<AgentProfileListSetPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendAgentProfileListResult(
+    sessionId: string,
+    requestId: string,
+    payload: AgentProfileListResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'agent_profile_list_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** A client asked which profile is currently active for a session (issue #752). Ignored if `sessionId` isn't one of this node's sessions. Reads {@link sessionProfiles} — in-memory only, so a session reloaded `'disconnected'` after a restart reports unrestricted until it's live again and re-selected. */
+  private handleAgentProfileSessionGet(message: AgentProfileSessionGet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.sendAgentProfileSessionResult(message.sessionId, message.requestId, {
+      profileId: this.sessionProfiles.get(message.sessionId) ?? null,
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send agent_profile_session_result for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked to switch a session's active profile (issue #752).
+   * Mirrors `handleConfigOption`'s shape: requires a LIVE bridge (not
+   * just `resolveSessionRouting`), since this mutates
+   * {@link sessionProfiles}, the very map {@link evaluateProfileForSession}
+   * reads fresh on every `session/request_permission` — a session with no
+   * live agent has no future tool call to apply this to yet. Answered
+   * with `outcome: 'error'` in that case rather than silently accepted
+   * (mirrors `handleConfigOption`'s "disconnected since the last restart"
+   * case). Takes effect starting with the very next tool call, never
+   * retroactively — see `evaluateProfileForSession`'s own doc comment.
+   */
+  private handleAgentProfileSessionSet(message: AgentProfileSessionSet): void {
+    const bridge = this.bridges.get(message.sessionId);
+    if (!bridge) {
+      if (this.sessionManager.getSession(message.sessionId)) {
+        this.sendAgentProfileSessionError(
+          message.sessionId,
+          message.requestId,
+          'This session has no live agent (disconnected since the last restart) — start a new session to change its profile.',
+        );
+      }
+      // else: not one of this node's sessions at all; ignore per SPEC.md §12
+      return;
+    }
+
+    this.decryptAgentProfileSessionPayload(message)
+      .then((payload) => {
+        this.sessionProfiles.set(message.sessionId, payload.profileId ?? undefined);
+        return this.sendAgentProfileSessionResult(message.sessionId, message.requestId, {
+          profileId: payload.profileId,
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle agent_profile_session_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptAgentProfileSessionPayload(
+    message: AgentProfileSessionSet,
+  ): Promise<AgentProfileSessionPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<AgentProfileSessionPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendAgentProfileSessionResult(
+    sessionId: string,
+    requestId: string,
+    payload: AgentProfileSessionPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'agent_profile_session_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  private sendAgentProfileSessionError(
+    sessionId: string,
+    requestId: string,
+    message: string,
+  ): void {
+    const payload: AgentProfileSessionErrorPayloadV1 = { outcome: 'error', message };
+    this.getSessionKey(sessionId)
+      .then((key) => sealJson(sessionId, payload, key))
+      .then((envelope) => {
+        this.relay.send({
+          type: 'agent_profile_session_result',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to send agent_profile_session_result error for session ${sessionId}: ${detail}`,
+        );
+      });
+  }
+
   /**
    * Reports one live policy denial to every client subscribed to
    * `sessionId` (SPEC §7.17; issue #751, D3-4's own "the UI must say
@@ -4863,6 +5176,49 @@ export class NodeDaemon extends EventEmitter {
     };
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'permission_policy_violation',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * Reports one live profile refusal to every client subscribed to
+   * `sessionId` (design spec `2026-08-05-zed-parity-decisions.md`'s D3-4;
+   * issue #752) — the profile-gate sibling of
+   * {@link sendPermissionPolicyViolation} just above, reusing the exact
+   * same `permission_policy_violation` wire message and
+   * `ToolRefusalReasonV1` union rather than a second notification
+   * mechanism (`@loombox/protocol`'s `permission-policy.ts` doc comment).
+   * `command` carries the refused tool call's own `title`, or its `id`
+   * when the agent gave no title. Called from {@link wireAgentSession}'s
+   * `'tool_profile_refusal'` listener, itself fed by
+   * `AgentSession`'s own `evaluateToolProfile` gate
+   * ({@link evaluateProfileForSession}) — best-effort, same as
+   * `sendPermissionPolicyViolation`: a failure to seal/send is logged,
+   * never thrown back (the tool call staying refused already happened,
+   * synchronously, before this notification is even attempted).
+   */
+  private async sendToolProfileRefusal(
+    sessionId: string,
+    payload: { toolCall: AcpToolCallUpdate; denial: ToolProfileDenial },
+  ): Promise<void> {
+    const violationPayload: PermissionPolicyViolationPayloadV1 = {
+      reason: {
+        kind: 'profile',
+        profileId: payload.denial.profileId,
+        profileName: payload.denial.profileName,
+        matchedBy: payload.denial.matchedBy,
+        rule: payload.denial.rule,
+      },
+      surface: 'tool_call',
+      command: payload.toolCall.title ?? payload.toolCall.id,
+      timestamp: new Date().toISOString(),
+    };
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, violationPayload, key);
     this.relay.send({
       type: 'permission_policy_violation',
       protocolVersion: PROTOCOL_V1,
