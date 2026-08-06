@@ -150,7 +150,7 @@ describe('resolveSessionSandbox', () => {
       expect(wrapped.args).not.toEqual(expect.arrayContaining([pathDir]));
     });
 
-    it('follows a version-manager shim symlink to the real install before deciding the mount root', async () => {
+    it('follows a version-manager shim symlink to the real install before deciding the mount root, and mounts BOTH the shim location and the real one', async () => {
       const realRoot = await mkdtemp(join(tmpdir(), 'loombox-toolchain-real-'));
       await mkdir(join(realRoot, 'bin'), { recursive: true });
       await writeFile(join(realRoot, 'bin', 'fake-omp'), '#!/bin/sh\necho real\n', { mode: 0o755 });
@@ -167,10 +167,89 @@ describe('resolveSessionSandbox', () => {
         });
         const wrapped = wrapSpawnConfig!({ command: 'fake-omp', args: [] });
         expect(wrapped.args).toEqual(expect.arrayContaining(['--ro-bind', realRoot]));
+        // The shim's OWN location must also be mounted — real omp on this
+        // project's own dev box is exactly this shape (a mise "latest"
+        // symlink pointing at a separate versioned install directory),
+        // and bwrap's execvpe re-does the PATH search fresh inside the
+        // sandbox: if the shim's own directory isn't visible, execvpe
+        // never even gets far enough to follow the symlink to realRoot.
+        expect(wrapped.args).toEqual(expect.arrayContaining(['--ro-bind', shimDir]));
       } finally {
         await rm(realRoot, { recursive: true, force: true });
         await rm(shimDir, { recursive: true, force: true });
       }
+    });
+
+    it("a RELATIVE symlink inside the same toolchain root (npm's own bin/npx -> ../lib/node_modules/npm/bin/npx-cli.js shape) needs only ONE mount, and a real bwrap child can actually execute through it", async () => {
+      // Reproduces, with fakes, the exact real bug found testing this
+      // against this project's own real `npx`: an EARLIER version of this
+      // resolver mounted only the symlink's resolved TARGET directory,
+      // leaving the toolchain root's `bin/` itself (where PATH search —
+      // and so bwrap's own execvpe — actually looks first) absent from
+      // the sandbox: `bwrap: execvp npx: No such file or directory`, even
+      // though the eventual target was perfectly visible.
+      await mkdir(join(toolRoot, 'lib', 'pkg', 'bin'), { recursive: true });
+      await writeFile(
+        join(toolRoot, 'lib', 'pkg', 'bin', 'real-tool'),
+        '#!/bin/sh\necho it-really-ran\n',
+        { mode: 0o755 },
+      );
+      await symlink(
+        join('..', 'lib', 'pkg', 'bin', 'real-tool'),
+        join(toolRoot, 'bin', 'shimmed-tool'),
+      );
+
+      const capability: SandboxCapability = { available: true, backend: 'bubblewrap' };
+      const { wrapSpawnConfig } = resolveSessionSandbox({
+        workspacePath: toolRoot,
+        platform: 'linux',
+        capability,
+        pathEnv: pathDir,
+      });
+      const wrapped = wrapSpawnConfig!({ command: 'shimmed-tool', args: [] });
+
+      const roBindTargets = wrapped.args.filter((_, i) => wrapped.args[i - 1] === '--ro-bind');
+      expect(roBindTargets.filter((p) => p !== '/usr' && p !== '/etc')).toEqual([toolRoot]);
+
+      // `pathEnv` above only steers THIS resolver's own mount planning;
+      // the actual sandboxed exec below re-does its own real PATH search
+      // using whatever env the caller spawns it with — in production
+      // that's the SAME `process.env.PATH` by default (see
+      // `resolveSessionSandbox`'s own `pathEnv` fallback), so this test
+      // matches that by spawning with an env whose PATH agrees with what
+      // `pathEnv` told the resolver to plan around.
+      const result = spawnSync(wrapped.command, wrapped.args, {
+        encoding: 'utf8',
+        timeout: 10_000,
+        // Prepended (not a full override) so `bwrap` itself — resolved
+        // from the REAL, unrestricted PATH — is still found by this
+        // outer spawnSync call.
+        env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}` },
+      });
+      expect(result.stdout).toBe('it-really-ran\n');
+      expect(result.status).toBe(0);
+    });
+
+    it('never elevates a mount root to the filesystem root itself — a command resolving through /bin or /sbin stays covered by the unconditional /usr mount, never a bare "/"', () => {
+      // Regression for a real near-miss found in the same investigation:
+      // `toolchainRootFor` walking `/bin/sh` up through its `bin/`
+      // parent computed `/` itself as the "toolchain root" — which would
+      // have `--ro-bind`ed the ENTIRE host filesystem read-only, defeating
+      // containment outright. Caught before merge by testing against a
+      // real spawned child (`session-sandbox.test.ts`'s own real
+      // end-to-end containment test below started failing the moment this
+      // bug was introduced), not by inspection.
+      const capability: SandboxCapability = { available: true, backend: 'bubblewrap' };
+      const { wrapSpawnConfig } = resolveSessionSandbox({
+        workspacePath: '/work/session-1',
+        platform: 'linux',
+        capability,
+        pathEnv: '/bin',
+      });
+      const wrapped = wrapSpawnConfig!({ command: 'sh', args: [] });
+      expect(wrapped.args).not.toContain('/');
+      const roBindTargets = wrapped.args.filter((_, i) => wrapped.args[i - 1] === '--ro-bind');
+      expect(roBindTargets).toEqual(['/usr', '/etc']);
     });
 
     it('does not add a redundant mount for a command already resolving under /usr (git, sh, ...)', () => {

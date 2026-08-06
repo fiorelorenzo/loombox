@@ -30,7 +30,7 @@ const execFileAsync = promisify(execFile);
  * `/usr`, the session worktree, or the auto-discovered toolchain root — a
  * real fixture-of-a-fixture problem, not a shortcut: an actual `claude`/
  * `codex`/`omp` provider only ever needs its OWN toolchain root and the
- * worktree (see `session-sandbox.ts`'s `resolveToolchainRoot` doc
+ * worktree (see `session-sandbox.ts`'s `resolveToolchainMounts` doc
  * comment), never an arbitrary third-party script path.
  */
 const ECHO_FIXTURE_SOURCE = await readFile(

@@ -54,7 +54,7 @@ export interface ResolveSessionSandboxOptions {
   /**
    * Extra read-only paths beyond the base OS layout (`/usr`, `/etc`; see
    * `buildBubblewrapArgv`) and the auto-discovered agent-toolchain root
-   * (see this module's `resolveToolchainRoot`) — e.g. a shared MCP server
+   * (see this module's `resolveToolchainMounts`) — e.g. a shared MCP server
    * binary this session's provider also needs to see.
    */
   extraReadOnlyMounts?: readonly string[];
@@ -122,9 +122,8 @@ export function resolveSessionSandbox(
 
   const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
   const wrapSpawnConfig = (config: AcpSpawnConfig): SandboxedSpawnConfig => {
-    const toolchainRoot = resolveToolchainRoot(config.command, pathEnv);
     const readOnly = new Set(options.extraReadOnlyMounts ?? []);
-    if (toolchainRoot) readOnly.add(toolchainRoot);
+    for (const root of resolveToolchainMounts(config.command, pathEnv)) readOnly.add(root);
 
     const sandboxed = sandboxCommand({
       command: config.command,
@@ -142,8 +141,35 @@ export function resolveSessionSandbox(
   return { required: true, capability, wrapSpawnConfig };
 }
 
+/** `/usr`-rooted paths are already covered unconditionally by `buildBubblewrapArgv` — naming one again would be redundant, not incorrect. */
+function isUnderUsr(dir: string): boolean {
+  return dir === '/usr' || dir.startsWith('/usr/');
+}
+
 /**
- * Best-effort discovery of the read-only directory tree the wrapped
+ * For a resolved executable path, the directory a caller should mount so
+ * `execvpe` can find it: the near-universal `<toolchain-root>/bin/<exe>`
+ * layout every version manager (mise, nvm, volta, homebrew) AND every npm
+ * package's own `bin/` folder uses gets its `bin/`'s PARENT mounted (the
+ * whole toolchain root); anything else gets its own containing directory.
+ * Never elevates past a `bin/` directory sitting directly under the
+ * filesystem root (`/bin`, `/sbin`) — that would compute `/` itself as
+ * the "toolchain root", which is exactly the wide-open mount this whole
+ * primitive exists to rule out. `resolveToolchainMounts`'s own `/usr`
+ * early-return already handles the common merged-`/usr` case where this
+ * would otherwise trigger (`/bin` is a symlink to `usr/bin`); this is the
+ * defensive fallback for a non-merged-`/usr` distro, where `/bin` is a
+ * real, separate directory `buildBubblewrapArgv` already `--ro-bind`s on
+ * its own — mounting it again here is a harmless duplicate, not a hole.
+ */
+function toolchainRootFor(resolvedPath: string): string {
+  const dir = path.dirname(resolvedPath);
+  const elevatesToFilesystemRoot = path.dirname(dir) === path.sep;
+  return path.basename(dir) === 'bin' && !elevatesToFilesystemRoot ? path.dirname(dir) : dir;
+}
+
+/**
+ * Best-effort discovery of the read-only directory tree(s) the wrapped
  * command's OWN interpreter/toolchain needs to even `exec` inside the
  * sandbox — beyond `/usr`/`/etc`, which `buildBubblewrapArgv` already
  * covers unconditionally. Without this, a command resolved from a
@@ -154,26 +180,35 @@ export function resolveSessionSandbox(
  * identical `PATH` lookup succeeds outside it — silently making every
  * real agent spawn un-launchable, not just a theoretical gap.
  *
- * Heuristic, not exhaustive, and documented as such rather than silently
- * assumed complete: resolves `command` the same way `execvp()` (and so
- * `bwrap`'s own final exec) will — an absolute/relative path used as-is,
- * a bare name searched down `PATH` in order — then follows symlinks
- * (version-manager shims are very often one). If the resolved binary
- * lives directly in a `bin/` directory (the near-universal
- * `<toolchain-root>/bin/<exe>` layout every version manager above uses),
- * mounts the PARENT of `bin/` — the whole toolchain root, e.g. the `lib/
- * node_modules` sibling `npm`/`npx` need beside their own `bin/npx` —
- * rather than just the directory holding the one binary. Anything not
- * fitting that shape still gets its own containing directory mounted,
- * which is correct for a single self-contained binary (this repo's own
- * `omp`) but under-mounts a toolchain split across more than one
- * directory in some OTHER shape — a real, known limitation: an operator
- * hitting it adds the extra path via `extraReadOnlyMounts` themselves.
- * Already-`/usr`-rooted commands (`git`, `sh`, ...) return `undefined`:
- * `buildBubblewrapArgv` mounts `/usr` unconditionally, so naming it again
- * here would be redundant, not incorrect.
+ * **Always mounts the exact directory a `PATH` search would find
+ * `command` in first** (`bwrap`'s own final `execvpe` re-does that same
+ * `PATH` search fresh inside the new mount namespace — the file has to
+ * actually be there, not just resolvable to something real on the host).
+ * This is not optional even when that entry is itself a symlink: verified
+ * against this project's own real `npx` (issue #257's acceptance bar
+ * asks for exactly this kind of real-agent proof, not a synthetic one) —
+ * `<node-root>/bin/npx` is a *relative* symlink to `../lib/node_modules/
+ * npm/bin/npx-cli.js`, so mounting only the symlink's resolved TARGET
+ * directory (an earlier version of this function did exactly that) left
+ * `<node-root>/bin/` itself absent from the sandbox — `bwrap: execvp
+ * npx: No such file or directory`, even though the eventual target was
+ * perfectly visible. `toolchainRootFor` walks the `PATH`-resolved
+ * location up through a `bin/` parent (covering the common
+ * `<root>/bin/<exe>` shape, mounting the whole root rather than just
+ * `bin/`), which — for a same-root RELATIVE symlink like `npx` above —
+ * already covers the resolved target too, no second mount needed.
+ *
+ * A symlink whose target escapes that root entirely (a genuine
+ * version-manager SHIM pointing at a separate, differently-versioned
+ * install elsewhere) gets that target's own `toolchainRootFor` mounted
+ * as a second, additional root — real, verified via this module's own
+ * shim-symlink test. Heuristic, not exhaustive, and documented as such
+ * rather than silently assumed complete: a toolchain split across
+ * directories in some OTHER shape than "PATH entry" (+ optionally "one
+ * symlink hop to elsewhere") under-mounts — an operator hitting that adds
+ * the extra path via `extraReadOnlyMounts` themselves.
  */
-function resolveToolchainRoot(command: string, pathEnv: string): string | undefined {
+function resolveToolchainMounts(command: string, pathEnv: string): string[] {
   const candidates = command.includes(path.sep)
     ? [command]
     : pathEnv
@@ -181,7 +216,7 @@ function resolveToolchainRoot(command: string, pathEnv: string): string | undefi
         .filter(Boolean)
         .map((dir) => path.join(dir, command));
   const resolved = candidates.find((candidate) => existsSync(candidate));
-  if (!resolved) return undefined;
+  if (!resolved) return [];
 
   let real: string;
   try {
@@ -189,8 +224,22 @@ function resolveToolchainRoot(command: string, pathEnv: string): string | undefi
   } catch {
     real = resolved;
   }
-  if (real === '/usr' || real.startsWith('/usr/')) return undefined;
+  // The merged-`/usr` common case: `/bin/sh`'s real target is
+  // `/usr/bin/sh` — already visible via `buildBubblewrapArgv`'s
+  // unconditional `/usr` mount plus its `/bin -> usr/bin` symlink, so
+  // both the PATH-resolved location AND its target already exist inside
+  // the sandbox with no extra work, and no risk of `toolchainRootFor`
+  // ever computing `/bin`'s "parent" as a mount root.
+  if (isUnderUsr(real)) return [];
 
-  const dir = path.dirname(real);
-  return path.basename(dir) === 'bin' ? path.dirname(dir) : dir;
+  const roots = new Set<string>();
+  const originalRoot = toolchainRootFor(resolved);
+  if (!isUnderUsr(originalRoot)) roots.add(originalRoot);
+
+  const alreadyCovered = real === resolved || real.startsWith(`${originalRoot}${path.sep}`);
+  if (!alreadyCovered) {
+    const realRoot = toolchainRootFor(real);
+    if (!isUnderUsr(realRoot)) roots.add(realRoot);
+  }
+  return [...roots];
 }
