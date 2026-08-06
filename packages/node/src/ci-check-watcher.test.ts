@@ -134,13 +134,26 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
   });
 
   it('fires onFailure exactly once for a failure that stays red across many polls, not once per poll', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      checkRunsResponse([
-        { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
-      ]),
+    // A fresh `Response` per call — a `Response`'s body can only be read
+    // once, so reusing one instance across polls (`mockResolvedValue`)
+    // would make poll 2/3 throw "body already used", silently degrading
+    // to `'unknown'` via `pollOne`'s own catch-all rather than genuinely
+    // exercising three real `'failing'` reads.
+    const fetchImpl = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        checkRunsResponse([
+          { name: 'test', head_sha: 'sha-a', status: 'completed', conclusion: 'failure' },
+        ]),
+      ),
     );
     const onFailure = vi.fn();
-    const watcher = new CiCheckWatcher({ fetchImpl, resolveToken: async () => 'ghp_token', onFailure });
+    const onUpdate = vi.fn();
+    const watcher = new CiCheckWatcher({
+      fetchImpl,
+      resolveToken: async () => 'ghp_token',
+      onUpdate,
+      onFailure,
+    });
     watcher.watch('sess-1', entry());
 
     await watcher.pollNow();
@@ -148,6 +161,14 @@ describe('CiCheckWatcher (SPEC §7.14; issue #239)', () => {
     await watcher.pollNow();
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // All three polls must be genuine 'failing' reads, not one real read
+    // plus two swallowed errors that happened to still leave the counts
+    // above looking right.
+    expect(onUpdate.mock.calls.map(([, state]) => (state as CiCheckStateV1).state)).toEqual([
+      'failing',
+      'failing',
+      'failing',
+    ]);
     expect(onFailure).toHaveBeenCalledTimes(1);
   });
 
