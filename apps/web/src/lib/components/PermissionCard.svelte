@@ -399,16 +399,18 @@
 
   /* Touch-optimized permission controls (SPEC.md §7.3, issue #133): on a
      coarse (touch) pointer, the confirm/deny/overflow buttons grow to at
-     least the ~44px hit target both major mobile platforms recommend. The
-     option buttons AND the overflow toggle are the shared `Button`
-     primitive now (`size="sm"`, which alone only grows to 2.5rem under
-     coarse pointer, and the overflow toggle is a `.ui-button` inside
-     `.options` too as of issue #579) — this keeps the permission card's
-     own, slightly larger, pre-existing touch target for both. */
+     least the 44px hit target both major mobile platforms recommend —
+     `var(--touch-target-min)`, not a `2.75rem` literal (A2-1, issue #734:
+     see that token's own note in `tokens.css`). The option buttons AND
+     the overflow toggle are the shared `Button` primitive now
+     (`size="sm"`, which alone only grows to `var(--touch-target-compact)`
+     under coarse pointer, and the overflow toggle is a `.ui-button`
+     inside `.options` too as of issue #579) — this keeps the permission
+     card's own, slightly larger, pre-existing touch target for both. */
   @media (pointer: coarse) {
     .options :global(.ui-button),
     .options-overflow :global(.ui-button) {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
       padding: var(--space-sm) var(--space-lg);
       font-size: var(--text-body-size);
     }

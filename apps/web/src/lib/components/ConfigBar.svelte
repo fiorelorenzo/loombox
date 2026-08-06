@@ -946,14 +946,16 @@
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133): the same
-     coarse-pointer convention `Button`/`IconButton` already use. */
+     coarse-pointer convention `Button`/`IconButton` already use —
+     `var(--touch-target-min)`, not a `2.75rem` literal (A2-1, issue #734:
+     see that token's own note in `tokens.css`). */
   @media (pointer: coarse) {
     .config-trigger {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
 
     :global(.mode-choice) {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
   }
 </style>

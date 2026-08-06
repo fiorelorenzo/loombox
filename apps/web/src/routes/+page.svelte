@@ -4602,7 +4602,7 @@
      coarse floor is taller. */
   @media (pointer: coarse) {
     .destination-row {
-      min-height: 2.75rem;
+      min-height: var(--touch-target-min);
     }
   }
 
