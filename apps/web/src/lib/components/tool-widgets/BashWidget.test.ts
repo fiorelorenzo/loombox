@@ -19,6 +19,10 @@ function bashItem(extra: Partial<TranscriptToolCallItem> = {}): TranscriptToolCa
     rawInput: { command: 'pnpm test' },
     content: 'ok 12 passed',
     parentToolCallId: undefined,
+    startedAtMs: undefined,
+    elapsedMs: undefined,
+    costAtStartUsd: undefined,
+    attributedCostUsd: undefined,
     ...extra,
   };
 }

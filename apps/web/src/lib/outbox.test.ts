@@ -13,6 +13,7 @@ function prompt(overrides: Partial<QueuedPrompt> = {}): QueuedPrompt {
     sessionId: 'sess_1',
     text: 'hello',
     attachments: [],
+    mentions: [],
     queuedAt: 1,
     ...overrides,
   };

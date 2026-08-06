@@ -621,15 +621,20 @@ test.describe('cockpit shell', () => {
     await expect(page.getByTestId('session-filter')).toBeVisible();
   });
 
-  test('the header shows no connection chip while the relay connection is healthy', async ({
+  test('the retired topbar connection chip is gone outright; the permanent status bar reads the connection instead (issue #736)', async ({
     page,
     loombox,
   }) => {
     await gotoCockpit(page, loombox);
     await expect(page.getByTestId('composer-input')).toBeVisible();
     // v2 spent the header's highest-attention corner on a permanently green
-    // dot. A healthy connection is now silent.
+    // dot; the conditional chip that replaced it (issue #428/#568) is
+    // itself retired now, not merely hidden — issue #736's status bar is
+    // the one place connection health reads, on every page, always.
     await expect(page.getByTestId('connection-status-chip')).toHaveCount(0);
+    const connection = page.getByTestId('status-bar-connection');
+    await expect(connection).toBeVisible();
+    await expect(connection).toContainText('Connected');
   });
 
   test('a session row spends a dot only on a status worth showing, and reserves its slot either way', async ({
@@ -1339,11 +1344,24 @@ test.describe('cockpit shell', () => {
     // drag, one real resize outcome once it settles.
     for (let step = 1; step <= 8; step += 1) {
       await page.mouse.move(startX, startY - step * 10);
+      // One frame between moves: the dock coalesces pointermoves to a single
+      // `ResizeObserver` notification per render frame (its own doc comment),
+      // so eight moves issued inside one frame can collapse into one that the
+      // drag never applies. Under CI load that is what made this assertion
+      // flake (issue #649), landing on the untouched default height.
+      await page.evaluate(async () => {
+        const framePassed = Promise.withResolvers<void>();
+        requestAnimationFrame(() => framePassed.resolve());
+        await framePassed.promise;
+      });
     }
     await page.mouse.up();
 
-    const heightAfter = (await dock.boundingBox())?.height ?? 0;
-    expect(heightAfter).toBeGreaterThan(heightBefore + 40);
+    // Polled, not read once: the last frame of a drag settles after
+    // `mouse.up` returns.
+    await expect
+      .poll(async () => (await dock.boundingBox())?.height ?? 0, { timeout: 5_000 })
+      .toBeGreaterThan(heightBefore + 40);
 
     // The real effect of the resize, not just the CSS box (issue #572's
     // own acceptance line: "xterm reflows to the new rows/cols").

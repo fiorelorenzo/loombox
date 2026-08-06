@@ -108,6 +108,31 @@ export function computeLineDiff(oldText: string | null, newText: string): DiffLi
   return lines;
 }
 
+export interface DiffStats {
+  /** `false` only for ACP's binary/symlink shape: `oldText === null && newText === ''` — no patch text at all (matches `DiffViewer`'s own `hasText` derivation, which this replaces). */
+  hasText: boolean;
+  lines: DiffLine[];
+  added: number;
+  removed: number;
+}
+
+/**
+ * The one place `added`/`removed` counts get computed from an ACP `Diff`
+ * (issue #740's turn-review aggregation, `DiffViewer.svelte`'s own former
+ * `hasText`/`lines`/`added`/`removed` derivations before this extraction).
+ * `DiffViewer` and `$lib/transcript/turn-review.ts`'s per-turn aggregator
+ * both call this instead of each re-deriving added/removed from
+ * `computeLineDiff` their own way, so a turn's summary bar total and the
+ * stat line inside the tool card it came from can never drift apart.
+ */
+export function diffStats(oldText: string | null, newText: string): DiffStats {
+  const hasText = !(oldText === null && newText === '');
+  const lines = hasText ? computeLineDiff(oldText, newText) : [];
+  const added = lines.filter((line) => line.kind === 'added').length;
+  const removed = lines.filter((line) => line.kind === 'removed').length;
+  return { hasText, lines, added, removed };
+}
+
 /** File-extension -> a loose language tag, for the diff viewer's syntax-aware coloring class. */
 export function languageForPath(path: string): string {
   const match = /\.([a-zA-Z0-9]+)$/.exec(path);

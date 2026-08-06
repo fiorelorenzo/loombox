@@ -3,16 +3,20 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { basename, posix } from 'node:path';
 
-import type {
-  AcpMcpServerConfig,
-  AcpPermissionOption,
-  AcpSessionWireEvent,
-  AcpToolCallUpdate,
-  AcpToolKind,
-  AcpTranscriptUpdate,
-  AcpTurnEnd,
-  AvailableCommandsChangeEvent,
-  ConfigOptionChangeEvent,
+import {
+  McpServerSecretMissingError,
+  mergeMcpServerConfigLists,
+  parseMcpServerConfig,
+  type AcpMcpServerConfig,
+  type AcpPermissionOption,
+  type AcpSessionWireEvent,
+  type AcpToolCallUpdate,
+  type AcpToolKind,
+  type AcpTranscriptUpdate,
+  type AcpTurnEnd,
+  type AvailableCommandsChangeEvent,
+  type ConfigOptionChangeEvent,
+  type McpServerConfig,
 } from '@loombox/providers-core';
 import {
   AgentSupervisor,
@@ -116,6 +120,9 @@ import {
   type AgentProfileSessionPayloadV1,
   type AgentProfileSessionSet,
   type TestRunnerConfigDetect,
+  type McpServerConfigV1,
+  type McpServerFailureCategoryV1,
+  type McpServerStatusEntryV1,
   type TestRunnerConfigDetectedPayloadV1,
   type TestRunnerConfigGet,
   type TestRunnerConfigResultPayloadV1,
@@ -147,6 +154,7 @@ import {
 } from './account-pin';
 import { AccountPinStore } from './account-pin-store';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
+import { renderPromptTextWithMentions, type PromptMentionRef } from './prompt-mentions';
 import { GithubDeviceFlowError } from './github-device-flow';
 import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
 import { JiraConnectService } from './jira-connect';
@@ -606,7 +614,6 @@ export interface CreateNodeSessionOptions {
    */
   worktree?: boolean;
   /**
-   * Which named agent profile (design spec
    * `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752) gates this
    * session's tool set, applied from the moment it spawns. `undefined`
    * (every existing caller) means unrestricted, unchanged from before
@@ -615,6 +622,17 @@ export interface CreateNodeSessionOptions {
    * `./agent-profile.ts`'s doc comment.
    */
   profileId?: string;
+  /**
+   * MCP server declarations to merge into this session's effective set
+   * (issue #750, D2-2), already parsed/validated — mirrors this node's
+   * own `McpConfigStore` records, but scoped to this one call rather than
+   * persisted. This is the direct-API counterpart to `session_create`'s
+   * `SessionPrivateMetaV1.mcpServerConfigs`: `handleSessionCreate` parses
+   * that wire field into exactly this shape before calling through to
+   * `createSessionInternal`, so both entry points share the one
+   * resolution path in `resolveMcpServers`.
+   */
+  mcpServerConfigs?: McpServerConfig[];
 }
 
 /**
@@ -649,6 +667,8 @@ interface PromptPayload {
   text: string;
   /** Attachments this turn references (SPEC §7.25); omitted/empty for a plain text prompt. */
   attachments?: PromptAttachmentRef[];
+  /** Still-live `@`-mention pills this turn references (issue #742); omitted/empty for a prompt with none. */
+  mentions?: PromptMentionRef[];
 }
 
 /**
@@ -733,6 +753,76 @@ class PathTraversalError extends Error {
     super(`path escapes the session's project root: ${requestedPath}`);
     this.name = 'PathTraversalError';
   }
+}
+
+interface McpFailureAttribution {
+  readonly name: string;
+  readonly category: McpServerFailureCategoryV1;
+  readonly reason: string;
+}
+
+/**
+ * Attributes an `AcpClient.newSession` rejection to one specific `servers`
+ * entry by name (issue #750, D2-2) — verified against a real `omp acp`
+ * binary: a server it cannot start rejects with `"<name>: <detail>"`
+ * inside the JSON-RPC error's own message, for both an absent binary
+ * (`Executable not found in $PATH: "..."`) and a failed MCP handshake
+ * (`MCP error -32601: ...`) — so this matches `": <name>: "` against
+ * every currently-attempted server's own name and classifies whichever
+ * one matches by whether its detail names a missing executable. Returns
+ * `undefined` for an error that names none of `servers` — a failure this
+ * node cannot pin on any specific MCP server, so {@link
+ * NodeDaemon.startAgentWithMcpFallback} rethrows it unchanged rather than
+ * swallowing it as if it were one more bad server.
+ */
+function attributeMcpFailure(
+  error: unknown,
+  servers: readonly AcpMcpServerConfig[],
+): McpFailureAttribution | undefined {
+  if (!(error instanceof Error)) return undefined;
+  for (const server of servers) {
+    const marker = `: ${server.name}: `;
+    const index = error.message.indexOf(marker);
+    if (index === -1) continue;
+    const reason = error.message.slice(index + marker.length);
+    const category: McpServerFailureCategoryV1 = /executable not found|enoent/i.test(reason)
+      ? 'missing_binary'
+      : 'handshake_failed';
+    return { name: server.name, category, reason };
+  }
+  return undefined;
+}
+
+/**
+ * Re-validates a decrypted `SessionPrivateMetaV1.mcpServerConfigs` list
+ * (already `@loombox/protocol`'s own zod-shaped, issue #750, D2-2) through
+ * `@loombox/providers-core`'s `parseMcpServerConfig` — the canonical,
+ * domain-level `McpServerConfig` type `resolveMcpServers` actually merges,
+ * and the one place a var-decl invariant `mcpServerConfigV1`'s own schema
+ * doesn't itself enforce would still be caught. A single malformed entry
+ * is dropped (logged, not thrown) rather than failing the whole list —
+ * the same forgiving, degrade-one-entry convention `mcp-server-store.ts`'s
+ * `parseStoredRecord` already uses client-side for this exact list, so a
+ * client one release ahead (a config shape this node doesn't understand
+ * yet) never blocks every other, understood server in the same list.
+ */
+function parseClientDeclaredMcpServers(
+  raw: readonly McpServerConfigV1[] | undefined,
+): McpServerConfig[] {
+  if (!raw) return [];
+  const result: McpServerConfig[] = [];
+  for (const entry of raw) {
+    try {
+      result.push(parseMcpServerConfig(entry));
+    } catch (error) {
+      console.warn(
+        `NodeDaemon: dropping a malformed client-declared MCP server config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return result;
 }
 
 /**
@@ -1053,6 +1143,10 @@ export class NodeDaemon extends EventEmitter {
   /** SPEC §7.7/§7.17; issues #187/#189 — see `NodeDaemonOptions.mcpConfigStore`/`mcpSecretManager`'s doc comments. */
   private readonly mcpConfigStore: McpConfigStore;
   private readonly mcpSecretManager: NodeMcpSecretManager;
+  /** Per-process (never persisted) consecutive-failure streak for an MCP server that failed to start, keyed by `${projectPath}\u0000${serverName}` — see {@link recordMcpServerOutcome}'s own doc comment (issue #750, D2-2's "disable" lifecycle action). */
+  private readonly mcpFailureStreaks = new Map<string, number>();
+  /** Consecutive start failures before {@link recordMcpServerOutcome} auto-disables an MCP server (issue #750, D2-2). */
+  private static readonly MCP_AUTO_DISABLE_THRESHOLD = 3;
   /** SPEC §7.17; issue #256 — see `NodeDaemonOptions.permissionPolicyStore`'s doc comment. */
   private readonly permissionPolicyStore: PermissionPolicyStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
@@ -1367,6 +1461,7 @@ export class NodeDaemon extends EventEmitter {
       title: options.title ?? basename(options.projectPath),
       worktree: options.worktree,
       profileId: options.profileId,
+      mcpServerConfigs: options.mcpServerConfigs,
     });
   }
 
@@ -1468,11 +1563,15 @@ export class NodeDaemon extends EventEmitter {
     title: string;
     worktree?: boolean;
     profileId?: string;
+    /** The client's own per-project `localStorage` MCP server declarations (issue #750, D2-2), merged into resolution alongside this node's own `McpConfigStore` — see {@link resolveMcpServers}'s doc comment. Omitted/`[]` behaves exactly like before this option existed. */
+    mcpServerConfigs?: readonly McpServerConfig[];
   }): Promise<Session> {
     const target = this.targets.find((candidate) => candidate.id === opts.targetId);
     if (!target) {
       throw new Error(`NodeDaemon: no target with id "${opts.targetId}"`);
     }
+
+    const sessionId = opts.sessionId ?? randomUUID();
 
     // Resolved before any worktree/lease/child is touched, and before this
     // session can even be queued (issues #187/#189's "fails clearly on an
@@ -1482,13 +1581,29 @@ export class NodeDaemon extends EventEmitter {
     // some other queued session wait behind a request that was always
     // going to fail. An unknown/deleted `profileId` degrades quietly to
     // `undefined` (unrestricted) here — see `./agent-profile.ts`'s doc
-    // comment — rather than failing session creation over a stale id.
-    const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
-    const mcpServers = filterMcpServersForProfile(
-      await this.resolveMcpServers(opts.projectPath),
-      profile,
-    );
+    // comment — rather than failing session creation over a stale id. A
+    // resulting `McpServerSecretMissingError` never gets a bridge, or
+    // even a `Session`, to hang a normal `sendSessionStatus` off of —
+    // `reportMcpPreflightFailure` announces a minimal phantom session
+    // record itself, purely so this failure is visible at all (issue
+    // #750, D2-2's "a revoked secret grant... produce a distinct,
+    // visible reason"); the worktree/lease cost this comment describes
+    // avoiding is still avoided — only a `session_announce` plus a
+    // `session_status: 'error'`/`mcp_server_status` pair go out.
     const sessionId = opts.sessionId ?? randomUUID();
+    let mcpServers: AcpMcpServerConfig[];
+    try {
+      const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
+      mcpServers = filterMcpServersForProfile(
+        await this.resolveMcpServers(opts.projectPath, opts.mcpServerConfigs ?? []),
+        profile,
+      );
+    } catch (error) {
+      if (error instanceof McpServerSecretMissingError) {
+        await this.reportMcpPreflightFailure(sessionId, opts, error);
+      }
+      throw error;
+    }
     // Recorded before any launch path below, so `evaluateProfileForSession`
     // (the resolver `launchLocalSession`/`launchReservedSshSession` pass
     // into `AgentSession.spawn()`) already has an answer the moment this
@@ -1565,13 +1680,21 @@ export class NodeDaemon extends EventEmitter {
     await this.sendSessionStatus(session.id, 'starting');
 
     let agentSession: AgentSession;
+    let failedMcpServers: McpServerStatusEntryV1[];
     try {
-      agentSession = await this.startAgentWithTimeout({
-        workspacePath: session.worktreePath,
-        providerId: opts.provider,
+      const outcome = await this.startAgentWithMcpFallback(
+        session.projectPath,
         mcpServers,
-        evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
-      });
+        (servers) =>
+          this.startAgentWithTimeout({
+            workspacePath: session.worktreePath,
+            providerId: opts.provider,
+            mcpServers: servers,
+            evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(session.id, toolCall),
+          }),
+      );
+      agentSession = outcome.result;
+      failedMcpServers = outcome.failedServers;
     } catch (error) {
       this.concurrencyGate.release(opts.targetId);
       const message = error instanceof Error ? error.message : String(error);
@@ -1586,6 +1709,7 @@ export class NodeDaemon extends EventEmitter {
       throw error;
     }
 
+    await this.sendMcpServerStatus(session.id, failedMcpServers);
     return this.finishSessionCreation(
       session,
       agentSession,
@@ -1651,20 +1775,84 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * `projectPath`'s effective MCP server set (SPEC §7.7; issue #187), with
-   * every declared secret substituted from this node's local grant/secret
-   * storage (SPEC §7.17; issue #189) — the exact list a session's
-   * `AcpClient.newSession` call receives as `mcpServers`. Throws
-   * `McpServerSecretMissingError` (from `@loombox/providers-core`) the
-   * moment a required secret is ungranted or has no stored value, naming the
-   * server and variable — before this method returns anything, so a caller
-   * never gets a partially-resolved list. Returns `[]` (skipping secret
-   * resolution entirely) when the project has no effective servers at all,
+   * Wraps one agent-start attempt (`start`) with issue #750's (D2-2) MCP
+   * fallback: if the agent's own `session/new` rejection can be
+   * attributed to one specific declared server by name — a missing binary
+   * or a failed MCP handshake, see {@link attributeMcpFailure} — this
+   * retries with that server excluded rather than failing the whole
+   * session: "a server that cannot start reports that to the client by
+   * name, rather than producing a session with quietly fewer tools" means
+   * the session still opens, degraded and honest, not that it must fail
+   * outright. A revoked-secret failure never reaches here at all —
+   * {@link resolveMcpServers} already rejected it before any spawn
+   * attempt, back in `createSessionInternal`. Bounded by construction:
+   * each retry strictly shrinks `remaining`, so this terminates within
+   * `mcpServers.length + 1` attempts even in the worst case (every server
+   * bad) — the final attempt, with `remaining: []`, either succeeds (an
+   * agent that needs no MCP servers at all) or fails on something
+   * `attributeMcpFailure` can no longer attribute to any server, which
+   * rethrows unchanged, exactly like a spawn failure unrelated to MCP
+   * always has. Every excluded server's consecutive-failure streak is
+   * recorded via {@link recordMcpServerOutcome} (three in a row
+   * auto-disables it — see that method's own doc comment), and every
+   * server that actually started is recorded as a success, resetting its
+   * streak.
+   */
+  private async startAgentWithMcpFallback<T>(
+    projectPath: string,
+    mcpServers: AcpMcpServerConfig[],
+    start: (servers: AcpMcpServerConfig[]) => Promise<T>,
+  ): Promise<{ result: T; failedServers: McpServerStatusEntryV1[] }> {
+    let remaining = mcpServers;
+    const failedServers: McpServerStatusEntryV1[] = [];
+    for (;;) {
+      try {
+        const result = await start(remaining);
+        for (const server of remaining) {
+          this.recordMcpServerOutcome(projectPath, server.name, true);
+        }
+        return { result, failedServers };
+      } catch (error) {
+        const attribution = attributeMcpFailure(error, remaining);
+        if (!attribution) throw error;
+        failedServers.push({
+          name: attribution.name,
+          ok: false,
+          category: attribution.category,
+          reason: attribution.reason,
+        });
+        this.recordMcpServerOutcome(projectPath, attribution.name, false);
+        remaining = remaining.filter((server) => server.name !== attribution.name);
+      }
+    }
+  }
+
+  /**
+   * `projectPath`'s effective MCP server set (SPEC §7.7; issue #187),
+   * merged with `clientDeclared` — the client's own per-project
+   * `localStorage` declarations, forwarded at `session_create` time
+   * (issue #750, D2-2's "the two config stores stop being two: one
+   * resolution path") — via `mergeMcpServerConfigLists`: this node's own
+   * `McpConfigStore` record wins outright on a name collision, since it's
+   * the one path that can inject a server the user never had to hand-add
+   * (a future in-process tracker MCP host, issue #627, is exactly that
+   * shape). Every declared secret is then substituted from this node's
+   * local grant/secret storage (SPEC §7.17; issue #189) — the exact list
+   * a session's `AcpClient.newSession` call receives as `mcpServers`.
+   * Throws `McpServerSecretMissingError` (from `@loombox/providers-core`)
+   * the moment a required secret is ungranted or has no stored value,
+   * naming the server and variable — before this method returns anything,
+   * so a caller never gets a partially-resolved list. Returns `[]`
+   * (skipping secret resolution entirely) when the merged set is empty,
    * the common case, rather than doing pointless keyring I/O for an empty
    * `requiredSecretsForList`.
    */
-  private async resolveMcpServers(projectPath: string): Promise<AcpMcpServerConfig[]> {
-    const effective = this.mcpConfigStore.effectiveServers(projectPath);
+  private async resolveMcpServers(
+    projectPath: string,
+    clientDeclared: readonly McpServerConfig[],
+  ): Promise<AcpMcpServerConfig[]> {
+    const nodeStoreServers = this.mcpConfigStore.effectiveServers(projectPath);
+    const effective = mergeMcpServerConfigLists(nodeStoreServers, clientDeclared);
     if (effective.length === 0) return [];
     return this.mcpSecretManager.resolveForSession(projectPath, effective);
   }
@@ -1889,25 +2077,43 @@ export class NodeDaemon extends EventEmitter {
       const spawnConfig = provider.spawnConfig({ cwd: worktreePath });
       const command = [spawnConfig.command, ...(spawnConfig.args ?? [])].map(shQuote).join(' ');
 
-      const { mode, usedFallback, handle } = await runner.launchWithFallback(sessionId, command);
-      if (usedFallback) {
-        console.warn(
-          `NodeDaemon: ssh target "${targetId}" has no setsid+mkfifo available; session ${sessionId} launched under the ${mode} fallback (#81)`,
-        );
-      }
-
-      const remoteChild = new RemoteAgentChildProcess(runner, handle, {
-        pollIntervalMs: this.remoteChildPollIntervalMs,
-      });
-      remoteChild.start();
-
-      const agentSession = await this.supervisor.startWithChild({
-        workspacePath: worktreePath,
-        providerId: opts.provider,
-        child: asAcpChildProcess(remoteChild),
+      // Each MCP fallback retry (issue #750, D2-2) redeploys the agent
+      // from scratch — `launchWithFallback` through `startWithChild` —
+      // since a remote process whose own ACP handshake already failed on
+      // a bad MCP server can't simply be re-handed a smaller list; there
+      // is no cheaper "just retry session/new" seam once the underlying
+      // process is in that state. Costs a real ssh round-trip per
+      // excluded server, unlike the local path's free in-process retry —
+      // an accepted, honest trade for a target this node redeploys to in
+      // the first place.
+      const { result, failedServers: failedMcpServers } = await this.startAgentWithMcpFallback(
+        opts.projectPath,
         mcpServers,
-        evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(sessionId, toolCall),
-      });
+        async (servers) => {
+          const { mode, usedFallback, handle } = await runner.launchWithFallback(
+            sessionId,
+            command,
+          );
+          if (usedFallback) {
+            console.warn(
+              `NodeDaemon: ssh target "${targetId}" has no setsid+mkfifo available; session ${sessionId} launched under the ${mode} fallback (#81)`,
+            );
+          }
+          const remoteChild = new RemoteAgentChildProcess(runner, handle, {
+            pollIntervalMs: this.remoteChildPollIntervalMs,
+          });
+          remoteChild.start();
+          const agentSession = await this.supervisor.startWithChild({
+            workspacePath: worktreePath,
+            providerId: opts.provider,
+            child: asAcpChildProcess(remoteChild),
+            mcpServers: servers,
+            evaluateToolProfile: (toolCall) => this.evaluateProfileForSession(sessionId, toolCall),
+          });
+          return { agentSession, remoteChild };
+        },
+      );
+      const { agentSession, remoteChild } = result;
 
       const session: Session = {
         id: sessionId,
@@ -1922,6 +2128,7 @@ export class NodeDaemon extends EventEmitter {
         targetId,
       };
 
+      await this.sendMcpServerStatus(sessionId, failedMcpServers);
       return await this.finishSessionCreation(
         session,
         agentSession,
@@ -2442,6 +2649,163 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  /**
+   * Pushes one `mcp_server_status` lifecycle event (SPEC §7.7/§7.17;
+   * issue #750, D2-2) straight to the relay, sealed under this session's
+   * derived key — the same "usable before a bridge exists" shape
+   * {@link sendSessionStatus} already has, needed for the same reason:
+   * {@link reportMcpPreflightFailure} calls this before any `Session` or
+   * bridge exists at all, and {@link launchLocalSession}/
+   * {@link launchReservedSshSession} call it right after a successful
+   * (possibly degraded) start, also before `finishSessionCreation` builds
+   * a bridge. A no-op for an empty list — a session with nothing to
+   * report stays exactly as silent as it was before this event existed,
+   * matching {@link resolveMcpServers}'s own empty-list short circuit.
+   */
+  private async sendMcpServerStatus(
+    sessionId: string,
+    servers: McpServerStatusEntryV1[],
+  ): Promise<void> {
+    if (servers.length === 0) return;
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(
+      sessionId,
+      { kind: 'mcp_server_status', servers, updatedAt: new Date().toISOString() },
+      key,
+    );
+    this.relay.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      seq: 0,
+      envelope,
+    });
+  }
+
+  /**
+   * Makes a `McpServerSecretMissingError` pre-flight failure visible
+   * (issue #750, D2-2's "a revoked secret grant... produce a distinct,
+   * visible reason") without paying for a worktree, lease, or `Session`
+   * record this request was always going to fail before reaching —
+   * exactly the cost `createSessionInternal`'s own doc comment describes
+   * avoiding. The relay drops any `session_update` for a `sessionId` it
+   * has never seen a `session_announce` for (`relay.ts`'s "unknown
+   * session" guard), so this sends a minimal `session_announce` itself —
+   * built from `opts`' own fields, no `Session`/worktree required — then
+   * the same `session_status: 'error'` a real spawn failure already gets
+   * (issue #730), plus an `mcp_server_status` naming the exact server and
+   * secret for a client that wants the structured form too. Both sends
+   * are best-effort past the announce: a failure to report is logged, not
+   * thrown, so the original `McpServerSecretMissingError` is always what
+   * the caller (and `handleSessionCreate`'s own `.catch`) sees.
+   */
+  private async reportMcpPreflightFailure(
+    sessionId: string,
+    opts: { targetId: string; provider: string; title: string; projectPath: string },
+    error: McpServerSecretMissingError,
+  ): Promise<void> {
+    try {
+      const key = await this.getSessionKey(sessionId);
+      const privateEnvelope = await sealJson(
+        sessionId,
+        { title: opts.title, projectPath: opts.projectPath },
+        key,
+      );
+      const meta: SessionMetaPublic = {
+        id: sessionId,
+        nodeId: this.nodeId,
+        targetId: opts.targetId,
+        accountId: this.accountId,
+        provider: opts.provider,
+        createdAt: Date.now(),
+      };
+      this.relay.send({
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope,
+      });
+      await this.sendSessionStatus(sessionId, 'error', error.message);
+      await this.sendMcpServerStatus(sessionId, [
+        {
+          name: error.serverName,
+          ok: false,
+          category: 'secret_missing',
+          reason: error.message,
+        },
+      ]);
+    } catch (reportError: unknown) {
+      console.warn(
+        `NodeDaemon: failed to report session ${sessionId}'s MCP secret-grant failure to the relay: ${
+          reportError instanceof Error ? reportError.message : String(reportError)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Records one MCP server's start-attempt outcome for `projectPath`
+   * (issue #750, D2-2's "lifecycle... disable, decided explicitly"): a
+   * success resets its streak to zero (an intermittent failure that then
+   * recovers must never accumulate toward a disable it never earns); a
+   * failure increments it, and three in a row auto-disables the server
+   * via {@link autoDisableMcpServer} — bounded, in-memory, and reset on
+   * every node restart (a fresh streak, not a persisted one; only the
+   * disable itself, once it happens, survives a restart, in
+   * `McpConfigStore`'s own file). "Restart" (this decision's other
+   * lifecycle action, alongside "report" and "disable") needs no code of
+   * its own: an excluded server was never removed from its config record,
+   * only from *this* attempt's list, so the very next session creation
+   * retries it fresh — self-healing without this node ever deciding "now
+   * is the moment to retry."
+   */
+  private recordMcpServerOutcome(projectPath: string, serverName: string, ok: boolean): void {
+    const key = `${projectPath}\u0000${serverName}`;
+    if (ok) {
+      this.mcpFailureStreaks.delete(key);
+      return;
+    }
+    const streak = (this.mcpFailureStreaks.get(key) ?? 0) + 1;
+    if (streak < NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD) {
+      this.mcpFailureStreaks.set(key, streak);
+      return;
+    }
+    this.mcpFailureStreaks.delete(key);
+    this.autoDisableMcpServer(projectPath, serverName);
+  }
+
+  /**
+   * Disables `serverName` in `projectPath`'s own `McpConfigStore` record —
+   * project-scoped first, falling back to a global record of the same
+   * name (mirrors {@link resolveMcpServers}'s own project-overrides-global
+   * precedence). A client-declared server (no node-store record at all,
+   * `mcp-server-store.ts`'s `localStorage` list) has nothing here to
+   * disable — this node doesn't own that storage — so it keeps being
+   * reported as failed on every attempt until the client itself disables
+   * or removes it; logged, not thrown, since a failed auto-disable must
+   * never mask the real failure this was reacting to.
+   */
+  private autoDisableMcpServer(projectPath: string, serverName: string): void {
+    try {
+      this.mcpConfigStore.setProjectEnabled(projectPath, serverName, false);
+      console.warn(
+        `NodeDaemon: auto-disabled project "${projectPath}"'s MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
+      );
+      return;
+    } catch {
+      // No project-scoped record by that name — try a global one below.
+    }
+    try {
+      this.mcpConfigStore.setGlobalEnabled(serverName, false);
+      console.warn(
+        `NodeDaemon: auto-disabled global MCP server "${serverName}" after ${NodeDaemon.MCP_AUTO_DISABLE_THRESHOLD} consecutive failures to start (issue #750).`,
+      );
+    } catch {
+      // A client-declared server with no node-store record at all —
+      // nothing to disable node-side; see this method's own doc comment.
+    }
+  }
+
   private sendTargetAnnounce(): void {
     this.relay.send({
       type: 'target_announce',
@@ -2854,6 +3218,13 @@ export class NodeDaemon extends EventEmitter {
           // comment for the full default-mapping story.
           worktree: privateMeta.worktree,
           profileId: privateMeta.profileId,
+          // issue #750, D2-2: the client's own per-project `localStorage`
+          // MCP server declarations, merged by `resolveMcpServers` into
+          // this node's own `McpConfigStore` — see
+          // `parseClientDeclaredMcpServers`'s own doc comment for why a
+          // single malformed entry degrades rather than failing the
+          // whole session.
+          mcpServerConfigs: parseClientDeclaredMcpServers(privateMeta.mcpServerConfigs),
         }),
       )
       .catch((error: unknown) => {
@@ -2991,7 +3362,11 @@ export class NodeDaemon extends EventEmitter {
       );
     }
 
-    const mcpServers = await this.resolveMcpServers(opts.projectPath);
+    // A fork request carries no `mcpServerConfigs` of its own (issue #750
+    // predates #746's fork wire shape) — only this node's own McpConfigStore
+    // applies; a future fork-time client declaration would thread through
+    // here identically to `createSessionInternal`'s own `opts.mcpServerConfigs`.
+    const mcpServers = await this.resolveMcpServers(opts.projectPath, []);
 
     let session: Session;
     try {
@@ -3352,6 +3727,13 @@ export class NodeDaemon extends EventEmitter {
    * before this change) rather than ever reaching either the agent or this
    * side channel. `sendFileEvent` is on its own wire message type, never
    * `bridge.sendQueue`/`session_update` — see that method's doc comment.
+   *
+   * `payload.mentions` (issue #742's `@`-mention pills) needs no resolution
+   * step of its own — each entry already IS the resolved reference (an ACP
+   * `resource_link`'s `uri`/`name`, folded onto the wire's plaintext by the
+   * client, never re-derived here) — `renderPromptTextWithMentions` just
+   * folds it into the text `agentSession.prompt()` takes, see that
+   * function's own doc comment for why text is still the only channel.
    */
   private async deliverPrompt(bridge: SessionBridge, payload: PromptPayload): Promise<void> {
     for (const attachment of payload.attachments ?? []) {
@@ -3373,7 +3755,7 @@ export class NodeDaemon extends EventEmitter {
       });
     }
     this.beginTurn(bridge);
-    await bridge.agentSession.prompt(payload.text);
+    await bridge.agentSession.prompt(renderPromptTextWithMentions(payload.text, payload.mentions));
   }
 
   /**

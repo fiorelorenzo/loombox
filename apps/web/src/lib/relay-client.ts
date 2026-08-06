@@ -135,6 +135,7 @@ import {
   type ComposerAttachment,
 } from './attachments';
 import { createDefaultOutboxStorage, type OutboxStorage, type QueuedPrompt } from './outbox';
+import type { MentionRef } from './mentions';
 
 export type {
   ConnectedAccount,
@@ -255,11 +256,27 @@ interface PromptAttachmentRef {
   name?: string;
 }
 
+/**
+ * A still-live `@`-mention pill (issue #742, decisions doc C2-3) carried
+ * inside a `prompt_inject` envelope's plaintext, mirrored field-for-field
+ * from `@loombox/node`'s `PromptMentionRef` (`packages/node/src/node-daemon.ts`)
+ * exactly like {@link PromptAttachmentRef} above — the node decrypts this
+ * same plaintext shape. `uri`/`name` are `MentionRef.resourceLink`'s own
+ * fields (`$lib/mentions.ts`) — ACP's baseline `ContentBlock::ResourceLink`
+ * shape, not a loombox-invented one.
+ */
+interface PromptMentionRef {
+  uri: string;
+  name: string;
+}
+
 /** The plaintext a `prompt_inject` envelope decrypts to, mirrored from `@loombox/node`'s `PromptPayload`. */
 interface PromptPayload {
   text: string;
   /** Attachments this turn references (SPEC §7.25); omitted for a plain text prompt. */
   attachments?: PromptAttachmentRef[];
+  /** Still-live `@`-mention pills this turn references (issue #742); omitted when there are none. */
+  mentions?: PromptMentionRef[];
 }
 
 /** One attachment's cached plaintext bytes, kept only long enough to (re)encrypt-and-upload without asking the user to re-pick the file (issue #155's retry). */
@@ -3906,24 +3923,39 @@ export class RelayClient {
 
   /**
    * Seals the composer's text (and any uploaded attachment refs, SPEC
-   * §7.25) into a `prompt_inject` envelope (SPEC §7.3) and sends it — or, if
-   * this session already has a turn considered in flight (issue #128) or
-   * there is currently no open connection (issue #130), queues it instead:
-   * appended to that session's {@link queuedPromptsFor} list and persisted
-   * to the offline outbox, to be flushed in order once the turn settles or
-   * the connection comes back (`flushNext`/`flushOutboxOnReconnect`).
-   * Always returns the generated `promptId` synchronously, whichever path
-   * was taken; referenced attachments are cleared from the composer's
-   * pending list either way, since they now belong to this prompt (sent or
-   * queued), not a future one.
+   * §7.25, plus any still-live `@`-mention pill, issue #742) into a
+   * `prompt_inject` envelope (SPEC §7.3) and sends it — or, if this session
+   * already has a turn considered in flight (issue #128) or there is
+   * currently no open connection (issue #130), queues it instead: appended
+   * to that session's {@link queuedPromptsFor} list and persisted to the
+   * offline outbox, to be flushed in order once the turn settles or the
+   * connection comes back (`flushNext`/`flushOutboxOnReconnect`). Always
+   * returns the generated `promptId` synchronously, whichever path was
+   * taken; referenced attachments are cleared from the composer's pending
+   * list either way, since they now belong to this prompt (sent or
+   * queued), not a future one. `mentions` is expected already filtered to
+   * what's still live — the caller (`+page.svelte`'s `submitPrompt`, via
+   * `$lib/mentions.ts`'s `resolveMentionsForSend`) folds a stale one back
+   * into `text` before this is ever called, so this method itself never
+   * decides what counts as stale.
    */
-  sendPrompt(sessionId: string, text: string, attachmentIds: string[] = []): string {
+  sendPrompt(
+    sessionId: string,
+    text: string,
+    attachmentIds: string[] = [],
+    mentions: MentionRef[] = [],
+  ): string {
     const attachments = this.resolveUploadedAttachmentRefs(sessionId, attachmentIds);
+    const mentionRefs = mentions.map((mention) => ({
+      uri: mention.resourceLink.uri,
+      name: mention.resourceLink.name ?? mention.resourceLink.uri,
+    }));
     const item: QueuedPrompt = {
       id: generateId('prompt'),
       sessionId,
       text,
       attachments,
+      mentions: mentionRefs,
       queuedAt: Date.now(),
     };
 
@@ -3956,13 +3988,17 @@ export class RelayClient {
       messageId: item.id,
       text: item.text,
     });
-    this.encryptAndSendPrompt(item.sessionId, item.id, item.text, item.attachments).catch(
-      (error: unknown) => {
-        console.warn(
-          `RelayClient: failed to encrypt/send prompt_inject for session ${item.sessionId}: ${errorMessage(error)}`,
-        );
-      },
-    );
+    this.encryptAndSendPrompt(
+      item.sessionId,
+      item.id,
+      item.text,
+      item.attachments,
+      item.mentions,
+    ).catch((error: unknown) => {
+      console.warn(
+        `RelayClient: failed to encrypt/send prompt_inject for session ${item.sessionId}: ${errorMessage(error)}`,
+      );
+    });
     this.markTurnActive(item.sessionId);
   }
 
@@ -4106,8 +4142,13 @@ export class RelayClient {
     promptId: string,
     text: string,
     attachments: PromptAttachmentRef[],
+    mentions: PromptMentionRef[],
   ): Promise<void> {
-    const payload: PromptPayload = attachments.length > 0 ? { text, attachments } : { text };
+    const payload: PromptPayload = {
+      text,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(mentions.length > 0 ? { mentions } : {}),
+    };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     this.send({
       type: 'prompt_inject',

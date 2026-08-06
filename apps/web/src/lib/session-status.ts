@@ -55,3 +55,24 @@ export const SESSION_STATUS_LABELS: Record<SessionStatusV1, string> = {
 
 /** The wording for a session the node has not reported a status for yet. */
 export const SESSION_STATUS_UNKNOWN_LABEL = 'No status yet';
+
+/**
+ * The row/selvage badge's status text (issue #730), and the status bar's
+ * own session segment (issue #736): the plain
+ * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
+ * for `'error'` with a `reason` the node sent (`RelayClient.
+ * statusReasonFor` — a spawn that failed or timed out), where the reason
+ * is appended so a hover/hold on the row's own tooltip, the dot's
+ * accessible name, or the status bar's own label reads WHY, not just that
+ * it failed. Hoisted here (out of `+page.svelte`, where it originated)
+ * once a second surface needed the identical reading — same "one place a
+ * status becomes words" rule this file's own doc comment already states.
+ */
+export function sessionStatusLabelWithReason(
+  status: SessionStatusV1 | undefined,
+  reason: string | undefined,
+): string {
+  if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
+  const label = SESSION_STATUS_LABELS[status];
+  return status === 'error' && reason ? `${label}: ${reason}` : label;
+}

@@ -20,7 +20,7 @@
   import type { IconName } from './icons/icon-paths';
 
   interface Props {
-    /** Which glyph identifies the tool kind (`tool-bash` / `tool-edit` / `tool-generic`). */
+    /** Which glyph identifies the tool kind — see `$lib/tool-widgets.ts`'s `toolKindIcon` for the full `ToolKind -> IconName` mapping (issue #744). */
     icon: IconName;
   }
 
