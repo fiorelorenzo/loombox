@@ -755,6 +755,24 @@ export {
   ciCheckStatusPayloadV1,
   ciCheckStatus,
 } from './ci-check';
+export type {
+  CiAutoIterateStopReasonV1,
+  CiAutoIterateAttemptV1,
+  CiAutoIterateStateV1,
+  CiAutoIterateStatusPayloadV1,
+  CiAutoIterateStatus,
+  CiAutoIterateStop,
+} from './ci-auto-iterate';
+export {
+  ciAutoIterateStopReasonV1,
+  ciAutoIterateAttemptV1,
+  ciAutoIterateStateV1,
+  parseCiAutoIterateStatusPayloadV1,
+  safeParseCiAutoIterateStatusPayloadV1,
+  ciAutoIterateStatusPayloadV1,
+  ciAutoIterateStatus,
+  ciAutoIterateStop,
+} from './ci-auto-iterate';
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
@@ -1139,6 +1157,14 @@ import {
   ciCheckStatus,
 } from './ci-check';
 import {
+  ciAutoIterateStopReasonV1,
+  ciAutoIterateAttemptV1,
+  ciAutoIterateStateV1,
+  ciAutoIterateStatusPayloadV1,
+  ciAutoIterateStatus,
+  ciAutoIterateStop,
+} from './ci-auto-iterate';
+import {
   permissionPolicyGet,
   permissionPolicyResult,
   permissionPolicySet,
@@ -1507,4 +1533,10 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  ciAutoIterateStopReasonV1,
+  ciAutoIterateAttemptV1,
+  ciAutoIterateStateV1,
+  ciAutoIterateStatusPayloadV1,
+  ciAutoIterateStatus,
+  ciAutoIterateStop,
 } as const;

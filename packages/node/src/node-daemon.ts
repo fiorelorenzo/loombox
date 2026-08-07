@@ -195,6 +195,8 @@ import {
   type PrOpenResultPayloadV1,
   type CiCheckStateV1,
   type CiCheckStatusPayloadV1,
+  type CiAutoIterateStatusPayloadV1,
+  type CiAutoIterateStop,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -293,6 +295,7 @@ import {
   type CiWatchEntry,
 } from './ci-check-watcher';
 import { CiWatchStore } from './ci-watch-store';
+import { CiAutoIterateController } from './ci-auto-iterate';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -759,6 +762,8 @@ export interface NodeDaemonOptions {
   ciCheckWatchStore?: CiWatchStore;
   /** SPEC §7.14, issue #239 — the whole polling engine, injectable wholesale (rather than just its `fetchImpl`, like `trackerBackendFetchImpl` above) so a test can fully control both the stubbed GitHub responses AND `resolveToken`, decoupled from this daemon's real `accountPinStore`/`githubConnectService` composition, which is proven separately by `resolveCiCheckGithubToken`'s own test. Defaults to a real `CiCheckWatcher` wired to `resolveCiCheckGithubToken`/`sendCiCheckStatus`/`handleCiCheckFailure`. */
   ciCheckWatcher?: CiCheckWatcher;
+  /** SPEC §7.14/§7.15, issue #246 — decides whether a new CI failure actually drives a new agent turn, and tracks the resulting auto-iterate loop's state; see `ci-auto-iterate.ts`'s own doc comment. Injectable wholesale, same convention as `ciCheckWatcher` above (a test can control `maxAttempts`/`now` directly, or inject a fully custom instance). Defaults to `new CiAutoIterateController()`. */
+  ciAutoIterateController?: CiAutoIterateController;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1529,6 +1534,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly ciCheckWatchStore: CiWatchStore;
   /** SPEC §7.14, issue #239's polling engine — see `NodeDaemonOptions.ciCheckWatcher`'s doc comment. */
   private readonly ciCheckWatcher: CiCheckWatcher;
+  /** SPEC §7.14/§7.15, issue #246's failure-decision-and-loop-state tracker — see `NodeDaemonOptions.ciAutoIterateController`'s doc comment. */
+  private readonly ciAutoIterateController: CiAutoIterateController;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1675,6 +1682,7 @@ export class NodeDaemon extends EventEmitter {
     // every other per-session store.
     this.ciCheckWatchStore =
       options.ciCheckWatchStore ?? new CiWatchStore({ stateDir: options.stateDir });
+    this.ciAutoIterateController = options.ciAutoIterateController ?? new CiAutoIterateController();
     this.ciCheckWatcher =
       options.ciCheckWatcher ??
       new CiCheckWatcher({
@@ -1685,6 +1693,16 @@ export class NodeDaemon extends EventEmitter {
               `NodeDaemon: failed to send ci_check_status for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
             );
           });
+          if (state.state === 'passing') {
+            const next = this.ciAutoIterateController.onGreen(sessionId);
+            if (next) {
+              this.sendCiAutoIterateStatus(sessionId, next).catch((error: unknown) => {
+                console.warn(
+                  `NodeDaemon: failed to send ci_auto_iterate_status for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              });
+            }
+          }
         },
         onFailure: (sessionId, state) => {
           this.handleCiCheckFailure(sessionId, state).catch((error: unknown) => {
@@ -4095,6 +4113,9 @@ export class NodeDaemon extends EventEmitter {
       case 'run_cancel':
         this.handleRunCancel(message);
         return;
+      case 'ci_auto_iterate_stop':
+        this.handleCiAutoIterateStop(message);
+        return;
       case 'amk_epoch_fetch_response':
         this.handleAmkEpochFetchResponse(message.pending);
         return;
@@ -4479,6 +4500,7 @@ export class NodeDaemon extends EventEmitter {
     // clean.
     this.ciCheckWatcher.unwatch(sessionId);
     this.ciCheckWatchStore.remove(sessionId);
+    this.ciAutoIterateController.forget(sessionId);
     // Clean up this session's hidden checkpoint refs (issue #603) before
     // the record disappears below — `GitCheckpointStore.deleteAllCheckpoints()`
     // needs `worktreePath`, still readable from `sessionManager` right up
@@ -8230,6 +8252,7 @@ export class NodeDaemon extends EventEmitter {
     };
     this.ciCheckWatchStore.set(session.id, entry);
     this.ciCheckWatcher.watch(session.id, entry);
+    this.ciAutoIterateController.reset(session.id);
   }
 
   /**
@@ -8283,21 +8306,93 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
+   * Pushes `sessionId`'s current auto-iterate loop state to its
+   * subscribed clients (SPEC §7.14/§7.15; issue #246) — every time
+   * `CiAutoIterateController` reports one, whether that's a fresh
+   * attempt, a green stop, a max-attempts stop, or a user stop. Session-
+   * scoped and envelope-sealed exactly like `sendCiCheckStatus` above.
+   */
+  private async sendCiAutoIterateStatus(
+    sessionId: string,
+    state: CiAutoIterateStatusPayloadV1['state'],
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: CiAutoIterateStatusPayloadV1 = { state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'ci_auto_iterate_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * Whether `sessionId` may currently be driven by the auto-iterate loop
+   * (SPEC §7.16; issue #251's "a paused session must not be resumed by
+   * the loop", and the same for a session over its effective spend cap)
+   * — read fresh on every new CI failure, never cached, since either
+   * condition can change moment to moment. `true` when this daemon has
+   * no record of the session at all (never created here, or already
+   * archived): {@link promptSession}'s own "no session with id" guard is
+   * the real, authoritative gate for that case, and this best-effort
+   * check has nothing more specific to say. Two real reasons this
+   * returns `false`:
+   * 1. The session's own lifecycle state isn't `'running'` — covers a
+   *    session paused for any reason, including `pauseForSpendCap`'s own
+   *    auto-pause (SPEC §7.16), since that always lands here first.
+   * 2. Defense in depth for the gap between a spend cap being crossed and
+   *    `maybeApplySpendCap` actually landing the pause above (e.g. mid-
+   *    turn, `maybeApplySpendCap`'s own "let it finish" guard): a live
+   *    bridge whose `spendCumulativeCostUsd` already exceeds its
+   *    `effectiveSpendCapUsd` is treated as ineligible even while
+   *    `session.state` still reads `'running'`.
+   */
+  private isAutoIterateEligible(sessionId: string): boolean {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) return true;
+    if (session.state !== 'running') return false;
+    const bridge = this.bridges.get(sessionId);
+    const capUsd = this.effectiveSpendCapUsd(session);
+    if (
+      bridge &&
+      capUsd !== undefined &&
+      bridge.spendCumulativeCostUsd !== undefined &&
+      bridge.spendCumulativeCostUsd > capUsd
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * `CiCheckWatcher`'s `onFailure` hook (SPEC §7.14, issue #239) — fired
    * exactly once per NEW failing commit (see `ci-check-watcher.ts`'s own
    * "exactly-once-per-failure dedup" doc comment; this method itself does
-   * no deduping of its own). Feeds the failure straight back to the
-   * session's own agent via `promptSession` — the "surfaced ... which can
-   * auto-iterate a fix" half of SPEC §7.14's PR & CI lifecycle bullet.
-   * This is only the hook: driving the resulting turn to a genuinely
-   * green re-run (re-pushing, watching the NEXT poll, deciding when to
-   * stop) is issue #246's job, not this one's. A session with no live
-   * agent (`promptSession`'s own "no session with id" — archived, or
+   * no deduping of its own). This IS issue #246's loop: `isAutoIterateEligible`
+   * reads whether this session may currently iterate at all (not paused,
+   * not over its spend cap), `CiAutoIterateController.onFailure` weighs
+   * that alongside a prior user stop and the attempt cap, and only a real
+   * `proceed: true` decision feeds the failure back to the session's own
+   * agent via `promptSession` — the "surfaced ... which can auto-iterate
+   * a fix" half of SPEC §7.14's PR & CI lifecycle bullet. Every decision,
+   * proceeding or not, pushes the resulting `ci_auto_iterate_status` so a
+   * client always sees why. A session with no live agent
+   * (`promptSession`'s own "no session with id" — archived, or
    * `'disconnected'` since a restart) rejects here and is caught by this
    * method's own caller (the `onFailure` wiring in this daemon's
    * constructor), exactly like every other best-effort hook in this file.
    */
   private async handleCiCheckFailure(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    const eligible = this.isAutoIterateEligible(sessionId);
+    const decision = this.ciAutoIterateController.onFailure(
+      sessionId,
+      state.headSha ?? 'unknown',
+      eligible,
+    );
+    await this.sendCiAutoIterateStatus(sessionId, decision.state);
+    if (!decision.proceed) return;
+
     const failing = state.checkRuns.filter((run) => isFailingConclusion(run.conclusion));
     const lines = failing.map((run) => {
       const detail = run.summary ? `: ${run.summary}` : '';
@@ -8541,6 +8636,31 @@ export class NodeDaemon extends EventEmitter {
       const detail = error instanceof Error ? error.message : String(error);
       console.warn(
         `NodeDaemon: failed to cancel run ${message.runId} for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked to stop `sessionId`'s auto-iterate loop right now
+   * (SPEC §7.14/§7.15; issue #246's own "user-initiated" stop) — a
+   * silent no-op when `sessionId` isn't one of this node's sessions at
+   * all, mirroring `handleRunCancel`'s identical guard just above.
+   * Unlike `handleRunCancel`, there is nothing further to actually
+   * cancel here (there is no in-flight process this stop needs to kill —
+   * any turn `handleCiCheckFailure` already started keeps running to
+   * completion exactly like any other prompt would); this only tells
+   * `CiAutoIterateController` to refuse every FUTURE new failure until
+   * the next green check or a fresh PR watch.
+   */
+  private handleCiAutoIterateStop(message: CiAutoIterateStop): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    const state = this.ciAutoIterateController.stopByUser(message.sessionId);
+    this.sendCiAutoIterateStatus(message.sessionId, state).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send ci_auto_iterate_status for session ${message.sessionId}: ${detail}`,
       );
     });
   }
