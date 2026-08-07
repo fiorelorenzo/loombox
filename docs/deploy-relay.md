@@ -313,24 +313,192 @@ That's the only human-only step in the whole environment: everything else
 in this section is scripted or already applied. After it, `docker compose
 up -d --build` (above) brings the rest up.
 
-### Verifying isolation once it's live
+### Verifying isolation once it's live (#868, epic #863)
 
-Confirm a GitHub sign-in on preview creates an account in preview's
-database only, not production's:
+The isolation claim is the entire reason the preview environment exists.
+Re-run this whole section after any change to either environment's compose
+file, `.env`, or Postgres — not just once at setup. What's cheap to
+automate is an automated test (`packages/relay/src/auth.test.ts`'s
+`preview/production isolation (#868, epic #863)` describe block, run with
+every `pnpm --filter @loombox/relay test`); the rest is the commands below,
+run by hand, with the output they should produce.
+
+#### 1. Databases: an account on one does not exist on the other
+
+Query both directly - never infer from the UI:
 
 ```bash
-# preview - should show the freshly-created account
-docker compose -p loombox-relay-preview exec postgres \
-  psql -U loombox_preview -d loombox_preview -c 'select id, email from "user";'
+# preview
+cd /opt/apps/loombox-preview/deploy/relay-preview
+docker compose exec -T postgres psql -U loombox_preview -d loombox_preview -c 'select id, email from "user";'
 
-# production - should NOT show it
+# production
 cd /opt/apps/loombox/deploy/relay
-docker compose exec postgres psql -U loombox -d loombox -c 'select id, email from "user";'
+docker compose exec -T postgres psql -U loombox -d loombox -c 'select id, email from "user";'
 ```
 
-And confirm production's own containers never moved, before and after any
-preview deploy: `docker ps -q | sort | md5sum` (or just diff the id list)
-run on prodbox before touching preview and again after - the production
-`relay-relay-1` / `relay-postgres-1` / `web-web-1` container IDs must be
-byte-identical, since preview never runs a command inside
-`/opt/apps/loombox`.
+Expected (checked 2026-08-07, before preview had ever been signed into):
+production returns exactly the one real account
+(`fiorelorenzo.fl@gmail.com`); preview returns zero rows. After a GitHub
+sign-in on `https://preview.loombox.dev`, preview's query shows the new row
+and production's is unchanged - the two `select`s never overlap because
+they are two different `psql` connections to two different Postgres
+containers (see "4. Containers and volumes" below), not two views of one
+database.
+
+#### 2. Auth: a bearer token minted by one is rejected by the other
+
+The mechanism (`better-auth`'s `bearer` plugin): a session's bearer token is
+`<sessionToken>.<HMAC-SHA256(secret, sessionToken)>`. The receiving side
+recomputes the HMAC with **its own** `secret` and rejects the request
+outright, before ever touching the database, if it doesn't match -
+`packages/relay/src/auth.test.ts`'s `preview/production isolation` tests
+exercise exactly this with two `createRelayAuth` instances built from two
+different secrets (the automated half of this check, runs in CI). This is
+why `BETTER_AUTH_SECRET` must differ between the two `.env` files
+(`deploy/relay/.env`, `deploy/relay-preview/.env`) and never be copied from
+one to the other - confirm they're actually different without ever
+printing either one:
+
+```bash
+A=$(grep '^BETTER_AUTH_SECRET=' /opt/apps/loombox/deploy/relay/.env | sha256sum)
+B=$(grep '^BETTER_AUTH_SECRET=' /opt/apps/loombox-preview/deploy/relay-preview/.env | sha256sum)
+[ "$A" = "$B" ] && echo MATCH-BAD || echo DIFFERENT-GOOD
+```
+
+Expected: `DIFFERENT-GOOD`.
+
+To see the rejection itself against the live relays rather than trust the
+mechanism, mint a real token from a real (throwaway) account on one side
+and present it to the other's `GET /account` (an authenticated, read-only
+endpoint that echoes back the resolved `accountId` or 401s - see
+`relay.ts`). There is no non-interactive sign-in on either deploy (GitHub
+OAuth only, by design - see "OAuth provider setup" above), so minting a
+token means running a throwaway `enableEmailPasswordForTests: true`
+`createRelayAuth` instance *pointed at the live database, using the
+container's own already-configured `DATABASE_URL`/`BETTER_AUTH_SECRET`*
+(never printed) - the same escape hatch `auth.test.ts` uses, the same
+signing code path a real GitHub sign-in goes through, just skipping the
+consent screen:
+
+```bash
+# run once, inside whichever relay container should mint the token -
+# writes nothing outside that one throwaway user/session/account row
+cat > /tmp/mint.ts <<'EOF'
+import { Pool } from 'pg';
+import { createRelayAuth } from './auth';
+const email = `isolation-check+${Date.now()}@loombox.dev`;
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const auth = createRelayAuth({
+  database: pool,
+  baseURL: process.env.RELAY_PUBLIC_URL ?? 'http://localhost:8787',
+  secret: process.env.BETTER_AUTH_SECRET!,
+  enableEmailPasswordForTests: true,
+});
+const resp = await auth.api.signUpEmail({
+  body: { email, password: `x-${Math.random()}`, name: 'isolation-check' },
+  asResponse: true,
+});
+console.log(JSON.stringify({ email, token: resp.headers.get('set-auth-token') }));
+await pool.end();
+EOF
+docker cp /tmp/mint.ts "$(docker compose ps -q relay)":/app/packages/relay/src/mint.ts
+docker compose exec -T relay sh -c 'cd /app && pnpm --filter @loombox/relay exec tsx src/mint.ts'
+docker compose exec -T relay rm -f /app/packages/relay/src/mint.ts
+
+# then, with $TOKEN set to the printed token:
+curl -sS -o /dev/null -w '%{http_code}\n' https://preview-relay.loombox.dev/account -H "Authorization: Bearer $TOKEN"
+curl -sS -o /dev/null -w '%{http_code}\n' https://relay.loombox.dev/account -H "Authorization: Bearer $TOKEN"
+```
+
+Expected, run 2026-08-07 with a token minted inside the **preview**
+container: `200` (with `{"accountId":"..."}`) against
+`preview-relay.loombox.dev`, `401` (`{"error":"invalid or missing auth
+token"}`) against `relay.loombox.dev` - the deliberate cross attempt,
+refused. Repeated with a token minted inside the **production** container:
+`200` against `relay.loombox.dev`, `401` against
+`preview-relay.loombox.dev` - the reverse holds too. Clean up the throwaway
+row afterward on whichever side minted it:
+`delete from session where "userId" in (select id from "user" where email
+like 'isolation-check+%'); delete from account where "userId" in (...);
+delete from "user" where email like 'isolation-check+%';` (same three
+statements, `psql -U loombox -d loombox` or `-U loombox_preview -d
+loombox_preview` as appropriate) - re-run "1. Databases" above afterward to
+confirm the row count is back to what it was before.
+
+#### 3. Node identities and sessions: a node paired with one never appears in the other's account
+
+A paired node is a row in `devices` (SPEC's node identity, keyed by
+`device_id` with an `account_id` column) and its sessions are rows in
+`sessions` - both tables live in the same Postgres container as `user`
+above, so "1. Databases" already covers this by construction (there is no
+cross-container query to run - preview's relay process holds no connection
+string to production's Postgres, or vice versa; see `DATABASE_URL` in each
+`docker-compose.yml`). Confirmed directly:
+
+```bash
+docker compose exec -T postgres psql -U loombox -d loombox \
+  -c 'select count(*) from devices; select count(*) from sessions;'
+docker compose exec -T postgres psql -U loombox_preview -d loombox_preview \
+  -c 'select count(*) from devices; select count(*) from sessions;'
+```
+
+Checked 2026-08-07: production had 5 devices / 1 session (real, paired
+nodes); preview had 0 of each (never paired against). Every `devices`/
+`sessions` row the relay ever writes carries the `account_id` of the
+connection that created it (`relay.ts`'s `handleNodeMessage`), and that
+`account_id` only ever resolves via *that relay's own* Better Auth/device-
+token store - there is no code path from a preview-resolved `account_id`
+into a query against production's `devices` table, because there is no
+code path from preview into production's database at all.
+
+#### 4. Relay routing: a message addressed to a session id from the other environment routes nowhere
+
+Already covered by the existing test suite, not new to #868: every
+session-scoped and node-scoped message handler in `relay.ts` checks
+`record.meta.accountId !== connection.accountId` (or the node/device
+equivalent) before routing, and `relay.test.ts` has a dedicated "ignores a
+... for an unknown session instead of throwing" test per message type plus
+several "a different account ... must never see it" tests exercising the
+account-mismatch branch directly (`grep -n 'for unknown/foreign\|ignores a\|different account' packages/relay/src/relay.test.ts`).
+Preview and production narrow this further to a structural guarantee
+rather than a runtime check: a session id minted on preview is a row in
+preview's `sessions` table only (see "3." above), so `store.sessions.get`
+on production's store returns nothing for it regardless of any
+`accountId` - the per-account check is defense in depth for two accounts
+colliding on the same relay, not what's carrying the preview/production
+split.
+
+#### 5. Containers and volumes: neither compose project can stop, rebuild, or wipe the other's
+
+This is read-only - list names, never demonstrate a wipe:
+
+```bash
+docker compose ls -a               # project name + compose file path per project
+docker volume ls | grep loombox    # named volume per project
+docker network ls | grep loombox   # compose-internal network per project
+```
+
+Expected, checked 2026-08-07:
+
+| | production | preview |
+| --- | --- | --- |
+| compose project name | `relay` (from `deploy/relay/docker-compose.yml`'s directory - no explicit `name:`) / `web` | `loombox-relay-preview` (explicit `name:` in `deploy/relay-preview/docker-compose.yml`) / `loombox-web-preview` |
+| Postgres volume | `relay_loombox-pg-data` | `loombox-relay-preview_loombox-preview-pg-data` |
+| compose network | `relay_default` | `loombox-relay-preview_default` |
+| containers | `relay-relay-1`, `relay-postgres-1`, `web-web-1` | `loombox-relay-preview-relay-1`, `loombox-relay-preview-postgres-1`, `loombox-web-preview-web-1` |
+| directory | `/opt/apps/loombox` | `/opt/apps/loombox-preview` |
+
+Every name in the preview column differs from its production counterpart,
+so `docker compose down`, `up --build`, or `down -v` run from
+`/opt/apps/loombox-preview/deploy/relay-preview` (or `web-preview`)
+addresses only the `loombox-*-preview` project - Compose resolves a
+project by name (from `name:` in the file, or the containing directory when
+absent) and only ever touches containers/volumes/networks labeled with
+that project name. There is structurally no shared name for a command run
+from the preview directory to accidentally match production's. Confirm
+production's own containers never moved before/after touching preview:
+`docker ps -q | sort | md5sum` (or diff the id list) run on prodbox before
+and after any preview deploy - the production `relay-relay-1` /
+`relay-postgres-1` / `web-web-1` container IDs must be byte-identical,
+since preview never runs a command inside `/opt/apps/loombox`.
