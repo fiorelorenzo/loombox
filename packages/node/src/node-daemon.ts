@@ -8195,18 +8195,19 @@ export class NodeDaemon extends EventEmitter {
           `NodeDaemon: ssh target "${routing.targetId}" transport does not support shell channels`,
         );
       }
-      const channel = await transport.openShellChannel({ cols: payload.cols, rows: payload.rows });
-      // `ssh2`'s `Client.shell()` has no `cwd` option (unlike `node-pty`'s
-      // local spawn): the remote PTY always starts in the login shell's own
-      // default directory. Typing a `cd` as the very first input lands this
-      // terminal in the session's worktree exactly like a local one, at the
-      // cost of that one line briefly appearing before `clear` wipes it —
-      // an accepted, documented tradeoff (SPEC §16 grounding notes this is
-      // the same channel primitive an interactive `ssh host` uses, which has
-      // this same limitation). No `shell` value returned below either, for
-      // the same reason: the remote login shell's binary is never named on
-      // this path.
-      channel.write(`cd ${shQuote(routing.session.worktreePath)} && clear\n`);
+      const channel = await transport.openShellChannel({
+        cols: payload.cols,
+        rows: payload.rows,
+        cwd: routing.session.worktreePath,
+      });
+      // Issue #704: the remote shell is already running in
+      // `routing.session.worktreePath` from its very first byte — see
+      // `Ssh2Transport.openShellChannel`'s own doc comment for the
+      // `cd ... && exec "$SHELL" -l` mechanism. Nothing is typed into
+      // this channel, so there is nothing for the remote PTY's line
+      // discipline to echo. No `shell` value returned below either: the
+      // remote login shell's binary is never named on this path (it's
+      // `$SHELL` on the REMOTE end, never read back over the wire).
       session = this.terminalSupervisor.openWithPty(terminalId, gate(shellChannelToPty(channel)));
     }
 

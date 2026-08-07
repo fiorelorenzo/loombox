@@ -1345,6 +1345,34 @@ test.describe('cockpit shell', () => {
     expect(screenshotBefore.equals(screenshotAfter)).toBe(false);
   });
 
+  test("opening the terminal dock never leaves xterm.js's own internal helpers visible in normal document flow (issue #704: a missing xterm.css import let its hidden character-width probe render as a garbage row above the real prompt)", async ({
+    page,
+    loombox,
+  }) => {
+    await gotoCockpit(page, loombox);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId('terminal-dock-toggle').click();
+    await expect(page.getByTestId('interactive-terminal')).toBeVisible();
+
+    // `.xterm-helpers` (xterm.js's own wrapper around its hidden input
+    // textarea and character-width measurement probes) is unconditionally
+    // created the moment `Terminal.open()` runs — `@xterm/xterm`'s OWN
+    // `xterm.css` is the only thing that takes it out of normal document
+    // flow (`position: absolute`). Without that stylesheet imported, this
+    // element (and the measurement spans it holds) renders inline, IN
+    // FLOW, ABOVE the real terminal content — exactly the "row of garbage
+    // characters above the prompt" this issue reported, and provably
+    // nothing to do with any target's own shell output (`InteractiveTerminal`
+    // never wrote anything resembling it). Scoped to the active pane, same
+    // as `measureTerminalFit` above, since a second open tab would leave a
+    // second, hidden `.xterm-helpers` in the DOM.
+    const helpersPosition = await page.evaluate(() => {
+      const helpers = document.querySelector('.terminal-pane-active .xterm-helpers');
+      return helpers ? getComputedStyle(helpers).position : null;
+    });
+    expect(helpersPosition).toBe('absolute');
+  });
+
   test('the terminal dock is one frame, not two: the word "Terminal" appears once, no hairline, a distinct surface from the canvas, and the resize edge still works from the keyboard (design spec §4 D1-2/D2-2, issue #669)', async ({
     page,
     loombox,
