@@ -483,14 +483,14 @@
               onclick={() => closeTab(tab.id)}
               dataTestId="terminal-tab-close"
             >
-              <Icon name="close" size="0.7rem" />
+              <Icon name="close" size="var(--icon-size-sm)" />
             </IconButton>
           </span>
         {/each}
       </div>
     {/if}
     <IconButton label="New terminal" onclick={addTab} dataTestId="terminal-new-tab">
-      <Icon name="plus" size="0.85rem" />
+      <Icon name="plus" size="var(--icon-size-md)" />
     </IconButton>
   </div>
 

@@ -347,7 +347,7 @@
 
     {#if status === 'loaded' && gitRepo === true}
       <p class="git-marker" data-testid="directory-picker-git-badge">
-        <Icon name="check" size="0.85em" />
+        <Icon name="check" size="var(--icon-size-md)" />
         Git repository
       </p>
     {/if}
@@ -520,7 +520,7 @@
   }
 
   .entries {
-    max-height: 12rem;
+    max-height: var(--scroll-cap-height);
     overflow-y: auto;
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);

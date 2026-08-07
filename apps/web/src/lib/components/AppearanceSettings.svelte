@@ -263,8 +263,8 @@
 
   .theme-option-icon {
     display: inline-flex;
-    width: 1rem;
-    height: 1rem;
+    width: var(--swatch-icon-size);
+    height: var(--swatch-icon-size);
   }
 
   .theme-option-icon svg {
@@ -307,8 +307,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 2.25rem;
-    height: 2.25rem;
+    width: var(--swatch-size);
+    height: var(--swatch-size);
     border-radius: var(--radius-full);
     border: 2px solid transparent;
     padding: 0;
@@ -341,8 +341,8 @@
   }
 
   .accent-swatch-check {
-    width: 1.1rem;
-    height: 1.1rem;
+    width: var(--swatch-check-size);
+    height: var(--swatch-check-size);
     filter: drop-shadow(0 1px 1px rgb(0 0 0 / 35%));
   }
 
@@ -372,8 +372,8 @@
 
   .custom-accent-swatch {
     display: inline-flex;
-    width: 1.5rem;
-    height: 1.5rem;
+    width: var(--swatch-custom-size);
+    height: var(--swatch-custom-size);
     border-radius: var(--radius-sm);
     overflow: hidden;
     border: 1px solid var(--color-border);

@@ -154,6 +154,6 @@
      component scope (same pattern as `AttentionInbox`'s `:global(.open)`). */
   :global(.kind-badge) {
     text-transform: uppercase;
-    letter-spacing: 0.02em;
+    letter-spacing: var(--text-caption-tracking);
   }
 </style>

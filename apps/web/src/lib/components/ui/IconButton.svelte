@@ -124,10 +124,18 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.125rem;
-    height: 1.125rem;
+    width: var(--icon-size-lg);
+    height: var(--icon-size-lg);
   }
 
+  /* Issue #580 swept this file's `md` icon box onto `--icon-size-lg`
+     (an exact match). This compact variant's own `0.8rem` stays a plain
+     literal on purpose: it is proportioned specifically to `.ui-icon-
+     button-sm`'s own 1.5rem hit target (issue #669), not a point on the
+     `sm`/`md`/`lg` icon-size scale (that scale's own `sm` is `0.7em`,
+     text-relative — a different unit family for a different job, see
+     that token's own doc comment in `tokens.css`), and no second call
+     site shares this exact value to justify naming it. */
   .ui-icon-button-sm .ui-icon-button-icon {
     width: 0.8rem;
     height: 0.8rem;
