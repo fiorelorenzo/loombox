@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { attentionHint } from './attention';
 import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attachments';
+import {
+  agentInstructionsGetRequest,
+  agentInstructionsGetResponse,
+  agentInstructionsSetRequest,
+  agentInstructionsSetResponse,
+} from './agent-instructions';
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
 import {
@@ -337,6 +343,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitCommitRequest,
   gitCommitResponse,
   ciCheckStatus,
+  agentInstructionsGetRequest,
+  agentInstructionsGetResponse,
+  agentInstructionsSetRequest,
+  agentInstructionsSetResponse,
   ciAutoIterateStatus,
   ciAutoIterateStop,
   ping,

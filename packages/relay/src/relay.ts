@@ -1426,6 +1426,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_diff_response':
       case 'git_hunk_diff_response':
       case 'git_hunk_action_response':
+      case 'agent_instructions_get_response':
+      case 'agent_instructions_set_response':
       case 'git_commit_draft_response':
       case 'git_commit_response':
         // The owning node's reply to a client's mcp_prompt_get_request
@@ -1433,6 +1435,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // read-only file viewer), git_diff_request (issue #206's
         // working-tree diff viewer), git_hunk_diff_request/
         // git_hunk_action_request (issue #232's hunk-level stage/
+        // unstage/discard), or agent_instructions_get_request/
+        // agent_instructions_set_request (SPEC §7.18's per-project
+        // AGENTS.md/CLAUDE.md surface; issue #260) — fanned out to this
+        // session's subscribed clients exactly like fs_list_response
+        // above; the relay never opens the envelope, so it never learns
+        // which server/prompt/rendered text, file content, changed-file
+        // diff, hunk breakdown, stage/unstage/discard outcome, or
+        // instructions-file content/hash, only that something was read
+        // or applied (SPEC §8's metadata boundary). A requesting client
+        // matches its own pending request by `requestId`; any other
+        // subscribed client simply has no pending request with that id.
         // unstage/discard), or git_commit_draft_request/git_commit_request
         // (issue #233's commit workflow) — fanned out to this session's
         // subscribed clients exactly like fs_list_response above; the
@@ -2264,11 +2277,24 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'mcp_prompt_get_request':
       case 'fs_read_request':
       case 'git_hunk_action_request':
+      case 'agent_instructions_set_request':
       case 'git_commit_request':
         // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
         // mcp_prompt_get_request (Zed-parity D5-2; issue #754), its
         // #737 sibling fs_read_request (read-only file viewer), its
         // #232 sibling git_hunk_action_request (hunk-level stage/
+        // unstage/discard), and its #260 sibling
+        // agent_instructions_set_request (SPEC §7.18's per-project
+        // AGENTS.md/CLAUDE.md surface): a client asking the owning node
+        // to list a directory, render an MCP prompt, read a file, apply
+        // one hunk's stage/unstage/discard, or save an instructions file
+        // inside one of its sessions' projects — routed exactly like
+        // prompt_inject/config_option above. The relay only ever sees
+        // `sessionId`/`targetId`/`requestId` and an opaque
+        // `EncryptedEnvelope`; the requested path, which server/prompt
+        // was asked for, which hunk was touched and how, or which
+        // instructions file changed to what, never reaches the relay in
+        // the clear (SPEC §8's metadata boundary).
         // unstage/discard), and its #233 sibling git_commit_request (commit
         // what's staged with the operator's own final message): a client
         // asking the owning node to list a directory, render an MCP
@@ -2360,6 +2386,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'checkpoint_restore':
       case 'git_diff_request':
       case 'git_hunk_diff_request':
+      case 'agent_instructions_get_request':
       case 'git_commit_draft_request':
       case 'pr_open_preview_request':
       case 'pr_open_request':
@@ -2367,6 +2394,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // checkpoints (SPEC §7.20; issue #603), the session's own current
         // working-tree diff (SPEC §7.4; issue #206's diff viewer), the
         // same session's staged/unstaged hunk breakdown (issue #232's
+        // hunk-level stage/unstage/discard), its saved AGENTS.md/
+        // CLAUDE.md state (SPEC §7.18; issue #260), or previewing/
+        // confirming opening a pull request from a session's own branch
+        // (SPEC §7.14; issue #238) — routed to the owning node exactly
+        // like permission_policy_get/_set above. The relay only ever
+        // sees sessionId/requestId plus, for checkpoint_create/
+        // pr_open_request, an opaque `EncryptedEnvelope`; checkpoint_
+        // restore_preview/_restore carry only an opaque checkpointId and
+        // (for _restore) a plain confirm boolean; git_diff_request,
+        // git_hunk_diff_request, and agent_instructions_get_request
+        // carry no envelope at all (asking carries no content) — no
+        // checkpoint label, commit, diff content, hunk breakdown,
+        // instructions-file content, PR title, body, branch name, or PR
+        // URL ever reaches the relay in the clear.
         // hunk-level stage/unstage/discard), a drafted commit message for
         // the currently staged diff (issue #233's commit workflow), or
         // previewing/confirming opening a pull request from a session's
