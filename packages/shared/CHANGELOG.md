@@ -1,5 +1,62 @@
 # @loombox/shared
 
+## 0.3.0
+
+### Minor Changes
+
+- 9c20ae1: Surface failing CI checks in the attention inbox (SPEC §7.13/§7.14; issue #243)
+
+  Issue #239's CI check watcher already streams a session's latest check-run state to the client over `ci_check_status`. This wires that state into the cross-project attention inbox as a real, live `'ci_failure'` item, following the exact conventions the inbox already uses for `permission`/`awaiting_input`/`session_outcome`:
+
+  - `RelayClient` decrypts `ci_check_status` into a new per-session store and recomputes the inbox whenever it changes, same as the transcript/permission-queue stores already do. A session contributes a `'ci_failure'` item exactly while its latest known state is `'failing'` - independently of its live status, so a session can be idle/finished and have a failing check on its open PR at the same time. The item clears the instant a later poll reports anything else (`'passing'`, `'pending'`, `'unknown'`), so a check going green never leaves a stale item behind, and a flapping check never accumulates duplicates - it is always the one latest reading for that session.
+  - The item carries what's needed to act on it: the session, the failing check run names (`failingChecks`), and the PR's own URL/number (`prUrl`/`prNumber`) so a renderer can link straight to it.
+  - New `@loombox/shared` export `isFailingCiConclusion`: the same conservative "which GitHub check-run conclusions count as a failure" judgment the node's own `ci-check-watcher.ts` uses, now also available to the browser so it names the exact same failing check(s) rather than guessing independently.
+  - `AttentionInbox.svelte` names the failing check(s) in the row body instead of a bare "CI check failed", and adds a "View PR" link for a `'ci_failure'` row. `'review_request'` remains the one still-unwired extension point (needs the tracker integration work, v2).
+
+  Verified: `pnpm --filter @loombox/web exec vitest run src/lib/relay-client.test.ts src/lib/components/AttentionInbox.test.ts src/lib/components/pages/InboxPage.test.ts` (196 tests), `pnpm --filter @loombox/shared test` (24 tests), `pnpm --filter @loombox/web typecheck`, `pnpm --filter @loombox/shared typecheck`, `pnpm exec eslint` on every changed file, and the full `pnpm format:check`.
+
+- 9400cb4: Local test runner joins the PR/CI loop and the attention inbox (SPEC §7.14/§7.15; issue #247)
+
+  The runner (#245), the CI check watcher (#239), the auto-iterate loop (#246), and the inbox's `ci_failure` class (#243) existed as four separate pieces. This wires a local run into the exact same loop and the exact same inbox a remote CI result already uses, so a failing change tells one story regardless of which side observed it first.
+
+  - New wire message `run_status` (`@loombox/protocol`'s `run-status.ts`): the node's own durable per-kind (`test`/`lint`/`build`) run outcome for a session, the runner's sibling of `ci_check_status` — node-pushed, session-scoped, envelope-sealed, aggregating to `'unknown'`/`'passing'`/`'failing'`. `@loombox/shared`'s new `isFailingRunOutcome` (a run's outcome is `'fail'`/`'could_not_start'`) is the runner's own `isFailingCiConclusion` sibling, shared between the node and the browser so both name the same runs as failing.
+  - `@loombox/node`'s new `RunStatusTracker` (`run-status-tracker.ts`) is `NodeDaemon.executeRun`'s own latest-outcome memory, updated from every exit path (a policy denial, an unsafe run id, and a real `run_exit` alike) right alongside the existing `sendRunExit`, and pushed as `run_status`.
+  - A failing run also drives `CiAutoIterateController` — the SAME controller/session record a CI failure already drives, sharing one attempt count/bound per session rather than two separate loops. The real risk this issue calls out: a CI failure and a local runner failure for the SAME underlying commit must not drive two agent turns. `@loombox/node`'s new `AutoIterateDriveGate` (`auto-iterate-drive-gate.ts`) is the shared cross-source dedup both `NodeDaemon.handleCiCheckFailure` and the new `driveAutoIterateFromRunFailure` consult before ever calling `ciAutoIterateController.onFailure`, keyed on the failing commit's own head sha (`@loombox/node`'s new `workspace-head.ts`'s `resolveWorkspaceHeadSha`, the runner's own `resolveSessionBranch` sibling) — whichever source observes a given sha first drives; the other's own failure for that identical sha still updates its own status/inbox item, it just never fires a second `promptSession` turn. The gate's lifetime is tied to the controller's own active-loop lifetime (cleared alongside `reset()`/`onGreen()`/`forget()`), never CI's own shorter-lived per-poll dedup.
+  - `@loombox/web`'s `RelayClient.attentionInbox()` gets a new `'run_failure'` class — the exact sibling of `'ci_failure'` (same base `AttentionInboxItem` shape: `sessionId`/`sessionTitle`/`projectPath`/`nodeId`/`waitingSince`, plus its own `failingRuns` alongside `ci_failure`'s `failingChecks`/`prUrl`/`prNumber`), built from `run_status` the same "durable until it clears, never a second guess" way `ci_failure` is built from `ci_check_status`. Independent of `ci_failure`, `awaiting_input`, and `session_outcome`: a session can carry any combination at once. `AttentionInbox.svelte` renders it with its own `'Run'` badge.
+
+  Verified:
+
+  - `pnpm --filter @loombox/node exec vitest run src/workspace-head.test.ts src/auto-iterate-drive-gate.test.ts src/run-status-tracker.test.ts src/node-daemon-run-ci-loop.test.ts src/node-daemon-ci-auto-iterate.test.ts src/node-daemon-ci-check.test.ts src/node-daemon-test-runner.test.ts src/test-runner-process.test.ts src/test-runner-config-store.test.ts` (250 tests, real local `sh -c`/git subprocesses only, no real network)
+  - `pnpm --filter @loombox/shared exec vitest run src/run-status.test.ts` (2 tests)
+  - `pnpm exec vitest run apps/web/src/lib/relay-client.test.ts apps/web/src/lib/components/AttentionInbox.test.ts` (218 + 32 tests, real in-process relay only)
+  - `pnpm --filter @loombox/protocol typecheck`, `pnpm --filter @loombox/shared typecheck`, `pnpm --filter @loombox/node typecheck`, `pnpm --filter @loombox/relay typecheck`, `pnpm --filter @loombox/web typecheck` — all clean
+  - `pnpm exec eslint` on every changed/new file — no errors
+  - the full `pnpm format:check` — clean
+  - the full `pnpm test` (touched `@loombox/protocol`) — 445 files passed, 1 pre-existing unrelated skip, 5379 tests passed, 2 skipped, 0 failures
+
+- e087fb9: Aggregate spend-over-time view, per project and per provider (SPEC §7.9; issue #249)
+
+  `@loombox/node` persists a per-day/project/provider spend ledger (`SpendLedgerStore`), fed by the exact same `usage_update.costUsd` increase that already drives §7.16's spend-cap enforcement — one source, never two divergent cost computations. `@loombox/protocol` adds `spend_report_request`/`spend_report_response` (node-addressed by `nodeId`+`projectPath`, mirroring `tracker_snapshot_request`; the request itself carries no envelope since a date range is a query parameter, not project content), routed through `@loombox/relay`'s exhaustive message-routing table.
+
+  The per-project/per-provider grouping logic (`aggregateSpendLedgerRows`/`filterSpendLedgerRows`) now lives in `@loombox/shared` rather than `@loombox/node`, so `@loombox/web`'s new `SpendReportPanel` (mounted in the Config workbench tab) reuses the identical function the node runs server-side, rather than recomputing the rollup a second time in the browser. The panel offers a 7d/30d/90d/all-time period selector and shows a total plus per-provider breakdown; a period with nothing recorded reads as an honest "No spend recorded for this period." message, never a fabricated $0.00, matching the live session cost meter's own established convention.
+
+### Patch Changes
+
+- Updated dependencies [7b8e591]
+- Updated dependencies [edb3752]
+- Updated dependencies [d2741e2]
+- Updated dependencies [e42b8d1]
+- Updated dependencies [8948531]
+- Updated dependencies [3dcb133]
+- Updated dependencies [93c1ffd]
+- Updated dependencies [c8a9381]
+- Updated dependencies [12cc8ec]
+- Updated dependencies [9400cb4]
+- Updated dependencies [eb16820]
+- Updated dependencies [e087fb9]
+- Updated dependencies [ed2392d]
+  - @loombox/protocol@0.8.0
+
 ## 0.2.5
 
 ### Patch Changes
