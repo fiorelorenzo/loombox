@@ -78,6 +78,14 @@ branch-protection rule cannot mark the check "required"; the gate is procedural,
 CI runs on every PR and we never merge a red one, always via a feature branch + PR,
 never a direct push to `main`.
 
+One category this scoping advice does not cover: a changeset written last,
+after `pnpm format:check` already ran clean, reaches CI unformatted (three
+PRs did exactly this — issue #723). `pnpm install` installs a git hook
+(`.githooks/pre-commit`, wired via the repo's `prepare` script) that
+reformats a staged `.changeset/*.md` file with Prettier and re-stages it, so
+there's nothing to remember here either; see CONTRIBUTING.md's changeset
+section for the mechanics and the `--no-verify` bypass.
+
 ## Checking the PWA here, headless (the Mac is only for Electron)
 
 Most UX/UI work needs no Mac at all. This box has **Chrome 149 and Playwright's own

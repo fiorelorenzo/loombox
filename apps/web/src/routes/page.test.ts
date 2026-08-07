@@ -152,13 +152,11 @@ interface FakeClientScenario {
   targets?: TargetListEntry[];
   connectedAccounts?: ConnectedAccount[];
   /**
-   * Typed with the protocol's wider `SessionStatusV1`, not
-   * `@loombox/providers-core`'s five-value `AcpSessionStatus`, for the exact
-   * reason `+page.svelte`'s own `selectedSessionStatus` documents: the map
-   * mirrors `client.statusFor(id)` but the wire value it stores unchecked can
-   * also be `'queued'`/`'starting'`/`'disconnected'` (issues #252, #516, #702),
-   * and issue #730's own states are two of those. A scenario has to be able to
-   * express what the node really sends.
+   * Typed with the protocol's `SessionStatusV1` — `@loombox/providers-core`'s
+   * `AcpSessionStatus` is that same type now (issue #636: an actual
+   * re-export, not a second, narrower list), so a scenario expressing
+   * `'queued'`/`'starting'`/`'disconnected'` (issues #252, #516, #702) is
+   * exactly what a real `RelayClient.statusFor` can hold, nothing wider.
    */
   sessionStatuses?: Record<string, SessionStatusV1>;
   /** Parallels `sessionStatuses` (issue #730) — the reason behind a scenario session's 'error' status, when it has one. */
@@ -255,13 +253,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     interruptTurn: vi.fn(),
     setConfigOption: vi.fn(),
     statusFor: (id: string) =>
-      // The seam the app itself lives with: `statusFor` is declared over the
-      // narrower five-value union while the wire really pushes eight, so the
-      // scenario's wider value is cast here exactly the way `+page.svelte`
-      // casts it back out again.
-      makeStore<AcpSessionStatus | undefined>(
-        scenario.sessionStatuses?.[id] as AcpSessionStatus | undefined,
-      ),
+      makeStore<AcpSessionStatus | undefined>(scenario.sessionStatuses?.[id]),
     statusReasonFor: (id: string) =>
       makeStore<string | undefined>(scenario.sessionStatusReasons?.[id]),
     statusUpdatedAtFor: (id: string) =>
@@ -1039,16 +1031,14 @@ describe('a session with no live agent behind it (issue #730)', () => {
     );
   });
 
-  it('a starting session disables the composer with a starting reason, shows a starting notice, and never appears in the attention inbox', async () => {
+  it('a starting session disables the composer with a starting reason, shows a starting notice, reports itself in the row (issue #636) — never appears in the attention inbox', async () => {
     mountCockpit({
       sessions: [makeSession({ id: 'sess_1', title: 'Fresh session' })],
       sessionStatuses: { sess_1: 'starting' },
       transcripts: {
         sess_1: {
           ...createTranscriptState(),
-          // Same seam as `sessionStatuses` above: the reducer stores whatever
-          // the wire sent, and the wire sends eight states, not five.
-          status: 'starting' as AcpSessionStatus,
+          status: 'starting',
           statusUpdatedAt: 't1',
         },
       },
@@ -1066,6 +1056,15 @@ describe('a session with no live agent behind it (issue #730)', () => {
     expect(await screen.findByTestId('session-agentless-notice')).toBeTruthy();
     expect(screen.queryByTestId('inbox-count')).toBeNull();
     expect(screen.queryByTestId('session-attention-dot')).toBeNull();
+
+    // Issue #636's own acceptance: a `'starting'` session reports as
+    // ITSELF in the row — its own dot tone/label — never mapped onto
+    // `'working'`, `'awaiting_input'`, or the neutral "no status" default
+    // a narrower `AcpSessionStatus` used to force this onto.
+    const row = screen.getByTestId('session-row-item');
+    const dot = within(row).getByTestId('ui-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe('Starting…');
+    expect(dot.getAttribute('data-tone')).toBe('info');
   });
 
   it('a session with no status yet (e.g. right after a reload) keeps the composer usable, unlike a positively-known bad state — absence of information is not proof there is nothing to send to', async () => {

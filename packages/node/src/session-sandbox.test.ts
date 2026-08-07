@@ -347,3 +347,105 @@ describe('resolveSessionSandbox — real end-to-end containment', () => {
     },
   );
 });
+
+/**
+ * The two acceptance proofs issue #831 itself asks for: reuse, MEASURED
+ * rather than merely asserted from file presence (a stale/leftover file
+ * would pass a presence check without proving anything was actually
+ * skipped); and containment, extended to cover the one thing this issue
+ * adds that {@link resolveSessionSandbox}'s existing "real end-to-end
+ * containment" suite above never had to consider — a SECOND writable
+ * mount, shared across otherwise-unrelated sessions on purpose (see
+ * `./npm-cache.ts`'s doc comment for the sharing-scope decision).
+ */
+describe('resolveSessionSandbox — npm/npx cache mount (issue #831)', () => {
+  it.skipIf(!bwrapUsable)(
+    'a second, independent sandboxed session (a different worktree — a different session) given the SAME cache mount skips work the first session already paid for, measured via real elapsed time, not asserted from file presence alone',
+    async () => {
+      const cacheDir = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-cache-'));
+      const worktreeA = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-session-a-'));
+      const worktreeB = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-session-b-'));
+      try {
+        // Stands in for "npx downloads and extracts the ACP bridge
+        // package": real, measurable work (a real `sleep`, not a mocked
+        // clock) gated on the package not already being in the cache —
+        // exactly npm's own "cache hit skips the network fetch" shape.
+        const markerPath = join(cacheDir, 'pkg', 'marker');
+        const populateOrSkip = `[ -f "${markerPath}" ] || { mkdir -p "${join(cacheDir, 'pkg')}" && sleep 0.5 && touch "${markerPath}"; }`;
+
+        const sessionA = resolveSessionSandbox({
+          workspacePath: worktreeA,
+          extraReadWriteMounts: [cacheDir],
+        });
+        if (!sessionA.required || !sessionA.capability.available) return;
+        const wrappedA = sessionA.wrapSpawnConfig!({
+          command: '/bin/sh',
+          args: ['-c', populateOrSkip],
+        });
+        const startA = Date.now();
+        const resultA = spawnSync(wrappedA.command, wrappedA.args, { timeout: 10_000 });
+        const elapsedA = Date.now() - startA;
+        expect(resultA.status).toBe(0);
+        // First session: no cache hit yet, really paid the ~500ms cost.
+        expect(elapsedA).toBeGreaterThanOrEqual(450);
+
+        const sessionB = resolveSessionSandbox({
+          workspacePath: worktreeB,
+          extraReadWriteMounts: [cacheDir],
+        });
+        const wrappedB = sessionB.wrapSpawnConfig!({
+          command: '/bin/sh',
+          args: ['-c', populateOrSkip],
+        });
+        const startB = Date.now();
+        const resultB = spawnSync(wrappedB.command, wrappedB.args, { timeout: 10_000 });
+        const elapsedB = Date.now() - startB;
+        expect(resultB.status).toBe(0);
+        // Second session: a DIFFERENT worktree (a different session)
+        // sharing only the cache mount really skipped the sleep — the
+        // measured proof of reuse issue #831 asks for.
+        expect(elapsedB).toBeLessThan(250);
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+        await rm(worktreeA, { recursive: true, force: true });
+        await rm(worktreeB, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!bwrapUsable)(
+    'the cache mount cannot become a channel out of confinement: a symlink planted inside it (as a different, malicious/compromised session sharing the same cache could) pointing at an arbitrary host path is still unreachable from inside the sandbox',
+    async () => {
+      const cacheDir = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-escape-cache-'));
+      const worktree = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-escape-session-'));
+      const secretDir = await mkdtemp(join(tmpdir(), 'loombox-npm-cache-e2e-escape-secret-'));
+      try {
+        await writeFile(join(secretDir, 'secret.txt'), 'do not leak\n', 'utf8');
+        await symlink(join(secretDir, 'secret.txt'), join(cacheDir, 'escape-link'));
+
+        const { required, wrapSpawnConfig, capability } = resolveSessionSandbox({
+          workspacePath: worktree,
+          extraReadWriteMounts: [cacheDir],
+        });
+        // Honest, not asserted: only proceed with the real-spawn assertion
+        // if this host actually reports itself sandboxable.
+        if (!required || !capability.available) return;
+
+        const wrapped = wrapSpawnConfig!({
+          command: '/bin/sh',
+          args: ['-c', `cat "${join(cacheDir, 'escape-link')}"`],
+        });
+        const result = spawnSync(wrapped.command, wrapped.args, {
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).not.toContain('do not leak');
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+        await rm(worktree, { recursive: true, force: true });
+        await rm(secretDir, { recursive: true, force: true });
+      }
+    },
+  );
+});

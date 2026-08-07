@@ -6,6 +6,59 @@ import path from 'node:path';
 import { LocalProcessTransport } from './local-process-transport';
 
 /**
+ * How long a TERM'd process group gets to exit on its own before this
+ * escalates to KILL, and how often it polls while waiting — mirrors
+ * `buildStopScript`'s own bounded wait for the production `setsid` stop
+ * path (issue #642/#645): 20 polls of 100ms.
+ */
+const GROUP_TERM_WAIT_MS = 2000;
+const GROUP_POLL_INTERVAL_MS = 100;
+
+/**
+ * Signals the WHOLE process group `pid` leads — not just `pid` itself —
+ * with TERM, gives it a bounded window to exit on its own, then escalates
+ * to KILL for anything still alive. `setsid` (the only mode this sandbox
+ * ever records a pidfile for) makes the launched process a session
+ * leader, so its pid is also its process-group id: `process.kill(-pid,
+ * ...)` (note the leading dash) reaches everything it forked, matching
+ * what `buildStopScript`'s `setsid` branch does for the production stop
+ * path (issue #642/#645). A bare `process.kill(pid, 'SIGKILL')` against
+ * the leader alone — this function's pre-#646 shape — reaches only the
+ * launcher; any child it forked keeps running, which is exactly the leak
+ * issue #518 exists to prevent. The negative-pid form only ever reaches
+ * `pid`'s own group, so an unrelated process outside it (a different
+ * pgid) is never touched, however many processes this sweep is reaping.
+ */
+async function killProcessGroup(pid: number): Promise<void> {
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    return; // Group already empty (e.g. a test that already called `runner.stop()` itself) — nothing left to kill.
+  }
+
+  let alive = true;
+  const deadline = Date.now() + GROUP_TERM_WAIT_MS;
+  while (alive && Date.now() < deadline) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, GROUP_POLL_INTERVAL_MS);
+    await promise;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+  }
+
+  if (alive) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // Exited between the last poll and this call.
+    }
+  }
+}
+
+/**
  * Kills every real process a `RemoteProcessRunner` in `setsid` mode has left
  * running under `home`'s `.loombox/remote-sessions` (`<baseDir>/<runId>/pid`,
  * see `remote-process-runner.ts`'s `paths()`), then removes `home` itself.
@@ -17,7 +70,8 @@ import { LocalProcessTransport } from './local-process-transport';
  * `LocalProcessTransport` leaks that process on every run, pass or fail,
  * unless something else reaps it (issue #518). Sweeping every pidfile under
  * `home` rather than tracking individual runners/handles means this stays
- * correct even when a test throws before its own assertions run.
+ * correct even when a test throws before its own assertions run, or spawns
+ * outside the runner entirely.
  */
 async function reapDetachedRemoteSessions(home: string): Promise<void> {
   const baseDir = path.join(home, '.loombox', 'remote-sessions');
@@ -40,12 +94,7 @@ async function reapDetachedRemoteSessions(home: string): Promise<void> {
           return; // never reached `setsid ... &`, or already reaped.
         }
         if (!Number.isInteger(pid) || pid <= 0) return;
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {
-          // Already exited (e.g. a test that already called `runner.stop()`
-          // itself) — nothing left to kill.
-        }
+        await killProcessGroup(pid);
       }),
   );
 }

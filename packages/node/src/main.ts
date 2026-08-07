@@ -293,7 +293,10 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
     // `enabled: true` through on a non-Linux host too: `resolveSessionSandbox`
     // itself is the platform gate (a no-op off Linux today, SPEC §7.17's
     // documented weaker macOS fallback not being built yet), not this flag.
-    sessionSandbox: { enabled: config.sandboxEnabled },
+    sessionSandbox: {
+      enabled: config.sandboxEnabled,
+      npmCacheEnabled: config.sandboxNpmCacheEnabled,
+    },
     // Same convention as `identityStore` above: MCP config/secret storage
     // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
     // silently defaulting to `~/.loombox/node` regardless of what the
