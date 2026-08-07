@@ -6862,4 +6862,161 @@ describe('NodeDaemon: session fork (design spec `2026-08-05-zed-parity-decisions
     const after = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
     expect(after.sessions.length).toBe(before.sessions.length);
   });
+  it('forks a PAST session — no live agent behind it anymore, e.g. after this node restarted — straight from its persisted on-disk transcript (issue #264)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-past-session';
+
+    const beforeRestart = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-past',
+      deviceId: 'device-node-fork-past-before',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // Explicit stateDir (unlike this suite's other tests, which lean on
+      // AgentSupervisor's real-homedir default): the whole point of this
+      // test is that a LATER supervisor instance, after "the restart"
+      // below, reads the exact on-disk transcript THIS one wrote — same
+      // convention `nodeStateDir` itself already gives `sessions.json`.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+
+    const source = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
+    const sourceKey = await derivePhoneSessionKey(amk, accountId, source.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-past',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: source.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await beforeRestart.promptSession(source.id, 'first turn');
+    const [turn1Chunk] = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      1,
+    );
+    const turn1Id = turn1Chunk!.turnId!;
+
+    // "The restart" (same idiom as the #702 reattach suite above): tears
+    // down every bridge/agent process this instance held, never touching
+    // `sessions.json` or the on-disk transcript log — exactly like a real
+    // process exit. The source session's own record survives on disk;
+    // nothing in THIS process remembers a live agent for it anymore.
+    beforeRestart.close();
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-past', // same node identity as before the restart
+      deviceId: 'device-node-fork-past-after',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+    await waitForConnected(node);
+
+    // Forking has nothing live to read from — `source` reloaded
+    // 'disconnected' (issue #515), no bridge exists for it in this fresh
+    // process — yet it succeeds by reading the source's persisted
+    // transcript straight off disk via its recorded `acpSessionId`, the
+    // exact fallback `forkSessionInternal` takes when `this.bridges` has
+    // nothing for the source.
+    const fork = await node.forkSession(source.id, turn1Id);
+
+    expect(fork.id).not.toBe(source.id);
+    expect(fork.worktreePath).not.toBe(source.worktreePath);
+    expect(fork.target).toBe('local');
+    expect(fork.provider).toBe(source.provider);
+
+    const forkKey = await derivePhoneSessionKey(amk, accountId, fork.id);
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: fork.id,
+      sinceSeq: 0,
+    });
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: fork.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === fork.id,
+    );
+
+    // The fork's starting context matches what the fork promised: exactly
+    // turn 1's own output, read back off the SAME on-disk transcript this
+    // process never lived through as a live turn.
+    const forkChunks = await waitForDecryptedKinds(
+      phone,
+      fork.id,
+      forkKey,
+      ['agent_message_chunk'],
+      2,
+    );
+    expect(forkChunks.every((chunk) => chunk.turnId === turn1Id)).toBe(true);
+    expect(forkChunks.map((chunk) => chunk.text).join('')).toBe('Hello world');
+
+    // The fork behaves like any other session from here: promptable
+    // immediately, diverging with genuinely new output.
+    await node.promptSession(fork.id, 'diverge from here');
+    const [forkTurnEnded] = await waitForDecryptedKinds(phone, fork.id, forkKey, ['turn_ended'], 1);
+    expect(forkTurnEnded!.stopReason).toBe('end_turn');
+  });
+
+  it('refuses to fork a past session whose worktree no longer exists on disk, with the reason named rather than a raw git failure (issue #264)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-past-worktree-gone';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-worktree-gone',
+      deviceId: 'device-node-fork-worktree-gone',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+
+    const source = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-worktree-gone',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: source.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await node.promptSession(source.id, 'only turn');
+    const sourceKey = await derivePhoneSessionKey(amk, accountId, source.id);
+    const [turn1Chunk] = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      1,
+    );
+    const turn1Id = turn1Chunk!.turnId!;
+
+    // Simulates a user manually cleaning up `.loombox/worktrees/*` while
+    // the session's own record (and its persisted transcript) is still
+    // around — the source's agent has already exited on its own by the
+    // time this test forks it, matching the "past session" case even
+    // without a node restart.
+    await rm(source.worktreePath, { recursive: true, force: true });
+
+    await expect(node.forkSession(source.id, turn1Id)).rejects.toThrow(
+      /worktree no longer exists/i,
+    );
+  });
 });

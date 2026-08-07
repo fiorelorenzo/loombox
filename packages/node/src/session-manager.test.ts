@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -540,6 +540,41 @@ describe('SessionManager', () => {
         /workInPlace/i,
       );
     });
+
+    it('rejects forking a session whose project folder no longer exists on disk (issue #264: a past session can outlive its own workspace)', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await rm(repoPath, { recursive: true, force: true });
+
+      await expect(manager.forkSession(source.id, { provider: 'claude' })).rejects.toThrow(
+        /project folder no longer exists/i,
+      );
+    });
+
+    it('rejects forking a session whose own worktree was removed manually, even though its project folder and branch are still there (issue #264)', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await rm(source.worktreePath, { recursive: true, force: true });
+
+      await expect(manager.forkSession(source.id, { provider: 'claude' })).rejects.toThrow(
+        /worktree no longer exists/i,
+      );
+    });
+
+    it('rejects forking a session whose branch was deleted out from under its worktree entry (issue #264)', async () => {
+      const source = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      await execFileAsync('git', ['worktree', 'remove', '--force', source.worktreePath], {
+        cwd: repoPath,
+      });
+      await execFileAsync('git', ['branch', '-D', source.branch], { cwd: repoPath });
+      // `git worktree remove` deletes the directory too, but this test is
+      // isolating the BRANCH refusal specifically — recreate a plain
+      // (non-git) directory at the same path so the earlier worktree-exists
+      // check passes and the branch check is what actually fires.
+      await mkdir(source.worktreePath, { recursive: true });
+
+      await expect(manager.forkSession(source.id, { provider: 'claude' })).rejects.toThrow(
+        /branch "[^"]+" no longer exists/i,
+      );
+    });
   });
 
   describe('lifecycle', () => {
@@ -649,6 +684,26 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setAcpSessionId (issue #264)', () => {
+    it('a fresh session starts with no ACP session id of its own', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      expect(session.acpSessionId).toBeUndefined();
+    });
+
+    it('records it, mutating the record in place', async () => {
+      const session = await manager.createSession({ projectPath: repoPath, provider: 'claude' });
+      const updated = manager.setAcpSessionId(session.id, 'acp-session-abc');
+      expect(updated.acpSessionId).toBe('acp-session-abc');
+      expect(updated).toBe(session);
+    });
+
+    it('rejects an unknown session id', () => {
+      expect(() => manager.setAcpSessionId('does-not-exist', 'acp-session-abc')).toThrow(
+        /no session/i,
+      );
+    });
+  });
+
   describe('persistence (issue #515)', () => {
     let stateDir: string;
 
@@ -719,6 +774,18 @@ describe('SessionManager', () => {
       // Reload marks it 'disconnected' (issue #515), but the cap itself is
       // just a plain field on the record — untouched by that rewrite.
       expect(second.getSession(created.id)?.spendCapUsd).toBe(15);
+    });
+
+    it("a session's ACP session id survives a restart — this is what lets a later fork of an ended session still find its transcript on disk (issue #264)", async () => {
+      const first = new SessionManager({ store: new SessionStore({ stateDir }) });
+      const created = await first.createSession({ projectPath: repoPath, provider: 'claude' });
+      first.setAcpSessionId(created.id, 'acp-session-xyz');
+
+      const second = new SessionManager({ store: new SessionStore({ stateDir }) });
+      // Reload marks it 'disconnected' (issue #515), but the ACP session
+      // id itself is just a plain field on the record — untouched by that
+      // rewrite, exactly like `spendCapUsd` above.
+      expect(second.getSession(created.id)?.acpSessionId).toBe('acp-session-xyz');
     });
   });
 });
