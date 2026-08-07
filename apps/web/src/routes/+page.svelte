@@ -58,6 +58,7 @@
   import type { QueuedPrompt } from '$lib/outbox';
   import { isThoughtStillThinking } from '$lib/thinking';
   import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
+  import { searchTranscript } from '$lib/transcript/search';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -157,6 +158,7 @@
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import StatusBar, { type TargetHealthDotState } from '$lib/components/StatusBar.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
+  import TranscriptSearchBar from '$lib/components/TranscriptSearchBar.svelte';
   import TranscriptTimeline, {
     type TranscriptJumpTarget,
   } from '$lib/components/TranscriptTimeline.svelte';
@@ -747,6 +749,56 @@
   let transcript = $state<TranscriptState | undefined>(undefined);
   /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
   let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
+  /**
+   * In-transcript search (SPEC.md §7.19; issues #262/#263). `searchTranscript`
+   * (`$lib/transcript/search.ts`) runs over `transcript.items`'s FULL
+   * array, never just whatever `TranscriptTimeline`'s own windowing
+   * (issue #755) currently has mounted — see that module's own doc
+   * comment for why a windowed scan would silently under-count.
+   * `transcriptSearchOpen` gates both the bar's visibility and whether
+   * `transcriptSearchMatches` computes anything at all, so closing it
+   * drops the highlight and the (otherwise pointless) per-keystroke
+   * recompute together.
+   */
+  let transcriptSearchOpen = $state(false);
+  let transcriptSearchQuery = $state('');
+  /** 0-based index into `transcriptSearchMatches`; meaningless while it's empty. */
+  let transcriptSearchActiveIndex = $state(0);
+
+  const transcriptSearchMatches = $derived(
+    transcriptSearchOpen ? searchTranscript(transcript?.items ?? [], transcriptSearchQuery) : [],
+  );
+
+  /** The item id `transcriptSearchLastJumpItemId` last forced into `TranscriptTimeline`'s mounted window — plain bookkeeping (mirrors that component's own `previousLeadPx`/`previousScrollInput`), not `$state`: nothing renders off it directly. */
+  let transcriptSearchLastJumpItemId = '';
+
+  /**
+   * Keeps the active match in range as the list changes size, and forces
+   * whichever item it now points at into `TranscriptTimeline`'s mounted
+   * window (the same `TranscriptJumpTarget` mechanism issue #740 shipped
+   * for "jump to this file's diff") — the acceptance bar for this
+   * feature: a match outside the rendered window still gets navigated to,
+   * not just counted. Only bumps the jump token when the target ITEM
+   * actually changes, not on every keystroke that still resolves to the
+   * same item — re-triggering `scrollIntoView` on an already-in-view row
+   * for every added character would be exactly the jitter a real find bar
+   * never has.
+   */
+  $effect(() => {
+    const matches = transcriptSearchMatches;
+    if (matches.length === 0) {
+      transcriptSearchActiveIndex = 0;
+      transcriptSearchLastJumpItemId = '';
+      return;
+    }
+    const clampedIndex = Math.min(transcriptSearchActiveIndex, matches.length - 1);
+    if (clampedIndex !== transcriptSearchActiveIndex) transcriptSearchActiveIndex = clampedIndex;
+    const targetId = matches[clampedIndex]!.itemId;
+    if (targetId !== transcriptSearchLastJumpItemId) {
+      transcriptSearchLastJumpItemId = targetId;
+      transcriptJumpTarget = { id: targetId, token: (transcriptJumpTarget?.token ?? 0) + 1 };
+    }
+  });
   let reviewChangesOpen = $state(false);
   let permissionQueue = $state<PermissionQueueState>(createPermissionQueueState());
   let configOptions = $state<AcpConfigOption[]>([]);
@@ -2201,6 +2253,29 @@
     transcriptJumpTarget = { id: toolCallId, token: (transcriptJumpTarget?.token ?? 0) + 1 };
   }
 
+  /** Opens the in-transcript search bar (SPEC.md §7.19; issues #262/#263) — the `search-transcript` registry action's handler, reachable via `Mod+F` or the command palette (no separate visible trigger in this iteration — see this PR's description). `TranscriptSearchBar`'s own autofocus takes it from there. */
+  function openTranscriptSearch(): void {
+    transcriptSearchOpen = true;
+  }
+
+  /** Closes the bar and drops the query — a fresh open always starts blank, mirroring `CommandPalette`'s own "no memory between openings" convention. */
+  function closeTranscriptSearch(): void {
+    transcriptSearchOpen = false;
+    transcriptSearchQuery = '';
+  }
+
+  function transcriptSearchSetQuery(query: string): void {
+    transcriptSearchQuery = query;
+  }
+
+  /** Wraps in both directions — the same "Enter past the last match goes back to the first" convention a browser's own find bar uses. A no-op with zero matches (there is nothing to step through). */
+  function transcriptSearchStep(direction: 1 | -1): void {
+    const count = transcriptSearchMatches.length;
+    if (count === 0) return;
+    transcriptSearchActiveIndex =
+      (((transcriptSearchActiveIndex + direction) % count) + count) % count;
+  }
+
   function openReviewChanges(): void {
     reviewChangesOpen = true;
   }
@@ -2221,6 +2296,12 @@
   $effect(() => {
     void selectedSessionId;
     canvasTabs.reset();
+  });
+
+  /** A new session's transcript has nothing to do with whatever the previous one's search bar was showing (same "a new session starts clean" convention `canvasTabs.reset()` above and `TranscriptTimeline`'s own `sessionKey` reset already use) — closes the bar rather than leaving it open against the wrong session's content. */
+  $effect(() => {
+    void selectedSessionId;
+    closeTranscriptSearch();
   });
 
   /** Marks any open file tab dirty once the agent's own edit lands on its path (issue #737's acceptance line) — see `CanvasTabsState.syncDirty`'s own doc comment for the transcript-position watermark this compares against. */
@@ -2446,6 +2527,7 @@
       configControlsExpanded = true;
       configBarPopoverOpen = true;
     },
+    openTranscriptSearch,
   };
 
   /** SPEC §7.3 "Keyboard & command palette" (issue #132) — a pure view over `actionRegistry` (issue #758): every entry whose `isAvailable` predicate accepts `actionContext` becomes a row, so the palette never lists something that would no-op if picked right now. */
@@ -4307,6 +4389,17 @@
                   {/if}
                 </div>
               {/if}
+              {#if transcriptSearchOpen}
+                <TranscriptSearchBar
+                  query={transcriptSearchQuery}
+                  activeIndex={transcriptSearchActiveIndex}
+                  matchCount={transcriptSearchMatches.length}
+                  onQueryChange={transcriptSearchSetQuery}
+                  onNext={() => transcriptSearchStep(1)}
+                  onPrevious={() => transcriptSearchStep(-1)}
+                  onClose={closeTranscriptSearch}
+                />
+              {/if}
               <TranscriptTimeline
                 sessionKey={selectedSessionId}
                 items={transcript?.items ?? []}
@@ -4318,6 +4411,8 @@
                 onFork={narrowViewport ? undefined : forkSessionFromTurn}
                 {forkingTurnId}
                 onOpenFile={openFileTab}
+                searchQuery={transcriptSearchQuery}
+                activeSearchItemId={transcriptSearchMatches[transcriptSearchActiveIndex]?.itemId}
               />
 
               <div class="canvas-footer">

@@ -242,7 +242,7 @@ describe('AttentionInbox: session-outcome class (issue #167, SPEC §7.13)', () =
   });
 });
 
-describe('AttentionInbox: CI-failure and review-request classes are modeled extension points (issue #167, v2-blocked)', () => {
+describe('AttentionInbox: ci_failure is live (issue #243); review_request remains a modeled extension point', () => {
   it('renders both classes with their own badge and needs-attention label, and an Open action, with no permission card or reply composer', async () => {
     const onOpenSession = vi.fn();
     render(AttentionInbox, {
@@ -269,6 +269,59 @@ describe('AttentionInbox: CI-failure and review-request classes are modeled exte
 
     await fireEvent.click(within(rows[0]).getByTestId('attention-inbox-open'));
     expect(onOpenSession).toHaveBeenCalledWith('sess-e');
+  });
+});
+
+describe('AttentionInbox: ci_failure carries actionable detail (issue #243)', () => {
+  const wiredCiFailureItem: AttentionInboxItem = {
+    kind: 'ci_failure',
+    sessionId: 'sess-g',
+    sessionTitle: 'Add CI job',
+    projectPath: '/proj-g',
+    nodeId: 'node-g',
+    waitingSince: 6,
+    prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+    prNumber: 12,
+    failingChecks: ['test (unit)', 'lint'],
+  };
+
+  it('names the failing check(s) in the row body instead of a bare "CI check failed"', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [wiredCiFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.getByText('CI check failed: test (unit), lint')).toBeTruthy();
+  });
+
+  it('links straight to the PR the check is failing on', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [wiredCiFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const link = screen.getByTestId('attention-inbox-ci-pr-link') as HTMLAnchorElement;
+    expect(link.href).toBe('https://github.com/fiorelorenzo/loombox/pull/12');
+    expect(link.textContent).toBe('View PR #12');
+    expect(link.target).toBe('_blank');
+  });
+
+  it('renders no PR link when the item has no prUrl yet', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [ciFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.queryByTestId('attention-inbox-ci-pr-link')).toBeNull();
   });
 });
 

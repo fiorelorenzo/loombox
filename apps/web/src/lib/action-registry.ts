@@ -101,6 +101,8 @@ export interface ActionHandlers {
   openSettings: () => void;
   /** Opens `ConfigBar`'s "model, thinking and mode" popover (issue #759, reaching the one consolidated control E1-2 already settled in v8 rather than proposing a new one) — expands the composer's collapsed picker row first on a narrow viewport, where the trigger is otherwise not in the DOM at all (`configControlsExpanded`). */
   openConfigPopover: () => void;
+  /** Opens the in-transcript search bar (SPEC.md §7.19; issues #262/#263) — `TranscriptSearchBar.svelte`'s own autofocus takes it from there. */
+  openTranscriptSearch: () => void;
 }
 
 export interface ActionDefinition {
@@ -320,6 +322,27 @@ export const actionRegistry: ActionDefinition[] = [
     shortcut: 'Mod+,',
     isAvailable: () => true,
     run: (handlers) => handlers.openSettings(),
+  },
+  /**
+   * SPEC.md §7.19; issues #262/#263. `Mod+F` — a browser tab's own "find
+   * in page" is one of the few chords a page CAN actually claim with
+   * `preventDefault()` (unlike `Mod+N`/`Mod+T`/`Mod+W`'s hard chrome-level
+   * reservations a few rows up in this file), and it is exactly the
+   * gesture a reader already reaches for: `TranscriptTimeline.svelte`'s
+   * own top doc comment names this precisely — native find only ever
+   * matched whatever issue #755's windowing happened to have mounted, and
+   * does nothing to restore that; this action supersedes it with a
+   * client-side search that never has that gap. Gated on
+   * `sessionSelected` alone (not e.g. `hasProjects`): the bar itself
+   * reads directly off `transcript?.items`, so it is exactly as
+   * available as the transcript view it searches.
+   */
+  {
+    id: 'search-transcript',
+    label: 'Search transcript',
+    shortcut: 'Mod+F',
+    isAvailable: (context) => context.sessionSelected,
+    run: (handlers) => handlers.openTranscriptSearch(),
   },
 ];
 

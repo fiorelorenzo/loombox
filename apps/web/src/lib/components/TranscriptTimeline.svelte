@@ -34,14 +34,22 @@
    * moves, and the same effect nudges `scrollTop` by that exact delta so
    * whatever the reader is looking at doesn't jump under them.
    *
-   * Accepted consequence (issue #755's second acceptance criterion):
-   * native browser find (Ctrl/Cmd+F) can only match rows currently
-   * mounted, not the whole transcript — SPEC.md §7.19/§7.24's own planned
-   * in-app search (issues #203/#263) is designed against the reducer's
-   * event model rather than the DOM for exactly this reason and is
-   * unaffected; this component does nothing to restore native find, on
-   * purpose.
+   * Accepted, narrower consequence of the same windowing (issue #755's
+   * second acceptance criterion): native browser find (Ctrl/Cmd+F) can
+   * only match rows currently mounted, not the whole transcript. This
+   * component does nothing to restore THAT — but SPEC.md §7.19's own
+   * in-app search (issues #262/#263) no longer has the same gap: it runs
+   * against `$lib/transcript/search.ts`'s `searchTranscript` over the
+   * FULL `items` array (never the DOM), and `searchQuery`/
+   * `activeSearchItemId` below only paint whatever of those matches this
+   * component currently has mounted — a match outside the window still
+   * counts and is still reachable, via the exact same `jumpTarget`
+   * mechanism `TranscriptJumpTarget` already documents below.
    */
+  import {
+    applyTranscriptSearchHighlights,
+    clearTranscriptSearchHighlights,
+  } from '$lib/transcript/search-highlight';
   import {
     computeToolCallNesting,
     type PendingPermissionRequest,
@@ -83,6 +91,10 @@
     forkingTurnId?: string;
     /** Opens a file in the canvas tab strip (issue #737's B2-2) — forwarded to `ToolCallRow`'s own `onOpenFile`, on down to whichever tool card actually renders a diff. Omitted renders no "Open" affordance on any diff card in this timeline. */
     onOpenFile?: (path: string) => void;
+    /** The active search query (issues #262/#263), painted as CSS Custom Highlight API highlights over whatever mounted row currently has matching text — see `$lib/transcript/search-highlight.ts`'s own doc comment for why this never touches the row's actual DOM structure. `undefined`/empty clears every highlight this component owns. */
+    searchQuery?: string;
+    /** The item id of the search match the reader is currently navigated to, if any (`+page.svelte`'s active match) — painted with the stronger of the two named highlights. Meaningless without `searchQuery`. */
+    activeSearchItemId?: string;
   }
 
   const {
@@ -96,6 +108,8 @@
     onFork,
     forkingTurnId,
     onOpenFile,
+    searchQuery = '',
+    activeSearchItemId,
   }: Props = $props();
 
   /**
@@ -119,6 +133,10 @@
     void sessionKey;
     win.reset();
     following = true;
+    // A new session's rows haven't mounted yet — never let the outgoing
+    // session's highlights flash over whatever the new one's transcript
+    // draws first.
+    clearTranscriptSearchHighlights();
   });
 
   $effect(() => {
@@ -128,6 +146,28 @@
   const visibleItems = $derived(
     win.range.start >= 0 ? items.slice(win.range.start, win.range.end + 1) : [],
   );
+
+  /**
+   * Repaints transcript search highlights (issues #262/#263) on any
+   * change to what this component actually has mounted (a new `items`
+   * reference, a scroll that moves `win.range`, a just-measured row
+   * trading its estimate for a real height) as well as on the query/
+   * active-match themselves — reading `visibleItems` alone covers the
+   * first three in one dependency, since it already recomputes from both
+   * `items` and `win.range`. See `$lib/transcript/search-highlight.ts`'s
+   * own doc comment for why this never reuses a character offset and
+   * instead re-finds the query live against whatever text is really
+   * mounted right now.
+   */
+  $effect(() => {
+    void visibleItems;
+    applyTranscriptSearchHighlights(containerEl, searchQuery, activeSearchItemId);
+  });
+
+  /** Never leaves a stale highlight painted once this component itself unmounts (e.g. the canvas switches away from the transcript tab entirely) — mirrors `MessageItem.svelte`'s own mount-once/cleanup-on-unmount `$effect` shape. */
+  $effect(() => {
+    return () => clearTranscriptSearchHighlights();
+  });
 
   /**
    * Subagent/nested-tool-call tree rendering (issue #200; SPEC.md §7.24).

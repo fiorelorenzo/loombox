@@ -1561,6 +1561,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // conclusion, or failure output.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'ci_auto_iterate_status':
+        // The owning node's current auto-iterate-until-green loop state
+        // for a session (SPEC §7.14/§7.15; issue #246) — fanned out
+        // exactly like ci_check_status above; the relay never opens the
+        // envelope, so it never sees an attempt's commit sha or why the
+        // loop stopped.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'lease_request':
         // SPEC §9; issues #82/#104: a session is owned by a node, never a
         // client — only a node connection ever sends this.
@@ -2361,6 +2369,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // sees sessionId/targetId/runId (and, for run_start, requestId)
         // plus an opaque `EncryptedEnvelope`; which command kind ran never
         // reaches the relay in the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'ci_auto_iterate_stop':
+        // A client stopping a session's auto-iterate-until-green loop
+        // right now (SPEC §7.14/§7.15; issue #246) — routed to the
+        // owning node exactly like run_cancel above. Envelope-less: the
+        // relay only ever sees sessionId, never why the loop was
+        // stopped (that's the resulting ci_auto_iterate_status push's
+        // own sealed envelope).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {
