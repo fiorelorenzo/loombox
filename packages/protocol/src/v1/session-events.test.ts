@@ -60,6 +60,17 @@ describe('sessionStatusEventV1', () => {
     expect(result.success && result.data.reason).toBe('Spend cap reached: $12.50 of $10.00');
   });
 
+  it('accepts a "reason" alongside a mid-session "exited" (issue #271: the exit code a stalled-looking session\'s own status can now say)', () => {
+    const result = sessionStatusEventV1.safeParse({
+      kind: 'session_status',
+      status: 'exited',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      reason: 'agent process exited (exit code 1)',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.reason).toBe('agent process exited (exit code 1)');
+  });
+
   it('parses fine with "reason" omitted (every status predating issue #730, and every non-error status)', () => {
     const result = sessionStatusEventV1.safeParse({
       kind: 'session_status',

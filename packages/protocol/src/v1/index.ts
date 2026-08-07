@@ -722,6 +722,21 @@ export {
 } from './target-lifecycle';
 
 export type {
+  NodeSelfUpdateApplyRequest,
+  NodeSelfUpdateApplyResponse,
+  NodeSelfUpdateStatusAnnounce,
+  NodeSelfUpdateStatusV1,
+  NodeSelfUpdateSummaryV1,
+} from './node-self-update';
+export {
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+} from './node-self-update';
+
+export type {
   GitHubTarget,
   JiraTarget,
   TrackerBackendResolutionErrorV1,
@@ -959,6 +974,46 @@ export {
   ciCheckStatusPayloadV1,
   ciCheckStatus,
 } from './ci-check';
+export type {
+  ReviewCommentThreadV1,
+  ReviewCommentOverallStateV1,
+  ReviewCommentStateV1,
+  ReviewCommentStatusPayloadV1,
+  ReviewCommentStatus,
+} from './review-comment';
+export {
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  parseReviewCommentStatusPayloadV1,
+  safeParseReviewCommentStatusPayloadV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+} from './review-comment';
+export type {
+  PrMergeMethod,
+  PrMergeBlockedReason,
+  PrMergeFailureCategory,
+  PrMergeOutcome,
+  PrMergeRequestPayloadV1,
+  PrMergeRequest,
+  PrMergeResultPayloadV1,
+  PrMergeResult,
+} from './pr-merge';
+export {
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  parsePrMergeRequestPayloadV1,
+  safeParsePrMergeRequestPayloadV1,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  parsePrMergeResultPayloadV1,
+  safeParsePrMergeResultPayloadV1,
+  prMergeResultPayloadV1,
+  prMergeResult,
+} from './pr-merge';
 export type {
   TrackerConnectivityStateV1,
   TrackerConnectivityStatusPayloadV1,
@@ -1367,6 +1422,13 @@ import {
   targetVersionStatusV1,
 } from './target-lifecycle';
 import {
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+} from './node-self-update';
+import {
   githubTarget,
   jiraTarget,
   trackerMode,
@@ -1406,6 +1468,23 @@ import {
   ciCheckStatusPayloadV1,
   ciCheckStatus,
 } from './ci-check';
+import {
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+} from './review-comment';
+import {
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  prMergeResultPayloadV1,
+  prMergeResult,
+} from './pr-merge';
 import {
   trackerConnectivityStateV1,
   trackerConnectivityStatusPayloadV1,
@@ -1704,6 +1783,11 @@ export const schemasV1 = {
   targetVersionStatusV1,
   targetUpdateRequest,
   targetUpdateResponse,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
   githubTarget,
   jiraTarget,
   trackerMode,
@@ -1825,6 +1909,19 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  prMergeResultPayloadV1,
+  prMergeResult,
   trackerConnectivityStateV1,
   trackerConnectivityStatusPayloadV1,
   trackerConnectivityStatus,
