@@ -20,11 +20,15 @@ import {
   GitDirtyWorktreeError,
   GitHunkActionError,
   GitMergeConflictError,
+  GitPushAuthenticationError,
+  GitPushNonFastForwardError,
+  GitPushStaleLeaseError,
   GitStashNotFoundError,
   GitStashPopConflictError,
   listBranches,
   listStashes,
   mergeBranch,
+  pushBranch,
   stashDrop,
   stashPop,
   stashSave,
@@ -844,5 +848,170 @@ describe('stash save/list/pop/drop against a real local git repo (issue #234)', 
         GitStashNotFoundError,
       );
     });
+  });
+});
+
+describe('pushBranch against a real local git repo with a real bare remote (issue #235)', () => {
+  let bareDir: string;
+  let worktreePath: string;
+  let peerDir: string | undefined;
+  const target: ExecutionTarget = new LocalExecutionTarget();
+
+  async function execGit(cwd: string, args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd });
+    return stdout.trim();
+  }
+
+  beforeEach(async () => {
+    bareDir = await mkdtemp(join(tmpdir(), 'loombox-git-push-remote-'));
+    await execFileAsync('git', ['init', '--bare', '-q', '-b', 'main', bareDir]);
+
+    worktreePath = await mkdtemp(join(tmpdir(), 'loombox-git-push-work-'));
+    await execFileAsync('git', ['clone', '-q', bareDir, worktreePath]);
+    await execGit(worktreePath, ['config', 'user.email', 'test@loombox.dev']);
+    await execGit(worktreePath, ['config', 'user.name', 'loombox test']);
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'initial']);
+    await execGit(worktreePath, ['push', '-q', 'origin', 'main']);
+    await execGit(worktreePath, ['checkout', '-q', '-b', 'feature']);
+  });
+
+  afterEach(async () => {
+    await rm(bareDir, { recursive: true, force: true });
+    await rm(worktreePath, { recursive: true, force: true });
+    if (peerDir) {
+      await rm(peerDir, { recursive: true, force: true });
+      peerDir = undefined;
+    }
+  });
+
+  /** Clones `bareDir` into a fresh dir, checks out `feature` (already pushed by the caller), and commits `subject` on it — a second, real contributor working from a different checkout, entirely independent of `pushBranch`/`worktreePath`. */
+  async function peerCommitsAndPushes(subject: string): Promise<void> {
+    peerDir = await mkdtemp(join(tmpdir(), 'loombox-git-push-peer-'));
+    await execFileAsync('git', ['clone', '-q', bareDir, peerDir]);
+    await execGit(peerDir, ['config', 'user.email', 'peer@loombox.dev']);
+    await execGit(peerDir, ['config', 'user.name', 'loombox peer']);
+    await execGit(peerDir, ['checkout', '-q', 'feature']);
+    await execGit(peerDir, ['commit', '-q', '--allow-empty', '-m', subject]);
+    await execGit(peerDir, ['push', '-q', 'origin', 'feature']);
+  }
+
+  it("a clean push sets upstream tracking on this branch's first push, and lands the real commit on the bare remote", async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work']);
+
+    const result = await pushBranch(target, worktreePath, 'feature');
+
+    expect(result).toEqual({ setUpstream: true, forced: false });
+    const remoteRefs = await execFileAsync('git', ['ls-remote', '--heads', bareDir]);
+    expect(remoteRefs.stdout).toContain('refs/heads/feature');
+    await expect(execGit(worktreePath, ['rev-parse', '--abbrev-ref', 'feature@{u}'])).resolves.toBe(
+      'origin/feature',
+    );
+  });
+
+  it('a second push on an already-tracked branch reports setUpstream: false — upstream is set exactly once', async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work 1']);
+    await pushBranch(target, worktreePath, 'feature');
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work 2']);
+
+    const result = await pushBranch(target, worktreePath, 'feature');
+
+    expect(result).toEqual({ setUpstream: false, forced: false });
+  });
+
+  it('rejected_non_fast_forward: honestly reported, never silently swallowed, when the remote has commits this branch does not', async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work']);
+    await pushBranch(target, worktreePath, 'feature');
+    await peerCommitsAndPushes('peer work');
+    // worktreePath never fetched the peer's commit — its own new commit
+    // diverges from what the remote now has, so a fast-forward push is
+    // impossible.
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'diverging local work']);
+
+    const error = await pushBranch(target, worktreePath, 'feature').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(GitPushNonFastForwardError);
+    // The rejected push never silently landed anything — the remote
+    // still only has the peer's commit.
+    const remoteLog = await execFileAsync('git', ['log', '-1', '--format=%s', 'feature'], {
+      cwd: bareDir,
+    });
+    expect(remoteLog.stdout.trim()).toBe('peer work');
+  });
+
+  it('force: true (--force-with-lease) refuses a stale lease, then succeeds once this worktree refreshes its knowledge of the remote', async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work']);
+    await pushBranch(target, worktreePath, 'feature');
+    await peerCommitsAndPushes('peer work');
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'diverging local work']);
+
+    // Force-with-lease WITHOUT fetching first: this worktree's own
+    // knowledge of origin/feature still points at its pre-peer commit,
+    // so the lease is stale — exactly what --force-with-lease (never
+    // plain --force) exists to refuse, rather than blindly discarding
+    // the peer's commit it never even saw.
+    const staleError = await pushBranch(target, worktreePath, 'feature', { force: true }).catch(
+      (e: unknown) => e,
+    );
+    expect(staleError).toBeInstanceOf(GitPushStaleLeaseError);
+    const stillPeerLog = await execFileAsync('git', ['log', '-1', '--format=%s', 'feature'], {
+      cwd: bareDir,
+    });
+    expect(stillPeerLog.stdout.trim()).toBe('peer work');
+
+    // Fetching re-syncs the lease — force-with-lease now knows exactly
+    // what it is overwriting, and succeeds.
+    await execGit(worktreePath, ['fetch', '-q', 'origin']);
+    const result = await pushBranch(target, worktreePath, 'feature', { force: true });
+    expect(result).toEqual({ setUpstream: false, forced: true });
+    const finalLog = await execFileAsync('git', ['log', '-1', '--format=%s', 'feature'], {
+      cwd: bareDir,
+    });
+    expect(finalLog.stdout.trim()).toBe('diverging local work');
+  });
+
+  it('auth_failed: a remote that refuses the credentials themselves is reported distinctly, never as a generic failure — hermetic, no real network', async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work']);
+    await execGit(worktreePath, [
+      'remote',
+      'set-url',
+      'origin',
+      'ssh://git@auth-failure.invalid.example/repo.git',
+    ]);
+    // `GIT_SSH_COMMAND` fully replaces the `ssh` invocation git would
+    // otherwise make — this script runs instead, so no DNS lookup or
+    // real network connection is ever attempted.
+    const fakeSshCommand = 'sh -c \'echo "Permission denied (publickey)." >&2; exit 255\'';
+    const hermeticTarget: ExecutionTarget = {
+      kind: 'local',
+      exec: (command, args, options = {}) =>
+        target.exec(command, args, {
+          ...options,
+          env: { ...options.env, GIT_SSH_COMMAND: fakeSshCommand },
+        }),
+      readFile: (p) => target.readFile(p),
+      writeFile: (p, content) => target.writeFile(p, content),
+      mkdir: (p) => target.mkdir(p),
+      readdir: (p) => target.readdir(p),
+      readdirDetailed: (p) => target.readdirDetailed(p),
+    };
+
+    const error = await pushBranch(hermeticTarget, worktreePath, 'feature').catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(GitPushAuthenticationError);
+    expect((error as Error).message).toContain('Permission denied');
+  });
+
+  it('error: any other push failure (e.g. no configured remote) is still reported, not swallowed', async () => {
+    await execGit(worktreePath, ['commit', '-q', '--allow-empty', '-m', 'feature work']);
+    await execGit(worktreePath, ['remote', 'remove', 'origin']);
+
+    const error = await pushBranch(target, worktreePath, 'feature').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(GitBranchActionError);
+    expect(error).not.toBeInstanceOf(GitPushNonFastForwardError);
+    expect(error).not.toBeInstanceOf(GitPushStaleLeaseError);
+    expect(error).not.toBeInstanceOf(GitPushAuthenticationError);
   });
 });

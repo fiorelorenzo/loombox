@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 // Fixture ACP agent shaped like Codex's real ACP bridge, used by the
 // conformance suites in packages/providers/core and packages/providers/codex
-// (issue #186; SPEC.md §7.24/§7.25). Not a real agent, and NOT a claim about
-// codex-acp's exact wire text — the option ids/tool titles below are modeled
-// on SPEC.md §7.24's "Codex's Yes / Yes-for-session / Stop-and-explain (an
-// abort, not a deny)" and its "Codex's patch/diff/bash" bespoke-widget tool
-// names, to be confirmed against the real binary in a future human-gated
-// build-time verification spike (the dependency #186's Codex half lists).
+// (issue #186; SPEC.md §7.24/§7.25). Not a real agent. The
+// `session/request_permission` option shapes below (issue #820) ARE a
+// verified claim: they match `@agentclientprotocol/codex-acp@1.1.10`'s real
+// `CodexApprovalHandler` labels/optionIds/kinds
+// (docs/research/codex-acp-completeness.md §4;
+// packages/providers/codex/src/codex-acp-capabilities.test.ts reads the
+// real installed package to keep this fixture honest). The tool-call
+// titles below ("Patch"/"Bash") are NOT such a claim — modeled on SPEC.md
+// §7.24's now-superseded wording, they're a known, tracked gap (issue
+// #819: real Codex titles a file-change tool call "Editing files" and a
+// command call by its literal (prefix-stripped) command text, never
+// "Patch"/"Bash") left as-is here since fixing it is #819's scope, not
+// this one's.
 //
 // On `session/prompt`:
 //  - text "patch-with-permission" streams a `tool_call` (kind edit, a
 //    "Patch" title, a diff), fires ONE `session/request_permission` with
-//    Codex's three-verb option set, applies the tool_call_update once
+//    Codex's real three-verb option set, applies the tool_call_update once
 //    resolved, and finishes with a summary message chunk. Deliberately
 //    sends NO vendor `_meta` at all (unlike the claude-like fixture's
 //    `_meta.claudeCode.parentToolUseId`) — SPEC.md §7.24: "Codex until an
@@ -165,14 +172,14 @@ rl.on('line', (line) => {
             content: [{ type: 'diff', path: 'src/foo.ts', oldText: 'old\n', newText: 'new\n' }],
             locations: [{ path: 'src/foo.ts' }],
           },
+          // Real Codex button shapes (issue #820; docs/research/
+          // codex-acp-completeness.md §4), not the fictional "Yes"/"Yes,
+          // for this session"/"Stop, and explain what to do differently"
+          // text this fixture used to send.
           options: [
-            { optionId: 'yes', name: 'Yes', kind: 'allow_once' },
-            { optionId: 'yes-for-session', name: 'Yes, for this session', kind: 'allow_always' },
-            {
-              optionId: 'stop-and-explain',
-              name: 'Stop, and explain what to do differently',
-              kind: 'reject_once',
-            },
+            { optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' },
+            { optionId: 'allow_always', name: 'Allow for Session', kind: 'allow_always' },
+            { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
           ],
         },
       });

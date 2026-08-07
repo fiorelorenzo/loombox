@@ -132,6 +132,9 @@ import {
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffResponse,
   type GitHunkDiffResponsePayloadV1,
+  type GitPushRequestPayloadV1,
+  type GitPushResponse,
+  type GitPushResponsePayloadV1,
   type GitStashDropRequestPayloadV1,
   type GitStashDropResponse,
   type GitStashDropResponsePayloadV1,
@@ -4081,6 +4084,24 @@ export class RelayClient {
   }
 
   /**
+   * The ISO timestamp {@link statusFor}'s current value transitioned at
+   * (mirrors `event.updatedAt`, `@loombox/node`'s `sendSessionStatus`) —
+   * `undefined` before any status has arrived at all. Issue #255's
+   * queued-session position: with no server-provided queue position, a
+   * client can still rank a `'queued'` session among its target-mates by
+   * whichever one transitioned to `'queued'` earliest, using nothing this
+   * store didn't already carry. A second `derived` over the exact same
+   * store {@link statusFor}/{@link statusReasonFor} already subscribe to
+   * (see this class's own doc comment), not a heavier separate
+   * subscription.
+   */
+  statusUpdatedAtFor(sessionId: string): Readable<string | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.statusUpdatedAt);
+  }
+
+  /**
    * The session-scoped permission FIFO queue store (SPEC §7.24, issues
    * #144/#145/#146/#147) — the single client-side source of truth a
    * session's permission-card UI and (once it exists) the cross-project
@@ -6160,6 +6181,9 @@ export class RelayClient {
         return;
       case 'git_stash_drop_response':
         this.handleGitStashDropResponse(message);
+        return;
+      case 'git_push_response':
+        this.handleGitPushResponse(message);
         return;
       case 'agent_instructions_get_response':
         this.handleAgentInstructionsGetResponse(message);
@@ -8574,6 +8598,84 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<AgentInstructionsSetResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** requestId -> the pending {@link pushBranch} call it belongs to (SPEC §7.6/§7.14; issue #235) — same shape as {@link pendingGitBranchSwitchRequests}, enveloped. */
+  private readonly pendingGitPushRequests = new Map<
+    string,
+    { resolve: (payload: GitPushResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /**
+   * Pushes this session's own branch to its remote (SPEC §7.6/§7.14;
+   * issue #235) — {@link switchBranch}'s own enveloped-request shape.
+   * Resolves every outcome (`ok`, `no_branch`,
+   * `rejected_non_fast_forward`, `rejected_stale_lease`, `auth_failed`,
+   * `error`) rather than throwing for anything but a genuinely dead
+   * connection/timeout — `@loombox/protocol`'s `git-push.ts` file doc
+   * comment has the full reasoning for why a push has more named,
+   * actionable failure shapes than any other action in this file:
+   * pushing is the first operation in the whole git-management surface
+   * that talks to a remote at all. `params.force` is `--force-with-lease`
+   * on the node side, never plain `--force` — see that same doc comment.
+   */
+  async pushBranch(
+    sessionId: string,
+    params: { force: boolean },
+    timeoutMs = 15_000,
+  ): Promise<GitPushResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot push branch, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitPushRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitpush');
+    return new Promise<GitPushResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitPushRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_push_response'));
+      }, timeoutMs);
+      this.pendingGitPushRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_push_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link pushBranch} calls (issue #235) — same sibling-device awareness as {@link handleGitBranchSwitchResponse}: a requesting client resolves its own pending call by `requestId`; any other subscribed client (or a device with no matching pending request) simply has nothing to do with this message. */
+  private handleGitPushResponse(message: GitPushResponse): void {
+    const pending = this.pendingGitPushRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitPushRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitPushResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

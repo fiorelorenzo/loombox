@@ -144,6 +144,9 @@ import {
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffRequest,
   type GitHunkDiffResponsePayloadV1,
+  type GitPushRequest,
+  type GitPushRequestPayloadV1,
+  type GitPushResponsePayloadV1,
   type GitStashDropRequest,
   type GitStashDropRequestPayloadV1,
   type GitStashDropResponsePayloadV1,
@@ -272,11 +275,15 @@ import {
   GitDirtyWorktreeError,
   GitHunkActionError,
   GitMergeConflictError,
+  GitPushAuthenticationError,
+  GitPushNonFastForwardError,
+  GitPushStaleLeaseError,
   GitStashNotFoundError,
   GitStashPopConflictError,
   listBranches,
   listStashes,
   mergeBranch,
+  pushBranch,
   stashDrop,
   stashPop,
   stashSave,
@@ -1480,6 +1487,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   /** Per-target concurrency caps + overflow queue (SPEC §7.16, issue #252) — the one chokepoint every session's launch (`local` or `ssh:`) passes through; see `./session-concurrency-gate.ts`. */
   private readonly concurrencyGate: SessionConcurrencyGate;
+  /** Whether each target id in {@link concurrencyGate}'s limits came from an operator's own setting or the node's own computed default (issue #255's "the limit's source is honest") — built once alongside `concurrencyGate` itself in the constructor, since a target's cap source never changes after that (targets themselves are fixed at construction; see `this.targets`' own doc comment). A target id with no entry here (only possible for one `concurrencyGate.setMax` would add outside any real call site today) reads as `'default'` at the read site below. */
+  private readonly concurrencyLimitSources: ReadonlyMap<string, 'configured' | 'default'>;
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
   private readonly relayLeaseClient: RelayLeaseClient;
@@ -1648,16 +1657,22 @@ export class NodeDaemon extends EventEmitter {
       this.sshTargetConfigs.set(config.id, config);
     }
     const concurrencyLimits: Record<string, number> = {};
+    const concurrencyLimitSources = new Map<string, 'configured' | 'default'>();
     for (const target of this.targets) {
       if (target.kind === 'local') {
         concurrencyLimits[target.id] =
           options.localMaxConcurrentSessions ?? defaultLocalMaxConcurrentSessions();
+        concurrencyLimitSources.set(
+          target.id,
+          options.localMaxConcurrentSessions !== undefined ? 'configured' : 'default',
+        );
       } else {
-        concurrencyLimits[target.id] =
-          this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions ??
-          DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        const sshMax = this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions;
+        concurrencyLimits[target.id] = sshMax ?? DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        concurrencyLimitSources.set(target.id, sshMax !== undefined ? 'configured' : 'default');
       }
     }
+    this.concurrencyLimitSources = concurrencyLimitSources;
     this.concurrencyGate = new SessionConcurrencyGate({
       limits: concurrencyLimits,
       defaultMax: DEFAULT_SSH_MAX_CONCURRENT_SESSIONS,
@@ -3819,6 +3834,12 @@ export class NodeDaemon extends EventEmitter {
       targets: this.targets.map((target) => ({
         ...target,
         providers: this.providerAvailability.get(target.id) ?? [],
+        // Issue #255's load/concurrency-limits UI: `maxFor` always returns a
+        // real number (falls back to `concurrencyGate`'s own `defaultMax`
+        // even for a target id it has no explicit limit for), so this is
+        // never omitted the way `providers` above legitimately can be.
+        maxConcurrentSessions: this.concurrencyGate.maxFor(target.id),
+        maxConcurrentSessionsSource: this.concurrencyLimitSources.get(target.id) ?? 'default',
       })),
     });
   }
@@ -4117,6 +4138,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'git_stash_drop_request':
         this.handleGitStashDropRequest(message);
+        return;
+      case 'git_push_request':
+        this.handleGitPushRequest(message);
         return;
       case 'agent_instructions_get_request':
         this.handleAgentInstructionsGetRequest(message);
@@ -9877,6 +9901,93 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to push this session's own
+   * branch to `origin` (SPEC §7.6/§7.14; issue #235) —
+   * `handleGitBranchSwitchRequest`'s sibling in shape: enveloped request
+   * (`payload.force`), always a reply, never a silent drop for a session
+   * this node actually owns.
+   */
+  private handleGitPushRequest(message: GitPushRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitPushRequest(message)
+      .then((payload) => this.pushBranchForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitPushResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_push_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitPushRequest(message: GitPushRequest): Promise<GitPushRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitPushRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves this session's own branch (`./session-branch.ts`'s
+   * `resolveSessionBranch` — the exact same resolution `pr-open.ts`'s
+   * `previewPrOpen` already uses for its own, unrelated push) and pushes
+   * it via `./git-diff.ts`'s `pushBranch`. `'no_branch'` for a detached
+   * `HEAD` or a non-git worktree, mirroring `PrOpenError`'s identical
+   * `'no_branch'` category — nothing to push at all, refused before
+   * `pushBranch` (and thus real `git`) ever runs.
+   */
+  private async pushBranchForBridge(
+    routing: SessionRouting,
+    payload: GitPushRequestPayloadV1,
+  ): Promise<GitPushResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const branch = await resolveSessionBranch(target, routing.session);
+      if (!branch || branch.startsWith('detached@')) {
+        return {
+          outcome: 'no_branch',
+          message:
+            'This session has no named branch to push (detached HEAD, or not a git repository).',
+        };
+      }
+      const result = await pushBranch(target, routing.session.worktreePath, branch, {
+        force: payload.force,
+      });
+      return { outcome: 'ok', branch, setUpstream: result.setUpstream, forced: result.forced };
+    } catch (error) {
+      if (error instanceof GitPushStaleLeaseError) {
+        return { outcome: 'rejected_stale_lease', message: error.message };
+      }
+      if (error instanceof GitPushNonFastForwardError) {
+        return { outcome: 'rejected_non_fast_forward', message: error.message };
+      }
+      if (error instanceof GitPushAuthenticationError) {
+        return { outcome: 'auth_failed', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitPushResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitPushResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_push_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

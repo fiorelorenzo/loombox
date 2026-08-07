@@ -71,11 +71,15 @@ export const SESSION_STATUS_UNKNOWN_LABEL = 'No status yet';
  * The row/selvage badge's status text (issue #730), and the status bar's
  * own session segment (issue #736): the plain
  * `SESSION_STATUS_LABELS`/`SESSION_STATUS_UNKNOWN_LABEL` reading, except
- * for `'error'` with a `reason` the node sent (`RelayClient.
- * statusReasonFor` — a spawn that failed or timed out), where the reason
- * is appended so a hover/hold on the row's own tooltip, the dot's
- * accessible name, or the status bar's own label reads WHY, not just that
- * it failed. Hoisted here (out of `+page.svelte`, where it originated)
+ * for `'error'`/`'paused'` with a `reason` the node sent (`RelayClient.
+ * statusReasonFor` — a spawn that failed or timed out, or why a spend cap
+ * paused it) or `'queued'` with a client-computed one (issue #255's
+ * `target-concurrency.ts#queuePositionReasons` — this target's queue has
+ * no wire-sent position, so the reason for `'queued'` is never a node
+ * `reason` field, always that helper's own string), where the reason is
+ * appended so a hover/hold on the row's own tooltip, the dot's accessible
+ * name, or the status bar's own label reads WHY/HOW LONG, not just the
+ * bare state. Hoisted here (out of `+page.svelte`, where it originated)
  * once a second surface needed the identical reading — same "one place a
  * status becomes words" rule this file's own doc comment already states.
  */
@@ -85,5 +89,6 @@ export function sessionStatusLabelWithReason(
 ): string {
   if (!status) return SESSION_STATUS_UNKNOWN_LABEL;
   const label = SESSION_STATUS_LABELS[status];
-  return (status === 'error' || status === 'paused') && reason ? `${label}: ${reason}` : label;
+  const reasonEligible = status === 'error' || status === 'paused' || status === 'queued';
+  return reasonEligible && reason ? `${label}: ${reason}` : label;
 }
