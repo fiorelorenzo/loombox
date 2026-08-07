@@ -85,6 +85,51 @@ function fakeSource(version: string, bytes: Uint8Array): NodeUpdateSource {
   };
 }
 
+interface BridgeLike {
+  agentSession: { getAttentionState(): { status: string } };
+}
+
+/**
+ * `NodeDaemon.bridges` is `private` only at the TypeScript level — the
+ * cast lives in this ONE named helper, never inlined into a property
+ * access, and is read-only synchronization plumbing for
+ * {@link waitForWorkingAttention} below, never a substitute for
+ * exercising the real `node_self_update_apply_request` wire path.
+ */
+function daemonBridges(node: NodeDaemon): Map<string, BridgeLike> {
+  const withBridges = node as unknown as { bridges: Map<string, BridgeLike> };
+  return withBridges.bridges;
+}
+
+/**
+ * Polls this SAME in-process `NodeDaemon`'s own `bridges` map for
+ * `sessionId`'s real `AttentionState.status` — the exact condition
+ * `handleNodeSelfUpdateApplyRequest` itself gates on — rather than a fixed
+ * sleep guessing how long a real subprocess spawn + first ACP round trip
+ * takes under whatever load this box happens to be under. A real polling
+ * delay (not a fake timer) is unavoidable here: the condition is driven
+ * by a genuine child-process spawn and ACP round trip, which no fake
+ * clock controls.
+ */
+async function waitForWorkingAttention(
+  node: NodeDaemon,
+  sessionId: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (daemonBridges(node).get(sessionId)?.agentSession.getAttentionState().status === 'working') {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error('waitForWorkingAttention: timed out waiting for a working turn');
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 5);
+    await promise;
+  }
+}
+
 class TestPhone {
   readonly messages: WireMessageV1[] = [];
   private readonly socket: WebSocket;
@@ -308,7 +353,14 @@ describe('NodeDaemon self-update — real relay, real subprocess (issue #656)', 
     )) as NodeSelfUpdateApplyResponse;
 
     expect(response).toMatchObject({ ok: true, fromVersion: '1.0.0', toVersion: '2.0.0' });
-    expect(restart).toHaveBeenCalledOnce();
+    // `handleNodeSelfUpdateApplyRequest`'s own `restart` callback replies
+    // BEFORE calling `selfUpdateOptions.restart()` (its own comment: the
+    // client must learn the outcome before the process actually exits),
+    // with a deliberate ~250ms pause in between so the reply has actually
+    // left this process first — so `restart` is not necessarily called
+    // yet the instant the response arrives client-side; poll for it
+    // rather than asserting synchronously with the reply.
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledOnce(), { timeout: 2000 });
 
     const driver = createLocalInstallLayoutDriver();
     expect(await driver.currentVersion(baseDir)).toBe('2.0.0');
@@ -368,10 +420,13 @@ describe('NodeDaemon self-update — real relay, real subprocess (issue #656)', 
 
       // Fires a turn that streams for several real chunks (the fixture's
       // own default ~25ms/chunk over 18 chunks, ~450ms total) — plenty of
-      // window to catch the session genuinely mid-turn, real subprocess
-      // timing, not a guessed sleep masking a race.
+      // window to catch the session genuinely mid-turn. Waits for the
+      // real `AttentionState` to actually read `'working'`
+      // ({@link waitForWorkingAttention}) rather than a fixed sleep
+      // guessing subprocess-spawn timing, which is exactly what raced
+      // under load.
       void node.promptSession(session.id, 'go');
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await waitForWorkingAttention(node, session.id);
 
       phone.send({
         type: 'node_self_update_apply_request',

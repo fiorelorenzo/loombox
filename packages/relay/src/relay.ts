@@ -1876,6 +1876,18 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           ...(message.latestVersion ? { latestVersion: message.latestVersion } : {}),
           checkedAt: message.checkedAt,
         };
+        // ALSO broadcast account-wide, live — exactly like
+        // `session_archive_response`/`session_fork_response`'s own
+        // account-wide client loop above: "detecting an update costs the
+        // user nothing and needs no confirmation" (this module's own doc
+        // comment) means a client watching the node row should see it the
+        // moment it's known, not wait for its next `target_list_request`
+        // poll — the stored `connection.selfUpdate` above is only the
+        // fallback for a client that queries later (a fresh page load, a
+        // second device that wasn't connected yet).
+        for (const client of registry.clients) {
+          if (client.accountId === connection.accountId) sendDirect(client, message);
+        }
         return;
       }
       case 'node_self_update_apply_response': {
