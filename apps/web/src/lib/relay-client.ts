@@ -127,6 +127,9 @@ import {
   type GitCommitResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
+  type GitGraphRequestPayloadV1,
+  type GitGraphResponse,
+  type GitGraphResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
   type GitHunkActionRequestPayloadV1,
@@ -1965,6 +1968,12 @@ export class RelayClient {
       resolve: (templates: SessionTemplateV1[]) => void;
       reject: (error: Error) => void;
     }
+  >();
+
+  /** requestId -> the pending {@link requestCommitGraph} call it belongs to (SPEC §7.6; issue #231) — same shape as {@link pendingGitDiffRequests}. `git_graph_response` is fanned out the same way, so a requestId not in this map means the reply belongs to a sibling device's own request. */
+  private readonly pendingGitGraphRequests = new Map<
+    string,
+    { resolve: (payload: GitGraphResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
 
   constructor(options: RelayClientOptions) {
@@ -6269,6 +6278,9 @@ export class RelayClient {
       case 'session_template_list_result':
         this.handleSessionTemplateListResult(message);
         return;
+      case 'git_graph_response':
+        this.handleGitGraphResponse(message);
+        return;
       case 'git_commit_draft_response':
         this.handleGitCommitDraftResponse(message);
         return;
@@ -8931,6 +8943,91 @@ export class RelayClient {
       .then((decrypted) =>
         pending.resolve(parseSessionTemplateListResultPayloadV1(decrypted).templates),
       )
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * Commit graph / branch tree (SPEC §7.6; issue #231) — kept as one
+   * contiguous block appended here, deliberately never interleaved
+   * among the many sibling `requestGitX`/`handleGitXResponse` methods
+   * above (tonight's own lesson: near-identical method families
+   * interleaved through this class make a three-way merge produce a
+   * broken hybrid).
+   *
+   * One page of `params.ref`'s own commit history — `@loombox/protocol`'s
+   * `git-graph.ts` `git_graph_request`/`git_graph_response`, enveloped
+   * like `createBranch` (this request carries a real caller-chosen
+   * filter: `ref`/`limit`/`offset`, unlike `requestBranches`' own
+   * no-content "asking" shape). `params.ref` defaults to `HEAD`
+   * node-side when omitted; `params.offset` omitted means page one.
+   * Pass the previous page's own `nextOffset` to page further in.
+   * Resolves with the node's own `ok`/`error` outcome either way; only
+   * REJECTS for a genuinely unusable call — no open connection, an
+   * unknown session, or a timeout with no response at all — mirroring
+   * `requestWorktreeDiff`'s identical contract.
+   */
+  async requestCommitGraph(
+    sessionId: string,
+    params: { ref?: string; limit?: number; offset?: number } = {},
+    timeoutMs = 10_000,
+  ): Promise<GitGraphResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a commit graph, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitGraphRequestPayloadV1 = {
+      ref: params.ref,
+      limit: params.limit,
+      offset: params.offset,
+    };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitgraph');
+    return new Promise<GitGraphResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitGraphRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_graph_response'));
+      }, timeoutMs);
+      this.pendingGitGraphRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_graph_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link requestCommitGraph} calls (issue #231) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitGraphResponse(message: GitGraphResponse): void {
+    const pending = this.pendingGitGraphRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitGraphRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitGraphResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
       });

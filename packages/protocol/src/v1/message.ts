@@ -9,6 +9,7 @@ import {
 } from './agent-instructions';
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
+import { gitGraphRequest, gitGraphResponse } from './git-graph';
 import {
   gitBranchCreateRequest,
   gitBranchCreateResponse,
@@ -355,6 +356,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitCommitDraftResponse,
   gitCommitRequest,
   gitCommitResponse,
+  gitGraphRequest,
+  gitGraphResponse,
   ciCheckStatus,
   trackerConnectivityStatus,
   agentInstructionsGetRequest,

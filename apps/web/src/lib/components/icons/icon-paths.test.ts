@@ -40,6 +40,7 @@ const EXPECTED_NAMES = [
   'copy',
   'pin',
   'checkpoint',
+  'git-graph',
   'close',
   'sidebar-panel',
   'provider-claude',

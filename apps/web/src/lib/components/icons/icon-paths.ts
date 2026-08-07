@@ -71,6 +71,7 @@ export const ICON_NAMES = [
   'fork',
   'pin',
   'checkpoint',
+  'git-graph',
   'close',
   'sidebar-panel',
   'provider-claude',
@@ -289,6 +290,22 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // reusing `pin` (already the session pin/unpin affordance, a distinct
   // concept) or `refresh` (already retry/reload).
   checkpoint: ['M20 10 V54', 'M20 12 L46 20 L20 28 Z'],
+
+  // A trunk line with three commits, plus a branch that diverges,
+  // carries its own commit, and merges back in — the commit graph /
+  // branch tree viewer (SPEC §7.6; issue #231), read literally rather
+  // than reusing `fork` (already the fork-a-session affordance, issue
+  // #746 — "one thing becomes two" reads differently from "a whole
+  // history of branches and merges").
+  'git-graph': [
+    'M20 8 V56',
+    'M16 16 A4 4 0 1 0 24 16 A4 4 0 1 0 16 16',
+    'M16 32 A4 4 0 1 0 24 32 A4 4 0 1 0 16 32',
+    'M16 48 A4 4 0 1 0 24 48 A4 4 0 1 0 16 48',
+    'M20 22 L40 30',
+    'M36 32 A4 4 0 1 0 44 32 A4 4 0 1 0 36 32',
+    'M40 34 L20 42',
+  ],
 
   // An X — close/dismiss.
   close: ['M18 18 L46 46', 'M46 18 L18 46'],

@@ -314,6 +314,31 @@ export {
 } from './git-diff';
 
 export type {
+  GitGraphCommitV1,
+  GitGraphRefKindV1,
+  GitGraphRefV1,
+  GitGraphRequest,
+  GitGraphRequestPayloadV1,
+  GitGraphResponse,
+  GitGraphResponsePayloadV1,
+} from './git-graph';
+export {
+  GIT_GRAPH_DEFAULT_LIMIT,
+  GIT_GRAPH_MAX_LIMIT,
+  gitGraphCommitV1,
+  gitGraphRefKindV1,
+  gitGraphRefV1,
+  gitGraphRequest,
+  gitGraphRequestPayloadV1,
+  gitGraphResponse,
+  gitGraphResponsePayloadV1,
+  parseGitGraphRequestPayloadV1,
+  parseGitGraphResponsePayloadV1,
+  safeParseGitGraphRequestPayloadV1,
+  safeParseGitGraphResponsePayloadV1,
+} from './git-graph';
+
+export type {
   GitHunkActionRequest,
   GitHunkActionRequestPayloadV1,
   GitHunkActionResponse,
@@ -1395,6 +1420,15 @@ import {
   ciAutoIterateStop,
 } from './ci-auto-iterate';
 import {
+  gitGraphCommitV1,
+  gitGraphRefKindV1,
+  gitGraphRefV1,
+  gitGraphRequest,
+  gitGraphRequestPayloadV1,
+  gitGraphResponse,
+  gitGraphResponsePayloadV1,
+} from './git-graph';
+import {
   runStatusEntryV1,
   runStatusOverallStateV1,
   runStatusStateV1,
@@ -1809,6 +1843,13 @@ export const schemasV1 = {
   ciAutoIterateStatusPayloadV1,
   ciAutoIterateStatus,
   ciAutoIterateStop,
+  gitGraphRefKindV1,
+  gitGraphRefV1,
+  gitGraphCommitV1,
+  gitGraphRequestPayloadV1,
+  gitGraphResponsePayloadV1,
+  gitGraphRequest,
+  gitGraphResponse,
   runStatusEntryV1,
   runStatusOverallStateV1,
   runStatusStateV1,

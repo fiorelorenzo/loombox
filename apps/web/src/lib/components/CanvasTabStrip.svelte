@@ -27,7 +27,7 @@
    * picker first.
    */
   import { Icon, type IconName } from './icons';
-  import type { CanvasTab, DiffCanvasTab, FileCanvasTab } from '$lib/tabs.svelte';
+  import type { CanvasTab, DiffCanvasTab, FileCanvasTab, GraphCanvasTab } from '$lib/tabs.svelte';
   import Dialog from './ui/Dialog.svelte';
   import IconButton from './ui/IconButton.svelte';
 
@@ -56,18 +56,22 @@
   function tabLabel(tab: CanvasTab): string {
     if (tab.kind === 'transcript') return 'Session';
     if (tab.kind === 'diff') return 'Working tree';
+    if (tab.kind === 'graph') return 'Commit graph';
     return tab.name;
   }
 
   function tabIcon(tab: CanvasTab): IconName {
     if (tab.kind === 'transcript') return 'sessions';
     if (tab.kind === 'diff') return 'tool-edit';
+    if (tab.kind === 'graph') return 'git-graph';
     return 'file';
   }
 
-  /** Every non-transcript tab is closable (a file tab, or the singleton diff tab) — this label is the close button's own accessible name for whichever one it is. */
-  function closeLabel(tab: FileCanvasTab | DiffCanvasTab): string {
-    return tab.kind === 'diff' ? 'Close working tree diff' : `Close ${tab.name}`;
+  /** Every non-transcript tab is closable (a file tab, or a singleton diff/graph tab) — this label is the close button's own accessible name for whichever one it is. */
+  function closeLabel(tab: FileCanvasTab | DiffCanvasTab | GraphCanvasTab): string {
+    if (tab.kind === 'diff') return 'Close working tree diff';
+    if (tab.kind === 'graph') return 'Close commit graph';
+    return `Close ${tab.name}`;
   }
 
   const activeTab = $derived(tabs.find((tab) => tab.id === activeId) ?? tabs[0]);

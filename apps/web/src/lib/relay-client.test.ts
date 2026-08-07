@@ -4333,6 +4333,222 @@ describe('RelayClient: branch create/switch/merge and stash save/pop (SPEC §7.6
   });
 });
 
+describe('RelayClient: commit graph / branch tree (SPEC §7.6; issue #231)', () => {
+  it('requestCommitGraph seals ref/limit/offset into the request envelope, and resolves an ok outcome', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-graph-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-graph-ok',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_graph_ok', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-graph-ok',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestCommitGraph(session.id, {
+      ref: 'main',
+      limit: 25,
+      offset: 0,
+    });
+    const request = (await node.waitFor((m) => m.type === 'git_graph_request')) as {
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const decrypted = await decryptEnvelope(
+      session.id,
+      {
+        resourceId: request.envelope.resourceId,
+        iv: Uint8Array.from(atob(request.envelope.iv), (c) => c.charCodeAt(0)),
+        ciphertext: Uint8Array.from(atob(request.envelope.ciphertext), (c) => c.charCodeAt(0)),
+      },
+      key,
+    );
+    expect(JSON.parse(new TextDecoder().decode(decrypted))).toEqual({
+      ref: 'main',
+      limit: 25,
+      offset: 0,
+    });
+
+    const commit = {
+      sha: 'a'.repeat(40),
+      parents: [],
+      authorName: 'loombox test',
+      authorEmail: 'test@loombox.dev',
+      authorDateIso: '2026-01-01T00:00:00Z',
+      subject: 'base',
+      refs: [{ name: 'main', kind: 'branch' }],
+      isHead: true,
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', commits: [commit], nextOffset: null },
+      key,
+    );
+    node.send({
+      type: 'git_graph_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      commits: [commit],
+      nextOffset: null,
+    });
+  });
+
+  it('requestCommitGraph called with no params seals an empty payload — every field defaults node-side', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-graph-defaults';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-graph-defaults',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_graph_defaults',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-graph-defaults',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestCommitGraph(session.id);
+    const request = (await node.waitFor((m) => m.type === 'git_graph_request')) as {
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const decrypted = await decryptEnvelope(
+      session.id,
+      {
+        resourceId: request.envelope.resourceId,
+        iv: Uint8Array.from(atob(request.envelope.iv), (c) => c.charCodeAt(0)),
+        ciphertext: Uint8Array.from(atob(request.envelope.ciphertext), (c) => c.charCodeAt(0)),
+      },
+      key,
+    );
+    expect(JSON.parse(new TextDecoder().decode(decrypted))).toEqual({});
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', commits: [], nextOffset: null },
+      key,
+    );
+    node.send({
+      type: 'git_graph_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({ outcome: 'ok', commits: [], nextOffset: null });
+  });
+
+  it('requestCommitGraph resolves (not rejects) an error outcome for a bad ref', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-graph-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-graph-error',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_graph_error', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-graph-error',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestCommitGraph(session.id, { ref: 'no-such-branch' });
+    const request = (await node.waitFor((m) => m.type === 'git_graph_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', message: 'no such ref "no-such-branch"' },
+      key,
+    );
+    node.send({
+      type: 'git_graph_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      message: 'no such ref "no-such-branch"',
+    });
+  });
+
+  it('rejects requestCommitGraph for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-graph-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-graph-unknown',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-graph-unknown',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(client.requestCommitGraph('no-such-session')).rejects.toThrow(/unknown session/);
+  });
+});
+
 describe('RelayClient: hunk-level staging (issue #232)', () => {
   it('requestGitHunkDiff sends a git_hunk_diff_request with no envelope, and resolves an ok outcome decrypted from the real git_hunk_diff_response the node opaquely routed back', async () => {
     const amk = generateAmk();

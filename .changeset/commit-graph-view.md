@@ -1,0 +1,17 @@
+---
+'@loombox/protocol': minor
+'@loombox/node': minor
+'@loombox/relay': minor
+'@loombox/web': minor
+---
+
+Commit graph / branch tree view (SPEC §7.6; issue #231): a read-only view of one ref's commit history for a session's repo, working identically on `local` and `ssh:` targets.
+
+- `@loombox/protocol`'s new `git-graph.ts` (`git_graph_request`/`git_graph_response`) is enveloped like `git_branch_create_request` (a real caller-chosen filter — `ref`/`limit`/`offset`), unlike `git_diff_request`'s own no-content "asking" shape. Documents the paging decision this issue's own size constraint forces: measured `--skip`/`--max-count` against a 120,000-commit synthetic history and rejected the alternative (a sha-keyed O(1) resume cursor) because it is provably incorrect for a ref whose history contains a merge commit — exactly this issue's own acceptance shape.
+- `@loombox/node`'s `git-diff.ts` gains `computeCommitGraph`, parsing `git log --pretty=format:` explicit fields (never `--graph`'s ASCII art) with `\x1f`/`\x1e` control-character separators, resolving `ref` via `git rev-parse --verify` first (a bad ref reports cleanly, and `git log` itself never receives a caller-controlled string). An unborn `HEAD` resolves to an empty graph, never an error, mirroring `listBranches`'s identical contract.
+- `@loombox/relay` routes `git_graph_request`/`_response` exactly like `git_diff_request`/`_response` — the relay never learns a ref, commit message, author, or sha.
+- `@loombox/web`: `RelayClient.requestCommitGraph`, `CanvasTabsState`'s new singleton `graph` tab (paging via `appendGraphPage`, mirroring `openDiff`'s own tab lifecycle), and `CommitGraphViewer.svelte` — a dumb, read-only view (`+page.svelte` owns the fetch) rendering short sha, subject, author, relative date, a merge badge for any 2+-parent commit, a HEAD badge, and every branch/tag decorating a commit, with a "Load more" affordance. New `git-graph` icon. Reachable from the Files panel's sidebar (`Commit graph` button, beside `Working tree diff`).
+
+Verified: `pnpm --filter @loombox/protocol exec vitest run src/v1/git-graph.test.ts` (20 tests), `pnpm --filter @loombox/node exec vitest run src/git-diff.test.ts src/node-daemon-git-graph.test.ts` (67 + 5 tests, including a real temp repo with a merge commit, two diverged branches, and a detached HEAD, and a paging-across-the-boundary test proving concatenated pages equal the real full `git log` output exactly), `pnpm --filter @loombox/relay exec vitest run src/message-routing.test.ts` (179 tests) plus the full relay suite (528 tests), `pnpm --filter @loombox/web exec vitest run src/lib/tabs.test.ts src/lib/components/CanvasTabStrip.test.ts src/lib/components/CommitGraphViewer.test.ts src/lib/components/icons src/lib/relay-client.test.ts` (301 tests), `pnpm --filter @loombox/{protocol,node,relay,web} typecheck`, `pnpm exec eslint` on every changed file, and the full `pnpm format:check`.
+
+Not yet done: a real-browser Playwright spec proving the view at the 390px mobile floor (the CSS itself follows this codebase's own established narrow-viewport conventions — `min-width: 0` down the flex chain, `flex-wrap` on the badge row, `overflow-wrap: break-word` on the subject line — and is unit-tested for correct rendering, but not yet measured against a real rendered box the way `spend-report-mobile.spec.ts`/`tracker-mobile.spec.ts` prove their own surfaces).
