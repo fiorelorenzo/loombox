@@ -7,6 +7,7 @@ import {
   unwrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
+import { isFailingCiConclusion } from '@loombox/shared';
 import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
@@ -36,58 +37,64 @@ import {
   type TranscriptState,
 } from '@loombox/providers-core/browser';
 import {
-  HEARTBEAT_CAPABILITY,
-  PROTOCOL_V1,
   buildIdentityMismatch,
+  HEARTBEAT_CAPABILITY,
   initializeResult,
+  keymapV1,
+  mcpPromptGetResponsePayloadV1,
   newDeviceBootstrapResponse,
-  parsePermissionPolicyResultPayloadV1,
   parseAgentProfileListResultPayloadV1,
   parseAgentProfileSessionPayloadV1,
-  parsePermissionPolicyViolationPayloadV1,
-  parseTestRunnerConfigDetectedPayloadV1,
-  parseTestRunnerConfigResultPayloadV1,
-  parsePrOpenPreviewResultPayloadV1,
-  parsePrOpenResultPayloadV1,
-  parseCheckpointResultPayloadV1,
   parseCheckpointListResultPayloadV1,
   parseCheckpointRestorePreviewResultPayloadV1,
   parseCheckpointRestoreResultPayloadV1,
+  parseCheckpointResultPayloadV1,
+  parseCiCheckStatusPayloadV1,
+  parsePermissionPolicyResultPayloadV1,
+  parsePermissionPolicyViolationPayloadV1,
+  parsePrOpenPreviewResultPayloadV1,
+  parsePrOpenResultPayloadV1,
+  parseTestRunnerConfigDetectedPayloadV1,
+  parseTestRunnerConfigResultPayloadV1,
+  PROTOCOL_V1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
-  type AccountPinMapV1,
-  type AccountPinResolveOutcome,
-  type ConfigOptionResult,
-  type ConnectedAccount,
-  type ConnectedAccountDisconnectResponse,
-  type ConnectedAccountList,
-  type KeymapResult,
-  type KeymapV1,
-  keymapV1,
-  type CustomAgentProbeRequestPayloadV1,
-  type CustomAgentProbeResponse,
-  type CustomAgentProbeResponsePayloadV1,
-  type CustomAgentProbeResultV1,
-  type CustomAgentRecordV1,
-  type CheckpointCreatePayloadV1,
-  type CheckpointListResult,
-  type CheckpointListResultPayloadV1,
-  type CheckpointResult,
-  type CheckpointResultPayloadV1,
-  type CheckpointRestorePreviewResult,
-  type CheckpointRestorePreviewResultPayloadV1,
-  type CheckpointRestoreResult,
-  type CheckpointRestoreResultPayloadV1,
+  spendReportResponsePayloadV1,
   trackerSnapshotResponsePayloadV1,
   trackerWriteResponsePayloadV1,
-  mcpPromptGetResponsePayloadV1,
-  type McpPromptGetRequestPayloadV1,
-  type McpPromptGetResponse,
+  type AccountPinMapV1,
+  type AccountPinResolveOutcome,
   type AgentInstructionsGetResponse,
   type AgentInstructionsGetResponsePayloadV1,
   type AgentInstructionsSetRequestPayloadV1,
   type AgentInstructionsSetResponse,
   type AgentInstructionsSetResponsePayloadV1,
+  type AgentProfileListResult,
+  type AgentProfileListSetPayloadV1,
+  type AgentProfileSessionPayloadV1,
+  type AgentProfileSessionResult,
+  type AgentProfileV1,
+  type BuildIdentityV1,
+  type CheckpointCreatePayloadV1,
+  type CheckpointListResult,
+  type CheckpointListResultPayloadV1,
+  type CheckpointRestorePreviewResult,
+  type CheckpointRestorePreviewResultPayloadV1,
+  type CheckpointRestoreResult,
+  type CheckpointRestoreResultPayloadV1,
+  type CheckpointResult,
+  type CheckpointResultPayloadV1,
+  type CiCheckStateV1,
+  type CiCheckStatus,
+  type ConfigOptionResult,
+  type ConnectedAccount,
+  type ConnectedAccountDisconnectResponse,
+  type ConnectedAccountList,
+  type CustomAgentProbeRequestPayloadV1,
+  type CustomAgentProbeResponse,
+  type CustomAgentProbeResponsePayloadV1,
+  type CustomAgentProbeResultV1,
+  type CustomAgentRecordV1,
   type DecommissionTargetResponse,
   type EncryptedEnvelope,
   type FsEntryV1,
@@ -97,40 +104,67 @@ import {
   type FsReadRequestPayloadV1,
   type FsReadResponse,
   type FsReadResponsePayloadV1,
+  type GitBranchCreateRequestPayloadV1,
+  type GitBranchCreateResponse,
+  type GitBranchCreateResponsePayloadV1,
+  type GitBranchListResponse,
+  type GitBranchListResponsePayloadV1,
+  type GitBranchMergeAbortResponse,
+  type GitBranchMergeAbortResponsePayloadV1,
+  type GitBranchMergeRequestPayloadV1,
+  type GitBranchMergeResponse,
+  type GitBranchMergeResponsePayloadV1,
+  type GitBranchSwitchRequestPayloadV1,
+  type GitBranchSwitchResponse,
+  type GitBranchSwitchResponsePayloadV1,
+  type GitCommitDraftResponse,
+  type GitCommitDraftResponsePayloadV1,
+  type GitCommitRequestPayloadV1,
+  type GitCommitResponse,
+  type GitCommitResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
+  type GithubConnectDeviceCode,
+  type GithubConnectOutcome,
   type GitHunkActionRequestPayloadV1,
   type GitHunkActionResponse,
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffResponse,
   type GitHunkDiffResponsePayloadV1,
-  type GithubConnectDeviceCode,
-  type GithubConnectOutcome,
-  type BuildIdentityV1,
+  type GitStashDropRequestPayloadV1,
+  type GitStashDropResponse,
+  type GitStashDropResponsePayloadV1,
+  type GitStashListResponse,
+  type GitStashListResponsePayloadV1,
+  type GitStashPopRequestPayloadV1,
+  type GitStashPopResponse,
+  type GitStashPopResponsePayloadV1,
+  type GitStashSaveRequestPayloadV1,
+  type GitStashSaveResponse,
+  type GitStashSaveResponsePayloadV1,
   type Initialize,
   type JiraConnectOutcome,
+  type KeymapResult,
+  type KeymapV1,
+  type McpPromptGetRequestPayloadV1,
+  type McpPromptGetResponse,
   type NewDeviceBootstrapRequest,
+  type PermissionPolicyResult,
+  type PermissionPolicySetPayloadV1,
+  type PermissionPolicyV1,
+  type PermissionPolicyViolation,
+  type PermissionPolicyViolationPayloadV1,
   type PermissionRequest,
   type Pong,
+  type PrOpenOutcome,
+  type PrOpenPreviewOutcome,
+  type PrOpenPreviewResult,
+  type PrOpenRequestPayloadV1,
+  type PrOpenResult,
   type ProvisionProgress,
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
   type ResyncMarker,
-  type SessionAnnounceV1,
-  type SessionArchiveResponse,
-  type SessionForkResponse,
-  type SessionListV1,
-  type SessionMetaPublic,
-  type SessionPrivateMetaV1,
-  type SessionUpdateEnvelopeV1,
-  type SshDiscoveryResponse,
-  type SshDiscoveryResultV1,
-  type TargetFsListRequestPayloadV1,
-  type TargetFsListResponse,
-  type TargetFsListResponsePayloadV1,
-  type TargetList,
-  type TargetListEntry,
-  type TargetUpdateResponse,
   type RunExit,
   type RunExitOutcomeV1,
   type RunExitPayloadV1,
@@ -139,6 +173,23 @@ import {
   type RunStarted,
   type RunStartedResultPayloadV1,
   type RunStartPayloadV1,
+  type SessionAnnounceV1,
+  type SessionArchiveResponse,
+  type SessionForkResponse,
+  type SessionListV1,
+  type SessionMetaPublic,
+  type SessionPrivateMetaV1,
+  type SessionUpdateEnvelopeV1,
+  type SpendReportResponse,
+  type SpendReportRowV1,
+  type SshDiscoveryResponse,
+  type SshDiscoveryResultV1,
+  type TargetFsListRequestPayloadV1,
+  type TargetFsListResponse,
+  type TargetFsListResponsePayloadV1,
+  type TargetList,
+  type TargetListEntry,
+  type TargetUpdateResponse,
   type TerminalClosed,
   type TerminalClosedPayloadV1,
   type TerminalDataPayloadV1,
@@ -148,21 +199,12 @@ import {
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
   type TestRunnerCommandsV1,
-  type PermissionPolicyResult,
-  type PermissionPolicyV1,
-  type PermissionPolicyViolation,
-  type PermissionPolicySetPayloadV1,
-  type PermissionPolicyViolationPayloadV1,
-  type AgentProfileV1,
-  type AgentProfileListResult,
-  type AgentProfileListSetPayloadV1,
-  type AgentProfileSessionResult,
-  type AgentProfileSessionPayloadV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
   type TestRunnerConfigSetPayloadV1,
-  type TrackerMode,
+  type TestRunnerKindV1,
   type TrackerBackendResolutionErrorV1,
+  type TrackerMode,
   type TrackerRecordV1,
   type TrackerRoleV1,
   type TrackerSnapshotRequestPayloadV1,
@@ -171,15 +213,6 @@ import {
   type TrackerWriteRequestPayloadV1,
   type TrackerWriteResponse,
   type TrackerWriteResponsePayloadV1,
-  type SpendReportRowV1,
-  type SpendReportResponse,
-  spendReportResponsePayloadV1,
-  type TestRunnerKindV1,
-  type PrOpenOutcome,
-  type PrOpenPreviewOutcome,
-  type PrOpenPreviewResult,
-  type PrOpenRequestPayloadV1,
-  type PrOpenResult,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -530,21 +563,26 @@ export interface RunClientState {
  * - `'awaiting_input'` — a session whose live status is `awaiting_input`.
  * - `'session_outcome'` — a session whose live status settled to `'exited'`
  *   (finished) or `'error'` (errored); see `outcome`/`stopReason`.
- * - `'ci_failure'` / `'review_request'` — declared here as an extension
- *   point ONLY: SPEC §7.13/§7.14 says a red CI check or a review request
- *   lands in this same inbox, but neither has a live event source in this
- *   client yet — that needs the git/CI/tracker integration work (SPEC
- *   §7.10/§7.14, v2). `RelayClient` never constructs one of these in v1;
- *   they exist in the union (and `AttentionInbox.svelte` already renders
- *   them distinctly) purely so wiring a real source later is additive, not
- *   a rendering/type rework.
+ * - `'ci_failure'` — a session whose watched pull request's latest
+ *   `ci_check_status` (`packages/node/src/ci-check-watcher.ts`, issue #239)
+ *   aggregates to `'failing'`; see `prUrl`/`prNumber`/`failingChecks`
+ *   (issue #243).
+ * - `'review_request'` — declared here as an extension point ONLY: SPEC
+ *   §7.14 says a review request lands in this same inbox too, but it has
+ *   no live event source in this client yet (that needs the tracker
+ *   integration work, v2). `RelayClient` never constructs one of these in
+ *   v1; it exists in the union (and `AttentionInbox.svelte` already
+ *   renders it distinctly) purely so wiring a real source later is
+ *   additive, not a rendering/type rework.
  *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'` are the three "needs
- * the user now" classes this v1 slice actually wires to live data. See
- * {@link RelayClient.attentionInbox}'s doc comment for why a session with a
- * queue of several pending requests only ever contributes its head as one
- * item, and why a session contributes at most one of `awaiting_input`/
- * `session_outcome` (its live status is one or the other, never both).
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'` are
+ * the four "needs the user now" classes this client actually wires to live
+ * data. See {@link RelayClient.attentionInbox}'s doc comment for why a
+ * session with a queue of several pending requests only ever contributes
+ * its head as one item, why a session contributes at most one of
+ * `awaiting_input`/`session_outcome` (its live status is one or the other,
+ * never both), and why `ci_failure` is independent of both (a session can
+ * be idle/finished AND have a failing check on its open PR at once).
  */
 export interface AttentionInboxItem {
   readonly kind:
@@ -578,6 +616,20 @@ export interface AttentionInboxItem {
    * first turn) — not a stale placeholder.
    */
   readonly agentMessage?: string;
+  /** Set only for a `'ci_failure'` item: the failing pull request's own URL and number (`CiCheckStateV1.prUrl`/`.prNumber`), so a renderer can link straight to it rather than only naming the session (issue #243). */
+  readonly prUrl?: string;
+  readonly prNumber?: number;
+  /**
+   * Set only for a `'ci_failure'` item: the names of the check runs
+   * actually responsible (`CiCheckStateV1.checkRuns`, filtered through
+   * `@loombox/shared`'s `isFailingCiConclusion` — the same judgment
+   * `NodeDaemon.handleCiCheckFailure`'s auto-iterate hook feeds back to
+   * the agent, never a second guess in the browser). Never empty when
+   * `kind` is `'ci_failure'`: the node's own aggregate `state` only
+   * reaches `'failing'` when at least one check run's conclusion matches
+   * that exact set (issue #243).
+   */
+  readonly failingChecks?: readonly string[];
 }
 
 /**
@@ -1367,6 +1419,8 @@ export class RelayClient {
   private inboxTrackingActive = false;
   /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
   private readonly inboxTrackedSessions = new Set<string>();
+  /** `sessionId` -> this session's latest known CI check state (SPEC §7.14; issue #243) — backs the attention inbox's `'ci_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleCiCheckStatus}. `undefined` (no entry yet) until the node's first `ci_check_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. */
+  private readonly ciCheckStatuses = new Map<string, Writable<CiCheckStateV1 | undefined>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1449,33 +1503,28 @@ export class RelayClient {
     }
   >();
   /**
-   * requestId -> the pending {@link getAgentInstructions} call it
-   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
-   * {@link pendingGitDiffRequests} above. `agent_instructions_get_response`
-   * is fanned out the same way, so a requestId not in this map means the
-   * reply belongs to a sibling device's own request.
-   */
-  private readonly pendingAgentInstructionsGetRequests = new Map<
-    string,
-    {
-      resolve: (payload: AgentInstructionsGetResponsePayloadV1) => void;
-      reject: (error: Error) => void;
-    }
-  >();
-  /**
-   * requestId -> the pending {@link setAgentInstructions} call it
-   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
-   * {@link pendingGitHunkActionRequests} above (enveloped, one-shot).
-   * `agent_instructions_set_response` is fanned out the same way, so a
-   * requestId not in this map means the reply belongs to a sibling
+   * requestId -> the pending {@link requestGitCommitDraft} call it
+   * belongs to (issue #233's commit workflow) — the exact same shape as
+   * {@link pendingGitHunkDiffRequests} above (envelope-less request,
+   * one-shot). `git_commit_draft_response` is fanned out the same way,
+   * so a requestId not in this map means the reply belongs to a sibling
    * device's own request.
    */
-  private readonly pendingAgentInstructionsSetRequests = new Map<
+  private readonly pendingGitCommitDraftRequests = new Map<
     string,
-    {
-      resolve: (payload: AgentInstructionsSetResponsePayloadV1) => void;
-      reject: (error: Error) => void;
-    }
+    { resolve: (payload: GitCommitDraftResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link commitStaged} call it belongs to
+   * (issue #233) — the exact same shape as {@link
+   * pendingGitHunkActionRequests} above (enveloped, one-shot).
+   * `git_commit_response` is fanned out the same way, so a requestId not
+   * in this map means the reply belongs to a sibling device's own
+   * request.
+   */
+  private readonly pendingGitCommitRequests = new Map<
+    string,
+    { resolve: (payload: GitCommitResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
@@ -1739,6 +1788,94 @@ export class RelayClient {
   private pendingPingNonce: string | undefined;
   /** See `RelayClientOptions.sessionResumeRetryMs`'s doc comment (issue #730). */
   private readonly sessionResumeRetryMs: number;
+
+  /** requestId -> the pending {@link requestBranches} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitDiffRequests}, no envelope on the request. */
+  private readonly pendingGitBranchListRequests = new Map<
+    string,
+    { resolve: (payload: GitBranchListResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link createBranch} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitBranchCreateRequests = new Map<
+    string,
+    { resolve: (payload: GitBranchCreateResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link switchBranch} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitBranchSwitchRequests = new Map<
+    string,
+    { resolve: (payload: GitBranchSwitchResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link mergeBranch} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitBranchMergeRequests = new Map<
+    string,
+    { resolve: (payload: GitBranchMergeResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link abortBranchMerge} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitDiffRequests}, no envelope on the request. */
+  private readonly pendingGitBranchMergeAbortRequests = new Map<
+    string,
+    {
+      resolve: (payload: GitBranchMergeAbortResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  /** requestId -> the pending {@link requestStashes} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitDiffRequests}, no envelope on the request. */
+  private readonly pendingGitStashListRequests = new Map<
+    string,
+    { resolve: (payload: GitStashListResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link saveStash} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitStashSaveRequests = new Map<
+    string,
+    { resolve: (payload: GitStashSaveResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link popStash} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitStashPopRequests = new Map<
+    string,
+    { resolve: (payload: GitStashPopResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /** requestId -> the pending {@link dropStash} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitHunkActionRequests}, enveloped. */
+  private readonly pendingGitStashDropRequests = new Map<
+    string,
+    { resolve: (payload: GitStashDropResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+
+  /**
+   * requestId -> the pending {@link getAgentInstructions} call it
+   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
+   * {@link pendingGitDiffRequests} above. `agent_instructions_get_response`
+   * is fanned out the same way, so a requestId not in this map means the
+   * reply belongs to a sibling device's own request.
+   */
+  private readonly pendingAgentInstructionsGetRequests = new Map<
+    string,
+    {
+      resolve: (payload: AgentInstructionsGetResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  /**
+   * requestId -> the pending {@link setAgentInstructions} call it
+   * belongs to (SPEC §7.18; issue #260) — the exact same shape as
+   * {@link pendingGitHunkActionRequests} above (enveloped, one-shot).
+   * `agent_instructions_set_response` is fanned out the same way, so a
+   * requestId not in this map means the reply belongs to a sibling
+   * device's own request.
+   */
+  private readonly pendingAgentInstructionsSetRequests = new Map<
+    string,
+    {
+      resolve: (payload: AgentInstructionsSetResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
 
   constructor(options: RelayClientOptions) {
     this.options = options;
@@ -3964,10 +4101,15 @@ export class RelayClient {
    *     `'awaiting_input'`;
    *   - a `'session_outcome'` item while its live `session_status` has
    *     settled to `'exited'` or `'error'`.
+   * - AND, independently again, a `'ci_failure'` item while its watched
+   *   PR's latest `ci_check_status` (issue #239) aggregates to `'failing'`
+   *   (issue #243) — a session can be idle/finished AND have a failing
+   *   check on its open PR at the same time, so this is never mutually
+   *   exclusive with the status item above.
    *
-   * `'ci_failure'`/`'review_request'` are NOT produced here — see
-   * {@link AttentionInboxItem}'s doc comment for why those two classes are
-   * only a modeled extension point in v1, not live yet.
+   * `'review_request'` is NOT produced here — see
+   * {@link AttentionInboxItem}'s doc comment for why that one class is
+   * still only a modeled extension point, not live yet.
    *
    * Reads straight off the exact same `permissionQueueStoreFor`/
    * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
@@ -4565,39 +4707,39 @@ export class RelayClient {
   }
 
   /**
-   * A session's project's current `AGENTS.md`/`CLAUDE.md` state (SPEC
-   * §7.18; issue #260) — `@loombox/protocol`'s `agent-instructions.ts`
-   * `agent_instructions_get_request`/`_response` pair, {@link
-   * requestWorktreeDiff}'s own sibling: a one-shot request/response the
-   * caller awaits, not a persistent subscription — a caller re-requests
-   * (a fresh `requestId`) to refresh, exactly like re-reading an
-   * already-open file tab. No envelope on the request at all — asking
-   * carries no content (see that schema's own doc comment). Resolves
-   * with the node's own `ok`/`error` outcome either way; only REJECTS
-   * for a genuinely unusable call — no open connection, an unknown
-   * session, or a timeout with no response at all — mirroring {@link
-   * requestWorktreeDiff}'s identical contract.
+   * Drafts a commit message for the session's currently staged diff
+   * (SPEC §7.6; issue #233) — generated node-side by prompting the
+   * session's own live agent (`@loombox/protocol`'s `git-commit.ts` own
+   * doc comment explains why, never a separate provider call), so this
+   * can fail for reasons {@link requestGitHunkDiff} never has to
+   * consider: no live agent for this session, or nothing staged to draft
+   * from — both reported as the node's own `outcome: 'error'`, resolved
+   * (not rejected) exactly like every other `outcome`-carrying reply.
+   * The draft is purely advisory: nothing is committed until an explicit
+   * {@link commitStaged} call. No `path`/envelope on the request itself
+   * (asking carries no content, mirrors {@link requestGitHunkDiff}); the
+   * reply is real session content, so it travels sealed.
    */
-  async getAgentInstructions(
+  async requestGitCommitDraft(
     sessionId: string,
-    timeoutMs = 10_000,
-  ): Promise<AgentInstructionsGetResponsePayloadV1> {
+    timeoutMs = 60_000,
+  ): Promise<GitCommitDraftResponsePayloadV1> {
     if (!this.isSocketOpen()) {
       return Promise.reject(
-        new Error('RelayClient: cannot get agent instructions, no open connection'),
+        new Error('RelayClient: cannot request a commit draft, no open connection'),
       );
     }
     if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
       return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
     }
     this.ensureSubscribed(sessionId);
-    const requestId = generateId('agentinstrget');
-    return new Promise<AgentInstructionsGetResponsePayloadV1>((resolve, reject) => {
+    const requestId = generateId('gitcommitdraft');
+    return new Promise<GitCommitDraftResponsePayloadV1>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pendingAgentInstructionsGetRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_instructions_get_response'));
+        this.pendingGitCommitDraftRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_commit_draft_response'));
       }, timeoutMs);
-      this.pendingAgentInstructionsGetRequests.set(requestId, {
+      this.pendingGitCommitDraftRequests.set(requestId, {
         resolve: (response) => {
           clearTimeout(timer);
           resolve(response);
@@ -4608,7 +4750,7 @@ export class RelayClient {
         },
       });
       this.send({
-        type: 'agent_instructions_get_request',
+        type: 'git_commit_draft_request',
         protocolVersion: PROTOCOL_V1,
         sessionId,
         requestId,
@@ -4617,43 +4759,42 @@ export class RelayClient {
   }
 
   /**
-   * Saves (fully replaces) one `AGENTS.md`/`CLAUDE.md` file inside a
-   * session's project (SPEC §7.18; issue #260) — {@link
-   * applyGitHunkAction}'s own sibling (enveloped request, since unlike
-   * {@link getAgentInstructions} this one carries real content). `params.baseHash`
-   * must be the exact hash a prior {@link getAgentInstructions}/{@link
-   * setAgentInstructions} call last reported for `params.fileName`, or
-   * `null` when creating a file that doesn't exist yet — see that
-   * schema's own doc comment for the full optimistic-concurrency
-   * contract. A stale `baseHash` never overwrites: the node replies with
-   * `outcome: 'conflict'` (this method resolves normally, it does not
-   * reject) carrying what's actually on disk right now. Resolves with
-   * the node's own `ok`/`conflict`/`error` outcome either way; only
-   * REJECTS for a genuinely unusable call, mirroring {@link
+   * Commits whatever is currently staged, with `message` (SPEC §7.6;
+   * issue #233) — {@link applyGitHunkAction}'s own sibling in shape (an
+   * enveloped request, since the commit message is real session
+   * content), but the one call in this file with a real, unrecoverable-
+   * by-undo side effect on the operator's actual repository. Called only
+   * from an explicit confirm (`CommitDialog.svelte`'s own file doc
+   * comment) — a draft from {@link requestGitCommitDraft}, accepted
+   * verbatim or edited first, never sent automatically. Resolves with
+   * the node's own `ok`/`error` outcome either way (an empty index or an
+   * empty message both come back as a clear `outcome: 'error'`, never a
+   * silent no-op or a thrown exception); only REJECTS for a genuinely
+   * unusable call — no open connection, an unknown session, or a
+   * timeout with no response at all — mirroring {@link
    * applyGitHunkAction}'s identical contract.
    */
-  async setAgentInstructions(
+  async commitStaged(
     sessionId: string,
-    params: AgentInstructionsSetRequestPayloadV1,
+    params: { message: string },
     timeoutMs = 10_000,
-  ): Promise<AgentInstructionsSetResponsePayloadV1> {
+  ): Promise<GitCommitResponsePayloadV1> {
     if (!this.isSocketOpen()) {
-      return Promise.reject(
-        new Error('RelayClient: cannot save agent instructions, no open connection'),
-      );
+      return Promise.reject(new Error('RelayClient: cannot commit, no open connection'));
     }
     if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
       return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
     }
     this.ensureSubscribed(sessionId);
-    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
-    const requestId = generateId('agentinstrset');
-    return new Promise<AgentInstructionsSetResponsePayloadV1>((resolve, reject) => {
+    const payload: GitCommitRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitcommit');
+    return new Promise<GitCommitResponsePayloadV1>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pendingAgentInstructionsSetRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_instructions_set_response'));
+        this.pendingGitCommitRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_commit_response'));
       }, timeoutMs);
-      this.pendingAgentInstructionsSetRequests.set(requestId, {
+      this.pendingGitCommitRequests.set(requestId, {
         resolve: (response) => {
           clearTimeout(timer);
           resolve(response);
@@ -4664,7 +4805,7 @@ export class RelayClient {
         },
       });
       this.send({
-        type: 'agent_instructions_set_request',
+        type: 'git_commit_request',
         protocolVersion: PROTOCOL_V1,
         sessionId,
         requestId,
@@ -5665,11 +5806,11 @@ export class RelayClient {
 
   /**
    * Wires one session into the attention inbox: subscribes it (so its
-   * `permission_request`/`session_update` traffic actually reaches this
-   * client, see `ensureSubscribed`) and recomputes the inbox whenever
-   * either its transcript (status) or its permission queue changes.
-   * Idempotent per session id, and a no-op before {@link attentionInbox}
-   * has ever been called (see `syncInboxTracking`).
+   * `permission_request`/`session_update`/`ci_check_status` traffic
+   * actually reaches this client, see `ensureSubscribed`) and recomputes
+   * the inbox whenever its transcript (status), permission queue, or CI
+   * check state changes. Idempotent per session id, and a no-op before
+   * {@link attentionInbox} has ever been called (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -5677,6 +5818,7 @@ export class RelayClient {
     this.ensureSubscribed(sessionId);
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
   }
 
   /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
@@ -5737,6 +5879,23 @@ export class RelayClient {
           stopReason: transcript.lastStopReason ?? transcript.statusReason,
         });
       }
+
+      const ci = get(this.ciCheckStatusStoreFor(session.id));
+      if (ci?.state === 'failing') {
+        items.push({
+          kind: 'ci_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: ci.updatedAt,
+          prUrl: ci.prUrl,
+          prNumber: ci.prNumber,
+          failingChecks: ci.checkRuns
+            .filter((run) => isFailingCiConclusion(run.conclusion))
+            .map((run) => run.name),
+        });
+      }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
     this.attentionInboxStore.set(items);
@@ -5747,6 +5906,16 @@ export class RelayClient {
     if (!store) {
       store = writable<TranscriptState>(createTranscriptState());
       this.transcripts.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /** `sessionId` -> {@link ciCheckStatuses}'s backing store, created on first access — same lazy-map pattern as {@link transcriptStoreFor}/{@link permissionQueueStoreFor}. */
+  private ciCheckStatusStoreFor(sessionId: string): Writable<CiCheckStateV1 | undefined> {
+    let store = this.ciCheckStatuses.get(sessionId);
+    if (!store) {
+      store = writable<CiCheckStateV1 | undefined>(undefined);
+      this.ciCheckStatuses.set(sessionId, store);
     }
     return store;
   }
@@ -5908,11 +6077,44 @@ export class RelayClient {
       case 'git_hunk_action_response':
         this.handleGitHunkActionResponse(message);
         return;
+      case 'git_branch_list_response':
+        this.handleGitBranchListResponse(message);
+        return;
+      case 'git_branch_create_response':
+        this.handleGitBranchCreateResponse(message);
+        return;
+      case 'git_branch_switch_response':
+        this.handleGitBranchSwitchResponse(message);
+        return;
+      case 'git_branch_merge_response':
+        this.handleGitBranchMergeResponse(message);
+        return;
+      case 'git_branch_merge_abort_response':
+        this.handleGitBranchMergeAbortResponse(message);
+        return;
+      case 'git_stash_list_response':
+        this.handleGitStashListResponse(message);
+        return;
+      case 'git_stash_save_response':
+        this.handleGitStashSaveResponse(message);
+        return;
+      case 'git_stash_pop_response':
+        this.handleGitStashPopResponse(message);
+        return;
+      case 'git_stash_drop_response':
+        this.handleGitStashDropResponse(message);
+        return;
       case 'agent_instructions_get_response':
         this.handleAgentInstructionsGetResponse(message);
         return;
       case 'agent_instructions_set_response':
         this.handleAgentInstructionsSetResponse(message);
+        return;
+      case 'git_commit_draft_response':
+        this.handleGitCommitDraftResponse(message);
+        return;
+      case 'git_commit_response':
+        this.handleGitCommitResponse(message);
         return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
@@ -6057,6 +6259,9 @@ export class RelayClient {
         pending.resolve(message.mode);
         return;
       }
+      case 'ci_check_status':
+        this.handleCiCheckStatus(message);
+        return;
       default:
         return;
     }
@@ -6426,21 +6631,20 @@ export class RelayClient {
 
   /**
    * The owning node's reply to one of this client's own {@link
-   * getAgentInstructions} calls (SPEC §7.18; issue #260).
-   * `agent_instructions_get_response` is fanned out to every client
-   * subscribed to the session exactly like `fs_read_response`, so a
-   * `requestId` not in {@link pendingAgentInstructionsGetRequests} means
-   * this reply is to a sibling device's own request — silently ignored,
-   * exactly like {@link handleFsReadResponse}'s identical sibling-device
-   * awareness.
+   * requestGitCommitDraft} calls (issue #233). `git_commit_draft_response`
+   * is fanned out to every client subscribed to the session exactly like
+   * `git_hunk_diff_response`, so a `requestId` not in {@link
+   * pendingGitCommitDraftRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleGitHunkDiffResponse}'s identical sibling-device awareness.
    */
-  private handleAgentInstructionsGetResponse(message: AgentInstructionsGetResponse): void {
-    const pending = this.pendingAgentInstructionsGetRequests.get(message.requestId);
+  private handleGitCommitDraftResponse(message: GitCommitDraftResponse): void {
+    const pending = this.pendingGitCommitDraftRequests.get(message.requestId);
     if (!pending) return;
-    this.pendingAgentInstructionsGetRequests.delete(message.requestId);
+    this.pendingGitCommitDraftRequests.delete(message.requestId);
 
     this.envelopeCrypto
-      .open<AgentInstructionsGetResponsePayloadV1>(
+      .open<GitCommitDraftResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,
@@ -6454,17 +6658,20 @@ export class RelayClient {
 
   /**
    * The owning node's reply to one of this client's own {@link
-   * setAgentInstructions} calls (SPEC §7.18; issue #260) — exactly like
-   * {@link handleAgentInstructionsGetResponse} above, sibling-device
-   * awareness included.
+   * commitStaged} calls (issue #233). `git_commit_response` is fanned
+   * out to every client subscribed to the session exactly like
+   * `git_hunk_action_response`, so a `requestId` not in {@link
+   * pendingGitCommitRequests} means this reply is to a sibling device's
+   * own request — silently ignored, exactly like {@link
+   * handleGitHunkActionResponse}'s identical sibling-device awareness.
    */
-  private handleAgentInstructionsSetResponse(message: AgentInstructionsSetResponse): void {
-    const pending = this.pendingAgentInstructionsSetRequests.get(message.requestId);
+  private handleGitCommitResponse(message: GitCommitResponse): void {
+    const pending = this.pendingGitCommitRequests.get(message.requestId);
     if (!pending) return;
-    this.pendingAgentInstructionsSetRequests.delete(message.requestId);
+    this.pendingGitCommitRequests.delete(message.requestId);
 
     this.envelopeCrypto
-      .open<AgentInstructionsSetResponsePayloadV1>(
+      .open<GitCommitResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,
@@ -6836,6 +7043,33 @@ export class RelayClient {
       .then((decrypted) => pending.resolve(parsePrOpenResultPayloadV1(decrypted).result))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's latest CI check-run reading for a session's open
+   * pull request (SPEC §7.14; issues #239/#243) — pushed on a fixed
+   * interval whatever the resulting state, exactly like
+   * {@link handleRunOutput}; no pending-request bookkeeping, since nothing
+   * on this client ever asks for it. Decrypts straight into
+   * {@link ciCheckStatusStoreFor}, which {@link recomputeAttentionInbox}
+   * reads to build (or clear) this session's `'ci_failure'` inbox item —
+   * a genuine decrypt failure is logged and otherwise swallowed, the same
+   * "best-effort push, never crash the client" contract {@link
+   * handleRunOutput} follows.
+   */
+  private handleCiCheckStatus(message: CiCheckStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.ciCheckStatusStoreFor(message.sessionId).set(
+          parseCiCheckStatusPayloadV1(decrypted).status,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt ci_check_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
       });
   }
 
@@ -7507,5 +7741,760 @@ export class RelayClient {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * One session's current local branches (SPEC §7.6; issue #234) —
+   * `@loombox/protocol`'s `git-branch.ts` `git_branch_list_request`/
+   * `_response` pair, {@link requestWorktreeDiff}'s own sibling: same
+   * one-shot request/response contract, no envelope on the request
+   * (asking carries no content). A caller re-requests (a fresh
+   * `requestId`) to refresh after {@link createBranch}/{@link
+   * switchBranch}/{@link mergeBranch} change what's there.
+   */
+  async requestBranches(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitBranchListResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list branches, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('gitbranchlist');
+    return new Promise<GitBranchListResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitBranchListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_branch_list_response'));
+      }, timeoutMs);
+      this.pendingGitBranchListRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_branch_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Creates `params.name` off `params.startPoint` (`HEAD` when omitted),
+   * optionally switching onto it (`params.checkout`) — {@link
+   * applyGitHunkAction}'s own enveloped-request shape (`name` is real
+   * session content). A `checkout: true` create against a
+   * worktree-isolated session resolves `outcome: 'session_branch_fixed'`
+   * (same as {@link switchBranch}) rather than moving that session's
+   * fixed branch — see `@loombox/protocol`'s `git-branch.ts` file doc
+   * comment.
+   */
+  async createBranch(
+    sessionId: string,
+    params: { name: string; startPoint?: string | null; checkout?: boolean },
+    timeoutMs = 10_000,
+  ): Promise<GitBranchCreateResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot create a branch, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitBranchCreateRequestPayloadV1 = {
+      name: params.name,
+      startPoint: params.startPoint ?? null,
+      checkout: params.checkout ?? false,
+    };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitbranchcreate');
+    return new Promise<GitBranchCreateResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitBranchCreateRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_branch_create_response'));
+      }, timeoutMs);
+      this.pendingGitBranchCreateRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_branch_create_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * Switches this session's worktree onto `params.name` — {@link
+   * applyGitHunkAction}'s own enveloped-request shape. Resolves
+   * `outcome: 'session_branch_fixed'` without touching git at all for a
+   * worktree-isolated session (that worktree's branch never moves for the
+   * session's whole life), or `outcome: 'dirty_worktree'` (with the real
+   * conflicting paths) when local changes would be overwritten — both
+   * honest, actionable states rather than a rejected promise; only a
+   * genuinely unusable call (no connection, unknown session, timeout)
+   * rejects.
+   */
+  async switchBranch(
+    sessionId: string,
+    params: { name: string },
+    timeoutMs = 10_000,
+  ): Promise<GitBranchSwitchResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot switch branch, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitBranchSwitchRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitbranchswitch');
+    return new Promise<GitBranchSwitchResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitBranchSwitchRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_branch_switch_response'));
+      }, timeoutMs);
+      this.pendingGitBranchSwitchRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_branch_switch_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * Merges `params.name` into this session's current branch — {@link
+   * applyGitHunkAction}'s own enveloped-request shape. Resolves `outcome:
+   * 'conflict'` (with every real unmerged path) when the merge stops on
+   * real conflicts (issue #234's own acceptance bar: a state to render
+   * and let the user resolve or abort via {@link abortBranchMerge}),
+   * never a rejected promise for that case.
+   */
+  async mergeBranch(
+    sessionId: string,
+    params: { name: string },
+    timeoutMs = 10_000,
+  ): Promise<GitBranchMergeResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot merge branch, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitBranchMergeRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitbranchmerge');
+    return new Promise<GitBranchMergeResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitBranchMergeRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_branch_merge_response'));
+      }, timeoutMs);
+      this.pendingGitBranchMergeRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_branch_merge_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * Aborts a merge stopped on conflicts (SPEC §7.6; issue #234) — the
+   * other half of {@link mergeBranch}'s `'conflict'` outcome's "resolve
+   * or abort". Envelope-less request (nothing to carry beyond
+   * session/request id), mirrors {@link requestBranches}.
+   */
+  async abortBranchMerge(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitBranchMergeAbortResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot abort a merge, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('gitbranchmergeabort');
+    return new Promise<GitBranchMergeAbortResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitBranchMergeAbortRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_branch_merge_abort_response'));
+      }, timeoutMs);
+      this.pendingGitBranchMergeAbortRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_branch_merge_abort_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * One session's current stash stack (SPEC §7.6; issue #234) — {@link
+   * requestBranches}'s own envelope-less-request shape.
+   */
+  async requestStashes(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<GitStashListResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list stashes, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('gitstashlist');
+    return new Promise<GitStashListResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitStashListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_stash_list_response'));
+      }, timeoutMs);
+      this.pendingGitStashListRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_stash_list_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves the current worktree onto the stash stack, labeled
+   * `params.message` when given (SPEC §7.6; issue #234) — {@link
+   * applyGitHunkAction}'s own enveloped-request shape. Resolves
+   * `outcome: 'ok'` with `created: false`, not an error, when there was
+   * nothing to stash.
+   */
+  async saveStash(
+    sessionId: string,
+    params: { message?: string | null } = {},
+    timeoutMs = 10_000,
+  ): Promise<GitStashSaveResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save a stash, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitStashSaveRequestPayloadV1 = { message: params.message ?? null };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitstashsave');
+    return new Promise<GitStashSaveResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitStashSaveRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_stash_save_response'));
+      }, timeoutMs);
+      this.pendingGitStashSaveRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_stash_save_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * Pops `params.index` (the most recent, `stash@{0}`, when omitted) off
+   * the stash stack — {@link applyGitHunkAction}'s own enveloped-request
+   * shape. Resolves `outcome: 'conflict'` (with `stashKept: true` and the
+   * real unmerged paths) when the pop cannot complete cleanly (issue
+   * #234's own named failure mode: "a stash that cannot pop") — the
+   * stash entry survives either way, never lost; a caller resolves the
+   * conflicts and calls {@link dropStash}, or discards the conflict-marked
+   * changes and tries again.
+   */
+  async popStash(
+    sessionId: string,
+    params: { index?: number | null } = {},
+    timeoutMs = 10_000,
+  ): Promise<GitStashPopResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot pop a stash, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitStashPopRequestPayloadV1 = { index: params.index ?? null };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitstashpop');
+    return new Promise<GitStashPopResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitStashPopRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_stash_pop_response'));
+      }, timeoutMs);
+      this.pendingGitStashPopRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_stash_pop_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * Drops `params.index` off the stash stack for good (SPEC §7.6; issue
+   * #234) — the way out of a resolved (or abandoned) {@link popStash}
+   * conflict, or of an entry no longer wanted. {@link applyGitHunkAction}'s
+   * own enveloped-request shape.
+   */
+  async dropStash(
+    sessionId: string,
+    params: { index: number },
+    timeoutMs = 10_000,
+  ): Promise<GitStashDropResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot drop a stash, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitStashDropRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitstashdrop');
+    return new Promise<GitStashDropResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitStashDropRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_stash_drop_response'));
+      }, timeoutMs);
+      this.pendingGitStashDropRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_stash_drop_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link requestBranches} calls (issue #234). Fanned out to every client subscribed to the session, so a `requestId` not in {@link pendingGitBranchListRequests} means this reply is to a sibling device's own request — silently ignored, exactly like {@link handleGitDiffResponse}. */
+  private handleGitBranchListResponse(message: GitBranchListResponse): void {
+    const pending = this.pendingGitBranchListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitBranchListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitBranchListResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link createBranch} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitBranchCreateResponse(message: GitBranchCreateResponse): void {
+    const pending = this.pendingGitBranchCreateRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitBranchCreateRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitBranchCreateResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link switchBranch} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitBranchSwitchResponse(message: GitBranchSwitchResponse): void {
+    const pending = this.pendingGitBranchSwitchRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitBranchSwitchRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitBranchSwitchResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link mergeBranch} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitBranchMergeResponse(message: GitBranchMergeResponse): void {
+    const pending = this.pendingGitBranchMergeRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitBranchMergeRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitBranchMergeResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link abortBranchMerge} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitBranchMergeAbortResponse(message: GitBranchMergeAbortResponse): void {
+    const pending = this.pendingGitBranchMergeAbortRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitBranchMergeAbortRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitBranchMergeAbortResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link requestStashes} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitStashListResponse(message: GitStashListResponse): void {
+    const pending = this.pendingGitStashListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitStashListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitStashListResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link saveStash} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitStashSaveResponse(message: GitStashSaveResponse): void {
+    const pending = this.pendingGitStashSaveRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitStashSaveRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitStashSaveResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link popStash} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitStashPopResponse(message: GitStashPopResponse): void {
+    const pending = this.pendingGitStashPopRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitStashPopRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitStashPopResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /** The owning node's reply to one of this client's own {@link dropStash} calls (issue #234) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
+  private handleGitStashDropResponse(message: GitStashDropResponse): void {
+    const pending = this.pendingGitStashDropRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitStashDropRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitStashDropResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * A session's project's current `AGENTS.md`/`CLAUDE.md` state (SPEC
+   * §7.18; issue #260) — `@loombox/protocol`'s `agent-instructions.ts`
+   * `agent_instructions_get_request`/`_response` pair, {@link
+   * requestWorktreeDiff}'s own sibling: a one-shot request/response the
+   * caller awaits, not a persistent subscription — a caller re-requests
+   * (a fresh `requestId`) to refresh, exactly like re-reading an
+   * already-open file tab. No envelope on the request at all — asking
+   * carries no content (see that schema's own doc comment). Resolves
+   * with the node's own `ok`/`error` outcome either way; only REJECTS
+   * for a genuinely unusable call — no open connection, an unknown
+   * session, or a timeout with no response at all — mirroring {@link
+   * requestWorktreeDiff}'s identical contract.
+   */
+  async getAgentInstructions(
+    sessionId: string,
+    timeoutMs = 10_000,
+  ): Promise<AgentInstructionsGetResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot get agent instructions, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('agentinstrget');
+    return new Promise<AgentInstructionsGetResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentInstructionsGetRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_instructions_get_response'));
+      }, timeoutMs);
+      this.pendingAgentInstructionsGetRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_instructions_get_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces) one `AGENTS.md`/`CLAUDE.md` file inside a
+   * session's project (SPEC §7.18; issue #260) — {@link
+   * applyGitHunkAction}'s own sibling (enveloped request, since unlike
+   * {@link getAgentInstructions} this one carries real content). `params.baseHash`
+   * must be the exact hash a prior {@link getAgentInstructions}/{@link
+   * setAgentInstructions} call last reported for `params.fileName`, or
+   * `null` when creating a file that doesn't exist yet — see that
+   * schema's own doc comment for the full optimistic-concurrency
+   * contract. A stale `baseHash` never overwrites: the node replies with
+   * `outcome: 'conflict'` (this method resolves normally, it does not
+   * reject) carrying what's actually on disk right now. Resolves with
+   * the node's own `ok`/`conflict`/`error` outcome either way; only
+   * REJECTS for a genuinely unusable call, mirroring {@link
+   * applyGitHunkAction}'s identical contract.
+   */
+  async setAgentInstructions(
+    sessionId: string,
+    params: AgentInstructionsSetRequestPayloadV1,
+    timeoutMs = 10_000,
+  ): Promise<AgentInstructionsSetResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save agent instructions, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
+    const requestId = generateId('agentinstrset');
+    return new Promise<AgentInstructionsSetResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentInstructionsSetRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for agent_instructions_set_response'));
+      }, timeoutMs);
+      this.pendingAgentInstructionsSetRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'agent_instructions_set_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * getAgentInstructions} calls (SPEC §7.18; issue #260).
+   * `agent_instructions_get_response` is fanned out to every client
+   * subscribed to the session exactly like `fs_read_response`, so a
+   * `requestId` not in {@link pendingAgentInstructionsGetRequests} means
+   * this reply is to a sibling device's own request — silently ignored,
+   * exactly like {@link handleFsReadResponse}'s identical sibling-device
+   * awareness.
+   */
+  private handleAgentInstructionsGetResponse(message: AgentInstructionsGetResponse): void {
+    const pending = this.pendingAgentInstructionsGetRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentInstructionsGetRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<AgentInstructionsGetResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * setAgentInstructions} calls (SPEC §7.18; issue #260) — exactly like
+   * {@link handleAgentInstructionsGetResponse} above, sibling-device
+   * awareness included.
+   */
+  private handleAgentInstructionsSetResponse(message: AgentInstructionsSetResponse): void {
+    const pending = this.pendingAgentInstructionsSetRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingAgentInstructionsSetRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<AgentInstructionsSetResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
   }
 }

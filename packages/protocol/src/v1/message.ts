@@ -10,6 +10,34 @@ import {
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
 import {
+  gitBranchCreateRequest,
+  gitBranchCreateResponse,
+  gitBranchListRequest,
+  gitBranchListResponse,
+  gitBranchMergeAbortRequest,
+  gitBranchMergeAbortResponse,
+  gitBranchMergeRequest,
+  gitBranchMergeResponse,
+  gitBranchSwitchRequest,
+  gitBranchSwitchResponse,
+} from './git-branch';
+import {
+  gitStashDropRequest,
+  gitStashDropResponse,
+  gitStashListRequest,
+  gitStashListResponse,
+  gitStashPopRequest,
+  gitStashPopResponse,
+  gitStashSaveRequest,
+  gitStashSaveResponse,
+} from './git-stash';
+import {
+  gitCommitDraftRequest,
+  gitCommitDraftResponse,
+  gitCommitRequest,
+  gitCommitResponse,
+} from './git-commit';
+import {
   gitHunkActionRequest,
   gitHunkActionResponse,
   gitHunkDiffRequest,
@@ -144,6 +172,7 @@ import {
 import { prOpenPreviewRequest, prOpenPreviewResult, prOpenRequest, prOpenResult } from './pr';
 import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
 import { ciCheckStatus } from './ci-check';
+import { ciAutoIterateStatus, ciAutoIterateStop } from './ci-auto-iterate';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -291,11 +320,35 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitHunkDiffResponse,
   gitHunkActionRequest,
   gitHunkActionResponse,
+  gitBranchListRequest,
+  gitBranchListResponse,
+  gitBranchCreateRequest,
+  gitBranchCreateResponse,
+  gitBranchSwitchRequest,
+  gitBranchSwitchResponse,
+  gitBranchMergeRequest,
+  gitBranchMergeResponse,
+  gitBranchMergeAbortRequest,
+  gitBranchMergeAbortResponse,
+  gitStashSaveRequest,
+  gitStashSaveResponse,
+  gitStashListRequest,
+  gitStashListResponse,
+  gitStashPopRequest,
+  gitStashPopResponse,
+  gitStashDropRequest,
+  gitStashDropResponse,
+  gitCommitDraftRequest,
+  gitCommitDraftResponse,
+  gitCommitRequest,
+  gitCommitResponse,
   ciCheckStatus,
   agentInstructionsGetRequest,
   agentInstructionsGetResponse,
   agentInstructionsSetRequest,
   agentInstructionsSetResponse,
+  ciAutoIterateStatus,
+  ciAutoIterateStop,
   ping,
   pong,
 ]);

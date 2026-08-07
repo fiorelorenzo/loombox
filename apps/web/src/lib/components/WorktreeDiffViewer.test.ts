@@ -35,6 +35,7 @@ function renderDiffViewer(props: {
   onStageHunk?: (path: string, hunkIndex: number) => void;
   onUnstageHunk?: (path: string, hunkIndex: number) => void;
   onDiscardHunk?: (path: string, hunkIndex: number, hunk: GitHunkV1) => void;
+  onOpenCommit?: () => void;
 }) {
   return render(WorktreeDiffViewer, {
     props: {
@@ -44,6 +45,7 @@ function renderDiffViewer(props: {
       onStageHunk: vi.fn(),
       onUnstageHunk: vi.fn(),
       onDiscardHunk: vi.fn(),
+      onOpenCommit: vi.fn(),
       ...props,
     },
   });
@@ -407,5 +409,35 @@ describe('WorktreeDiffViewer: staging content (issue #232)', () => {
     expect(within(unstaged).getByText('hello')).toBeTruthy();
     expect(within(unstaged).getByTestId('hunk-stage-button')).toBeTruthy();
     expect(within(unstaged).getByTestId('hunk-discard-button')).toBeTruthy();
+  });
+
+  it('disables the Commit button when nothing is staged, and enables it once a file has a staged hunk', async () => {
+    const untrackedNoStaged: GitHunkFileV1 = {
+      path: 'unstaged-only.txt',
+      previousPath: null,
+      status: 'added',
+      staged: [],
+      unstaged: [unstagedHunk()],
+    };
+    const viewer: DiffTabViewerState = { status: 'loaded', files: [] };
+    const hunkViewer: HunkTabViewerState = { status: 'loaded', files: [untrackedNoStaged] };
+    renderDiffViewer({ viewer, hunkViewer });
+
+    await fireEvent.click(screen.getByTestId('worktree-diff-surface-staging'));
+    expect(screen.getByTestId('worktree-diff-commit-button').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('clicking Commit staged changes calls onOpenCommit once there is a staged hunk', async () => {
+    const onOpenCommit = vi.fn();
+    const viewer: DiffTabViewerState = { status: 'loaded', files: [] };
+    const hunkViewer: HunkTabViewerState = { status: 'loaded', files: [partiallyStagedFile()] };
+    renderDiffViewer({ viewer, hunkViewer, onOpenCommit });
+
+    await fireEvent.click(screen.getByTestId('worktree-diff-surface-staging'));
+    const commitButton = screen.getByTestId('worktree-diff-commit-button');
+    expect(commitButton.hasAttribute('disabled')).toBe(false);
+    await fireEvent.click(commitButton);
+
+    expect(onOpenCommit).toHaveBeenCalledTimes(1);
   });
 });

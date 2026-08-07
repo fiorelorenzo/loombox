@@ -2170,3 +2170,123 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
     );
   });
 });
+
+// ---------------------------------------------------------------------
+// Transcript search (SPEC.md §7.19; issues #262/#263): the acceptance
+// bar for this feature end to end — a match outside the rendered window
+// is still found and still reachable, not just a windowed DOM scan that
+// would silently miss it (see `TranscriptTimeline.svelte`'s own top doc
+// comment for why a naive scan has exactly that gap).
+// ---------------------------------------------------------------------
+
+describe('transcript search (SPEC.md §7.19; issues #262/#263)', () => {
+  function readOnlyToolCall(id: string) {
+    return {
+      type: 'tool_call' as const,
+      id,
+      turnId: 't1',
+      title: `Read file ${id}`,
+      toolKind: undefined,
+      status: 'completed' as const,
+      diff: undefined,
+      rawInput: undefined,
+      content: undefined,
+      parentToolCallId: undefined,
+      startedAtMs: undefined,
+      elapsedMs: undefined,
+      costAtStartUsd: undefined,
+      attributedCostUsd: undefined,
+    };
+  }
+
+  /** A long session: one needle message right at the start, then 600 unrelated tool calls — enough to push the needle well above the pinned-to-tail window issue #755's windowing mounts by default (the same order of magnitude `TranscriptTimeline.test.ts`'s own "brings a turn's edit into view" acceptance test uses). */
+  function longTranscriptWithNeedle(): TranscriptState {
+    return {
+      ...createTranscriptState(),
+      items: [
+        {
+          type: 'message',
+          id: 'm0',
+          kind: 'agent_message_chunk',
+          turnId: 't1',
+          messageId: 'm0',
+          text: 'investigating the flaky-retry-needle regression in the payment worker',
+        },
+        ...Array.from({ length: 600 }, (_, i) => readOnlyToolCall(`tc${i}`)),
+      ],
+    };
+  }
+
+  it('Mod+F opens the search bar for the open session', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: longTranscriptWithNeedle() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    expect(await screen.findByTestId('transcript-search-bar')).toBeTruthy();
+  });
+
+  it('finds a match outside the rendered window, reports it in the count, and navigates to it — mounting a row the initial pinned-to-tail window never mounted', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: longTranscriptWithNeedle() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    // Confirms the premise: at rest, the needle's row is genuinely not
+    // mounted — a windowed-DOM-only search would have nothing to find.
+    expect(screen.getByTestId('transcript-items').querySelector('[data-item-id="m0"]')).toBeNull();
+
+    await fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    const searchInput = await screen.findByTestId('transcript-search-input');
+    await fireEvent.input(searchInput, { target: { value: 'flaky-retry-needle' } });
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('transcript-search-count').textContent?.trim()).toBe('1 of 1'),
+    );
+    await vi.waitFor(() =>
+      expect(
+        screen.getByTestId('transcript-items').querySelector('[data-item-id="m0"]'),
+      ).toBeTruthy(),
+    );
+  });
+
+  it('Escape closes the bar and drops the query', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      transcripts: { sess_1: longTranscriptWithNeedle() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    const searchInput = await screen.findByTestId('transcript-search-input');
+    await fireEvent.input(searchInput, { target: { value: 'needle' } });
+    await screen.findByText('1 of 1');
+
+    await fireEvent.keyDown(searchInput, { key: 'Escape' });
+
+    expect(screen.queryByTestId('transcript-search-bar')).toBeNull();
+  });
+
+  it('switching sessions closes the search bar rather than leaving it open against the new session\u2019s unrelated content', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+      transcripts: { sess_1: longTranscriptWithNeedle() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    await screen.findByTestId('transcript-search-bar');
+
+    const secondRow = screen.getByText('Second session').closest('button');
+    await fireEvent.click(secondRow!);
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('cockpit-session-title').textContent).toBe('Second session'),
+    );
+    expect(screen.queryByTestId('transcript-search-bar')).toBeNull();
+  });
+});

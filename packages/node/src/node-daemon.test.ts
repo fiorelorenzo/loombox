@@ -2740,6 +2740,258 @@ describe('NodeDaemon git-hunks (hunk-level stage/unstage/discard, issue #232)', 
   });
 });
 
+describe('NodeDaemon git-commit (commit workflow with AI-generated commit messages, issue #233)', () => {
+  it("drafts a commit message by prompting the session's own live agent over git_commit_draft_request/git_commit_draft_response — commits NOTHING (the draft is only ever advisory) — then a follow-up git_commit_request with that accepted draft actually commits the staged content, with the expected message and author", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-commit-draft-then-confirm';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-commit-1',
+      deviceId: 'device-node-git-commit-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // echoProvider() always replies "Hello world" regardless of the
+      // prompt text (the fixture's own doc comment) — proof enough that
+      // the DRAFT reaches the client verbatim from a real agent turn,
+      // without this test needing to assert anything about prompt
+      // engineering quality.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'staged.txt'), 'brand new content\n');
+    await git(session.worktreePath, ['add', 'staged.txt']);
+    const headBeforeDraft = await git(session.worktreePath, ['rev-parse', 'HEAD']);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-commit-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_commit_draft_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-commit-draft',
+    });
+    const draftResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_commit_draft_response' &&
+        (m as { requestId?: string }).requestId === 'req-commit-draft',
+    )) as { type: 'git_commit_draft_response'; envelope: EncryptedEnvelope };
+    assertOpaque(draftResponse.envelope, ['Hello world', 'staged.txt', session.worktreePath]);
+    const draftPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      draftResponse.envelope,
+      key,
+    );
+    expect(draftPayload).toEqual({ outcome: 'ok', message: 'Hello world' });
+
+    // The draft is purely advisory: no commit has happened yet.
+    expect(await git(session.worktreePath, ['rev-parse', 'HEAD'])).toBe(headBeforeDraft);
+    expect(await git(session.worktreePath, ['status', '--porcelain'])).toContain('staged.txt');
+
+    const commitEnvelope = await phoneSeal(session.id, { message: draftPayload.message }, key);
+    phone.send({
+      type: 'git_commit_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-commit-confirm',
+      envelope: commitEnvelope,
+    });
+    const commitResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_commit_response' &&
+        (m as { requestId?: string }).requestId === 'req-commit-confirm',
+    )) as { type: 'git_commit_response'; envelope: EncryptedEnvelope };
+    assertOpaque(commitEnvelope, ['Hello world']);
+    const commitPayload = await phoneOpen<{ outcome: string; sha?: string }>(
+      session.id,
+      commitResponse.envelope,
+      key,
+    );
+    expect(commitPayload.outcome).toBe('ok');
+    expect(commitPayload.sha).toBeTruthy();
+
+    const headAfterCommit = await git(session.worktreePath, ['rev-parse', 'HEAD']);
+    expect(headAfterCommit).toBe(commitPayload.sha);
+    expect(headAfterCommit).not.toBe(headBeforeDraft);
+    expect(await git(session.worktreePath, ['log', '-1', '--format=%s'])).toBe('Hello world');
+    expect(await git(session.worktreePath, ['log', '-1', '--format=%an'])).toBe('loombox test');
+    expect(await git(session.worktreePath, ['log', '-1', '--format=%ae'])).toBe('test@loombox.dev');
+    expect(await git(session.worktreePath, ['show', 'HEAD:staged.txt'])).toBe('brand new content');
+  });
+
+  it('lets the operator edit the draft before committing — the edited text, not the original draft, lands as the commit message', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-commit-edited';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-commit-2',
+      deviceId: 'device-node-git-commit-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'edited.txt'), 'content\n');
+    await git(session.worktreePath, ['add', 'edited.txt']);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-commit-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    // Never even requests a draft — an edited/hand-typed message is
+    // committed verbatim exactly like an accepted-as-is one.
+    const commitEnvelope = await phoneSeal(
+      session.id,
+      { message: 'Add edited.txt (hand-typed, never drafted)' },
+      key,
+    );
+    phone.send({
+      type: 'git_commit_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-commit-edited',
+      envelope: commitEnvelope,
+    });
+    const commitResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_commit_response' &&
+        (m as { requestId?: string }).requestId === 'req-commit-edited',
+    )) as { type: 'git_commit_response'; envelope: EncryptedEnvelope };
+    const commitPayload = await phoneOpen<{ outcome: string; sha?: string }>(
+      session.id,
+      commitResponse.envelope,
+      key,
+    );
+    expect(commitPayload.outcome).toBe('ok');
+    expect(await git(session.worktreePath, ['log', '-1', '--format=%s'])).toBe(
+      'Add edited.txt (hand-typed, never drafted)',
+    );
+  });
+
+  it('reports outcome: error with a clear reason for an empty index over git_commit_request, and creates no commit', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-commit-empty-index';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-commit-3',
+      deviceId: 'device-node-git-commit-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const headBefore = await git(session.worktreePath, ['rev-parse', 'HEAD']);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-commit-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const commitEnvelope = await phoneSeal(session.id, { message: 'nothing to commit' }, key);
+    phone.send({
+      type: 'git_commit_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-commit-empty',
+      envelope: commitEnvelope,
+    });
+    const commitResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_commit_response' &&
+        (m as { requestId?: string }).requestId === 'req-commit-empty',
+    )) as { type: 'git_commit_response'; envelope: EncryptedEnvelope };
+    const commitPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      commitResponse.envelope,
+      key,
+    );
+    expect(commitPayload.outcome).toBe('error');
+    expect(commitPayload.message).toMatch(/nothing staged/i);
+    expect(await git(session.worktreePath, ['rev-parse', 'HEAD'])).toBe(headBefore);
+  });
+
+  it('reports outcome: error with a clear reason for git_commit_draft_request when nothing is staged, without spending a real agent turn', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-commit-draft-empty-index';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-commit-4',
+      deviceId: 'device-node-git-commit-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-commit-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    phone.send({
+      type: 'git_commit_draft_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-commit-draft-empty',
+    });
+    const draftResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_commit_draft_response' &&
+        (m as { requestId?: string }).requestId === 'req-commit-draft-empty',
+    )) as { type: 'git_commit_draft_response'; envelope: EncryptedEnvelope };
+    const draftPayload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      draftResponse.envelope,
+      key,
+    );
+    expect(draftPayload.outcome).toBe('error');
+    expect(draftPayload.message).toMatch(/nothing staged/i);
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();
