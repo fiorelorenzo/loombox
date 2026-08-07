@@ -322,6 +322,7 @@ import { JiraConnectService } from './jira-connect';
 import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
+import { linkOpenedPullRequestToNativeTracker } from './native-tracker-pr-link';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { NodeProjectEnvManager } from './project-env-secrets';
 import {
@@ -8594,6 +8595,14 @@ export class NodeDaemon extends EventEmitter {
           ),
         ),
       )
+      .then((opened) =>
+        // Issue #241 (SPEC §7.14): once a PR is genuinely open, write the
+        // linkage back onto whichever native tracker record this
+        // session is linked to — best-effort, same "never turns an
+        // otherwise-successful pr_open_request into a reported failure"
+        // contract as the CI-watch registration above.
+        this.linkPullRequestToNativeTracker(routing.session, opened).then(() => opened),
+      )
       .then(
         (opened) => ({ outcome: 'ok' as const, url: opened.url, number: opened.number }),
         (error: unknown) => ({ outcome: 'failure' as const, ...this.prOpenFailureFrom(error) }),
@@ -10364,6 +10373,45 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       envelope,
     });
+  }
+
+  /**
+   * Issue #241 (SPEC §7.14; epic #24): once a session's PR is genuinely
+   * open ({@link handlePrOpenRequest}), writes that linkage back onto
+   * whichever native tracker record the session is linked to
+   * (`system.linkedSessionIds`, `tracker_link_session`) — mirrors
+   * {@link registerCiCheckWatch}'s own "best-effort, never turns an
+   * otherwise-successful pr_open_request into a reported failure"
+   * contract, for the same reason: this write-back is a side effect of a
+   * PR having opened, not a precondition for `pr_open_result` succeeding.
+   * A `'live'`-mode project is out of scope here — issue #242 writes the
+   * same event back through that project's own `TrackerBackend` instead
+   * — and a session with no native tracker record linked at all (the
+   * common case) is a silent, honest no-op, not an error. A non-
+   * `github.com` PR URL (`parseGithubPullRequestUrl` returning
+   * `undefined`) is out of scope the same way `registerCiCheckWatch`
+   * treats it.
+   */
+  private async linkPullRequestToNativeTracker(
+    session: Session,
+    opened: OpenPrResult,
+  ): Promise<void> {
+    try {
+      const mode = this.trackerModeStore.get(session.projectPath) ?? { kind: 'native' as const };
+      if (mode.kind !== 'native') return;
+      const parsed = parseGithubPullRequestUrl(opened.url);
+      if (!parsed) return;
+      linkOpenedPullRequestToNativeTracker(
+        this.nativeTrackerStore,
+        session.projectPath,
+        session.id,
+        { owner: parsed.owner, repo: parsed.repo, number: opened.number },
+      );
+    } catch (error) {
+      console.warn(
+        `NodeDaemon: failed to link PR to native tracker for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }
 

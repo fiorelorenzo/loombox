@@ -25,6 +25,7 @@ import {
 } from '@loombox/crypto';
 
 import { createNode, type NodeDaemon } from './node-daemon';
+import { NativeTrackerStore } from './native-tracker-store';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -367,6 +368,55 @@ describe('pr_open_preview_request / pr_open_request wire round trip (SPEC §7.14
 
       const remoteRefs = await execFileAsync('git', ['ls-remote', '--heads', bareDir]);
       expect(remoteRefs.stdout).toContain(`refs/heads/loombox/session-${sessionId}`);
+    },
+  );
+
+  it(
+    "issue #241: opening a PR for a session linked to a native tracker record writes the link back onto that record's system.linkedPullRequests",
+    { retry: 0, timeout: 20000 },
+    async () => {
+      const { sessionId, key, worktreePath } = await createSessionOverWire();
+      await commitInWorktree(worktreePath, 'session work');
+      await stubGh(GH_OK);
+
+      const nativeTrackerStore = new NativeTrackerStore({ stateDir: nodeStateDir });
+      const record = nativeTrackerStore.create(projectPath, {
+        primaryType: 'task',
+        fields: {},
+        authorId: 'author-1',
+      });
+      nativeTrackerStore.linkSession(projectPath, record.id, sessionId);
+
+      const openEnvelope = await phoneSeal(
+        sessionId,
+        { title: 'Add widget', body: 'Body text' },
+        key,
+      );
+      phone!.send({
+        type: 'pr_open_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId: 'req-open-native-tracker',
+        envelope: openEnvelope,
+      });
+      const openMsg = (await phone!.waitFor(
+        (m) =>
+          m.type === 'pr_open_result' &&
+          (m as { requestId?: string }).requestId === 'req-open-native-tracker',
+      )) as { envelope: EncryptedEnvelope };
+      const opened = await phoneOpen<{ result: PrOpenOutcome }>(sessionId, openMsg.envelope, key);
+      expect(opened.result).toEqual({
+        outcome: 'ok',
+        url: 'https://github.com/acme/widgets/pull/42',
+        number: 42,
+      });
+
+      // pr_open_result only arrives after handlePrOpenRequest's whole
+      // .then chain (including the native tracker write-back stage)
+      // has resolved, so this is already settled — no polling needed.
+      const linked = nativeTrackerStore.get(projectPath, record.id);
+      expect(linked?.system.linkedPullRequests).toEqual(['acme/widgets#42']);
+      expect(linked?.system.activity.map((entry) => entry.kind)).toContain('pull_request_linked');
     },
   );
 
