@@ -176,6 +176,10 @@ import {
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
   type PermissionPolicyViolationPayloadV1,
+  type PrMergeOutcome,
+  type PrMergeRequest,
+  type PrMergeRequestPayloadV1,
+  type PrMergeResultPayloadV1,
   type PromptInjectV1,
   type PrOpenFailureCategory,
   type PrOpenPreviewRequest,
@@ -186,6 +190,8 @@ import {
   type ProvisionProgress,
   type ProvisionTargetResult,
   type RestorePreviewV1,
+  type ReviewCommentStateV1,
+  type ReviewCommentStatusPayloadV1,
   type RewindErrorTypeV1,
   type RewindPreviewV1,
   type RunCancel,
@@ -374,6 +380,8 @@ import {
   parseGithubPullRequestUrl,
   type CiWatchEntry,
 } from './ci-check-watcher';
+import { ReviewCommentWatcher } from './review-comment-watcher';
+import { mergePr } from './pr-merge';
 import {
   TrackerConnectivityWatcher,
   type TrackerConnectivityTarget,
@@ -859,6 +867,8 @@ export interface NodeDaemonOptions {
   runStatusTracker?: RunStatusTracker;
   /** SPEC §7.10, issue #219 — the live-tracker reachability polling engine, injectable wholesale, same convention as `ciCheckWatcher` above. Defaults to a real `TrackerConnectivityWatcher` wired to `resolveTrackerConnectivityTarget`/`pushTrackerConnectivityStatus`. */
   trackerConnectivityWatcher?: TrackerConnectivityWatcher;
+  /** SPEC §7.14, issue #240 — the review-comment polling engine, injectable wholesale, same convention as `ciCheckWatcher` above. Defaults to a real `ReviewCommentWatcher` wired to `resolveCiCheckGithubToken`/`sendReviewCommentStatus` — the same credential resolver `ciCheckWatcher` already uses, never a second token path (see `review-comment-watcher.ts`'s own doc comment). */
+  reviewCommentWatcher?: ReviewCommentWatcher;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1637,6 +1647,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly ciCheckWatchStore: CiWatchStore;
   /** SPEC §7.14, issue #239's polling engine — see `NodeDaemonOptions.ciCheckWatcher`'s doc comment. */
   private readonly ciCheckWatcher: CiCheckWatcher;
+  /** SPEC §7.14, issue #240's polling engine — see `NodeDaemonOptions.reviewCommentWatcher`'s doc comment. */
+  private readonly reviewCommentWatcher: ReviewCommentWatcher;
   /** SPEC §7.14/§7.15, issue #246's failure-decision-and-loop-state tracker — see `NodeDaemonOptions.ciAutoIterateController`'s doc comment. */
   private readonly ciAutoIterateController: CiAutoIterateController;
   /** SPEC §7.10, issue #219's live-tracker reachability polling engine — see `NodeDaemonOptions.trackerConnectivityWatcher`'s doc comment. */
@@ -1843,6 +1855,36 @@ export class NodeDaemon extends EventEmitter {
       }
     }
     this.ciCheckWatcher.start();
+
+    // SPEC §7.14, issue #240: the review-comment sibling of the
+    // `ciCheckWatcher` composition just above — same persisted watch
+    // registry (`CiWatchEntry`'s shape already carries everything a
+    // `ReviewCommentWatchEntry` needs, so the exact same
+    // `ciCheckWatchStore` records reload into this watcher too, no
+    // second store), same reload-then-prune restart behaviour, same
+    // credential resolver. `onNewComment` is available on
+    // `ReviewCommentWatcher` but deliberately left unwired here — see
+    // that module's own doc comment for why a review comment's action
+    // is a human decision, never an automatic `promptSession` call the
+    // way a red CI check is.
+    this.reviewCommentWatcher =
+      options.reviewCommentWatcher ??
+      new ReviewCommentWatcher({
+        resolveToken: (entry) => this.resolveCiCheckGithubToken(entry.projectPath),
+        onUpdate: (sessionId, state) => {
+          this.sendReviewCommentStatus(sessionId, state).catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to send review_comment_status for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        },
+      });
+    for (const record of this.ciCheckWatchStore.list()) {
+      if (this.sessionManager.getSession(record.sessionId)) {
+        this.reviewCommentWatcher.watch(record.sessionId, record);
+      }
+    }
+    this.reviewCommentWatcher.start();
 
     // SPEC §7.10, issue #219: re-`watch`es every project already saved as
     // `'live'` mode before this node last restarted — mirrors the
@@ -4316,6 +4358,9 @@ export class NodeDaemon extends EventEmitter {
       case 'pr_open_request':
         this.handlePrOpenRequest(message);
         return;
+      case 'pr_merge_request':
+        this.handlePrMergeRequest(message);
+        return;
       case 'run_start':
         this.handleRunStart(message);
         return;
@@ -4708,6 +4753,7 @@ export class NodeDaemon extends EventEmitter {
     // but nothing here relies on session ids never being reused) starts
     // clean.
     this.ciCheckWatcher.unwatch(sessionId);
+    this.reviewCommentWatcher.unwatch(sessionId);
     this.ciCheckWatchStore.remove(sessionId);
     this.ciAutoIterateController.forget(sessionId);
     this.autoIterateDriveGate.clear(sessionId);
@@ -8677,9 +8723,15 @@ export class NodeDaemon extends EventEmitter {
    * starts (or replaces) that session's watched entry — `CiCheckWatcher`
    * polls it from the very next pass, and `CiWatchStore` persists it so a
    * later node restart re-registers it too (see this daemon's own
-   * constructor). Best-effort: `parseGithubPullRequestUrl` returning
-   * `undefined` (a non-`github.com` PR — out of this watcher's scope, see
-   * that function's own doc comment) or `resolveSessionBranch` resolving
+   * constructor). Also registers the SAME entry with
+   * `reviewCommentWatcher` (SPEC §7.14, issue #240) — a `CiWatchEntry`'s
+   * `owner`/`repo`/`prNumber`/`prUrl`/`projectPath` are exactly what a
+   * `ReviewCommentWatchEntry` needs (it just never reads the extra `ref`
+   * field), so one registration call covers both watchers rather than
+   * duplicating the URL-parse-and-branch-resolve dance here a second
+   * time. Best-effort: `parseGithubPullRequestUrl` returning `undefined`
+   * (a non-`github.com` PR — out of both watchers' scope, see that
+   * function's own doc comment) or `resolveSessionBranch` resolving
    * nothing usable both fall through as a silent no-op rather than an
    * error, matching `handlePrOpenRequest`'s own "never lets a watch-
    * registration failure turn an otherwise-successful pr_open_request
@@ -8704,6 +8756,7 @@ export class NodeDaemon extends EventEmitter {
     };
     this.ciCheckWatchStore.set(session.id, entry);
     this.ciCheckWatcher.watch(session.id, entry);
+    this.reviewCommentWatcher.watch(session.id, entry);
     this.ciAutoIterateController.reset(session.id);
     this.autoIterateDriveGate.clear(session.id);
   }
@@ -10484,6 +10537,111 @@ export class NodeDaemon extends EventEmitter {
         `NodeDaemon: failed to link PR to native tracker for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+  // -------------------------------------------------------------------
+  // SPEC §7.14, issue #240: review comments + merge — the human half of
+  // the PR loop `pr-open.ts`/`ci-check-watcher.ts` (issues #238/#239)
+  // already built the machine half of. `sendReviewCommentStatus` is
+  // `reviewCommentWatcher`'s own `onUpdate` sink, the exact sibling of
+  // `sendCiCheckStatus` above; `handlePrMergeRequest`/
+  // `resolvePrMergeOutcome`/`decryptPrMergeRequest`/`sendPrMergeResult`
+  // are the merge action's own request/reply pair, the sibling of
+  // `handlePrOpenRequest`/`decryptPrOpenRequest`/`sendPrOpenResult`
+  // above. Kept together, at the end of the class, rather than
+  // interleaved among those siblings — this wave's own convention for
+  // avoiding a three-way merge hybrid across near-identical handler
+  // families.
+  // -------------------------------------------------------------------
+
+  /**
+   * Pushes a session's latest `ReviewCommentWatcher` reading to its
+   * subscribed clients (SPEC §7.14, issue #240) — mirrors
+   * `sendCiCheckStatus` exactly, down to the "fire after every completed
+   * poll, whatever the resulting state" contract.
+   */
+  private async sendReviewCommentStatus(
+    sessionId: string,
+    state: ReviewCommentStateV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: ReviewCommentStatusPayloadV1 = { status: state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'review_comment_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked this node to merge `sessionId`'s watched pull request
+   * (SPEC §7.14 "...and merge"; issue #240) — the explicit merge action.
+   * Ignored if `sessionId` isn't one of this node's sessions at all
+   * ({@link resolveSessionRouting}'s guard, mirroring
+   * `handlePrOpenRequest`'s own).
+   */
+  private handlePrMergeRequest(message: PrMergeRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.resolvePrMergeOutcome(message)
+      .then((result) => this.sendPrMergeResult(message.sessionId, message.requestId, { result }))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle pr_merge_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  /**
+   * The actual merge decision behind {@link handlePrMergeRequest} (SPEC
+   * §7.14; issue #240): resolves this session's watched PR and GitHub
+   * credential — the SAME `ciCheckWatchStore` entry and
+   * `resolveCiCheckGithubToken` `registerCiCheckWatch`/`ciCheckWatcher`
+   * already use — then defers to `mergePr` for the actual
+   * read-then-write GitHub call. No watch, or no credential, is its own
+   * named `PrMergeOutcome` (`'no_pr'`/`'no_credential'`) rather than a
+   * thrown error, so a merge attempt on a session with no open PR
+   * reports exactly as clearly as a real GitHub-side block.
+   */
+  private async resolvePrMergeOutcome(message: PrMergeRequest): Promise<PrMergeOutcome> {
+    const payload = await this.decryptPrMergeRequest(message);
+    const watch = this.ciCheckWatchStore.get(message.sessionId);
+    if (!watch) return { outcome: 'failed', category: 'no_pr' };
+
+    const token = await this.resolveCiCheckGithubToken(watch.projectPath);
+    if (!token) return { outcome: 'failed', category: 'no_credential' };
+
+    return mergePr({
+      owner: watch.owner,
+      repo: watch.repo,
+      prNumber: watch.prNumber,
+      method: payload.method,
+      token,
+    });
+  }
+
+  private async decryptPrMergeRequest(message: PrMergeRequest): Promise<PrMergeRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<PrMergeRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  private async sendPrMergeResult(
+    sessionId: string,
+    requestId: string,
+    payload: PrMergeResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'pr_merge_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
   }
 }
 

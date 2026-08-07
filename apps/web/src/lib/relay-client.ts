@@ -52,8 +52,10 @@ import {
   parseCiCheckStatusPayloadV1,
   parsePermissionPolicyResultPayloadV1,
   parsePermissionPolicyViolationPayloadV1,
+  parsePrMergeResultPayloadV1,
   parsePrOpenPreviewResultPayloadV1,
   parsePrOpenResultPayloadV1,
+  parseReviewCommentStatusPayloadV1,
   parseRunStatusPayloadV1,
   parseSessionTemplateListResultPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
@@ -165,6 +167,10 @@ import {
   type PermissionPolicyViolationPayloadV1,
   type PermissionRequest,
   type Pong,
+  type PrMergeMethod,
+  type PrMergeOutcome,
+  type PrMergeRequestPayloadV1,
+  type PrMergeResult,
   type PrOpenOutcome,
   type PrOpenPreviewOutcome,
   type PrOpenPreviewResult,
@@ -174,6 +180,9 @@ import {
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
   type ResyncMarker,
+  type ReviewCommentStateV1,
+  type ReviewCommentStatus,
+  type ReviewCommentThreadV1,
   type RunExit,
   type RunExitOutcomeV1,
   type RunExitPayloadV1,
@@ -286,6 +295,8 @@ export type {
 } from '@loombox/protocol';
 export type { CustomAgentProbeResultV1, CustomAgentRecordV1 } from '@loombox/protocol';
 export type { PrOpenFailureCategory, PrOpenOutcome, PrOpenPreviewOutcome } from '@loombox/protocol';
+export type { PrMergeMethod, PrMergeOutcome } from '@loombox/protocol';
+export type { ReviewCommentOverallStateV1, ReviewCommentThreadV1 } from '@loombox/protocol';
 export type {
   CheckpointErrorTypeV1,
   CheckpointResultPayloadV1,
@@ -595,34 +606,27 @@ export interface RunClientState {
  *   (GitHub/Jira) is unreachable or its credential was rejected
  *   (`packages/node/src/tracker-connectivity-watcher.ts`, issue #219); see
  *   `trackerProvider`/`trackerConnectivityState`.
- * - `'review_request'` — declared here as an extension point ONLY: SPEC
- *   §7.14 says a review request lands in this same inbox too, but it has
- *   no live event source in this client yet. `RelayClient` never
+ * - `'review_request'` — a session whose watched pull request has at
+ *   least one unresolved review thread, per its latest
+ *   `review_comment_status` (`packages/node/src/review-comment-watcher.ts`,
+ *   issue #240); see `prUrl`/`prNumber`/`reviewThreads`. Unlike
+ *   `'ci_failure'`, this is never auto-driven back into the session — a
+ *   review comment is a human waiting for a reply, not a machine waiting
+ *   for a retry (that module's own doc comment). A renderer offers
+ *   forwarding a thread into the session as a follow-up prompt
+ *   (`prompt_inject`) instead; this client never sends one itself.
  *
- *   constructs one of these in  v1; it exists in the union (and
- *
- *   `AttentionInbox.svelte` already  renders it distinctly) purely so
- *
- *   wiring a real source later is  additive, not a rendering/type rework.
- *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'`/
- * `'run_failure'` are the five "needs the user now" classes this client
- * actually wires to live data. See {@link RelayClient.attentionInbox}'s
- * doc comment for why a session with a queue of several pending requests
- * only ever contributes its head as one item, why a session contributes
- * at most one of `awaiting_input`/`session_outcome` (its live status is
- * one or the other, never both), and why `ci_failure`/`run_failure` are
- * each independent of both AND of each other (a session can be
- * idle/finished, have a failing check on its open PR, AND have a failing
- * local run, all at once — three unrelated facts about that session).
- * `'tracker_failure'` are the five "needs the user now" classes this
- * client actually wires to live data. See {@link RelayClient.attentionInbox}'s
- * doc comment for why a session with a queue of several pending requests
- * only ever contributes its head as one item, why a session contributes
- * at most one of `awaiting_input`/`session_outcome` (its live status is
- * one or the other, never both), and why `ci_failure`/`tracker_failure`
- * are independent of both (a session can be idle/finished AND have a
- * failing check on its open PR, or a broken project tracker, at once).
+ * All seven are the "needs the user now" classes this client wires to
+ * live data. See {@link RelayClient.attentionInbox}'s doc comment for why
+ * a session with a queue of several pending requests only ever
+ * contributes its head as one item, why a session contributes at most one
+ * of `awaiting_input`/`session_outcome` (its live status is one or the
+ * other, never both), and why `ci_failure`/`run_failure`/
+ * `tracker_failure`/`review_request` are each independent of the others
+ * (a session can be idle/finished, have a failing check on its open PR,
+ * have a failing local run, have an unresolved review thread on that same
+ * PR, AND have a broken project tracker, all at once — five unrelated
+ * facts about that session).
  */
 export interface AttentionInboxItem {
   readonly kind:
@@ -662,7 +666,7 @@ export interface AttentionInboxItem {
    * first turn) — not a stale placeholder.
    */
   readonly agentMessage?: string;
-  /** Set only for a `'ci_failure'` item: the failing pull request's own URL and number (`CiCheckStateV1.prUrl`/`.prNumber`), so a renderer can link straight to it rather than only naming the session (issue #243). */
+  /** Set for a `'ci_failure'` or `'review_request'` item: the pull request's own URL and number (`CiCheckStateV1.prUrl`/`.prNumber`, `ReviewCommentStateV1.prUrl`/`.prNumber`), so a renderer can link straight to it rather than only naming the session (issues #243/#240). */
   readonly prUrl?: string;
   readonly prNumber?: number;
   /**
@@ -699,6 +703,17 @@ export interface AttentionInboxItem {
    */
   readonly trackerProvider?: 'github' | 'jira';
   readonly trackerConnectivityState?: 'unreachable' | 'authFailed';
+  /**
+   * Set only for a `'review_request'` item: every currently-unresolved
+   * review thread (`ReviewCommentStateV1.threads`), so a renderer can
+   * show each thread's own file/line/author/body and, if the operator
+   * chooses, forward one into the session as a follow-up prompt (issue
+   * #240's "sent to the session as a prompt" acceptance line) — never
+   * empty when `kind` is `'review_request'`: the node's own aggregate
+   * `state` only reaches `'pending'` when at least one thread is
+   * unresolved.
+   */
+  readonly reviewThreads?: readonly ReviewCommentThreadV1[];
 }
 
 /**
@@ -1497,6 +1512,11 @@ export class RelayClient {
     string,
     Writable<TrackerConnectivityStateV1 | undefined>
   >();
+  /** `sessionId` -> this session's latest known review-thread state (SPEC §7.14; issue #240) — backs the attention inbox's `'review_request'` class (see {@link recomputeAttentionInbox}), populated by {@link handleReviewCommentStatus}. `undefined` (no entry yet) until the node's first `review_comment_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. Mirrors {@link ciCheckStatuses} exactly. */
+  private readonly reviewCommentStatuses = new Map<
+    string,
+    Writable<ReviewCommentStateV1 | undefined>
+  >();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1730,6 +1750,11 @@ export class RelayClient {
   private readonly pendingPrOpenRequests = new Map<
     string,
     { resolve: (result: PrOpenOutcome) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link mergePr} call it belongs to (SPEC §7.14; issue #240) — resolves the whole `pr_merge_result` outcome union rather than throwing for a non-`'merged'` outcome, same "expected, renderable result" contract {@link pendingPrOpenRequests} above documents: a `'blocked'`/`'conflict'`/`'not_ready'` outcome is exactly as renderable as a success, not a transport failure. */
+  private readonly pendingPrMergeRequests = new Map<
+    string,
+    { resolve: (result: PrMergeOutcome) => void; reject: (error: Error) => void }
   >();
   /** requestId -> the pending {@link createCheckpoint} call it belongs to (SPEC §7.20; issue #268/#603). Resolves the whole `checkpoint_result` outcome union (`'ok'` or `'error'`) rather than throwing for an error outcome — same "expected, renderable result" contract {@link pendingPrOpenPreviewRequests} above documents, since a caller needs to distinguish which named `errorType` (e.g. `unsupported_target` for an ssh: session) rather than only free text. */
   private readonly pendingCheckpointCreateRequests = new Map<
@@ -4222,11 +4247,13 @@ export class RelayClient {
    *   PR's latest `ci_check_status` (issue #239) aggregates to `'failing'`
    *   (issue #243) — a session can be idle/finished AND have a failing
    *   check on its open PR at the same time, so this is never mutually
-   *   exclusive with the status item above.
-   *
-   * `'review_request'` is NOT produced here — see
-   * {@link AttentionInboxItem}'s doc comment for why that one class is
-   * still only a modeled extension point, not live yet.
+   *   exclusive with the status item above;
+   * - AND, independently yet again, a `'review_request'` item while that
+   *   same PR's latest `review_comment_status` (issue #240) has at least
+   *   one unresolved thread — a session can have a red check AND an
+   *   unresolved review comment on the same PR at once, two unrelated
+   *   facts about it, so this is never mutually exclusive with
+   *   `'ci_failure'` either.
    *
    * Reads straight off the exact same `permissionQueueStoreFor`/
    * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
@@ -5937,6 +5964,7 @@ export class RelayClient {
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.reviewCommentStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.runStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.trackerConnectivityStatusStoreFor(sessionId).subscribe(() =>
       this.recomputeAttentionInbox(),
@@ -6016,6 +6044,21 @@ export class RelayClient {
           failingChecks: ci.checkRuns
             .filter((run) => isFailingCiConclusion(run.conclusion))
             .map((run) => run.name),
+        });
+      }
+
+      const review = get(this.reviewCommentStatusStoreFor(session.id));
+      if (review?.state === 'pending') {
+        items.push({
+          kind: 'review_request',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: review.updatedAt,
+          prUrl: review.prUrl,
+          prNumber: review.prNumber,
+          reviewThreads: review.threads,
         });
       }
 
@@ -6343,6 +6386,12 @@ export class RelayClient {
         return;
       case 'pr_open_result':
         this.handlePrOpenResult(message);
+        return;
+      case 'review_comment_status':
+        this.handleReviewCommentStatus(message);
+        return;
+      case 'pr_merge_result':
+        this.handlePrMergeResult(message);
         return;
       case 'checkpoint_result':
         this.handleCheckpointResult(message);
@@ -9031,5 +9080,125 @@ export class RelayClient {
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
       });
+  }
+
+  // ---------------------------------------------------------------------
+  // SPEC §7.14, issue #240: review comments + merge — the human half of
+  // the PR loop `openPr`/`handleCiCheckStatus` (issues #238/#239) already
+  // built the machine half of. Kept together, at the end of the class,
+  // rather than interleaved among those siblings — this wave's own
+  // convention for avoiding a three-way merge hybrid across
+  // near-identical handler families.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Merges `sessionId`'s watched pull request (SPEC §7.14 "...and
+   * merge"; issue #240) — the explicit merge action. Resolves with the
+   * whole `pr_merge_result` outcome union (`'merged'`/`'already_merged'`/
+   * `'not_ready'`/`'blocked'`/`'conflict'`/`'failed'`) rather than
+   * throwing for anything but a `'merged'` outcome, same "expected,
+   * renderable result" contract {@link openPr} documents: a blocked or
+   * conflicted PR is exactly as renderable as a success, never a
+   * transport failure; only a timeout/no-connection rejects.
+   */
+  mergePr(sessionId: string, method: PrMergeMethod, timeoutMs = 30_000): Promise<PrMergeOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot merge pull request, no open connection'),
+      );
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('prmerge');
+    return new Promise<PrMergeOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPrMergeRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for pr_merge_result'));
+      }, timeoutMs);
+      this.pendingPrMergeRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: PrMergeRequestPayloadV1 = { method };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'pr_merge_request',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingPrMergeRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link mergePr}
+   * calls (SPEC §7.14; issue #240) — mirrors `handlePrOpenResult`
+   * exactly, down to the "requestId not pending means it isn't mine"
+   * guard.
+   */
+  private handlePrMergeResult(message: PrMergeResult): void {
+    const pending = this.pendingPrMergeRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingPrMergeRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parsePrMergeResultPayloadV1(decrypted).result))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's latest review-thread reading for a session's open
+   * pull request (SPEC §7.14; issue #240) — pushed on a fixed interval
+   * whatever the resulting state, exactly like {@link handleCiCheckStatus}
+   * (its own sibling); no pending-request bookkeeping, since nothing on
+   * this client ever asks for it. Decrypts straight into
+   * {@link reviewCommentStatusStoreFor}, which
+   * {@link recomputeAttentionInbox} reads to build (or clear) this
+   * session's `'review_request'` inbox item — a genuine decrypt failure
+   * is logged and otherwise swallowed, the same "best-effort push, never
+   * crash the client" contract {@link handleCiCheckStatus} follows.
+   */
+  private handleReviewCommentStatus(message: ReviewCommentStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.reviewCommentStatusStoreFor(message.sessionId).set(
+          parseReviewCommentStatusPayloadV1(decrypted).status,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt review_comment_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** `sessionId` -> {@link reviewCommentStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
+  private reviewCommentStatusStoreFor(
+    sessionId: string,
+  ): Writable<ReviewCommentStateV1 | undefined> {
+    let store = this.reviewCommentStatuses.get(sessionId);
+    if (!store) {
+      store = writable<ReviewCommentStateV1 | undefined>(undefined);
+      this.reviewCommentStatuses.set(sessionId, store);
+    }
+    return store;
   }
 }

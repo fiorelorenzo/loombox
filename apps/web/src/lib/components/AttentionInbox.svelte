@@ -3,11 +3,10 @@
    * The cross-project, cross-node attention inbox (SPEC.md §7.13, issues
    * #167/#168/#169): one list of every item across every project/node that
    * needs the user now, sorted oldest-waiting first
-   * (`RelayClient.attentionInbox()`'s own sort, not re-sorted here). Renders
-   * all five classes SPEC §7.13/§7.15 name, each visually distinguishable
-   * via its `data-kind` attribute and a `.kind-badge` label:
-   * all five classes SPEC §7.13 names, each visually distinguishable via its
-   * `data-kind` attribute and a `.kind-badge` label:
+   * (`RelayClient.attentionInbox()`'s own sort, not re-sorted here).
+   * Renders all seven classes SPEC §7.13/§7.15 name, each visually
+   * distinguishable via its `data-kind` attribute and a `.kind-badge`
+   * label:
    * - `'permission'` — an actionable pending tool-call approval.
    * - `'awaiting_input'` — a session waiting on the user's next message.
    * - `'session_outcome'` — a session that finished (`outcome: 'exited'`) or
@@ -24,11 +23,14 @@
    *   (`TrackerConnectivityWatcher`, SPEC §7.10, issue #219); wording
    *   distinguishes the two, since the corrective action differs (retry
    *   later vs. reconnect the account).
-   * - `'review_request'` — modeled and rendered here so the inbox already
-   *   has a distinct look for it, but `RelayClient` never produces one in
-   *   v1: it has no live event source in this client yet. This is a
-   *   forward-looking extension point, not a fake stub — no item of this
-   *   kind is ever synthesized.
+   * - `'review_request'` — a session whose watched PR has at least one
+   *   unresolved review thread, per its latest `review_comment_status`
+   *   (`packages/node/src/review-comment-watcher.ts`, issue #240); shows a
+   *   link to the PR. Distinct from `'ci_failure'`: a human is waiting on
+   *   a reply here, not a machine waiting on a retry, so this item is
+   *   never auto-driven back into the session the way a red check can be
+   *   — the operator forwards a thread into the session as a follow-up
+   *   prompt instead, or doesn't.
    *
    * Every item has an Open action (`onOpenSession`) that jumps to its
    * originating session. A `'permission'` item is additionally actionable
