@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createTranscriptState,
+  type PendingPermissionRequest,
   type TranscriptGapItem,
   type TranscriptItem,
   type TranscriptState,
   type TranscriptToolCallItem,
 } from '@loombox/providers-core/browser';
+import { TOOL_CALL_BURST_THRESHOLD } from '$lib/transcript/tool-call-bursts';
 import TranscriptTimeline, { type TranscriptJumpTarget } from './TranscriptTimeline.svelte';
 
 afterEach(() => cleanup());
@@ -36,8 +38,8 @@ function toolCallItem(
   };
 }
 
-function toolCalls(count: number): TranscriptToolCallItem[] {
-  return Array.from({ length: count }, (_, i) => toolCallItem(`tc${i}`));
+function toolCalls(count: number, prefix = 'tc'): TranscriptToolCallItem[] {
+  return Array.from({ length: count }, (_, i) => toolCallItem(`${prefix}${i}`));
 }
 
 function messageItem(id: string, text: string): TranscriptItem {
@@ -65,7 +67,7 @@ interface TranscriptTimelineTestProps {
   transcript: TranscriptState;
   turnActive: boolean;
   providerId: string;
-  permissionHead: undefined;
+  permissionHead: PendingPermissionRequest | undefined;
   jumpTarget: TranscriptJumpTarget | undefined;
   searchQuery?: string;
   activeSearchItemId?: string;
@@ -452,10 +454,15 @@ describe('TranscriptTimeline: search highlighting (issues #262/#263)', () => {
   });
 
   it('paints no highlight at all for a match that exists in `items` but is outside the mounted window — the documented, accepted DOM-only constraint (search.ts still counted it; only painting is DOM-bound)', () => {
-    // A huge tail of unrelated tool calls pushes "m0" out of the
+    // A huge tail of unrelated messages pushes "m0" out of the
     // pinned-to-tail window, the same setup the jumpTarget "brings a row
-    // outside the window into view" test above uses.
-    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...toolCalls(500)];
+    // outside the window into view" test above uses. Plain messages, not
+    // `toolCalls`: 500 consecutive tool calls now collapse into one
+    // tier-3 burst group (issue #202), which would defeat this fixture's
+    // whole point of needing many real mounted rows between here and the
+    // tail.
+    const filler = Array.from({ length: 500 }, (_, i) => messageItem(`filler${i}`, 'filler'));
+    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...filler];
     const { container } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
     expect(container.querySelector('[data-item-id="m0"]')).toBeNull();
 
@@ -463,7 +470,8 @@ describe('TranscriptTimeline: search highlighting (issues #262/#263)', () => {
   });
 
   it('navigating to that same off-window match (via jumpTarget, exactly like +page.svelte does) mounts it and the highlight then appears', () => {
-    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...toolCalls(500)];
+    const filler = Array.from({ length: 500 }, (_, i) => messageItem(`filler${i}`, 'filler'));
+    const items: TranscriptItem[] = [messageItem('m0', 'the needle is here'), ...filler];
     const { rerender, container } = renderTimeline(items, 'sess_1', { searchQuery: 'needle' });
     expect(registry.has('loombox-transcript-search')).toBe(false);
 
@@ -510,5 +518,117 @@ describe('TranscriptTimeline: search highlighting (issues #262/#263)', () => {
     rerender({ ...propsFor(items, 'sess_1'), searchQuery: '' });
 
     expect(registry.has('loombox-transcript-search')).toBe(false);
+  });
+});
+
+describe('TranscriptTimeline: tool-call burst/group summary card (issue #202)', () => {
+  it('a run at the threshold stays flat; one more call crosses it and collapses the whole run into one card', async () => {
+    const { rerender } = renderTimeline(toolCalls(TOOL_CALL_BURST_THRESHOLD));
+    expect(screen.getAllByTestId('transcript-row')).toHaveLength(TOOL_CALL_BURST_THRESHOLD);
+    expect(screen.queryByTestId('tool-call-burst-group')).toBeNull();
+
+    await rerender(propsFor(toolCalls(TOOL_CALL_BURST_THRESHOLD + 1), 'sess_1'));
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dataset.itemId).toBe('tool_call_group::tc0');
+    expect(screen.getByTestId('tool-call-burst-group')).toBeTruthy();
+  });
+
+  it('stays the SAME mounted row (never remounted) across every further streamed call, only growing', async () => {
+    const { rerender } = renderTimeline(toolCalls(TOOL_CALL_BURST_THRESHOLD + 1));
+    const groupRow = screen.getAllByTestId('transcript-row')[0]!;
+    const stableId = groupRow.dataset.itemId;
+    expect(stableId).toBe('tool_call_group::tc0');
+
+    for (let n = TOOL_CALL_BURST_THRESHOLD + 2; n <= TOOL_CALL_BURST_THRESHOLD + 12; n += 1) {
+      await rerender(propsFor(toolCalls(n), 'sess_1'));
+      const stillOneRow = screen.getAllByTestId('transcript-row');
+      // Exactly one mounted row throughout, and it never re-forms under a
+      // different id — the stability this ticket's own acceptance requires:
+      // a group that changed identity on every tick would flicker.
+      expect(stillOneRow).toHaveLength(1);
+      expect(stillOneRow[0]!.dataset.itemId).toBe(stableId);
+    }
+  });
+
+  it('expanding the card reveals every real call, each through its normal tier-1/2 ToolCallRow renderer', async () => {
+    const items = toolCalls(TOOL_CALL_BURST_THRESHOLD + 3);
+    renderTimeline(items);
+    expect(screen.queryByTestId('tool-call-burst-detail')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('tool-call-burst-summary'));
+
+    const detail = screen.getByTestId('tool-call-burst-detail');
+    // The exact same testid a top-level, ungrouped tool call renders
+    // through — no special-cased rendering for a grouped call.
+    expect(within(detail).getAllByTestId('tool-call-row')).toHaveLength(items.length);
+    for (const call of items) {
+      expect(detail.querySelector(`[data-item-id="${call.id}"]`)).toBeTruthy();
+    }
+  });
+
+  it('collapsing back after expanding removes the detail rows again — a real toggle, not a one-way reveal', async () => {
+    renderTimeline(toolCalls(TOOL_CALL_BURST_THRESHOLD + 1));
+    const toggle = screen.getByTestId('tool-call-burst-summary');
+    await fireEvent.click(toggle);
+    expect(screen.getByTestId('tool-call-burst-detail')).toBeTruthy();
+    await fireEvent.click(toggle);
+    expect(screen.queryByTestId('tool-call-burst-detail')).toBeNull();
+  });
+
+  it('a group entirely outside the mounted window renders no partial DOM for it, and mounts COMPLETE (every real call, not a subset) once brought into view', async () => {
+    const burst = toolCalls(TOOL_CALL_BURST_THRESHOLD + 20, 'burst');
+    const filler = Array.from({ length: 30 }, (_, i) => messageItem(`filler${i}`, 'filler'));
+    const items: TranscriptItem[] = [...burst, ...filler];
+    const { rerender, container } = renderTimeline(items);
+
+    // Pinned to the tail by default (the same jsdom fallback the existing
+    // "mounts a row far outside the initial pinned-to-tail window" test
+    // relies on) — the burst sits well before that tail, so its group must
+    // not be mounted AT ALL: no group element, and no orphaned child row
+    // either (the half-render this ticket's acceptance rules out).
+    expect(container.querySelector('[data-item-id^="tool_call_group::"]')).toBeNull();
+    expect(screen.queryByTestId('tool-call-burst-group')).toBeNull();
+    expect(container.querySelector('[data-item-id="burst5"]')).toBeNull();
+
+    // Bring it into view via the same jumpTarget mechanism issue #740 uses.
+    await rerender({ ...propsFor(items, 'sess_1'), jumpTarget: { id: 'burst5', token: 1 } });
+
+    expect(screen.getByTestId('tool-call-burst-group')).toBeTruthy();
+    const detail = screen.getByTestId('tool-call-burst-detail');
+    // Complete, not partial: the group forced itself open for the jump
+    // target, and EVERY one of the run's real calls is present, never a
+    // subset sliced off by the window boundary.
+    expect(within(detail).getAllByTestId('tool-call-row')).toHaveLength(burst.length);
+    expect(detail.querySelector('[data-item-id="burst5"]')).toBeTruthy();
+  });
+
+  it('a pending permission request buried inside a collapsed group forces the card open and marks the actionable child, not the whole group', async () => {
+    const items = toolCalls(TOOL_CALL_BURST_THRESHOLD + 2);
+    const targetId = items[3]!.id;
+    const permissionHead: PendingPermissionRequest = {
+      requestId: 'req-1',
+      sessionId: 'sess_1',
+      toolCall: { kind: 'tool_call', id: targetId, title: 'Run something risky' },
+      options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+      parentToolCallId: undefined,
+      enqueuedAt: 0,
+    };
+    renderTimeline(items, 'sess_1', { permissionHead });
+
+    // Locked open, no toggle affordance at all — mirrors GenericToolRow's
+    // own C2-1 "no click affordance on a locked state" discipline.
+    const summary = screen.getByTestId('tool-call-burst-summary');
+    expect(summary.tagName).toBe('DIV');
+    const detail = screen.getByTestId('tool-call-burst-detail');
+    expect(detail).toBeTruthy();
+    expect(within(detail).getAllByTestId('tool-call-row')).toHaveLength(items.length);
+
+    // Only the actionable child itself carries the amber ring, not every
+    // sibling in the group.
+    const targetRow = detail.querySelector(
+      `[data-item-id="${targetId}"] [data-testid="tool-call-row"]`,
+    );
+    expect(targetRow?.className).toContain('awaiting-permission');
   });
 });
