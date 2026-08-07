@@ -151,6 +151,7 @@
   import StatusDot, { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
   import PermissionQueueBar from '$lib/components/PermissionQueueBar.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
+  import PlanSidebar from '$lib/components/PlanSidebar.svelte';
   import PrOpenDialog from '$lib/components/PrOpenDialog.svelte';
   import ProjectConfigPanel from '$lib/components/ProjectConfigPanel.svelte';
   import QueuedPromptBar from '$lib/components/QueuedPromptBar.svelte';
@@ -1050,6 +1051,15 @@
   // `SvelteMap` (not a plain `Map` wrapped in `$state`) so `.set()` itself
   // triggers reactivity instead of requiring a clone-and-reassign dance.
   const planCollapsedBySession = new SvelteMap<string, boolean>();
+  // The persistent plan sidebar's own collapse state (issue #201) — a
+  // sibling map to `planCollapsedBySession` above, deliberately separate:
+  // the sidebar (grouped by status, a completion bar) and the inline card
+  // (a flat checklist at the point the plan was emitted) are two different
+  // views a user may want open/closed independently, e.g. collapse the
+  // now-redundant inline card once the sidebar is glanceable but keep the
+  // sidebar itself open, or the reverse while re-reading how a step's
+  // wording changed. Same `SvelteMap`-for-reactive-`.set()` shape.
+  const planSidebarCollapsedBySession = new SvelteMap<string, boolean>();
 
   // Live per-session status badge for the session list (SPEC §7.13/§7.24;
   // issue #126 "list updates live as session status changes"). Every
@@ -1169,6 +1179,9 @@
 
   const planCollapsed = $derived(
     selectedSessionId ? (planCollapsedBySession.get(selectedSessionId) ?? false) : false,
+  );
+  const planSidebarCollapsed = $derived(
+    selectedSessionId ? (planSidebarCollapsedBySession.get(selectedSessionId) ?? false) : false,
   );
   const permissionHead = $derived(
     selectedSessionId ? headPermissionRequest(permissionQueue, selectedSessionId) : undefined,
@@ -2265,6 +2278,14 @@
     planCollapsedBySession.set(
       selectedSessionId,
       !(planCollapsedBySession.get(selectedSessionId) ?? false),
+    );
+  }
+
+  function togglePlanSidebarCollapsed(): void {
+    if (!selectedSessionId) return;
+    planSidebarCollapsedBySession.set(
+      selectedSessionId,
+      !(planSidebarCollapsedBySession.get(selectedSessionId) ?? false),
     );
   }
 
@@ -4502,6 +4523,22 @@
                   onNext={() => transcriptSearchStep(1)}
                   onPrevious={() => transcriptSearchStep(-1)}
                   onClose={closeTranscriptSearch}
+                />
+              {/if}
+              <!-- The persistent per-session plan sidebar (SPEC.md §7.24
+                   "Plans, rendered twice from one truth" — sidebar portion,
+                   v2; issue #201). Docked above the transcript's own scroll
+                   region rather than inside it — see PlanSidebar.svelte's
+                   own file doc comment for why this beat a fourth
+                   Workbench tab (issue #811's reverted precedent) — so it
+                   stays visible without hunting through scroll, and is
+                   genuinely absent, not an empty scaffold, for a session
+                   whose agent has never emitted a plan. -->
+              {#if transcript && transcript.plan.length > 0}
+                <PlanSidebar
+                  entries={transcript.plan}
+                  collapsed={planSidebarCollapsed}
+                  onToggle={togglePlanSidebarCollapsed}
                 />
               {/if}
               <TranscriptTimeline

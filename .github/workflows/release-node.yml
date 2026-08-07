@@ -94,6 +94,12 @@ jobs:
       - name: Create/update the GitHub Release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks the repo out (it only needs the built
+          # artifacts), so `gh` has no git remote to infer the repository
+          # from and every call must say which repo it means. Without it
+          # v0.7.0's publish step died on "fatal: not a git repository"
+          # after both platform packages had already built fine.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
