@@ -303,6 +303,34 @@ function validateFile(parsed: unknown, filePath: string): NativeTrackerFileV1 {
   return { v: NATIVE_TRACKER_SCHEMA_VERSION, projects };
 }
 
+/** `"owner/repo#number"` (the convention every caller of {@link NativeTrackerStore.linkPullRequest} — see issue #241's `native-tracker-pr-link.ts` — formats a ref as) parses out to `"owner/repo"`; anything not shaped that way (a caller free to link an arbitrary string) has no prefix at all. */
+const PR_REF_PATTERN = /^(.*)#(\d+)$/;
+
+/**
+ * Upserts `ref` into `existing` for {@link NativeTrackerStore.linkPullRequest}:
+ * an exact repeat of a ref already linked is a no-op (re-running the same
+ * `pr_open_request` twice — `gh pr create` is itself idempotent and
+ * returns the same URL — must not grow the list), and a ref sharing
+ * another entry's `owner/repo` prefix but a different PR number (a PR
+ * reopened under a new number after the old one closed, or a session's
+ * second attempt after abandoning its first) *replaces* that entry in
+ * place rather than appending beside it — one native tracker item is
+ * expected to carry at most one currently-relevant PR per repo, not an
+ * ever-growing history. A ref for a different repo (or one that doesn't
+ * parse as `owner/repo#number` at all) is unrelated to every existing
+ * entry and is simply appended. Exported standalone so its exact output
+ * shape can be asserted directly, not just inferred from a store call.
+ */
+export function upsertPullRequestRef(existing: readonly string[], ref: string): string[] {
+  if (existing.includes(ref)) return [...existing];
+  const prefix = PR_REF_PATTERN.exec(ref)?.[1];
+  const kept =
+    prefix === undefined
+      ? existing
+      : existing.filter((entry) => PR_REF_PATTERN.exec(entry)?.[1] !== prefix);
+  return [...kept, ref];
+}
+
 export interface CreateTrackerRecordInput {
   readonly primaryType: string;
   readonly typeTags?: string[];
@@ -493,15 +521,27 @@ export class NativeTrackerStore {
     }));
   }
 
+  /**
+   * Links `ref` (by convention `"owner/repo#number"`, e.g. from issue
+   * #241's `native-tracker-pr-link.ts`) onto `id`'s `system.linkedPullRequests`
+   * via {@link upsertPullRequestRef} — re-linking the exact same ref is a
+   * silent no-op (no duplicate entry, no extra activity), and linking a
+   * different PR number for the same `owner/repo` replaces the prior
+   * entry rather than appending beside it. See that function's own doc
+   * comment for the reasoning.
+   */
   linkPullRequest(projectPath: string, id: string, ref: string): TrackerRecord {
-    return this.mutateSystem(projectPath, id, (system) => ({
-      ...system,
-      linkedPullRequests: [...system.linkedPullRequests, ref],
-      activity: [
-        ...system.activity,
-        { id: randomUUID(), at: Date.now(), kind: 'pull_request_linked', detail: { ref } },
-      ],
-    }));
+    return this.mutateSystem(projectPath, id, (system) => {
+      if (system.linkedPullRequests.includes(ref)) return system;
+      return {
+        ...system,
+        linkedPullRequests: upsertPullRequestRef(system.linkedPullRequests, ref),
+        activity: [
+          ...system.activity,
+          { id: randomUUID(), at: Date.now(), kind: 'pull_request_linked', detail: { ref } },
+        ],
+      };
+    });
   }
 
   addComment(projectPath: string, id: string, authorId: string, body: string): TrackerRecord {
