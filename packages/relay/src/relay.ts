@@ -10,6 +10,7 @@ import {
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type BuildIdentityV1,
+  type NodeSelfUpdateSummaryV1,
   type ConnectedAccountList,
   type KeymapResult,
   type InitializeResult,
@@ -101,6 +102,8 @@ interface NodeConnection extends BaseConnection {
   nodeIds: Set<string>;
   /** This node's own build identity, from its `initialize.buildIdentity` (issue #655) — `undefined` for a node that predates the field. Connection-scoped, exactly like `reachable` (`registry.nodeConnectionsByNodeId`): never persisted in `TargetStore`, since it isn't a per-target property and a disconnected node has nothing live to report. */
   buildIdentity?: BuildIdentityV1;
+  /** This node's latest self-update check (issue #656), from its `node_self_update_status` push — `undefined` until the first one arrives on this connection, or for a node that predates the field. Connection-scoped, exactly like `buildIdentity` above: never persisted, since a disconnected node has nothing live to report. */
+  selfUpdate?: NodeSelfUpdateSummaryV1;
 }
 
 interface ClientConnection extends BaseConnection {
@@ -326,6 +329,16 @@ export interface CreateRelayOptions {
    */
   targetUpdateRequestTtlMs?: number;
   /**
+   * How long a `node_self_update_apply_request`'s per-requestId routing
+   * entry (issue #656 — see the `pendingNodeSelfUpdateApplyRequests` doc
+   * comment below) survives without a `node_self_update_apply_response`,
+   * before the relay drops it on its own to avoid leaking it forever.
+   * Defaults to {@link DEFAULT_NODE_SELF_UPDATE_APPLY_REQUEST_TTL_MS};
+   * tests lower it to keep expiry-then-reuse assertions fast, exactly
+   * like `targetUpdateRequestTtlMs`.
+   */
+  nodeSelfUpdateApplyRequestTtlMs?: number;
+  /**
    * How long any SPEC §7.26 connected-account request's (github/jira
    * connect, disconnect, pin get/set/unset/resolve — issue #230; see the
    * `pendingAccountRequests` doc comment below) per-requestId routing entry
@@ -381,6 +394,8 @@ export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 export const DEFAULT_DECOMMISSION_TARGET_REQUEST_TTL_MS = 60_000;
 /** Sane default for {@link CreateRelayOptions.targetUpdateRequestTtlMs} — 5 minutes, generous because the underlying update re-runs supervisor provisioning (fetch + verify + stage an artifact over `ssh:`, #87); this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal update latency. */
 export const DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS = 5 * 60_000;
+/** Sane default for {@link CreateRelayOptions.nodeSelfUpdateApplyRequestTtlMs} — 5 minutes, the same generous window as `DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS` and for the same reason: a real node self-update stages+verifies+activates a real bundle before it ever replies; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (issue #656), not normal update latency. */
+export const DEFAULT_NODE_SELF_UPDATE_APPLY_REQUEST_TTL_MS = 5 * 60_000;
 /** Sane default for {@link CreateRelayOptions.accountRequestTtlMs} — 16 minutes, one past GitHub's own device-flow `expires_in` default (15 minutes, `github-device-flow.ts`), so a slow-but-real approval is never cut off by the relay's own routing-entry TTL; this only guards against a genuinely abandoned/crashed request leaking its entry forever (#230), not normal connect/pin/disconnect latency. */
 export const DEFAULT_ACCOUNT_REQUEST_TTL_MS = 16 * 60_000;
 /** Sane default for {@link CreateRelayOptions.healthCheck}'s `timeoutMs` (#270) — generous relative to a healthy `SELECT 1`/`PING` (single-digit milliseconds on the same host/LAN as prodbox's Postgres/Redis), short enough that a hung dependency still answers well within any external uptime checker's own timeout (these commonly run 5-30s). */
@@ -482,6 +497,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const targetUpdateRequestTtlMs =
     opts.targetUpdateRequestTtlMs ?? DEFAULT_TARGET_UPDATE_REQUEST_TTL_MS;
   const accountRequestTtlMs = opts.accountRequestTtlMs ?? DEFAULT_ACCOUNT_REQUEST_TTL_MS;
+  const nodeSelfUpdateApplyRequestTtlMs =
+    opts.nodeSelfUpdateApplyRequestTtlMs ?? DEFAULT_NODE_SELF_UPDATE_APPLY_REQUEST_TTL_MS;
   const relayBuildIdentity = opts.buildIdentity;
 
   /**
@@ -665,6 +682,31 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (!pending) return;
     clearTimeout(pending.timeout);
     pendingTargetUpdateRequests.delete(requestId);
+  }
+
+  /**
+   * Issue #656: routes a node's `node_self_update_apply_response` back to
+   * the client whose `node_self_update_apply_request` this requestId
+   * belongs to — same shape as `pendingTargetUpdateRequests` above and for
+   * the same reason (a single-shot reply with no `targetId`/session to
+   * fan it out through). Populated in the `node_self_update_apply_request`
+   * handler below, consumed in the `node_self_update_apply_response`
+   * handler, and cleaned up in exactly three places so it never leaks: the
+   * response itself, the requesting client's own disconnect
+   * (`dropConnection`), and the TTL timer set here
+   * (`nodeSelfUpdateApplyRequestTtlMs`). Never persisted — purely routing
+   * metadata for a request currently in flight.
+   */
+  const pendingNodeSelfUpdateApplyRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingNodeSelfUpdateApplyRequest(requestId: string): void {
+    const pending = pendingNodeSelfUpdateApplyRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingNodeSelfUpdateApplyRequests.delete(requestId);
   }
 
   /**
@@ -1819,6 +1861,38 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingTargetUpdateRequest(message.requestId);
         return;
       }
+      case 'node_self_update_status': {
+        // Issue #656: an unprompted push, never a reply — stored on the
+        // live connection exactly like `buildIdentity` at handshake time
+        // (`handleInitialize`), except this one can legitimately arrive
+        // again later on the SAME connection (a node's own version is
+        // static for its process lifetime, but "is there a newer one"
+        // keeps getting re-checked while it stays connected). Read back at
+        // `target_list_request` time, mirrored onto every target row this
+        // node owns, exactly like `buildIdentity`/`build`.
+        connection.selfUpdate = {
+          status: message.status,
+          currentVersion: message.currentVersion,
+          ...(message.latestVersion ? { latestVersion: message.latestVersion } : {}),
+          checkedAt: message.checkedAt,
+        };
+        return;
+      }
+      case 'node_self_update_apply_response': {
+        // Issue #656: same single-shot reply/routing-table shape as
+        // `target_update_response` above.
+        const pending = pendingNodeSelfUpdateApplyRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: node_self_update_apply_response for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingNodeSelfUpdateApplyRequest(message.requestId);
+        return;
+      }
       case 'github_connect_device_code': {
         // #230: streamed once ahead of the terminal `github_connect_result`
         // — delivered to the requesting client, routing entry kept (not
@@ -1935,6 +2009,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               providers: target.providers,
               ...(health ? { health } : {}),
               ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
+              ...(nodeConnection?.selfUpdate ? { selfUpdate: nodeConnection.selfUpdate } : {}),
               // Issue #255: forwarded verbatim from the node's own
               // `target_announce`, exactly like `providers` above — absent
               // for a node that predates it.
@@ -2331,6 +2406,33 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           pendingTargetUpdateRequests.delete(message.requestId);
         }, targetUpdateRequestTtlMs);
         pendingTargetUpdateRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'node_self_update_apply_request': {
+        // Issue #656: same direct-by-`nodeId` routing shape as
+        // `target_update_request` above — this node updates ITSELF, never
+        // one of its targets, so there's no `targetId` to validate.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            'relay: node_self_update_apply_request for unknown/foreign node',
+          );
+          return;
+        }
+        clearPendingNodeSelfUpdateApplyRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: node_self_update_apply_request routing entry expired before a response arrived',
+          );
+          pendingNodeSelfUpdateApplyRequests.delete(message.requestId);
+        }, nodeSelfUpdateApplyRequestTtlMs);
+        pendingNodeSelfUpdateApplyRequests.set(message.requestId, {
           clientConnection: connection,
           timeout,
         });
@@ -2734,6 +2836,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // still-pending target_update_response.
       for (const [requestId, pending] of pendingTargetUpdateRequests) {
         if (pending.clientConnection === connection) clearPendingTargetUpdateRequest(requestId);
+      }
+      // Issue #656: same reasoning — a disconnected client can never
+      // receive a still-pending node_self_update_apply_response.
+      for (const [requestId, pending] of pendingNodeSelfUpdateApplyRequests) {
+        if (pending.clientConnection === connection) {
+          clearPendingNodeSelfUpdateApplyRequest(requestId);
+        }
       }
       // #230: same reasoning as every cleanup above — a disconnected client
       // can never receive a still-pending github/jira connect, disconnect,

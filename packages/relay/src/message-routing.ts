@@ -249,6 +249,9 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   ci_auto_iterate_status: { routed: 'node' },
   ci_auto_iterate_stop: { routed: 'client' },
   run_status: { routed: 'node' },
+  node_self_update_status: { routed: 'node' },
+  node_self_update_apply_request: { routed: 'client' },
+  node_self_update_apply_response: { routed: 'node' },
   ping: { routed: 'device' },
   pong: {
     routed: 'not-routed',

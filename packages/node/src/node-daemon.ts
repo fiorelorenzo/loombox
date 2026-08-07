@@ -1,7 +1,7 @@
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
-import { basename, posix } from 'node:path';
+import { basename, join, posix } from 'node:path';
 
 import {
   buildInlineImageContentBlock,
@@ -228,6 +228,7 @@ import {
   type TargetResourceSample,
   type TargetUpdateRequest,
   type TargetVersionStatusV1,
+  type NodeSelfUpdateApplyRequest,
   type TerminalClose,
   type TerminalClosedPayloadV1,
   type TerminalClosedReasonV1,
@@ -427,6 +428,9 @@ import { TargetUpdateMonitor } from './ssh/target-update-monitor';
 import { SshTransportPool } from './ssh/ssh-transport-pool';
 import { SshTargetStore } from './ssh/verify-and-persist';
 import type { ReconnectingTransportOptions } from './ssh/reconnecting-transport';
+import { createLocalInstallLayoutDriver, type InstallLayoutDriver } from './install-layout';
+import { NodeSelfUpdateMonitor, type NodeSelfUpdateSummary } from './node-self-update-monitor';
+import type { NodeUpdateSource } from './self-update';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -833,6 +837,36 @@ export interface NodeDaemonOptions {
     publicKey: Uint8Array;
     /** Overrides the remote supervisor base directory; defaults to `$HOME/.loombox/supervisor` (see `supervisor-provisioning.ts`). */
     baseDir?: string;
+  };
+  /**
+   * Configures the node's own atomic self-update (issue #656; epic #653):
+   * detecting a newer `@loombox/node` version, surfacing it
+   * (`node_self_update_status`, pushed on every completed check — issue
+   * #656 never gates DETECTING an update behind consent, only APPLYING
+   * one), and the explicit one-tap `node_self_update_apply_request`
+   * action. Left `undefined` by default, exactly like `targetUpdate`
+   * above and for the same reason: without it, a
+   * `node_self_update_apply_request` replies `ok: false` rather than
+   * pretending to update anything real. Tests inject a fake `source` to
+   * exercise the real update path without real network.
+   */
+  selfUpdate?: {
+    source: NodeUpdateSource;
+    /** This node's own currently-running version — the same value `readNodeBuildIdentity().version` resolves to at startup. Every check compares against this, and it's the "from" state `applyNodeSelfUpdate` reports and rolls back to. */
+    currentVersion: string;
+    /** Overrides `~/.loombox` — `install-layout.ts`'s own `baseDir`, the parent of `versions/` and `current`. */
+    baseDir?: string;
+    /** Overrides the local `InstallLayoutDriver`; defaults to `createLocalInstallLayoutDriver()` — self-update is always local (a node updates itself, never a remote target), so there is no remote-driver variant here. */
+    driver?: InstallLayoutDriver;
+    /** This node's pinned Ed25519 public key (raw 32 bytes), checked against the fetched artifact's signature when set. Omitted by default: today's real `node-<version>-<os>-<arch>.tar.gz` release assets ship unsigned (`self-update.ts`'s own `NodeUpdateArtifact` doc comment). */
+    publicKey?: Uint8Array;
+    /** How often the periodic check re-runs; see `NodeSelfUpdateMonitor`'s own `intervalMs` doc comment for the default. */
+    checkIntervalMs?: number;
+    /** Hands control back to the service manager once `current` is live at the new version — defaults to `() => process.exit(0)`. Tests inject a no-op so a passing suite never kills the test runner's own process. */
+    restart?: () => void | Promise<void>;
+    /** See `VerifyStagedNodeBuildOptions.runVersionProbe`'s doc comment — tests inject a fake so a staged-build check never needs a real, fully-dependency-resolved `@loombox/node` bundle on disk. */
+    runVersionProbe?: (entryPath: string) => Promise<string>;
+    probeTimeoutMs?: number;
   };
   /** SPEC §7.26, issue #230 — see `NodeDaemonOptions.jiraConnectService`/`accountPinStore`'s doc comments for the sibling stores this shares its convention with. Defaults to `new GithubConnectService({stateDir: options.stateDir})`. */
   githubConnectService?: GithubConnectService;
@@ -1600,6 +1634,18 @@ export class NodeDaemon extends EventEmitter {
   /** Redesign v2 §3.3; issue #476 — see `NodeDaemonOptions.targetUpdate`'s doc comment; `undefined` until a caller configures it. */
   private readonly targetUpdateOptions?: NodeDaemonOptions['targetUpdate'];
   private readonly targetUpdateMonitor?: TargetUpdateMonitor;
+  /** Issue #656 — see `NodeDaemonOptions.selfUpdate`'s doc comment; `undefined` until a caller configures it. */
+  private readonly selfUpdateMonitor?: NodeSelfUpdateMonitor;
+  /** Resolved/defaulted form of `NodeDaemonOptions.selfUpdate`, read by `handleNodeSelfUpdateApplyRequest`. */
+  private readonly selfUpdateOptions?: {
+    currentVersion: string;
+    baseDir: string;
+    driver: InstallLayoutDriver;
+    publicKey: Uint8Array | undefined;
+    restart: () => void | Promise<void>;
+    runVersionProbe: ((entryPath: string) => Promise<string>) | undefined;
+    probeTimeoutMs: number | undefined;
+  };
   /** See `NodeDaemonOptions.providerCandidates`'s doc comment. */
   private readonly providerCandidates: ProviderAvailabilityCandidate[];
   /** See `NodeDaemonOptions.customAgentAllowlist`'s doc comment. */
@@ -1757,6 +1803,26 @@ export class NodeDaemon extends EventEmitter {
     this.targetUpdateMonitor = options.targetUpdate
       ? new TargetUpdateMonitor({ pinnedVersion: options.targetUpdate.pinnedVersion })
       : undefined;
+    this.selfUpdateOptions = options.selfUpdate
+      ? {
+          currentVersion: options.selfUpdate.currentVersion,
+          baseDir: options.selfUpdate.baseDir ?? join(homedir(), '.loombox'),
+          driver: options.selfUpdate.driver ?? createLocalInstallLayoutDriver(),
+          publicKey: options.selfUpdate.publicKey,
+          restart: options.selfUpdate.restart ?? (() => process.exit(0)),
+          runVersionProbe: options.selfUpdate.runVersionProbe,
+          probeTimeoutMs: options.selfUpdate.probeTimeoutMs,
+        }
+      : undefined;
+    this.selfUpdateMonitor = options.selfUpdate
+      ? new NodeSelfUpdateMonitor({
+          source: options.selfUpdate.source,
+          currentVersion: options.selfUpdate.currentVersion,
+          intervalMs: options.selfUpdate.checkIntervalMs,
+          onUpdate: (summary) => this.pushNodeSelfUpdateStatus(summary),
+        })
+      : undefined;
+    this.selfUpdateMonitor?.start();
     this.providerCandidates = options.providerCandidates ?? [];
     this.customAgentAllowlist = options.customAgentAllowlist ?? [];
     this.githubConnectService =
@@ -1865,6 +1931,7 @@ export class NodeDaemon extends EventEmitter {
       this._connected = true;
       this.sendAmkEpochFetchRequest();
       this.sendConnectedAccountListRequest();
+      this.sendNodeSelfUpdateStatusIfKnown();
       void this.reannounceAll().then(() => {
         this.emit('connected');
       });
@@ -1932,6 +1999,7 @@ export class NodeDaemon extends EventEmitter {
     this.targetHealthSampler.stop();
     this.ciCheckWatcher.stop();
     this.trackerConnectivityWatcher.stop();
+    this.selfUpdateMonitor?.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
     // exiting does not kill it" — a later reattach still works), a
@@ -4226,6 +4294,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'target_update_request':
         this.handleTargetUpdateRequest(message);
+        return;
+      case 'node_self_update_apply_request':
+        this.handleNodeSelfUpdateApplyRequest(message);
         return;
       case 'terminal_open':
         this.handleTerminalOpen(message);
@@ -10364,6 +10435,128 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       envelope,
     });
+  }
+  /**
+   * Issue #656: this node's own atomic self-update. Refuses up front
+   * (never even asks `NodeSelfUpdateMonitor` to fetch anything) when this
+   * node has no `selfUpdate` configured, or when any session's agent is
+   * actively mid-turn — the epic's own "never interrupts" requirement,
+   * the same `AttentionStatus.status === 'working'` check
+   * `performCheckpointRestore`/`previewSessionRewind` already gate on for
+   * the identical reason. Every other outcome (a fetch/signature/staged-
+   * verification failure, or an activation failure that was rolled back)
+   * comes back from `NodeSelfUpdateMonitor.applyUpdate` itself. The
+   * SUCCESS reply is sent from inside the `restart` callback passed to
+   * it, not here — see that callback's own comment for why.
+   */
+  private handleNodeSelfUpdateApplyRequest(message: NodeSelfUpdateApplyRequest): void {
+    const monitor = this.selfUpdateMonitor;
+    const selfUpdateOptions = this.selfUpdateOptions;
+    if (!monitor || !selfUpdateOptions) {
+      this.sendNodeSelfUpdateApplyResponse(message, {
+        ok: false,
+        fromVersion: 'unknown',
+        message: 'self-update is not configured on this node',
+      });
+      return;
+    }
+    for (const bridge of this.bridges.values()) {
+      if (bridge.agentSession.getAttentionState().status === 'working') {
+        this.sendNodeSelfUpdateApplyResponse(message, {
+          ok: false,
+          fromVersion: selfUpdateOptions.currentVersion,
+          message:
+            'a session is actively working on a turn; wait for it to finish (or stop it) before updating',
+        });
+        return;
+      }
+    }
+
+    const targetVersion = monitor.statusFor()?.latestVersion;
+    monitor
+      .applyUpdate({
+        baseDir: selfUpdateOptions.baseDir,
+        driver: selfUpdateOptions.driver,
+        publicKey: selfUpdateOptions.publicKey,
+        runVersionProbe: selfUpdateOptions.runVersionProbe,
+        probeTimeoutMs: selfUpdateOptions.probeTimeoutMs,
+        restart: async () => {
+          // `applyNodeSelfUpdate` only ever calls `restart` on the success
+          // path, strictly after `current` is already flipped to
+          // `targetVersion` (that function's own doc comment) — sending
+          // the final response HERE, before this process actually exits,
+          // is what issue #656 means by "the client learns the outcome
+          // rather than just losing the connection": a bare process exit
+          // would otherwise look like nothing but a dropped socket.
+          this.sendNodeSelfUpdateApplyResponse(message, {
+            ok: true,
+            fromVersion: selfUpdateOptions.currentVersion,
+            toVersion: targetVersion,
+            message: `updated ${selfUpdateOptions.currentVersion} -> ${targetVersion}; restarting to apply`,
+          });
+          // A brief, deliberate pause before handing off to the real
+          // restart (`process.exit(0)` by default) — `RelayConnection.send`
+          // queues the frame on the OS socket buffer, it doesn't guarantee
+          // it has actually left this process yet.
+          const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
+          setTimeout(settle, 250);
+          await settled;
+          await selfUpdateOptions.restart();
+        },
+      })
+      .then((outcome) => {
+        if (outcome.ok) return; // already replied inside `restart` above
+        this.sendNodeSelfUpdateApplyResponse(message, {
+          ok: false,
+          fromVersion: outcome.fromVersion,
+          message: outcome.message,
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendNodeSelfUpdateApplyResponse(message, {
+          ok: false,
+          fromVersion: selfUpdateOptions.currentVersion,
+          message: detail,
+        });
+      });
+  }
+
+  private sendNodeSelfUpdateApplyResponse(
+    message: NodeSelfUpdateApplyRequest,
+    outcome: { ok: boolean; fromVersion: string; toVersion?: string; message: string },
+  ): void {
+    this.relay.send({
+      type: 'node_self_update_apply_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      nodeId: this.nodeId,
+      ...outcome,
+    });
+  }
+
+  /**
+   * `NodeSelfUpdateMonitor`'s own `onUpdate` hook (issue #656): pushes
+   * this node's latest self-update check, unprompted, exactly like
+   * `sendTargetStatus` — detecting an update needs no consent, only
+   * applying one does ({@link handleNodeSelfUpdateApplyRequest}).
+   */
+  private pushNodeSelfUpdateStatus(summary: NodeSelfUpdateSummary): void {
+    this.relay.send({
+      type: 'node_self_update_status',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: this.nodeId,
+      status: summary.status,
+      currentVersion: summary.currentVersion,
+      ...(summary.latestVersion ? { latestVersion: summary.latestVersion } : {}),
+      checkedAt: summary.checkedAt,
+    });
+  }
+
+  /** Re-pushes the last recorded self-update check on every fresh relay `'open'` (including reconnects) — mirrors `buildIdentity`'s own "sent again on every `initialize`" contract, so a client reconnecting to a relay that dropped its prior connection state doesn't wait for this node's next scheduled periodic check to learn what it already knew. A no-op before the first check ever completes. */
+  private sendNodeSelfUpdateStatusIfKnown(): void {
+    const summary = this.selfUpdateMonitor?.statusFor();
+    if (summary) this.pushNodeSelfUpdateStatus(summary);
   }
 }
 
