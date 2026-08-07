@@ -56,6 +56,7 @@
     PermissionPolicyViolationPayloadV1,
     ToolRefusalReasonV1,
   } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
@@ -63,7 +64,7 @@
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Field from './ui/Field.svelte';
   import Input from './ui/Input.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The three calls this panel needs off `RelayClient` — see the file doc comment's DI note. */
   export interface PermissionPolicyClient {
@@ -158,11 +159,20 @@
     try {
       policy = await currentClient.getPermissionPolicy(currentSessionId);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('The saved policy', err);
     } finally {
       loading = false;
     }
   }
+
+  /** One tagged value, not two independent flags — issue #650. */
+  const policyState = $derived<AsyncPanelState<PermissionPolicyV1>>(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : { status: 'loaded', data: policy },
+  );
 
   // Reloads whenever the selected session (or, in a test, the injected
   // client) changes — `ProjectConfigPanel`'s "config" tab stays mounted
@@ -247,111 +257,107 @@
   {#if !sessionId || !client}
     <EmptyState message="Select a session to configure this project's permission policy." />
   {:else}
-    {#if loadError}
-      <ErrorNotice
-        message={`Could not load the saved policy: ${loadError}`}
-        retryable
-        onRetry={() => void (sessionId && client && load(sessionId, client))}
-      />
-    {/if}
     {#if saveError}
       <ErrorNotice message={`Could not save: ${saveError}`} />
     {/if}
-    {#if loading}
-      <p class="loading" data-testid="permission-policy-loading">
-        <WovenLoader size="sm" label="Loading" />
-        Loading saved policy…
-      </p>
-    {:else}
-      {#each DIMENSIONS as dim (dim.key)}
-        <Card elevation="raised" padding="md" class="config-section">
-          <div class="dimension-header">
-            <h4>{dim.label}</h4>
-            <Badge
-              tone={defaultMode(dim.key) === 'allow-all' ? 'neutral' : 'warning'}
-              dataTestId={`permission-policy-${dim.key}-mode`}
-            >
-              {defaultMode(dim.key) === 'allow-all'
-                ? 'Default: allow'
-                : 'Default: only listed commands run'}
-            </Badge>
-          </div>
-          {#each KINDS as kind (kind.key)}
-            {@const key = sectionKey(dim.key, kind.key)}
-            {@const rules = policy[dim.key][kind.key]}
-            <section class="rule-kind">
-              <h5>{kind.label}</h5>
-              {#if rules.length === 0}
-                <p class="no-rules">No {kind.key} rules.</p>
-              {:else}
-                <ul class="rule-list" data-testid={`permission-policy-${key}-list`}>
-                  {#each rules as rule, index (`${rule}-${index}`)}
-                    <li class="rule-row">
-                      <code>{rule}</code>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        disabled={saving}
-                        onclick={() => void removeRule(dim.key, kind.key, index)}
-                        dataTestId={`permission-policy-${key}-remove-${index}`}
-                      >
-                        Remove
-                      </Button>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-              <form
-                class="add-rule-form"
-                onsubmit={(event) => handleAddSubmit(dim.key, kind.key, event)}
+    <AsyncPanel
+      state={policyState}
+      loadingLabel="Loading"
+      loadingTestId="permission-policy-loading"
+      loadingText="Loading saved policy…"
+      onRetry={() => void (sessionId && client && load(sessionId, client))}
+    >
+      {#snippet content(loadedPolicy)}
+        {#each DIMENSIONS as dim (dim.key)}
+          <Card elevation="raised" padding="md" class="config-section">
+            <div class="dimension-header">
+              <h4>{dim.label}</h4>
+              <Badge
+                tone={defaultMode(dim.key) === 'allow-all' ? 'neutral' : 'warning'}
+                dataTestId={`permission-policy-${dim.key}-mode`}
               >
-                <Field label={`Add a ${kind.key} pattern`} error={draftErrors[key]}>
-                  {#snippet children({ id, describedBy, errorId, invalid, required })}
-                    <div class="add-rule-row">
-                      <Input
-                        {id}
-                        {describedBy}
-                        {errorId}
-                        {invalid}
-                        {required}
-                        monospace
-                        placeholder={kind.placeholder}
-                        bind:value={drafts[key]}
-                        dataTestId={`permission-policy-${key}-input`}
-                      />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        loading={saving}
-                        dataTestId={`permission-policy-${key}-add`}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  {/snippet}
-                </Field>
-              </form>
-            </section>
-          {/each}
-        </Card>
-      {/each}
-
-      <Card elevation="raised" padding="md" class="config-section">
-        <h4>Recent policy blocks</h4>
-        {#if recentViolations.length === 0}
-          <p class="no-violations">No commands have been blocked by this policy yet.</p>
-        {:else}
-          <ul class="violation-list" data-testid="permission-policy-violations">
-            {#each recentViolations as violation, index (index)}
-              <li class="violation-row" data-testid={`permission-policy-violation-${index}`}>
-                <Badge tone="danger" size="sm">{ATTRIBUTION_LABEL[violation.reason.kind]}</Badge>
-                <span class="violation-text">{violationDetail(violation.reason)}</span>
-              </li>
+                {defaultMode(dim.key) === 'allow-all'
+                  ? 'Default: allow'
+                  : 'Default: only listed commands run'}
+              </Badge>
+            </div>
+            {#each KINDS as kind (kind.key)}
+              {@const key = sectionKey(dim.key, kind.key)}
+              {@const rules = loadedPolicy[dim.key][kind.key]}
+              <section class="rule-kind">
+                <h5>{kind.label}</h5>
+                {#if rules.length === 0}
+                  <p class="no-rules">No {kind.key} rules.</p>
+                {:else}
+                  <ul class="rule-list" data-testid={`permission-policy-${key}-list`}>
+                    {#each rules as rule, index (`${rule}-${index}`)}
+                      <li class="rule-row">
+                        <code>{rule}</code>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          disabled={saving}
+                          onclick={() => void removeRule(dim.key, kind.key, index)}
+                          dataTestId={`permission-policy-${key}-remove-${index}`}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+                <form
+                  class="add-rule-form"
+                  onsubmit={(event) => handleAddSubmit(dim.key, kind.key, event)}
+                >
+                  <Field label={`Add a ${kind.key} pattern`} error={draftErrors[key]}>
+                    {#snippet children({ id, describedBy, errorId, invalid, required })}
+                      <div class="add-rule-row">
+                        <Input
+                          {id}
+                          {describedBy}
+                          {errorId}
+                          {invalid}
+                          {required}
+                          monospace
+                          placeholder={kind.placeholder}
+                          bind:value={drafts[key]}
+                          dataTestId={`permission-policy-${key}-input`}
+                        />
+                        <Button
+                          type="submit"
+                          size="sm"
+                          loading={saving}
+                          dataTestId={`permission-policy-${key}-add`}
+                        >
+                          Add
+                        </Button>
+                      </div>
+                    {/snippet}
+                  </Field>
+                </form>
+              </section>
             {/each}
-          </ul>
-        {/if}
-      </Card>
-    {/if}
+          </Card>
+        {/each}
+
+        <Card elevation="raised" padding="md" class="config-section">
+          <h4>Recent policy blocks</h4>
+          {#if recentViolations.length === 0}
+            <p class="no-violations">No commands have been blocked by this policy yet.</p>
+          {:else}
+            <ul class="violation-list" data-testid="permission-policy-violations">
+              {#each recentViolations as violation, index (index)}
+                <li class="violation-row" data-testid={`permission-policy-violation-${index}`}>
+                  <Badge tone="danger" size="sm">{ATTRIBUTION_LABEL[violation.reason.kind]}</Badge>
+                  <span class="violation-text">{violationDetail(violation.reason)}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Card>
+      {/snippet}
+    </AsyncPanel>
   {/if}
 </div>
 
@@ -449,14 +455,5 @@
   .add-rule-row :global(.ui-input) {
     flex: 1 1 auto;
     min-width: 0;
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 </style>
