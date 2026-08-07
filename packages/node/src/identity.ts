@@ -214,8 +214,26 @@ export class NodeIdentityStore {
     return this.toNodeIdentity({ publicKey, privateKey }, publicKeyRaw);
   }
 
-  /** Generates a fresh keypair and persists it, overwriting anything already at this path. */
-  async create(): Promise<NodeIdentity> {
+  /**
+   * Generates a fresh keypair and persists it. Refuses when this stateDir
+   * already holds a persisted identity (file or OS-keyring cache) unless
+   * `replaceExisting` is explicit — issue #876: a bare `create()` used to
+   * overwrite unconditionally, which is exactly what a `stateDir`-typo'd
+   * debug script did to a running node's real identity keypair. Passing
+   * `replaceExisting: true` keeps the previous file as `identity.json.bak`
+   * before overwriting (`writeFile()`'s own doc comment) — {@link loadOrCreate}
+   * always passes it, since by the time it calls `create()` its own `load()`
+   * has already confirmed there is nothing usable to protect.
+   */
+  async create(options: { replaceExisting?: boolean } = {}): Promise<NodeIdentity> {
+    if (!options.replaceExisting && (await this.exists())) {
+      throw new Error(
+        'NodeIdentityStore.create(): refusing to overwrite the identity already persisted ' +
+          `under ${this.stateDir} (issue #876). Pass \`{ replaceExisting: true }\` if you ` +
+          'genuinely mean to replace it, or use `loadOrCreate()` if you just want the ' +
+          'existing identity.',
+      );
+    }
     const keyPair = await generateEcdhKeyPair();
     const publicKeyRaw = await exportPublicKeyRaw(keyPair.publicKey);
     await this.persist(keyPair, publicKeyRaw);
@@ -246,7 +264,7 @@ export class NodeIdentityStore {
     console.warn(
       `NodeIdentityStore: no identity keypair found under ${this.stateDir}; generating a new one.`,
     );
-    return this.create();
+    return this.create({ replaceExisting: true });
   }
 
   /**
@@ -254,9 +272,22 @@ export class NodeIdentityStore {
    * source-of-truth write, never the only one an OS-keyring caller relies
    * on. `persist()` (fresh writes) and `load()` (reseeding after adopting
    * a legacy OS-only value) both funnel through this.
+   *
+   * **Backs up whatever was already at this path first** (issue #876): a
+   * legitimate replace — `create({ replaceExisting: true })`, or a stale
+   * OS-keyring cache reseed — costs nothing to make recoverable, so it
+   * writes the previous content to `identity.json.bak` (0600, one level
+   * deep, overwriting any earlier backup) before the new file lands. The
+   * production incident this closes had no such copy: the old private key
+   * was simply gone the moment the new one was written.
    */
   private writeFile(raw: string): void {
     mkdirSync(this.stateDir, { recursive: true });
+    if (existsSync(this.filePath)) {
+      const backupPath = `${this.filePath}.bak`;
+      writeFileSync(backupPath, readFileSync(this.filePath), { mode: 0o600 });
+      chmodSync(backupPath, 0o600);
+    }
     writeFileSync(this.filePath, raw, { mode: 0o600 });
     // `writeFileSync`'s `mode` only applies when the file is newly created
     // (and is still subject to umask); explicitly chmod afterwards so this

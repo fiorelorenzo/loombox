@@ -15,7 +15,7 @@ import {
   planRuntimeBootstrap,
   type PlanRuntimeBootstrapOptions,
 } from '../ssh/remote-runtime';
-import { defaultNodeStateDir } from '../ssh/verify-and-persist';
+import { allowLiveNodeStateDir, defaultNodeStateDir } from '../ssh/verify-and-persist';
 import type { SupervisorBackend } from '../supervisor-backend';
 
 /**
@@ -132,6 +132,11 @@ export async function provisionLocalNode(
   options: LocalProvisionOptions,
 ): Promise<LocalProvisionResult> {
   const mintNodeTokenImpl = options.mintNodeToken ?? defaultMintNodeToken;
+  // Issue #876: this machine IS the node being provisioned, so defaulting
+  // into its own `~/.loombox/node` when `options.stateDir` is omitted is
+  // the deliberate, intended behavior here — not the accident the guard
+  // exists to catch.
+  allowLiveNodeStateDir();
   const stateDir = options.stateDir ?? defaultNodeStateDir();
   const nodeId = options.nodeId;
   const deviceId = options.deviceId ?? nodeId;
