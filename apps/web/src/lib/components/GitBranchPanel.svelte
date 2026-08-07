@@ -41,6 +41,7 @@
     GitBranchMergeResponsePayloadV1,
     GitBranchSummaryV1,
     GitBranchSwitchResponsePayloadV1,
+    GitPushResponsePayloadV1,
     GitStashDropResponsePayloadV1,
     GitStashListResponsePayloadV1,
     GitStashPopResponsePayloadV1,
@@ -67,6 +68,7 @@
       params: { name: string },
     ): Promise<GitBranchMergeResponsePayloadV1>;
     abortBranchMerge(sessionId: string): Promise<GitBranchMergeAbortResponsePayloadV1>;
+    pushBranch(sessionId: string, params: { force: boolean }): Promise<GitPushResponsePayloadV1>;
     saveStash(
       sessionId: string,
       params: { message?: string | null },
@@ -116,6 +118,15 @@
   let mergeConflict = $state<{ message: string; conflictedPaths: string[] } | undefined>(undefined);
   let aborting = $state(false);
   let abortError = $state<string | undefined>(undefined);
+
+  let pushing = $state(false);
+  let pushError = $state<string | undefined>(undefined);
+  let pushNoBranch = $state<string | undefined>(undefined);
+  /** `staleLease: true` distinguishes a force-with-lease refusal (fetch, then retry) from an ordinary non-fast-forward rejection (fetch and merge/rebase, or retry with force) — issue #235's own acceptance bar: distinct, honest states, not one generic "push failed". */
+  let pushRejected = $state<{ message: string; staleLease: boolean } | undefined>(undefined);
+  let pushSuccess = $state<{ branch: string; setUpstream: boolean; forced: boolean } | undefined>(
+    undefined,
+  );
 
   let stashMessage = $state('');
   let stashing = $state(false);
@@ -274,6 +285,53 @@
       abortError = errorMessage(error);
     } finally {
       aborting = false;
+    }
+  }
+
+  /**
+   * Pushes this session's own branch (SPEC §7.6/§7.14; issue #235) —
+   * always the session's own branch, never an arbitrary name (mirrors
+   * `pr-open.ts`'s own scope on the node side): there is nothing to type
+   * here, only whether to `force`. Deliberately never calls
+   * {@link onChanged}: a push changes the REMOTE, never this worktree's
+   * own diff/branch list, so there is nothing for a host page to
+   * re-fetch — unlike every other action in this panel.
+   */
+  async function handlePush(force: boolean): Promise<void> {
+    if (!client || pushing) return;
+    pushing = true;
+    pushError = undefined;
+    pushNoBranch = undefined;
+    pushRejected = undefined;
+    try {
+      const result = await client.pushBranch(sessionId, { force });
+      if (result.outcome === 'ok') {
+        pushSuccess = {
+          branch: result.branch,
+          setUpstream: result.setUpstream,
+          forced: result.forced,
+        };
+        return;
+      }
+      pushSuccess = undefined;
+      if (result.outcome === 'no_branch') {
+        pushNoBranch = result.message;
+        return;
+      }
+      if (result.outcome === 'rejected_non_fast_forward') {
+        pushRejected = { message: result.message, staleLease: false };
+        return;
+      }
+      if (result.outcome === 'rejected_stale_lease') {
+        pushRejected = { message: result.message, staleLease: true };
+        return;
+      }
+      pushError = result.message;
+    } catch (error) {
+      pushSuccess = undefined;
+      pushError = errorMessage(error);
+    } finally {
+      pushing = false;
     }
   }
 
@@ -473,6 +531,57 @@
         {/if}
       </div>
     {/if}
+
+    <div class="git-branch-push">
+      <Button
+        variant="primary"
+        size="sm"
+        loading={pushing}
+        onclick={() => handlePush(false)}
+        dataTestId="git-branch-push-submit"
+      >
+        Push
+      </Button>
+    </div>
+    {#if pushSuccess}
+      <p class="git-push-success" data-testid="git-branch-push-success">
+        Pushed to origin/{pushSuccess.branch}{pushSuccess.setUpstream
+          ? ' — upstream tracking set (first push of this branch)'
+          : ''}{pushSuccess.forced ? ' (forced)' : ''}.
+      </p>
+    {/if}
+    {#if pushNoBranch}
+      <ErrorNotice message={pushNoBranch} class="git-branch-inline-error" />
+    {/if}
+    {#if pushError}
+      <ErrorNotice message={pushError} class="git-branch-inline-error" />
+    {/if}
+    {#if pushRejected}
+      <div class="git-branch-conflict" data-testid="git-branch-push-rejected">
+        <p>{pushRejected.message}</p>
+        {#if pushRejected.staleLease}
+          <p>
+            This worktree's own knowledge of the remote is out of date — fetch (an integrated
+            terminal, §7.5), then push again.
+          </p>
+        {:else}
+          <p>
+            The remote has commits this branch doesn't have — fetch and merge or rebase, or push
+            again with force (only overwrites the remote if this worktree's own knowledge of it is
+            still current; otherwise this becomes the same stale-knowledge refusal above).
+          </p>
+        {/if}
+        <Button
+          variant="danger"
+          size="sm"
+          loading={pushing}
+          onclick={() => handlePush(true)}
+          dataTestId="git-branch-push-force"
+        >
+          Push (force)
+        </Button>
+      </div>
+    {/if}
   </Card>
 
   <Card elevation="raised" padding="md">
@@ -608,6 +717,7 @@
 
   .git-branch-create,
   .git-branch-merge,
+  .git-branch-push,
   .git-stash-save {
     display: flex;
     align-items: center;
@@ -652,6 +762,11 @@
 
   :global(.git-branch-inline-error) {
     margin-top: var(--space-sm);
+  }
+
+  .git-push-success {
+    color: var(--color-text-secondary);
+    margin: var(--space-sm) 0 0 0;
   }
 
   .git-stash-empty-note {

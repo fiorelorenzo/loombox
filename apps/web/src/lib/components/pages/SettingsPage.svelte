@@ -30,6 +30,7 @@
     NotificationPreferencesStorage,
   } from '$lib/notification-preferences';
   import type { BuildIdentityV1, ConnectedAccount, TargetListEntry } from '$lib/relay-client';
+  import type { TargetConcurrencySnapshot } from '$lib/target-concurrency';
   import type { KeymapV1 } from '@loombox/protocol';
   import { isNarrowViewport } from '$lib/viewport';
   import AppearanceSettings from '../AppearanceSettings.svelte';
@@ -58,6 +59,8 @@
     authToken: string;
     /** The former `NodesPage` props (issue #568's merge): `+page.svelte` still owns polling `listTargets()` and passes the latest snapshot straight through, unchanged from when this was its own destination. */
     targets: TargetListEntry[];
+    /** Per-target best-effort running/queued session counts (issue #255), keyed by `${nodeId}:${targetId}` — `+page.svelte`'s own `target-concurrency.ts#summarizeTargetConcurrency`, forwarded straight to `TargetStatusView` alongside `targets` itself. */
+    concurrency: Map<string, TargetConcurrencySnapshot>;
     loading: boolean;
     error: string | undefined;
     focusTarget?: FocusTarget;
@@ -87,6 +90,7 @@
     relayBaseUrl,
     authToken,
     targets,
+    concurrency,
     loading,
     error,
     focusTarget,
@@ -227,6 +231,7 @@
           </div>
           <TargetStatusView
             {targets}
+            {concurrency}
             {loading}
             {error}
             {focusTarget}

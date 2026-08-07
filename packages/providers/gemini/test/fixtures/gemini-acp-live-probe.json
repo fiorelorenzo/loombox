@@ -1,0 +1,142 @@
+{
+  "_recordedFrom": {
+    "package": "@google/gemini-cli",
+    "version": "0.54.0",
+    "command": "npx -y @google/gemini-cli@0.54.0 --acp",
+    "recordedOn": "2026-08-07",
+    "note": "Live JSON-RPC 2.0 traffic against the real, published npm package over stdio, no auth/credentials configured — same recording convention as packages/providers/core/test/fixtures/omp-acp-session-new-response.json. 'initializeResult' is the real, unmodified 'result' of an 'initialize' request (protocolVersion 1, clientCapabilities {fs:{readTextFile:false,writeTextFile:false},terminal:false}, matching AcpClient.initialize()'s real request shape). 'methodProbe' is the real response to each named method, sent immediately after 'initialize' on a fresh session (no session/new yet) with placeholder params — 'totally/bogus/method' is the deliberate baseline for JSON-RPC -32601 'Method not found' so the four session-lifecycle methods' identical error code is a direct comparison, not an inference. See docs/research/gemini-acp-completeness.md for the full citation trail (including source at the exact GitHub commit matching this npm version)."
+  },
+  "initializeResult": {
+    "protocolVersion": 1,
+    "authMethods": [
+      {
+        "id": "oauth-personal",
+        "name": "Log in with Google",
+        "description": "Log in with your Google account"
+      },
+      {
+        "id": "gemini-api-key",
+        "name": "Gemini API key",
+        "description": "Use an API key with Gemini Developer API",
+        "_meta": {
+          "api-key": {
+            "provider": "google"
+          }
+        }
+      },
+      {
+        "id": "vertex-ai",
+        "name": "Vertex AI",
+        "description": "Use an API key with Vertex AI GenAI API"
+      },
+      {
+        "id": "gateway",
+        "name": "AI API Gateway",
+        "description": "Use a custom AI API Gateway",
+        "_meta": {
+          "gateway": {
+            "protocol": "google",
+            "restartRequired": "false"
+          }
+        }
+      }
+    ],
+    "agentInfo": {
+      "name": "gemini-cli",
+      "title": "Gemini CLI",
+      "version": "0.54.0"
+    },
+    "agentCapabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": true,
+        "audio": true,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      }
+    }
+  },
+  "methodProbe": [
+    {
+      "method": "session/resume",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": session/resume",
+          "data": {
+            "method": "session/resume"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/list",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": session/list",
+          "data": {
+            "method": "session/list"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/close",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": session/close",
+          "data": {
+            "method": "session/close"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/delete",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": session/delete",
+          "data": {
+            "method": "session/delete"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/load",
+      "response": {
+        "error": {
+          "code": -32000,
+          "message": "Authentication required"
+        }
+      }
+    },
+    {
+      "method": "session/new",
+      "response": {
+        "error": {
+          "code": -32000,
+          "message": "Gemini API key is missing or not configured."
+        }
+      }
+    },
+    {
+      "method": "totally/bogus/method",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": totally/bogus/method",
+          "data": {
+            "method": "totally/bogus/method"
+          }
+        }
+      }
+    }
+  ]
+}

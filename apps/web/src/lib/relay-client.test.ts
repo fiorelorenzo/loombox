@@ -17,24 +17,24 @@ import {
   reduceTranscript,
 } from '@loombox/providers-core/browser';
 import {
+  buildIdentityMismatch,
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
-  buildIdentityMismatch,
   type BlobDownloadResponse,
-  type CheckpointRestoreResultPayloadV1,
-  type GitCheckpointV1,
-  type RestorePreviewV1,
-  type RestoreResultV1,
   type BuildIdentityV1,
+  type CheckpointRestoreResultPayloadV1,
+  type CiCheckStateV1,
   type ConfigOption,
   type ConnectedAccount,
-  type KeymapV1,
-  type CiCheckStateV1,
-  type RunStatusStateV1,
   type EncryptedEnvelope,
-  type PermissionResponse,
+  type GitCheckpointV1,
+  type KeymapV1,
   type PermissionPolicyV1,
+  type PermissionResponse,
   type PromptInjectV1,
+  type RestorePreviewV1,
+  type RestoreResultV1,
+  type RunStatusStateV1,
   type SessionMetaPublic,
   type WireMessageV1,
 } from '@loombox/protocol';
@@ -10483,6 +10483,129 @@ describe('RelayClient: dropped-range resync_marker surfaces as a visible transcr
       'chunk-4',
       'chunk-5',
     ]);
+  });
+});
+
+describe('RelayClient: pushBranch (SPEC §7.6/§7.14; issue #235)', () => {
+  it('seals { force } into the request envelope, and resolves an ok outcome decrypted from the real response', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-push-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-push-ok',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_git_push_ok', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-push-ok',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.pushBranch(session.id, { force: false });
+    const request = (await node.waitFor((m) => m.type === 'git_push_request')) as {
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    const decrypted = await decryptEnvelope(
+      session.id,
+      {
+        resourceId: request.envelope.resourceId,
+        iv: Uint8Array.from(atob(request.envelope.iv), (c) => c.charCodeAt(0)),
+        ciphertext: Uint8Array.from(atob(request.envelope.ciphertext), (c) => c.charCodeAt(0)),
+      },
+      key,
+    );
+    expect(JSON.parse(new TextDecoder().decode(decrypted))).toEqual({ force: false });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', branch: 'loombox/session-1', setUpstream: true, forced: false },
+      key,
+    );
+    node.send({
+      type: 'git_push_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      branch: 'loombox/session-1',
+      setUpstream: true,
+      forced: false,
+    });
+  });
+
+  it('resolves (not rejects) every named failure outcome — rejected_non_fast_forward, rejected_stale_lease, auth_failed, no_branch, error', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-push-outcomes';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-push-outcomes',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const fakeNode = node;
+
+    const session = makeSessionMeta({ id: 'sess_git_push_outcomes', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-push-outcomes',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const outcomes: Array<{ outcome: string; message?: string; branch?: string }> = [
+      {
+        outcome: 'rejected_non_fast_forward',
+        message: 'origin/feature has commits this branch does not',
+      },
+      {
+        outcome: 'rejected_stale_lease',
+        message: "this worktree's view of origin/feature is stale",
+      },
+      { outcome: 'auth_failed', message: 'git push could not authenticate with the remote' },
+      { outcome: 'no_branch', message: 'This session has no named branch to push' },
+      { outcome: 'error', message: 'git push failed: no configured push destination' },
+    ];
+
+    for (const expected of outcomes) {
+      const alreadySent = fakeNode.messages.length;
+      const resultPromise = client.pushBranch(session.id, { force: false });
+      await fakeNode.waitFor(() => fakeNode.messages.length > alreadySent);
+      const request = fakeNode.messages[alreadySent] as { requestId: string };
+      const responseEnvelope = await nodeSeal(session.id, expected, key);
+      fakeNode.send({
+        type: 'git_push_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        requestId: request.requestId,
+        envelope: responseEnvelope,
+      });
+      await expect(resultPromise).resolves.toEqual(expected);
+    }
   });
 });
 

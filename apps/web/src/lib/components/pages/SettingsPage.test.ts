@@ -34,6 +34,7 @@ function baseProps() {
     relayBaseUrl: 'http://relay.test',
     authToken: 'tok',
     targets: TARGETS,
+    concurrency: new Map(),
     loading: false,
     error: undefined,
     onRefresh: noop,
