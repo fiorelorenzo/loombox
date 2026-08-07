@@ -35,7 +35,7 @@
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Field from './ui/Field.svelte';
   import TextArea from './ui/TextArea.svelte';
-  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
+  import { loadErrorMessage, writeErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The two calls this dialog needs off `RelayClient` — see the file doc comment's DI note. Both resolve their whole outcome union (`'ok'` or `'error'`) rather than throwing for a failure — `RelayClient`'s own documented contract for these two calls. */
   export interface CommitDialogClient {
@@ -124,10 +124,7 @@
       onCommitted();
     } catch (err) {
       console.warn('CommitDialog: commitStaged failed', err);
-      const raw = err instanceof Error ? err.message : String(err);
-      commitError = raw.includes('timed out waiting')
-        ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay. Nothing was committed.'
-        : raw;
+      commitError = writeErrorMessage('committed', err);
     } finally {
       committing = false;
     }

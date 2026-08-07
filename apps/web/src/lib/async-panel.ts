@@ -51,3 +51,29 @@ export function loadErrorMessage(subject: string, error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.includes('timed out waiting') ? timeoutMessage(subject) : raw;
 }
+
+/**
+ * The sibling of {@link timeoutMessage} for a *mutating* action's own
+ * timeout (issue #652's duplicate sweep — found hand-rolled identically,
+ * modulo the trailing verb, in `ArchiveSessionDialog`, `CheckpointRestoreDialog`,
+ * `CommitDialog`, `DiscardHunkDialog` and `GitBranchPanel`). Deliberately a
+ * different sentence from {@link timeoutMessage}, not a shared one:
+ * `loadErrorMessage` names a THING that stayed silent ("This folder didn't
+ * answer"), which is honest for a read. A write's own timeout cannot make
+ * that same claim — the request may have landed on the node and only the
+ * reply got lost — so it says plainly that the outcome is unknown rather
+ * than implying nothing happened. `action` names what the caller cannot
+ * confirm happened ("archived", "restored", ...); omitted (`GitBranchPanel`,
+ * whose one handler covers several different mutations), the sentence
+ * stays generic.
+ */
+export function writeTimeoutMessage(action?: string): string {
+  const base = 'Nothing answered in time. The node may be asleep, offline, or on an older relay.';
+  return action ? `${base} Nothing was ${action}.` : base;
+}
+
+/** The write-side counterpart of {@link loadErrorMessage} — see {@link writeTimeoutMessage}'s doc comment for why the two sentences differ. */
+export function writeErrorMessage(action: string | undefined, error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.includes('timed out waiting') ? writeTimeoutMessage(action) : raw;
+}
