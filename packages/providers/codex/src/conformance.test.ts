@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { codexProviderModule } from './provider';
 import { buildCodexImageContentBlock } from './image';
 import { mapCodexPermissionOptions } from './permissions';
+import type { CodexPermissionButton } from './permissions';
 import { hasCodexBespokeWidget } from './tool-widgets';
 
 // Protocol-conformance suite for issue #186's Codex half: drives the
@@ -64,7 +65,7 @@ describe('codexProviderModule conformance', () => {
 
     const sessionId = await client.newSession(workDir);
 
-    let mappedButtons: ReturnType<typeof mapCodexPermissionOptions> | undefined;
+    let mappedButtons: CodexPermissionButton[] | undefined;
     let wasBespoke: boolean | undefined;
 
     client.on(
@@ -79,7 +80,7 @@ describe('codexProviderModule conformance', () => {
         mappedButtons = mapCodexPermissionOptions(request.options);
         wasBespoke = hasCodexBespokeWidget(request.toolCall);
 
-        const chosen = mappedButtons.find((b) => b.verb === 'yes_for_session')!;
+        const chosen = mappedButtons.find((b) => b.verb === 'allow_for_session')!;
         client.permissions.resolve(request.requestId, {
           outcome: 'selected',
           optionId: chosen.optionId,
@@ -91,11 +92,12 @@ describe('codexProviderModule conformance', () => {
     await client.prompt(sessionId, 'patch-with-permission');
     await turnEnd;
 
-    // Codex's real three-verb set, mapped from the fixture's actual options[].
+    // Codex's real three-verb set (issue #820), mapped from the fixture's
+    // actual options[] via the text rule itself, not just the kind fallback.
     expect(mappedButtons?.map((b) => b.verb)).toEqual([
-      'yes',
-      'yes_for_session',
-      'stop_and_explain',
+      'allow_once',
+      'allow_for_session',
+      'reject',
     ]);
     // The fixture's tool-call title ("Patch") is synthetic and, by design,
     // does not match real Codex's actual literal title ("Editing files") —
@@ -111,7 +113,7 @@ describe('codexProviderModule conformance', () => {
     expect(toolCall).toMatchObject({ status: 'completed', title: 'Patch', toolKind: 'edit' });
 
     const message = state.items.find((item) => item.type === 'message');
-    expect(message).toMatchObject({ text: 'patched (chose yes-for-session)' });
+    expect(message).toMatchObject({ text: 'patched (chose allow_always)' });
   });
 
   it('classifies the Bash bespoke tool call with no permission round trip', async () => {
