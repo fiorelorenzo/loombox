@@ -186,7 +186,8 @@
    */
   function targetHealthFor(item: AttentionInboxItem): InboxTargetHealthContext | undefined {
     const isStalledOrErrored =
-      item.kind === 'awaiting_input' || (item.kind === 'session_outcome' && item.outcome === 'error');
+      item.kind === 'awaiting_input' ||
+      (item.kind === 'session_outcome' && item.outcome === 'error');
     return isStalledOrErrored ? targetHealthBySessionId.get(item.sessionId) : undefined;
   }
 

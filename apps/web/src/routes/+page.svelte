@@ -2727,7 +2727,9 @@
   );
   /** `${nodeId}:${targetId}` -> its live `TargetListEntry` — the one lookup `sessionStallReasons` and `inboxTargetHealthBySessionId` below both join a session's own `nodeId`/`targetId` against, hoisted out of `sessionStallReasons`'s own `$derived.by` (issue #271's original home for it) so the second consumer doesn't rebuild an identical map every recompute. */
   const targetsByKey = $derived(
-    new SvelteMap(targetStatusEntries.map((target) => [`${target.nodeId}:${target.targetId}`, target])),
+    new SvelteMap(
+      targetStatusEntries.map((target) => [`${target.nodeId}:${target.targetId}`, target]),
+    ),
   );
   /** The status bar's Behind badge (issue #736): every currently-listed target whose build identity doesn't match this relay's own — `TargetStatusView`'s per-row `isBehind`/`buildIdentityMismatch` check, aggregated across the account instead of per row. */
   const targetsBehindCount = $derived(
