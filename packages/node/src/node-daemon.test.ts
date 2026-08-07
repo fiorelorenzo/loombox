@@ -4970,14 +4970,25 @@ describe('NodeDaemon MCP server resolution at session start (issues #187/#189)',
     const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
     const echoedMcpServers = JSON.parse(chunk!.text!);
 
-    expect(echoedMcpServers).toEqual([
-      {
-        name: 'github',
-        command: '/usr/bin/mcp-github',
-        args: [],
-        env: [{ name: 'GITHUB_TOKEN', value: 'ghp_test_value' }],
-      },
-    ]);
+    // Issue #627: this project has no explicit TrackerMode saved, which
+    // defaults to native (the same `?? {kind:'native'}` convention every
+    // other tracker-mode-reading call site in this file uses) — so its
+    // own tracker MCP server rides alongside the one declared server this
+    // test is actually about, appended after it (never reordering the
+    // declared list resolveMcpServers itself already produced).
+    expect(echoedMcpServers).toHaveLength(2);
+    expect(echoedMcpServers[0]).toEqual({
+      name: 'github',
+      command: '/usr/bin/mcp-github',
+      args: [],
+      env: [{ name: 'GITHUB_TOKEN', value: 'ghp_test_value' }],
+    });
+    expect(echoedMcpServers[1]).toMatchObject({
+      name: 'loombox-tracker',
+      type: 'http',
+      headers: [],
+    });
+    expect(echoedMcpServers[1].url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/tracker\/[\w-]+$/);
   });
 
   it('rejects session creation up front, before any worktree/agent is created, when a configured MCP server has an ungranted secret', async () => {
@@ -5093,7 +5104,11 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
     const [chunk] = await waitForDecryptedKinds(phone, session.id, key, ['agent_message_chunk'], 1);
     const echoed = JSON.parse(chunk!.text!) as { name: string; command: string }[];
 
-    expect(echoed.map((s) => s.name).sort()).toEqual(['client-only', 'shared']);
+    // Issue #627: native-mode default (see the previous describe block's
+    // own comment on this exact point) adds this project's own tracker
+    // server to every session's list, regardless of what a client/the
+    // node's own McpConfigStore declared.
+    expect(echoed.map((s) => s.name).sort()).toEqual(['client-only', 'loombox-tracker', 'shared']);
     // The node's own record wins outright — never the client-declared one
     // of the same name.
     expect(echoed.find((s) => s.name === 'shared')?.command).toBe('/node/shared');
@@ -5200,7 +5215,7 @@ describe('NodeDaemon MCP server placement/lifecycle on the execution target (iss
 
     const chunk = events.find((e) => e.kind === 'agent_message_chunk');
     const echoed = JSON.parse(chunk!.text!) as { name: string }[];
-    expect(echoed.map((s) => s.name)).toEqual(['good']);
+    expect(echoed.map((s) => s.name)).toEqual(['good', 'loombox-tracker']);
   }, 15000);
 
   it('excludes a server with a failed MCP handshake, reported with a distinct category from a missing binary', async () => {
