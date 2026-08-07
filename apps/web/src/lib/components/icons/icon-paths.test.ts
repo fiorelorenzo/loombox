@@ -32,6 +32,7 @@ const EXPECTED_NAMES = [
   'tool-search',
   'tool-think',
   'tool-fetch',
+  'tool-switch-mode',
   'terminal',
   'file',
   'folder',

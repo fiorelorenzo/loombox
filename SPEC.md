@@ -731,7 +731,7 @@ across providers rather than needing a bespoke per-provider transcript format.
   Edit/Write/Bash/TodoWrite; Codex's patch/diff/bash), each wrapped in its own
   error boundary so one bad widget can't take down the transcript. (2) A
   generic `ToolKind`-driven fallback row (`read`/`edit`/`delete`/`move`/
-  `search`/`execute`/`think`/`fetch`/`other`) for anything without a bespoke
+  `search`/`execute`/`think`/`fetch`/`switch_mode`/`other`) for anything without a bespoke
   widget — the guaranteed baseline for the generic ACP adapter tier (§5.5).
   Suppress the generic row for a tool call already covered by a bespoke diff/
   edit widget so streaming never briefly shows a duplicate placeholder. *A
