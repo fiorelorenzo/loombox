@@ -65,6 +65,7 @@ import {
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
   type AccountPinResolveRequest,
+  type AccountPinScanRequest,
   type AccountPinSetRequest,
   type AccountPinUnsetRequest,
   type AgentInstructionsGetRequest,
@@ -282,6 +283,7 @@ import {
   AmbiguousAccountError,
   resolveAccountForRead,
   resolveAccountForWrite,
+  scanPinsForAccount,
   type AccountPinMap,
 } from './account-pin';
 import { readAgentInstructionsFiles, writeAgentInstructionsFile } from './agent-instructions';
@@ -4528,6 +4530,9 @@ export class NodeDaemon extends EventEmitter {
       case 'account_pin_resolve_request':
         this.handleAccountPinResolveRequest(message);
         return;
+      case 'account_pin_scan_request':
+        this.handleAccountPinScanRequest(message);
+        return;
       case 'config_option':
         this.handleConfigOption(message);
         return;
@@ -7227,6 +7232,29 @@ export class NodeDaemon extends EventEmitter {
       requestId,
       nodeId: this.nodeId,
       result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to scan every project it has
+   * ever recorded an `AccountPinStore` entry for and report every
+   * `{projectPath, capability}` still pinned to `message.accountId` (SPEC
+   * §7.26's pre-disconnect scan-and-warn, issue #229) — sent before
+   * {@link handleConnectedAccountDisconnectRequest}'s own request, never
+   * as part of it, so the client can decide whether a confirmation step
+   * is even needed from a real `affected` list rather than a generic
+   * warning. Read-only: `scanPinsForAccount` is pure, and this handler
+   * never mutates `accountPinStore`.
+   */
+  private handleAccountPinScanRequest(message: AccountPinScanRequest): void {
+    const affected = scanPinsForAccount(this.accountPinStore.allProjectPins(), message.accountId);
+    this.relay.send({
+      type: 'account_pin_scan_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: message.requestId,
+      nodeId: this.nodeId,
+      accountId: message.accountId,
+      affected,
     });
   }
 

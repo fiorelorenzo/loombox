@@ -2021,6 +2021,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'jira_connect_response':
       case 'account_pin_response':
       case 'account_pin_resolve_response':
+      case 'account_pin_scan_response':
       case 'tracker_mode_response':
       case 'tracker_snapshot_response':
       case 'tracker_write_response':
@@ -2555,6 +2556,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'account_pin_set_request':
       case 'account_pin_unset_request':
       case 'account_pin_resolve_request':
+      case 'account_pin_scan_request':
       case 'tracker_mode_get_request':
       case 'tracker_mode_set_request':
       case 'tracker_snapshot_request':

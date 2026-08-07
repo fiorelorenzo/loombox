@@ -280,3 +280,52 @@ export async function resolveAccountForWriteOnThisNode(
   await ensureAccountPresentOnThisNode(account, params.capability, presence);
   return account;
 }
+
+/**
+ * One `{projectPath, capability}` hit {@link scanPinsForAccount} found —
+ * `account-connect.ts`'s `accountPinScanHitV1`'s I/O-free counterpart.
+ */
+export interface AccountPinScanHit {
+  readonly projectPath: string;
+  readonly capability: string;
+}
+
+/**
+ * SPEC §7.26's pre-disconnect scan (issue #229: "Before letting a user
+ * disconnect an account still pinned somewhere, scan all project settings
+ * and warn"). Deliberately I/O-free like every other resolver in this
+ * module: `projectPins` is the caller's own already-loaded
+ * `AccountPinStore.allProjectPins()` snapshot, not a store this function
+ * reads itself — same split `resolveAccountForRead`/`resolveAccountForWrite`
+ * already draw between "decide" (here) and "persist"
+ * (`account-pin-store.ts`).
+ *
+ * A hit is exactly a project/capability whose pin is the literal string
+ * `accountId` — an explicit opt-out (`null`) or an absent key is never a
+ * hit, and neither is a pin naming a *different* account, however similar
+ * (e.g. a different host on the same provider): this scan answers "would
+ * removing THIS account break something", not "is this project pinned to
+ * anything at all".
+ *
+ * Sorted by `projectPath` then `capability` so the result is deterministic
+ * regardless of on-disk write order or object key iteration order — the
+ * caller (a confirmation dialog) renders this list directly, and a stable
+ * order matters more here than it does for `AccountPinStore.get`'s own
+ * single-project map.
+ */
+export function scanPinsForAccount(
+  projectPins: Readonly<Record<string, AccountPinMap>>,
+  accountId: string,
+): AccountPinScanHit[] {
+  const hits: AccountPinScanHit[] = [];
+  for (const [projectPath, pins] of Object.entries(projectPins)) {
+    for (const [capability, pinnedAccountId] of Object.entries(pins)) {
+      if (pinnedAccountId === accountId) hits.push({ projectPath, capability });
+    }
+  }
+  hits.sort(
+    (a, b) =>
+      a.projectPath.localeCompare(b.projectPath) || a.capability.localeCompare(b.capability),
+  );
+  return hits;
+}

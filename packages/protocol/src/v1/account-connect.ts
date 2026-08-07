@@ -140,7 +140,7 @@ export type JiraConnectResponse = z.infer<typeof jiraConnectResponse>;
 // Disconnect
 // ---------------------------------------------------------------------
 
-/** A client asks `nodeId` (the node that holds this account's local secret) to disconnect `accountId` — deletes the local keyring entry and, on success, the relay forgets the synced metadata row too (SPEC §7.26's "the local half of disconnecting it (the metadata row itself is the caller's/relay's concern)", `github-connect.ts`/`jira-connect.ts`'s own `deleteAccessToken`/`deleteCredential` doc comments). Does not itself scan for or unpin project pins referencing this account (issue #229's full scan-and-warn) — the client confirms with the operator first, using whatever pin state it already has loaded, before ever sending this. */
+/** A client asks `nodeId` (the node that holds this account's local secret) to disconnect `accountId` — deletes the local keyring entry and, on success, the relay forgets the synced metadata row too (SPEC §7.26's "the local half of disconnecting it (the metadata row itself is the caller's/relay's concern)", `github-connect.ts`/`jira-connect.ts`'s own `deleteAccessToken`/`deleteCredential` doc comments). Does not itself scan for, warn about, or unpin project pins referencing this account — {@link accountPinScanRequest} is the scan-and-warn step (issue #229), sent first and separately, so the client confirms with the operator using real project/capability names before ever sending this. Deliberately does not touch `AccountPinStore` either: a pin that named this account is left exactly as it was (orphaned, not cleared or blocked) — `account-pin.ts`'s `resolveAccountForRead`/`resolveAccountForWrite` already throw `AccountPinDanglingError` for a pin naming an account no longer in the connected-accounts list, which is the honest, real failure this account's own removal now produces on the next resolve, never a silent fallback to a different account. */
 export const connectedAccountDisconnectRequest = z.object({
   type: z.literal('connected_account_disconnect_request'),
   protocolVersion: z.literal(PROTOCOL_V1),
@@ -285,3 +285,50 @@ export const accountPinResolveResponse = z.object({
   result: accountPinResolveOutcome,
 });
 export type AccountPinResolveResponse = z.infer<typeof accountPinResolveResponse>;
+
+// ---------------------------------------------------------------------
+// Pre-disconnect scan (issue #229's "scan all project settings and warn"
+// — SPEC §7.26 — `account-pin.ts`'s pure `scanPinsForAccount`, reachable
+// here)
+// ---------------------------------------------------------------------
+
+/** One `{projectPath, capability}` hit — `account-pin.ts`'s pure `scanPinsForAccount`'s wire counterpart, one entry per project/capability pair whose `AccountPinStore` entry is still an explicit string pin equal to the scanned `accountId` (an explicit opt-out or an absent key is never a hit). */
+export const accountPinScanHitV1 = z.object({
+  projectPath: z.string().min(1),
+  capability: z.string().min(1),
+});
+export type AccountPinScanHitV1 = z.infer<typeof accountPinScanHitV1>;
+
+/**
+ * A client asks `nodeId` to scan every project this node has ever recorded
+ * an `AccountPinStore` entry for and report every `{projectPath,
+ * capability}` still pinned to `accountId` (SPEC §7.26: "Before letting a
+ * user disconnect an account still pinned somewhere, scan all project
+ * settings and warn"; issue #229). Sent BEFORE {@link
+ * connectedAccountDisconnectRequest}, not as part of it — the caller
+ * decides whether to even show a confirmation step from the reply's
+ * `affected` list (this issue's own acceptance: no pins, no extra
+ * confirmation). Read-only: never mutates a pin, and disconnecting
+ * afterward does not clear the ones it found either — see {@link
+ * connectedAccountDisconnectRequest}'s doc comment for why a dangling pin
+ * is the deliberate outcome, not a silently-cleared one.
+ */
+export const accountPinScanRequest = z.object({
+  type: z.literal('account_pin_scan_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  accountId: z.string().min(1),
+});
+export type AccountPinScanRequest = z.infer<typeof accountPinScanRequest>;
+
+/** {@link accountPinScanRequest}'s reply — `affected` is `[]` for an account nothing is pinned to (the common case: a client may disconnect immediately, no confirmation needed), or one entry per real project/capability hit otherwise, each carrying the actual `projectPath` so a confirmation can name it instead of a generic "some projects may be affected" warning. */
+export const accountPinScanResponse = z.object({
+  type: z.literal('account_pin_scan_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  accountId: z.string().min(1),
+  affected: z.array(accountPinScanHitV1),
+});
+export type AccountPinScanResponse = z.infer<typeof accountPinScanResponse>;
