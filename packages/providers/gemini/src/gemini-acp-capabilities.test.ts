@@ -123,20 +123,24 @@ describe('real gemini-cli --acp source/wire (issue #272 build-time verification 
 });
 
 describe("real-shape conformance: loombox's capability derivation and generic tier against Gemini's real data", () => {
-  it('[real Gemini gap] deriveFeatureFlags reports supportsResume/supportsAdditionalDirectories/supportsSessionDelete: false, even though loadSession is true', () => {
-    // Correct behavior per issue #821's fix — sessionCapabilities really is
-    // absent for Gemini (confirmed above), so this is capabilities.ts
-    // correctly reporting a genuine Gemini limitation, not a loombox bug.
-    // packages/providers/core/src/client.ts's resumeSession() only ever
-    // sends 'session/resume' (no 'session/load' fallback), so Gemini
-    // sessions can never be resumed via loombox's client today — see
-    // docs/research/gemini-acp-completeness.md's gaps table.
+  it('[issue #843 resolved] deriveFeatureFlags reports supportsResume: true via the session/load fallback, even though sessionCapabilities.resume itself is genuinely absent', () => {
+    // sessionCapabilities really is absent for Gemini (confirmed above) —
+    // that part of issue #821's finding still holds. What changed: issue
+    // #843 gave packages/providers/core/src/client.ts's resumeSession() a
+    // session/load fallback for exactly this shape (loadSession: true, no
+    // sessionCapabilities.resume), so a Gemini session genuinely CAN be
+    // resumed via loombox's client now — reporting supportsResume: false
+    // here would be capability reporting saying what we wish were, not
+    // what's genuinely available, the opposite of what this suite exists
+    // to hold honest. supportsAdditionalDirectories/supportsSessionDelete
+    // stay false: session/load has no equivalent fallback for either (it
+    // only ever substitutes for session/resume).
     const flags = deriveFeatureFlags(fixture.initializeResult.agentCapabilities);
     expect(flags).toEqual({
       supportsImages: true,
       supportsAudio: true,
       supportsEmbeddedContext: true,
-      supportsResume: false,
+      supportsResume: true,
       supportsAdditionalDirectories: false,
       supportsSessionDelete: false,
     });

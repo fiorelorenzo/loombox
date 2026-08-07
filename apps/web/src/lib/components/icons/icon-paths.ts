@@ -63,6 +63,7 @@ export const ICON_NAMES = [
   'tool-search',
   'tool-think',
   'tool-fetch',
+  'tool-switch-mode',
   'terminal',
   'file',
   'folder',
@@ -251,6 +252,16 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // A downward arrow landing on a baseline — inbound/"fetched" data — the
   // `fetch` tool call.
   'tool-fetch': ['M32 12 V40', 'M22 30 L32 40 L42 30', 'M14 48 H50'],
+
+  // A toggle-track pill with its knob thrown to one side — the
+  // `switch_mode` tool call (issue #822: the real ACP v1 `ToolKind` this
+  // set was missing a glyph for entirely). Deliberately a different
+  // anatomy from `refresh`'s circular arrow: this is a discrete flip
+  // between two states, not a retry loop.
+  'tool-switch-mode': [
+    'M24 18 H40 A14 14 0 0 1 40 46 H24 A14 14 0 0 1 24 18 Z',
+    'M34 32 A6 6 0 1 0 46 32 A6 6 0 1 0 34 32',
+  ],
 
   // Same terminal-frame anatomy as `tool-bash` (frame, prompt caret,
   // cursor) under its own name for surfaces that mean "open a terminal"

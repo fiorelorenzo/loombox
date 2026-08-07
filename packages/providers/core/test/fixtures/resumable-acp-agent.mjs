@@ -16,8 +16,18 @@
 // a resuming client must coalesce the two chunks into one item and must
 // not duplicate or drop the tool call.
 //
-// `session/list` returns a small canned roster. `session/cancel` (a
-// notification, no response expected) is accepted and ignored.
+// `agentCapabilities.sessionCapabilities.resume`/`.list` are set because
+// this fixture genuinely implements `session/resume`/`session/list` below
+// (issue #843: `AcpClient.resumeSession` now branches on the real
+// `sessionCapabilities.resume` field to decide whether to call
+// `session/resume` at all vs. fall back to `session/load` — a fixture that
+// claims only the older `loadSession` flag while actually answering
+// `session/resume` would make that branch untestable here). No
+// `loadSession` flag: this fixture doesn't implement `session/load`, so
+// claiming it would be exactly the dishonest-capability-reporting bug
+// issue #843 exists to fix. `session/list` returns a small canned roster.
+// `session/cancel` (a notification, no response expected) is accepted and
+// ignored.
 //
 // Plain Node ESM (no TypeScript, no deps): spawned directly as a child
 // process, not imported.
@@ -53,7 +63,7 @@ rl.on('line', (line) => {
       id: msg.id,
       result: {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: { sessionCapabilities: { resume: {}, list: {} } },
         agentInfo: { name: 'resumable-acp-agent', version: '0.0.0' },
         authMethods: [],
       },

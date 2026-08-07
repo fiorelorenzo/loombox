@@ -60,9 +60,12 @@ describe('resolveToolWidgetKind', () => {
     expect(resolveToolWidgetKind(item)).toBe('generic');
   });
 
-  it('falls back to generic for anything else (read/search/other with no todos)', () => {
+  it('falls back to generic for anything else (read/search/switch_mode/other with no todos)', () => {
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: 'read' }))).toBe('generic');
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: 'search' }))).toBe('generic');
+    // `switch_mode` (issue #822) has no bespoke widget — it renders through
+    // the generic row with its own icon, same as read/search/fetch/etc.
+    expect(resolveToolWidgetKind(toolCallItem({ toolKind: 'switch_mode' }))).toBe('generic');
     expect(resolveToolWidgetKind(toolCallItem({ toolKind: undefined }))).toBe('generic');
   });
 });
@@ -78,6 +81,7 @@ describe('toolKindIcon', () => {
       ['execute', 'tool-bash'],
       ['think', 'tool-think'],
       ['fetch', 'tool-fetch'],
+      ['switch_mode', 'tool-switch-mode'],
       ['other', 'tool-generic'],
     ];
     const seen = new Set<string>();

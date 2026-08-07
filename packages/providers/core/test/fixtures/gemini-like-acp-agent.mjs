@@ -174,6 +174,55 @@ rl.on('line', (line) => {
     return;
   }
 
+  if (msg.method === 'session/load') {
+    const sessionId = msg.params?.sessionId;
+
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'm1',
+          content: { type: 'text', text: 'before-gap ' },
+        },
+      },
+    });
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc1',
+          title: 'Search',
+          kind: 'search',
+          status: 'completed',
+        },
+      },
+    });
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'm1',
+          content: { type: 'text', text: 'after-gap' },
+        },
+      },
+    });
+
+    // Real LoadSessionResponse never carries sessionId back (only optional
+    // configOptions/modes) -- this fixture sends neither, same as the real
+    // recorded probe never observed a successful session/load response.
+    send({ jsonrpc: '2.0', id: msg.id, result: {} });
+    return;
+  }
+
   if (msg.method === 'session/prompt') {
     const sessionId = msg.params?.sessionId;
     const text = msg.params?.prompt?.[0]?.text;
@@ -230,7 +279,7 @@ rl.on('line', (line) => {
     id: msg.id,
     error: {
       code: -32601,
-      message: `gemini-like-acp-agent: method not implemented: ${String(msg.method)}`,
+      message: `"Method not found": ${String(msg.method)}`,
     },
   });
 });

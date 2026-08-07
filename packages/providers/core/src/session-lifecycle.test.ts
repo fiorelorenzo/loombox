@@ -14,6 +14,15 @@ const FIXTURE_PATH = path.join(
   'resumable-acp-agent.mjs',
 );
 
+/** `echo-acp-agent.mjs` advertises neither `sessionCapabilities.resume` nor `loadSession` -- no resume affordance at all (issue #843's other branch). */
+const NO_LIFECYCLE_FIXTURE_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'test',
+  'fixtures',
+  'echo-acp-agent.mjs',
+);
+
 let activeClients: AcpClient[] = [];
 
 function makeClient(): AcpClient {
@@ -88,6 +97,18 @@ describe('AcpClient: session/list (issue #176)', () => {
       { sessionId: 'sess_list_1', cwd: '/tmp/loombox-a', title: 'Alpha' },
       { sessionId: 'sess_list_2', cwd: '/tmp/loombox-b' },
     ]);
+  });
+});
+
+describe('AcpClient.resumeSession: no fallback available (issue #843)', () => {
+  it('throws an actionable error rather than reaching the agent, when the agent advertises neither sessionCapabilities.resume nor loadSession', async () => {
+    const client = new AcpClient({ command: process.execPath, args: [NO_LIFECYCLE_FIXTURE_PATH] });
+    activeClients.push(client);
+    await client.initialize();
+
+    await expect(
+      client.resumeSession('sess_no_lifecycle', '/tmp/loombox-no-lifecycle'),
+    ).rejects.toThrow(/neither sessionCapabilities\.resume nor loadSession/);
   });
 });
 
