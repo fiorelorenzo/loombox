@@ -139,7 +139,7 @@ export const sessionStatusV1 = z.enum([
 ]);
 export type SessionStatusV1 = z.infer<typeof sessionStatusV1>;
 
-/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). `reason` is set for `'error'` (issue #730) or `'paused'` (issue #251): a spawn that failed or timed out, or a spend cap that was crossed, in words a user can read — never populated for any other status, and never required (a status push predating this field, or one with nothing more specific to say, omits it). */
+/** A session's current status, pushed whenever it transitions (SPEC §7.13/§7.24's status badge). `reason` is set for `'error'` (issue #730), `'paused'` (issue #251), or a mid-session `'exited'` (issue #271 — the exit code `NodeDaemon`'s `reasonForAttentionState` reads off `AgentSession`'s own terminal detail, so a stalled-looking session's own status can say the agent process is genuinely gone rather than the client having to guess): a spawn that failed or timed out, a spend cap that was crossed, or a process's own exit code, in words a user can read — never populated for any other status, and never required (a status push predating this field, or one with nothing more specific to say, omits it). */
 export const sessionStatusEventV1 = z.object({
   kind: z.literal('session_status'),
   status: sessionStatusV1,
@@ -148,18 +148,22 @@ export const sessionStatusEventV1 = z.object({
    * Set alongside an `'error'` status the node wants the client to show
    * VERBATIM rather than a generic "session failed" — today one producer
    * is a custom-agent allowlist refusal (issue #748's "a request to run
-   * a binary outside it is refused with a reason the client shows"),
-   * naming the disallowed command and where the allowlist lives. Also
-   * set, always, alongside a `'paused'` status (issue #251): which cap
-   * (project or session) fired and the spend that crossed it, e.g.
+   * a binary outside it is refused with a reason the client shows").
+   * Also set, always, alongside a `'paused'` status (issue #251): which
+   * cap (project or session) fired and the spend that crossed it, e.g.
    * `"Spend cap reached: $12.50 of $10.00"` — a `'paused'` status with no
    * reason would be indistinguishable from a future, differently-caused
-   * pause, which is exactly what this field exists to prevent.
-   * `undefined` for every other status transition and for an ordinary
-   * spawn failure with nothing more specific to add than "error" — this is
-   * additive, so an older peer's schema simply drops an unrecognized field
-   * rather than rejecting the whole envelope (mirrors `sessionStatusV1`'s
-   * own "enum widenings degrade, never crash" doc comment above).
+   * pause, which is exactly what this field exists to prevent. Also set
+   * alongside a mid-session `'exited'` (issue #271), e.g. `"agent process
+   * exited (exit code 1)"` — `NodeDaemon`'s `wireAgentSession`'s
+   * `'attention'` listener is the one producer; a client-side stall
+   * diagnosis (`apps/web`'s `session-stall-diagnosis.ts`) reads this
+   * straight through rather than re-deriving it. `undefined` for every
+   * other status transition and for an ordinary spawn failure/exit with
+   * nothing more specific to add — this is additive, so an older peer's
+   * schema simply drops an unrecognized field rather than rejecting the
+   * whole envelope (mirrors `sessionStatusV1`'s own "enum widenings
+   * degrade, never crash" doc comment above).
    */
   reason: z.string().min(1).optional(),
 });

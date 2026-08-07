@@ -6186,6 +6186,11 @@ describe('NodeDaemon per-target concurrency caps (SPEC §7.16, issue #252)', () 
       3,
     );
     expect(session1Statuses.map((e) => e.status)).toEqual(['starting', 'awaiting_input', 'exited']);
+    // Issue #271: the crash fixture's `process.exit(1)` is real state the
+    // node had (`AttentionState.detail.code`, via `AgentSession.handleTerminal`)
+    // that used to be dropped on the floor here — now it rides `reason`,
+    // the same field #730 already uses for a pre-spawn failure.
+    expect(session1Statuses[2]?.reason).toBe('agent process exited (exit code 1)');
 
     // The slot session1 held is free again — a fresh session must start
     // immediately, never sit queued behind a session that is actually gone
