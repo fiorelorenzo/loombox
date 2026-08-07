@@ -140,6 +140,20 @@ semver bump, and write a short summary. The generated Markdown file goes in
 `.changeset/` and is committed alongside your change. Purely internal changes
 (docs, CI/tooling, tests with no package behavior change) don't need one.
 
+**Formatting is automatic, not another thing to remember:** `pnpm install`
+wires up a plain git hook (`git config core.hooksPath .githooks`, see
+`.githooks/pre-commit` — no husky, no lint-staged) that reformats any staged
+`.changeset/*.md` file with Prettier and re-stages it before the commit is
+made. This exists because writing the changeset is naturally the last step
+of a change, after `pnpm format:check` already ran clean, so an unformatted
+changeset used to slip through to CI every time (issue #723). Skip it for a
+genuine reason with `git commit --no-verify`; CI's full `pnpm format:check`
+still runs on every PR regardless, this hook is just a faster local net. A
+brand-new clone or worktree always gets it, since `prepare` runs on the
+first real install; on an existing checkout, pnpm sometimes decides nothing
+changed and skips `prepare` — run `git config core.hooksPath .githooks`
+once by hand in that case.
+
 **What happens after merge** (`.github/workflows/release.yml`, using
 [changesets/action](https://github.com/changesets/action)):
 
