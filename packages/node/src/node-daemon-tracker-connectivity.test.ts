@@ -124,6 +124,7 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     nodeId: 'node-tracker-connectivity',
     targetId: 'local',
     spendCapUsd: undefined,
+    acpSessionId: undefined,
     ...overrides,
   };
 }

@@ -116,6 +116,7 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     nodeId: 'node-review-comment',
     targetId: 'local',
     spendCapUsd: undefined,
+    acpSessionId: undefined,
     ...overrides,
   };
 }

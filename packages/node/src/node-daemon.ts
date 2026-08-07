@@ -2721,6 +2721,7 @@ export class NodeDaemon extends EventEmitter {
       nodeId: this.nodeId,
       targetId,
       spendCapUsd: undefined,
+      acpSessionId: undefined,
     };
     await this.announce(provisional, targetId, opts.title);
 
@@ -2904,6 +2905,7 @@ export class NodeDaemon extends EventEmitter {
         nodeId: this.nodeId,
         targetId,
         spendCapUsd: undefined,
+        acpSessionId: undefined,
       };
 
       await this.sendMcpServerStatus(sessionId, failedMcpServers);
@@ -3134,6 +3136,14 @@ export class NodeDaemon extends EventEmitter {
       remoteChild,
     };
     this.bridges.set(session.id, bridge);
+    if (session.target === 'local') {
+      // issue #264: durably links this loombox session to its ACP-level
+      // agent session id, the key its transcript lives under in
+      // `AgentSupervisor`'s `TranscriptStore` — see `Session.acpSessionId`'s
+      // own doc comment for why a LATER fork (once this agent is long
+      // gone) needs this recorded now, not derived after the fact.
+      this.sessionManager.setAcpSessionId(session.id, agentSession.id);
+    }
     this.wireAgentSession(bridge);
     // The relay drops a session_update for a session it hasn't seen a
     // session_announce for yet (`relay.ts`'s "unknown session" guard) — so
@@ -4587,9 +4597,12 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * A client asked (via the relay) to fork one of this node's sessions
-   * from a turn into a brand-new one (design spec
-   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746). Always
-   * replies — `outcome: 'error'` with a human-readable reason for every
+   * from a turn into a brand-new one — a still-running source (design
+   * spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) or a
+   * past one with no live agent behind it anymore (issue #264); see
+   * {@link forkSessionInternal}'s own doc comment for how the two share
+   * this one wire path and handler.
+   * Always replies — `outcome: 'error'` with a human-readable reason for every
    * refusal case, `outcome: 'ok'` only once the fork's worktree is copied,
    * its transcript seeded, and its own agent spawn kicked off (whose
    * success/failure rides the new session's ordinary `session_status`
@@ -4657,12 +4670,31 @@ export class NodeDaemon extends EventEmitter {
    * and launches the new session exactly like `createSessionInternal`
    * does for an ordinary creation — same concurrency-gate queueing, same
    * `launchLocalSession` — with `seedTranscriptUpdates` threaded through
-   * so `finishSessionCreation` replays the copied history onto it. Throws
-   * (never half-creates) for: an unrecognized target, a non-`local`
+   * so `finishSessionCreation` replays the copied history onto it.
+   *
+   * One mechanism, two sources for `seedTranscriptUpdates` (issue #264,
+   * the archive-facing sibling of #746's live-turn fork): a still-running
+   * source reads its transcript from the live `AgentSession` via its
+   * bridge, exactly as before; a PAST source — ended, exited, or simply
+   * reconnected after a node restart, so `this.bridges` has nothing for
+   * it — reads the identical `AcpTranscriptUpdate[]` shape straight off
+   * disk instead, via `AgentSupervisor.readPersistedTranscriptUpdates()`
+   * keyed by the source's own persisted `Session.acpSessionId`. From that
+   * point on (`cutTranscriptAtTurn` through `launchLocalSession`) the two
+   * cases are indistinguishable — there is no second fork implementation,
+   * only a second way to arrive at the same `AcpTranscriptUpdate[]` input.
+   *
+   * Throws (never half-creates) for: an unrecognized target; a non-`local`
    * target (this wave's scope — an `ssh:` fork would need a remote
-   * worktree copy this doesn't build), a source with no active bridge (no
-   * live agent, or disconnected — there is nothing to read its transcript
-   * from), or a `forkFromTurnId` this source's transcript never produced.
+   * worktree copy this doesn't build); a source this node has no record
+   * of at all — live or past — (unknown id, archived, or it belongs to a
+   * different node); a past source that never reached a live agent (no
+   * `acpSessionId` was ever recorded, so there is nothing on disk to
+   * read); a `forkFromTurnId` this source's transcript never produced;
+   * or, from `SessionManager.forkSession` itself, a source whose project
+   * folder, worktree, or branch no longer exists on disk (issue #264 —
+   * see that method's own doc comment for why those are checked up front
+   * rather than surfacing as a raw git/fs error).
    */
   private async forkSessionInternal(opts: {
     sessionId: string;
@@ -4682,19 +4714,34 @@ export class NodeDaemon extends EventEmitter {
     }
 
     const sourceBridge = this.bridges.get(opts.sourceSessionId);
-    if (!sourceBridge) {
-      throw new Error(
-        `session ${opts.sourceSessionId} has no active agent to fork from (no live agent, or disconnected)`,
+    let sourceTranscriptUpdates: readonly AcpTranscriptUpdate[];
+    if (sourceBridge) {
+      if (sourceBridge.session.target !== 'local') {
+        throw new Error(`cannot fork a '${sourceBridge.session.target}' session`);
+      }
+      sourceTranscriptUpdates = sourceBridge.agentSession.getTranscriptUpdates();
+    } else {
+      // No live agent: either a past session (issue #264 — ended, exited,
+      // or reconnected after a restart) or one this node never held at
+      // all. Only `SessionManager`'s own still-tracked record (never
+      // touched by a fork, only read) tells the two apart honestly.
+      const sourceRecord = this.sessionManager.getSession(opts.sourceSessionId);
+      if (!sourceRecord) {
+        throw new Error(
+          `session ${opts.sourceSessionId} is not known to this node (it may have been archived, or it ran on a different node)`,
+        );
+      }
+      if (!sourceRecord.acpSessionId) {
+        throw new Error(
+          `session ${opts.sourceSessionId} never reached a live agent, so it has no transcript to fork from`,
+        );
+      }
+      sourceTranscriptUpdates = this.supervisor.readPersistedTranscriptUpdates(
+        sourceRecord.acpSessionId,
       );
     }
-    if (sourceBridge.session.target !== 'local') {
-      throw new Error(`cannot fork a '${sourceBridge.session.target}' session`);
-    }
 
-    const seedTranscriptUpdates = cutTranscriptAtTurn(
-      sourceBridge.agentSession.getTranscriptUpdates(),
-      opts.forkFromTurnId,
-    );
+    const seedTranscriptUpdates = cutTranscriptAtTurn(sourceTranscriptUpdates, opts.forkFromTurnId);
     if (!seedTranscriptUpdates) {
       throw new Error(
         `turn "${opts.forkFromTurnId}" was not found in session ${opts.sourceSessionId}'s transcript`,
