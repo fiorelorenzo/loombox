@@ -500,7 +500,7 @@ describe('auto-pause on a crossed spend cap (SPEC §7.16; issue #251)', () => {
   );
 
   it(
-    'a paused session refuses a follow-up prompt (no reply channel, per issue #706 — logged and dropped)',
+    'a paused session refuses a follow-up prompt, and issue #706 gives that refusal a real reply instead of a silent drop',
     { retry: 0, timeout: 20000 },
     async () => {
       await createSpendCapSession();
@@ -509,10 +509,24 @@ describe('auto-pause on a crossed spend cap (SPEC §7.16; issue #251)', () => {
       await waitForSessionStatus('paused');
 
       const chunksBefore = await countAgentMessageChunks();
-      await promptOverWire('usage:1');
-      await sleep(300);
-      const chunksAfter = await countAgentMessageChunks();
+      promptCounter += 1;
+      const refusedPromptId = `prompt-${promptCounter}`;
+      const envelope = await phoneSeal(currentSessionId, { text: 'usage:1' }, sessionKey);
+      phone!.send({
+        type: 'prompt_inject',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: currentSessionId,
+        promptId: refusedPromptId,
+        envelope,
+      });
+      const result = (await phone!.waitFor(
+        (m) => m.type === 'prompt_inject_result' && m.promptId === refusedPromptId,
+        5000,
+      )) as Extract<WireMessageV1, { type: 'prompt_inject_result' }>;
+      expect(result.result.outcome).toBe('error');
+      expect(result.result.outcome === 'error' && result.result.message).toMatch(/spend cap/i);
 
+      const chunksAfter = await countAgentMessageChunks();
       // Nothing new arrived from the agent — the prompt was never delivered.
       expect(chunksAfter).toBe(chunksBefore);
     },
