@@ -7,6 +7,7 @@ import {
   unwrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
+import { isFailingCiConclusion } from '@loombox/shared';
 import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
@@ -53,6 +54,7 @@ import {
   parseCheckpointListResultPayloadV1,
   parseCheckpointRestorePreviewResultPayloadV1,
   parseCheckpointRestoreResultPayloadV1,
+  parseCiCheckStatusPayloadV1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
   type AccountPinMapV1,
@@ -175,6 +177,8 @@ import {
   type PrOpenPreviewResult,
   type PrOpenRequestPayloadV1,
   type PrOpenResult,
+  type CiCheckStateV1,
+  type CiCheckStatus,
   type WireMessageV1,
 } from '@loombox/protocol';
 import {
@@ -525,21 +529,26 @@ export interface RunClientState {
  * - `'awaiting_input'` — a session whose live status is `awaiting_input`.
  * - `'session_outcome'` — a session whose live status settled to `'exited'`
  *   (finished) or `'error'` (errored); see `outcome`/`stopReason`.
- * - `'ci_failure'` / `'review_request'` — declared here as an extension
- *   point ONLY: SPEC §7.13/§7.14 says a red CI check or a review request
- *   lands in this same inbox, but neither has a live event source in this
- *   client yet — that needs the git/CI/tracker integration work (SPEC
- *   §7.10/§7.14, v2). `RelayClient` never constructs one of these in v1;
- *   they exist in the union (and `AttentionInbox.svelte` already renders
- *   them distinctly) purely so wiring a real source later is additive, not
- *   a rendering/type rework.
+ * - `'ci_failure'` — a session whose watched pull request's latest
+ *   `ci_check_status` (`packages/node/src/ci-check-watcher.ts`, issue #239)
+ *   aggregates to `'failing'`; see `prUrl`/`prNumber`/`failingChecks`
+ *   (issue #243).
+ * - `'review_request'` — declared here as an extension point ONLY: SPEC
+ *   §7.14 says a review request lands in this same inbox too, but it has
+ *   no live event source in this client yet (that needs the tracker
+ *   integration work, v2). `RelayClient` never constructs one of these in
+ *   v1; it exists in the union (and `AttentionInbox.svelte` already
+ *   renders it distinctly) purely so wiring a real source later is
+ *   additive, not a rendering/type rework.
  *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'` are the three "needs
- * the user now" classes this v1 slice actually wires to live data. See
- * {@link RelayClient.attentionInbox}'s doc comment for why a session with a
- * queue of several pending requests only ever contributes its head as one
- * item, and why a session contributes at most one of `awaiting_input`/
- * `session_outcome` (its live status is one or the other, never both).
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'` are
+ * the four "needs the user now" classes this client actually wires to live
+ * data. See {@link RelayClient.attentionInbox}'s doc comment for why a
+ * session with a queue of several pending requests only ever contributes
+ * its head as one item, why a session contributes at most one of
+ * `awaiting_input`/`session_outcome` (its live status is one or the other,
+ * never both), and why `ci_failure` is independent of both (a session can
+ * be idle/finished AND have a failing check on its open PR at once).
  */
 export interface AttentionInboxItem {
   readonly kind:
@@ -573,6 +582,20 @@ export interface AttentionInboxItem {
    * first turn) — not a stale placeholder.
    */
   readonly agentMessage?: string;
+  /** Set only for a `'ci_failure'` item: the failing pull request's own URL and number (`CiCheckStateV1.prUrl`/`.prNumber`), so a renderer can link straight to it rather than only naming the session (issue #243). */
+  readonly prUrl?: string;
+  readonly prNumber?: number;
+  /**
+   * Set only for a `'ci_failure'` item: the names of the check runs
+   * actually responsible (`CiCheckStateV1.checkRuns`, filtered through
+   * `@loombox/shared`'s `isFailingCiConclusion` — the same judgment
+   * `NodeDaemon.handleCiCheckFailure`'s auto-iterate hook feeds back to
+   * the agent, never a second guess in the browser). Never empty when
+   * `kind` is `'ci_failure'`: the node's own aggregate `state` only
+   * reaches `'failing'` when at least one check run's conclusion matches
+   * that exact set (issue #243).
+   */
+  readonly failingChecks?: readonly string[];
 }
 
 /**
@@ -1362,6 +1385,8 @@ export class RelayClient {
   private inboxTrackingActive = false;
   /** Sessions already wired to recompute the inbox on their own transcript/permission-queue changes — see {@link trackSessionForInbox}. */
   private readonly inboxTrackedSessions = new Set<string>();
+  /** `sessionId` -> this session's latest known CI check state (SPEC §7.14; issue #243) — backs the attention inbox's `'ci_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleCiCheckStatus}. `undefined` (no entry yet) until the node's first `ci_check_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. */
+  private readonly ciCheckStatuses = new Map<string, Writable<CiCheckStateV1 | undefined>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -3930,10 +3955,15 @@ export class RelayClient {
    *     `'awaiting_input'`;
    *   - a `'session_outcome'` item while its live `session_status` has
    *     settled to `'exited'` or `'error'`.
+   * - AND, independently again, a `'ci_failure'` item while its watched
+   *   PR's latest `ci_check_status` (issue #239) aggregates to `'failing'`
+   *   (issue #243) — a session can be idle/finished AND have a failing
+   *   check on its open PR at the same time, so this is never mutually
+   *   exclusive with the status item above.
    *
-   * `'ci_failure'`/`'review_request'` are NOT produced here — see
-   * {@link AttentionInboxItem}'s doc comment for why those two classes are
-   * only a modeled extension point in v1, not live yet.
+   * `'review_request'` is NOT produced here — see
+   * {@link AttentionInboxItem}'s doc comment for why that one class is
+   * still only a modeled extension point, not live yet.
    *
    * Reads straight off the exact same `permissionQueueStoreFor`/
    * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
@@ -5522,11 +5552,11 @@ export class RelayClient {
 
   /**
    * Wires one session into the attention inbox: subscribes it (so its
-   * `permission_request`/`session_update` traffic actually reaches this
-   * client, see `ensureSubscribed`) and recomputes the inbox whenever
-   * either its transcript (status) or its permission queue changes.
-   * Idempotent per session id, and a no-op before {@link attentionInbox}
-   * has ever been called (see `syncInboxTracking`).
+   * `permission_request`/`session_update`/`ci_check_status` traffic
+   * actually reaches this client, see `ensureSubscribed`) and recomputes
+   * the inbox whenever its transcript (status), permission queue, or CI
+   * check state changes. Idempotent per session id, and a no-op before
+   * {@link attentionInbox} has ever been called (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -5534,6 +5564,7 @@ export class RelayClient {
     this.ensureSubscribed(sessionId);
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
   }
 
   /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
@@ -5594,6 +5625,23 @@ export class RelayClient {
           stopReason: transcript.lastStopReason ?? transcript.statusReason,
         });
       }
+
+      const ci = get(this.ciCheckStatusStoreFor(session.id));
+      if (ci?.state === 'failing') {
+        items.push({
+          kind: 'ci_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: ci.updatedAt,
+          prUrl: ci.prUrl,
+          prNumber: ci.prNumber,
+          failingChecks: ci.checkRuns
+            .filter((run) => isFailingCiConclusion(run.conclusion))
+            .map((run) => run.name),
+        });
+      }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
     this.attentionInboxStore.set(items);
@@ -5604,6 +5652,16 @@ export class RelayClient {
     if (!store) {
       store = writable<TranscriptState>(createTranscriptState());
       this.transcripts.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /** `sessionId` -> {@link ciCheckStatuses}'s backing store, created on first access — same lazy-map pattern as {@link transcriptStoreFor}/{@link permissionQueueStoreFor}. */
+  private ciCheckStatusStoreFor(sessionId: string): Writable<CiCheckStateV1 | undefined> {
+    let store = this.ciCheckStatuses.get(sessionId);
+    if (!store) {
+      store = writable<CiCheckStateV1 | undefined>(undefined);
+      this.ciCheckStatuses.set(sessionId, store);
     }
     return store;
   }
@@ -5908,6 +5966,9 @@ export class RelayClient {
         pending.resolve(message.mode);
         return;
       }
+      case 'ci_check_status':
+        this.handleCiCheckStatus(message);
+        return;
       default:
         return;
     }
@@ -6635,6 +6696,33 @@ export class RelayClient {
       .then((decrypted) => pending.resolve(parsePrOpenResultPayloadV1(decrypted).result))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
+  /**
+   * The owning node's latest CI check-run reading for a session's open
+   * pull request (SPEC §7.14; issues #239/#243) — pushed on a fixed
+   * interval whatever the resulting state, exactly like
+   * {@link handleRunOutput}; no pending-request bookkeeping, since nothing
+   * on this client ever asks for it. Decrypts straight into
+   * {@link ciCheckStatusStoreFor}, which {@link recomputeAttentionInbox}
+   * reads to build (or clear) this session's `'ci_failure'` inbox item —
+   * a genuine decrypt failure is logged and otherwise swallowed, the same
+   * "best-effort push, never crash the client" contract {@link
+   * handleRunOutput} follows.
+   */
+  private handleCiCheckStatus(message: CiCheckStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.ciCheckStatusStoreFor(message.sessionId).set(
+          parseCiCheckStatusPayloadV1(decrypted).status,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt ci_check_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
       });
   }
 

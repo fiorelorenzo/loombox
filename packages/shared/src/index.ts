@@ -49,3 +49,11 @@ export {
 // `spend-aggregation.ts`'s own doc comment.
 export type { SpendAggregationRow, SpendLedgerFilter, SpendAggregateV1 } from './spend-aggregation';
 export { filterSpendLedgerRows, aggregateSpendLedgerRows } from './spend-aggregation';
+
+// Pure GitHub check-run conclusion judgment (SPEC §7.14; issues #239/#243)
+// — shared between `@loombox/node` (`ci-check-watcher.ts`'s own aggregate
+// `state`, and `NodeDaemon.handleCiCheckFailure`'s auto-iterate hook) and
+// `@loombox/web` (`RelayClient`'s `'ci_failure'` attention-inbox item), so
+// both name the exact same check runs as failing. See `ci-check.ts`'s own
+// doc comment.
+export { isFailingCiConclusion } from './ci-check';
