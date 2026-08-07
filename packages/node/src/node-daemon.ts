@@ -323,6 +323,7 @@ import { JiraConnectService } from './jira-connect';
 import { LocalExecutionTarget } from './local-execution-target';
 import { McpConfigStore } from './mcp-config-store';
 import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
+import { linkOpenedPullRequestToNativeTracker } from './native-tracker-pr-link';
 import { NodeMcpSecretManager } from './mcp-secrets';
 import { NodeProjectEnvManager } from './project-env-secrets';
 import {
@@ -414,6 +415,7 @@ import {
   trackerResolutionErrorPayload,
   type LiveTrackerProvider,
 } from './tracker-live-bridge';
+import { LiveTrackerPrLinkageWriter } from './tracker-pr-linkage-live';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -1684,6 +1686,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly ciAutoIterateController: CiAutoIterateController;
   /** SPEC §7.10, issue #219's live-tracker reachability polling engine — see `NodeDaemonOptions.trackerConnectivityWatcher`'s doc comment. */
   private readonly trackerConnectivityWatcher: TrackerConnectivityWatcher;
+  /** SPEC §7.14 lines 526-530, issue #242's live-tracker PR-linkage write-back — see `./tracker-pr-linkage-live.ts`'s own top comment for its idempotency contract. No `NodeDaemonOptions` injection point: it holds no external dependency of its own (its only state is an in-memory dedup `Set`), so there is nothing a test needs to substitute — `writeLiveTrackerPrLinkage`'s own `resolveTrackerDispatch` call is what tests inject `githubConnectService`/`jiraConnectService`/`trackerBackendFetchImpl` around instead. */
+  private readonly liveTrackerPrLinkageWriter = new LiveTrackerPrLinkageWriter();
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -8646,24 +8650,54 @@ export class NodeDaemon extends EventEmitter {
     const routing = this.resolveSessionRouting(message.sessionId);
     if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
 
+    // Stashed by the first `.then` below so the write-back stage further
+    // down this chain (issue #242) can read the operator's own PR
+    // title/body — the one thing `openPr`'s own `OpenPrResult` doesn't
+    // carry — without threading a second parameter through every
+    // intermediate `.then` in between.
+    let openedPrPayload: PrOpenRequestPayloadV1 | undefined;
+
     this.decryptPrOpenRequest(message)
-      .then((payload) =>
-        this.getExecutionTarget(routing.targetId, routing.session.projectPath).then((target) =>
-          openPr(target, routing.session, payload).then((opened) =>
-            // SPEC §7.14, issue #239: once a PR is genuinely open, start
-            // watching its CI checks — best-effort, never lets a watch-
-            // registration failure (e.g. an unparseable PR URL) turn an
-            // otherwise-successful pr_open_request into a reported
-            // failure.
-            this.registerCiCheckWatch(routing.session, target, opened)
-              .catch((error: unknown) => {
-                console.warn(
-                  `NodeDaemon: failed to register CI check watch for session ${message.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
-                );
-              })
-              .then(() => opened),
-          ),
-        ),
+      .then((payload) => {
+        openedPrPayload = payload;
+        return this.getExecutionTarget(routing.targetId, routing.session.projectPath).then(
+          (target) =>
+            openPr(target, routing.session, payload).then((opened) =>
+              // SPEC §7.14, issue #239: once a PR is genuinely open, start
+              // watching its CI checks — best-effort, never lets a watch-
+              // registration failure (e.g. an unparseable PR URL) turn an
+              // otherwise-successful pr_open_request into a reported
+              // failure.
+              this.registerCiCheckWatch(routing.session, target, opened)
+                .catch((error: unknown) => {
+                  console.warn(
+                    `NodeDaemon: failed to register CI check watch for session ${message.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                })
+                .then(() => opened),
+            ),
+        );
+      })
+      .then((opened) =>
+        // SPEC §7.14 lines 526-530, issue #242: same best-effort contract
+        // as registerCiCheckWatch just above — a live tracker write-back
+        // failure never turns an otherwise-successful pr_open_request
+        // into a reported failure.
+        this.writeLiveTrackerPrLinkage(routing.session, openedPrPayload!, opened)
+          .catch((error: unknown) => {
+            console.warn(
+              `NodeDaemon: failed to write live tracker PR linkage for session ${message.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          })
+          .then(() => opened),
+      )
+      .then((opened) =>
+        // Issue #241 (SPEC §7.14): once a PR is genuinely open, write the
+        // linkage back onto whichever native tracker record this
+        // session is linked to — best-effort, same "never turns an
+        // otherwise-successful pr_open_request into a reported failure"
+        // contract as the CI-watch registration above.
+        this.linkPullRequestToNativeTracker(routing.session, opened).then(() => opened),
       )
       .then(
         (opened) => ({ outcome: 'ok' as const, url: opened.url, number: opened.number }),
@@ -10436,6 +10470,83 @@ export class NodeDaemon extends EventEmitter {
       envelope,
     });
   }
+
+  /**
+   * SPEC §7.14 lines 526-530, issue #242: once a session's PR is
+   * genuinely open, write that linkage back through the project's own
+   * LIVE `TrackerBackend` — the live-tracker sibling of issue #241's
+   * native `system.linkedPullRequests` write, invoked from {@link
+   * handlePrOpenRequest} the same best-effort way {@link
+   * registerCiCheckWatch} already is (issue #239): that call site's own
+   * `.catch` means a write-back failure here never turns an otherwise-
+   * successful `pr_open_request` into a reported one. `resolveTrackerDispatch`'s
+   * `'native'` case is a silent no-op (issue #241's own job, never this
+   * one's); so is `'error'` (no live backend to write through at all —
+   * issue #219's `TrackerConnectivityWatcher` already polls and surfaces
+   * exactly that state on its own, independent cadence, so this call
+   * site doesn't duplicate it). See `./tracker-pr-linkage-live.ts`'s own
+   * top comment for the full per-provider design.
+   */
+  private async writeLiveTrackerPrLinkage(
+    session: Session,
+    payload: PrOpenRequestPayloadV1,
+    opened: OpenPrResult,
+  ): Promise<void> {
+    const dispatch = await this.resolveTrackerDispatch(session.projectPath, 'write');
+    if (dispatch.kind !== 'live') return;
+    const result = await this.liveTrackerPrLinkageWriter.writePrLinkage({
+      backend: dispatch.backend,
+      binding: dispatch.binding,
+      prUrl: opened.url,
+      prTitle: payload.title,
+      prBody: payload.body,
+    });
+    if (result.outcome === 'unreachable' || result.outcome === 'authFailed') {
+      console.warn(
+        `NodeDaemon: live tracker PR linkage write-back for session ${session.id} (${dispatch.provider} ${result.externalId}) failed: ${result.outcome}`,
+      );
+    }
+  }
+
+  /**
+   * Issue #241 (SPEC §7.14; epic #24): once a session's PR is genuinely
+   * open ({@link handlePrOpenRequest}), writes that linkage back onto
+   * whichever native tracker record the session is linked to
+   * (`system.linkedSessionIds`, `tracker_link_session`) — mirrors
+   * {@link registerCiCheckWatch}'s own "best-effort, never turns an
+   * otherwise-successful pr_open_request into a reported failure"
+   * contract, for the same reason: this write-back is a side effect of a
+   * PR having opened, not a precondition for `pr_open_result` succeeding.
+   * A `'live'`-mode project is out of scope here — issue #242 writes the
+   * same event back through that project's own `TrackerBackend` instead
+   * — and a session with no native tracker record linked at all (the
+   * common case) is a silent, honest no-op, not an error. A non-
+   * `github.com` PR URL (`parseGithubPullRequestUrl` returning
+   * `undefined`) is out of scope the same way `registerCiCheckWatch`
+   * treats it.
+   */
+  private async linkPullRequestToNativeTracker(
+    session: Session,
+    opened: OpenPrResult,
+  ): Promise<void> {
+    try {
+      const mode = this.trackerModeStore.get(session.projectPath) ?? { kind: 'native' as const };
+      if (mode.kind !== 'native') return;
+      const parsed = parseGithubPullRequestUrl(opened.url);
+      if (!parsed) return;
+      linkOpenedPullRequestToNativeTracker(
+        this.nativeTrackerStore,
+        session.projectPath,
+        session.id,
+        { owner: parsed.owner, repo: parsed.repo, number: opened.number },
+      );
+    } catch (error) {
+      console.warn(
+        `NodeDaemon: failed to link PR to native tracker for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   /**
    * Issue #656: this node's own atomic self-update. Refuses up front
    * (never even asks `NodeSelfUpdateMonitor` to fetch anything) when this

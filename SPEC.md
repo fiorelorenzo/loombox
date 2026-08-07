@@ -177,16 +177,37 @@ adapter:
   generic-ACP session that happens to support images behaves identically to a
   Claude Code one that does.
 - **Per-provider adapter modules** (`packages/providers/claude`,
-  `packages/providers/codex`, `packages/providers/gemini` reserved, one small
-  package each) add exactly the two things ACP deliberately leaves to the
-  client: an `enrich(update, raw)` hook that promotes a vendor's `_meta`
-  fields into a small, fixed set of first-class core fields — starting with
-  Claude Code's `_meta.claudeCode.parentToolUseId` → `parentToolCallId`
-  (§7.24, v2 on the roadmap) — and the provider-specific UI wiring (a bespoke
-  per-tool-name widget table, the permission button set/verbs that provider's
-  agent actually offers, and any image hand-off quirk, §7.25). A module that
-  adds neither simply falls back to the generic tier everywhere: no-op
-  `enrich`, `ToolKind`-generic tool rows, a plain Allow/Deny permission pair.
+  `packages/providers/codex`, one small package each) add exactly the two
+  things ACP deliberately leaves to the client: an `enrich(update, raw)`
+  hook that promotes a vendor's `_meta` fields into a small, fixed set of
+  first-class core fields — starting with Claude Code's
+  `_meta.claudeCode.parentToolUseId` → `parentToolCallId` (§7.24, v2 on the
+  roadmap) — and the provider-specific UI wiring (a bespoke per-tool-name
+  widget table, the permission button set/verbs that provider's agent
+  actually offers, and any image hand-off quirk, §7.25). A module that adds
+  neither simply falls back to the generic tier everywhere: no-op `enrich`,
+  `ToolKind`-generic tool rows, a plain Allow/Deny permission pair.
+- **Gemini rides the generic tier, not a bespoke adapter module.** Issue
+  #272's build-time spike (`docs/research/gemini-acp-completeness.md`)
+  live-verified a real `gemini --acp` process and found the zero-code
+  generic tier already covers Gemini CLI's session/prompt/tool-call/
+  permission/image loop with no bespoke `enrich()` or UI wiring needed.
+  `packages/providers/gemini` stays a small capability-verification-test
+  package (`gemini-acp-capabilities.test.ts`, regression-proofed against a
+  future `gemini-cli` release), not a shipped adapter; Gemini is registered
+  through `AGENT_CATALOGUE`'s custom-agent quick-add, the same generic path
+  any other ACP agent takes. Issue #273 (the reserved bespoke-module slot)
+  is closed on that basis. The spike filed the two real gaps a future
+  bespoke module would exist to close, each its own issue: #843 (Gemini
+  implements no ACP v1 session-lifecycle method except the deprecated
+  `session/load` — `session/resume`/`list`/`close`/`delete` are
+  unimplemented on the real binary, not just unadvertised; the fix, if
+  taken, is a `packages/providers/core`-level `session/load` fallback, not
+  a provider-level one) and #844 (Gemini's `session/new` carries a
+  non-standard `models` axis, paired with `unstable_setSessionModel`, that
+  `mapConfigOptions` never reads — no model-switcher UI is possible for
+  Gemini today). A bespoke Gemini module is worth building again only once
+  one of those two is picked up.
 - **Generic ACP adapter** (`packages/providers/generic`) is what any other
   ACP-speaking agent gets automatically — flat tool-call list, `ToolKind`-
   generic rows, plain permission buttons, `ResourceLink` for file/image
@@ -195,11 +216,10 @@ adapter:
   widget module later only if that agent's own conventions turn out to
   warrant one.
 - v1 ships **Claude Code + Codex** adapter modules (Codex's ACP completeness
-  verified at build time, §10/§12). A **Gemini** adapter module is the next
-  one reserved, ahead of any long-tail generic-ACP provider, since it is a
-  major CLI worth its own bespoke module rather than leaving to the generic
-  tier (roadmap: §12). loombox deliberately does not chase provider breadth
-  for its own sake (§11).
+  verified at build time, §10/§12). **Gemini** is registered generic-tier
+  only (§16, issue #272) — no bespoke module is planned unless #843 or #844
+  gets picked up (bullet above). loombox deliberately does not chase
+  provider breadth for its own sake (§11).
 
 ### 5.6 Agent-supervisor
 
@@ -1291,8 +1311,8 @@ Two repositories:
 - `packages/crypto` — E2E crypto primitives (shared).
 - `packages/providers` — the layered ACP provider architecture: `core`
   (generic ACP session/message/tool-call/permission/config-option handling),
-  `claude`, `codex`, `gemini` (reserved), and `generic` (fallback for any
-  other ACP-speaking agent) — see §5.5.
+  `claude`, `codex`, and `generic` (fallback for any other ACP-speaking
+  agent — currently also how Gemini CLI is registered, §5.5).
 - `packages/shared` — shared types and utilities.
 - `tooling/` and `scripts/` — dev tooling and useful scripts.
 
@@ -1370,7 +1390,7 @@ Each milestone is a shippable increment; a fresh agent session builds them in or
   the tier-3 tool-call burst/group summary card (§7.24, Claude-adapter-
   specific, degrading to a flat list elsewhere — subagent/nested tool-call
   tree rendering itself shipped ahead of this milestone, issue #200);
-  a Gemini provider adapter module (§5.5); an expanded per-tool-name
+  an expanded per-tool-name
   bespoke widget registry; a persistent plan sidebar; client-side transcript
   search via the CSS Custom Highlight API (§7.19, §7.24).
 - **v3 — voice & reach.** BYO-key voice (clean-room); native mobile wrapper; more
