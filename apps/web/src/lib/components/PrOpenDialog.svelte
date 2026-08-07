@@ -37,13 +37,14 @@
     PrOpenPreviewOutcome,
   } from '@loombox/protocol';
   import type { ClientSessionMeta } from '$lib/relay-client';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import Field from './ui/Field.svelte';
   import Input from './ui/Input.svelte';
   import TextArea from './ui/TextArea.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The two calls this dialog needs off `RelayClient` — see the file doc comment's DI note. Both resolve their whole outcome union (`'ok'` or `'failure'`) rather than throwing for a failure — `RelayClient`'s own documented contract for these two calls. */
   export interface PrOpenClient {
@@ -86,11 +87,28 @@
     try {
       preview = await currentClient.previewPrOpen(sessionId);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('This pull-request preview', err);
     } finally {
       loading = false;
     }
   }
+
+  /** One tagged value, not three independent flags — issue #650: the old `{#if loadError}...{/if}` sat as a SEPARATE `{#if}` above the `{#if loading}...{:else if}...{/if}` chain, the exact "two independent ifs" shape the Runner's #244 bug came from (harmless here only because `load` always clears `loadError` before setting `loading`, never a structural guarantee). `preview?.outcome === 'failure'` (a structured, already-human reply) and a caught transport `loadError` both render identically (a retryable `ErrorNotice`), so both fold into the same `error` status. */
+  const previewState = $derived<AsyncPanelState<Extract<PrOpenPreviewOutcome, { outcome: 'ok' }>>>(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : preview?.outcome === 'failure'
+          ? {
+              status: 'error',
+              message: `${FAILURE_LABEL[preview.category]} (${preview.reason})`,
+              retryable: true,
+            }
+          : preview?.outcome === 'ok'
+            ? { status: 'loaded', data: preview }
+            : { status: 'loading' },
+  );
 
   // Resets every time the dialog opens for a (possibly different)
   // session, same "open is this effect's only reactive read" convention
@@ -138,89 +156,83 @@
     Open a pull request from <strong>{session.title}</strong>'s branch.
   </p>
 
-  {#if loadError}
-    <ErrorNotice
-      message={`Could not preview opening a pull request: ${loadError}`}
-      retryable
+  {#if loading || loadError || preview}
+    <AsyncPanel
+      state={previewState}
+      loadingLabel="Loading"
+      loadingTestId="pr-open-loading"
+      loadingText="Checking what opening a pull request would do…"
       onRetry={() => void (client && load(session.id, client))}
-    />
-  {/if}
-  {#if loading}
-    <p class="loading" data-testid="pr-open-loading">
-      <WovenLoader size="sm" label="Loading" />
-      Checking what opening a pull request would do…
-    </p>
-  {:else if preview?.outcome === 'failure'}
-    <ErrorNotice
-      message={`${FAILURE_LABEL[preview.category]} (${preview.reason})`}
-      retryable
-      onRetry={() => void (client && load(session.id, client))}
-    />
-  {:else if preview?.outcome === 'ok'}
-    <p class="preview" data-testid="pr-open-preview">
-      This will push <code>{preview.branch}</code> ({preview.commitCount}
-      {preview.commitCount === 1 ? 'commit' : 'commits'}) to <code>origin</code> and open a pull
-      request into <code>{preview.base}</code>.
-    </p>
+    >
+      {#snippet content(previewOk)}
+        <p class="preview" data-testid="pr-open-preview">
+          This will push <code>{previewOk.branch}</code> ({previewOk.commitCount}
+          {previewOk.commitCount === 1 ? 'commit' : 'commits'}) to <code>origin</code> and open a
+          pull request into <code>{previewOk.base}</code>.
+        </p>
 
-    {#if openOutcome?.outcome === 'ok'}
-      <p class="opened" data-testid="pr-open-result-url">
-        Opened
-        <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- gh's own created-PR URL (github.com/.../pull/N), never an internal SvelteKit route; the rule can't statically prove that from a dynamic href. -->
-        <a href={openOutcome.url} target="_blank" rel="noreferrer">{openOutcome.url}</a>
-        (#{openOutcome.number}).
-      </p>
-      <div class="actions">
-        <Button onclick={handleClose} dataTestId="pr-open-done">Done</Button>
-      </div>
-    {:else}
-      <form class="pr-form" onsubmit={handleSubmit}>
-        <Field label="Title">
-          {#snippet children({ id, describedBy, errorId, invalid, required })}
-            <Input
-              {id}
-              {describedBy}
-              {errorId}
-              {invalid}
-              {required}
-              placeholder="e.g. Add widget support"
-              bind:value={title}
-              dataTestId="pr-open-title-input"
-            />
-          {/snippet}
-        </Field>
-        <Field label="Description">
-          {#snippet children({ id, describedBy, errorId, invalid })}
-            <TextArea
-              {id}
-              {describedBy}
-              {errorId}
-              {invalid}
-              placeholder="Optional — describe the change"
-              bind:value={body}
-              dataTestId="pr-open-body-input"
-            />
-          {/snippet}
-        </Field>
-        {#if openOutcome?.outcome === 'failure'}
-          <ErrorNotice message={`${FAILURE_LABEL[openOutcome.category]} (${openOutcome.reason})`} />
+        {#if openOutcome?.outcome === 'ok'}
+          <p class="opened" data-testid="pr-open-result-url">
+            Opened
+            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- gh's own created-PR URL (github.com/.../pull/N), never an internal SvelteKit route; the rule can't statically prove that from a dynamic href. -->
+            <a href={openOutcome.url} target="_blank" rel="noreferrer">{openOutcome.url}</a>
+            (#{openOutcome.number}).
+          </p>
+          <div class="actions">
+            <Button onclick={handleClose} dataTestId="pr-open-done">Done</Button>
+          </div>
+        {:else}
+          <form class="pr-form" onsubmit={handleSubmit}>
+            <Field label="Title">
+              {#snippet children({ id, describedBy, errorId, invalid, required })}
+                <Input
+                  {id}
+                  {describedBy}
+                  {errorId}
+                  {invalid}
+                  {required}
+                  placeholder="e.g. Add widget support"
+                  bind:value={title}
+                  dataTestId="pr-open-title-input"
+                />
+              {/snippet}
+            </Field>
+            <Field label="Description">
+              {#snippet children({ id, describedBy, errorId, invalid })}
+                <TextArea
+                  {id}
+                  {describedBy}
+                  {errorId}
+                  {invalid}
+                  placeholder="Optional — describe the change"
+                  bind:value={body}
+                  dataTestId="pr-open-body-input"
+                />
+              {/snippet}
+            </Field>
+            {#if openOutcome?.outcome === 'failure'}
+              <ErrorNotice
+                message={`${FAILURE_LABEL[openOutcome.category]} (${openOutcome.reason})`}
+              />
+            {/if}
+            {#if openError}
+              <ErrorNotice message={`Could not open the pull request: ${openError}`} />
+            {/if}
+            <div class="actions">
+              <Button variant="secondary" onclick={handleClose}>Cancel</Button>
+              <Button
+                type="submit"
+                loading={opening}
+                disabled={title.trim().length === 0}
+                dataTestId="pr-open-confirm"
+              >
+                Push &amp; open pull request
+              </Button>
+            </div>
+          </form>
         {/if}
-        {#if openError}
-          <ErrorNotice message={`Could not open the pull request: ${openError}`} />
-        {/if}
-        <div class="actions">
-          <Button variant="secondary" onclick={handleClose}>Cancel</Button>
-          <Button
-            type="submit"
-            loading={opening}
-            disabled={title.trim().length === 0}
-            dataTestId="pr-open-confirm"
-          >
-            Push &amp; open pull request
-          </Button>
-        </div>
-      </form>
-    {/if}
+      {/snippet}
+    </AsyncPanel>
   {/if}
 {/snippet}
 
@@ -257,15 +269,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 
   .actions {
