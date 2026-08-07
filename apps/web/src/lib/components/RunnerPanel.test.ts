@@ -151,4 +151,30 @@ describe('RunnerPanel (issue #244)', () => {
       expect(screen.getByTestId('ui-error-notice').textContent).toContain('node unreachable'),
     );
   });
+
+  it('a node that never answers reads as "The runner config didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      getTestRunnerConfig: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient: timed out waiting for test_runner_config_result'),
+        ),
+    });
+    render(RunnerPanel, { props: { sessionId: 'sess-1', client } });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('test_runner_config_result');
+    expect(notice.textContent).not.toContain('RelayClient');
+    expect(notice.textContent).toContain("The runner config didn't answer in time.");
+  });
+
+  it('a failed load shows the error alone, never the empty-catalog message stacked on top (issue #650, #244)', async () => {
+    const client = fakeClient({
+      getTestRunnerConfig: vi.fn().mockRejectedValue(new Error('node unreachable')),
+    });
+    render(RunnerPanel, { props: { sessionId: 'sess-1', client } });
+
+    await waitFor(() => expect(screen.getByTestId('ui-error-notice')).toBeTruthy());
+    expect(screen.queryByTestId('ui-empty-state')).toBeNull();
+  });
 });

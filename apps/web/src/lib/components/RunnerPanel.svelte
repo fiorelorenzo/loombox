@@ -33,13 +33,13 @@
   import { SvelteMap } from 'svelte/reactivity';
   import type { TestRunnerCommandsV1, TestRunnerKindV1 } from '@loombox/protocol';
   import type { RunClientState } from '$lib/relay-client';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import StatusDot, { type StatusTone } from './ui/StatusDot.svelte';
-  import WovenLoader from './WovenLoader.svelte';
   import TerminalOutput from './TerminalOutput.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The calls this panel needs off `RelayClient` — see the file doc comment's DI note. */
   export interface RunnerClient {
@@ -86,11 +86,33 @@
     try {
       commands = await currentClient.getTestRunnerConfig(currentSessionId);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('The runner config', err);
     } finally {
       loading = false;
     }
   }
+
+  /**
+   * One tagged value, not three independent flags — issue #650's actual
+   * fix for this panel (#244): the old `{#if loadError}...{/if}` sat
+   * OUTSIDE the `{#if loading}...{:else if empty}...{/if}` chain below,
+   * so a failed load (`loadError` set, `loading` now false, `commands`
+   * still `{}`) rendered the timeout error AND "no commands configured"
+   * stacked on top of each other — the exact bug the issue was filed
+   * over. One `status` makes that unrepresentable.
+   */
+  const commandsState = $derived<AsyncPanelState<TestRunnerCommandsV1>>(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : KIND_FIELDS.every((field) => !commands[field.key])
+          ? {
+              status: 'empty',
+              message: 'No test/lint/build commands configured yet — set them up in Config.',
+            }
+          : { status: 'loaded', data: commands },
+  );
 
   // Reloads/resubscribes whenever the selected session (or, in a test, the
   // injected client) changes — this panel stays mounted across a session
@@ -178,64 +200,58 @@
     <EmptyState message="Select a session to run this project's test/lint/build commands." />
   {:else}
     <Card elevation="raised" padding="md" class="runner-section">
-      {#if loadError}
-        <ErrorNotice
-          message={`Could not load the configured commands: ${loadError}`}
-          retryable
-          onRetry={() => void (sessionId && client && load(sessionId, client))}
-        />
-      {/if}
-      {#if loading}
-        <p class="loading" data-testid="test-runner-loading">
-          <WovenLoader size="sm" label="Loading" />
-          Loading configured commands…
-        </p>
-      {:else if KIND_FIELDS.every((field) => !commands[field.key])}
-        <EmptyState message="No test/lint/build commands configured yet — set them up in Config." />
-      {:else}
-        <div class="runs">
-          {#each KIND_FIELDS as field (field.key)}
-            {#if commands[field.key]}
-              {@const runId = runIds[field.key]}
-              {@const state = runId ? runsMap.get(runId) : undefined}
-              {@const active = state?.status === 'starting' || state?.status === 'running'}
-              <section class="run" data-testid={`test-runner-run-${field.key}`}>
-                <div class="run-header">
-                  <StatusDot
-                    tone={statusToneFor(state)}
-                    pulse={active}
-                    label={statusLabelFor(state)}
-                    size="sm"
-                  />
-                  <span class="run-label">{field.label}</span>
-                  <code class="run-command">{commands[field.key]}</code>
-                  {#if active}
-                    <Button
-                      variant="secondary"
+      <AsyncPanel
+        state={commandsState}
+        loadingLabel="Loading"
+        loadingTestId="test-runner-loading"
+        loadingText="Loading configured commands…"
+        onRetry={() => void (sessionId && client && load(sessionId, client))}
+      >
+        {#snippet content(loadedCommands)}
+          <div class="runs">
+            {#each KIND_FIELDS as field (field.key)}
+              {#if loadedCommands[field.key]}
+                {@const runId = runIds[field.key]}
+                {@const state = runId ? runsMap.get(runId) : undefined}
+                {@const active = state?.status === 'starting' || state?.status === 'running'}
+                <section class="run" data-testid={`test-runner-run-${field.key}`}>
+                  <div class="run-header">
+                    <StatusDot
+                      tone={statusToneFor(state)}
+                      pulse={active}
+                      label={statusLabelFor(state)}
                       size="sm"
-                      onclick={() => cancel(field.key)}
-                      dataTestId={`test-runner-cancel-${field.key}`}
-                    >
-                      Cancel
-                    </Button>
-                  {:else}
-                    <Button
-                      size="sm"
-                      onclick={() => run(field.key)}
-                      dataTestId={`test-runner-run-button-${field.key}`}
-                    >
-                      Run
-                    </Button>
+                    />
+                    <span class="run-label">{field.label}</span>
+                    <code class="run-command">{loadedCommands[field.key]}</code>
+                    {#if active}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onclick={() => cancel(field.key)}
+                        dataTestId={`test-runner-cancel-${field.key}`}
+                      >
+                        Cancel
+                      </Button>
+                    {:else}
+                      <Button
+                        size="sm"
+                        onclick={() => run(field.key)}
+                        dataTestId={`test-runner-run-button-${field.key}`}
+                      >
+                        Run
+                      </Button>
+                    {/if}
+                  </div>
+                  {#if runId}
+                    <TerminalOutput content={outputs[runId] ?? []} />
                   {/if}
-                </div>
-                {#if runId}
-                  <TerminalOutput content={outputs[runId] ?? []} />
-                {/if}
-              </section>
-            {/if}
-          {/each}
-        </div>
-      {/if}
+                </section>
+              {/if}
+            {/each}
+          </div>
+        {/snippet}
+      </AsyncPanel>
     </Card>
   {/if}
 </div>
@@ -279,14 +295,5 @@
     font-family: var(--font-mono);
     font-size: var(--text-small-size);
     color: var(--color-text-muted);
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 </style>
