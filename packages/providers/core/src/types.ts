@@ -399,7 +399,7 @@ export type AcpTranscriptUpdate =
 export type AcpSessionStatus =
   'working' | 'awaiting_input' | 'permission_required' | 'error' | 'exited';
 
-/** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). `reason` is set only for `'error'` (issue #730) — a spawn that failed or timed out, in words a user can read. */
+/** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). `reason` is set for `'error'` (issue #730) — a spawn that failed or timed out — and, since issue #271, for a mid-session `'exited'` too: the process's own exit code, in words a user can read. */
 export interface AcpSessionStatusEvent {
   kind: 'session_status';
   status: AcpSessionStatus;

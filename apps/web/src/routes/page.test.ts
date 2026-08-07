@@ -1161,6 +1161,125 @@ describe('queued session: distinct from running, wait made visible (issue #255)'
   });
 });
 
+describe('stalled session diagnostics (issue #271, pairs with #255/#269)', () => {
+  it('a still-"working" session whose target has gone unreachable reads distinctly — never plain "Working", never a guess at "stuck"', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Long-running refactor' })],
+      sessionStatuses: { sess_1: 'working' },
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          providers: ['claude'],
+          reachable: true,
+          health: {
+            cpuPercent: 0,
+            memPercent: 0,
+            memUsedBytes: 0,
+            memTotalBytes: 0,
+            diskPercent: 0,
+            diskUsedBytes: 0,
+            diskTotalBytes: 0,
+            healthy: false,
+            sampledAt: Date.now() - 30_000,
+          },
+        },
+      ],
+    });
+
+    const row = await screen.findByTestId('session-row-item');
+    const title = row.querySelector('button.session')?.getAttribute('title');
+    expect(title).toContain('Working: target unreachable');
+    expect(title).not.toBe('Refactor relay routing\n/home/dev/loombox · local\nWorking');
+    expect(title).not.toMatch(/thinking|wedged/i);
+  });
+
+  it('a mid-session crash names the exit code the node reported — "Exited" alone used to be all this row said', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Crashed run' })],
+      sessionStatuses: { sess_1: 'exited' },
+      sessionStatusReasons: { sess_1: 'agent process exited (exit code 1)' },
+    });
+
+    const row = await screen.findByTestId('session-row-item');
+    expect(row.querySelector('button.session')?.getAttribute('title')).toContain(
+      'Exited: agent process exited (exit code 1)',
+    );
+  });
+
+  it('a queued session and a target-unreachable session read distinctly from each other, not the same generic wording', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_queued', title: 'Waiting for capacity', targetId: 'local' }),
+        makeSession({ id: 'sess_unreachable', title: 'Talking to devbox', targetId: 'ssh_devbox' }),
+      ],
+      sessionStatuses: { sess_queued: 'queued', sess_unreachable: 'working' },
+      sessionStatusUpdatedAt: { sess_queued: '2026-08-07T00:00:00.000Z' },
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'Local',
+          kind: 'local',
+          reachable: true,
+          providers: ['claude'],
+        },
+        {
+          nodeId: 'node_1',
+          targetId: 'ssh_devbox',
+          label: 'Devbox',
+          kind: 'ssh',
+          reachable: false,
+          providers: ['claude'],
+        },
+      ],
+    });
+
+    const rows = await screen.findAllByTestId('session-row-item');
+    const titleFor = (title: string) =>
+      rows.find((row) => row.textContent?.includes(title))?.querySelector('button.session');
+    const queuedTitle = titleFor('Waiting for capacity')?.getAttribute('title');
+    const unreachableTitle = titleFor('Talking to devbox')?.getAttribute('title');
+    expect(queuedTitle).toContain('Queued: waiting for a slot');
+    expect(unreachableTitle).toContain('Working: target unreachable');
+    expect(queuedTitle).not.toEqual(unreachableTitle);
+  });
+
+  it('a plain "working" session on a healthy, non-queued target keeps reading as bare "Working" — no invented diagnosis for the genuinely unknown case', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Business as usual' })],
+      sessionStatuses: { sess_1: 'working' },
+      targets: [
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'This machine',
+          kind: 'local',
+          providers: ['claude'],
+          reachable: true,
+          health: {
+            cpuPercent: 10,
+            loadPercent: 10,
+            memPercent: 20,
+            memUsedBytes: 1,
+            memTotalBytes: 10,
+            diskPercent: 30,
+            diskUsedBytes: 1,
+            diskTotalBytes: 10,
+            healthy: true,
+            sampledAt: Date.now(),
+          },
+        },
+      ],
+    });
+
+    const row = await screen.findByTestId('session-row-item');
+    expect(row.querySelector('button.session')?.getAttribute('title')).toContain('\nWorking');
+  });
+});
+
 describe('new session: real per-target providers (forms + real providers design spec §2/§3)', () => {
   it("keys the dialog's available providers by the project's own (nodeId, targetId) — not just the first target in the list — and shows the sole one as a context-line fact", async () => {
     mountCockpit({
