@@ -53,8 +53,8 @@
     margin-bottom: var(--space-sm);
   }
 
+  /* Icon's own .icon root rule already sets flex-shrink: 0 (issue #665). */
   :global(.replay-banner-icon) {
-    flex-shrink: 0;
     color: var(--color-info);
   }
 
