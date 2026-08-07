@@ -85,7 +85,7 @@ export type {
 export type { AcpSessionSummary } from './types';
 export { deriveFeatureFlags } from './capabilities';
 export type { AcpFeatureFlags } from './capabilities';
-export type { AcpAgentCapabilities, AcpPromptCapabilities } from './types';
+export type { AcpAgentCapabilities, AcpPromptCapabilities, AcpSessionCapabilities } from './types';
 export type {
   AcpPermissionOption,
   AcpPermissionOptionKind,
