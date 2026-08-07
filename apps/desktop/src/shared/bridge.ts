@@ -17,6 +17,7 @@
 export const BRIDGE_CHANNELS = {
   listSshHostCandidates: 'loombox:listSshHostCandidates',
   provisionTarget: 'loombox:provisionTarget',
+  provisionLocalNode: 'loombox:provisionLocalNode',
   spawnLocalNode: 'loombox:spawnLocalNode',
   stopLocalNode: 'loombox:stopLocalNode',
   status: 'loombox:status',
@@ -108,6 +109,57 @@ export interface ProvisionTargetResult {
 }
 
 // ---------------------------------------------------------------------------
+// provisionLocalNode — drives `@loombox/node`'s `provisionLocalNode()`
+// (issue #654) for real (see `../main/provisioning/provision-local-node-
+// bridge.ts`), the macOS-local counterpart to `provisionTarget` above: no
+// ssh: target, no `SshTargetConfig` — this machine IS the node. The
+// version-to-install / where-to-fetch-it / which `SupervisorBackend`
+// (launchd) halves are resolved for real by that bridge module (decision
+// A1-2 + issue #817 unblocked it); `actingAuthToken`/`amkBase64` below are
+// NOT resolved by this app — they come from the renderer's own
+// already-unlocked account session (decision D1-1: the desktop app, i.e.
+// this same PWA loaded into Electron, is the only install surface), which
+// is the one piece still unwired end to end (see this issue's PR notes).
+// `amkBase64` crosses the IPC boundary base64-encoded, never a live
+// `Uint8Array` — `ipcRenderer.invoke` only carries structured-cloneable
+// plain data.
+// ---------------------------------------------------------------------------
+
+export interface ProvisionLocalNodeRequest {
+  relayUrl: string;
+  accountId: string;
+  /** This renderer's own already-unlocked bearer token — a Better Auth session token or an existing device token; used to mint the new resident node's token. */
+  actingAuthToken: string;
+  /** The account's currently-unlocked AMK, base64-encoded. */
+  amkBase64: string;
+  amkEpoch?: number;
+  nodeId: string;
+  /** Defaults to `nodeId` on the main-process side. */
+  deviceId?: string;
+  tokenLabel?: string;
+  claudeCodeOAuthToken?: string;
+}
+
+export type LocalProvisionStepId =
+  'runtime_bootstrap' | 'target_identity' | 'mint_node_token' | 'amk_handoff' | 'resident_node_install';
+
+/** A flattened, renderer-friendly projection of `@loombox/node`'s per-step progress union — mirrors `ProvisionProgressStep` above, but with `status` (`'started' | 'ok' | 'failed'`) instead of a plain `ok` boolean, matching `provisionLocalNode`'s own richer progress shape (it streams a `'started'` event too, not just the terminal outcome). */
+export interface LocalProvisionProgressStep {
+  step: LocalProvisionStepId;
+  status: 'started' | 'ok' | 'failed';
+  message: string;
+}
+
+export interface ProvisionLocalNodeResult {
+  ok: boolean;
+  progress: LocalProvisionProgressStep[];
+  failedStep?: LocalProvisionStepId;
+  deviceId?: string;
+  nodeId?: string;
+  message?: string;
+}
+
+// ---------------------------------------------------------------------------
 // spawnLocalNode / stopLocalNode — supervises a `@loombox/node` process
 // running locally on this Mac (the "run a node right here" alternative to
 // SSH-provisioning a remote one). The child-process management itself
@@ -159,6 +211,7 @@ export interface BridgeStatus {
 export interface LoomboxBridgeApi {
   listSshHostCandidates(): Promise<ListSshHostCandidatesResult>;
   provisionTarget(request: ProvisionTargetRequest): Promise<ProvisionTargetResult>;
+  provisionLocalNode(request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult>;
   spawnLocalNode(request?: SpawnLocalNodeRequest): Promise<SpawnLocalNodeResult>;
   stopLocalNode(): Promise<StopLocalNodeResult>;
   status(): Promise<BridgeStatus>;

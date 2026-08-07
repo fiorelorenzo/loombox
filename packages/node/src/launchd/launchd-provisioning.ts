@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -178,6 +178,8 @@ export interface LaunchdIo {
   writeFile: (path: string, content: string) => void;
   /** Creates a directory, including any missing parents (like `mkdir -p`); a no-op if it already exists. */
   mkdir: (path: string) => void;
+  /** Removes `path` if it exists; a no-op (never throws) if it doesn't — the counterpart `SupervisorBackend.uninstall` implementations use to actually delete a plist, `writeFile`/`mkdir` having no delete equivalent of their own. */
+  removeFile: (path: string) => void;
   /** Runs `launchctl` with `args` as argv (never shell-interpolated). */
   launchctl: (args: string[]) => Promise<LaunchctlResult>;
 }
@@ -378,6 +380,9 @@ export function createNodeLaunchdIo(): LaunchdIo {
     },
     mkdir: (path) => {
       mkdirSync(path, { recursive: true });
+    },
+    removeFile: (path) => {
+      rmSync(path, { force: true });
     },
     launchctl: async (args) => {
       try {

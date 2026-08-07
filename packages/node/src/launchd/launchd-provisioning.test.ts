@@ -28,6 +28,9 @@ function fakeIo(overrides: Partial<LaunchdIo> = {}): LaunchdIo & {
     mkdir: () => {
       /* in-memory — no real directory to create */
     },
+    removeFile: (path) => {
+      files.delete(path);
+    },
     launchctl: async (args) => {
       launchctlCalls.push(args);
       return { stdout: '', stderr: '', exitCode: 0 };

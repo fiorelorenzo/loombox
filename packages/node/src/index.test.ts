@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildLocalNodeLaunchdAgent,
+  createLaunchdSupervisorBackend,
+  createLocalFsNodeReleaseSource,
   createNodeLaunchdIo,
+  createSystemdSshSupervisorBackend,
   DEFAULT_LAUNCHD_LABEL,
   executeLaunchdProvisioning,
   generateLaunchdPlist,
   installGracefulShutdown,
+  NODE_BUNDLE_ENTRY_FILE,
   PACKAGE_NAME,
   planLaunchdProvisioning,
+  provisionLocalNode,
   relayHttpBaseUrl,
   resolveAccountIdViaRelay,
   run,
@@ -36,5 +41,13 @@ describe('@loombox/node', () => {
     expect(typeof buildLocalNodeLaunchdAgent).toBe('function');
     expect(typeof createNodeLaunchdIo).toBe('function');
     expect(DEFAULT_LAUNCHD_LABEL).toBe('dev.loombox.node');
+  });
+
+  it('exposes the supervisor-backend seam (issue #654): both wired implementations, the node-release source, and the local-provisioning orchestrator', () => {
+    expect(typeof createSystemdSshSupervisorBackend).toBe('function');
+    expect(typeof createLaunchdSupervisorBackend).toBe('function');
+    expect(typeof createLocalFsNodeReleaseSource).toBe('function');
+    expect(typeof provisionLocalNode).toBe('function');
+    expect(NODE_BUNDLE_ENTRY_FILE).toBe('node.mjs');
   });
 });
