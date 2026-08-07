@@ -94,7 +94,7 @@
    * pre-filled — never to gate the add itself, which always succeeds
    * client-side regardless of the probe's outcome.
    */
-  import type { CreateSessionOptions } from '$lib/relay-client';
+  import type { CreateSessionOptions, SessionTemplateV1 } from '$lib/relay-client';
   import {
     createLocalStorageMcpServerConfigStorage,
     effectiveMcpServerConfigs,
@@ -151,6 +151,27 @@
       targetId: string;
       command: string;
     }) => Promise<CustomAgentProbeResultV1>;
+    /**
+     * The account's saved session-template catalog (issue #259, epic #29)
+     * — optional so a fake client exercising only `createSession` (most of
+     * this suite's existing fixtures) still satisfies this interface.
+     * Routed by `nodeId`+`targetId` directly (no session exists yet —
+     * see `@loombox/protocol`'s `session-template.ts` doc comment), so
+     * `project.nodeId`/`project.targetId` are all this dialog ever needs
+     * to pass. Absent entirely (not just an empty catalog) disables the
+     * "Start from a template" picker and the "Save as template" action
+     * below, rather than showing either against a client that can't
+     * actually answer them.
+     */
+    listSessionTemplates?: (options: {
+      nodeId: string;
+      targetId: string;
+    }) => Promise<SessionTemplateV1[]>;
+    /** Saves (fully replaces) the account's session-template catalog (issue #259) — resolves with the saved catalog, mirroring `listSessionTemplates`. */
+    saveSessionTemplates?: (
+      options: { nodeId: string; targetId: string },
+      templates: SessionTemplateV1[],
+    ) => Promise<SessionTemplateV1[]>;
   }
 
   interface Props {
@@ -265,6 +286,27 @@
   let catalogueProbe = $state<CatalogueProbeState | undefined>(undefined);
   type WorkspaceChoice = 'worktree' | 'in-place';
   let workspaceChoice = $state<WorkspaceChoice>('worktree');
+
+  /**
+   * The account's full saved session-template catalog (issue #259, epic
+   * #29) — every target, not just this project's own (see
+   * `NewSessionClient.listSessionTemplates`'s doc comment: the wire
+   * result is account-wide regardless of which target's key it travelled
+   * under). Kept in full, not pre-filtered, so "Save as template" can
+   * `saveSessionTemplates` the whole catalog back — a partial patch would
+   * silently drop every other target's templates.
+   */
+  let templates = $state<SessionTemplateV1[]>([]);
+  /** This dialog's own picker only ever offers templates for `project`'s own target — applying one for a different target could pick an agent this target has never even probed. */
+  const templatesForTarget = $derived(templates.filter((t) => t.targetId === project.targetId));
+  const templateOptions: SelectOption[] = $derived(
+    templatesForTarget.map((t) => ({ id: t.id, label: t.name })),
+  );
+  let templatesError = $state<string | undefined>(undefined);
+  let showSaveTemplateForm = $state(false);
+  let newTemplateName = $state('');
+  let savingTemplate = $state(false);
+  let saveTemplateError = $state<string | undefined>(undefined);
 
   /** SPEC §7.1's two per-session choices — see `RadioGroup.svelte`'s own doc comment for why these render as description-bearing cards, not bare native radios. */
   const WORKSPACE_OPTIONS: RadioOption[] = [
@@ -502,6 +544,110 @@
     newAgentEnv = '';
     customAgentError = undefined;
     catalogueProbe = undefined;
+    templates = [];
+    templatesError = undefined;
+    showSaveTemplateForm = false;
+    newTemplateName = '';
+    saveTemplateError = undefined;
+    void loadTemplates();
+  }
+
+  /** Fetches the account's saved session-template catalog (issue #259) on every dialog open — a no-op, leaving `templates` at `[]`, when `client` doesn't implement `listSessionTemplates` at all (an older/fake client). */
+  async function loadTemplates(): Promise<void> {
+    if (!client?.listSessionTemplates) return;
+    try {
+      templates = await client.listSessionTemplates({
+        nodeId: project.nodeId,
+        targetId: project.targetId,
+      });
+      templatesError = undefined;
+    } catch (err) {
+      templatesError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /**
+   * Applies a saved template's choices to this form — the one-click half
+   * of issue #259's acceptance: every field it sets is the SAME reactive
+   * state a hand-filled form would set, so `handleSubmit` builds an
+   * identical `CreateSessionOptions` either way, with no separate
+   * template-to-options translation to keep in sync.
+   *
+   * A template's own `customAgent` (when present) is added to this
+   * project's custom-agent list if it isn't there already, exactly like
+   * quick-add does — never overwritten if a same-named one already exists
+   * here, so this never clobbers an operator's own hand-edited version.
+   */
+  function applyTemplate(id: string): void {
+    const template = templatesForTarget.find((t) => t.id === id);
+    if (!template) return;
+    if (template.customAgent) {
+      const customAgent = template.customAgent;
+      if (!customAgents.some((agent) => agent.name === customAgent.name)) {
+        customAgents = addCustomAgent(agentStorage, customAgent);
+      }
+      selectedProvider = `${CUSTOM_AGENT_PREFIX}${customAgent.name}`;
+    } else {
+      selectedProvider = template.provider;
+    }
+    if (project.isGitRepo === true && template.worktree !== undefined) {
+      workspaceChoice = template.worktree ? 'worktree' : 'in-place';
+    }
+    title = template.title ?? '';
+  }
+
+  /** Purely local, client-generated — mirrors `$lib/projects`'s own `newId()` fallback exactly (`crypto.randomUUID` is missing in older Safari and in some test environments; this id is never a security boundary, only a catalog key). */
+  function newTemplateId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `tpl_${crypto.randomUUID()}`;
+    }
+    return `tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /**
+   * Saves the CURRENT form selections as a new named template (issue
+   * #259) — built from the exact same state `handleSubmit` reads
+   * (`selectedProvider`/`customAgentFor`/`workspaceChoice`/`title`), so a
+   * template saved from a filled-in form and a session created from that
+   * same form always agree. Sends the FULL existing catalog plus this new
+   * entry (`saveSessionTemplates` fully replaces, never patches), so
+   * every other target's templates survive this save untouched.
+   */
+  function handleSaveTemplate(): void {
+    if (!client?.saveSessionTemplates) return;
+    const name = newTemplateName.trim();
+    if (!name) {
+      saveTemplateError = 'Name is required.';
+      return;
+    }
+    const customAgent = customAgentFor(selectedProvider);
+    const template: SessionTemplateV1 = {
+      id: newTemplateId(),
+      name,
+      targetId: project.targetId,
+      provider: customAgent ? 'custom' : selectedProvider,
+      ...(customAgent ? { customAgent } : {}),
+      ...(project.isGitRepo === true ? { worktree: workspaceChoice === 'worktree' } : {}),
+      ...(title.trim() ? { title: title.trim() } : {}),
+    };
+    savingTemplate = true;
+    saveTemplateError = undefined;
+    client
+      .saveSessionTemplates({ nodeId: project.nodeId, targetId: project.targetId }, [
+        ...templates,
+        template,
+      ])
+      .then((saved) => {
+        templates = saved;
+        newTemplateName = '';
+        showSaveTemplateForm = false;
+      })
+      .catch((err: unknown) => {
+        saveTemplateError = err instanceof Error ? err.message : String(err);
+      })
+      .finally(() => {
+        savingTemplate = false;
+      });
   }
 
   function handleClose(): void {
@@ -535,6 +681,25 @@
         />
       {/snippet}
     </Field>
+
+    {#if templateOptions.length > 0}
+      <Field
+        label="Template"
+        help="Start from a saved template, then adjust anything below"
+        grouped
+      >
+        <Select
+          value=""
+          options={templateOptions}
+          onChange={(id) => applyTemplate(id)}
+          label="Template"
+          dataTestId="new-session-template"
+        />
+      </Field>
+    {/if}
+    {#if templatesError}
+      <ErrorNotice message={`Could not load saved templates: ${templatesError}`} />
+    {/if}
 
     {#if agentOptions.length >= 2}
       <Field label="Agent" grouped>
@@ -718,6 +883,51 @@
       </Field>
     {/if}
 
+    {#if client?.saveSessionTemplates}
+      <div class="save-template-section">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onclick={() => (showSaveTemplateForm = !showSaveTemplateForm)}
+          dataTestId="new-session-save-template-toggle"
+        >
+          {showSaveTemplateForm ? 'Cancel' : '+ Save as template'}
+        </Button>
+        {#if showSaveTemplateForm}
+          <div class="save-template-form">
+            <Field label="Template name">
+              {#snippet children({ id, describedBy, errorId, invalid, required })}
+                <Input
+                  {id}
+                  {describedBy}
+                  {errorId}
+                  {invalid}
+                  {required}
+                  bind:value={newTemplateName}
+                  placeholder="e.g. Daily check-in"
+                  dataTestId="new-session-template-name"
+                />
+              {/snippet}
+            </Field>
+            {#if saveTemplateError}
+              <ErrorNotice message={saveTemplateError} />
+            {/if}
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              loading={savingTemplate}
+              onclick={handleSaveTemplate}
+              dataTestId="new-session-template-save"
+            >
+              Save template
+            </Button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if createError}
       <ErrorNotice message={createError} />
     {/if}
@@ -843,6 +1053,21 @@
   }
 
   .custom-agent-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .save-template-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .save-template-form {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);

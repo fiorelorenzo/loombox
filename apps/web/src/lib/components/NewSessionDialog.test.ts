@@ -985,4 +985,247 @@ describe('NewSessionDialog (issue #385; IA v4 project-inherited target/folder, d
       );
     });
   });
+
+  describe('session templates (issue #259, epic #29)', () => {
+    const dailyCheckin = {
+      id: 'tpl_daily',
+      name: 'Daily check-in',
+      targetId: 'local',
+      provider: 'codex',
+      worktree: false,
+      title: 'Daily check-in',
+    };
+
+    it('renders no template picker and never calls listSessionTemplates when the client does not implement it', async () => {
+      const client = fakeClient();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      await tick();
+      expect(screen.queryByTestId('new-session-template')).toBeNull();
+    });
+
+    it("loads the catalog on open and offers only templates for this project's own target", async () => {
+      const listSessionTemplates = vi
+        .fn()
+        .mockResolvedValue([
+          dailyCheckin,
+          { id: 'tpl_other_target', name: 'Elsewhere', targetId: 'ssh:other', provider: 'claude' },
+        ]);
+      const client = fakeClient({ listSessionTemplates });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      await waitFor(() =>
+        expect(listSessionTemplates).toHaveBeenCalledWith({ nodeId: 'node_1', targetId: 'local' }),
+      );
+      await waitFor(() => expect(screen.getByTestId('new-session-template')).toBeTruthy());
+      await fireEvent.click(screen.getByTestId('new-session-template-trigger'));
+      expect(screen.getByTestId('new-session-template-option-tpl_daily').textContent).toContain(
+        'Daily check-in',
+      );
+      expect(screen.queryByTestId('new-session-template-option-tpl_other_target')).toBeNull();
+    });
+
+    it('renders no "Save as template" action when the client does not implement saveSessionTemplates', () => {
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client: fakeClient(),
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      expect(screen.queryByTestId('new-session-save-template-toggle')).toBeNull();
+    });
+
+    it('creating a session from a template produces the exact same createSession options as filling the dialog out by hand', async () => {
+      const client = fakeClient({
+        listSessionTemplates: vi.fn().mockResolvedValue([dailyCheckin]),
+      });
+
+      // Path A: apply the template, then submit.
+      const onCreatedA = vi.fn();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: onCreatedA,
+          onClose: vi.fn(),
+        },
+      });
+      await waitFor(() => expect(screen.getByTestId('new-session-template')).toBeTruthy());
+      await fireEvent.click(screen.getByTestId('new-session-template-trigger'));
+      await fireEvent.click(screen.getByTestId('new-session-template-option-tpl_daily'));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+      await waitFor(() => expect(onCreatedA).toHaveBeenCalled());
+      const viaTemplate = vi.mocked(client.createSession).mock.calls[0]?.[0];
+      cleanup();
+
+      // Path B: the identical choices, filled in by hand.
+      vi.mocked(client.createSession).mockClear();
+      const onCreatedB = vi.fn();
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: onCreatedB,
+          onClose: vi.fn(),
+        },
+      });
+      await fireEvent.input(screen.getByTestId('new-session-title'), {
+        target: { value: 'Daily check-in' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-provider-trigger'));
+      await fireEvent.click(screen.getByTestId('new-session-provider-option-codex'));
+      await fireEvent.click(screen.getByTestId('new-session-workspace-in-place'));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+      await waitFor(() => expect(onCreatedB).toHaveBeenCalled());
+      const viaManual = vi.mocked(client.createSession).mock.calls[0]?.[0];
+
+      expect(viaTemplate).toEqual(viaManual);
+      expect(viaTemplate).toEqual({
+        targetId: 'local',
+        provider: 'codex',
+        projectPath: '/home/dev/loombox',
+        worktree: false,
+        title: 'Daily check-in',
+      });
+    });
+
+    it('"Save as template" captures the current form state and sends it alongside the existing catalog, never a partial patch', async () => {
+      const saveSessionTemplates = vi.fn().mockResolvedValue([dailyCheckin]);
+      const client = fakeClient({
+        listSessionTemplates: vi.fn().mockResolvedValue([dailyCheckin]),
+        saveSessionTemplates,
+      });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude', 'codex'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+      await waitFor(() => expect(screen.getByTestId('new-session-template')).toBeTruthy());
+
+      await fireEvent.input(screen.getByTestId('new-session-title'), {
+        target: { value: 'Weekly review' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-provider-trigger'));
+      await fireEvent.click(screen.getByTestId('new-session-provider-option-codex'));
+      await fireEvent.click(screen.getByTestId('new-session-workspace-in-place'));
+
+      await fireEvent.click(screen.getByTestId('new-session-save-template-toggle'));
+      await fireEvent.input(screen.getByTestId('new-session-template-name'), {
+        target: { value: 'Weekly review' },
+      });
+      await fireEvent.click(screen.getByTestId('new-session-template-save'));
+
+      await waitFor(() => expect(saveSessionTemplates).toHaveBeenCalled());
+      expect(saveSessionTemplates).toHaveBeenCalledWith({ nodeId: 'node_1', targetId: 'local' }, [
+        dailyCheckin,
+        expect.objectContaining({
+          name: 'Weekly review',
+          targetId: 'local',
+          provider: 'codex',
+          worktree: false,
+          title: 'Weekly review',
+        }),
+      ]);
+    });
+
+    it('rejects saving a template with a blank name, without calling saveSessionTemplates', async () => {
+      const saveSessionTemplates = vi.fn();
+      const client = fakeClient({ saveSessionTemplates });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('new-session-save-template-toggle'));
+      await fireEvent.click(screen.getByTestId('new-session-template-save'));
+
+      expect(screen.getByText(/name is required/i)).toBeTruthy();
+      expect(saveSessionTemplates).not.toHaveBeenCalled();
+    });
+
+    it("applying a template with a custom agent adds it to this project's own custom-agent list and selects it", async () => {
+      const storage = createInMemoryCustomAgentStorage();
+      const withCustomAgent = {
+        id: 'tpl_custom',
+        name: 'Internal agent workflow',
+        targetId: 'local',
+        provider: 'custom',
+        customAgent: { name: 'internal', command: 'omp', args: ['acp'] },
+      };
+      const client = fakeClient({
+        listSessionTemplates: vi.fn().mockResolvedValue([withCustomAgent]),
+      });
+      render(NewSessionDialog, {
+        props: {
+          open: true,
+          project: PROJECT,
+          client,
+          providers: ['claude'],
+          targetLabel: TARGET_LABEL,
+          onCreated: vi.fn(),
+          onClose: vi.fn(),
+          customAgentStorage: storage,
+        },
+      });
+      await waitFor(() => expect(screen.getByTestId('new-session-template')).toBeTruthy());
+      await fireEvent.click(screen.getByTestId('new-session-template-trigger'));
+      await fireEvent.click(screen.getByTestId('new-session-template-option-tpl_custom'));
+      await fireEvent.click(screen.getByTestId('new-session-submit'));
+
+      await waitFor(() =>
+        expect(client.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            provider: 'custom',
+            customAgent: { name: 'internal', command: 'omp', args: ['acp'] },
+          }),
+        ),
+      );
+      expect(storage.get()).toEqual([{ name: 'internal', command: 'omp', args: ['acp'] }]);
+    });
+  });
 });

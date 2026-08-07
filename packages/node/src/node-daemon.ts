@@ -59,6 +59,7 @@ import {
   parseConnectedAccountId,
   parseCustomAgentProbeRequestPayloadV1,
   parseSessionPrivateMetaV1,
+  parseSessionTemplateListSetPayloadV1,
   PROTOCOL_V1,
   type AccountPinGetRequest,
   type AccountPinMapV1,
@@ -205,6 +206,10 @@ import {
   type SessionRewindResultPayloadV1,
   type SessionSpendCapResume,
   type SessionStatusV1,
+  type SessionTemplateListGet,
+  type SessionTemplateListResultPayloadV1,
+  type SessionTemplateListSet,
+  type SessionTemplateListSetPayloadV1,
   type SpendCapGet,
   type SpendCapResultPayloadV1,
   type SpendCapSet,
@@ -321,9 +326,9 @@ import {
   type PolicyViolation,
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
+import { SessionTemplateStore } from './session-template-store';
 import { SpendCapStore } from './spend-cap-store';
 import { SpendLedgerStore } from './spend-ledger-store';
-import { filterSpendLedgerRows } from '@loombox/shared';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,
@@ -390,7 +395,7 @@ import { TargetHealthSampler } from './target-health-sampler';
 import { TestRunnerConfigStore } from './test-runner-config-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
-import { isFailingRunOutcome } from '@loombox/shared';
+import { filterSpendLedgerRows, isFailingRunOutcome } from '@loombox/shared';
 import { TrackerModeStore } from './tracker-mode-store';
 import {
   resolveTrackerBackend,
@@ -739,6 +744,8 @@ export interface NodeDaemonOptions {
    * Injectable for tests; defaults to a fresh `SpendCapStore({ stateDir })`.
    */
   spendCapStore?: SpendCapStore;
+  /** Issue #259, epic #29 — this account's named session templates. Defaults to `new SessionTemplateStore({stateDir})`, same convention as `spendCapStore` above. */
+  sessionTemplateStore?: SessionTemplateStore;
   /**
    * This node's persisted spend-over-time ledger (SPEC §7.9; issue
    * #249): every `usage_update` cost increase this daemon has ever
@@ -1542,6 +1549,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly permissionPolicyStore: PermissionPolicyStore;
   /** SPEC §7.16; issue #251 — see `NodeDaemonOptions.spendCapStore`'s doc comment. */
   private readonly spendCapStore: SpendCapStore;
+  /** Issue #259, epic #29 — see `NodeDaemonOptions.sessionTemplateStore`'s doc comment. */
+  private readonly sessionTemplateStore: SessionTemplateStore;
   /** SPEC §7.9; issue #249 — see `NodeDaemonOptions.spendLedgerStore`'s doc comment. */
   private readonly spendLedgerStore: SpendLedgerStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
@@ -1725,6 +1734,8 @@ export class NodeDaemon extends EventEmitter {
     this.permissionPolicyStore =
       options.permissionPolicyStore ?? new PermissionPolicyStore({ stateDir: options.stateDir });
     this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
+    this.sessionTemplateStore =
+      options.sessionTemplateStore ?? new SessionTemplateStore({ stateDir: options.stateDir });
     this.spendLedgerStore =
       options.spendLedgerStore ?? new SpendLedgerStore({ stateDir: options.stateDir });
     this.agentProfileStore =
@@ -4168,6 +4179,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'agent_instructions_set_request':
         this.handleAgentInstructionsSetRequest(message);
+        return;
+      case 'session_template_list_get':
+        this.handleSessionTemplateListGet(message);
+        return;
+      case 'session_template_list_set':
+        this.handleSessionTemplateListSet(message);
         return;
       case 'git_commit_draft_request':
         this.handleGitCommitDraftRequest(message);
@@ -10166,6 +10183,91 @@ export class NodeDaemon extends EventEmitter {
       type: 'git_push_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to list its account's saved
+   * session-template catalog (issue #259, epic #29) —
+   * `handleTargetFsListRequest`'s account-scoped sibling: routed directly
+   * by `nodeId`+`targetId` (see `@loombox/protocol`'s `session-template.ts`
+   * doc comment for why — `NewSessionDialog` loads this catalog before
+   * ever creating a session, often the project's very first, so there is
+   * no existing `sessionId` to route an `agent_profile_list_get`-style
+   * request through). Ignored if `targetId` isn't one of this node's own
+   * targets, mirroring `handleTargetFsListRequest`'s identical guard.
+   */
+  private handleSessionTemplateListGet(message: SessionTemplateListGet): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(
+        `NodeDaemon: session_template_list_get for unknown target "${message.targetId}"`,
+      );
+      return;
+    }
+    this.sendSessionTemplateListResult(message.targetId, message.requestId, {
+      templates: this.sessionTemplateStore.list(),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send session_template_list_result for target ${message.targetId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to save (fully replace) its
+   * account's saved session-template catalog (issue #259) — mirrors
+   * `handleAgentProfileListSet`'s "whole value, never a partial patch"
+   * contract, but decrypted under the per-target key
+   * `handleCustomAgentProbeRequest` uses, since there is no session yet
+   * to derive a session key from. Replies with the same
+   * `session_template_list_result` {@link handleSessionTemplateListGet}
+   * does.
+   */
+  private handleSessionTemplateListSet(message: SessionTemplateListSet): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(
+        `NodeDaemon: session_template_list_set for unknown target "${message.targetId}"`,
+      );
+      return;
+    }
+
+    this.decryptSessionTemplateListSet(message)
+      .then((payload) => {
+        this.sessionTemplateStore.saveAll(payload.templates);
+        return this.sendSessionTemplateListResult(message.targetId, message.requestId, {
+          templates: this.sessionTemplateStore.list(),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle session_template_list_set for target ${message.targetId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptSessionTemplateListSet(
+    message: SessionTemplateListSet,
+  ): Promise<SessionTemplateListSetPayloadV1> {
+    const key = await this.getTargetKey(message.targetId);
+    const raw = await openJson<unknown>(message.targetId, message.envelope, key);
+    return parseSessionTemplateListSetPayloadV1(raw);
+  }
+
+  private async sendSessionTemplateListResult(
+    targetId: string,
+    requestId: string,
+    payload: SessionTemplateListResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getTargetKey(targetId);
+    const envelope = await sealJson(targetId, payload, key);
+    this.relay.send({
+      type: 'session_template_list_result',
+      protocolVersion: PROTOCOL_V1,
+      targetId,
       requestId,
       envelope,
     });

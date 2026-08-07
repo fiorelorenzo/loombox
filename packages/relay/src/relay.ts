@@ -287,6 +287,16 @@ export interface CreateRelayOptions {
    */
   customAgentProbeRequestTtlMs?: number;
   /**
+   * How long a `session_template_list_get`/`_set`'s per-requestId routing
+   * entry (issue #259 — see the `pendingSessionTemplateListRequests` doc
+   * comment below) survives without a `session_template_list_result`,
+   * before the relay drops it on its own to avoid leaking it forever.
+   * Defaults to {@link DEFAULT_SESSION_TEMPLATE_LIST_REQUEST_TTL_MS}; tests
+   * lower it to keep expiry-then-reuse assertions fast, exactly like
+   * `customAgentProbeRequestTtlMs`.
+   */
+  sessionTemplateListRequestTtlMs?: number;
+  /**
    * How long an `ssh_discovery_request`'s per-requestId routing entry (#475
    * — see the `pendingSshDiscoveryRequests` doc comment below) survives
    * without an `ssh_discovery_response`, before the relay drops it on its
@@ -363,6 +373,8 @@ export const DEFAULT_PROVISION_REQUEST_TTL_MS = 10 * 60_000;
 export const DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS = 30_000;
 /** Sane default for {@link CreateRelayOptions.customAgentProbeRequestTtlMs} — 15s, generous for a `command -v` probe over `ssh:`; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (issue #748), not normal probe latency. */
 export const DEFAULT_CUSTOM_AGENT_PROBE_REQUEST_TTL_MS = 15_000;
+/** Sane default for {@link CreateRelayOptions.sessionTemplateListRequestTtlMs} — 15s, generous for a small local JSON file read/write on the node; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (issue #259), not normal catalog latency. */
+export const DEFAULT_SESSION_TEMPLATE_LIST_REQUEST_TTL_MS = 15_000;
 /** Sane default for {@link CreateRelayOptions.sshDiscoveryRequestTtlMs} — 15s, generous for `~/.ssh/config` parsing + an ssh-agent probe on the acting node; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#475), not normal discovery latency. */
 export const DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS = 15_000;
 /** Sane default for {@link CreateRelayOptions.decommissionTargetRequestTtlMs} — 60s, generous for the systemd stop/disable + optional file cleanup `decommissionSshTarget` runs over `ssh:`; this only guards against a genuinely abandoned/crashed request leaking its routing entry forever (#476), not normal decommission latency. */
@@ -461,6 +473,8 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     opts.targetFsListRequestTtlMs ?? DEFAULT_TARGET_FS_LIST_REQUEST_TTL_MS;
   const customAgentProbeRequestTtlMs =
     opts.customAgentProbeRequestTtlMs ?? DEFAULT_CUSTOM_AGENT_PROBE_REQUEST_TTL_MS;
+  const sessionTemplateListRequestTtlMs =
+    opts.sessionTemplateListRequestTtlMs ?? DEFAULT_SESSION_TEMPLATE_LIST_REQUEST_TTL_MS;
   const sshDiscoveryRequestTtlMs =
     opts.sshDiscoveryRequestTtlMs ?? DEFAULT_SSH_DISCOVERY_REQUEST_TTL_MS;
   const decommissionTargetRequestTtlMs =
@@ -547,6 +561,35 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (!pending) return;
     clearTimeout(pending.timeout);
     pendingCustomAgentProbeRequests.delete(requestId);
+  }
+
+  /**
+   * Issue #259: routes a node's `session_template_list_result` back to the
+   * client whose `session_template_list_get`/`_set` this requestId belongs
+   * to — the same small in-memory routing table `pendingTargetFsListRequests`
+   * is, and for the same reason (there is no session, and often none has
+   * ever existed for this project, to fan this out through —
+   * `NewSessionDialog` is exactly where a template gets loaded/saved
+   * BEFORE any session exists). Shared by both `_get` and `_set`, since
+   * both produce the same `session_template_list_result` reply, mirroring
+   * `agent_profile_list_get`/`_set`'s own shared-reply convention.
+   * Populated in the `session_template_list_get`/`_set` handler below,
+   * consumed in the `session_template_list_result` handler, and cleaned up
+   * in exactly three places so it never leaks: the response itself, the
+   * requesting client's own disconnect (`dropConnection`), and the TTL
+   * timer set here (`sessionTemplateListRequestTtlMs`). Never persisted —
+   * purely routing metadata for a request currently in flight.
+   */
+  const pendingSessionTemplateListRequests = new Map<
+    string,
+    { clientConnection: ClientConnection; timeout: ReturnType<typeof setTimeout> }
+  >();
+
+  function clearPendingSessionTemplateListRequest(requestId: string): void {
+    const pending = pendingSessionTemplateListRequests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingSessionTemplateListRequests.delete(requestId);
   }
 
   /**
@@ -686,6 +729,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     }
     for (const requestId of [...pendingCustomAgentProbeRequests.keys()]) {
       clearPendingCustomAgentProbeRequest(requestId);
+    }
+    for (const requestId of [...pendingSessionTemplateListRequests.keys()]) {
+      clearPendingSessionTemplateListRequest(requestId);
     }
     for (const requestId of [...pendingSshDiscoveryRequests.keys()]) {
       clearPendingSshDiscoveryRequest(requestId);
@@ -1700,6 +1746,23 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         clearPendingCustomAgentProbeRequest(message.requestId);
         return;
       }
+      case 'session_template_list_result': {
+        // Issue #259: a single-shot reply, delivered directly to the
+        // requesting client and then retired — same shape as
+        // `custom_agent_probe_response` above, via
+        // `pendingSessionTemplateListRequests`.
+        const pending = pendingSessionTemplateListRequests.get(message.requestId);
+        if (!pending || pending.clientConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { requestId: message.requestId },
+            'relay: session_template_list_result for an unknown/expired/foreign requestId',
+          );
+          return;
+        }
+        sendDirect(pending.clientConnection, message);
+        clearPendingSessionTemplateListRequest(message.requestId);
+        return;
+      }
       case 'ssh_discovery_response': {
         // #475's add-target wizard: a single-shot reply, delivered directly
         // to the requesting client and then retired — via the same
@@ -2143,6 +2206,38 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           pendingCustomAgentProbeRequests.delete(message.requestId);
         }, customAgentProbeRequestTtlMs);
         pendingCustomAgentProbeRequests.set(message.requestId, {
+          clientConnection: connection,
+          timeout,
+        });
+        sendDirect(nodeConnection, message);
+        return;
+      }
+      case 'session_template_list_get':
+      case 'session_template_list_set': {
+        // Issue #259: routed directly by `nodeId`, exactly like
+        // `custom_agent_probe_request` above — there is no session (and
+        // often none has ever existed for this project) to resolve the
+        // owning node through: `NewSessionDialog` loads/saves templates
+        // before ever creating one. Both request types share the same
+        // `session_template_list_result` reply, mirroring
+        // `agent_profile_list_get`/`_set`'s own shared-reply convention.
+        const nodeConnection = registry.nodeConnectionsByNodeId.get(message.nodeId);
+        if (!nodeConnection || nodeConnection.accountId !== connection.accountId) {
+          app.log.warn(
+            { nodeId: message.nodeId },
+            `relay: ${message.type} for unknown/foreign node`,
+          );
+          return;
+        }
+        clearPendingSessionTemplateListRequest(message.requestId);
+        const timeout = setTimeout(() => {
+          app.log.warn(
+            { requestId: message.requestId },
+            `relay: ${message.type} routing entry expired before a response arrived`,
+          );
+          pendingSessionTemplateListRequests.delete(message.requestId);
+        }, sessionTemplateListRequestTtlMs);
+        pendingSessionTemplateListRequests.set(message.requestId, {
           clientConnection: connection,
           timeout,
         });
@@ -2612,6 +2707,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       for (const [requestId, pending] of pendingCustomAgentProbeRequests) {
         if (pending.clientConnection === connection) {
           clearPendingCustomAgentProbeRequest(requestId);
+        }
+      }
+      // Issue #259: same reasoning as the cleanup above — a disconnected
+      // client can never receive a still-pending session_template_list_result.
+      for (const [requestId, pending] of pendingSessionTemplateListRequests) {
+        if (pending.clientConnection === connection) {
+          clearPendingSessionTemplateListRequest(requestId);
         }
       }
       // #475: same reasoning as the two cleanups above — a disconnected

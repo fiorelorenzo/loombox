@@ -74,6 +74,8 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionResume,
+  type SessionTemplateListGet,
+  type SessionTemplateListResult,
   type SessionUpdateEnvelopeV1,
   type SshDiscoveryRequest,
   type SshDiscoveryResponse,
@@ -2403,6 +2405,258 @@ describe('relay v1', () => {
       };
       send(node, response);
       const received = (await nextMessage(secondClient)) as unknown as TargetFsListResponse;
+      expect(received).toEqual(response);
+
+      // The expired-and-abandoned firstClient must not have received it.
+      send(firstClient, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const firstClientNext = await nextMessage(firstClient);
+      expect(firstClientNext.type).toBe('session_list');
+    });
+  });
+
+  describe("session_template_list_get/set/result (issue #259) — the New session dialog's template catalog, routed directly by nodeId like custom_agent_probe_request since it can be read/saved before any session exists", () => {
+    it("routes session_template_list_get to the node identified by nodeId, scoped to the requester's account, byte-for-byte, never inspecting the envelope-less request", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: SessionTemplateListGet = {
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl',
+        targetId: 'local',
+        requestId: 'req_tpl_1',
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as SessionTemplateListGet;
+      expect(received).toEqual(request);
+    });
+
+    it('routes session_template_list_set to the node identified by nodeId, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_set',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request = {
+        type: 'session_template_list_set' as const,
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_set',
+        targetId: 'local',
+        requestId: 'req_tpl_2',
+        envelope: fakeEnvelope('[{"id":"tpl_1"}]'),
+      };
+      send(client, request);
+
+      const received = await nextMessage(node);
+      expect(received).toEqual(request);
+    });
+
+    it('ignores a session_template_list_get for an unknown node instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_nonexistent',
+        targetId: 'local',
+        requestId: 'req_tpl_orphan',
+      } satisfies SessionTemplateListGet);
+
+      // the relay should still be responsive
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it('does not route session_template_list_get to a node owned by another account', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_owner',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_foreign',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: intruder } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'intruder-device',
+        authToken: 'acct_other',
+      });
+      send(intruder, {
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_foreign',
+        targetId: 'local',
+        requestId: 'req_tpl_intruder',
+      } satisfies SessionTemplateListGet);
+
+      send(intruder, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const response = (await nextMessage(intruder)) as unknown as SessionListV1;
+      expect(response.type).toBe('session_list');
+    });
+
+    it('delivers session_template_list_result back to the requesting client only, byte-for-byte', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_reply',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: requester } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'requester-device',
+        authToken: 'acct_1',
+      });
+      // A second, uninvolved client on the SAME account — must never see
+      // this request's reply.
+      const { socket: bystander } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'bystander-device',
+        authToken: 'acct_1',
+      });
+
+      const request: SessionTemplateListGet = {
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_reply',
+        targetId: 'local',
+        requestId: 'req_tpl_3',
+      };
+      send(requester, request);
+      await nextMessage(node); // the node's own copy of the request
+
+      const response: SessionTemplateListResult = {
+        type: 'session_template_list_result',
+        protocolVersion: PROTOCOL_V1,
+        targetId: 'local',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('[]'),
+      };
+      send(node, response);
+      const received = (await nextMessage(requester)) as unknown as SessionTemplateListResult;
+      expect(received).toEqual(response);
+
+      send(bystander, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const bystanderNext = (await nextMessage(bystander)) as unknown as SessionListV1;
+      expect(bystanderNext.type).toBe('session_list');
+    });
+
+    it('cleans up an abandoned routing entry after its TTL, freeing the requestId for reuse', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        sessionTemplateListRequestTtlMs: 50,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      send(node, {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_ttl',
+        targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: [] }],
+      } satisfies TargetAnnounce);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: firstClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'first-client-device',
+        authToken: 'acct_1',
+      });
+      const request: SessionTemplateListGet = {
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_tpl_ttl',
+        targetId: 'local',
+        requestId: 'req_tpl_ttl',
+      };
+      send(firstClient, request);
+      await nextMessage(node);
+
+      // Never send a response — simulate an abandoned request and let it
+      // expire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const { socket: secondClient } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'second-client-device',
+        authToken: 'acct_1',
+      });
+      send(secondClient, request);
+      await nextMessage(node);
+
+      const response: SessionTemplateListResult = {
+        type: 'session_template_list_result',
+        protocolVersion: PROTOCOL_V1,
+        targetId: 'local',
+        requestId: request.requestId,
+        envelope: fakeEnvelope('[]'),
+      };
+      send(node, response);
+      const received = (await nextMessage(secondClient)) as unknown as SessionTemplateListResult;
       expect(received).toEqual(response);
 
       // The expired-and-abandoned firstClient must not have received it.
