@@ -234,6 +234,8 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type TrackerConnectivityStateV1,
+  type TrackerConnectivityStatusPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -357,6 +359,10 @@ import {
   parseGithubPullRequestUrl,
   type CiWatchEntry,
 } from './ci-check-watcher';
+import {
+  TrackerConnectivityWatcher,
+  type TrackerConnectivityTarget,
+} from './tracker-connectivity-watcher';
 import { CiWatchStore } from './ci-watch-store';
 import { CiAutoIterateController } from './ci-auto-iterate';
 import { SessionStore } from './session-store';
@@ -827,6 +833,8 @@ export interface NodeDaemonOptions {
   ciCheckWatcher?: CiCheckWatcher;
   /** SPEC §7.14/§7.15, issue #246 — decides whether a new CI failure actually drives a new agent turn, and tracks the resulting auto-iterate loop's state; see `ci-auto-iterate.ts`'s own doc comment. Injectable wholesale, same convention as `ciCheckWatcher` above (a test can control `maxAttempts`/`now` directly, or inject a fully custom instance). Defaults to `new CiAutoIterateController()`. */
   ciAutoIterateController?: CiAutoIterateController;
+  /** SPEC §7.10, issue #219 — the live-tracker reachability polling engine, injectable wholesale, same convention as `ciCheckWatcher` above. Defaults to a real `TrackerConnectivityWatcher` wired to `resolveTrackerConnectivityTarget`/`pushTrackerConnectivityStatus`. */
+  trackerConnectivityWatcher?: TrackerConnectivityWatcher;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1601,6 +1609,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly ciCheckWatcher: CiCheckWatcher;
   /** SPEC §7.14/§7.15, issue #246's failure-decision-and-loop-state tracker — see `NodeDaemonOptions.ciAutoIterateController`'s doc comment. */
   private readonly ciAutoIterateController: CiAutoIterateController;
+  /** SPEC §7.10, issue #219's live-tracker reachability polling engine — see `NodeDaemonOptions.trackerConnectivityWatcher`'s doc comment. */
+  private readonly trackerConnectivityWatcher: TrackerConnectivityWatcher;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1792,6 +1802,25 @@ export class NodeDaemon extends EventEmitter {
     }
     this.ciCheckWatcher.start();
 
+    // SPEC §7.10, issue #219: re-`watch`es every project already saved as
+    // `'live'` mode before this node last restarted — mirrors the
+    // `ciCheckWatchStore` reload loop just above, minus the "prune a
+    // stale entry" half (a `TrackerModeStore` entry has no equivalent
+    // notion of going stale the way a session-keyed CI watch entry does;
+    // it stays valid for as long as the project itself does).
+    this.trackerConnectivityWatcher =
+      options.trackerConnectivityWatcher ??
+      new TrackerConnectivityWatcher({
+        resolveTarget: (projectPath) => this.resolveTrackerConnectivityTarget(projectPath),
+        onUpdate: (projectPath, state) => {
+          this.pushTrackerConnectivityStatus(projectPath, state);
+        },
+      });
+    for (const { projectPath, mode } of this.trackerModeStore.list()) {
+      if (mode.kind === 'live') this.trackerConnectivityWatcher.watch(projectPath);
+    }
+    this.trackerConnectivityWatcher.start();
+
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
     // reconnects) must re-announce everything this node still holds.
@@ -1865,6 +1894,7 @@ export class NodeDaemon extends EventEmitter {
     this.bridges.clear();
     this.targetHealthSampler.stop();
     this.ciCheckWatcher.stop();
+    this.trackerConnectivityWatcher.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
     // exiting does not kill it" — a later reattach still works), a
@@ -6270,6 +6300,11 @@ export class NodeDaemon extends EventEmitter {
   /** `TrackerModeStore.set` (SPEC §7.10; issue #631) — saves `message.mode` for `message.projectPath`. There is deliberately no unset handler (mirrors `trackerModeSetRequest`'s own doc comment). Replies with the resulting mode re-read through the store, mirroring `handleAccountPinSetRequest`'s same re-read-after-write convention, so the client never needs a second round trip. */
   private handleTrackerModeSetRequest(message: TrackerModeSetRequest): void {
     this.trackerModeStore.set(message.projectPath, message.mode);
+    if (message.mode.kind === 'live') {
+      this.trackerConnectivityWatcher.watch(message.projectPath);
+    } else {
+      this.trackerConnectivityWatcher.unwatch(message.projectPath);
+    }
     this.sendTrackerModeResponse(
       message.requestId,
       message.projectPath,
@@ -8624,6 +8659,96 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * `TrackerConnectivityWatcher`'s only source of a `TrackerBackend` to
+   * probe (SPEC §7.10; issue #219) — the exact same composition
+   * `resolveTrackerDispatch`'s own 'live' branch uses, called fresh on
+   * every poll rather than cached, so a credential disconnected between
+   * polls takes effect on the very next one. A resolution failure (no
+   * connected account, no pinned credential, a dangling pin, ...) reports
+   * `ok: false`: there was no credential to even attempt a call with,
+   * which `TrackerConnectivityWatcher` folds into the same `'authFailed'`
+   * bucket a remote 401/403 gets (see that class's own doc comment for
+   * why). Defensive `mode.kind !== 'live'` fallback: this daemon only
+   * ever `watch()`es a project whose saved mode is `'live'`
+   * (`handleTrackerModeSetRequest`, and this daemon's own constructor for
+   * every one already saved before a restart) and `unwatch()`es it the
+   * moment that stops being true, so a poll landing here for a
+   * since-reverted-to-native project should never actually happen — the
+   * arbitrary 'github' fallback below is never rendered anywhere a user
+   * would see it.
+   */
+  private async resolveTrackerConnectivityTarget(
+    projectPath: string,
+  ): Promise<TrackerConnectivityTarget> {
+    const mode = this.trackerModeStore.get(projectPath);
+    if (!mode || mode.kind !== 'live') {
+      return { ok: false, provider: 'github' };
+    }
+    const resolution = await resolveTrackerBackend({
+      mode,
+      projectPath,
+      intent: 'read',
+      accounts: this.connectedAccounts,
+      pins: this.accountPinStore.get(projectPath),
+      githubConnectService: this.githubConnectService,
+      jiraConnectService: this.jiraConnectService,
+      fetchImpl: this.trackerBackendFetchImpl,
+    });
+    if (!resolution.ok) return { ok: false, provider: mode.provider };
+    return {
+      ok: true,
+      provider: mode.provider,
+      backend: resolution.backend,
+      binding: { connectionId: mode.connectionId, target: mode.target },
+    };
+  }
+
+  /**
+   * Fans `projectPath`'s latest `TrackerConnectivityWatcher` reading out
+   * to every session currently open on it (SPEC §7.10; issue #219) —
+   * polling is per-PROJECT (one API call per pass, not one per session),
+   * but delivery rides the relay's existing per-SESSION fan-out
+   * (`tracker_connectivity_status` mirrors `ci_check_status`'s wire shape
+   * exactly; see that module's own doc comment for why). A session
+   * created after this pass already started sees nothing until the next
+   * scheduled poll — the same latency `CiCheckWatcher.watch` already
+   * accepts (`registerCiCheckWatch`'s own doc comment).
+   */
+  private pushTrackerConnectivityStatus(
+    projectPath: string,
+    state: TrackerConnectivityStateV1,
+  ): void {
+    for (const session of this.sessionManager.listSessions()) {
+      if (session.projectPath !== projectPath) continue;
+      this.sendTrackerConnectivityStatus(session.id, state).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to send tracker_connectivity_status for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Pushes one session's copy of its project's latest live-tracker
+   * connectivity reading (SPEC §7.10; issue #219). Session-scoped and
+   * envelope-sealed exactly like `sendCiCheckStatus` above.
+   */
+  private async sendTrackerConnectivityStatus(
+    sessionId: string,
+    state: TrackerConnectivityStateV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: TrackerConnectivityStatusPayloadV1 = { status: state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'tracker_connectivity_status',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       envelope,

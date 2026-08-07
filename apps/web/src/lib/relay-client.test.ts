@@ -9288,6 +9288,191 @@ describe('RelayClient: attention inbox ci_failure class (SPEC §7.13/§7.14; iss
   });
 });
 
+describe('RelayClient: attention inbox tracker_failure class (SPEC §7.10/§7.13; issue #219)', () => {
+  it('distinguishes reachable-and-empty (no item), unreachable, and authFailed, raises exactly one item for a failing tracker, and clears it on recovery', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-tracker';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-tracker',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const fakeNode = node;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_a', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Ship the feature', projectPath: '/proj-tracker' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-tracker' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const sendTrackerConnectivityStatus = async (status: {
+      state: 'reachable' | 'unreachable' | 'authFailed';
+      provider: 'github' | 'jira';
+      updatedAt: number;
+    }) => {
+      const envelope = await nodeSeal(session.id, { status }, key);
+      fakeNode.send({
+        type: 'tracker_connectivity_status',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        envelope,
+      });
+    };
+
+    // Reachable-and-empty first, immediately followed by unreachable:
+    // when the unreachable item appears (a deterministic wait, not a
+    // guessed delay), it must be the ONLY item — proving the prior
+    // reachable reading never synthesized one of its own (an unreachable
+    // tracker must never look the same as an empty-but-reachable one,
+    // and the inverse holds too: a healthy tracker must never falsely
+    // alarm).
+    await sendTrackerConnectivityStatus({ state: 'reachable', provider: 'github', updatedAt: 500 });
+
+    // Goes unreachable: raises exactly one tracker_failure item.
+    await sendTrackerConnectivityStatus({
+      state: 'unreachable',
+      provider: 'github',
+      updatedAt: 1000,
+    });
+    const afterUnreachable = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterUnreachable[0]).toMatchObject({
+      kind: 'tracker_failure',
+      sessionId: session.id,
+      sessionTitle: 'Ship the feature',
+      projectPath: '/proj-tracker',
+      nodeId: session.nodeId,
+      waitingSince: 1000,
+      trackerProvider: 'github',
+      trackerConnectivityState: 'unreachable',
+    });
+
+    // Still unreachable on a later poll (the ordinary "still down"
+    // repoll) — must update the existing item in place, never add a
+    // second one.
+    await sendTrackerConnectivityStatus({
+      state: 'unreachable',
+      provider: 'github',
+      updatedAt: 2000,
+    });
+    const stillUnreachable = await waitForStore(inbox, (value) => value[0]?.waitingSince === 2000);
+    expect(stillUnreachable).toHaveLength(1);
+
+    // Distinct third state: the credential is rejected, not just
+    // unreachable — same session, different wording/state, still exactly
+    // one item.
+    await sendTrackerConnectivityStatus({
+      state: 'authFailed',
+      provider: 'github',
+      updatedAt: 3000,
+    });
+    const afterAuthFailed = await waitForStore(
+      inbox,
+      (value) => value[0]?.trackerConnectivityState === 'authFailed',
+    );
+    expect(afterAuthFailed).toHaveLength(1);
+    expect(afterAuthFailed[0]).toMatchObject({
+      kind: 'tracker_failure',
+      trackerConnectivityState: 'authFailed',
+      waitingSince: 3000,
+    });
+
+    // Recovers: the item clears, not lingering stale.
+    await sendTrackerConnectivityStatus({
+      state: 'reachable',
+      provider: 'github',
+      updatedAt: 4000,
+    });
+    await waitForStore(inbox, (value) => value.length === 0);
+  });
+
+  it('is independent of the session live-status item: a session can carry both an awaiting_input item and a tracker_failure item at once', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-tracker-independent';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-tracker-independent',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const fakeNode = node;
+
+    const session = makeSessionMeta({ id: 'sess_tracker_b', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Refactor', projectPath: '/proj-tracker-b' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-tracker-independent',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const statusEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'session_status', status: 'awaiting_input', updatedAt: 't1' },
+      key,
+    );
+    fakeNode.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: statusEnvelope,
+    });
+
+    const trackerEnvelope = await nodeSeal(
+      session.id,
+      { status: { state: 'unreachable', provider: 'jira', updatedAt: 5000 } },
+      key,
+    );
+    fakeNode.send({
+      type: 'tracker_connectivity_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: trackerEnvelope,
+    });
+
+    const both = await waitForStore(inbox, (value) => value.length === 2);
+    expect(both.map((item) => item.kind).sort()).toEqual(['awaiting_input', 'tracker_failure']);
+    expect(both.every((item) => item.sessionId === session.id)).toBe(true);
+  });
+});
+
 describe('RelayClient: recovery-code AMK escrow + new-device bootstrap (SPEC §8 path 2, §16; issues #114/#115)', () => {
   it('escrows the AMK from a first device, then a fresh device bootstraps from just the Recovery Code and decrypts a session the first device could', async () => {
     const accountId = 'acct-recovery';
