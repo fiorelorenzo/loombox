@@ -351,11 +351,12 @@ function transitionsApiUrl(baseUrl: string, externalId: string): string {
   return `${issueApiUrl(baseUrl, externalId)}/transitions`;
 }
 
-/** The one field this backend reads off each transition Jira's discovery endpoint returns — `fields`, when present, is Jira's own workflow-screen field map (`{fieldKey: {required, ...}}`); everything else `GET .../transitions` returns (`to`, `hasScreen`, `isGlobal`, ...) is UI chrome this backend has no use for. */
+/** The fields this backend reads off each transition Jira's discovery endpoint returns — `fields`, when present, is Jira's own workflow-screen field map (`{fieldKey: {required, ...}}`); `to.statusCategory.key` (issue #696) is the ONE other field read out of `to` (`hasScreen`, `isGlobal`, ... stay UI chrome this backend has no use for) — the same `new`/`indeterminate`/`done` vocabulary `deriveJiraWorkflowCategory` already derives for a read, letting `listTransitions` report which workflow CATEGORY each transition lands on, not only its raw Jira status name. */
 interface JiraTransitionPayload {
   id: string;
   name: string;
   fields?: Record<string, { required?: boolean }>;
+  to?: { statusCategory?: { key?: string | null } | null } | null;
 }
 
 /** True when Jira's own per-transition `fields` map marks at least one field `required: true` — the signal `listTransitions` surfaces as `TrackerTransition.requiresFields` so a caller knows to pass `transition`'s `options.fields` (e.g. `{resolution: {name: 'Done'}}`) before posting, rather than discovering it only after a `400`. */
@@ -645,6 +646,7 @@ export class JiraTrackerBackend implements TrackerBackend {
       id: raw.id,
       name: raw.name,
       requiresFields: transitionRequiresFields(raw.fields),
+      targetCategory: deriveJiraWorkflowCategory(raw.to?.statusCategory?.key),
     }));
   }
 

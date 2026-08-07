@@ -33,8 +33,11 @@ import {
   defaultPtySpawn,
   DetachedHeadError,
   DirtySubmoduleError,
+  FsSnapshotCheckpointStore,
   GitCheckpointStore,
+  isGitWorktree,
   NotAGitWorktreeError,
+  SnapshotTooLargeError,
   TerminalSupervisor,
   type AgentSession,
   type AgentSupervisorStartOptions,
@@ -444,6 +447,7 @@ import {
   type TrackerBackendResolutionError,
 } from './tracker-backend-composition';
 import {
+  applyLiveTrackerCategoryMove,
   liveItemToTrackerRecord,
   liveTrackerTypeDefinition,
   trackerResolutionErrorPayload,
@@ -1521,6 +1525,9 @@ function checkpointErrorOutcome(error: unknown): {
   }
   if (error instanceof DirtySubmoduleError) {
     return { outcome: 'error', errorType: 'dirty_submodule', message: error.message };
+  }
+  if (error instanceof SnapshotTooLargeError) {
+    return { outcome: 'error', errorType: 'snapshot_too_large', message: error.message };
   }
   const detail = error instanceof Error ? error.message : String(error);
   return { outcome: 'error', errorType: 'unknown', message: detail };
@@ -5036,14 +5043,13 @@ export class NodeDaemon extends EventEmitter {
     // doc comment.
     const session = this.sessionManager.getSession(sessionId);
     if (session) {
-      await this.getCheckpointStore(session)
-        ?.deleteAllCheckpoints()
-        .catch((error: unknown) => {
-          const detail = error instanceof Error ? error.message : String(error);
-          console.warn(
-            `NodeDaemon: failed to delete checkpoints for session ${sessionId} during archive: ${detail}`,
-          );
-        });
+      const store = await this.getCheckpointStore(session);
+      await store?.deleteAllCheckpoints().catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to delete checkpoints for session ${sessionId} during archive: ${detail}`,
+        );
+      });
     }
     await this.sessionManager.removeSession(sessionId, { removeWorktree });
     // Issue #706: forgets this session's cached title alongside the
@@ -5125,22 +5131,46 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * Builds this session's `GitCheckpointStore` (issue #603) — stateless
-   * (the engine's own class doc comment), so constructed fresh per call
-   * rather than cached on the bridge, exactly like this daemon already
-   * treats `permissionPolicyStore`/`testRunnerConfigStore` reads ("fresh,
-   * never cached", `handlePermissionPolicyGet`'s own doc comment).
-   * Returns `undefined` for anything but a `local` session — see
+   * Builds this session's checkpoint engine — `GitCheckpointStore` (issue
+   * #603) for a git worktree, or `FsSnapshotCheckpointStore` (issue #267)
+   * for a plain folder — both stateless (each engine's own class doc
+   * comment), so constructed fresh per call rather than cached on the
+   * bridge, exactly like this daemon already treats
+   * `permissionPolicyStore`/`testRunnerConfigStore` reads ("fresh, never
+   * cached", `handlePermissionPolicyGet`'s own doc comment). Returns
+   * `undefined` for anything but a `local` session — see
    * `CHECKPOINT_UNSUPPORTED_TARGET_MESSAGE`'s own doc comment for why an
    * `ssh:` session can't be supported here at all; every checkpoint
    * handler below checks for `undefined` first and answers
-   * `errorType: 'unsupported_target'` rather than letting
-   * `execFile('git', ...)` fail confusingly against an unrelated (or
-   * absent) local directory.
+   * `errorType: 'unsupported_target'` rather than letting either engine
+   * fail confusingly against an unrelated (or unreachable) directory.
+   *
+   * Which engine a `local` session gets is never stored anywhere — it's
+   * derived fresh, every call, from `session.branch`/a live git probe:
+   * an isolated-worktree session (`session.branch !== ''`) is ALWAYS a
+   * git worktree, because `SessionManager.createSession` only ever forks
+   * one off a real repo (`assertIsGitRepo`, `./session-manager.ts`) —
+   * there is nothing to branch a worktree off of otherwise — so that case
+   * skips the probe entirely and never pays for it. Only a `workInPlace`
+   * session (`session.branch === ''`) can honestly be either kind (SPEC
+   * §6: a project "does not have to be a git repository"), so only that
+   * case calls `isGitWorktree` — one extra `git rev-parse` spawn, dwarfed
+   * by `FsSnapshotCheckpointStore.checkpoint()`'s own walk-the-tree cost
+   * on the branch where it actually matters, and never paid at all on the
+   * (default, far more common) isolated-worktree path where issue #603's
+   * own latency measurements already live.
    */
-  private getCheckpointStore(session: Session): GitCheckpointStore | undefined {
+  private async getCheckpointStore(
+    session: Session,
+  ): Promise<GitCheckpointStore | FsSnapshotCheckpointStore | undefined> {
     if (session.target !== 'local') return undefined;
-    return new GitCheckpointStore({ worktreePath: session.worktreePath, sessionId: session.id });
+    const isGit = session.branch !== '' || (await isGitWorktree(session.worktreePath));
+    return isGit
+      ? new GitCheckpointStore({ worktreePath: session.worktreePath, sessionId: session.id })
+      : new FsSnapshotCheckpointStore({
+          worktreePath: session.worktreePath,
+          sessionId: session.id,
+        });
   }
 
   /**
@@ -5201,12 +5231,22 @@ export class NodeDaemon extends EventEmitter {
    * mean the agent itself stops working.
    */
   private autoCheckpointBeforeTurn(bridge: SessionBridge): Promise<void> {
-    const store = this.getCheckpointStore(bridge.session);
-    if (!store) return Promise.resolve(); // ssh: target — see getCheckpointStore's own doc comment
+    // Synchronous, cheap check only — see `getCheckpointStore`'s own doc
+    // comment for why an `ssh:` session never gets a store at all. Kept
+    // OUTSIDE the queued `.then()` below (unlike the actual store
+    // resolution, which needs `await isGitWorktree(...)` for a
+    // `workInPlace` session): reading/chaining `bridge.checkpointQueue`
+    // must stay fully synchronous relative to this method's own two calls
+    // racing each other, or two turns fired close together could both
+    // read the same stale `checkpointQueue` and run concurrently instead
+    // of serialized — exactly what this queue exists to prevent.
+    if (bridge.session.target !== 'local') return Promise.resolve();
     bridge.turnCount = (bridge.turnCount ?? 0) + 1;
     const turnNumber = bridge.turnCount;
     const message = `${AUTO_CHECKPOINT_MESSAGE_PREFIX}${turnNumber}`;
     const next = (bridge.checkpointQueue ?? Promise.resolve()).then(async () => {
+      const store = await this.getCheckpointStore(bridge.session);
+      if (!store) return; // target flipped away from 'local' mid-queue — nothing to do
       try {
         await store.checkpoint({ message });
       } catch {
@@ -6910,15 +6950,25 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * The live half of {@link applyTrackerWrite}. `create`/`update`
-   * forward `fields` straight to the resolved `TrackerBackend` — a live
-   * record has no native `primaryType`/`typeTags`/`archived` concept to
-   * apply, see `tracker-live-bridge.ts`'s own doc comment for what a
-   * live-mode record actually carries. `defineType` has no live-mode
-   * analog (a live project's types come from the provider, never a user
-   * definition) and fails immediately, without attempting a backend
-   * call. Never throws: a backend/network failure becomes an
-   * `outcome: 'error'` payload, same as {@link readLiveTrackerSnapshot}.
+   * The live half of {@link applyTrackerWrite}. `create` forwards
+   * `fields` straight to the resolved `TrackerBackend` — a live record
+   * has no native `primaryType`/`typeTags`/`archived` concept to apply,
+   * see `tracker-live-bridge.ts`'s own doc comment for what a live-mode
+   * record actually carries. `update` goes through
+   * {@link applyLiveTrackerCategoryMove} rather than `dispatch.backend.update`
+   * directly (issue #696): a board move sets `fields.workflowCategory` to
+   * the moved-to column, and landing it for real needs the provider's own
+   * discovered transitions, not a raw field PATCH the provider would
+   * ignore or reject — see that function's own doc comment for the full
+   * "read current category, diff, transition, then patch the rest"
+   * algorithm, which also covers the plain-field-edit (no category
+   * change) case unchanged. `defineType` has no live-mode analog (a live
+   * project's types come from the provider, never a user definition) and
+   * fails immediately, without attempting a backend call. Never throws: a
+   * backend/network failure, including a board move that lands on a
+   * category no discovered transition reaches
+   * ({@link LiveTrackerCategoryMoveError}), becomes an `outcome: 'error'`
+   * payload, same as {@link readLiveTrackerSnapshot}.
    */
   private async applyLiveTrackerWrite(
     dispatch: Extract<TrackerBridgeDispatch, { kind: 'live' }>,
@@ -6934,7 +6984,8 @@ export class NodeDaemon extends EventEmitter {
           };
         }
         case 'update': {
-          const item = await dispatch.backend.update(
+          const item = await applyLiveTrackerCategoryMove(
+            dispatch.backend,
             dispatch.binding,
             payload.id,
             payload.fields ?? {},
@@ -8348,7 +8399,7 @@ export class NodeDaemon extends EventEmitter {
     requestId: string,
     payload: CheckpointCreatePayloadV1,
   ): Promise<void> {
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     if (!store) {
       await this.sendCheckpointResult(session.id, requestId, {
         outcome: 'error',
@@ -8398,7 +8449,7 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private async performCheckpointList(session: Session, requestId: string): Promise<void> {
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     if (!store) {
       await this.sendCheckpointListResult(session.id, requestId, {
         outcome: 'error',
@@ -8456,7 +8507,7 @@ export class NodeDaemon extends EventEmitter {
     requestId: string,
     checkpointId: string,
   ): Promise<void> {
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     if (!store) {
       await this.sendCheckpointRestorePreviewResult(session.id, requestId, {
         outcome: 'error',
@@ -8570,7 +8621,7 @@ export class NodeDaemon extends EventEmitter {
     checkpointId: string,
     confirm: boolean,
   ): Promise<void> {
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     if (!store) {
       await this.sendCheckpointRestoreResult(session.id, requestId, {
         outcome: 'error',
@@ -8652,7 +8703,7 @@ export class NodeDaemon extends EventEmitter {
     | { outcome: 'ok'; preview: RewindPreviewV1; targetTurnId: string | undefined }
     | { outcome: 'error'; errorType: RewindErrorTypeV1; message: string }
   > {
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     if (!store) {
       return {
         outcome: 'error',
@@ -8822,7 +8873,7 @@ export class NodeDaemon extends EventEmitter {
     // exactly the same window `performCheckpointRestore` already accepts
     // this same race for — the store/bridge existing a moment ago is
     // best-effort, not a lock.
-    const store = this.getCheckpointStore(session);
+    const store = await this.getCheckpointStore(session);
     const liveBridge = this.bridges.get(session.id);
     if (!store || !liveBridge) {
       await this.sendSessionRewindResult(session.id, requestId, {

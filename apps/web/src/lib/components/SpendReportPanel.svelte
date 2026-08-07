@@ -37,9 +37,9 @@
   import type { SpendReportRowV1 } from '@loombox/protocol';
   import type { SpendReportState } from '$lib/relay-client';
   import Badge from './ui/Badge.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Select, { type SelectOption } from './ui/Select.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
 
   export interface SpendReportClient {
     spendReportFor(nodeId: string, projectPath: string): Readable<SpendReportState>;
@@ -162,6 +162,30 @@
   function formatUsd(amount: number): string {
     return `$${amount.toFixed(2)}`;
   }
+
+  /**
+   * Reshapes `report`/`timedOut` onto the shared primitive (issue #650);
+   * this panel's own wording for both the timeout and the "nothing
+   * recorded" case predates the primitive and stays exactly as it was
+   * (an unrelated wording harmonization is out of this refactor's
+   * scope). The zero-rows case stays a compact inline `<p>` inside
+   * `content` rather than `AsyncPanel`'s built-in `empty` branch — this
+   * panel's own hand-rolled empty note was never `EmptyState`'s bigger
+   * treatment to begin with, the same call `DirectoryPicker` makes.
+   */
+  const reportState = $derived<AsyncPanelState<undefined>>(
+    report.status === 'error' || timedOut
+      ? {
+          status: 'error',
+          message: timedOut
+            ? "This project's spend history didn't answer in time. The node isn't reachable right now."
+            : (report.error ?? 'Failed to load the spend history.'),
+          retryable: true,
+        }
+      : report.status === 'loading'
+        ? { status: 'loading' }
+        : { status: 'loaded', data: undefined },
+  );
 </script>
 
 <div class="spend-report" data-testid="spend-report-panel">
@@ -178,36 +202,35 @@
 
   {#if nodeId === undefined}
     <p class="spend-report-no-data">Select a session to load this project's spend history.</p>
-  {:else if report.status === 'error' || timedOut}
-    <ErrorNotice
-      message={timedOut
-        ? "This project's spend history didn't answer in time. The node isn't reachable right now."
-        : (report.error ?? 'Failed to load the spend history.')}
-      retryable
-      onRetry={reload}
-    />
-  {:else if report.status === 'loading'}
-    <p class="spend-report-loading" data-testid="spend-report-loading">
-      <WovenLoader size="sm" label="Loading spend history" />
-      Loading…
-    </p>
-  {:else if !aggregate.hasData}
-    <p class="spend-report-no-data" data-testid="spend-report-no-data">
-      No spend recorded for this period.
-    </p>
   {:else}
-    <div class="spend-report-total" data-testid="spend-report-total">
-      <span class="spend-report-total-label">Total</span>
-      <span class="spend-report-total-value font-mono">{formatUsd(aggregate.totalUsd)}</span>
-    </div>
-    <ul class="spend-report-providers" data-testid="spend-report-providers">
-      {#each providerBreakdown as [provider, costUsd] (provider)}
-        <li class="spend-report-provider-row">
-          <Badge tone="neutral" size="sm">{provider}</Badge>
-          <span class="spend-report-provider-value font-mono">{formatUsd(costUsd)}</span>
-        </li>
-      {/each}
-    </ul>
+    <AsyncPanel
+      state={reportState}
+      loadingLabel="Loading spend history"
+      loadingTestId="spend-report-loading"
+      loadingText="Loading…"
+      onRetry={reload}
+    >
+      {#snippet content()}
+        {#if !aggregate.hasData}
+          <p class="spend-report-no-data" data-testid="spend-report-no-data">
+            No spend recorded for this period.
+          </p>
+        {:else}
+          <div class="spend-report-total" data-testid="spend-report-total">
+            <span class="spend-report-total-label">Total</span>
+            <span class="spend-report-total-value font-mono">{formatUsd(aggregate.totalUsd)}</span>
+          </div>
+          <ul class="spend-report-providers" data-testid="spend-report-providers">
+            {#each providerBreakdown as [provider, costUsd] (provider)}
+              <li class="spend-report-provider-row">
+                <Badge tone="neutral" size="sm">{provider}</Badge>
+                <span class="spend-report-provider-value font-mono">{formatUsd(costUsd)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/snippet}
+    </AsyncPanel>
   {/if}
 </div>
 
@@ -227,15 +250,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-xs);
-  }
-
-  .spend-report-loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
-    margin: 0;
   }
 
   .spend-report-no-data {

@@ -119,6 +119,24 @@
      same layer as the heights it is set from. The cockpit's Drawer
      overrides it on its own backdrop; see `Overlay.svelte`. */
   --overlay-top: 0px;
+  /* The "needs attention" warning mark (issue #605): a small round
+     indicator in `--color-warning`, smaller than either of `StatusDot`'s
+     own two diameters above since it is a corner overlay, not a status
+     dot in its own right — `+page.svelte`'s `.session-attention-dot` and
+     its collapsed-rail twin `.selvage-session.needs-attention::after`
+     both drew the identical `0.4rem` literal independently; named once
+     instead of trusting two call sites to keep matching by hand. */
+  --attention-dot-size: 0.4rem;
+  /* `ConfigBar`'s own compound model/thinking/mode popover (issue #605).
+     `.config-trigger`'s `max-width` and `.config-popover`'s `min-width`
+     are the same number on purpose — the panel is never narrower than
+     the button that opens it — so one token stands for both instead of
+     two literals that could silently drift apart. The max-height is
+     that popover's own scroll cap, taller than `Select.svelte`'s plain
+     single-list `16rem` on purpose: this popover stacks several picker
+     sections, not one flat option list. */
+  --config-popover-width: 14rem;
+  --config-popover-max-height: 20rem;
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */

@@ -52,12 +52,11 @@
   import { Icon } from './icons';
   import CopyButton from './CopyButton.svelte';
   import DiffViewer from './DiffViewer.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
-  import EmptyState from './ui/EmptyState.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
   import IconButton from './ui/IconButton.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
 
   interface Props {
     /** `CanvasTabsState.diffViewer`'s current value — loading/loaded/error. */
@@ -105,6 +104,27 @@
   /** At least one hunk is currently staged (SPEC §7.6; issue #233) — gates the staging surface's own "Commit" button: committing an empty index is refused node-side anyway, but there is nothing useful for this button to open when nothing is staged. */
   const hasStagedChanges = $derived(
     hunkViewer.status === 'loaded' && hunkViewer.files.some((file) => file.staged.length > 0),
+  );
+
+  /** Two independently-fetched surfaces (issue #206's diff, #232's staging hunks), each already its own `loading | loaded | error` tagged union — reshaped onto the shared primitive (issue #650). Both share the exact "no uncommitted changes" wording and both already rendered it through `EmptyState`, so both fold into `AsyncPanel`'s own `empty` branch (the `CommitGraphViewer` precedent), not a compact inline note. */
+  const diffState = $derived<AsyncPanelState<readonly GitDiffFileV1[]>>(
+    viewer.status === 'loading'
+      ? { status: 'loading' }
+      : viewer.status === 'error'
+        ? { status: 'error', message: viewer.message, retryable: true }
+        : viewer.files.length === 0
+          ? { status: 'empty', message: "No uncommitted changes in this project's worktree." }
+          : { status: 'loaded', data: viewer.files },
+  );
+
+  const hunkState = $derived<AsyncPanelState<readonly GitHunkFileV1[]>>(
+    hunkViewer.status === 'loading'
+      ? { status: 'loading' }
+      : hunkViewer.status === 'error'
+        ? { status: 'error', message: hunkViewer.message, retryable: true }
+        : hunkViewer.files.length === 0
+          ? { status: 'empty', message: "No uncommitted changes in this project's worktree." }
+          : { status: 'loaded', data: hunkViewer.files },
   );
 
   function renameNote(file: {
@@ -330,105 +350,105 @@
   </div>
 
   {#if surface === 'diff'}
-    {#if viewer.status === 'loading'}
-      <div class="worktree-diff-loading" data-testid="worktree-diff-loading">
-        <WovenLoader size="md" label="Loading working-tree diff" />
-      </div>
-    {:else if viewer.status === 'error'}
-      <div class="worktree-diff-error">
-        <ErrorNotice message={viewer.message} retryable {onRetry} />
-      </div>
-    {:else if viewer.files.length === 0}
-      <EmptyState message="No uncommitted changes in this project's worktree." />
-    {:else}
-      <div class="worktree-diff-toolbar">
-        <div class="worktree-diff-mode" role="radiogroup" aria-label="Diff display mode">
+    <AsyncPanel
+      state={diffState}
+      loadingLabel="Loading working-tree diff"
+      loadingTestId="worktree-diff-loading"
+      loadingSize="md"
+      errorTestId="worktree-diff-error"
+      {onRetry}
+    >
+      {#snippet content(files)}
+        <div class="worktree-diff-toolbar">
+          <div class="worktree-diff-mode" role="radiogroup" aria-label="Diff display mode">
+            <Button
+              variant="ghost"
+              size="sm"
+              class={`mode-choice ${mode === 'inline' ? 'selected' : ''}`.trim()}
+              role="radio"
+              ariaChecked={mode === 'inline'}
+              tabindex={mode === 'inline' ? 0 : -1}
+              onclick={() => (requestedMode = 'inline')}
+              dataTestId="worktree-diff-mode-inline"
+            >
+              Inline
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              class={`mode-choice ${mode === 'split' ? 'selected' : ''}`.trim()}
+              role="radio"
+              ariaChecked={mode === 'split'}
+              tabindex={mode === 'split' ? 0 : -1}
+              disabled={$narrowForSplit}
+              title={$narrowForSplit ? 'Split view needs a wider window' : undefined}
+              onclick={() => (requestedMode = 'split')}
+              dataTestId="worktree-diff-mode-split"
+            >
+              Split
+            </Button>
+          </div>
+          <span class="worktree-diff-count">
+            {files.length}
+            {files.length === 1 ? 'file' : 'files'}
+          </span>
+        </div>
+
+        <div class="worktree-diff-files" data-testid="worktree-diff-files">
+          {#each files as file (file.path)}
+            {#if mode === 'inline'}
+              {@const note = renameNote(file)}
+              <div class="worktree-diff-file" data-testid="worktree-diff-file">
+                {#if note}
+                  <p class="worktree-diff-rename-note">{note}</p>
+                {/if}
+                <DiffViewer
+                  path={file.path}
+                  oldText={file.oldText}
+                  newText={file.newText}
+                  onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
+                />
+              </div>
+            {:else}
+              {@render splitFile(file)}
+            {/if}
+          {/each}
+        </div>
+      {/snippet}
+    </AsyncPanel>
+  {:else}
+    <AsyncPanel
+      state={hunkState}
+      loadingLabel="Loading staged/unstaged hunks"
+      loadingTestId="worktree-hunk-loading"
+      loadingSize="md"
+      errorTestId="worktree-diff-error"
+      onRetry={onRetryHunks}
+    >
+      {#snippet content(files)}
+        <div class="worktree-diff-toolbar">
+          <span class="worktree-diff-count">
+            {files.length}
+            {files.length === 1 ? 'file' : 'files'} changed
+          </span>
           <Button
-            variant="ghost"
+            variant="primary"
             size="sm"
-            class={`mode-choice ${mode === 'inline' ? 'selected' : ''}`.trim()}
-            role="radio"
-            ariaChecked={mode === 'inline'}
-            tabindex={mode === 'inline' ? 0 : -1}
-            onclick={() => (requestedMode = 'inline')}
-            dataTestId="worktree-diff-mode-inline"
+            disabled={!hasStagedChanges}
+            title={hasStagedChanges ? undefined : 'Stage at least one hunk first'}
+            onclick={onOpenCommit}
+            dataTestId="worktree-diff-commit-button"
           >
-            Inline
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            class={`mode-choice ${mode === 'split' ? 'selected' : ''}`.trim()}
-            role="radio"
-            ariaChecked={mode === 'split'}
-            tabindex={mode === 'split' ? 0 : -1}
-            disabled={$narrowForSplit}
-            title={$narrowForSplit ? 'Split view needs a wider window' : undefined}
-            onclick={() => (requestedMode = 'split')}
-            dataTestId="worktree-diff-mode-split"
-          >
-            Split
+            Commit staged changes
           </Button>
         </div>
-        <span class="worktree-diff-count">
-          {viewer.files.length}
-          {viewer.files.length === 1 ? 'file' : 'files'}
-        </span>
-      </div>
-
-      <div class="worktree-diff-files" data-testid="worktree-diff-files">
-        {#each viewer.files as file (file.path)}
-          {#if mode === 'inline'}
-            {@const note = renameNote(file)}
-            <div class="worktree-diff-file" data-testid="worktree-diff-file">
-              {#if note}
-                <p class="worktree-diff-rename-note">{note}</p>
-              {/if}
-              <DiffViewer
-                path={file.path}
-                oldText={file.oldText}
-                newText={file.newText}
-                onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
-              />
-            </div>
-          {:else}
-            {@render splitFile(file)}
-          {/if}
-        {/each}
-      </div>
-    {/if}
-  {:else if hunkViewer.status === 'loading'}
-    <div class="worktree-diff-loading" data-testid="worktree-hunk-loading">
-      <WovenLoader size="md" label="Loading staged/unstaged hunks" />
-    </div>
-  {:else if hunkViewer.status === 'error'}
-    <div class="worktree-diff-error">
-      <ErrorNotice message={hunkViewer.message} retryable onRetry={onRetryHunks} />
-    </div>
-  {:else if hunkViewer.files.length === 0}
-    <EmptyState message="No uncommitted changes in this project's worktree." />
-  {:else}
-    <div class="worktree-diff-toolbar">
-      <span class="worktree-diff-count">
-        {hunkViewer.files.length}
-        {hunkViewer.files.length === 1 ? 'file' : 'files'} changed
-      </span>
-      <Button
-        variant="primary"
-        size="sm"
-        disabled={!hasStagedChanges}
-        title={hasStagedChanges ? undefined : 'Stage at least one hunk first'}
-        onclick={onOpenCommit}
-        dataTestId="worktree-diff-commit-button"
-      >
-        Commit staged changes
-      </Button>
-    </div>
-    <div class="worktree-diff-files" data-testid="worktree-hunk-files">
-      {#each hunkViewer.files as file (file.path)}
-        {@render stagingFile(file)}
-      {/each}
-    </div>
+        <div class="worktree-diff-files" data-testid="worktree-hunk-files">
+          {#each files as file (file.path)}
+            {@render stagingFile(file)}
+          {/each}
+        </div>
+      {/snippet}
+    </AsyncPanel>
   {/if}
 </div>
 
@@ -498,14 +518,20 @@
     flex-shrink: 0;
   }
 
-  .worktree-diff-loading {
-    display: flex;
-    align-items: center;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center;gap:xs`; this restates only the two
+     deltas this panel's own full-panel `size="md"` loads always had (a
+     centered spinner, wider vertical breathing room) — scoped by testid,
+     not class, since the element now renders inside `AsyncPanel.svelte`'s
+     own template. Shared by both surfaces (issue #206's diff, #232's
+     staging hunks), same as the error rule below. */
+  :global([data-testid='worktree-diff-loading']),
+  :global([data-testid='worktree-hunk-loading']) {
     justify-content: center;
     padding: var(--space-2xl) 0;
   }
 
-  .worktree-diff-error {
+  :global([data-testid='worktree-diff-error']) {
     padding: var(--space-sm) 0;
   }
 
