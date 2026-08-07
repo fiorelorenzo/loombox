@@ -105,6 +105,16 @@ export class AccountPinStore {
     return { ...(this.readFile().projects[projectPath] ?? {}) };
   }
 
+  /** Every project this node has ever recorded a pin for, keyed by `projectPath`, each value the same shape {@link get} returns for one — issue #229's scan-and-warn reads this (via `account-pin.ts`'s pure `scanPinsForAccount`) to find every project/capability still pinned to an account about to be disconnected, without needing a caller-supplied list of "known projects" (this store's own on-disk file already is that list, scoped to projects that actually have a pin). A shallow clone per project, same defensive copy {@link get} already makes, so a caller can never mutate this store's cached state by holding onto the result. */
+  allProjectPins(): Record<string, AccountPinMap> {
+    const { projects } = this.readFile();
+    const result: Record<string, AccountPinMap> = {};
+    for (const [projectPath, pins] of Object.entries(projects)) {
+      result[projectPath] = { ...pins };
+    }
+    return result;
+  }
+
   /** `projectPath`'s pin for `capability` — `undefined` (unconfigured), `null` (opted out), or the pinned account id, matching {@link AccountPinMap}'s own tri-state exactly. */
   getPin(projectPath: string, capability: string): string | null | undefined {
     return this.get(projectPath)[capability];

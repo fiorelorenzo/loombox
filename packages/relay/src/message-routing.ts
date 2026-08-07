@@ -197,6 +197,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   account_pin_response: { routed: 'node' },
   account_pin_resolve_request: { routed: 'client' },
   account_pin_resolve_response: { routed: 'node' },
+  account_pin_scan_request: { routed: 'client' },
+  account_pin_scan_response: { routed: 'node' },
   tracker_mode_get_request: { routed: 'client' },
   tracker_mode_set_request: { routed: 'client' },
   tracker_mode_response: { routed: 'node' },

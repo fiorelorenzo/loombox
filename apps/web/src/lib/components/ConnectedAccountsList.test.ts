@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ConnectedAccount } from '@loombox/protocol';
+import type { AccountPinScanHitV1, ConnectedAccount } from '@loombox/protocol';
 import ConnectedAccountsList, {
   type DisconnectAccountsClient,
 } from './ConnectedAccountsList.svelte';
@@ -32,15 +32,26 @@ const ACCOUNT: ConnectedAccount = {
   secretRef: `connected-account-token:github:github.com:12345:${FAKE_TOKEN_MARKER}`,
 };
 
+const SOME_PINS: AccountPinScanHitV1[] = [
+  { projectPath: '/home/dev/loombox', capability: 'github' },
+  { projectPath: '/home/dev/side-project', capability: 'github' },
+];
+
 function noopClient(overrides: Partial<DisconnectAccountsClient> = {}): DisconnectAccountsClient {
   return {
+    scanAccountPins: vi.fn(async () => []),
     disconnectAccount: vi.fn(),
     refreshConnectedAccounts: vi.fn(),
     ...overrides,
   };
 }
 
-describe('ConnectedAccountsList (SPEC §7.26, issue #230)', () => {
+async function expandAndClickDisconnect(accountId: string): Promise<void> {
+  await fireEvent.click(screen.getByTestId(`connected-account-row-${accountId}`));
+  await fireEvent.click(screen.getByTestId(`disconnect-start-${accountId}`));
+}
+
+describe('ConnectedAccountsList (SPEC §7.26, issues #230/#229)', () => {
   it('shows a real EmptyState pointing at the connect actions when there are no accounts', () => {
     render(ConnectedAccountsList, {
       props: { accounts: [], client: noopClient(), nodeId: 'node_1' },
@@ -69,26 +80,46 @@ describe('ConnectedAccountsList (SPEC §7.26, issue #230)', () => {
     expect(container.innerHTML).not.toContain(FAKE_TOKEN_MARKER);
   });
 
-  it('expanding a row and starting Disconnect shows a confirm bar naming what it may affect, not an immediate disconnect', async () => {
+  it('clicking Disconnect scans for pins first — disconnectAccount is not called before the scan resolves', async () => {
+    const scanAccountPins = vi.fn(async () => SOME_PINS);
     const disconnectAccount = vi.fn();
     render(ConnectedAccountsList, {
       props: {
         accounts: [ACCOUNT],
-        client: noopClient({ disconnectAccount }),
+        client: noopClient({ scanAccountPins, disconnectAccount }),
         nodeId: 'node_1',
       },
     });
 
-    await fireEvent.click(screen.getByTestId(`connected-account-row-${ACCOUNT.id}`));
-    await fireEvent.click(screen.getByTestId(`disconnect-start-${ACCOUNT.id}`));
+    await expandAndClickDisconnect(ACCOUNT.id);
 
-    expect(screen.getByTestId(`disconnect-confirmbar-${ACCOUNT.id}`).textContent).toContain(
-      'pinned',
-    );
+    expect(scanAccountPins).toHaveBeenCalledWith('node_1', ACCOUNT.id);
     expect(disconnectAccount).not.toHaveBeenCalled();
   });
 
-  it('confirming Disconnect calls disconnectAccount with the acting node and refreshes the list', async () => {
+  it('a scan that finds pins shows a confirm bar naming the real affected projects and capabilities, not a generic warning', async () => {
+    const disconnectAccount = vi.fn();
+    render(ConnectedAccountsList, {
+      props: {
+        accounts: [ACCOUNT],
+        client: noopClient({ scanAccountPins: vi.fn(async () => SOME_PINS), disconnectAccount }),
+        nodeId: 'node_1',
+      },
+    });
+
+    await expandAndClickDisconnect(ACCOUNT.id);
+
+    const bar = await waitFor(() => screen.getByTestId(`disconnect-confirmbar-${ACCOUNT.id}`));
+    expect(bar.textContent).toContain('pinned');
+    const affected = screen.getByTestId(`disconnect-affected-${ACCOUNT.id}`);
+    expect(affected.textContent).toContain('/home/dev/loombox');
+    expect(affected.textContent).toContain('github');
+    expect(affected.textContent).toContain('/home/dev/side-project');
+    expect(disconnectAccount).not.toHaveBeenCalled();
+  });
+
+  it('a scan that finds nothing disconnects immediately, with no confirm bar ever shown (issue #229 acceptance)', async () => {
+    const scanAccountPins = vi.fn(async () => []);
     const disconnectAccount = vi
       .fn()
       .mockResolvedValue({ outcome: 'ok', message: 'Disconnected.' });
@@ -96,18 +127,41 @@ describe('ConnectedAccountsList (SPEC §7.26, issue #230)', () => {
     render(ConnectedAccountsList, {
       props: {
         accounts: [ACCOUNT],
-        client: noopClient({ disconnectAccount, refreshConnectedAccounts }),
+        client: noopClient({ scanAccountPins, disconnectAccount, refreshConnectedAccounts }),
         nodeId: 'node_1',
       },
     });
 
-    await fireEvent.click(screen.getByTestId(`connected-account-row-${ACCOUNT.id}`));
-    await fireEvent.click(screen.getByTestId(`disconnect-start-${ACCOUNT.id}`));
+    await expandAndClickDisconnect(ACCOUNT.id);
+
+    await waitFor(() => expect(disconnectAccount).toHaveBeenCalledWith('node_1', ACCOUNT.id));
+    expect(screen.queryByTestId(`disconnect-confirmbar-${ACCOUNT.id}`)).toBeNull();
+    await waitFor(() => expect(refreshConnectedAccounts).toHaveBeenCalled());
+  });
+
+  it('confirming Disconnect on a bar naming real pins calls disconnectAccount with the acting node and refreshes the list', async () => {
+    const disconnectAccount = vi
+      .fn()
+      .mockResolvedValue({ outcome: 'ok', message: 'Disconnected.' });
+    const refreshConnectedAccounts = vi.fn();
+    render(ConnectedAccountsList, {
+      props: {
+        accounts: [ACCOUNT],
+        client: noopClient({
+          scanAccountPins: vi.fn(async () => SOME_PINS),
+          disconnectAccount,
+          refreshConnectedAccounts,
+        }),
+        nodeId: 'node_1',
+      },
+    });
+
+    await expandAndClickDisconnect(ACCOUNT.id);
+    await waitFor(() => screen.getByTestId(`disconnect-confirm-${ACCOUNT.id}`));
     await fireEvent.click(screen.getByTestId(`disconnect-confirm-${ACCOUNT.id}`));
 
     expect(disconnectAccount).toHaveBeenCalledWith('node_1', ACCOUNT.id);
-    await Promise.resolve();
-    expect(refreshConnectedAccounts).toHaveBeenCalled();
+    await waitFor(() => expect(refreshConnectedAccounts).toHaveBeenCalled());
   });
 
   it('Cancel on the confirm bar backs out without disconnecting', async () => {
@@ -115,13 +169,13 @@ describe('ConnectedAccountsList (SPEC §7.26, issue #230)', () => {
     render(ConnectedAccountsList, {
       props: {
         accounts: [ACCOUNT],
-        client: noopClient({ disconnectAccount }),
+        client: noopClient({ scanAccountPins: vi.fn(async () => SOME_PINS), disconnectAccount }),
         nodeId: 'node_1',
       },
     });
 
-    await fireEvent.click(screen.getByTestId(`connected-account-row-${ACCOUNT.id}`));
-    await fireEvent.click(screen.getByTestId(`disconnect-start-${ACCOUNT.id}`));
+    await expandAndClickDisconnect(ACCOUNT.id);
+    await waitFor(() => screen.getByTestId(`disconnect-cancel-${ACCOUNT.id}`));
     await fireEvent.click(screen.getByTestId(`disconnect-cancel-${ACCOUNT.id}`));
 
     expect(screen.queryByTestId(`disconnect-confirmbar-${ACCOUNT.id}`)).toBeNull();

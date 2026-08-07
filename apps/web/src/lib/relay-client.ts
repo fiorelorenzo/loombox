@@ -71,6 +71,7 @@ import {
   trackerWriteResponsePayloadV1,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
+  type AccountPinScanHitV1,
   type AgentInstructionsGetResponse,
   type AgentInstructionsGetResponsePayloadV1,
   type AgentInstructionsSetRequestPayloadV1,
@@ -1454,6 +1455,11 @@ export class RelayClient {
     string,
     { resolve: (outcome: AccountPinResolveOutcome) => void; reject: (error: Error) => void }
   >();
+  /** requestId -> the pending `scanAccountPins` call it belongs to (SPEC §7.26's pre-disconnect scan-and-warn, issue #229). */
+  private readonly pendingAccountPinScanRequests = new Map<
+    string,
+    { resolve: (affected: AccountPinScanHitV1[]) => void; reject: (error: Error) => void }
+  >();
   /** requestId -> the pending `getTrackerMode`/`setTrackerMode` call it belongs to (SPEC §7.10, issue #631) — both share `tracker_mode_response`'s shape, mirroring `pendingAccountPinRequests`'s own consolidation immediately above (and `packages/relay/src/relay.ts`'s `pendingAccountRequests`, which routes this alongside the account-pin messages on purpose). */
   private readonly pendingTrackerModeRequests = new Map<
     string,
@@ -2744,10 +2750,12 @@ export class RelayClient {
    * `connected_account_disconnect_response` handler), so a caller should
    * follow a successful disconnect with {@link refreshConnectedAccounts}
    * to see it drop out of {@link connectedAccounts}. Does not itself scan
-   * for or warn about project pins referencing this account (issue #229's
-   * full scan-and-warn) — the caller (this issue's confirm dialog) is
-   * responsible for confirming with the operator first, using whatever pin
-   * state it already has loaded.
+   * for, warn about, or clear project pins referencing this account —
+   * {@link scanAccountPins} is that step (issue #229), sent first and
+   * separately, so the caller can confirm with the operator using real
+   * project/capability names before ever calling this. A pin naming this
+   * account is left dangling, not cleared, once it succeeds — see
+   * {@link scanAccountPins}'s own doc comment for why.
    */
   disconnectAccount(
     nodeId: string,
@@ -2779,6 +2787,56 @@ export class RelayClient {
       });
       this.send({
         type: 'connected_account_disconnect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        accountId,
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to scan every project it has ever recorded an account
+   * pin for and report every `{projectPath, capability}` still pinned to
+   * `accountId` (SPEC §7.26's "Before letting a user disconnect an
+   * account still pinned somewhere, scan all project settings and warn";
+   * issue #229) — call this BEFORE {@link disconnectAccount}, never after,
+   * so a caller can decide whether disconnecting even needs a
+   * confirmation step: an empty result means proceed immediately (this
+   * issue's own acceptance), a non-empty one names exactly what would
+   * break. `disconnectAccount` deliberately never clears a pin this finds
+   * — it is left dangling, so a resolve through it after disconnecting
+   * fails with `AccountPinDanglingError` (an honest, real failure)
+   * instead of silently falling back to a different account; a rescan
+   * after disconnecting still finds the same hit, which is how an
+   * operator discovers it needs repinning.
+   */
+  scanAccountPins(
+    nodeId: string,
+    accountId: string,
+    timeoutMs = 15_000,
+  ): Promise<AccountPinScanHitV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot scan account pins, no open connection'));
+    }
+    const requestId = generateId('acctpinscan');
+    return new Promise<AccountPinScanHitV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAccountPinScanRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for account_pin_scan_response'));
+      }, timeoutMs);
+      this.pendingAccountPinScanRequests.set(requestId, {
+        resolve: (affected) => {
+          clearTimeout(timer);
+          resolve(affected);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'account_pin_scan_request',
         protocolVersion: PROTOCOL_V1,
         requestId,
         nodeId,
@@ -6705,6 +6763,13 @@ export class RelayClient {
         if (!pending) return;
         this.pendingAccountPinResolveRequests.delete(message.requestId);
         pending.resolve(message.result);
+        return;
+      }
+      case 'account_pin_scan_response': {
+        const pending = this.pendingAccountPinScanRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingAccountPinScanRequests.delete(message.requestId);
+        pending.resolve(message.affected);
         return;
       }
       case 'tracker_mode_response': {
