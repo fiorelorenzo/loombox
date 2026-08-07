@@ -357,3 +357,43 @@ export {
 } from './linux-sandbox';
 export type { ResolveSessionSandboxOptions, SessionSandboxResolution } from './session-sandbox';
 export { resolveSessionSandbox } from './session-sandbox';
+
+// v2: the supervisor-backend seam (issue #654, epic #653) — one
+// install/start/stop/status/uninstall/survivesReboot vocabulary, no
+// platform words above it. Two implementations wired: `systemd` for an
+// `ssh:` target, `launchd` for a macOS-local node.
+export type {
+  SupervisorBackend,
+  SupervisorBackendAction,
+  SupervisorBackendActionResult,
+  SupervisorBackendInstallConfig,
+  SupervisorBackendInstallResult,
+  SupervisorBackendStatus,
+  SupervisorBackendUninstallOptions,
+  SupervisorRunState,
+} from './supervisor-backend';
+
+export type { LocalFsNodeReleaseSourceOptions, NodeReleaseSource } from './node-release';
+export { createLocalFsNodeReleaseSource, NODE_BUNDLE_ENTRY_FILE } from './node-release';
+
+export type { SystemdSshSupervisorBackendOptions } from './ssh/systemd-supervisor-backend';
+export { createSystemdSshSupervisorBackend } from './ssh/systemd-supervisor-backend';
+
+export type { LaunchdSupervisorBackendOptions } from './launchd/launchd-supervisor-backend';
+export { createLaunchdSupervisorBackend } from './launchd/launchd-supervisor-backend';
+
+// v2: the local-node provisioning orchestrator (issue #654) — the shared
+// half of the seam alongside `SupervisorBackend` itself: composes
+// runtime_bootstrap/target_identity/mint_node_token/amk_handoff (reused
+// unchanged from the ssh: reference) with a resident_node_install
+// dispatched through the caller's own `SupervisorBackend`. #658/#659
+// (Linux/Windows local) reuse this function unchanged, only swapping the
+// backend they pass in.
+export type {
+  LocalProvisionOptions,
+  LocalProvisionProgress,
+  LocalProvisionResult,
+  LocalProvisionStepId,
+  LocalProvisionStepStatus,
+} from './local/provision-local-node';
+export { provisionLocalNode } from './local/provision-local-node';

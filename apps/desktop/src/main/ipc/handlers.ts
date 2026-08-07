@@ -4,6 +4,8 @@ import {
   BRIDGE_CHANNELS,
   type BridgeStatus,
   type ListSshHostCandidatesResult,
+  type ProvisionLocalNodeRequest,
+  type ProvisionLocalNodeResult,
   type ProvisionTargetRequest,
   type ProvisionTargetResult,
   type SpawnLocalNodeRequest,
@@ -19,6 +21,11 @@ import {
   runProvisionTarget,
   type ProvisionTargetDeps,
 } from '../provisioning/provision-target-bridge';
+import {
+  resolveProvisionLocalNodeDeps,
+  runProvisionLocalNode,
+  type ProvisionLocalNodeDeps,
+} from '../provisioning/provision-local-node-bridge';
 import { listSshHostCandidates } from '../ssh-candidates';
 
 /**
@@ -43,6 +50,8 @@ export interface BridgeHandlerDeps {
   app: LoginItemApp & AppVersionSource;
   /** Overrides `resolveProvisionTargetDeps()`'s own (currently always-`undefined`) result — tests inject real deps against a `FakeTransport`; production leaves this unset until #398/#399 land. */
   provisionTargetDeps?: ProvisionTargetDeps;
+  /** Overrides `resolveProvisionLocalNodeDeps()`'s own real resolution; tests inject a fake `SupervisorBackend`/`fetchArchive` instead of touching this machine's real `~/.loombox/releases` or launchd. */
+  provisionLocalNodeDeps?: ProvisionLocalNodeDeps;
   /**
    * Overrides `../ssh-candidates.ts`'s real discovery. Production leaves it
    * unset. Tests MUST set it: the real implementation reads the developer's
@@ -87,6 +96,14 @@ export function registerBridgeHandlers(ipcMain: IpcMainLike, deps: BridgeHandler
           ? { ...provisionDeps.residentNode, skip: true }
           : provisionDeps.residentNode,
       });
+    },
+  );
+
+  ipcMain.handle(
+    BRIDGE_CHANNELS.provisionLocalNode,
+    async (_event, request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult> => {
+      const provisionDeps = deps.provisionLocalNodeDeps ?? (await resolveProvisionLocalNodeDeps());
+      return runProvisionLocalNode(request, provisionDeps);
     },
   );
 

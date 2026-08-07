@@ -115,6 +115,43 @@ describe('registerBridgeHandlers', () => {
     expect(result).toMatchObject({ ok: false, targetId: 't1', failedStep: 'verify_and_persist' });
   });
 
+  it('provisionLocalNode delegates to the injected deps and genuinely runs @loombox/node provisionLocalNode()', async () => {
+    const ipcMain = new FakeIpcMain();
+    const connectError = new Error('spawn ENOENT');
+
+    registerBridgeHandlers(ipcMain, {
+      localNode: new LocalNodeBridge(undefined, {}),
+      app: fakeApp(),
+      provisionLocalNodeDeps: {
+        version: '1.0.0',
+        fetchArchive: async () => {
+          throw new Error('fetchArchive should never be called: the transport never connects');
+        },
+        backend: {
+          install: async () => {
+            throw new Error('backend.install should never be called');
+          },
+          start: async () => ({ ok: false, message: 'unused' }),
+          stop: async () => ({ ok: false, message: 'unused' }),
+          status: async () => ({ installed: false, state: 'stopped', message: 'unused' }),
+          uninstall: async () => ({ ok: false, message: 'unused' }),
+          survivesReboot: async () => false,
+        },
+        transport: new FakeTransport({ connectError }),
+        stateDir: '/tmp/loombox-desktop-handlers-test-unused-local-node',
+      },
+    });
+
+    const result = await ipcMain.invoke(BRIDGE_CHANNELS.provisionLocalNode, {
+      relayUrl: 'wss://relay.loombox.dev',
+      accountId: 'acct-1',
+      actingAuthToken: 'session-token',
+      amkBase64: Buffer.alloc(32).toString('base64'),
+      nodeId: 'mac-local-1',
+    });
+    expect(result).toMatchObject({ ok: false, failedStep: 'runtime_bootstrap' });
+  });
+
   it('spawnLocalNode / stopLocalNode / status delegate to the LocalNodeBridge and status builder', async () => {
     const ipcMain = new FakeIpcMain();
     const app = fakeApp();

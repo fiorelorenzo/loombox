@@ -5,6 +5,8 @@ import {
   type ListSshHostCandidatesResult,
   type LoomboxBridgeApi,
   type BridgeStatus,
+  type ProvisionLocalNodeRequest,
+  type ProvisionLocalNodeResult,
   type ProvisionTargetRequest,
   type ProvisionTargetResult,
   type SpawnLocalNodeRequest,
@@ -29,6 +31,8 @@ const api: LoomboxBridgeApi = {
     ipcRenderer.invoke(BRIDGE_CHANNELS.listSshHostCandidates),
   provisionTarget: (request: ProvisionTargetRequest): Promise<ProvisionTargetResult> =>
     ipcRenderer.invoke(BRIDGE_CHANNELS.provisionTarget, request),
+  provisionLocalNode: (request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult> =>
+    ipcRenderer.invoke(BRIDGE_CHANNELS.provisionLocalNode, request),
   spawnLocalNode: (request?: SpawnLocalNodeRequest): Promise<SpawnLocalNodeResult> =>
     ipcRenderer.invoke(BRIDGE_CHANNELS.spawnLocalNode, request),
   stopLocalNode: (): Promise<StopLocalNodeResult> =>
