@@ -6346,9 +6346,34 @@
     }
   }
 
+  /* Redesign v3 §3.4's own session-row density target (issue #581): a
+     two-line row — title above, target/activity meta below — reads at
+     44px. Before this, that number was never written down anywhere: the
+     row's actual height was whatever `padding` plus the browser's own
+     UA line-height for text inside a `<button>` happened to add up to
+     (Chromium: ~40.6px: form controls don't inherit `html`'s
+     `--text-body-line`/`--text-caption-line`, so `.session-title-row
+     strong`/`.session-meta` silently fall back to `line-height: normal`
+     rather than either type-scale token — confirmed with a headless
+     `getComputedStyle` probe, not assumed). That accidental number was
+     already close to the v3 target and nothing was truncating, so this
+     is a `min-height` floor rather than a padding/line-height rewrite
+     that would have to re-derive the same result from first principles
+     for no visible difference — not `height`, so a future change to
+     that content still grows the row rather than clipping it.
+     `--touch-target-min` (issue #133) already IS 44px: the same number
+     under a different name, for a related reason (this row is the
+     densest list in the app, per the issue's own framing, and is
+     touched directly in the mobile sessions sheet, not only clicked with
+     a mouse) — reusing it instead of a second `--row-height-*` token
+     states the rule once. Unlike `.destination-row` below, which only
+     reaches this floor `@media (pointer: coarse)`, this row sits at it
+     unconditionally: v3 asked for 44px at rest, not merely "44px once a
+     touch screen forces the issue". */
   .session {
     flex: 1;
     min-width: 0;
+    min-height: var(--touch-target-min);
     display: grid;
     grid-template-columns: var(--status-dot-size-sm) minmax(0, 1fr);
     align-items: center;
