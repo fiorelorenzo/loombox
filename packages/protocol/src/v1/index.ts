@@ -722,6 +722,21 @@ export {
 } from './target-lifecycle';
 
 export type {
+  NodeSelfUpdateApplyRequest,
+  NodeSelfUpdateApplyResponse,
+  NodeSelfUpdateStatusAnnounce,
+  NodeSelfUpdateStatusV1,
+  NodeSelfUpdateSummaryV1,
+} from './node-self-update';
+export {
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+} from './node-self-update';
+
+export type {
   GitHubTarget,
   JiraTarget,
   TrackerBackendResolutionErrorV1,
@@ -1367,6 +1382,13 @@ import {
   targetVersionStatusV1,
 } from './target-lifecycle';
 import {
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+} from './node-self-update';
+import {
   githubTarget,
   jiraTarget,
   trackerMode,
@@ -1704,6 +1726,11 @@ export const schemasV1 = {
   targetVersionStatusV1,
   targetUpdateRequest,
   targetUpdateResponse,
+  nodeSelfUpdateStatusV1,
+  nodeSelfUpdateSummaryV1,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
   githubTarget,
   jiraTarget,
   trackerMode,
