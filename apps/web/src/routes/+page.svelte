@@ -1289,23 +1289,14 @@
   );
   /**
    * The selected session's live status (issue #702), read out of the same
-   * `sessionStatuses` map every row badge already uses. Cast to the
-   * protocol's wider `SessionStatusV1`, not the `AcpSessionStatus` the map
-   * is declared with: `sessionStatuses` mirrors `client.statusFor(id)`
-   * (typed `AcpSessionStatus | undefined`, `@loombox/providers-core`'s
-   * five-value union), but the wire value it stores unchecked can also be
-   * `'queued'`/`'starting'`/`'disconnected'` — the exact tolerance
-   * `relay-client.ts`'s `parseSessionWireEvent` doc comment already
-   * documents ("the reducer's case 'session_status' already stores
-   * whichever string arrives unchecked either way"). Comparing against the
-   * literal `'disconnected'` below needs the wider type; `session-
-   * status.ts`'s Records only needed assignability, not a literal
-   * comparison, so they didn't.
+   * `sessionStatuses` map every row badge already uses. `sessionStatuses`
+   * is typed `AcpSessionStatus | undefined`, which is `@loombox/protocol`'s
+   * own `SessionStatusV1` (issue #636: `AcpSessionStatus` is a re-export,
+   * not a second, narrower list) — so comparing against the literal
+   * `'disconnected'` below needs no widening cast; before that fix it did.
    */
   const selectedSessionStatus = $derived(
-    selectedSessionId
-      ? (sessionStatuses.get(selectedSessionId) as SessionStatusV1 | undefined)
-      : undefined,
+    selectedSessionId ? sessionStatuses.get(selectedSessionId) : undefined,
   );
   /**
    * Whether the selected session currently has a live agent that is
@@ -3087,9 +3078,7 @@
   );
   /** How many OTHER sessions across the account are currently `'queued'` (issue #730's "waiting for a concurrency slot"), for the status bar's own right-zone segment (issue #736) — read straight off the same live `sessionStatuses` map every row's own badge already uses, not a separate subscription. */
   const queuedSessionCount = $derived(
-    (Array.from(sessionStatuses.values()) as (SessionStatusV1 | undefined)[]).filter(
-      (value) => value === 'queued',
-    ).length,
+    Array.from(sessionStatuses.values()).filter((value) => value === 'queued').length,
   );
   /**
    * Every currently-`'queued'` session's own wait-position wording (issue
@@ -3104,16 +3093,13 @@
   const sessionQueueReasons = $derived(
     queuePositionReasons(
       sessions,
-      (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
+      (id) => sessionStatuses.get(id),
       (id) => sessionStatusUpdatedAt.get(id),
     ),
   );
   /** Per-target best-effort running/queued snapshot (issue #255's "the wait ... explicable" — the limit means nothing on its own), keyed by `${nodeId}:${targetId}` exactly like `TargetStatusView.svelte`'s own `rowKey`. Passed straight through to `SettingsPage`/`TargetStatusView` alongside the wire-sent cap. */
   const targetConcurrency = $derived(
-    summarizeTargetConcurrency(
-      sessions,
-      (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
-    ),
+    summarizeTargetConcurrency(sessions, (id) => sessionStatuses.get(id)),
   );
   /**
    * Issue #271's own stall diagnosis, client-computed exactly like #255's
@@ -3142,7 +3128,7 @@
     for (const session of sessions) {
       const target = targetsByKey.get(`${session.nodeId}:${session.targetId}`);
       const diagnosis = diagnoseSessionStall({
-        status: sessionStatuses.get(session.id) as SessionStatusV1 | undefined,
+        status: sessionStatuses.get(session.id),
         statusReason: sessionStatusReasons.get(session.id),
         queueReason: sessionQueueReasons.get(session.id),
         targetUnreachable: target ? classifyTargetHealth(target) === 'unreachable' : undefined,
@@ -3385,12 +3371,13 @@
    * summary `StatusDot` (design spec v4 §3.2). Reuses `$lib/session-
    * status.ts`'s own tone/label maps for the actual dot and its
    * `aria-label`, so this ranking never invents wording of its own. Keyed
-   * by the protocol's `SessionStatusV1` (8 values), not the narrower
-   * `AcpSessionStatus` (5) — same reasoning as `session-status.ts`'s own
-   * doc comment: `'queued'`/`'starting'`/`'disconnected'` (issue #702) are
-   * real values `sessionStatuses` can hold, and a project group whose
+   * by `@loombox/protocol`'s `SessionStatusV1` — `@loombox/providers-core`'s
+   * `AcpSessionStatus` is that same nine-value type now (issue #636), but
+   * this map is exhaustive over every status `sessionStatuses` can
+   * genuinely hold, so it stays keyed by the wire vocabulary directly
+   * rather than the provider-facing alias: `'queued'`/`'starting'`/
+   * `'disconnected'` (issue #702) are real values, and a project group whose
    * first-seen session happened to be one of those used to get stuck
-   * there (`SESSION_STATUS_SEVERITY[status]` came back `undefined` for
    * them, so no later, genuinely worse status could ever out-rank it —
    * `undefined > n` is always `false`). `'starting'` ranks beside
    * `'working'` (both actively in flight); `'queued'` ranks below

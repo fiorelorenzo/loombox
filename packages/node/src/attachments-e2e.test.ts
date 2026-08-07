@@ -209,7 +209,11 @@ class TestPhone {
       if (found) return found;
       if (Date.now() > deadline)
         throw new Error('TestPhone: timed out waiting for a matching message');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Real-time poll interval driving a real WebSocket/relay/subprocess
+      // integration test — there is no in-process clock to fake here.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 10);
+      await promise;
     }
   }
 
@@ -224,6 +228,53 @@ class TestPhone {
     ) {
       this.socket.close();
     }
+  }
+}
+
+/**
+ * Waits until `phone` has seen a `session_update` for `sessionId`, at
+ * array index strictly greater than `afterIndex`, whose decrypted payload
+ * is `kind: 'turn_ended'` — a turn's own last envelope (SPEC §7.24; issue
+ * #128), so seeing it is proof every earlier envelope that turn produced
+ * has already been enqueued for delivery (and, for anything that survived
+ * a bounded/overflowing client queue, actually delivered). Returns the
+ * matched message's index so a caller can chain further calls with it as
+ * the next `afterIndex`.
+ *
+ * The `afterIndex` cursor matters on a session with more than one turn:
+ * `phone.messages` never shrinks (a delivered message stays put), so a
+ * naive "does any session_update ever received have kind turn_ended"
+ * scan matches a PREVIOUS turn's already-seen turn_ended and returns
+ * instantly instead of waiting for the turn actually in flight. That
+ * false-instant return — not "at least one session_update arrived" being
+ * too weak a completion signal on its own — is what let a still-draining
+ * primer turn's tail envelopes interleave with the next turn's own and
+ * corrupt this file's ordering assertion under full-suite load (issue
+ * #886).
+ */
+async function waitForTurnEnded(
+  phone: TestPhone,
+  sessionId: string,
+  key: CryptoKey,
+  afterIndex = -1,
+  timeoutMs = 10000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (let index = afterIndex + 1; index < phone.messages.length; index++) {
+      const message = phone.messages[index];
+      if (message.type !== 'session_update' || message.sessionId !== sessionId) continue;
+      const decrypted = await openJson<{ kind?: string }>(sessionId, message.envelope, key);
+      if (decrypted.kind === 'turn_ended') return index;
+    }
+    if (Date.now() > deadline) {
+      throw new Error('waitForTurnEnded: timed out waiting for turn_ended');
+    }
+    // Real-time poll interval driving a real WebSocket/relay/subprocess
+    // integration test — there is no in-process clock to fake here.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
   }
 }
 
@@ -767,7 +818,7 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
       authToken: accountId,
     });
     // A local, non-`undefined`-typed alias: the module-level `let phone`
-    // can't be narrowed inside the `vi.waitFor` closure below.
+    // can't be narrowed inside the closures below.
     const activePhone = phone;
     await activePhone.ready;
     activePhone.send({
@@ -780,7 +831,13 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
     // Saturate this session's bounded client queue with a couple of
     // ordinary (attachment-less) turns first, so a genuine drop-oldest
     // overflow (a resync_marker) has already happened for this exact
-    // session/client before the attachment turn ever runs.
+    // session/client before the attachment turn ever runs. Each iteration
+    // waits for its OWN turn_ended (tracked via `turnEndedCursor`, so the
+    // second iteration can't re-match the first primer's already-seen
+    // turn_ended — see `waitForTurnEnded`'s doc comment) before the next
+    // one fires. A blind fixed sleep here, before that, was the same
+    // wall-clock-as-synchronisation bug as #793's PTY test.
+    let turnEndedCursor = -1;
     for (let i = 0; i < 2; i++) {
       const primerEnvelope = await phoneSeal(session.id, { text: `priming turn ${i}` }, key);
       activePhone.send({
@@ -790,30 +847,30 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
         promptId: `prompt-primer-${i}`,
         envelope: primerEnvelope,
       });
-      // Give each primer turn's burst a moment to land (and overflow the
-      // depth-2 queue) before the next one fires.
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      turnEndedCursor = await waitForTurnEnded(activePhone, session.id, key, turnEndedCursor);
     }
     // Waits for the marker itself to actually arrive, driven off
     // `TestPhone`'s own message-arrival poll (the same idiom every other
-    // wait in this file already uses), instead of guessing a fixed 300ms
-    // was long enough after the loop above — that blind sleep-then-assert
-    // shape was the same "wall-clock deadline as primary synchronisation"
-    // bug as issue #793's PTY test: reported flaking under full-suite
-    // parallel load, since a slower run could still be short of real
-    // backpressure at the 300ms mark. `waitFor` throws (failing the test
-    // for a real reason) if no resync_marker shows up within its own
-    // 5000ms bound.
-    await activePhone.waitFor((m) => m.type === 'resync_marker'); // real backpressure genuinely happened for this session/client
+    // wait in this file already uses), instead of guessing a fixed sleep
+    // was long enough after the loop above. `waitFor` throws (failing the
+    // test for a real reason) if no resync_marker shows up within its
+    // bound — widened past the 5000ms default because under full-suite
+    // load a real relay/node/agent round trip can genuinely need more
+    // than that (issue #886).
+    await activePhone.waitFor((m) => m.type === 'resync_marker', 10_000); // real backpressure genuinely happened for this session/client
 
     // Now the attachment turn. `deliverPrompt` resolves the attachment and
     // awaits `sendFileEvent` *before* ever calling `beginTurn`/`prompt()`
     // (see that method's doc comment), so on the node→relay connection the
     // `blob_ref` frame is always sent strictly before any session_update
-    // this turn produces even exists to be sent.
-    const sessionUpdateCountBeforeAttachmentTurn = activePhone.count(
-      (m) => m.type === 'session_update',
-    );
+    // this turn produces even exists to be sent. The assertions below
+    // prove that on the wire, not just in the implementation's doc
+    // comment: `turnEndedCursor` (already pointing at the last primer's
+    // own turn_ended) anchors "this turn's own updates start after here",
+    // and the index comparison after `blobRefMsg` arrives (below) proves
+    // "strictly before" as an ordering fact about one WebSocket's
+    // message-arrival sequence, not a timing race (issue #886).
+    const sessionUpdateBaselineIndex = turnEndedCursor;
     const attachmentEnvelope = await phoneSeal(
       session.id,
       { text: 'here is a big file', attachments: [{ ref: 'ref-big', mimeType: 'image/png' }] },
@@ -827,9 +884,15 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
       envelope: attachmentEnvelope,
     });
 
+    // Widened past the 5000ms default for the same reason as the
+    // resync_marker wait above (issue #886): fetching and decrypting a
+    // real 200KB blob and round-tripping through a real relay/node under
+    // full-suite CPU contention can take longer than that.
     const blobRefMsg = (await activePhone.waitFor(
       (m) => m.type === 'blob_ref',
+      15_000,
     )) as unknown as BlobRef;
+    const blobRefIndex = activePhone.messages.indexOf(blobRefMsg as unknown as WireMessageV1);
     expect(blobRefMsg.sessionId).toBe(session.id);
     expect(blobRefMsg.ref).toBe('ref-big');
     // Structurally a different animal from a bounded-queue item
@@ -844,12 +907,38 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
     expect(fileEvent).toEqual({ ref: 'ref-big', mimeType: 'image/png' });
 
     // The turn still completes normally afterward — the file event never
-    // blocked/starved the agent's own prompt delivery either.
-    await vi.waitFor(() =>
-      expect(activePhone.count((m) => m.type === 'session_update')).toBeGreaterThan(
-        sessionUpdateCountBeforeAttachmentTurn,
-      ),
+    // blocked/starved the agent's own prompt delivery either. Waiting for
+    // this turn's own turn_ended (cursored past `turnEndedCursor`, so it
+    // can't re-match a primer's) is both the real completion signal and
+    // what pins the exact index range the ordering check below scans.
+    const attachmentTurnEndedIndex = await waitForTurnEnded(
+      activePhone,
+      session.id,
+      key,
+      turnEndedCursor,
     );
+
+    // The causal ordering proof itself: every session_update this turn
+    // produced (strictly after `sessionUpdateBaselineIndex`, up to and
+    // including its own turn_ended) arrived, on the wire, strictly after
+    // blob_ref — never gated or delayed behind the very queue it
+    // deliberately bypasses. Message arrival order on one WebSocket
+    // connection is deterministic (the socket's `message` listener fires
+    // in frame-arrival order), so comparing array indices proves
+    // ordering, not a race against the clock.
+    const thisTurnsSessionUpdateIndices = activePhone.messages
+      .map((m, index) => ({ type: m.type, index }))
+      .filter(
+        ({ type, index }) =>
+          type === 'session_update' &&
+          index > sessionUpdateBaselineIndex &&
+          index <= attachmentTurnEndedIndex,
+      )
+      .map(({ index }) => index);
+    expect(thisTurnsSessionUpdateIndices.length).toBeGreaterThan(0);
+    for (const index of thisTurnsSessionUpdateIndices) {
+      expect(index).toBeGreaterThan(blobRefIndex);
+    }
 
     // The core byte-boundary guarantee: scan every session_update this
     // client ever received (this session's whole transcript stream,
@@ -867,5 +956,15 @@ describe('the file event is decoupled from the session_update bounded queue (SPE
       expect(serialized).not.toContain(attachmentBase64);
       expect(serialized.length).toBeLessThan(attachmentBase64.length);
     }
-  });
+    // This test does real end-to-end work through a real relay, node, and
+    // spawned ACP agent process: two priming turns each waiting for their
+    // own turn_ended, the resync_marker wait, the attachment turn's
+    // blob_ref wait, and its own turn_ended wait — each generously bounded
+    // on its own, and each genuinely slower under full-suite CPU
+    // contention than on an idle box. Vitest's 5000ms default test
+    // timeout is tighter than the sum of those bounds even in a
+    // merely-slow (not stuck) run, which is exactly what made this test
+    // time out under load (issue #886) rather than fail any individual
+    // assertion. 60s leaves real headroom without masking an actual hang.
+  }, 60_000);
 });
