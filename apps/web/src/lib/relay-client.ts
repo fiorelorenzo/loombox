@@ -4056,6 +4056,24 @@ export class RelayClient {
   }
 
   /**
+   * The ISO timestamp {@link statusFor}'s current value transitioned at
+   * (mirrors `event.updatedAt`, `@loombox/node`'s `sendSessionStatus`) —
+   * `undefined` before any status has arrived at all. Issue #255's
+   * queued-session position: with no server-provided queue position, a
+   * client can still rank a `'queued'` session among its target-mates by
+   * whichever one transitioned to `'queued'` earliest, using nothing this
+   * store didn't already carry. A second `derived` over the exact same
+   * store {@link statusFor}/{@link statusReasonFor} already subscribe to
+   * (see this class's own doc comment), not a heavier separate
+   * subscription.
+   */
+  statusUpdatedAtFor(sessionId: string): Readable<string | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.statusUpdatedAt);
+  }
+
+  /**
    * The session-scoped permission FIFO queue store (SPEC §7.24, issues
    * #144/#145/#146/#147) — the single client-side source of truth a
    * session's permission-card UI and (once it exists) the cross-project

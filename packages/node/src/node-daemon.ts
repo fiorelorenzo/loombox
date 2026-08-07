@@ -1479,6 +1479,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   /** Per-target concurrency caps + overflow queue (SPEC §7.16, issue #252) — the one chokepoint every session's launch (`local` or `ssh:`) passes through; see `./session-concurrency-gate.ts`. */
   private readonly concurrencyGate: SessionConcurrencyGate;
+  /** Whether each target id in {@link concurrencyGate}'s limits came from an operator's own setting or the node's own computed default (issue #255's "the limit's source is honest") — built once alongside `concurrencyGate` itself in the constructor, since a target's cap source never changes after that (targets themselves are fixed at construction; see `this.targets`' own doc comment). A target id with no entry here (only possible for one `concurrencyGate.setMax` would add outside any real call site today) reads as `'default'` at the read site below. */
+  private readonly concurrencyLimitSources: ReadonlyMap<string, 'configured' | 'default'>;
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
   private readonly relayLeaseClient: RelayLeaseClient;
@@ -1645,16 +1647,22 @@ export class NodeDaemon extends EventEmitter {
       this.sshTargetConfigs.set(config.id, config);
     }
     const concurrencyLimits: Record<string, number> = {};
+    const concurrencyLimitSources = new Map<string, 'configured' | 'default'>();
     for (const target of this.targets) {
       if (target.kind === 'local') {
         concurrencyLimits[target.id] =
           options.localMaxConcurrentSessions ?? defaultLocalMaxConcurrentSessions();
+        concurrencyLimitSources.set(
+          target.id,
+          options.localMaxConcurrentSessions !== undefined ? 'configured' : 'default',
+        );
       } else {
-        concurrencyLimits[target.id] =
-          this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions ??
-          DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        const sshMax = this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions;
+        concurrencyLimits[target.id] = sshMax ?? DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        concurrencyLimitSources.set(target.id, sshMax !== undefined ? 'configured' : 'default');
       }
     }
+    this.concurrencyLimitSources = concurrencyLimitSources;
     this.concurrencyGate = new SessionConcurrencyGate({
       limits: concurrencyLimits,
       defaultMax: DEFAULT_SSH_MAX_CONCURRENT_SESSIONS,
@@ -3796,6 +3804,12 @@ export class NodeDaemon extends EventEmitter {
       targets: this.targets.map((target) => ({
         ...target,
         providers: this.providerAvailability.get(target.id) ?? [],
+        // Issue #255's load/concurrency-limits UI: `maxFor` always returns a
+        // real number (falls back to `concurrencyGate`'s own `defaultMax`
+        // even for a target id it has no explicit limit for), so this is
+        // never omitted the way `providers` above legitimately can be.
+        maxConcurrentSessions: this.concurrencyGate.maxFor(target.id),
+        maxConcurrentSessionsSource: this.concurrencyLimitSources.get(target.id) ?? 'default',
       })),
     });
   }

@@ -1857,6 +1857,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               providers: target.providers,
               ...(health ? { health } : {}),
               ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
+              // Issue #255: forwarded verbatim from the node's own
+              // `target_announce`, exactly like `providers` above — absent
+              // for a node that predates it.
+              ...(target.maxConcurrentSessions !== undefined
+                ? {
+                    maxConcurrentSessions: target.maxConcurrentSessions,
+                    maxConcurrentSessionsSource: target.maxConcurrentSessionsSource,
+                  }
+                : {}),
             });
           }
         }
