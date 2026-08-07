@@ -2,6 +2,7 @@ import type { BridgeStatus } from '../shared/bridge';
 import type { LocalNodeBridge } from './local-node/bridge';
 import type { LoginItemApp } from './login-item';
 import { getLaunchAtLogin } from './login-item';
+import type { UpdateController } from './updater';
 
 export interface AppVersionSource {
   getVersion(): string;
@@ -11,11 +12,13 @@ export interface AppVersionSource {
 export function buildStatus(
   app: LoginItemApp & AppVersionSource,
   localNode: LocalNodeBridge,
+  updateController: UpdateController,
 ): BridgeStatus {
   const local = localNode.status();
   return {
     appVersion: app.getVersion(),
     launchAtLogin: getLaunchAtLogin(app),
     localNode: { status: local.status, pid: local.pid },
+    update: updateController.getState(),
   };
 }

@@ -46,6 +46,46 @@ const config: Configuration = {
   // functional need, see README.md's "native-module rebuild caveat") is
   // still a manual, not-yet-wired step done separately, not by this flag.
   npmRebuild: false,
+  // Issue #657: the electron-updater feed. GitHub Releases — reuses the
+  // EXACT tag+release `.github/workflows/release.yml` (changesets/action)
+  // already creates for every @loombox/desktop version bump
+  // (`@loombox/desktop@<version>`, CONTRIBUTING.md's own "Releases"
+  // section), rather than inventing a second tag/release lifecycle:
+  // `.github/workflows/release-desktop.yml` attaches Windows/Linux
+  // artifacts to it on `release: published`, `scripts/release-desktop.sh`
+  // attaches signed macOS ones by hand from Lorenzo's own Mac.
+  //
+  // `tagNamePrefix` is NOT optional here. electron-builder's own GitHub
+  // publisher default tag is bare `v${version}` (`vPrefixedTagName`'s
+  // successor, `tagNamePrefix`, itself defaults to `'v'`) — for this
+  // package's own version that would be `v0.2.7`-shaped, landing in the
+  // EXACT SAME namespace as `scripts/deploy-prod.sh`'s hand-cut `vX.Y.Z`
+  // prod-deploy tags (CONTRIBUTING.md's "Deploying to prod": "the two tag
+  // namespaces can't collide (`v*` vs. `@loombox/*@*`)" — a claim that
+  // holds only because nothing publishes to the bare `v*` shape). Setting
+  // it explicitly to `'@loombox/desktop@'` targets `changesets`'s own
+  // format instead, keeping that guarantee true for this new publisher too
+  // rather than quietly reintroducing the exact collision CONTRIBUTING.md
+  // says can't happen.
+  //
+  // `channel` keeps production and preview from ever offering each other's
+  // build: a preview install auto-updating to a production artifact (or
+  // vice versa) is exactly the cross-contamination issue #866 already
+  // guards `userData`/`appId`/the deep-link scheme against, and
+  // electron-updater's own channel mechanism (a separate
+  // `<channel>-<platform>.yml` manifest alongside the default
+  // `latest*.yml`, both attached to the SAME tag/release above — `channel`
+  // never changes the tag itself) is what keeps two builds on the same
+  // GitHub Releases repo apart. Production stays on electron-updater's own
+  // default channel name ('latest'), so an existing production install's
+  // update check is unchanged by this issue.
+  publish: {
+    provider: 'github',
+    owner: 'fiorelorenzo',
+    repo: 'loombox',
+    tagNamePrefix: '@loombox/desktop@',
+    channel: desktopEnv.environment === 'preview' ? 'preview' : 'latest',
+  },
   directories: {
     // Separate output trees per environment: electron-builder's own
     // intermediate staging directories under `output` (e.g. `mac/`,

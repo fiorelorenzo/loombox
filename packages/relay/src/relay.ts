@@ -5,11 +5,13 @@ import {
   HEARTBEAT_CAPABILITY,
   PROTOCOL_V1,
   initialize,
+  isBelowCompatWindow,
   negotiateVersion,
   safeParseWireMessageV1,
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type BuildIdentityV1,
+  type CompatibilityWindowV1,
   type NodeSelfUpdateSummaryV1,
   type ConnectedAccountList,
   type KeymapResult,
@@ -372,6 +374,21 @@ export interface CreateRelayOptions {
    * schema already tolerates that (additive, optional).
    */
   buildIdentity?: BuildIdentityV1;
+  /**
+   * This relay's declared compatibility window (issue #657): the oldest
+   * node build and the oldest client build it will still serve, as DATA
+   * rather than folklore — see `compatibilityWindowV1`'s own doc comment
+   * for why. `handleInitialize` below refuses (the same `update_required`
+   * path #108 already uses for an incompatible protocol version) a peer
+   * whose `buildIdentity.version` falls below the floor for its role
+   * (`isBelowCompatWindow`); at or above the floor, #655's own "Behind"
+   * badge is what surfaces the gap, not a refusal. Omitted (every existing
+   * test, and any relay build that predates #657) enforces nothing — the
+   * exact behavior today. `main.ts` resolves this once at boot from
+   * `compat-window.ts`'s `readRelayCompatWindow`, exactly like
+   * `buildIdentity` above.
+   */
+  compatWindow?: CompatibilityWindowV1;
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
@@ -509,6 +526,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const nodeSelfUpdateApplyRequestTtlMs =
     opts.nodeSelfUpdateApplyRequestTtlMs ?? DEFAULT_NODE_SELF_UPDATE_APPLY_REQUEST_TTL_MS;
   const relayBuildIdentity = opts.buildIdentity;
+  const relayCompatWindow = opts.compatWindow;
 
   /**
    * #410: routes a node's `provision_progress`/`provision_target_result`
@@ -1064,6 +1082,27 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       return undefined;
     }
     const message = result.data;
+
+    // Issue #657: the same `update_required` refusal #108 uses for an
+    // incompatible protocol version, now also for a build strictly below
+    // this relay's declared compatibility floor for `message.role`. Checked
+    // before auth (like the protocol-version check above it): whether a
+    // build is too old to serve is a property of the peer's own
+    // announcement, not of which account it belongs to. At or above the
+    // floor, nothing changes here — #655's own "Behind" badge is what
+    // surfaces a mismatch that's still inside the window.
+    if (isBelowCompatWindow(relayCompatWindow, message.role, message.buildIdentity?.version)) {
+      const floor =
+        message.role === 'node'
+          ? relayCompatWindow?.minNodeVersion
+          : relayCompatWindow?.minClientVersion;
+      sendJson(socket, {
+        type: 'update_required',
+        message: `relay requires a ${message.role} build >= ${floor}, this peer is on ${message.buildIdentity?.version}`,
+      });
+      socket.close(4400, 'update required');
+      return undefined;
+    }
 
     // #121: validate the bearer authToken (Better Auth-backed in production,
     // the dev/hermetic stub otherwise — see `resolveAccountId`'s construction
@@ -3088,7 +3127,23 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         ? probeWithTimeout(() => fanOutBackend.ping!(), healthProbeTimeoutMs)
         : Promise.resolve(true),
     ]);
-    if (postgresHealthy && redisHealthy) return { status: 'ok' };
+    // Issue #657: "is this deployment self-consistent" answerable from one
+    // place, without SSH — this relay's own build identity (issue #655,
+    // same value `initialize_result` echoes) and the compatibility window
+    // it's enforcing (`readRelayCompatWindow`), both omitted unless
+    // `main.ts` was actually configured with them (dev/hermetic default,
+    // and every existing test, none of which pass either option). An
+    // operator compares `build.commit` here against `git rev-parse
+    // origin/main` to answer "is prod behind main", the same check
+    // `scripts/check-relay-freshness.sh` automates — see that script and
+    // `docs/deploy-relay.md`'s "Updating the relay" section.
+    if (postgresHealthy && redisHealthy) {
+      return {
+        status: 'ok',
+        ...(relayBuildIdentity ? { build: relayBuildIdentity } : {}),
+        ...(relayCompatWindow ? { compatWindow: relayCompatWindow } : {}),
+      };
+    }
 
     // Names which dependency failed, nothing more — no error
     // message/stack, connection string, or version, so an unauthenticated

@@ -1,0 +1,135 @@
+name: release-desktop
+
+# Attaches @loombox/desktop's distributable Windows and Linux artifacts to
+# the GitHub Release changesets/action already created for this package's
+# version bump (issue #657; epic #653's "the platform updater for the
+# desktop"). No new tag, no new release object: electron-builder.ts's
+# `publish.tagNamePrefix` targets that exact `@loombox/desktop@<version>`
+# tag on purpose (see its own comment for why a bare `v*` tag would have
+# collided with scripts/deploy-prod.sh's unrelated tag sequence), so this
+# workflow only needs to build and upload, not create anything.
+#
+# macOS is NOT built here: signing/notarization need Lorenzo's own Apple
+# Developer certificate, which only exists on his Mac — see
+# scripts/release-desktop.sh, the manual counterpart this workflow's own
+# artifacts sit alongside once that script runs. Until it does, a release
+# carries Windows/Linux installers and no macOS one; electron-updater on a
+# Mac install simply finds nothing newer until that catches up.
+#
+# `workflow_dispatch` is the manual fallback (re-run for a tag whose
+# automated attempt failed, or to backfill artifacts for a version bump
+# that shipped before this workflow existed) — `gh release upload` has no
+# time-window restriction the way electron-builder's own publisher does
+# (confirmed against its source: a 2-hour cutoff on an already-published
+# release unless EP_GH_IGNORE_TIME is set), so a manual re-run days later
+# is exactly as safe as the automated one.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The @loombox/desktop@<version> release tag to attach artifacts to'
+        required: true
+
+permissions:
+  contents: write # gh release upload
+
+jobs:
+  build-and-upload:
+    name: build + upload (${{ matrix.os }})
+    # Only this package's own releases — changesets/action creates one GitHub
+    # Release per bumped package on every version-bump merge (CONTRIBUTING.md
+    # "Releases"), most of which have nothing to do with the desktop shell.
+    if: |
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, '@loombox/desktop@')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, '@loombox/desktop@'))
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # No signing certificate in CI, same as ci.yml's own desktop matrix
+      # job — these artifacts ship unsigned (README.md's "Building &
+      # distributing" already documents that Windows/Linux builds are
+      # unsigned regardless of where they're built).
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+    steps:
+      # The `release` event's default checkout ref is the DEFAULT BRANCH,
+      # not the release's own tag — an easy-to-miss gotcha that would build
+      # whatever's on main *right now* instead of the exact tagged commit
+      # the release names. Resolved explicitly for both trigger shapes.
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # windows-latest's default shell is PowerShell — see ci.yml's own
+      # desktop job for why every step here pins `shell: bash`.
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (@loombox/desktop)
+        shell: bash
+        run: pnpm --filter @loombox/desktop typecheck
+
+      - name: Test (@loombox/desktop)
+        shell: bash
+        run: pnpm --filter @loombox/desktop test
+
+      # Real installers this time, not ci.yml's `--dir` validation build —
+      # `package:win`/`package:linux` never pass `--publish`, so
+      # electron-builder writes the update manifest (latest.yml /
+      # latest-linux.yml) to disk without attempting any network publish
+      # (confirmed against its source: manifest generation is gated on the
+      # `publish` config existing, not on the CLI's publish policy) — this
+      # workflow does the upload itself, below, with plain `gh`.
+      - name: Package (win)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: pnpm --filter @loombox/desktop run package:win
+
+      - name: Package (linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: pnpm --filter @loombox/desktop run package:linux
+
+      # Everything electron-builder actually produced for distribution:
+      # installers, the differential-update blockmaps electron-updater's
+      # NSIS/AppImage differential-download path uses, and the channel
+      # manifest(s) electron-updater reads to learn a newer version exists.
+      # `--clobber` makes a re-run (workflow_dispatch backfill, or CI retry
+      # after a transient failure) idempotent rather than failing on an
+      # asset that already exists from a prior attempt.
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(apps/desktop/release/production/*.exe apps/desktop/release/production/*.AppImage apps/desktop/release/production/*.deb apps/desktop/release/production/*.yml apps/desktop/release/production/*.blockmap)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no distributable artifacts found under apps/desktop/release/production/ -- packaging must have failed silently"
+            exit 1
+          fi
+          gh release upload "${{ steps.tag.outputs.tag }}" "${files[@]}" --clobber --repo "${{ github.repository }}"
