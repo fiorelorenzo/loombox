@@ -15,6 +15,9 @@ export type {
   InitializeResult,
   WireRole,
 } from './handshake';
+
+export type { CompatibilityWindowV1 } from './compat-window';
+export { compareBuildVersions, compatibilityWindowV1, isBelowCompatWindow } from './compat-window';
 export {
   PROTOCOL_V1,
   SUPPORTED_PROTOCOL_VERSIONS,

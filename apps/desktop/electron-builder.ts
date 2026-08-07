@@ -46,6 +46,27 @@ const config: Configuration = {
   // functional need, see README.md's "native-module rebuild caveat") is
   // still a manual, not-yet-wired step done separately, not by this flag.
   npmRebuild: false,
+  // Issue #657: the electron-updater feed. GitHub Releases, since #567's
+  // CI already validates every platform builds and the release flow
+  // (`.github/workflows/release.yml`) already creates a GitHub Release on
+  // every version bump — this just gives it artifacts to attach (see
+  // `scripts/release-desktop.sh` and `.github/workflows/release-
+  // desktop.yml`). `channel` keeps production and preview from ever
+  // offering each other's build: a preview install auto-updating to a
+  // production artifact (or vice versa) is exactly the cross-
+  // contamination issue #866 already guards `userData`/`appId`/the
+  // deep-link scheme against, and electron-updater's own channel
+  // mechanism (a separate `<channel>-<platform>.yml` manifest alongside
+  // the default `latest*.yml`) is what keeps two builds on the same
+  // GitHub Releases repo apart. Production stays on electron-updater's
+  // own default channel name ('latest'), so an existing production
+  // install's update check is unchanged by this issue.
+  publish: {
+    provider: 'github',
+    owner: 'fiorelorenzo',
+    repo: 'loombox',
+    channel: desktopEnv.environment === 'preview' ? 'preview' : 'latest',
+  },
   directories: {
     // Separate output trees per environment: electron-builder's own
     // intermediate staging directories under `output` (e.g. `mac/`,

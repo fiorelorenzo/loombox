@@ -78,6 +78,16 @@ services:
       # `build-identity.ts` falls back to a real `git rev-parse HEAD`
       # against this checkout instead.
       LOOMBOX_BUILD_COMMIT: ${LOOMBOX_BUILD_COMMIT:-}
+      # Issue #657: the compatibility window this relay enforces — the
+      # oldest node/client build it will still serve. Both unset by
+      # default (this line's ${VAR:-} form), which is every relay running
+      # today: nothing refused beyond an incompatible protocol version,
+      # unchanged. Set one in .env only after deliberately deciding a
+      # floor — see docs/deploy-relay.md's "Updating the relay" section
+      # for when and why, and compat-window.ts's own doc comment for what
+      # "below the floor" means precisely.
+      LOOMBOX_MIN_NODE_VERSION: ${LOOMBOX_MIN_NODE_VERSION:-}
+      LOOMBOX_MIN_CLIENT_VERSION: ${LOOMBOX_MIN_CLIENT_VERSION:-}
     ports:
       # loopback-only publish; host Caddy reverse-proxies to this (prodbox
       # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW).

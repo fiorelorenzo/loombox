@@ -1,3 +1,5 @@
+import { compareBuildVersions } from '@loombox/protocol';
+
 import type { RemoteTransport } from './remote-transport';
 import {
   planSupervisorProvisioning,
@@ -24,29 +26,18 @@ import {
 export type TargetVersionStatus = 'current' | 'behind' | 'ahead' | 'unknown';
 
 /**
- * Compares two dotted-numeric version strings segment by segment (e.g.
- * `"1.2.0"` vs `"1.10.0"` — a plain string compare would wrongly rank
- * `"1.10.0"` before `"1.2.0"`). Returns negative/zero/positive like
- * `Array.prototype.sort`'s comparator. Falls back to a plain string compare
- * for the whole pair the moment either version has a non-numeric segment
- * (e.g. a `-rc1` suffix), rather than silently coercing it to `0` and
- * risking a wrong verdict.
+ * Segment-by-segment dotted-numeric version comparison — re-exported from
+ * `@loombox/protocol`'s `compareBuildVersions` (issue #657) rather than
+ * kept as a second, independently-maintained copy of the same algorithm.
+ * That package is a dependency-direction-safe home for it (both this
+ * package and `@loombox/relay` already depend on `@loombox/protocol`, and
+ * the relay's own compatibility-window floor check, issue #657, needed the
+ * identical arithmetic). Behavior unchanged: see `compareBuildVersions`'s
+ * own doc comment for the exact rules (numeric segments compared as
+ * numbers, a whole-string fallback the moment either side has a
+ * non-numeric segment).
  */
-export function compareVersions(a: string, b: string): number {
-  const as = a.split('.');
-  const bs = b.split('.');
-  const len = Math.max(as.length, bs.length);
-  for (let i = 0; i < len; i += 1) {
-    const av = Number.parseInt(as[i] ?? '0', 10);
-    const bv = Number.parseInt(bs[i] ?? '0', 10);
-    if (Number.isNaN(av) || Number.isNaN(bv)) {
-      if (a === b) return 0;
-      return a < b ? -1 : 1;
-    }
-    if (av !== bv) return av - bv;
-  }
-  return 0;
-}
+export const compareVersions = compareBuildVersions;
 
 /** Issue #88's version-comparison logic: `undefined` (never handshaked, or nothing staged) is `'unknown'`, never guessed at as current or behind. */
 export function compareTargetVersion(
