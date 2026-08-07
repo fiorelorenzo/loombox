@@ -603,6 +603,7 @@ export type {
   TerminalOutput,
   TerminalResize,
   TerminalResizePayloadV1,
+  TerminalResyncMarker,
 } from './terminal';
 export {
   parseTerminalClosedPayloadV1,
@@ -631,6 +632,7 @@ export {
   terminalOutput,
   terminalResize,
   terminalResizePayloadV1,
+  terminalResyncMarker,
 } from './terminal';
 
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';

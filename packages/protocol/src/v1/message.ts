@@ -86,6 +86,7 @@ import {
   terminalOpened,
   terminalOutput,
   terminalResize,
+  terminalResyncMarker,
 } from './terminal';
 import { sessionUpdateEnvelopeV1 } from './transcript';
 import { targetFsListRequest, targetFsListResponse } from './target-fs';
@@ -244,6 +245,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   terminalResize,
   terminalClose,
   terminalClosed,
+  terminalResyncMarker,
   presence,
   resyncRequest,
   resyncMarker,

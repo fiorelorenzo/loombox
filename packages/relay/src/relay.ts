@@ -40,6 +40,7 @@ import { registerDeviceAuthRoutes } from './device-auth-routes';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { registerNodeTokenRoutes } from './node-token-routes';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
+import { BoundedTerminalOutbox, type TerminalOutboxItem } from './terminal-outbox';
 import type { PgLike } from './pg-client';
 import { createWebPushSender, type PushPayload, type PushSender } from './push';
 import {
@@ -110,6 +111,8 @@ interface ClientConnection extends BaseConnection {
   kind: 'client';
   subscriptions: Set<string>;
   outbox: BoundedClientOutbox;
+  /** Bounded per-client `terminal_output` fan-out queue (SPEC §7.16; issue #207) — kept as a separate instance from `outbox` above rather than folded in, mirroring `FanOutPayload`'s own `'terminal'`/`'update'` split (`terminal-outbox.ts`'s doc comment). */
+  terminalOutbox: BoundedTerminalOutbox;
   /** One entry per subscribed sessionId — the {@link FanOutBackend}'s own unsubscribe function for this specific connection, released on disconnect (#97). */
   fanOutUnsubscribes: Map<string, () => void>;
 }
@@ -139,6 +142,8 @@ export interface CreateRelayOptions {
   store?: RelayStore;
   /** Bounded per-client output-queue depth for `session_update` fan-out (SPEC §7.16, #98/#254). */
   maxClientQueueDepth?: number;
+  /** Bounded per-client output-queue depth for `terminal_output` fan-out (SPEC §7.16; issue #207) — the terminal-stream sibling of {@link maxClientQueueDepth}. */
+  maxTerminalQueueDepth?: number;
   /**
    * How the WS handshake's `authToken` resolves to an `accountId` (#121).
    * Defaults to {@link deriveAccountIdStub} — every existing hermetic test in
@@ -369,6 +374,8 @@ export interface CreateRelayOptions {
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
+/** Sane default for {@link CreateRelayOptions.maxTerminalQueueDepth} — same depth as {@link DEFAULT_MAX_CLIENT_QUEUE_DEPTH} (issue #207): generous enough that an ordinary high-volume burst (a build log, `find /`) drains under real backpressure pacing with zero loss, tight enough that a genuinely stalled client's queue never grows past a small, fixed bound. */
+const DEFAULT_MAX_TERMINAL_QUEUE_DEPTH = 64;
 
 /** Sane default for {@link CreateRelayOptions.rateLimit}'s `max` — generous enough for a single self-hoster's own devices reconnecting in a burst, tight enough to blunt a public-endpoint scan/enrollment flood (#101). */
 export const DEFAULT_RATE_LIMIT_MAX = 120;
@@ -476,6 +483,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const registry = createRegistry();
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
+  const maxTerminalQueueDepth = opts.maxTerminalQueueDepth ?? DEFAULT_MAX_TERMINAL_QUEUE_DEPTH;
   const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
   const defaultLeaseTtlMs = opts.leaseTtlMs?.default ?? DEFAULT_LEASE_TTL_MS;
   const maxLeaseTtlMs = opts.leaseTtlMs?.max ?? DEFAULT_MAX_LEASE_TTL_MS;
@@ -854,6 +862,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     fanOutBackend.publish(sessionId, { kind: 'update', item });
   }
 
+  /** The `terminal_output`/`terminal_resync_marker` sibling of {@link fanOutSessionUpdate} above (SPEC §7.16; issue #207) — its own bounded queue per client connection, see `terminal-outbox.ts`'s doc comment for why it isn't just `fanOutSessionUpdate` with a wider item type. */
+  function fanOutTerminalOutput(sessionId: string, item: TerminalOutboxItem): void {
+    fanOutBackend.publish(sessionId, { kind: 'terminal', item });
+  }
+
   /** Direct fan-out (no bounded queue) for lower-volume session-scoped control traffic (permission requests, blob refs, ...). */
   function fanOutDirect(sessionId: string, message: WireMessageV1): void {
     fanOutBackend.publish(sessionId, { kind: 'direct', message });
@@ -873,6 +886,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     client.subscriptions.add(sessionId);
     const unsubscribe = fanOutBackend.subscribe(sessionId, (payload) => {
       if (payload.kind === 'update') client.outbox.enqueue(payload.item);
+      else if (payload.kind === 'terminal') client.terminalOutbox.enqueue(payload.item);
       else sendDirect(client, payload.message);
     });
     client.fanOutUnsubscribes.set(sessionId, unsubscribe);
@@ -1045,6 +1059,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               sendJson(socket, item);
               done();
             }, maxClientQueueDepth),
+            terminalOutbox: new BoundedTerminalOutbox((item, done) => {
+              sendJson(socket, item);
+              done();
+            }, maxTerminalQueueDepth),
             fanOutUnsubscribes: new Map(),
           };
 
@@ -1584,14 +1602,28 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         fanOutDirect(message.sessionId, message);
         return;
       case 'terminal_opened':
-      case 'terminal_output':
       case 'terminal_closed':
-        // The owning node's terminal replies/output/close notification
-        // (SPEC §7.5; issues #172/#173/#174) — fanned out exactly like
-        // fs_list_response above; the relay never opens any of these
-        // envelopes, so it never sees a byte of typed input, shell output,
-        // or even the negotiated cols/rows (SPEC §8's metadata boundary).
+        // The owning node's terminal open reply/close notification (SPEC
+        // §7.5; issues #172/#173/#174) — fanned out exactly like
+        // fs_list_response above; the relay never opens either envelope,
+        // so it never sees the negotiated cols/rows or the close reason
+        // (SPEC §8's metadata boundary). Low-volume (once per open/close),
+        // unlike `terminal_output` below, so the direct path is correct
+        // here: `fanOutDirect` never drops a control message a client is
+        // actively waiting on a reply for.
         fanOutDirect(message.sessionId, message);
+        return;
+      case 'terminal_output':
+        // One chunk of an open terminal's byte stream (SPEC §7.5) — unlike
+        // `terminal_opened`/`terminal_closed` above, this can arrive far
+        // faster than a slow client drains its own socket (a build log
+        // scrolling past, `find /`), so it rides its own bounded,
+        // drop-oldest `BoundedTerminalOutbox` (SPEC §7.16; issue #207)
+        // rather than the unbounded `fanOutDirect` path every other
+        // node-pushed reply uses — see `terminal-outbox.ts`'s doc comment.
+        // The relay never opens this envelope either; only `seq` (plain
+        // routing metadata, never content) is visible to it.
+        fanOutTerminalOutput(message.sessionId, message);
         return;
       case 'test_runner_config_result':
       case 'test_runner_config_detected':
