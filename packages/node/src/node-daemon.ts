@@ -60,6 +60,7 @@ import {
   parseCustomAgentProbeRequestPayloadV1,
   parseSessionPrivateMetaV1,
   parseSessionTemplateListSetPayloadV1,
+  parseSnippetListSetPayloadV1,
   PROTOCOL_V1,
   type AccountPinGetRequest,
   type AccountPinMapV1,
@@ -179,6 +180,7 @@ import {
   type McpServerConfigV1,
   type McpServerFailureCategoryV1,
   type McpServerStatusEntryV1,
+  type NodeSelfUpdateApplyRequest,
   type PermissionPolicyGet,
   type PermissionPolicyResultPayloadV1,
   type PermissionPolicySet,
@@ -228,6 +230,10 @@ import {
   type SessionTemplateListResultPayloadV1,
   type SessionTemplateListSet,
   type SessionTemplateListSetPayloadV1,
+  type SnippetListGet,
+  type SnippetListResultPayloadV1,
+  type SnippetListSet,
+  type SnippetListSetPayloadV1,
   type SpendCapGet,
   type SpendCapResultPayloadV1,
   type SpendCapSet,
@@ -243,7 +249,6 @@ import {
   type TargetResourceSample,
   type TargetUpdateRequest,
   type TargetVersionStatusV1,
-  type NodeSelfUpdateApplyRequest,
   type TerminalClose,
   type TerminalClosedPayloadV1,
   type TerminalClosedReasonV1,
@@ -356,6 +361,7 @@ import {
   type PolicyViolation,
 } from './permission-policy';
 import { PermissionPolicyStore } from './permission-policy-store';
+import { SnippetStore } from './snippet-store';
 import { SessionTemplateStore } from './session-template-store';
 import { SpendCapStore } from './spend-cap-store';
 import { SpendLedgerStore } from './spend-ledger-store';
@@ -782,6 +788,8 @@ export interface NodeDaemonOptions {
   spendCapStore?: SpendCapStore;
   /** Issue #259, epic #29 — this account's named session templates. Defaults to `new SessionTemplateStore({stateDir})`, same convention as `spendCapStore` above. */
   sessionTemplateStore?: SessionTemplateStore;
+  /** Issue #261, epic #29 — this account's named prompt/snippet catalog. Defaults to `new SnippetStore({stateDir})`, same convention as `sessionTemplateStore` above. */
+  snippetStore?: SnippetStore;
   /**
    * This node's persisted spend-over-time ledger (SPEC §7.9; issue
    * #249): every `usage_update` cost increase this daemon has ever
@@ -1638,6 +1646,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly spendCapStore: SpendCapStore;
   /** Issue #259, epic #29 — see `NodeDaemonOptions.sessionTemplateStore`'s doc comment. */
   private readonly sessionTemplateStore: SessionTemplateStore;
+  /** Issue #261, epic #29 — see `NodeDaemonOptions.snippetStore`'s doc comment. */
+  private readonly snippetStore: SnippetStore;
   /** SPEC §7.9; issue #249 — see `NodeDaemonOptions.spendLedgerStore`'s doc comment. */
   private readonly spendLedgerStore: SpendLedgerStore;
   /** SPEC design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752 — see `NodeDaemonOptions.agentProfileStore`'s doc comment. */
@@ -1841,6 +1851,7 @@ export class NodeDaemon extends EventEmitter {
     this.spendCapStore = options.spendCapStore ?? new SpendCapStore({ stateDir: options.stateDir });
     this.sessionTemplateStore =
       options.sessionTemplateStore ?? new SessionTemplateStore({ stateDir: options.stateDir });
+    this.snippetStore = options.snippetStore ?? new SnippetStore({ stateDir: options.stateDir });
     this.spendLedgerStore =
       options.spendLedgerStore ?? new SpendLedgerStore({ stateDir: options.stateDir });
     this.agentProfileStore =
@@ -4369,6 +4380,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'git_graph_request':
         this.handleGitGraphRequest(message);
+        return;
+      case 'snippet_list_get':
+        this.handleSnippetListGet(message);
+        return;
+      case 'snippet_list_set':
+        this.handleSnippetListSet(message);
         return;
       case 'git_commit_draft_request':
         this.handleGitCommitDraftRequest(message);
@@ -11301,6 +11318,63 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'git_diff_explain_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /** A client asked for its account's saved prompt/snippet catalog (SPEC §7.18; issue #261). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs no live agent, mirrors `handleAgentProfileListGet`. */
+  private handleSnippetListGet(message: SnippetListGet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.sendSnippetListResult(message.sessionId, message.requestId, {
+      snippets: this.snippetStore.list(),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send snippet_list_result for session ${message.sessionId}: ${detail}`,
+      );
+    });
+  }
+
+  /** A client asked to save (fully replace) its account's snippet catalog (issue #261) — mirrors `handleAgentProfileListSet`'s "whole value, never a partial patch" contract. Replies with the same `snippet_list_result` `handleSnippetListGet` does. */
+  private handleSnippetListSet(message: SnippetListSet): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptSnippetListSet(message)
+      .then((payload) => {
+        this.snippetStore.saveAll(payload.snippets);
+        return this.sendSnippetListResult(message.sessionId, message.requestId, {
+          snippets: this.snippetStore.list(),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle snippet_list_set for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptSnippetListSet(message: SnippetListSet): Promise<SnippetListSetPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    const raw = await openJson<unknown>(message.sessionId, message.envelope, key);
+    return parseSnippetListSetPayloadV1(raw);
+  }
+
+  private async sendSnippetListResult(
+    sessionId: string,
+    requestId: string,
+    payload: SnippetListResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'snippet_list_result',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,

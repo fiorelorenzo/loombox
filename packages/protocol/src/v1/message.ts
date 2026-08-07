@@ -165,6 +165,7 @@ import {
   sessionTemplateListResult,
   sessionTemplateListSet,
 } from './session-template';
+import { snippetListGet, snippetListResult, snippetListSet } from './snippet';
 import { spendCapGet, spendCapResult, spendCapSet, sessionSpendCapResume } from './spend-cap';
 import { spendReportRequest, spendReportResponse } from './spend-report';
 import {
@@ -331,6 +332,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   sessionTemplateListGet,
   sessionTemplateListSet,
   sessionTemplateListResult,
+  snippetListGet,
+  snippetListSet,
+  snippetListResult,
   spendCapGet,
   spendCapSet,
   spendCapResult,

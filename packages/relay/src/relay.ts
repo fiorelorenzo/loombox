@@ -1757,6 +1757,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // name or rules.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'snippet_list_result':
+        // The owning node's reply to a client's snippet_list_get/_set
+        // (SPEC §7.18; issue #261) — fanned out exactly like
+        // agent_profile_list_result above; the relay never opens the
+        // envelope, so it never sees a saved prompt's name or text.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'run_started':
       case 'run_output':
       case 'run_exit':
@@ -2790,6 +2797,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // _set above. The relay only ever sees sessionId/requestId plus
         // an opaque `EncryptedEnvelope`; no profile name or rule ever
         // reaches the relay in the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'snippet_list_get':
+      case 'snippet_list_set':
+        // A client reading/saving its account's saved prompt/snippet
+        // catalog (SPEC §7.18; issue #261) — routed to the owning node
+        // exactly like agent_profile_list_get/_set above. The relay only
+        // ever sees sessionId/requestId plus an opaque `EncryptedEnvelope`;
+        // no snippet name or text ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'run_start':

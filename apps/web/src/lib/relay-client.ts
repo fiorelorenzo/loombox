@@ -60,6 +60,7 @@ import {
   parseReviewCommentStatusPayloadV1,
   parseRunStatusPayloadV1,
   parseSessionTemplateListResultPayloadV1,
+  parseSnippetListResultPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   parseTrackerConnectivityStatusPayloadV1,
@@ -210,6 +211,9 @@ import {
   type SessionTemplateListSetPayloadV1,
   type SessionTemplateV1,
   type SessionUpdateEnvelopeV1,
+  type SnippetListResult,
+  type SnippetListSetPayloadV1,
+  type SnippetV1,
   type SpendReportResponse,
   type SpendReportRowV1,
   type SshDiscoveryResponse,
@@ -264,6 +268,7 @@ export type {
   TargetHealth,
   TargetListEntry,
   SessionTemplateV1,
+  SnippetV1,
 } from '@loombox/protocol';
 export type {
   PermissionPolicyV1,
@@ -1873,6 +1878,11 @@ export class RelayClient {
   private readonly pendingAgentProfileListRequests = new Map<
     string,
     { resolve: (profiles: AgentProfileV1[]) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link listSnippets}/{@link saveSnippets} call it belongs to (issue #261). Both resolve to the same `snippet_list_result` reply, mirroring `pendingAgentProfileListRequests` above exactly — a snippet catalog has no per-session "active" half to pair with a second map. */
+  private readonly pendingSnippetListRequests = new Map<
+    string,
+    { resolve: (snippets: SnippetV1[]) => void; reject: (error: Error) => void }
   >();
   /** requestId -> the pending {@link getSessionAgentProfile}/{@link setSessionAgentProfile} call it belongs to (issue #752). Both resolve to the same `agent_profile_session_result` reply. */
   private readonly pendingAgentProfileSessionRequests = new Map<
@@ -6662,6 +6672,9 @@ export class RelayClient {
       case 'agent_profile_list_result':
         this.handleAgentProfileListResult(message);
         return;
+      case 'snippet_list_result':
+        this.handleSnippetListResult(message);
+        return;
       case 'agent_profile_session_result':
         this.handleAgentProfileSessionResult(message);
         return;
@@ -9580,5 +9593,87 @@ export class RelayClient {
     }
     listeners.add(listener);
     return () => listeners.delete(listener);
+  }
+
+  /** Reads this account's saved prompt/snippet catalog from the owning node (SPEC §7.18; issue #261) — `[]` for a node with nothing saved yet. No envelope on the request, mirrors {@link listAgentProfiles}. Requires an open connection and a session to route through; rejects on a timeout. */
+  listSnippets(sessionId: string, timeoutMs = 5000): Promise<SnippetV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list snippets, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('snippets');
+    return new Promise<SnippetV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSnippetListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
+      }, timeoutMs);
+      this.pendingSnippetListRequests.set(requestId, {
+        resolve: (snippets) => {
+          clearTimeout(timer);
+          resolve(snippets);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ type: 'snippet_list_get', protocolVersion: PROTOCOL_V1, sessionId, requestId });
+    });
+  }
+
+  /** Saves (fully replaces — never a partial patch) this account's snippet catalog (issue #261). Resolves with the saved result, mirrors {@link saveAgentProfiles}. */
+  saveSnippets(sessionId: string, snippets: SnippetV1[], timeoutMs = 5000): Promise<SnippetV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save snippets, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('snippets');
+    return new Promise<SnippetV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSnippetListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
+      }, timeoutMs);
+      this.pendingSnippetListRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: SnippetListSetPayloadV1 = { snippets };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'snippet_list_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingSnippetListRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link listSnippets}/{@link saveSnippets} calls (issue #261). Mirrors {@link handleAgentProfileListResult}. */
+  private handleSnippetListResult(message: SnippetListResult): void {
+    const pending = this.pendingSnippetListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSnippetListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseSnippetListResultPayloadV1(decrypted).snippets))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
   }
 }
