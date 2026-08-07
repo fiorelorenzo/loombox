@@ -9,6 +9,22 @@ const config = {
     // matching the relay-fronted deployment model used by pitchbox and
     // loombox-landing (Caddy -> node process on prodbox), see SPEC §10.1.
     adapter: adapter(),
+    // Issue #865: SvelteKit's own build-identity marker (`kit.version.name`,
+    // which both `client/_app/version.json` and the client-side
+    // `$app/environment` `version` export report - see
+    // `SettingsPage.svelte`'s "Build" line) defaults to a build timestamp,
+    // useless for answering "which commit is this". `LOOMBOX_BUILD_COMMIT`
+    // is the same env var `packages/relay/src/build-identity.ts` already
+    // reads at relay boot and `scripts/deploy-prod.sh` already exports -
+    // reused here, not a second name, so one env var means the same thing
+    // everywhere in this repo. Set by `.github/workflows/build-web.yml`
+    // (shared by both deploy-prod.yml and deploy-preview.yml) to the exact
+    // commit being built; `|| undefined` falls through to SvelteKit's own
+    // timestamp default whenever it's unset (`vite dev`, `vite build` run
+    // by hand, every test) rather than baking in a literal empty string.
+    version: {
+      name: process.env.LOOMBOX_BUILD_COMMIT || undefined,
+    },
     serviceWorker: {
       // SvelteKit auto-registers `src/service-worker.ts` by default via an
       // injected `navigator.serviceWorker.register(...)` script in the page.
