@@ -18,7 +18,12 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
-  import type { GitHunkV1, KeymapV1, SessionStatusV1 } from '@loombox/protocol';
+  import type {
+    FsWriteResponsePayloadV1,
+    GitHunkV1,
+    KeymapV1,
+    SessionStatusV1,
+  } from '@loombox/protocol';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { transcriptTail } from '$lib/transcript-tail';
   import {
@@ -143,7 +148,7 @@
   import ConfigBar from '$lib/components/ConfigBar.svelte';
   import DiscardHunkDialog from '$lib/components/DiscardHunkDialog.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
-  import FileViewer from '$lib/components/FileViewer.svelte';
+  import FileEditor from '$lib/components/FileEditor.svelte';
   import GateShell from '$lib/components/GateShell.svelte';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons';
@@ -2422,7 +2427,7 @@
     canvasTabs.activeTab.kind === 'graph' ? canvasTabs.activeTab : undefined,
   );
 
-  /** Fetches `path`'s content for its own open tab (issue #737) — a fresh one-shot `RelayClient.readFile` every call, never a cached re-render, since re-reading (a retry, or reopening an already-open tab) is meant to hit the node again. */
+  /** Fetches `path`'s content for its own open tab (issue #737) — a fresh one-shot `RelayClient.readFile` every call, never a cached re-render, since re-reading (a retry, or reopening an already-open tab) is meant to hit the node again. `result.hash` (issue #205's integrated editor) becomes the editor's next save's own `baseHash`. */
   async function loadFileContent(path: string): Promise<void> {
     if (!client || !selectedSessionId) return;
     canvasTabs.setViewer(path, { status: 'loading' });
@@ -2433,6 +2438,7 @@
           status: 'loaded',
           content: result.content,
           truncated: result.truncated,
+          hash: result.hash,
         });
       } else {
         canvasTabs.setViewer(path, { status: 'error', message: result.message });
@@ -2443,6 +2449,35 @@
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Saves `path`'s new content back to the node (SPEC §7.4's "light
+   * quick-edit"; issue #205's integrated editor) — `RelayClient.writeFile`'s
+   * own `ok`/`conflict`/`error` outcome is handed straight to
+   * `FileEditor`, which owns the save UI (including the conflict banner);
+   * this function's only extra job is updating the tab's cached
+   * viewer state on a successful save, so a later close/reopen of the
+   * same tab shows what was just saved without a redundant `readFile`.
+   */
+  async function saveFileContent(
+    path: string,
+    content: string,
+    baseHash: string,
+  ): Promise<FsWriteResponsePayloadV1> {
+    if (!client || !selectedSessionId) {
+      return { outcome: 'error' as const, path, message: 'No active session.' };
+    }
+    const result = await client.writeFile(selectedSessionId, { path, content, baseHash });
+    if (result.outcome === 'ok') {
+      canvasTabs.setViewer(path, {
+        status: 'loaded',
+        content,
+        truncated: false,
+        hash: result.hash,
+      });
+    }
+    return result;
   }
 
   /**
@@ -4889,11 +4924,13 @@
               </div>
             </div>
             {#if activeFileTab}
-              <FileViewer
+              <FileEditor
                 path={activeFileTab.path}
                 name={activeFileTab.name}
                 viewer={canvasTabs.viewerFor(activeFileTab.path) ?? { status: 'loading' }}
                 onRetry={() => loadFileContent(activeFileTab.path)}
+                stale={canvasTabs.isDirty(activeFileTab.path)}
+                onSave={(path, content, baseHash) => saveFileContent(path, content, baseHash)}
               />
             {/if}
             {#if activeDiffTab}

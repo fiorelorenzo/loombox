@@ -24,10 +24,10 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type { GitDiffFileV1, GitGraphCommitV1, GitHunkFileV1 } from '@loombox/protocol';
 import type { TranscriptItem } from '@loombox/providers-core/browser';
 
-/** A file tab's own content-loading state — set to `'loading'` the instant a tab opens, then resolved once the caller's `readFile` round trip (or a re-open) settles. */
+/** A file tab's own content-loading state — set to `'loading'` the instant a tab opens, then resolved once the caller's `readFile` round trip (or a re-open) settles. `hash` (issue #205's integrated editor) is `fsReadResultV1`'s own optimistic-concurrency token: the editor forwards it back as `fs_write_request`'s `baseHash`, so a save can never land against stale content without the node noticing. */
 export type FileTabViewerState =
   | { status: 'loading' }
-  | { status: 'loaded'; content: string; truncated: boolean }
+  | { status: 'loaded'; content: string; truncated: boolean; hash: string }
   | { status: 'error'; message: string };
 
 /** The working-tree diff tab's own content-loading state (issue #206) — the exact same "loading -> resolved" shape as {@link FileTabViewerState}, minus a `truncated` flag (`git_diff_response` never truncates the file LIST, only each file's own text, already handled node-side). */

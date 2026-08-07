@@ -62,7 +62,7 @@ test.describe('canvas tab strip (issue #737)', () => {
 
     // The newly opened tab is the active one, and the transcript's own
     // composer/timeline are hidden behind it (never both at once).
-    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await expect(page.getByTestId('file-editor')).toBeVisible();
     await expect(page.getByTestId('composer-input')).toBeHidden();
 
     // Switching back to the transcript tab restores the composer, and the
@@ -81,7 +81,7 @@ test.describe('canvas tab strip (issue #737)', () => {
     await seedDiffTurn(loombox);
     await page.getByTestId('row-header').click();
     await page.getByRole('button', { name: 'Open src/foo.ts' }).click();
-    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await expect(page.getByTestId('file-editor')).toBeVisible();
 
     await page.setViewportSize({ width: 390, height: 844 });
 

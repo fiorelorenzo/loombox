@@ -6,7 +6,8 @@
  * here rather than a second file-extension table — then hands the whole
  * thing to `$lib/markdown.ts`'s `renderMarkdownToHtml`/
  * `highlightMarkdownToHtml`, the same lazy-loaded highlighter #600 built
- * for a transcript's own fenced code blocks. `FileViewer.svelte` is the
+ * for a transcript's own fenced code blocks. `FileEditor.svelte`'s view
+ * mode (issue #205 renamed and extended #737's read-only `FileViewer`) is the
  * only caller; this module holds the one pure, independently testable
  * piece — building a fence CommonMark can never parse as closing early,
  * given arbitrary file content — while the render-trigger orchestration
