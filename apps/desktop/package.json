@@ -5,13 +5,17 @@
   "main": "src/main/bootstrap.cjs",
   "scripts": {
     "dev": "electron .",
+    "dev:preview": "LOOMBOX_DESKTOP_ENV=preview electron .",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
     "package:mac": "electron-builder --mac",
+    "package:mac:preview": "LOOMBOX_DESKTOP_ENV=preview electron-builder --mac",
     "package:win": "electron-builder --win",
-    "package:linux": "electron-builder --linux"
+    "package:win:preview": "LOOMBOX_DESKTOP_ENV=preview electron-builder --win",
+    "package:linux": "electron-builder --linux",
+    "package:linux:preview": "LOOMBOX_DESKTOP_ENV=preview electron-builder --linux"
   },
   "dependencies": {
     "@loombox/node": "workspace:*",
