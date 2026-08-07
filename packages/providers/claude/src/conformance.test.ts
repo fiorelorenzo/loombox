@@ -54,7 +54,12 @@ describe('claudeProviderModule conformance', () => {
 
     const initResult = await client.initialize();
     expect(initResult.agentCapabilities?.promptCapabilities?.image).toBe(true);
-    expect(initResult.agentCapabilities?.requestPermission).toBe(true);
+    // `requestPermission` was never a real ACP capability field (issue
+    // #821) -- session/request_permission is answered unconditionally, not
+    // gated by anything `initialize` advertises. What IS real and worth
+    // asserting here: the fixture's negotiated resume/list session
+    // capabilities round-trip through initialize() intact.
+    expect(initResult.agentCapabilities?.sessionCapabilities?.resume).toEqual({});
 
     const sessionId = await client.newSession(workDir);
 

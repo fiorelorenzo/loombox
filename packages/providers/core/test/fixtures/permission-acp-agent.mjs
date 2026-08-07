@@ -100,7 +100,10 @@ rl.on('line', (line) => {
       id: msg.id,
       result: {
         protocolVersion: 1,
-        agentCapabilities: { requestPermission: true },
+        // No real ACP v1 capability gates session/request_permission --
+        // AcpClient answers it unconditionally (issue #821). An empty
+        // object here is the honest "nothing else negotiated" shape.
+        agentCapabilities: {},
         agentInfo: { name: 'permission-acp-agent', version: '0.0.0' },
         authMethods: [],
       },

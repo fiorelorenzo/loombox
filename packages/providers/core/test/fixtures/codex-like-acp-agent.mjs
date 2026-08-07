@@ -95,11 +95,18 @@ rl.on('line', (line) => {
         agentCapabilities: {
           loadSession: true,
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
-          mcpServerPicker: false,
-          additionalDirectories: false,
-          sessionDelete: false,
-          requestPermission: true,
-          plans: true,
+          // The real Codex ACP bridge's actual `agentCapabilities` shape,
+          // verified against @agentclientprotocol/codex-acp@1.1.10's own
+          // source (issue #821/#182; docs/research/codex-acp-completeness.md
+          // section 1): sessionCapabilities nested, not flat, and Codex
+          // really does advertise all five.
+          sessionCapabilities: {
+            resume: {},
+            list: {},
+            close: {},
+            delete: {},
+            additionalDirectories: {},
+          },
         },
         agentInfo: { name: 'codex-like-acp-agent', version: '0.0.0' },
         authMethods: [],
