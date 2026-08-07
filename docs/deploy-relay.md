@@ -209,6 +209,86 @@ production, check for that log line before debugging the client:
 docker compose logs relay --since 10m | grep invalid_union_discriminator
 ```
 
+### The production update path: a tag push (issue #657)
+
+Everything above this point is the generic, by-hand self-hosting path (a
+manual `rsync` + `docker compose up -d --build` on whatever box you run).
+Lorenzo's own prodbox is instead wired to a CI pipeline, and the actual
+update path there is **a `v*` tag push, not a script run by hand**
+(AGENTS.md's "Shipping to prod"):
+
+```bash
+git tag -a v0.8.0 -m "..." && git push origin v0.8.0
+```
+
+`.github/workflows/deploy-prod.yml` takes it from there on prodbox's own
+self-hosted runner, handing off to `scripts/deploy-prod.sh` — read that
+script's own header comment for the full mechanism (stage into
+`releases/<sha>`, flip the symlink, health-gate, roll back automatically on
+any failure after the flip). What that script's comments don't spell out,
+because they're about the mechanism rather than the operator experience,
+are the two things this issue asked to have named:
+
+**What happens to live WebSocket connections.** `deploy-prod.sh` computes a
+content hash of `packages/relay`, `packages/protocol`, `packages/crypto`,
+`packages/shared`, and the lockfile, and rebuilds the `relay` image only
+when that hash actually changed — "most releases don't touch it at all...
+a restart would drop every live WebSocket on the box" (the script's own
+comment). Concretely:
+
+- A release that only touches `apps/web` (the overwhelming majority —
+  cockpit UI work) never rebuilds or restarts the `relay` container. Every
+  resident node and every open PWA tab keeps its connection through the
+  whole deploy, unaffected.
+- A release that touches the relay's own dependency graph rebuilds and
+  `--force-recreate`s the `relay` container, which drops **every** live
+  connection on the box at once. This is not silent data loss: both sides
+  already implement automatic reconnect with capped exponential backoff
+  and re-announce their targets/sessions on reconnect (issue #511 —
+  `@loombox/node`'s `RelayConnection` and the web client's own, in
+  `apps/web/src/lib/relay-client.ts`), so it is a brief, self-healing blip
+  (single-digit seconds in practice) rather than a dropped session. An
+  in-flight agent turn is not lost either way — the node holds the actual
+  agent process; the relay only routes.
+
+**No one tells you a deploy is overdue.** The pipeline only runs when
+Lorenzo pushes a tag, so the relay is current only while someone remembers
+to look — this issue's own "operator awareness" gap, and it doesn't need
+new relay code to close: issue #655 already put a build identity on the
+wire, and this issue's `/health` change (see "Monitoring" above) echoes it
+back alongside the compatibility window the relay is enforcing, with no
+auth and no SSH:
+
+```bash
+curl -fsS https://relay.loombox.dev/health
+# {"status":"ok","build":{"version":"0.8.0","commit":"<sha>"},"compatWindow":{...}}
+```
+
+`scripts/check-relay-freshness.sh` automates the comparison against
+`origin/main` this issue's own acceptance asks for ("is this deployment
+self-consistent, from one place, without SSH"):
+
+```bash
+scripts/check-relay-freshness.sh                 # https://relay.loombox.dev by default
+RELAY_URL=https://preview-relay.loombox.dev scripts/check-relay-freshness.sh
+```
+
+Exits `0` when the relay is on `origin/main`, `1` (with the commit count)
+when it is genuinely behind, `2` when the question itself can't be
+answered honestly (relay unreachable, a pre-#655 relay with no build
+identity at all, or a commit this checkout's history doesn't contain) —
+never a guess. Point a cron job or a CI scheduled workflow at it once a
+day; a non-zero exit is exactly the "overdue" signal this section's own
+first paragraph says nothing currently provides. **This script only reads
+data — it never touches prodbox.**
+
+What still requires SSH: which node/client versions are actually
+*connected* right now (rather than what the relay is willing to serve).
+That's issue #655's own answer — a node's build shows on its own row in
+Settings > Nodes (`TargetStatusView`), flagged "Behind" the moment it
+differs from what the relay serves — and it was already answerable without
+SSH before this issue; this section only adds the relay's own half.
+
 ## Backup & disaster recovery
 
 The relay's Postgres database is the only copy of everything it holds - set up

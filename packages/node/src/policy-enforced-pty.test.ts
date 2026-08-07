@@ -30,7 +30,25 @@ beforeEach(async () => {
   workDir = await mkdtemp(path.join(tmpdir(), 'loombox-policy-pty-'));
 });
 
-/** Waits for every still-open session to actually exit before tearing down — a `closeAll()` fire-and-forget leaves the next test's fresh PTY racing the previous one's async kill for a reused fd. */
+/**
+ * Waits for every still-open session to actually exit before tearing down —
+ * a `closeAll()` fire-and-forget leaves the next test's fresh PTY racing the
+ * previous one's async kill for a reused fd. The wait itself is already
+ * event-driven (`session.onExit`, not a poll), but vitest wraps *every*
+ * hook — this one included — in its own default `hookTimeout` (10000ms)
+ * regardless of how the hook synchronises internally, and issue #914 is
+ * that implicit default biting here: a real `bash --noprofile --norc`
+ * process, killed over a real PTY, takes real OS scheduling to actually
+ * exit and get reaped, and under a loaded full-parallel CI run that
+ * routinely clears 10s well before anything is actually stuck — the exact
+ * same "real PTY is slower under load than on this box" bug #793 fixed in
+ * this file's test bodies, one layer up. `20_000` below is the explicit,
+ * documented replacement for that implicit default, matching the bound
+ * this file's own `it()`s and `waitForOutput` already carry for the same
+ * class of wait. The real signal (`onExit`) is not being replaced — it was
+ * already the thing this hook waits on, not a fixed budget — only vitest's
+ * own unstated 10s wrapper around it was.
+ */
 afterEach(async () => {
   if (supervisor) {
     const exits = supervisor.list().map((session) => {
@@ -44,7 +62,7 @@ afterEach(async () => {
   }
   supervisor = undefined;
   await rm(workDir, { recursive: true, force: true });
-});
+}, 20_000);
 
 /**
  * Polls `check()` on a real interval — kept, as the sole survivor of this
@@ -156,7 +174,11 @@ function openPolicyEnforcedTerminal(
 // (`node-daemon.test.ts`'s local-terminal tests, `{ retry: 0, timeout:
 // 20000 }`); unlike those, this file keeps the package's default `retry:
 // 2` (`vitest.config.ts`) rather than `retry: 0`, since that retry budget
-// predates and was sized for exactly this file's real-PTY flakiness.
+// predates and was sized for exactly this file's real-PTY flakiness. The
+// `afterEach` hook above got the same explicit `20_000` treatment for the
+// same underlying reason (issue #914): it was inheriting vitest's separate,
+// tighter `hookTimeout` default (10000ms) despite already synchronising on
+// a real event (`onExit`), not a guess.
 
 describe('PolicyEnforcedPty — real bash over a real PTY', () => {
   it(
