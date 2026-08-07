@@ -315,6 +315,27 @@ export {
 } from './fs';
 
 export type {
+  GitDiffExplainHunkSideV1,
+  GitDiffExplainRequest,
+  GitDiffExplainRequestPayloadV1,
+  GitDiffExplainResponse,
+  GitDiffExplainResponsePayloadV1,
+  GitDiffExplainScopeV1,
+} from './git-diff-explain';
+export {
+  gitDiffExplainHunkSideV1,
+  gitDiffExplainRequest,
+  gitDiffExplainRequestPayloadV1,
+  gitDiffExplainResponse,
+  gitDiffExplainResponsePayloadV1,
+  gitDiffExplainScopeV1,
+  parseGitDiffExplainRequestPayloadV1,
+  parseGitDiffExplainResponsePayloadV1,
+  safeParseGitDiffExplainRequestPayloadV1,
+  safeParseGitDiffExplainResponsePayloadV1,
+} from './git-diff-explain';
+
+export type {
   GitDiffFileStatusV1,
   GitDiffFileV1,
   GitDiffRequest,

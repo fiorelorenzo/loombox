@@ -3335,6 +3335,247 @@ describe('NodeDaemon git-commit (commit workflow with AI-generated commit messag
   });
 });
 
+/**
+ * This suite's own seam for spying on `bridge.agentSession.prompt`
+ * directly — `explainGitDiffForBridge`/`explainDiffViaAgent` call it
+ * straight off the live `SessionBridge`, not through
+ * `NodeDaemon.promptSession`, so the `vi.spyOn(node, 'promptSession')`
+ * technique this file's CI-auto-iterate sibling suites use can't observe
+ * this call. Named distinctly from the generic `internals()` helper those
+ * other suites define (each in its own file) since this main
+ * node-daemon.test.ts file has several concurrent siblings landing in the
+ * same wave — see this suite's own doc comment.
+ */
+interface DiffExplainDaemonInternals {
+  bridges: Map<string, { agentSession: { prompt(text: string): Promise<void> } }>;
+}
+function diffExplainInternals(node: NodeDaemon): DiffExplainDaemonInternals {
+  return node as unknown as DiffExplainDaemonInternals;
+}
+
+describe('NodeDaemon git-diff-explain (AI diff-explain assist, issue #236)', () => {
+  it("explains a single unstaged hunk by prompting the session's own live agent over git_diff_explain_request/git_diff_explain_response — the real prompt sent names the hunk's own scope and carries its real patch text", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-hunk';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-1',
+      deviceId: 'device-node-git-diff-explain-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // echoProvider() always replies "Hello world" regardless of the
+      // prompt text (the fixture's own doc comment) — proof enough that
+      // the EXPLANATION reaches the client verbatim from a real agent
+      // turn. The prompt's own SHAPE is asserted separately below via a
+      // spy on the real `bridge.agentSession.prompt` call, not by
+      // inspecting the fixture's fixed reply.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'hunk.txt'), 'one\ntwo\nthree\n');
+    await git(session.worktreePath, ['add', 'hunk.txt']);
+    await git(session.worktreePath, ['commit', '-q', '-m', 'seed hunk.txt']);
+    await fsWriteFile(pathJoin(session.worktreePath, 'hunk.txt'), 'one\nEDITED\nthree\n');
+
+    const bridge = diffExplainInternals(node).bridges.get(session.id);
+    if (!bridge) throw new Error('expected a live bridge right after createSession');
+    const promptSpy = vi.spyOn(bridge.agentSession, 'prompt');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'hunk', path: 'hunk.txt', side: 'unstaged', hunkIndex: 0 } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-hunk',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-hunk',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['Hello world', 'hunk.txt', 'EDITED', session.worktreePath]);
+    const payload = await phoneOpen<{ outcome: string; explanation?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', explanation: 'Hello world' });
+
+    expect(promptSpy).toHaveBeenCalledTimes(1);
+    const [promptText] = promptSpy.mock.calls[0] as [string];
+    expect(promptText).toContain('one unstaged hunk of "hunk.txt"');
+    expect(promptText).toContain('-two');
+    expect(promptText).toContain('+EDITED');
+    expect(promptText).toMatch(/ONLY the explanation/i);
+  });
+
+  it("explains a whole file's current diff (staged AND unstaged hunks together) — a scope distinct from, and carrying more than, a single hunk", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-file';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-2',
+      deviceId: 'device-node-git-diff-explain-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'file.txt'), 'one\ntwo\n');
+    await git(session.worktreePath, ['add', 'file.txt']);
+    await git(session.worktreePath, ['commit', '-q', '-m', 'seed file.txt']);
+    await fsWriteFile(pathJoin(session.worktreePath, 'file.txt'), 'one\nSTAGED-EDIT\n');
+    await git(session.worktreePath, ['add', 'file.txt']);
+    await fsWriteFile(
+      pathJoin(session.worktreePath, 'file.txt'),
+      'one\nSTAGED-EDIT\nUNSTAGED-APPEND\n',
+    );
+
+    const bridge = diffExplainInternals(node).bridges.get(session.id);
+    if (!bridge) throw new Error('expected a live bridge right after createSession');
+    const promptSpy = vi.spyOn(bridge.agentSession, 'prompt');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'file', path: 'file.txt' } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-file',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-file',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; explanation?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', explanation: 'Hello world' });
+
+    expect(promptSpy).toHaveBeenCalledTimes(1);
+    const [promptText] = promptSpy.mock.calls[0] as [string];
+    expect(promptText).toContain('the whole current diff of "file.txt"');
+    expect(promptText).toContain('+STAGED-EDIT');
+    expect(promptText).toContain('+UNSTAGED-APPEND');
+  });
+
+  it("reports outcome: error honestly instead of hanging when a session has no live agent (disconnected since a restart) — the same contract git_commit_draft_request's draft path has", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-no-agent';
+
+    const beforeRestart = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-3',
+      deviceId: 'device-node-git-diff-explain-3-before',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'orphan.txt'), 'content\n');
+    // "The restart": tears every bridge down, never touching the on-disk
+    // session record — mirrors the #702 reattach describe block's own
+    // `beforeRestart.close()` exactly.
+    beforeRestart.close();
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-3',
+      deviceId: 'device-node-git-diff-explain-3-after',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'file', path: 'orphan.txt' } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-no-agent',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-no-agent',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('error');
+    expect(payload.message).toMatch(/no live agent/i);
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();
