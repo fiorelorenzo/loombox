@@ -13,6 +13,8 @@ import {
   acpPermissionRequestPayloadSchema,
   acpTranscriptUpdateSchema,
   cancelAllPermissionRequests,
+  CONTEXT_NEAR_LIMIT_THRESHOLD,
+  contextFillPercent,
   createPermissionQueueState,
   createTranscriptState,
   enqueuePermissionRequest,
@@ -109,6 +111,9 @@ import {
   type FsReadRequestPayloadV1,
   type FsReadResponse,
   type FsReadResponsePayloadV1,
+  type FsWriteRequestPayloadV1,
+  type FsWriteResponse,
+  type FsWriteResponsePayloadV1,
   type GitBranchCreateRequestPayloadV1,
   type GitBranchCreateResponse,
   type GitBranchCreateResponsePayloadV1,
@@ -225,6 +230,7 @@ import {
   type TerminalOpenResultPayloadV1,
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
+  type TerminalResyncMarker,
   type TestRunnerCommandsV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
@@ -630,18 +636,29 @@ export interface RunClientState {
  *   for a retry (that module's own doc comment). A renderer offers
  *   forwarding a thread into the session as a follow-up prompt
  *   (`prompt_inject`) instead; this client never sends one itself.
+ * - `'context_limit'` — a session whose latest real `usage_update`-derived
+ *   context-fill percentage (`@loombox/providers-core`'s
+ *   `contextFillPercent`, over `TranscriptState.usage` — already
+ *   parent-only, see that type's `attributedToSubagent` doc comment) has
+ *   crossed `CONTEXT_NEAR_LIMIT_THRESHOLD` (issue #250, SPEC §7.9's
+ *   near-limit warning, the cross-project sibling of `StatusBar`'s own
+ *   in-session meter warning). Never guessed: a session whose provider
+ *   never reports `usage_update.size`/`used` (`contextFillPercent`
+ *   returns `undefined`) simply never produces this item — see
+ *   `recomputeAttentionInbox`. See `contextPercent`/`tokensUsed`/
+ *   `contextWindow`.
  *
- * All seven are the "needs the user now" classes this client wires to
+ * All eight are the "needs the user now" classes this client wires to
  * live data. See {@link RelayClient.attentionInbox}'s doc comment for why
  * a session with a queue of several pending requests only ever
  * contributes its head as one item, why a session contributes at most one
  * of `awaiting_input`/`session_outcome` (its live status is one or the
  * other, never both), and why `ci_failure`/`run_failure`/
- * `tracker_failure`/`review_request` are each independent of the others
- * (a session can be idle/finished, have a failing check on its open PR,
- * have a failing local run, have an unresolved review thread on that same
- * PR, AND have a broken project tracker, all at once — five unrelated
- * facts about that session).
+ * `tracker_failure`/`review_request`/`context_limit` are each independent
+ * of the others (a session can be idle/finished, have a failing check on
+ * its open PR, have a failing local run, have an unresolved review thread
+ * on that same PR, have a broken project tracker, AND be near its context
+ * limit, all at once — six unrelated facts about that session).
  */
 export interface AttentionInboxItem {
   readonly kind:
@@ -651,7 +668,8 @@ export interface AttentionInboxItem {
     | 'ci_failure'
     | 'run_failure'
     | 'tracker_failure'
-    | 'review_request';
+    | 'review_request'
+    | 'context_limit';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
@@ -729,6 +747,18 @@ export interface AttentionInboxItem {
    * unresolved.
    */
   readonly reviewThreads?: readonly ReviewCommentThreadV1[];
+  /**
+   * Set only for a `'context_limit'` item: the exact figures
+   * `contextFillPercent` derived this crossing from
+   * (`TranscriptState.usage.tokensUsed`/`.contextWindow`), so a renderer
+   * never has to re-derive or re-round the percentage itself. Never set
+   * when `kind` isn't `'context_limit'`: the node/provider genuinely
+   * reported nothing usable, not a `0` standing in for "unknown" (issue
+   * #250's own framing — never a guessed number).
+   */
+  readonly contextPercent?: number;
+  readonly tokensUsed?: number;
+  readonly contextWindow?: number;
 }
 
 /**
@@ -1532,6 +1562,24 @@ export class RelayClient {
     string,
     Writable<ReviewCommentStateV1 | undefined>
   >();
+  /**
+   * `sessionId` -> the client wall-clock ms (`Date.now()`) this session's
+   * `contextFillPercent` was FIRST observed at or above
+   * `CONTEXT_NEAR_LIMIT_THRESHOLD` (issue #250) — backs the attention
+   * inbox's `'context_limit'` item's `waitingSince`, populated and cleared
+   * by {@link recomputeAttentionInbox} itself (there is no separate wire
+   * push to decrypt into it, unlike {@link ciCheckStatuses} and its
+   * siblings: `usage_update` carries no timestamp of its own — see
+   * `NodeDaemon.recordUsageCost`'s own doc comment for the same honest gap
+   * on the node side — so "the moment THIS client saw the crossing" is the
+   * one real signal available, the same convention issue #744's
+   * `TranscriptToolCallItem.startedAtMs` already established). Deleted the
+   * moment a session's percentage drops back below the threshold, so a
+   * later, separate crossing gets a fresh timestamp rather than reusing a
+   * stale one — this is also what makes the item disappear from the inbox
+   * when a session's context genuinely frees up.
+   */
+  private readonly contextLimitCrossedAt = new Map<string, number>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1572,6 +1620,19 @@ export class RelayClient {
   private readonly pendingFsReadRequests = new Map<
     string,
     { resolve: (payload: FsReadResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link writeFile} call it belongs to
+   * (issue #205's integrated editor) — the exact same shape as {@link
+   * pendingFsReadRequests} above, for the same "caller needs the
+   * outcome directly" reason. `fs_write_response` is fanned out to
+   * every client subscribed to the session exactly like
+   * `fs_read_response`, so a requestId not in this map means the reply
+   * belongs to a sibling device's own request, not this one.
+   */
+  private readonly pendingFsWriteRequests = new Map<
+    string,
+    { resolve: (payload: FsWriteResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
   /**
    * requestId -> the pending {@link requestWorktreeDiff} call it belongs
@@ -1667,6 +1728,13 @@ export class RelayClient {
   >();
   /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalOutput}, fired with each decrypted `terminal_output` chunk as it arrives (never buffered here — see {@link TerminalClientState}'s doc comment for why). */
   private readonly terminalOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
+  /** Per-terminal promise chain backing {@link handleTerminalOutput}'s strict receipt-order decrypt+dispatch (issue #207) — mirrors {@link sessionUpdateQueue}. Concurrent async envelope-open calls have no ordering guarantee of their own; without this a burst could apply chunk N+1 to xterm.js before chunk N finishes decrypting, scrambling output under exactly the load this hardening targets. `terminal_resync_marker` (no decrypt needed) is chained through the SAME queue so a drop notice lands in its true position relative to the surrounding chunks, not ahead of ones still decrypting. */
+  private readonly terminalOutputQueues = new Map<string, Promise<void>>();
+  /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalResync}, fired with each `terminal_resync_marker` as it arrives (SPEC §7.16; issue #207). */
+  private readonly terminalResyncListeners = new Map<
+    string,
+    Set<(marker: TerminalResyncMarker) => void>
+  >();
   /** Backs {@link runsFor} (SPEC §7.15; issue #244) — one reactive `Map<runId, RunClientState>` per session, mirroring {@link terminals}. */
   private readonly runs = new Map<string, Writable<Map<string, RunClientState>>>();
   /** requestId -> the session/run an in-flight `run_start` this client itself sent is about — the run counterpart of {@link pendingTerminalOpens}. */
@@ -4759,6 +4827,63 @@ export class RelayClient {
   }
 
   /**
+   * Saves (fully replaces) one file's content inside a session's project
+   * (SPEC §7.4's "light quick-edit"; issue #205's integrated editor) —
+   * {@link readFile}'s write-side sibling, `@loombox/protocol`'s `fs.ts`
+   * `fs_write_request`/`fs_write_response` pair. `params.baseHash` must
+   * be the exact `hash` a prior {@link readFile}/{@link writeFile} call
+   * last reported for `params.path` — see that schema's own doc comment
+   * for the full optimistic-concurrency contract. A stale `baseHash`
+   * never overwrites: the node replies with `outcome: 'conflict'` (this
+   * method resolves normally, it does not reject) carrying what's
+   * actually on disk right now. Resolves with the node's own
+   * `ok`/`conflict`/`error` outcome either way; only REJECTS for a
+   * genuinely unusable call — no open connection, an unknown session,
+   * or a timeout with no response at all — mirroring {@link readFile}'s
+   * identical contract.
+   */
+  async writeFile(
+    sessionId: string,
+    params: FsWriteRequestPayloadV1,
+    timeoutMs = 10_000,
+  ): Promise<FsWriteResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save a file, no open connection'));
+    }
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    if (!targetId) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
+    const requestId = generateId('fswrite');
+    return new Promise<FsWriteResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingFsWriteRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for fs_write_response'));
+      }, timeoutMs);
+      this.pendingFsWriteRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * The session's current working-tree diff (SPEC §7.4; issue #206's diff
    * viewer) — `@loombox/protocol`'s `git-diff.ts` `git_diff_request`/
    * `git_diff_response` pair, {@link readFile}'s own sibling: a one-shot
@@ -6034,10 +6159,12 @@ export class RelayClient {
    * Wires one session into the attention inbox: subscribes it (so its
    * `permission_request`/`session_update`/`ci_check_status`/`run_status`
    * traffic actually reaches this client, see `ensureSubscribed`) and
-   * recomputes the inbox whenever its transcript (status), permission
-   * queue, CI check state, or run status changes. Idempotent per session
-   * id, and a no-op before {@link attentionInbox} has ever been called
-   * (see `syncInboxTracking`).
+   * recomputes the inbox whenever its transcript (status, OR its
+   * `usage_update`-derived context-fill percentage, issue #250 — both ride
+   * the same `session_update` traffic, so no separate subscription is
+   * needed), permission queue, CI check state, or run status changes.
+   * Idempotent per session id, and a no-op before {@link attentionInbox}
+   * has ever been called (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -6170,6 +6297,42 @@ export class RelayClient {
           trackerProvider: trackerConnectivity.provider,
           trackerConnectivityState: trackerConnectivity.state,
         });
+      }
+
+      // Issue #250: the cross-project sibling of `StatusBar`'s own
+      // in-session near-limit warning. `contextFillPercent` already
+      // returns `undefined` for a subagent-attributed update (`transcript.
+      // usage.tokensUsed`/`.contextWindow` are frozen to the last real
+      // PARENT-turn record, see `UsageRecord.attributedToSubagent`'s own
+      // doc comment) and for a provider that never reports `usage_update.
+      // size`/`used` at all — either way this session contributes no item,
+      // never a guessed one.
+      const contextPercent = contextFillPercent(transcript.usage);
+      if (contextPercent !== undefined && contextPercent >= CONTEXT_NEAR_LIMIT_THRESHOLD) {
+        const crossedAt = this.contextLimitCrossedAt.get(session.id) ?? Date.now();
+        this.contextLimitCrossedAt.set(session.id, crossedAt);
+        items.push({
+          kind: 'context_limit',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: crossedAt,
+          contextPercent,
+          tokensUsed: transcript.usage?.tokensUsed,
+          contextWindow: transcript.usage?.contextWindow,
+        });
+      } else {
+        // Below the threshold (or no usable data at all) — clear any prior
+        // crossing so a LATER, separate crossing gets a fresh `waitingSince`
+        // rather than reusing a stale one. This is also the "does it clear"
+        // half of issue #250's own acceptance: a real later `usage_update`
+        // reporting fewer tokens in context (e.g. after the agent's own
+        // auto-compaction — `reduceUsage`'s doc comment: these two fields
+        // are the LATEST reported figures, never frozen outside a
+        // subagent-attributed update) drops this session's item from the
+        // inbox on the very next recompute.
+        this.contextLimitCrossedAt.delete(session.id);
       }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
@@ -6358,6 +6521,9 @@ export class RelayClient {
       case 'fs_read_response':
         this.handleFsReadResponse(message);
         return;
+      case 'fs_write_response':
+        this.handleFsWriteResponse(message);
+        return;
       case 'git_diff_response':
         this.handleGitDiffResponse(message);
         return;
@@ -6435,6 +6601,9 @@ export class RelayClient {
         return;
       case 'terminal_closed':
         this.handleTerminalClosed(message);
+        return;
+      case 'terminal_resync_marker':
+        this.handleTerminalResyncMarker(message);
         return;
       case 'run_started':
         this.handleRunStarted(message);
@@ -6851,6 +7020,30 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<FsReadResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * writeFile} calls (issue #205's integrated editor) — exactly like
+   * {@link handleFsReadResponse} above, sibling-device awareness
+   * included.
+   */
+  private handleFsWriteResponse(message: FsWriteResponse): void {
+    const pending = this.pendingFsWriteRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingFsWriteRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<FsWriteResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,
@@ -7768,19 +7961,21 @@ export class RelayClient {
       });
   }
 
-  /** One chunk of an open terminal's output (SPEC §7.5) — decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`, never buffered by this class itself (see `TerminalClientState`'s doc comment). */
+  /** One chunk of an open terminal's output (SPEC §7.5) — chained through {@link terminalOutputQueues} (issue #207) so a burst can never apply chunks to xterm.js out of the order they actually arrived in, then decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`. Never buffered by this class itself (see `TerminalClientState`'s doc comment). */
   private handleTerminalOutput(message: TerminalOutputMessage): void {
-    this.envelopeCrypto
-      .open<TerminalDataPayloadV1>(
-        'session',
-        message.sessionId,
-        message.sessionId,
-        message.envelope,
+    const queueKey = `${message.sessionId}:${message.terminalId}`;
+    const previous = this.terminalOutputQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous
+      .then(() =>
+        this.envelopeCrypto.open<TerminalDataPayloadV1>(
+          'session',
+          message.sessionId,
+          message.sessionId,
+          message.envelope,
+        ),
       )
       .then((payload) => {
-        const listeners = this.terminalOutputListeners.get(
-          `${message.sessionId}:${message.terminalId}`,
-        );
+        const listeners = this.terminalOutputListeners.get(queueKey);
         if (!listeners) return;
         const bytes = base64ToBytes(payload.data);
         for (const listener of listeners) listener(bytes);
@@ -7790,6 +7985,19 @@ export class RelayClient {
           `RelayClient: failed to decrypt terminal_output for session ${message.sessionId} terminal ${message.terminalId}: ${errorMessage(error)}`,
         );
       });
+    this.terminalOutputQueues.set(queueKey, next);
+  }
+
+  /** A relay-constructed drop-oldest backpressure notice for this terminal's `terminal_output` stream (SPEC §7.16; issue #207) — no envelope (routing metadata, never content; mirrors `handleResyncMarker`). Chained through the SAME {@link terminalOutputQueues} per-terminal queue `handleTerminalOutput` uses, not dispatched immediately, so it lands in its true position relative to chunks still decrypting rather than jumping ahead of them. Fanned out to every listener {@link onTerminalResync} registered for this exact `sessionId`/`terminalId`. */
+  private handleTerminalResyncMarker(message: TerminalResyncMarker): void {
+    const queueKey = `${message.sessionId}:${message.terminalId}`;
+    const previous = this.terminalOutputQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous.then(() => {
+      const listeners = this.terminalResyncListeners.get(queueKey);
+      if (!listeners) return;
+      for (const listener of listeners) listener(message);
+    });
+    this.terminalOutputQueues.set(queueKey, next);
   }
 
   /** A terminal closed — either this client asked to (SPEC §7.5's `closed_by_client`) or its shell exited on its own. */
@@ -9427,5 +9635,29 @@ export class RelayClient {
           `RelayClient: failed to decrypt session_view_state_result for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
+  }
+
+  /**
+   * Registers `listener` to be called with each `terminal_resync_marker`
+   * this terminal receives (SPEC §7.16; issue #207) — the drop-oldest
+   * backpressure notice `BoundedTerminalOutbox` sends in place of chunks
+   * it dropped under a burst; `InteractiveTerminal.svelte` feeds these
+   * into a visible gap banner, mirroring {@link onTerminalOutput}'s own
+   * shape. Returns an unsubscribe function; call it (e.g. `onDestroy`)
+   * once the caller stops rendering this terminal.
+   */
+  onTerminalResync(
+    sessionId: string,
+    terminalId: string,
+    listener: (marker: TerminalResyncMarker) => void,
+  ): () => void {
+    const key = `${sessionId}:${terminalId}`;
+    let listeners = this.terminalResyncListeners.get(key);
+    if (!listeners) {
+      listeners = new Set();
+      this.terminalResyncListeners.set(key, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
   }
 }

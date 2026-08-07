@@ -228,15 +228,65 @@ export const terminalInput = z.object({
 });
 export type TerminalInput = z.infer<typeof terminalInput>;
 
-/** The owning node streams one chunk of an open terminal's output. Fanned out to a session's subscribed clients exactly like `fs_list_response`. */
+/**
+ * The owning node streams one chunk of an open terminal's output. Fanned
+ * out to a session's subscribed clients exactly like `fs_list_response` —
+ * but, unlike every other `fanOutDirect` message, NOT via the relay's
+ * unbounded direct path: a high-volume PTY (a build log scrolling past, a
+ * `find /` gone wide) can produce output far faster than a phone on
+ * cellular can drain its own socket, and the relay's fan-out queues per
+ * client connection (`ws.send`'s own internal buffer), never per terminal —
+ * an unbounded queue there is exactly the OOM SS7.16 exists to prevent.
+ * `relay.ts`'s `fanOutTerminalOutput` instead routes this through a
+ * `BoundedTerminalOutbox` (`terminal-outbox.ts`), the terminal-stream
+ * sibling of `BoundedClientOutbox`'s existing `session_update` bound
+ * (issue #207): once a slow client's own queue exceeds its depth, the
+ * oldest queued chunks are dropped and replaced by one `terminal_resync_marker`
+ * naming the `seq` range that never arrived, so xterm.js can render a
+ * visible gap instead of silently missing bytes.
+ *
+ * `seq` is assigned by the node, monotonically increasing per `terminalId`
+ * starting at 0 (mirrors `session_update.seq`, scoped to one terminal
+ * rather than one session) — the only way a client (or the bounded queue
+ * dropping entries) can tell which chunks it actually received versus
+ * which a `terminal_resync_marker` covers. There is no terminal analogue
+ * of `resync_request`: a dropped PTY chunk was never persisted anywhere to
+ * replay from (unlike `session_update`'s relay-side ring buffer) — once
+ * gone, the marker is the only record it ever existed.
+ */
 export const terminalOutput = z.object({
   type: z.literal('terminal_output'),
   protocolVersion: z.literal(PROTOCOL_V1),
   sessionId: z.string().min(1),
   terminalId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
   envelope: encryptedEnvelope,
 });
 export type TerminalOutput = z.infer<typeof terminalOutput>;
+
+/**
+ * The bounded/backpressure drop notice for the `terminal_output` stream
+ * (SPEC §7.16; issue #207) — the terminal-scoped sibling of `presence.ts`'s
+ * `resyncMarker`. Sent by the relay itself (`BoundedTerminalOutbox`, never
+ * a node or a client) in place of the `terminal_output` chunks it dropped
+ * under backpressure, so the client knows it missed `terminalId`'s
+ * `seq`s `fromSeq..toSeq` and can render a visible gap in that terminal's
+ * scrollback rather than presenting a silently truncated stream as
+ * complete. No envelope: which `seq` range was dropped is relay-observed
+ * routing metadata, never session content (mirrors `resyncMarker` carrying
+ * no envelope either) — the relay picks the range from its own queue
+ * without ever opening the chunks it drops.
+ */
+export const terminalResyncMarker = z.object({
+  type: z.literal('terminal_resync_marker'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  sessionId: z.string().min(1),
+  terminalId: z.string().min(1),
+  fromSeq: z.number().int().nonnegative(),
+  toSeq: z.number().int().nonnegative(),
+  dropped: z.literal(true),
+});
+export type TerminalResyncMarker = z.infer<typeof terminalResyncMarker>;
 
 /** Either direction of the terminal byte stream, discriminated on `type` — a convenience union for code that handles both the same way (e.g. a wire-level byte-visibility test). */
 export const terminalData = z.discriminatedUnion('type', [terminalInput, terminalOutput]);

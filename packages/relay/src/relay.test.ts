@@ -31,6 +31,8 @@ import {
   type FsListResponse,
   type FsReadRequest,
   type FsReadResponse,
+  type FsWriteRequest,
+  type FsWriteResponse,
   type GitCommitDraftRequest,
   type GitCommitDraftResponse,
   type GitCommitRequest,
@@ -95,6 +97,7 @@ import {
   type TerminalOpened,
   type TerminalOutput,
   type TerminalResize,
+  type TerminalResyncMarker,
   type TestRunnerConfigDetect,
   type TestRunnerConfigDetected,
   type TestRunnerConfigGet,
@@ -180,6 +183,33 @@ function nextMessage(socket: WebSocket, timeoutMs = 2000): Promise<Record<string
       resolve(msg);
     });
   });
+}
+
+/**
+ * Polls `condition` on a short real interval until it's true, or rejects
+ * after `timeoutMs` (issue #207's own "no fixed sleeps standing in for a
+ * condition you can poll" bar) — a genuine real-time wait is unavoidable
+ * here since what's under test IS real timer-paced backpressure
+ * (`BoundedTerminalOutbox`'s own `minFlushIntervalMs` floor) driven by a
+ * real WebSocket, not something `vi.useFakeTimers()` can stand in for
+ * without abandoning the real socket I/O this suite depends on throughout.
+ */
+async function waitUntil(condition: () => boolean, timeoutMs = 5000): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const deadline = Date.now() + timeoutMs;
+  const check = (): void => {
+    if (condition()) {
+      resolve();
+      return;
+    }
+    if (Date.now() > deadline) {
+      reject(new Error('waitUntil: condition never became true within the timeout'));
+      return;
+    }
+    setTimeout(check, 5);
+  };
+  check();
+  return promise;
 }
 
 interface CloseInfo {
@@ -1635,6 +1665,117 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as FsReadResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('fs_write_request/fs_write_response (issue #205) — routed and fanned out exactly like fs_read_request/fs_read_response, always blind, envelope on both request and response', () => {
+    it('routes a client fs_write_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_write', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: FsWriteRequest = {
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_write',
+        targetId: 'target_1',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('src/index.ts'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as FsWriteRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an fs_write_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        targetId: 'target_1',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('some-path'),
+      } satisfies FsWriteRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans fs_write_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_write_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_fs_write_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: FsWriteResponse = {
+        type: 'fs_write_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_write_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('{"outcome":"ok"}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as FsWriteResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
@@ -3621,6 +3762,7 @@ describe('relay v1', () => {
         protocolVersion: PROTOCOL_V1,
         sessionId: 'sess_term_output',
         terminalId: 'term_1',
+        seq: 0,
         envelope: fakeEnvelope('$ cat ~/.ssh/id_ed25519'),
       };
       send(node, response);
@@ -3628,7 +3770,7 @@ describe('relay v1', () => {
       const received = (await nextMessage(client)) as unknown as TerminalOutput;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
-        ['envelope', 'protocolVersion', 'sessionId', 'terminalId', 'type'].sort(),
+        ['envelope', 'protocolVersion', 'seq', 'sessionId', 'terminalId', 'type'].sort(),
       );
     });
 
@@ -3782,6 +3924,7 @@ describe('relay v1', () => {
             protocolVersion: PROTOCOL_V1,
             sessionId: 'sess_term_blind',
             terminalId: 'term_blind',
+            seq: 0,
             envelope: fakeEnvelope('super-secret-output'),
           } satisfies TerminalOutput,
         ],
@@ -3801,10 +3944,301 @@ describe('relay v1', () => {
             'terminalId',
             'targetId',
             'requestId',
+            'seq',
             'envelope',
           ]).toContain(key);
         }
       }
+    });
+  });
+
+  describe('terminal_output bounded fan-out backpressure (SPEC §7.16; issue #207)', () => {
+    it('drops the oldest queued terminal_output chunks under a burst and signals a terminal_resync_marker naming that one terminal, keeping seq continuity for the tail', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        maxTerminalQueueDepth: 2,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_term_burst', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_term_burst',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const received: Array<Record<string, unknown>> = [];
+      client.addEventListener('message', (event) => {
+        received.push(JSON.parse(event.data.toString()) as Record<string, unknown>);
+      });
+
+      // Same "synchronous burst outruns a tiny bound + the pump's own
+      // minFlushIntervalMs floor" determinism the session_update drop-oldest
+      // test above relies on — no socket pausing needed to force a real
+      // overflow (`outbox.ts`'s own doc comment on why the floor exists).
+      const burstSize = 50;
+      for (let i = 1; i <= burstSize; i++) {
+        send(node, {
+          type: 'terminal_output',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_term_burst',
+          terminalId: 'term_burst',
+          seq: i,
+          envelope: fakeEnvelope(`chunk-${i}`),
+        } satisfies TerminalOutput);
+      }
+
+      // Poll for the real condition instead of a fixed sleep (issue #207):
+      // drop-oldest guarantees the very last chunk the node sent (nothing
+      // enqueued after it to evict it) eventually arrives once the queue
+      // finishes draining.
+      await waitUntil(() =>
+        received.some(
+          (m) => m.type === 'terminal_output' && (m as unknown as TerminalOutput).seq === burstSize,
+        ),
+      );
+
+      const chunks = received.filter(
+        (m) => m.type === 'terminal_output',
+      ) as unknown as TerminalOutput[];
+      const markers = received.filter(
+        (m) => m.type === 'terminal_resync_marker',
+      ) as unknown as TerminalResyncMarker[];
+
+      // The bound genuinely bit — real numbers, not a theoretical claim.
+      expect(chunks.length).toBeLessThan(burstSize);
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(markers.length).toBeGreaterThan(0);
+      for (const marker of markers) {
+        expect(marker.dropped).toBe(true);
+        expect(marker.sessionId).toBe('sess_term_burst');
+        expect(marker.terminalId).toBe('term_burst');
+        expect(marker.fromSeq).toBeLessThanOrEqual(marker.toSeq);
+      }
+
+      // seq continuity for whatever chunks did survive: strictly
+      // increasing, no duplicates/regressions — and drop-oldest means the
+      // very last chunk the node sent is still the very last one delivered.
+      for (let i = 1; i < chunks.length; i++) {
+        expect(chunks[i]?.seq).toBeGreaterThan(chunks[i - 1]?.seq ?? 0);
+      }
+      expect(chunks.at(-1)?.seq).toBe(burstSize);
+    });
+
+    it('two terminals overflowing on the same connection never mix seq ranges into the same marker (SPEC §7.16 grouping, issue #207)', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        maxTerminalQueueDepth: 2,
+      });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_term_multi', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_term_multi',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client);
+
+      const received: Array<Record<string, unknown>> = [];
+      client.addEventListener('message', (event) => {
+        received.push(JSON.parse(event.data.toString()) as Record<string, unknown>);
+      });
+
+      // Interleaved so the shared per-connection queue genuinely sees both
+      // terminals mixed together, not two separate back-to-back bursts.
+      const burstSize = 30;
+      for (let i = 1; i <= burstSize; i++) {
+        send(node, {
+          type: 'terminal_output',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_term_multi',
+          terminalId: 'term_a',
+          seq: i,
+          envelope: fakeEnvelope(`a-${i}`),
+        } satisfies TerminalOutput);
+        send(node, {
+          type: 'terminal_output',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_term_multi',
+          terminalId: 'term_b',
+          seq: i,
+          envelope: fakeEnvelope(`b-${i}`),
+        } satisfies TerminalOutput);
+      }
+
+      // Poll until BOTH terminals' own last chunk has arrived — same
+      // drop-oldest tail guarantee as the single-terminal test above,
+      // applied independently to each stream.
+      await waitUntil(() => {
+        const chunks = received.filter(
+          (m) => m.type === 'terminal_output',
+        ) as unknown as TerminalOutput[];
+        return (
+          chunks.some((c) => c.terminalId === 'term_a' && c.seq === burstSize) &&
+          chunks.some((c) => c.terminalId === 'term_b' && c.seq === burstSize)
+        );
+      });
+
+      const markers = received.filter(
+        (m) => m.type === 'terminal_resync_marker',
+      ) as unknown as TerminalResyncMarker[];
+      expect(markers.length).toBeGreaterThan(0);
+      // Every marker names exactly one of the two terminals — never both,
+      // never a range that could only make sense if the two streams'
+      // dropped chunks had been folded together.
+      for (const marker of markers) {
+        expect(['term_a', 'term_b']).toContain(marker.terminalId);
+      }
+      const chunks = received.filter(
+        (m) => m.type === 'terminal_output',
+      ) as unknown as TerminalOutput[];
+      for (const terminalId of ['term_a', 'term_b']) {
+        const own = chunks.filter((c) => c.terminalId === terminalId);
+        for (let i = 1; i < own.length; i++) {
+          expect(own[i]?.seq).toBeGreaterThan(own[i - 1]?.seq ?? 0);
+        }
+      }
+    });
+
+    it('a burst overflowing this terminal queue never delays direct fan-out traffic on the same connection (e.g. a second terminal_opened), with real numbers', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_term_responsive', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_term_responsive',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client);
+
+      const received: Array<{ msg: Record<string, unknown>; at: number }> = [];
+      client.addEventListener('message', (event) => {
+        received.push({
+          msg: JSON.parse(event.data.toString()) as Record<string, unknown>,
+          at: Date.now(),
+        });
+      });
+
+      // Large enough, at the default depth (64), that most of it queues for
+      // real and takes real wall-clock time to drain (minFlushIntervalMs's
+      // own floor paces every send) — unlike the tiny-depth tests above,
+      // this is deliberately NOT an instant overflow-and-forget.
+      const burstStart = Date.now();
+      const burstSize = 400;
+      for (let i = 1; i <= burstSize; i++) {
+        send(node, {
+          type: 'terminal_output',
+          protocolVersion: PROTOCOL_V1,
+          sessionId: 'sess_term_responsive',
+          terminalId: 'term_busy',
+          seq: i,
+          envelope: fakeEnvelope(`chunk-${i}`),
+        } satisfies TerminalOutput);
+      }
+      // A second terminal's own control reply — routed via the unbounded
+      // `fanOutDirect` path, never this connection's `BoundedTerminalOutbox`
+      // — sent immediately after the burst, on the very same connection.
+      send(node, {
+        type: 'terminal_opened',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_term_responsive',
+        terminalId: 'term_fast',
+        requestId: 'req-fast',
+        envelope: fakeEnvelope('ok'),
+      } satisfies TerminalOpened);
+
+      // Poll until both the direct reply AND the bounded queue's full
+      // drain (its very last real chunk, guaranteed to survive — nothing
+      // enqueued after it) have arrived, instead of guessing a duration.
+      await waitUntil(
+        () =>
+          received.some((r) => r.msg.type === 'terminal_opened') &&
+          received.some(
+            (r) =>
+              r.msg.type === 'terminal_output' &&
+              (r.msg as unknown as TerminalOutput).seq === burstSize,
+          ),
+      );
+
+      const directReply = received.find((r) => r.msg.type === 'terminal_opened');
+      expect(directReply).toBeDefined();
+      const directLatencyMs = (directReply?.at ?? 0) - burstStart;
+
+      const terminalFrames = received.filter(
+        (r) => r.msg.type === 'terminal_output' || r.msg.type === 'terminal_resync_marker',
+      );
+      const lastQueuedFrame = terminalFrames.at(-1);
+      const fullDrainMs = (lastQueuedFrame?.at ?? 0) - burstStart;
+
+      // The bounded queue really did have real backlog to drain (proof the
+      // comparison below means something, not an accident of an
+      // already-empty queue).
+      expect(terminalFrames.length).toBeGreaterThan(50);
+      // The direct control reply for an unrelated terminal was never paced
+      // behind the bounded queue's own floor — it lands well before that
+      // queue finishes draining, with real numbers proving it, not just an
+      // ordering assumption.
+      expect(directLatencyMs).toBeLessThan(fullDrainMs);
+      expect(directLatencyMs).toBeLessThan(50);
     });
   });
 

@@ -190,6 +190,34 @@ export interface UsageRecord {
   attributedToSubagent: boolean;
 }
 
+/**
+ * The single source of truth for "how full is this session's context
+ * window right now" (SPEC.md §7.9) — shared by every consumer that needs
+ * it: `StatusBar`'s own live meter, the session-view near-limit warning,
+ * and the attention-inbox `'context_limit'` item (issue #250), rather
+ * than three divergent copies of the same division.
+ *
+ * `undefined` whenever either half is missing: `usage` itself (no
+ * `usage_update` has ever arrived for this session), `tokensUsed` (`used`
+ * was absent on the wire), or `contextWindow` (`size` was absent, or
+ * reported as `0` — treated the same as "no denominator" rather than
+ * dividing by zero). ACP's real `UsageUpdate` marks both `size` and
+ * `used` as schema-REQUIRED `uint64` fields
+ * (agentclientprotocol.com/protocol/v1/schema's `UsageUpdate`: "Context
+ * window and cost update for a session"), but nothing in ACP requires an
+ * agent to send a `usage_update` notification AT ALL — this package's own
+ * wire mapping already treats every field as optional defensively
+ * (`client.ts`'s `RawSessionUpdate.used?`/`size?`, `acp-wire-schema.ts`'s
+ * `.optional()`), so a provider that simply never reports context usage
+ * produces `undefined` here forever, never a guessed number (issue #250's
+ * own framing: "a wrong warning here is worse than none").
+ */
+export function contextFillPercent(usage: UsageRecord | undefined): number | undefined {
+  return usage && usage.tokensUsed !== undefined && usage.contextWindow
+    ? Math.min(100, Math.round((usage.tokensUsed / usage.contextWindow) * 100))
+    : undefined;
+}
+
 export interface TranscriptState {
   /** Ordered by first appearance; a coalesced chunk update never changes an item's position. */
   items: TranscriptItem[];

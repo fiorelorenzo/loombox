@@ -31,7 +31,6 @@ import {
   type RingEntryRetentionMeta,
   type SessionRecord,
   type SessionStore,
-  type SessionViewStateEntry,
   type SessionViewStateStore,
   type VapidKeyPair,
   type VapidKeyStore,

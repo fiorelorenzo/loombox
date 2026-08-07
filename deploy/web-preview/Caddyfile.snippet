@@ -1,0 +1,17 @@
+# loombox web PWA PREVIEW - Caddy site block for prodbox's
+# /etc/caddy/Caddyfile. Same shape as the `app.loombox.dev` block
+# `deploy/web/README.md` documents inline for production (that file has no
+# separate Caddyfile.snippet of its own) - a different host and a
+# different loopback port so the two can never cross. Broken out into its
+# own file here rather than inline in a README, matching the
+# `deploy/relay-preview/Caddyfile.snippet` convention #864 already
+# established for this preview environment.
+#
+# Requires: DNS A record preview.loombox.dev -> prodbox public IP
+# (152.53.44.195, same as its siblings), DNS-only / grey cloud so Caddy,
+# not Cloudflare, manages the cert, and 80/443 already open (UFW) - both
+# already true on this box for the other *.loombox.dev records.
+
+preview.loombox.dev {
+	reverse_proxy 127.0.0.1:5188
+}

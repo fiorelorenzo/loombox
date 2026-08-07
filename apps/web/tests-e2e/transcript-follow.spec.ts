@@ -25,7 +25,7 @@ import { expect, sendSessionUpdate, test } from './fixtures';
  * `scrollHeight` growth instead.
  */
 
-/** Enough tool calls to overflow the transcript viewport at 900px tall. */
+/** Enough tool calls to overflow the transcript viewport at 900px tall. Chunked into `TOOL_CALL_BURST_THRESHOLD`-sized runs separated by a one-line message: an unbroken 30-call run would collapse into ONE tier-3 burst card (issue #202), starting collapsed by default — exactly what this fixture must NOT do, since the tests below assert individual tool-call titles (`file-29.ts`) render directly, not behind a click. */
 async function seedOverflowingTranscript(
   node: Parameters<typeof sendSessionUpdate>[0],
   session: Parameters<typeof sendSessionUpdate>[1],
@@ -40,6 +40,14 @@ async function seedOverflowingTranscript(
       toolKind: 'read',
       status: 'completed',
     });
+    if (i % 5 === 4) {
+      await sendSessionUpdate(node, session, {
+        kind: 'agent_message_chunk',
+        turnId: 'turn-1',
+        messageId: `msg-batch-${i}`,
+        text: 'Continuing.',
+      });
+    }
   }
 }
 

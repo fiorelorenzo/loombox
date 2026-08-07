@@ -28,39 +28,17 @@ permissions:
   actions: read # the deploy job reads the CI workflow's conclusion for this tag before touching prod
 
 jobs:
+  # Split into its own reusable workflow (issue #865, epic #863):
+  # deploy-preview.yml calls the exact same job, so there is one place that
+  # knows how to build the web bundle, not two copies that can drift. See
+  # build-web.yml's own header for why it runs on ubuntu-latest rather than
+  # prodbox, and for LOOMBOX_BUILD_COMMIT's role in the served-build-
+  # identity mechanism both deploy scripts' health gates rely on.
   build-web:
     name: build web bundle
-    runs-on: ubuntu-latest
-    # Built here, not on prodbox: prodbox has 4 shared vCPUs and also hosts
-    # pitchbox and embertold, so the monorepo install and the SvelteKit build
-    # (which needs the whole workspace resolved, not just @loombox/web) stay
-    # off it. Only the small, already-built apps/web/build/ output ships to
-    # prod as an artifact.
-    steps:
-      - name: Checkout tag
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build @loombox/web
-        run: pnpm --filter @loombox/web build
-
-      - name: Upload web bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-build
-          path: apps/web/build/
-          retention-days: 14
+    uses: ./.github/workflows/build-web.yml
+    with:
+      artifact-name: web-build
 
   deploy:
     name: deploy to prodbox

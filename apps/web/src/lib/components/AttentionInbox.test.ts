@@ -108,6 +108,18 @@ const reviewRequestItem: AttentionInboxItem = {
   waitingSince: 5,
 };
 
+const contextLimitItem: AttentionInboxItem = {
+  kind: 'context_limit',
+  sessionId: 'sess-j',
+  sessionTitle: 'Long research turn',
+  projectPath: '/proj-j',
+  nodeId: 'node-j',
+  waitingSince: 6,
+  contextPercent: 85,
+  tokensUsed: 170_000,
+  contextWindow: 200_000,
+};
+
 describe('AttentionInbox: empty state', () => {
   it('shows an empty-state message and no items when there is nothing to surface', () => {
     render(AttentionInbox, {
@@ -270,6 +282,73 @@ describe('AttentionInbox: session-outcome class (issue #167, SPEC §7.13)', () =
     });
     await fireEvent.click(screen.getByTestId('attention-inbox-open'));
     expect(onOpenSession).toHaveBeenCalledWith('sess-d');
+  });
+});
+
+describe('AttentionInbox: target-health context on a stalled/errored row (issue #204)', () => {
+  it('shows the target-health note for an awaiting_input row when the caller found relevant context', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem],
+        targetHealthBySessionId: new Map([
+          ['sess-b', { state: 'overloaded' as const, message: 'target overloaded — load 96%' }],
+        ]),
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const note = screen.getByTestId('attention-inbox-target-health');
+    expect(note.textContent?.trim()).toBe('target overloaded — load 96%');
+    expect(note.dataset.tone).toBe('overloaded');
+  });
+
+  it('shows it for an errored session_outcome row too, but never for a finished (exited) one', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [finishedItem, erroredItem],
+        targetHealthBySessionId: new Map([
+          ['sess-c', { state: 'unreachable' as const, message: 'should never render' }],
+          [
+            'sess-d',
+            { state: 'unreachable' as const, message: 'target unreachable — last checked 2m ago' },
+          ],
+        ]),
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const notes = screen.getAllByTestId('attention-inbox-target-health');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].textContent?.trim()).toBe('target unreachable — last checked 2m ago');
+  });
+
+  it("never shows it for a permission row, even if the caller's map happens to carry an entry for that session", () => {
+    render(AttentionInbox, {
+      props: {
+        items: [permissionItem],
+        targetHealthBySessionId: new Map([
+          ['sess-a', { state: 'no-data' as const, message: 'should never render' }],
+        ]),
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.queryByTestId('attention-inbox-target-health')).toBeNull();
+  });
+
+  it('renders no note at all when no target-health map is supplied (existing callers keep the plain v1 row)', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [awaitingInputItem, erroredItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.queryByTestId('attention-inbox-target-health')).toBeNull();
   });
 });
 
@@ -712,5 +791,45 @@ describe("AttentionInbox: run_failure is live (issue #247), sharing ci_failure's
     expect(rows.map((row) => row.dataset.kind)).toEqual(['run_failure', 'ci_failure']);
     expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Run');
     expect(within(rows[1]).getByTestId('attention-inbox-kind-badge').textContent).toBe('CI');
+  });
+});
+
+describe('AttentionInbox: context_limit is live (SPEC §7.9; issue #250)', () => {
+  it('renders its own warning badge and percentage in the row body, and an Open action, with no permission card or reply composer', async () => {
+    const onOpenSession = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [contextLimitItem],
+        onResolve: vi.fn(),
+        onOpenSession,
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows).toHaveLength(1);
+
+    expect(rows[0].dataset.kind).toBe('context_limit');
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Context');
+    expect(within(rows[0]).getByText('Context window nearly full — 85% used')).toBeTruthy();
+
+    expect(screen.queryAllByTestId('permission-card')).toHaveLength(0);
+    expect(screen.queryAllByTestId('attention-inbox-reply')).toHaveLength(0);
+
+    await fireEvent.click(within(rows[0]).getByTestId('attention-inbox-open'));
+    expect(onOpenSession).toHaveBeenCalledWith('sess-j');
+  });
+
+  it('renders alongside a ci_failure item as two distinct rows — a session can be both near its context limit and have a failing check at once', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [contextLimitItem, ciFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows.map((row) => row.dataset.kind)).toEqual(['context_limit', 'ci_failure']);
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Context');
   });
 });

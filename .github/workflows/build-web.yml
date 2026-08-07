@@ -1,0 +1,64 @@
+name: build-web
+
+# Reusable: builds @loombox/web on a GitHub-hosted runner and uploads
+# apps/web/build/ as an artifact. Split out of deploy-prod.yml (#865, epic
+# #863) so deploy-prod.yml (tag push) and deploy-preview.yml (push to main)
+# call the exact same job instead of two copies that can drift - issue
+# #865's own scope explicitly calls for reuse here, not a second build
+# step. Every consumer decides what to call the produced artifact via
+# `artifact-name`, so two callers can safely run concurrently without
+# clobbering each other's upload.
+#
+# Runs on ubuntu-latest, never on prodbox's self-hosted runner: prodbox has
+# 4 shared vCPUs and also hosts pitchbox and embertold, so the monorepo
+# install and the SvelteKit build (which needs the whole workspace
+# resolved, not just @loombox/web) stay off it. Only the small,
+# already-built apps/web/build/ output ships to prodbox as an artifact.
+#
+# LOOMBOX_BUILD_COMMIT (issue #865): the same env var
+# packages/relay/src/build-identity.ts already reads at relay boot and
+# scripts/deploy-prod.sh already exports for it, set here instead to the
+# commit actually being built. svelte.config.js's `kit.version.name` picks
+# it up, which makes it into both `client/_app/version.json` (what the two
+# deploy scripts' health gates compare against this artifact) and the
+# in-app "Build" line (SettingsPage.svelte) - one env var, three
+# consumers, never a second independently-computed identity.
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: name to upload the built apps/web/build/ output under
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @loombox/web
+        env:
+          LOOMBOX_BUILD_COMMIT: ${{ github.sha }}
+        run: pnpm --filter @loombox/web build
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: apps/web/build/
+          retention-days: 14

@@ -1,4 +1,4 @@
-import { randomUUID, type webcrypto } from 'node:crypto';
+import { createHash, randomUUID, type webcrypto } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { basename, join, posix } from 'node:path';
@@ -116,6 +116,9 @@ import {
   type FsReadRequest,
   type FsReadRequestPayloadV1,
   type FsReadResponsePayloadV1,
+  type FsWriteRequest,
+  type FsWriteRequestPayloadV1,
+  type FsWriteResponsePayloadV1,
   type GitBranchCreateRequest,
   type GitBranchCreateRequestPayloadV1,
   type GitBranchCreateResponsePayloadV1,
@@ -1180,6 +1183,23 @@ function resolveSessionRelativePath(root: string, requestedPath: string): string
     throw new PathTraversalError(requestedPath);
   }
   return resolved;
+}
+
+/**
+ * The integrated editor's own optimistic-concurrency token (SPEC §7.4's
+ * "light quick-edit"; issue #205) — plain sha256 over the exact bytes a
+ * reader would see, never a git blob hash or mtime, since a `local` and
+ * an `ssh:` target expose neither uniformly through `ExecutionTarget`.
+ * The same construction `agent-instructions.ts`'s own
+ * `hashAgentInstructionsContent` uses for the identical reason, kept as
+ * its own copy here rather than a shared import: that module's hash is
+ * scoped to `AGENTS.md`/`CLAUDE.md` at a project's root, this one to any
+ * path inside the worktree `resolveSessionRelativePath` already guards —
+ * different callers, same one-line formula, not worth a shared module
+ * for.
+ */
+function hashFileContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 /**
@@ -4264,6 +4284,9 @@ export class NodeDaemon extends EventEmitter {
       case 'fs_read_request':
         this.handleFsReadRequest(message);
         return;
+      case 'fs_write_request':
+        this.handleFsWriteRequest(message);
+        return;
       case 'git_diff_request':
         this.handleGitDiffRequest(message);
         return;
@@ -5659,6 +5682,7 @@ export class NodeDaemon extends EventEmitter {
         path: requestedPath,
         content: truncated ? content.slice(0, NodeDaemon.MAX_FS_READ_BYTES) : content,
         truncated,
+        hash: hashFileContent(content),
       };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -5675,6 +5699,130 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'fs_read_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * The integrated editor's own byte cap on a SAVE (SPEC §7.4's "light
+   * quick-edit"; issue #205) — {@link MAX_FS_READ_BYTES}'s write-side
+   * mirror, same "bound one request so an accidental huge payload never
+   * ties up the encrypted channel" reasoning, applied to what a client
+   * proposes to write rather than what the node reads back.
+   */
+  private static readonly MAX_FS_WRITE_BYTES = 1_000_000;
+
+  /**
+   * A client asked (via the relay) this node to save one file inside one
+   * of its sessions' projects (issue #205's integrated editor) —
+   * `handleFsReadRequest`'s write-side sibling, same "no live bridge
+   * needed, always a reply, never a silent drop" contract.
+   */
+  private handleFsWriteRequest(message: FsWriteRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptFsWriteRequest(message)
+      .then((payload) => this.writeFileForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendFsWriteResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle fs_write_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptFsWriteRequest(message: FsWriteRequest): Promise<FsWriteRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<FsWriteRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves `payload.path` against `routing`'s session root (the exact
+   * same guard {@link readFileForBridge} uses) and, only when
+   * `payload.baseHash` still matches the file's CURRENT hash, writes
+   * `payload.content` via that session's `ExecutionTarget` — never
+   * applied otherwise (issue #205's own "never overwrite blindly"
+   * acceptance line, the identical optimistic-concurrency contract
+   * `agent-instructions.ts`'s `writeAgentInstructionsFile` already
+   * ships for `AGENTS.md`/`CLAUDE.md`). A mismatch — the file changed on
+   * disk, was deleted, or was created where `baseHash: null` expected
+   * none — comes back as `outcome: 'conflict'` carrying what is
+   * actually on disk right now, capped at {@link MAX_FS_READ_BYTES}
+   * exactly like a read. This covers every source of "changed
+   * underneath" uniformly, including the session's own agent editing
+   * the same file mid-turn: there is no special case for who made the
+   * change, only whether the hash the edit started from still matches.
+   * Never throws itself: a path-traversal attempt, a directory, an
+   * oversized payload, or an `ssh:` transport failure all become an
+   * `outcome: 'error'` payload instead, so {@link handleFsWriteRequest}
+   * always has a response to seal and send back.
+   */
+  private async writeFileForBridge(
+    routing: SessionRouting,
+    payload: FsWriteRequestPayloadV1,
+  ): Promise<FsWriteResponsePayloadV1> {
+    if (payload.content.length > NodeDaemon.MAX_FS_WRITE_BYTES) {
+      return {
+        outcome: 'error',
+        path: payload.path,
+        message: `Content exceeds the editor's ${NodeDaemon.MAX_FS_WRITE_BYTES}-byte save limit.`,
+      };
+    }
+
+    let resolvedPath: string;
+    try {
+      resolvedPath = resolveSessionRelativePath(routing.session.worktreePath, payload.path);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: payload.path, message: detail };
+    }
+
+    try {
+      const target = await this.getExecutionTarget(routing.targetId);
+      const currentContent = await target.readFile(resolvedPath).catch(() => null);
+      const currentHash = currentContent === null ? null : hashFileContent(currentContent);
+      if (currentHash !== payload.baseHash) {
+        return {
+          outcome: 'conflict',
+          path: payload.path,
+          current:
+            currentContent === null
+              ? null
+              : {
+                  content:
+                    currentContent.length > NodeDaemon.MAX_FS_READ_BYTES
+                      ? currentContent.slice(0, NodeDaemon.MAX_FS_READ_BYTES)
+                      : currentContent,
+                  hash: currentHash!,
+                  truncated: currentContent.length > NodeDaemon.MAX_FS_READ_BYTES,
+                },
+        };
+      }
+
+      await target.writeFile(resolvedPath, payload.content);
+      return { outcome: 'ok', path: payload.path, hash: hashFileContent(payload.content) };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: payload.path, message: detail };
+    }
+  }
+
+  private async sendFsWriteResponse(
+    sessionId: string,
+    requestId: string,
+    payload: FsWriteResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'fs_write_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
@@ -7353,8 +7501,14 @@ export class NodeDaemon extends EventEmitter {
    * {@link openTerminalForBridge} spawns it.
    */
   private wireTerminalSession(sessionId: string, session: TerminalSession): void {
+    // Assigned synchronously, in PTY emission order, right at the source —
+    // never inside `queueTerminalOutput`'s async encrypt/send chain, so a
+    // client (or the relay's `BoundedTerminalOutbox`, SPEC §7.16, issue
+    // #207) can always tell a real gap from ordinary delivery, independent
+    // of whatever timing the encrypt pipeline happens to run at.
+    let nextTerminalOutputSeq = 0;
     session.onData((chunk) => {
-      this.queueTerminalOutput(sessionId, session.terminalId, chunk);
+      this.queueTerminalOutput(sessionId, session.terminalId, nextTerminalOutputSeq++, chunk);
     });
     session.onExit((event) => {
       const closedByClient = this.clientInitiatedTerminalCloses.delete(session.terminalId);
@@ -7373,11 +7527,16 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /** Chains this terminal's `terminal_output` sends (mirrors `forwardSessionEvent`'s `bridge.sendQueue`) so concurrent encrypts can never resolve, and so get sent to the relay, out of the order their chunks arrived in. */
-  private queueTerminalOutput(sessionId: string, terminalId: string, chunk: Uint8Array): void {
+  private queueTerminalOutput(
+    sessionId: string,
+    terminalId: string,
+    seq: number,
+    chunk: Uint8Array,
+  ): void {
     const queueKey = `${sessionId}:${terminalId}`;
     const previous = this.terminalSendQueues.get(queueKey) ?? Promise.resolve();
     const next = previous
-      .then(() => this.sendTerminalOutput(sessionId, terminalId, chunk))
+      .then(() => this.sendTerminalOutput(sessionId, terminalId, seq, chunk))
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
@@ -7390,6 +7549,7 @@ export class NodeDaemon extends EventEmitter {
   private async sendTerminalOutput(
     sessionId: string,
     terminalId: string,
+    seq: number,
     chunk: Uint8Array,
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
@@ -7400,6 +7560,7 @@ export class NodeDaemon extends EventEmitter {
       protocolVersion: PROTOCOL_V1,
       sessionId,
       terminalId,
+      seq,
       envelope,
     });
   }

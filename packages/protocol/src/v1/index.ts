@@ -270,6 +270,13 @@ export type {
   FsReadResponse,
   FsReadResponsePayloadV1,
   FsReadResultV1,
+  FsWriteConflictV1,
+  FsWriteErrorV1,
+  FsWriteRequest,
+  FsWriteRequestPayloadV1,
+  FsWriteResponse,
+  FsWriteResponsePayloadV1,
+  FsWriteResultV1,
 } from './fs';
 export {
   fsEntryKindV1,
@@ -286,14 +293,25 @@ export {
   fsReadResponse,
   fsReadResponsePayloadV1,
   fsReadResultV1,
+  fsWriteConflictV1,
+  fsWriteErrorV1,
+  fsWriteRequest,
+  fsWriteRequestPayloadV1,
+  fsWriteResponse,
+  fsWriteResponsePayloadV1,
+  fsWriteResultV1,
   parseFsListRequestPayloadV1,
   parseFsListResponsePayloadV1,
   parseFsReadRequestPayloadV1,
   parseFsReadResponsePayloadV1,
+  parseFsWriteRequestPayloadV1,
+  parseFsWriteResponsePayloadV1,
   safeParseFsListRequestPayloadV1,
   safeParseFsListResponsePayloadV1,
   safeParseFsReadRequestPayloadV1,
   safeParseFsReadResponsePayloadV1,
+  safeParseFsWriteRequestPayloadV1,
+  safeParseFsWriteResponsePayloadV1,
 } from './fs';
 
 export type {
@@ -603,6 +621,7 @@ export type {
   TerminalOutput,
   TerminalResize,
   TerminalResizePayloadV1,
+  TerminalResyncMarker,
 } from './terminal';
 export {
   parseTerminalClosedPayloadV1,
@@ -631,6 +650,7 @@ export {
   terminalOutput,
   terminalResize,
   terminalResizePayloadV1,
+  terminalResyncMarker,
 } from './terminal';
 
 export type { Presence, ResyncMarker, ResyncRequest } from './presence';
@@ -1358,6 +1378,13 @@ import {
   fsListResponse,
   fsListResponsePayloadV1,
   fsListResultV1,
+  fsWriteConflictV1,
+  fsWriteErrorV1,
+  fsWriteRequest,
+  fsWriteRequestPayloadV1,
+  fsWriteResponse,
+  fsWriteResponsePayloadV1,
+  fsWriteResultV1,
 } from './fs';
 import {
   mcpPromptGetErrorV1,
@@ -1741,6 +1768,13 @@ export const schemasV1 = {
   fsListResponsePayloadV1,
   fsListRequest,
   fsListResponse,
+  fsWriteRequestPayloadV1,
+  fsWriteResultV1,
+  fsWriteConflictV1,
+  fsWriteErrorV1,
+  fsWriteResponsePayloadV1,
+  fsWriteRequest,
+  fsWriteResponse,
   mcpPromptGetRequestPayloadV1,
   mcpPromptGetResultV1,
   mcpPromptGetErrorV1,

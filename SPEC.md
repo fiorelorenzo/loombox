@@ -736,7 +736,7 @@ across providers rather than needing a bespoke per-provider transcript format.
   Queuing (not interrupting, not blocking) is the default because ACP has no
   "insert into the middle of a turn" primitive; interrupting-to-redirect is
   just Stop followed by a new prompt.
-- **Tool calls, two tiers in v1.** (1) A per-provider, per-tool-name bespoke
+- **Tool calls, three tiers.** (1) A per-provider, per-tool-name bespoke
   widget table for the handful of tools worth custom rendering (Claude's
   Edit/Write/Bash/TodoWrite; Codex's patch/diff/bash), each wrapped in its own
   error boundary so one bad widget can't take down the transcript. (2) A
@@ -744,13 +744,26 @@ across providers rather than needing a bespoke per-provider transcript format.
   `search`/`execute`/`think`/`fetch`/`switch_mode`/`other`) for anything without a bespoke
   widget — the guaranteed baseline for the generic ACP adapter tier (§5.5).
   Suppress the generic row for a tool call already covered by a bespoke diff/
-  edit widget so streaming never briefly shows a duplicate placeholder. *A
-  third tier — a summarized burst/group card for large tool-call bursts and
-  subagent groups — is real but secondary to getting these two solid; it
-  remains v2 future work (§12) even though the subagent-TREE rendering it
-  was originally paired with has since shipped (§7.24's own subagent
-  bullet, issue #200) — flat-indented nesting turned out to not need this
-  card as a prerequisite.*
+  edit widget so streaming never briefly shows a duplicate placeholder. (3) A
+  summarized burst/group card (issue #202) for a run of MORE than five
+  consecutive tool calls sharing the same nesting scope (root-level, or one
+  subagent's own children — the same scope §7.24's own subagent bullet below
+  already resolves) with nothing else, not even a message, between them: one
+  collapsed line (call count, a succeeded/failed/running breakdown, total
+  elapsed time, one status dot carrying the loudest outcome) standing in for
+  the whole run until expanded, at which point every real call mounts
+  through its normal tier-1/2 renderer, unchanged. Computed BEFORE windowing
+  (§7.16/#755), not after, so a group is always one atomic windowed item —
+  the render range can include or exclude it whole, never slice through the
+  middle of its own calls — and keeps the SAME id for as long as the same
+  run keeps growing (anchored to its first call), so a live-streaming burst
+  never re-forms under a different identity as more calls land. Default
+  collapsed regardless of live/streaming state; a pending permission request
+  or a `TranscriptJumpTarget`/search match landing on one of its calls forces
+  it open (the former locked, mirroring the tier-2 row's own failed-call
+  lock; the latter a plain, still-dismissable toggle) so neither the FIFO
+  queue's own "always reachable" contract nor a navigated-to match ever goes
+  silently missing behind a collapsed card.
 - **Diffs.** ACP **v1**'s Diff is `{path, oldText, newText}` — render that with
   client-side line diffing and syntax-aware coloring; the richer structured `changes[]`
   (operation, old/new path) is an ACP **v2**-only shape, gated like the other v2 bullets
@@ -806,12 +819,15 @@ across providers rather than needing a bespoke per-provider transcript format.
   just indented). A child whose parent link never resolves (the generic ACP
   tier, Codex, or a Claude Code parent evicted by #729's resync ring) renders
   at the top level, identical to a genuine root call, rather than
-  disappearing. *Not yet built:* the richer collapsible-group/auto-scrolling-
-  preview treatment and the narrow-viewport "last 3 + N more" summary an
-  earlier draft of this bullet described — real subagent nesting in
-  production is Claude-only today and typically shallow, and the flat-indent
-  rendering already satisfies the tree's core contract; a burst/group
-  summary card remains real but secondary future work (§12's tier-3 bullet).
+  disappearing. *Not built here:* the richer collapsible-group/auto-
+  scrolling-preview treatment and the narrow-viewport "last 3 + N more"
+  summary an earlier draft of this bullet described — real subagent nesting
+  in production is Claude-only today and typically shallow, and the flat-
+  indent rendering already satisfies the tree's core contract on its own. A
+  large run DOES collapse, via the separate tier-3 burst/group card above
+  (issue #202) once it crosses that card's own five-call threshold, using
+  this same nesting scope to decide which calls belong together — not a
+  bespoke subagent-specific treatment, the general one.
 - **Tool-call permissions.** A FIFO queue, one focused card at a time,
   rendered inline at the tool call / composer site — never a blocking modal,
   since loombox is a multi-session cockpit and a modal on one session must not
@@ -1396,11 +1412,11 @@ Each milestone is a shippable increment; a fresh agent session builds them in or
   reconnect/resume hardening (resident-daemon semantics); PR & CI lifecycle; test &
   verification runner; agent guardrails/sandboxing; session templates + project
   instructions + prompt library; session history/search + fork/replay;
-  checkpoint/rollback; richer cross-project attention inbox & observability;
-  the tier-3 tool-call burst/group summary card (§7.24, Claude-adapter-
-  specific, degrading to a flat list elsewhere — subagent/nested tool-call
-  tree rendering itself shipped ahead of this milestone, issue #200);
-  an expanded per-tool-name
+  checkpoint/rollback; richer cross-project attention inbox & observability
+  (the tier-3 tool-call burst/group summary card and the subagent/nested
+  tool-call tree rendering it was once paired with have both since shipped
+  ahead of this milestone, §7.24, issues #202 and #200); an expanded
+  per-tool-name
   bespoke widget registry; a persistent plan sidebar; client-side transcript
   search via the CSS Custom Highlight API (§7.19, §7.24).
 - **v3 — voice & reach.** BYO-key voice (clean-room); native mobile wrapper; more

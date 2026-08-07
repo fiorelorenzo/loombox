@@ -2,19 +2,27 @@ import IORedis from 'ioredis';
 import type { WireMessageV1 } from '@loombox/protocol';
 
 import type { OutboxItem } from './outbox';
+import type { TerminalOutboxItem } from './terminal-outbox';
 
 /**
- * What travels over a fan-out channel: either a bounded, queued
- * `session_update`/`resync_marker` (delivered via the receiving client's own
- * `BoundedClientOutbox`) or a lower-volume direct control message
- * (permission requests, blob refs, ...). Both cases carry exactly the same
- * `WireMessageV1`/`OutboxItem` shapes the relay already routes between a
- * node and its clients on a single instance (#315's locked architecture) —
- * Redis is not a new protocol, it's the same opaque envelopes crossing a
- * process boundary instead of an in-memory `Set`.
+ * What travels over a fan-out channel: a bounded, queued
+ * `session_update`/`resync_marker` (delivered via the receiving client's
+ * own `BoundedClientOutbox`), a bounded, queued `terminal_output`/
+ * `terminal_resync_marker` (delivered via its own `BoundedTerminalOutbox`,
+ * SPEC §7.16, issue #207 — kept as a separate `kind` rather than folded
+ * into `'update'` because the two bounded queues are keyed and grouped
+ * differently, see `terminal-outbox.ts`'s own doc comment), or a
+ * lower-volume direct control message (permission requests, blob refs,
+ * ...). All three cases carry exactly the same `WireMessageV1`/`OutboxItem`/
+ * `TerminalOutboxItem` shapes the relay already routes between a node and
+ * its clients on a single instance (#315's locked architecture) — Redis is
+ * not a new protocol, it's the same opaque envelopes crossing a process
+ * boundary instead of an in-memory `Set`.
  */
 export type FanOutPayload =
-  { kind: 'update'; item: OutboxItem } | { kind: 'direct'; message: WireMessageV1 };
+  | { kind: 'update'; item: OutboxItem }
+  | { kind: 'terminal'; item: TerminalOutboxItem }
+  | { kind: 'direct'; message: WireMessageV1 };
 
 /**
  * Fan-out backend abstraction (#97, SPEC §9/§16 "relay stack: Redis

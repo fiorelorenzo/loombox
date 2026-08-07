@@ -41,6 +41,7 @@ import { registerDeviceAuthRoutes } from './device-auth-routes';
 import { createInProcessFanOutBackend, type FanOutBackend } from './fanout';
 import { registerNodeTokenRoutes } from './node-token-routes';
 import { BoundedClientOutbox, type OutboxItem } from './outbox';
+import { BoundedTerminalOutbox, type TerminalOutboxItem } from './terminal-outbox';
 import type { PgLike } from './pg-client';
 import { createWebPushSender, type PushPayload, type PushSender } from './push';
 import {
@@ -111,6 +112,8 @@ interface ClientConnection extends BaseConnection {
   kind: 'client';
   subscriptions: Set<string>;
   outbox: BoundedClientOutbox;
+  /** One `BoundedTerminalOutbox` per open terminal this connection is subscribed to (SPEC §7.16; issue #207), keyed by `sessionId:terminalId` — see {@link terminalOutboxFor}'s doc comment for why one PER TERMINAL rather than one shared instance like `outbox` above. Created lazily on first `terminal_output`; entries are removed on `terminal_closed`. */
+  terminalOutboxes: Map<string, BoundedTerminalOutbox>;
   /** One entry per subscribed sessionId — the {@link FanOutBackend}'s own unsubscribe function for this specific connection, released on disconnect (#97). */
   fanOutUnsubscribes: Map<string, () => void>;
 }
@@ -140,6 +143,8 @@ export interface CreateRelayOptions {
   store?: RelayStore;
   /** Bounded per-client output-queue depth for `session_update` fan-out (SPEC §7.16, #98/#254). */
   maxClientQueueDepth?: number;
+  /** Bounded per-client output-queue depth for `terminal_output` fan-out (SPEC §7.16; issue #207) — the terminal-stream sibling of {@link maxClientQueueDepth}. */
+  maxTerminalQueueDepth?: number;
   /**
    * How the WS handshake's `authToken` resolves to an `accountId` (#121).
    * Defaults to {@link deriveAccountIdStub} — every existing hermetic test in
@@ -370,6 +375,8 @@ export interface CreateRelayOptions {
 }
 
 const DEFAULT_MAX_CLIENT_QUEUE_DEPTH = 64;
+/** Sane default for {@link CreateRelayOptions.maxTerminalQueueDepth} — same depth as {@link DEFAULT_MAX_CLIENT_QUEUE_DEPTH} (issue #207): generous enough that an ordinary high-volume burst (a build log, `find /`) drains under real backpressure pacing with zero loss, tight enough that a genuinely stalled client's queue never grows past a small, fixed bound. */
+const DEFAULT_MAX_TERMINAL_QUEUE_DEPTH = 500;
 
 /** Sane default for {@link CreateRelayOptions.rateLimit}'s `max` — generous enough for a single self-hoster's own devices reconnecting in a burst, tight enough to blunt a public-endpoint scan/enrollment flood (#101). */
 export const DEFAULT_RATE_LIMIT_MAX = 120;
@@ -477,6 +484,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   const registry = createRegistry();
   const store = opts.store ?? createInMemoryRelayStore();
   const maxClientQueueDepth = opts.maxClientQueueDepth ?? DEFAULT_MAX_CLIENT_QUEUE_DEPTH;
+  const maxTerminalQueueDepth = opts.maxTerminalQueueDepth ?? DEFAULT_MAX_TERMINAL_QUEUE_DEPTH;
   const maxAccountStorageBytes = opts.maxAccountStorageBytes ?? DEFAULT_MAX_ACCOUNT_STORAGE_BYTES;
   const defaultLeaseTtlMs = opts.leaseTtlMs?.default ?? DEFAULT_LEASE_TTL_MS;
   const maxLeaseTtlMs = opts.leaseTtlMs?.max ?? DEFAULT_MAX_LEASE_TTL_MS;
@@ -851,8 +859,50 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   // subscribed client's own delivery). With a Redis-backed backend, this is
   // what lets a client connected to a different relay process receive an
   // update whose owning node is connected here.
+  /**
+   * The `terminal_output`/`terminal_resync_marker` sibling of
+   * {@link fanOutSessionUpdate} above (SPEC §7.16; issue #207). Unlike
+   * `outbox` (one shared bounded queue for every session a connection is
+   * subscribed to), each open terminal gets its OWN
+   * {@link BoundedTerminalOutbox}, keyed by `sessionId:terminalId` in
+   * {@link ClientConnection.terminalOutboxes} — a single connection can
+   * have several terminals open (SPEC §7.5, issue #173) sharing one
+   * session's working directory, and a single shared queue would let one
+   * terminal's firehose (a build log) evict — and so starve — a second,
+   * otherwise idle terminal's own reply, since drop-oldest has no way to
+   * tell "this queued item belongs to a different terminal" from "this
+   * queued item is just old" (found and fixed while proving issue #207's
+   * acceptance: a real two-terminal round trip against a shared queue
+   * lost the second terminal's own output entirely for as long as the
+   * first kept overflowing). One small bounded queue per terminal keeps
+   * the fix simple and the total bound still small: N open terminals
+   * means at most `N * maxTerminalQueueDepth` items in flight, and N is a
+   * user-controlled, inherently small number, never adversarial.
+   */
+  function terminalOutboxFor(
+    client: ClientConnection,
+    sessionId: string,
+    terminalId: string,
+  ): BoundedTerminalOutbox {
+    const key = `${sessionId}:${terminalId}`;
+    let outbox = client.terminalOutboxes.get(key);
+    if (!outbox) {
+      outbox = new BoundedTerminalOutbox((item, done) => {
+        sendJson(client.socket, item);
+        done();
+      }, maxTerminalQueueDepth);
+      client.terminalOutboxes.set(key, outbox);
+    }
+    return outbox;
+  }
+
   function fanOutSessionUpdate(sessionId: string, item: OutboxItem): void {
     fanOutBackend.publish(sessionId, { kind: 'update', item });
+  }
+
+  /** The `terminal_output`/`terminal_resync_marker` fan-out publish half — see {@link terminalOutboxFor}'s doc comment for the per-terminal queue this feeds on the receiving end. */
+  function fanOutTerminalOutput(sessionId: string, item: TerminalOutboxItem): void {
+    fanOutBackend.publish(sessionId, { kind: 'terminal', item });
   }
 
   /** Direct fan-out (no bounded queue) for lower-volume session-scoped control traffic (permission requests, blob refs, ...). */
@@ -874,7 +924,22 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     client.subscriptions.add(sessionId);
     const unsubscribe = fanOutBackend.subscribe(sessionId, (payload) => {
       if (payload.kind === 'update') client.outbox.enqueue(payload.item);
-      else sendDirect(client, payload.message);
+      else if (payload.kind === 'terminal') {
+        terminalOutboxFor(client, payload.item.sessionId, payload.item.terminalId).enqueue(
+          payload.item,
+        );
+      } else {
+        sendDirect(client, payload.message);
+        // A closed terminal's queue is never coming back — drop it from
+        // this connection's map so a session that opens and closes many
+        // terminals over its lifetime doesn't accumulate one empty,
+        // never-reclaimed `BoundedTerminalOutbox` per terminal ever opened.
+        if (payload.message.type === 'terminal_closed') {
+          client.terminalOutboxes.delete(
+            `${payload.message.sessionId}:${payload.message.terminalId}`,
+          );
+        }
+      }
     });
     client.fanOutUnsubscribes.set(sessionId, unsubscribe);
   }
@@ -1046,6 +1111,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               sendJson(socket, item);
               done();
             }, maxClientQueueDepth),
+            terminalOutboxes: new Map(),
             fanOutUnsubscribes: new Map(),
           };
 
@@ -1513,6 +1579,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       case 'mcp_prompt_get_response':
       case 'fs_read_response':
+      case 'fs_write_response':
       case 'git_diff_response':
       case 'git_graph_response':
       case 'git_hunk_diff_response':
@@ -1586,14 +1653,28 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         fanOutDirect(message.sessionId, message);
         return;
       case 'terminal_opened':
-      case 'terminal_output':
       case 'terminal_closed':
-        // The owning node's terminal replies/output/close notification
-        // (SPEC §7.5; issues #172/#173/#174) — fanned out exactly like
-        // fs_list_response above; the relay never opens any of these
-        // envelopes, so it never sees a byte of typed input, shell output,
-        // or even the negotiated cols/rows (SPEC §8's metadata boundary).
+        // The owning node's terminal open reply/close notification (SPEC
+        // §7.5; issues #172/#173/#174) — fanned out exactly like
+        // fs_list_response above; the relay never opens either envelope,
+        // so it never sees the negotiated cols/rows or the close reason
+        // (SPEC §8's metadata boundary). Low-volume (once per open/close),
+        // unlike `terminal_output` below, so the direct path is correct
+        // here: `fanOutDirect` never drops a control message a client is
+        // actively waiting on a reply for.
         fanOutDirect(message.sessionId, message);
+        return;
+      case 'terminal_output':
+        // One chunk of an open terminal's byte stream (SPEC §7.5) — unlike
+        // `terminal_opened`/`terminal_closed` above, this can arrive far
+        // faster than a slow client drains its own socket (a build log
+        // scrolling past, `find /`), so it rides its own bounded,
+        // drop-oldest `BoundedTerminalOutbox` (SPEC §7.16; issue #207)
+        // rather than the unbounded `fanOutDirect` path every other
+        // node-pushed reply uses — see `terminal-outbox.ts`'s doc comment.
+        // The relay never opens this envelope either; only `seq` (plain
+        // routing metadata, never content) is visible to it.
+        fanOutTerminalOutput(message.sessionId, message);
         return;
       case 'test_runner_config_result':
       case 'test_runner_config_detected':
@@ -2580,6 +2661,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'fs_list_request':
       case 'mcp_prompt_get_request':
       case 'fs_read_request':
+      case 'fs_write_request':
       case 'git_hunk_action_request':
       case 'agent_instructions_set_request':
       case 'git_commit_request':
