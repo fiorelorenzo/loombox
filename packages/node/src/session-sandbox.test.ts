@@ -2,11 +2,41 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { SandboxUnavailableError, type SandboxCapability } from './linux-sandbox';
 import { resolveSessionSandbox } from './session-sandbox';
 
+/**
+ * Whether this host can actually run a bubblewrap child, probed once. Every
+ * assertion below that SPAWNS a real sandboxed process (rather than only
+ * inspecting the argv this module plans) is gated on it: `bwrap` is present
+ * on this project's dev box but not on a GitHub-hosted runner, where the
+ * same test would otherwise fail for a reason that has nothing to do with
+ * the code under test — the same trap #792 already documented for the
+ * `omp acp` binary. Argv-shape assertions stay unconditional, so the
+ * planning logic is still covered everywhere.
+ */
+const bwrapUsable = spawnSync('bwrap', ['--version']).status === 0;
+
+/**
+ * A PATH entry that really does hold an executable named `bwrap`, created per
+ * run rather than assumed. Every assertion below that injects its own `probe`
+ * needs the resolver to GET as far as calling it, and the resolver only does
+ * that once it finds a `bwrap` on the PATH it was handed. Pointing those at
+ * `/usr/bin` worked on this dev box and silently short-circuited on a
+ * GitHub-hosted runner, where the real binary is absent: the probe was never
+ * called and the assertion failed for a reason that had nothing to do with
+ * the code under test.
+ */
+let fakeBwrapPathEnv: string;
+beforeAll(async () => {
+  fakeBwrapPathEnv = await mkdtemp(join(tmpdir(), 'loombox-fake-bwrap-'));
+  await writeFile(join(fakeBwrapPathEnv, 'bwrap'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+});
+afterAll(async () => {
+  await rm(fakeBwrapPathEnv, { recursive: true, force: true });
+});
 describe('resolveSessionSandbox', () => {
   describe('platform split', () => {
     it('a non-Linux host is not required to sandbox — returns required: false, no wrapSpawnConfig, and never even looks at capability', () => {
@@ -29,7 +59,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       expect(resolution.required).toBe(true);
       expect(resolution.capability).toEqual(capability);
@@ -72,7 +102,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
 
       const wrapped = wrapSpawnConfig!({
@@ -94,7 +124,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       const config = { command: 'omp', args: ['acp'] };
       expect(wrapSpawnConfig!(config)).toEqual(wrapSpawnConfig!(config));
@@ -106,7 +136,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
         extraReadOnlyMounts: ['/opt/mcp-server'],
         extraReadWriteMounts: ['/home/dev/.npm'],
       });
@@ -180,55 +210,58 @@ describe('resolveSessionSandbox', () => {
       }
     });
 
-    it("a RELATIVE symlink inside the same toolchain root (npm's own bin/npx -> ../lib/node_modules/npm/bin/npx-cli.js shape) needs only ONE mount, and a real bwrap child can actually execute through it", async () => {
-      // Reproduces, with fakes, the exact real bug found testing this
-      // against this project's own real `npx`: an EARLIER version of this
-      // resolver mounted only the symlink's resolved TARGET directory,
-      // leaving the toolchain root's `bin/` itself (where PATH search —
-      // and so bwrap's own execvpe — actually looks first) absent from
-      // the sandbox: `bwrap: execvp npx: No such file or directory`, even
-      // though the eventual target was perfectly visible.
-      await mkdir(join(toolRoot, 'lib', 'pkg', 'bin'), { recursive: true });
-      await writeFile(
-        join(toolRoot, 'lib', 'pkg', 'bin', 'real-tool'),
-        '#!/bin/sh\necho it-really-ran\n',
-        { mode: 0o755 },
-      );
-      await symlink(
-        join('..', 'lib', 'pkg', 'bin', 'real-tool'),
-        join(toolRoot, 'bin', 'shimmed-tool'),
-      );
+    it.skipIf(!bwrapUsable)(
+      "a RELATIVE symlink inside the same toolchain root (npm's own bin/npx -> ../lib/node_modules/npm/bin/npx-cli.js shape) needs only ONE mount, and a real bwrap child can actually execute through it",
+      async () => {
+        // Reproduces, with fakes, the exact real bug found testing this
+        // against this project's own real `npx`: an EARLIER version of this
+        // resolver mounted only the symlink's resolved TARGET directory,
+        // leaving the toolchain root's `bin/` itself (where PATH search —
+        // and so bwrap's own execvpe — actually looks first) absent from
+        // the sandbox: `bwrap: execvp npx: No such file or directory`, even
+        // though the eventual target was perfectly visible.
+        await mkdir(join(toolRoot, 'lib', 'pkg', 'bin'), { recursive: true });
+        await writeFile(
+          join(toolRoot, 'lib', 'pkg', 'bin', 'real-tool'),
+          '#!/bin/sh\necho it-really-ran\n',
+          { mode: 0o755 },
+        );
+        await symlink(
+          join('..', 'lib', 'pkg', 'bin', 'real-tool'),
+          join(toolRoot, 'bin', 'shimmed-tool'),
+        );
 
-      const capability: SandboxCapability = { available: true, backend: 'bubblewrap' };
-      const { wrapSpawnConfig } = resolveSessionSandbox({
-        workspacePath: toolRoot,
-        platform: 'linux',
-        capability,
-        pathEnv: pathDir,
-      });
-      const wrapped = wrapSpawnConfig!({ command: 'shimmed-tool', args: [] });
+        const capability: SandboxCapability = { available: true, backend: 'bubblewrap' };
+        const { wrapSpawnConfig } = resolveSessionSandbox({
+          workspacePath: toolRoot,
+          platform: 'linux',
+          capability,
+          pathEnv: pathDir,
+        });
+        const wrapped = wrapSpawnConfig!({ command: 'shimmed-tool', args: [] });
 
-      const roBindTargets = wrapped.args.filter((_, i) => wrapped.args[i - 1] === '--ro-bind');
-      expect(roBindTargets.filter((p) => p !== '/usr' && p !== '/etc')).toEqual([toolRoot]);
+        const roBindTargets = wrapped.args.filter((_, i) => wrapped.args[i - 1] === '--ro-bind');
+        expect(roBindTargets.filter((p) => p !== '/usr' && p !== '/etc')).toEqual([toolRoot]);
 
-      // `pathEnv` above only steers THIS resolver's own mount planning;
-      // the actual sandboxed exec below re-does its own real PATH search
-      // using whatever env the caller spawns it with — in production
-      // that's the SAME `process.env.PATH` by default (see
-      // `resolveSessionSandbox`'s own `pathEnv` fallback), so this test
-      // matches that by spawning with an env whose PATH agrees with what
-      // `pathEnv` told the resolver to plan around.
-      const result = spawnSync(wrapped.command, wrapped.args, {
-        encoding: 'utf8',
-        timeout: 10_000,
-        // Prepended (not a full override) so `bwrap` itself — resolved
-        // from the REAL, unrestricted PATH — is still found by this
-        // outer spawnSync call.
-        env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}` },
-      });
-      expect(result.stdout).toBe('it-really-ran\n');
-      expect(result.status).toBe(0);
-    });
+        // `pathEnv` above only steers THIS resolver's own mount planning;
+        // the actual sandboxed exec below re-does its own real PATH search
+        // using whatever env the caller spawns it with — in production
+        // that's the SAME `process.env.PATH` by default (see
+        // `resolveSessionSandbox`'s own `pathEnv` fallback), so this test
+        // matches that by spawning with an env whose PATH agrees with what
+        // `pathEnv` told the resolver to plan around.
+        const result = spawnSync(wrapped.command, wrapped.args, {
+          encoding: 'utf8',
+          timeout: 10_000,
+          // Prepended (not a full override) so `bwrap` itself — resolved
+          // from the REAL, unrestricted PATH — is still found by this
+          // outer spawnSync call.
+          env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}` },
+        });
+        expect(result.stdout).toBe('it-really-ran\n');
+        expect(result.status).toBe(0);
+      },
+    );
 
     it('never elevates a mount root to the filesystem root itself — a command resolving through /bin or /sbin stays covered by the unconditional /usr mount, never a bare "/"', () => {
       // Regression for a real near-miss found in the same investigation:
@@ -258,7 +291,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       const wrapped = wrapSpawnConfig!({ command: 'true', args: [] });
       // Only the base /usr bind (added unconditionally by
@@ -281,14 +314,7 @@ describe('resolveSessionSandbox', () => {
  * sandbox at all.
  */
 describe('resolveSessionSandbox — real end-to-end containment', () => {
-  it.skipIf(
-    !(() => {
-      // Mirrors detectSandboxCapability's own real self-test cheaply: if
-      // bwrap can't even run --version, there's no point attempting this.
-      const probe = spawnSync('bwrap', ['--version']);
-      return probe.status === 0;
-    })(),
-  )(
+  it.skipIf(!bwrapUsable)(
     'a real agent-shaped process, wrapped via the hook node-daemon actually wires up, cannot read outside the session worktree',
     async () => {
       const worktree = await mkdtemp(join(tmpdir(), 'loombox-session-sandbox-e2e-'));
