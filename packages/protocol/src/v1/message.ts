@@ -46,6 +46,7 @@ import {
   gitCommitRequest,
   gitCommitResponse,
 } from './git-commit';
+import { gitDiffExplainRequest, gitDiffExplainResponse } from './git-diff-explain';
 import {
   gitHunkActionRequest,
   gitHunkActionResponse,
@@ -171,6 +172,8 @@ import {
   accountPinResolveRequest,
   accountPinResolveResponse,
   accountPinResponse,
+  accountPinScanRequest,
+  accountPinScanResponse,
   accountPinSetRequest,
   accountPinUnsetRequest,
   connectedAccountDisconnectRequest,
@@ -298,6 +301,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   accountPinResponse,
   accountPinResolveRequest,
   accountPinResolveResponse,
+  accountPinScanRequest,
+  accountPinScanResponse,
   trackerModeGetRequest,
   trackerModeSetRequest,
   trackerModeResponse,
@@ -378,6 +383,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitCommitDraftResponse,
   gitCommitRequest,
   gitCommitResponse,
+  gitDiffExplainRequest,
+  gitDiffExplainResponse,
   gitGraphRequest,
   gitGraphResponse,
   ciCheckStatus,

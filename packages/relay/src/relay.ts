@@ -1586,6 +1586,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'agent_instructions_set_response':
       case 'git_commit_draft_response':
       case 'git_commit_response':
+      case 'git_diff_explain_response':
         // The owning node's reply to a client's mcp_prompt_get_request
         // (Zed-parity D5-2; issue #754), fs_read_request (issue #737's
         // read-only file viewer), git_diff_request (issue #206's
@@ -1612,6 +1613,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // boundary). A requesting client matches its own pending request
         // by `requestId`; any other subscribed client simply has no
         // pending request with that id.
+        // git_diff_explain_request/git_diff_explain_response (issue #236's
+        // "explain a diff or a hunk" AI assist, `git_commit_draft_request`'s
+        // own sibling for understanding a diff rather than drafting text
+        // from one) fan out exactly the same way: the relay never learns
+        // which file/hunk was addressed or what the agent's explanation
+        // said.
         fanOutDirect(message.sessionId, message);
         return;
       case 'git_branch_list_response':
@@ -2015,6 +2022,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'github_cli_import_response':
       case 'account_pin_response':
       case 'account_pin_resolve_response':
+      case 'account_pin_scan_response':
       case 'tracker_mode_response':
       case 'tracker_snapshot_response':
       case 'tracker_write_response':
@@ -2550,6 +2558,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'account_pin_set_request':
       case 'account_pin_unset_request':
       case 'account_pin_resolve_request':
+      case 'account_pin_scan_request':
       case 'tracker_mode_get_request':
       case 'tracker_mode_set_request':
       case 'tracker_snapshot_request':
@@ -2606,6 +2615,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_hunk_action_request':
       case 'agent_instructions_set_request':
       case 'git_commit_request':
+      case 'git_diff_explain_request':
         // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
         // mcp_prompt_get_request (Zed-parity D5-2; issue #754), its
         // #737 sibling fs_read_request (read-only file viewer), its
@@ -2633,6 +2643,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // path, which server/prompt was asked for, which hunk was touched
         // and how, or the commit message itself, never reaches the relay
         // in the clear (SPEC §8's metadata boundary).
+        // and its #236 sibling git_diff_explain_request (explain a diff or
+        // a hunk): routed the same way. The relay only ever sees
+        // `sessionId`/`requestId` and an opaque `EncryptedEnvelope`; which
+        // file/hunk was addressed never reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'git_branch_list_request':

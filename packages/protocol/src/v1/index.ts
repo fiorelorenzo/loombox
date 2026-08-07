@@ -315,6 +315,27 @@ export {
 } from './fs';
 
 export type {
+  GitDiffExplainHunkSideV1,
+  GitDiffExplainRequest,
+  GitDiffExplainRequestPayloadV1,
+  GitDiffExplainResponse,
+  GitDiffExplainResponsePayloadV1,
+  GitDiffExplainScopeV1,
+} from './git-diff-explain';
+export {
+  gitDiffExplainHunkSideV1,
+  gitDiffExplainRequest,
+  gitDiffExplainRequestPayloadV1,
+  gitDiffExplainResponse,
+  gitDiffExplainResponsePayloadV1,
+  gitDiffExplainScopeV1,
+  parseGitDiffExplainRequestPayloadV1,
+  parseGitDiffExplainResponsePayloadV1,
+  safeParseGitDiffExplainRequestPayloadV1,
+  safeParseGitDiffExplainResponsePayloadV1,
+} from './git-diff-explain';
+
+export type {
   GitDiffFileStatusV1,
   GitDiffFileV1,
   GitDiffRequest,
@@ -1137,6 +1158,9 @@ export type {
   AccountPinResolveRequest,
   AccountPinResolveResponse,
   AccountPinResponse,
+  AccountPinScanHitV1,
+  AccountPinScanRequest,
+  AccountPinScanResponse,
   AccountPinSetRequest,
   AccountPinUnsetRequest,
   ConnectedAccountDisconnectRequest,
@@ -1162,6 +1186,9 @@ export {
   accountPinResolveRequest,
   accountPinResolveResponse,
   accountPinResponse,
+  accountPinScanHitV1,
+  accountPinScanRequest,
+  accountPinScanResponse,
   accountPinSetRequest,
   accountPinUnsetRequest,
   connectedAccountDisconnectRequest,
@@ -1611,6 +1638,9 @@ import {
   accountPinResolveRequest,
   accountPinResolveResponse,
   accountPinResponse,
+  accountPinScanHitV1,
+  accountPinScanRequest,
+  accountPinScanResponse,
   accountPinSetRequest,
   accountPinUnsetRequest,
   connectedAccountDisconnectRequest,
@@ -1912,6 +1942,9 @@ export const schemasV1 = {
   accountPinResolveRequest,
   accountPinResolveOutcome,
   accountPinResolveResponse,
+  accountPinScanHitV1,
+  accountPinScanRequest,
+  accountPinScanResponse,
   trackerRoleV1,
   trackerTypeDefinitionV1,
   trackerSystemV1,

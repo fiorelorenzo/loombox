@@ -24,6 +24,7 @@
   import type {
     AccountPinMapV1,
     AccountPinResolveOutcome,
+    AccountPinScanHitV1,
     ConnectedAccount,
     ConnectedAccountDisconnectResponse,
     GithubConnectDeviceCode,
@@ -51,6 +52,11 @@
       credentials: { siteUrl: string; email: string; apiToken: string },
       timeoutMs?: number,
     ) => Promise<JiraConnectOutcome>;
+    scanAccountPins: (
+      nodeId: string,
+      accountId: string,
+      timeoutMs?: number,
+    ) => Promise<AccountPinScanHitV1[]>;
     disconnectAccount: (
       nodeId: string,
       accountId: string,
