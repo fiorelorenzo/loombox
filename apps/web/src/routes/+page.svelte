@@ -18,7 +18,14 @@
     createPermissionQueueState,
     headPermissionRequest,
   } from '@loombox/providers-core/browser';
-  import type { GitHunkV1, KeymapV1, SessionStatusV1 } from '@loombox/protocol';
+  import type {
+    GitHunkV1,
+    KeymapV1,
+    SessionStatusV1,
+    SessionViewStatePanelV1,
+    SessionViewStatePayloadV1,
+  } from '@loombox/protocol';
+  import { invalidateStaleViewState } from '$lib/session-view-state';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { transcriptTail } from '$lib/transcript-tail';
   import {
@@ -764,6 +771,32 @@
   /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
   let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
   /**
+   * Device-switch state preservation (issue #198, epic #6). `viewedItemId`
+   * mirrors `TranscriptTimeline`'s own `onViewportItemChange` (`undefined`
+   * while pinned to the live tail — see that prop's own doc comment).
+   * `pendingViewStateJumpTarget` is a RAW, not-yet-validated
+   * `lastViewedItemId` restored from another device — kept separate from
+   * `transcriptJumpTarget` (which actually drives `TranscriptTimeline`)
+   * because whether it still resolves depends on THIS device's own
+   * transcript resync, which can still be in flight the moment the saved
+   * view state itself arrives; the `$effect` below re-checks it against
+   * `transcript.items` on every change until it resolves (jumps once, then
+   * clears itself) or the session is left with the live-tail default
+   * forever if it never does — issue #198's own "invalidate a stale
+   * cached view" story, `$lib/session-view-state.ts`'s own doc comment
+   * has the full design rationale. `viewStateRestoreSettled` gates
+   * `selectSession`'s own subscribe callback below (apply live updates
+   * while unsettled — covers both an instantly-available cached store and
+   * a fresh relay round trip) and the persist effect further down (never
+   * re-save what was just restored, and never save over an
+   * still-in-flight restore).
+   */
+  let viewedItemId = $state<string | undefined>(undefined);
+  let pendingViewStateJumpTarget = $state<string | undefined>(undefined);
+  let viewStateRestoreSettled = $state(false);
+  let viewStateSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  let viewStatePersistTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
    * In-transcript search (SPEC.md §7.19; issues #262/#263). `searchTranscript`
    * (`$lib/transcript/search.ts`) runs over `transcript.items`'s FULL
    * array, never just whatever `TranscriptTimeline`'s own windowing
@@ -1461,6 +1494,7 @@
   let unsubscribeStaleNotice: (() => void) | undefined;
   let unsubscribeFileTree: (() => void) | undefined;
   let unsubscribeRelayBuildIdentity: (() => void) | undefined;
+  let unsubscribeViewState: (() => void) | undefined;
 
   // #164: "tapping/clicking a notification opens directly to the relevant
   // session" — the service worker's `notificationclick` handler

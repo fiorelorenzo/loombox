@@ -1063,6 +1063,22 @@ export {
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
+  SessionViewStateGetRequest,
+  SessionViewStateSet,
+  SessionViewStateResult,
+  SessionViewStatePanelV1,
+  SessionViewStatePayloadV1,
+} from './session-view-state';
+export {
+  sessionViewStateGetRequest,
+  sessionViewStateSet,
+  sessionViewStateResult,
+  sessionViewStatePanelV1,
+  sessionViewStatePayloadV1,
+  parseSessionViewStatePayloadV1,
+  safeParseSessionViewStatePayloadV1,
+} from './session-view-state';
+export type {
   AgentProfileV1,
   AgentProfileListResultPayloadV1,
   AgentProfileListSetPayloadV1,
@@ -1539,6 +1555,13 @@ import {
 } from './checkpoint';
 import { keymapGetRequest, keymapResult, keymapSetRequest, keymapV1 } from './keymap';
 import {
+  sessionViewStateGetRequest,
+  sessionViewStateSet,
+  sessionViewStateResult,
+  sessionViewStatePanelV1,
+  sessionViewStatePayloadV1,
+} from './session-view-state';
+import {
   agentProfileV1,
   agentProfileListGet,
   agentProfileListSet,
@@ -1896,6 +1919,11 @@ export const schemasV1 = {
   keymapGetRequest,
   keymapSetRequest,
   keymapResult,
+  sessionViewStateGetRequest,
+  sessionViewStateSet,
+  sessionViewStateResult,
+  sessionViewStatePanelV1,
+  sessionViewStatePayloadV1,
   prOpenFailureCategory,
   prOpenFailure,
   prOpenPreviewOutcome,

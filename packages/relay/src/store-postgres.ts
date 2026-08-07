@@ -31,6 +31,8 @@ import {
   type RingEntryRetentionMeta,
   type SessionRecord,
   type SessionStore,
+  type SessionViewStateEntry,
+  type SessionViewStateStore,
   type VapidKeyPair,
   type VapidKeyStore,
 } from './store';
@@ -64,6 +66,7 @@ export function createPostgresRelayStore(pg: PgLike, opts: RelayStoreOptions = {
     deviceTokens: createPostgresDeviceTokenStore(pg),
     connectedAccounts: createPostgresConnectedAccountStore(pg),
     keymaps: createPostgresKeymapStore(pg),
+    sessionViewStates: createPostgresSessionViewStateStore(pg),
   };
 }
 
@@ -1040,6 +1043,58 @@ function createPostgresKeymapStore(pg: PgLike): KeymapStore {
         [accountId],
       );
       return rows[0] ? rowToEnvelope(rows[0]) : undefined;
+    },
+  };
+}
+
+interface SessionViewStateRow {
+  envelope_resource_id: string;
+  envelope_iv: string;
+  envelope_ciphertext: string;
+  envelope_alg: string;
+  revision: number;
+}
+
+/**
+ * Postgres-backed `SessionViewStateStore` (issue #198) — one opaque
+ * envelope row per session, upserted whole on every save, exactly like
+ * {@link createPostgresKeymapStore} above just keyed by `session_id`
+ * rather than `account_id`. `delete` is called explicitly alongside
+ * `SessionStore.deleteSession` (`relay.ts`'s session-archive handler,
+ * `prune.ts`'s TTL expiry) rather than an `ON DELETE CASCADE` FK — the
+ * `sessions` table itself is never actually deleted (`session_ring_entries`/
+ * `session_rings`/`session_seq_counters` are the only rows `deleteSession`
+ * removes; see that method's own doc comment), so a CASCADE FK would never
+ * fire in the first place.
+ */
+function createPostgresSessionViewStateStore(pg: PgLike): SessionViewStateStore {
+  return {
+    async set(sessionId, entry) {
+      const [resourceId, iv, ciphertext, alg] = envelopeColumns(entry.envelope);
+      await pg.query(
+        `INSERT INTO session_view_state (session_id, envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg, revision, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (session_id) DO UPDATE SET
+           envelope_resource_id = EXCLUDED.envelope_resource_id,
+           envelope_iv = EXCLUDED.envelope_iv,
+           envelope_ciphertext = EXCLUDED.envelope_ciphertext,
+           envelope_alg = EXCLUDED.envelope_alg,
+           revision = EXCLUDED.revision,
+           updated_at = EXCLUDED.updated_at`,
+        [sessionId, resourceId, iv, ciphertext, alg, entry.revision, Date.now()],
+      );
+    },
+    async get(sessionId) {
+      const { rows } = await pg.query<SessionViewStateRow>(
+        `SELECT envelope_resource_id, envelope_iv, envelope_ciphertext, envelope_alg, revision
+         FROM session_view_state WHERE session_id = $1`,
+        [sessionId],
+      );
+      const row = rows[0];
+      return row ? { envelope: rowToEnvelope(row), revision: row.revision } : undefined;
+    },
+    async delete(sessionId) {
+      await pg.query(`DELETE FROM session_view_state WHERE session_id = $1`, [sessionId]);
     },
   };
 }

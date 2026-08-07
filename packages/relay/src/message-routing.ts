@@ -219,6 +219,13 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
     reason:
       "relay-constructed reply to `keymap_get_request`/`keymap_set_request`, sent by `handleClientMessage`'s own cases — never legitimately arrives inbound.",
   },
+  session_view_state_get_request: { routed: 'client' },
+  session_view_state_set: { routed: 'client' },
+  session_view_state_result: {
+    routed: 'not-routed',
+    reason:
+      "relay-constructed reply to `session_view_state_get_request`/`session_view_state_set`, sent by `handleClientMessage`'s own cases — never legitimately arrives inbound.",
+  },
   agent_profile_list_get: { routed: 'client' },
   agent_profile_list_set: { routed: 'client' },
   agent_profile_list_result: { routed: 'node' },

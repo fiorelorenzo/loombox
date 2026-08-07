@@ -11657,3 +11657,200 @@ describe('RelayClient.mergePr (SPEC §7.14; issue #240)', () => {
     await expect(conflictPromise).resolves.toEqual(conflictResult);
   });
 });
+
+describe('RelayClient: device-switch view state (issue #198, epic #6)', () => {
+  let viewStateRelay: StartedRelay | undefined;
+
+  afterEach(async () => {
+    await viewStateRelay?.close();
+    viewStateRelay = undefined;
+  });
+
+  it('setSessionViewState seals the draft before sending — the relay only ever carries ciphertext, proven over the wire shape', async () => {
+    const store = createInMemoryRelayStore();
+    viewStateRelay = await startRelay({ store });
+    const amk = generateAmk();
+    const accountId = 'acct-view-state-seal';
+    const session = makeSessionMeta({ id: 'sess_view_state_seal', accountId });
+    store.sessions.announce({
+      meta: session,
+      privateEnvelope: { resourceId: session.id, iv: 'x', ciphertext: 'y', alg: 'AES-256-GCM' },
+    });
+
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: viewStateRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-seal',
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await client.setSessionViewState(session.id, {
+      draft: 'the unsent secret prompt',
+      panel: { kind: 'transcript' },
+      lastViewedItemId: undefined,
+    });
+
+    const routed = sent.find((m) => m.type === 'session_view_state_set');
+    if (routed?.type !== 'session_view_state_set') throw new Error('no session_view_state_set sent');
+    expect(routed.sessionId).toBe(session.id);
+    expect(routed.revision).toBe(0);
+
+    // Nothing user-authored reached the relay in the clear.
+    const raw = Buffer.from(routed.envelope.ciphertext, 'base64').toString('latin1');
+    expect(raw.includes('the unsent secret prompt')).toBe(false);
+    const rawJson = JSON.stringify(routed);
+    expect(rawJson.includes('the unsent secret prompt')).toBe(false);
+
+    // An independent party deriving the SAME documented key recovers the
+    // exact plaintext — proving real interop, not self-consistency.
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const decrypted = await nodeOpen<{ draft: string }>(session.id, routed.envelope, key);
+    expect(decrypted.draft).toBe('the unsent secret prompt');
+  });
+
+  it('sessionViewStateFor fetches and decrypts an already-saved view state — the actual device-switch resume path', async () => {
+    const store = createInMemoryRelayStore();
+    viewStateRelay = await startRelay({ store });
+    const amk = generateAmk();
+    const accountId = 'acct-view-state-fetch';
+    const session = makeSessionMeta({ id: 'sess_view_state_fetch', accountId });
+    store.sessions.announce({
+      meta: session,
+      privateEnvelope: { resourceId: session.id, iv: 'x', ciphertext: 'y', alg: 'AES-256-GCM' },
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const savedByOtherDevice = await nodeSeal(
+      session.id,
+      { draft: 'left off here', panel: { kind: 'file', path: 'src/app.ts' }, lastViewedItemId: 'turn-3' },
+      key,
+    );
+    store.sessionViewStates.set(session.id, { envelope: savedByOtherDevice, revision: 5 });
+
+    client = new RelayClient({ relayUrl: viewStateRelay.url, amk, accountId, deviceId: 'client-fetch' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const viewState = await waitForStore(
+      client.sessionViewStateFor(session.id),
+      (value) => value !== undefined,
+    );
+    expect(viewState).toEqual({
+      payload: {
+        draft: 'left off here',
+        panel: { kind: 'file', path: 'src/app.ts' },
+        lastViewedItemId: 'turn-3',
+      },
+      revision: 5,
+    });
+  });
+
+  it('a second live device on the same account sees the other one\u2019s save immediately, without asking for it', async () => {
+    const store = createInMemoryRelayStore();
+    viewStateRelay = await startRelay({ store });
+    const amk = generateAmk();
+    const accountId = 'acct-view-state-live';
+    const session = makeSessionMeta({ id: 'sess_view_state_live', accountId });
+    store.sessions.announce({
+      meta: session,
+      privateEnvelope: { resourceId: session.id, iv: 'x', ciphertext: 'y', alg: 'AES-256-GCM' },
+    });
+
+    const deviceA = new RelayClient({
+      relayUrl: viewStateRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-live-a',
+    });
+    const deviceB = new RelayClient({
+      relayUrl: viewStateRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-live-b',
+    });
+    try {
+      deviceA.connect();
+      deviceB.connect();
+      await waitForStore(deviceA.status, (status) => status === 'open');
+      await waitForStore(deviceB.status, (status) => status === 'open');
+
+      // deviceB shows interest in the session's view state BEFORE deviceA
+      // saves anything — its own initial get_request resolves to nothing
+      // saved yet, then the live push from deviceA lands on the same store.
+      const deviceBViewState = deviceB.sessionViewStateFor(session.id);
+
+      await deviceA.setSessionViewState(session.id, {
+        draft: 'typed on device A',
+        panel: { kind: 'diff' },
+        lastViewedItemId: undefined,
+      });
+
+      const pushed = await waitForStore(deviceBViewState, (value) => value !== undefined);
+      expect(pushed?.payload.draft).toBe('typed on device A');
+      expect(pushed?.payload.panel).toEqual({ kind: 'diff' });
+    } finally {
+      deviceA.close();
+      deviceB.close();
+    }
+  });
+
+  it('a reconnect re-fetches view state for a session already being watched, recovering a save made while disconnected', async () => {
+    const store = createInMemoryRelayStore();
+    viewStateRelay = await startRelay({ store });
+    const amk = generateAmk();
+    const accountId = 'acct-view-state-reconnect';
+    const session = makeSessionMeta({ id: 'sess_view_state_reconnect', accountId });
+    store.sessions.announce({
+      meta: session,
+      privateEnvelope: { resourceId: session.id, iv: 'x', ciphertext: 'y', alg: 'AES-256-GCM' },
+    });
+
+    const sent: WireMessageV1[] = [];
+    const sockets: WebSocketLike[] = [];
+    client = new RelayClient({
+      relayUrl: viewStateRelay.url,
+      amk,
+      accountId,
+      deviceId: 'client-reconnect',
+      initialBackoffMs: 50,
+      maxBackoffMs: 100,
+      webSocketImpl: recordingSocketCtor(sent, sockets),
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const viewState = client.sessionViewStateFor(session.id);
+    await waitForStore(viewState, () => true); // the initial fetch's own (empty) reply landed
+
+    // An unexpected drop — another device saves while this one is offline.
+    sockets[0]!.close();
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const savedWhileOffline = await nodeSeal(
+      session.id,
+      { draft: 'saved while B was offline', panel: { kind: 'transcript' }, lastViewedItemId: undefined },
+      key,
+    );
+    store.sessionViewStates.set(session.id, { envelope: savedWhileOffline, revision: 1 });
+
+    await waitForCondition(() => sockets.length >= 2);
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const recovered = await waitForStore(
+      viewState,
+      (value) => value?.payload.draft === 'saved while B was offline',
+    );
+    expect(recovered?.revision).toBe(1);
+
+    // The mechanism, not just the symptom: a second get_request actually
+    // went out on the reconnected socket.
+    expect(
+      sent.filter((m) => m.type === 'session_view_state_get_request' && m.sessionId === session.id)
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+});
+

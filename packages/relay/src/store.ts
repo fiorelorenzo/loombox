@@ -480,6 +480,30 @@ export interface KeymapStore {
   get(accountId: string): Awaitable<EncryptedEnvelope | undefined>;
 }
 
+/** One session's saved device-switch view state (issue #198) — the opaque envelope `session_view_state_set` sealed, plus the writing device's own revision anchor. See `@loombox/protocol`'s `session-view-state.ts` for the full design doc comment. */
+export interface SessionViewStateEntry {
+  envelope: EncryptedEnvelope;
+  revision: number;
+}
+
+/**
+ * One session's saved view state (issue #198), keyed by `sessionId` alone —
+ * `KeymapStore`'s structural sibling, just session- rather than
+ * account-scoped: one opaque entry, fully replaced on every `set`, never
+ * parsed or decrypted here. Ownership (this session belongs to the calling
+ * connection's account) is checked by `relay.ts` against `SessionStore`
+ * before ever reaching this store, the same guard `session_resume` already
+ * applies — this store trusts whatever `sessionId` it is given.
+ */
+export interface SessionViewStateStore {
+  /** Fully replaces any previously saved entry for `sessionId` (never a partial patch — same whole-document contract `KeymapStore.set` already follows). */
+  set(sessionId: string, entry: SessionViewStateEntry): Awaitable<void>;
+  /** Returns `undefined` if this session has never had a view state saved — `session_view_state_get_request`'s "every caller falls back to its own defaults" case. */
+  get(sessionId: string): Awaitable<SessionViewStateEntry | undefined>;
+  /** Forgets a session's saved view state — called alongside `SessionStore.deleteSession` (an archived or TTL-expired session has nothing left for a view state to describe). Idempotent: deleting an already-gone or never-saved `sessionId` is a no-op. */
+  delete(sessionId: string): Awaitable<void>;
+}
+
 export interface RelayStore {
   devices: DeviceStore;
   targets: TargetStore;
@@ -495,6 +519,7 @@ export interface RelayStore {
   deviceTokens: DeviceTokenStore;
   connectedAccounts: ConnectedAccountStore;
   keymaps: KeymapStore;
+  sessionViewStates: SessionViewStateStore;
 }
 
 export interface RelayStoreOptions {
@@ -555,6 +580,12 @@ interface SyncEscrowStore extends EscrowStore {
 interface SyncKeymapStore extends KeymapStore {
   set(accountId: string, envelope: EncryptedEnvelope): void;
   get(accountId: string): EncryptedEnvelope | undefined;
+}
+
+interface SyncSessionViewStateStore extends SessionViewStateStore {
+  set(sessionId: string, entry: SessionViewStateEntry): void;
+  get(sessionId: string): SessionViewStateEntry | undefined;
+  delete(sessionId: string): void;
 }
 
 interface SyncAmkRotationStore extends AmkRotationStore {
@@ -644,6 +675,7 @@ export interface SyncRelayStore extends RelayStore {
   deviceTokens: SyncDeviceTokenStore;
   connectedAccounts: SyncConnectedAccountStore;
   keymaps: SyncKeymapStore;
+  sessionViewStates: SyncSessionViewStateStore;
 }
 
 /**
@@ -1154,6 +1186,22 @@ function createKeymapStore(): SyncKeymapStore {
   };
 }
 
+/** In-memory `SessionViewStateStore` (issue #198) — one opaque entry per session, fully replaced on every `set`, exactly like {@link createKeymapStore} above. */
+function createSessionViewStateStore(): SyncSessionViewStateStore {
+  const entries = new Map<string, SessionViewStateEntry>();
+  return {
+    set(sessionId, entry) {
+      entries.set(sessionId, entry);
+    },
+    get(sessionId) {
+      return entries.get(sessionId);
+    },
+    delete(sessionId) {
+      entries.delete(sessionId);
+    },
+  };
+}
+
 /** Builds a fresh, per-instance in-memory `RelayStore`. Never shared across `createRelay()` calls. */
 export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRelayStore {
   const usage = createUsageTracker();
@@ -1172,5 +1220,6 @@ export function createInMemoryRelayStore(opts: RelayStoreOptions = {}): SyncRela
     deviceTokens: createDeviceTokenStore(),
     connectedAccounts: createConnectedAccountStore(),
     keymaps: createKeymapStore(),
+    sessionViewStates: createSessionViewStateStore(),
   };
 }
