@@ -127,6 +127,7 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     nodeId: 'node-ci-check',
     targetId: 'local',
     spendCapUsd: undefined,
+    acpSessionId: undefined,
     ...overrides,
   };
 }
