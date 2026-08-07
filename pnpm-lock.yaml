@@ -285,7 +285,14 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
-  packages/providers/gemini: {}
+  packages/providers/gemini:
+    dependencies:
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../core
+      '@loombox/providers-generic':
+        specifier: workspace:*
+        version: link:../generic
 
   packages/providers/generic:
     dependencies:
