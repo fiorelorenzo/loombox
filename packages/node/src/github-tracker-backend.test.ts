@@ -447,8 +447,8 @@ describe('GithubTrackerBackend.listTransitions/transition (issue #215 slice 2)',
     const transitions = await svc.listTransitions(binding(), '213');
 
     expect(transitions).toEqual([
-      { id: 'close_completed', name: 'Close as completed' },
-      { id: 'close_not_planned', name: 'Close as not planned' },
+      { id: 'close_completed', name: 'Close as completed', targetCategory: 'done' },
+      { id: 'close_not_planned', name: 'Close as not planned', targetCategory: 'done' },
     ]);
   });
 
@@ -460,7 +460,7 @@ describe('GithubTrackerBackend.listTransitions/transition (issue #215 slice 2)',
 
     const transitions = await svc.listTransitions(binding(), '213');
 
-    expect(transitions).toEqual([{ id: 'reopen', name: 'Reopen' }]);
+    expect(transitions).toEqual([{ id: 'reopen', name: 'Reopen', targetCategory: 'new' }]);
   });
 
   it('listTransitions() rejects a payload that turns out to be a pull request', async () => {

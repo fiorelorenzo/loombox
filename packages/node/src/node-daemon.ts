@@ -445,6 +445,7 @@ import {
   type TrackerBackendResolutionError,
 } from './tracker-backend-composition';
 import {
+  applyLiveTrackerCategoryMove,
   liveItemToTrackerRecord,
   liveTrackerTypeDefinition,
   trackerResolutionErrorPayload,
@@ -6713,15 +6714,25 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /**
-   * The live half of {@link applyTrackerWrite}. `create`/`update`
-   * forward `fields` straight to the resolved `TrackerBackend` — a live
-   * record has no native `primaryType`/`typeTags`/`archived` concept to
-   * apply, see `tracker-live-bridge.ts`'s own doc comment for what a
-   * live-mode record actually carries. `defineType` has no live-mode
-   * analog (a live project's types come from the provider, never a user
-   * definition) and fails immediately, without attempting a backend
-   * call. Never throws: a backend/network failure becomes an
-   * `outcome: 'error'` payload, same as {@link readLiveTrackerSnapshot}.
+   * The live half of {@link applyTrackerWrite}. `create` forwards
+   * `fields` straight to the resolved `TrackerBackend` — a live record
+   * has no native `primaryType`/`typeTags`/`archived` concept to apply,
+   * see `tracker-live-bridge.ts`'s own doc comment for what a live-mode
+   * record actually carries. `update` goes through
+   * {@link applyLiveTrackerCategoryMove} rather than `dispatch.backend.update`
+   * directly (issue #696): a board move sets `fields.workflowCategory` to
+   * the moved-to column, and landing it for real needs the provider's own
+   * discovered transitions, not a raw field PATCH the provider would
+   * ignore or reject — see that function's own doc comment for the full
+   * "read current category, diff, transition, then patch the rest"
+   * algorithm, which also covers the plain-field-edit (no category
+   * change) case unchanged. `defineType` has no live-mode analog (a live
+   * project's types come from the provider, never a user definition) and
+   * fails immediately, without attempting a backend call. Never throws: a
+   * backend/network failure, including a board move that lands on a
+   * category no discovered transition reaches
+   * ({@link LiveTrackerCategoryMoveError}), becomes an `outcome: 'error'`
+   * payload, same as {@link readLiveTrackerSnapshot}.
    */
   private async applyLiveTrackerWrite(
     dispatch: Extract<TrackerBridgeDispatch, { kind: 'live' }>,
@@ -6737,7 +6748,8 @@ export class NodeDaemon extends EventEmitter {
           };
         }
         case 'update': {
-          const item = await dispatch.backend.update(
+          const item = await applyLiveTrackerCategoryMove(
+            dispatch.backend,
             dispatch.binding,
             payload.id,
             payload.fields ?? {},

@@ -1,4 +1,4 @@
-import type { GitHubTarget, JiraTarget } from '@loombox/protocol';
+import type { GitHubTarget, JiraTarget, WorkflowCategoryV1 } from '@loombox/protocol';
 
 /**
  * The pluggable `TrackerBackend` extension point every live tracker
@@ -62,11 +62,12 @@ export interface TrackerListPage {
   readonly nextCursor?: string;
 }
 
-/** One workflow transition `TrackerBackend.listTransitions` discovers and `TrackerBackend.transition` can then apply by `id` (GitHub: a fixed two-state set; Jira: the item's own discovered workflow, SPEC §7.10). `requiresFields` is optional and provider-specific — Jira sets it from its own per-transition workflow-screen field map (a "Done"-category move commonly requiring `resolution`); GitHub's fixed set never sets it, since GitHub has no such per-transition field requirement to discover. */
+/** One workflow transition `TrackerBackend.listTransitions` discovers and `TrackerBackend.transition` can then apply by `id` (GitHub: a fixed two-state set; Jira: the item's own discovered workflow, SPEC §7.10). `requiresFields` is optional and provider-specific — Jira sets it from its own per-transition workflow-screen field map (a "Done"-category move commonly requiring `resolution`); GitHub's fixed set never sets it, since GitHub has no such per-transition field requirement to discover. `targetCategory` (issue #696) is the {@link WorkflowCategoryV1} this transition lands on — GitHub derives it from the exact same `state`/`stateReason` pair `deriveGithubWorkflowCategory` already maps for a read; Jira derives it from the transition's own `to.statusCategory.key`, the identical field `deriveJiraWorkflowCategory` reads for a read. This is what lets a board move (`TrackerBoard`'s drag/"Move to", which only ever knows the target CATEGORY, never a provider-specific status id) pick the right transition without either backend inventing a second, hand-written category-to-transition table. */
 export interface TrackerTransition {
   readonly id: string;
   readonly name: string;
   readonly requiresFields?: boolean;
+  readonly targetCategory?: WorkflowCategoryV1;
 }
 
 /** One board `TrackerBackend.listBoards` exposes (Jira agile board or a GitHub Projects v2 board). */
