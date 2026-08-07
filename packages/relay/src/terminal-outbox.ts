@@ -2,25 +2,33 @@ import { PROTOCOL_V1 } from '@loombox/protocol';
 import type { TerminalOutput, TerminalResyncMarker } from '@loombox/protocol';
 
 /**
- * Bounded per-client output queue for `terminal_output` fan-out (SPEC
- * §7.16; issue #207) — the terminal-stream sibling of `outbox.ts`'s
- * `BoundedClientOutbox`, which this class deliberately mirrors structurally
- * (same single-flight pump, same `minFlushIntervalMs` floor, same
- * drop-oldest-then-mark shape) rather than sharing code with it: the two
- * differ in what a "drop" means enough to be worth keeping apart —
- * `session_update`'s marker groups a run of drops by `sessionId` alone (one
- * ring per session), this one groups by `sessionId` + `terminalId` (a
- * client can have several terminals open across several sessions sharing
- * one connection, and a burst on one terminal must never get folded into
- * another terminal's own gap marker).
+ * Bounded output queue for one open terminal's `terminal_output` fan-out
+ * (SPEC §7.16; issue #207) — the terminal-stream sibling of `outbox.ts`'s
+ * `BoundedClientOutbox`, which this class deliberately mirrors
+ * structurally (same single-flight pump, same `minFlushIntervalMs` floor,
+ * same drop-oldest-then-mark shape) rather than sharing code with it: the
+ * two differ in what a "drop" means enough to be worth keeping apart —
+ * `session_update`'s marker groups a run of drops by `sessionId` alone,
+ * this one groups every dropped item by `sessionId` + `terminalId`
+ * regardless of position in the dropped batch (not just contiguous runs —
+ * see {@link buildMarkers}'s own doc comment for why that distinction
+ * matters even though `relay.ts` gives every terminal its own instance
+ * today: a caller that reused one instance across terminals, or a future
+ * change that goes back to sharing one, must not silently reintroduce the
+ * unbounded-growth bug this grouping was written to fix).
  *
- * One `BoundedTerminalOutbox` per WS client connection (mirrors
- * `BoundedClientOutbox`'s own per-connection lifetime) — every open
- * terminal that connection is subscribed to shares this one bounded queue,
- * so a firehose on terminal A can still crowd out terminal B's own chunks
- * (both are real PTY bytes the client asked to see, and FIFO ordering
- * across them is exactly what fairness means here), but never a DIFFERENT
- * client's connection, which owns its own independent instance entirely.
+ * `relay.ts` creates one `BoundedTerminalOutbox` PER OPEN TERMINAL per
+ * client connection (`terminalOutboxFor`, keyed by `sessionId:terminalId`),
+ * not one shared instance for the whole connection like `outbox`/
+ * `BoundedClientOutbox` above: SPEC §7.5/issue #173 lets one session hold
+ * several open terminals sharing a connection, and a single shared queue
+ * was tried first and found, with a real two-terminal round trip, to let
+ * one terminal's firehose (a busy build log) evict — and so starve, not
+ * just delay — a second, otherwise-idle terminal's own reply for as long
+ * as the first kept overflowing. One small bounded queue per terminal
+ * means the total in-flight bound scales with the number of terminals a
+ * user actually has open (small, user-controlled) rather than with
+ * output volume, and structurally cannot let one terminal starve another.
  *
  * There is no terminal analogue of `resync_request`/the relay's
  * `session_update` ring buffer: a dropped PTY chunk was never durably
@@ -97,7 +105,7 @@ function buildMarkers(dropped: readonly TerminalOutboxItem[]): TerminalResyncMar
   );
 }
 
-const DEFAULT_MIN_FLUSH_INTERVAL_MS = 2;
+const DEFAULT_MIN_FLUSH_INTERVAL_MS = 0;
 
 export class BoundedTerminalOutbox {
   private readonly queue: TerminalOutboxItem[] = [];
