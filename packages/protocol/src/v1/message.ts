@@ -190,6 +190,8 @@ import {
   githubConnectDeviceCode,
   githubConnectResult,
   githubConnectStartRequest,
+  githubPatConnectRequest,
+  githubPatConnectResponse,
   jiraConnectRequest,
   jiraConnectResponse,
 } from './account-connect';
@@ -297,6 +299,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   githubConnectResult,
   githubCliImportRequest,
   githubCliImportResponse,
+  githubPatConnectRequest,
+  githubPatConnectResponse,
   jiraConnectRequest,
   jiraConnectResponse,
   connectedAccountDisconnectRequest,

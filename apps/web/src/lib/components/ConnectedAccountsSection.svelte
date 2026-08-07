@@ -29,6 +29,7 @@
     ConnectedAccountDisconnectResponse,
     GithubConnectDeviceCode,
     GithubConnectOutcome,
+    GithubPatConnectOutcome,
     JiraConnectOutcome,
   } from '@loombox/protocol';
   import type { TargetListEntry } from '$lib/relay-client';
@@ -47,6 +48,12 @@
       onDeviceCode: (info: GithubConnectDeviceCode) => void,
       timeoutMs?: number,
     ) => { requestId: string; cancel: () => void; result: Promise<GithubConnectOutcome> };
+    /** Issue #224's fine-grained PAT paste path — see `GithubConnectFlow`'s own `GithubConnectClient.connectGithubPat` doc comment. */
+    connectGithubPat: (
+      nodeId: string,
+      credentials: { token: string; host?: string },
+      timeoutMs?: number,
+    ) => Promise<GithubPatConnectOutcome>;
     connectJiraAccount: (
       nodeId: string,
       credentials: { siteUrl: string; email: string; apiToken: string },

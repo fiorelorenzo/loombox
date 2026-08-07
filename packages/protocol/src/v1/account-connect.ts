@@ -190,6 +190,47 @@ export const githubCliImportResponse = z.object({
 export type GithubCliImportResponse = z.infer<typeof githubCliImportResponse>;
 
 // ---------------------------------------------------------------------
+// GitHub — fine-grained PAT paste (issue #224's flow, reachable here)
+// ---------------------------------------------------------------------
+
+/** A client asks `nodeId` to run SPEC §7.26's fine-grained PAT paste path (issue #224) against `token` the operator just typed — the fallback for orgs that enable OAuth App access restrictions (real, enabled-by-default per GitHub's own docs) and can block `githubConnectStartRequest`'s device flow outright. `host` defaults to `github.com` on the node side when omitted; set it for a GitHub Enterprise Server token, the same per-host convention `github-identity.ts`'s `githubApiBaseUrl` already gives the `gh` CLI import path (#223). One round trip, like `jiraConnectRequest` — no device-flow-style polling step. */
+export const githubPatConnectRequest = z.object({
+  type: z.literal('github_pat_connect_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  token: z.string().min(1),
+  host: z.string().min(1).optional(),
+});
+export type GithubPatConnectRequest = z.infer<typeof githubPatConnectRequest>;
+
+/** `githubPatConnectResponse.result`'s own outcome. `'success'` carries the newly-synced `ConnectedAccount` (already announced separately via `connected_account_announce`, issue #221) plus `accessibleRepositories` — the first page (up to 100) of `owner/repo` names `GET /user/repos` returned for this token, the only signal GitHub's API offers for what a fine-grained PAT can actually reach (there is no scope-introspection endpoint for this token kind at all — see `github-identity.ts`'s own top comment on why `X-OAuth-Scopes` never applies here). `accessibleRepositoriesTruncated` is true when there were more than fit on that one page. `'failure'` never carries the token; `reason` is `'invalid_or_revoked'` (`GET /user` itself rejected the token — GitHub's API returns a bare 401 "Bad credentials" for an invalid, expired, AND revoked token alike, with no further distinction to report), `'insufficient_access'` (the token authenticates fine but `GET /user/repos` came back with no repositories at all — too narrow to connect), or `'error'` for anything else (a network failure, a malformed GitHub response). */
+export const githubPatConnectOutcome = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('success'),
+    account: connectedAccount,
+    accessibleRepositories: z.array(z.string().min(1)),
+    accessibleRepositoriesTruncated: z.boolean(),
+  }),
+  z.object({
+    outcome: z.literal('failure'),
+    reason: z.enum(['invalid_or_revoked', 'insufficient_access', 'error']),
+    message: z.string().min(1),
+  }),
+]);
+export type GithubPatConnectOutcome = z.infer<typeof githubPatConnectOutcome>;
+
+/** The connect attempt's terminal (and only) message — see {@link githubPatConnectOutcome}'s doc comment for what `result` carries. */
+export const githubPatConnectResponse = z.object({
+  type: z.literal('github_pat_connect_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  result: githubPatConnectOutcome,
+});
+export type GithubPatConnectResponse = z.infer<typeof githubPatConnectResponse>;
+
+// ---------------------------------------------------------------------
 // Disconnect
 // ---------------------------------------------------------------------
 

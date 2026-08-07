@@ -31,6 +31,7 @@ function baseClient(overrides: Partial<TrackerPageClient> = {}): TrackerPageClie
       cancel: vi.fn(),
       result: Promise.withResolvers<GithubConnectOutcome>().promise,
     })),
+    connectGithubPat: vi.fn(),
     connectJiraAccount: vi.fn(() => Promise.withResolvers<JiraConnectOutcome>().promise),
     getTrackerMode: vi.fn(async () => undefined),
     setTrackerMode: vi.fn(async () => undefined),

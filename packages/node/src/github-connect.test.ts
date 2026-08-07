@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GithubConnectService,
   GITHUB_CONNECT_CLIENT_ID_ENV_VAR,
+  GithubPatConnectError,
   resolveGithubConnectClientId,
 } from './github-connect';
 import { GithubDeviceFlowError } from './github-device-flow';
@@ -241,5 +242,137 @@ describe('resolveGithubConnectClientId (issue #222)', () => {
     expect(
       resolveGithubConnectClientId({ [GITHUB_CONNECT_CLIENT_ID_ENV_VAR]: '' } as NodeJS.ProcessEnv),
     ).toBeUndefined();
+  });
+});
+
+const RAW_PAT = 'github_pat_the-actual-secret-never-synced';
+
+/** A `fetchImpl` standing in for the two GitHub endpoints `connectWithToken` calls (`GET /user`, `GET /user/repos`), routed by URL — same "never reach the real network" contract as `stubGithubFetch`. */
+function stubGithubPatFetch(options: {
+  userResponse?: Response;
+  reposResponse?: Response;
+  apiBaseUrl?: string;
+}): typeof fetch {
+  const base = options.apiBaseUrl ?? 'https://api.github.com';
+  const userResponse =
+    options.userResponse ??
+    jsonResponse(200, {
+      id: 7654321,
+      login: 'hubot',
+      avatar_url: 'https://avatars.githubusercontent.com/u/7654321',
+    });
+  const reposResponse =
+    options.reposResponse ?? jsonResponse(200, [{ full_name: 'hubot/hello-world' }]);
+
+  const impl: typeof fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url === `${base}/user`) return userResponse;
+    if (url === `${base}/user/repos?per_page=100&sort=full_name`) return reposResponse;
+    throw new Error(`stubGithubPatFetch: unexpected URL ${url}`);
+  };
+  return impl;
+}
+
+describe('GithubConnectService.connectWithToken (SPEC §7.26, issue #224)', () => {
+  it('connects a pasted fine-grained PAT, keys providerAccountId on the numeric id, and reports the reachable repositories', async () => {
+    const svc = service();
+    const fetchImpl = stubGithubPatFetch({});
+
+    const result = await svc.connectWithToken({ token: RAW_PAT, fetchImpl });
+
+    expect(result.account.provider).toBe('github');
+    expect(result.account.host).toBe('github.com');
+    expect(result.account.providerAccountId).toBe('7654321');
+    expect(result.account.id).toBe('github:github.com:7654321');
+    expect(result.account.label).toBe('hubot');
+    expect(result.account.credentialSource).toBe('fine_grained_pat');
+    expect(result.account.scopes).toEqual([]);
+    expect(result.account.capabilities).toEqual(['repo']);
+    expect(result.accessibleRepositories).toEqual(['hubot/hello-world']);
+    expect(result.accessibleRepositoriesTruncated).toBe(false);
+  });
+
+  it('writes the token to the keyring, referenced only by secretRef — the metadata row itself carries no secret', async () => {
+    const svc = service();
+    const fetchImpl = stubGithubPatFetch({});
+
+    const result = await svc.connectWithToken({ token: RAW_PAT, fetchImpl });
+
+    const serialized = JSON.stringify(result.account);
+    expect(serialized).not.toContain(RAW_PAT);
+    expect(Object.keys(result.account)).not.toContain('token');
+
+    const storedToken = await svc.getAccessToken(result.account);
+    expect(storedToken).toBe(RAW_PAT);
+  });
+
+  it('a GET /user 401 is reported as invalid_or_revoked, and never leaks the token into the message', async () => {
+    const svc = service();
+    const fetchImpl = stubGithubPatFetch({
+      userResponse: jsonResponse(401, { message: 'Bad credentials' }),
+    });
+
+    await expect(svc.connectWithToken({ token: RAW_PAT, fetchImpl })).rejects.toMatchObject({
+      reason: 'invalid_or_revoked',
+    });
+    await expect(svc.connectWithToken({ token: RAW_PAT, fetchImpl })).rejects.toMatchObject({
+      message: expect.not.stringContaining(RAW_PAT),
+    });
+
+    // Nothing was ever written to the keyring for this token.
+    await expect(
+      svc.getAccessToken({ secretRef: 'connected-account-token:github:github.com:7654321' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('a token with zero accessible repositories is reported as insufficient_access, and the keyring stays empty', async () => {
+    const svc = service();
+    const fetchImpl = stubGithubPatFetch({ reposResponse: jsonResponse(200, []) });
+
+    await expect(svc.connectWithToken({ token: RAW_PAT, fetchImpl })).rejects.toMatchObject({
+      reason: 'insufficient_access',
+    });
+    await expect(
+      svc.getAccessToken({ secretRef: 'connected-account-token:github:github.com:7654321' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('an empty/blank token is rejected before ever calling fetch', async () => {
+    const svc = service();
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await expect(svc.connectWithToken({ token: '   ', fetchImpl })).rejects.toMatchObject({
+      reason: 'invalid_or_revoked',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('resolves a GitHub Enterprise Server token against its own host, not github.com', async () => {
+    const svc = service();
+    const ghesBase = 'https://github.mycorp.com/api/v3';
+    const fetchImpl = stubGithubPatFetch({ apiBaseUrl: ghesBase });
+
+    const result = await svc.connectWithToken({
+      token: RAW_PAT,
+      host: 'github.mycorp.com',
+      fetchImpl,
+    });
+
+    expect(result.account.host).toBe('github.mycorp.com');
+    expect(result.account.id).toBe('github:github.mycorp.com:7654321');
+  });
+
+  it('an unrelated failure from the reach probe surfaces as GithubPatConnectError with reason "error", never syncing an account', async () => {
+    const svc = service();
+    const fetchImpl = stubGithubPatFetch({
+      reposResponse: jsonResponse(500, { message: 'internal error' }),
+    });
+
+    await expect(svc.connectWithToken({ token: RAW_PAT, fetchImpl })).rejects.toBeInstanceOf(
+      GithubPatConnectError,
+    );
+    await expect(svc.connectWithToken({ token: RAW_PAT, fetchImpl })).rejects.toMatchObject({
+      reason: 'error',
+    });
   });
 });

@@ -6,6 +6,7 @@ import {
   type ConnectedAccount,
   type ConnectedAccountDisconnectRequest,
   type GithubConnectStartRequest,
+  type GithubPatConnectRequest,
   type Initialize,
   type InitializeResult,
   type JiraConnectRequest,
@@ -288,6 +289,46 @@ describe('jira_connect_request / jira_connect_response routing', () => {
         requestId: 'req-jira-1',
         nodeId: 'node-1',
         result: { outcome: 'failure', message: 'bad credentials' },
+      }),
+    );
+    const response = await nextMessage(clientSocket);
+    expect(asRecord(response.result, 'response.result').message).toBe('bad credentials');
+  });
+});
+
+describe('github_pat_connect_request / github_pat_connect_response routing (issue #224)', () => {
+  it('routes a request to the named node and its response back to the requesting client', async () => {
+    const { url } = await startTestRelay();
+    const { socket: nodeSocket } = await initConnection(url, {
+      role: 'node',
+      deviceId: 'node-device',
+      authToken: 'acct_a',
+    });
+    await announceNode(nodeSocket, 'node-1');
+    const { socket: clientSocket } = await initConnection(url, {
+      role: 'client',
+      deviceId: 'client-device',
+      authToken: 'acct_a',
+    });
+
+    const request: GithubPatConnectRequest = {
+      type: 'github_pat_connect_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-github-pat-1',
+      nodeId: 'node-1',
+      token: 'github_pat_11ABC',
+    };
+    clientSocket.send(JSON.stringify(request));
+    const forwarded = await nextMessage(nodeSocket);
+    expect(forwarded).toEqual(request);
+
+    nodeSocket.send(
+      JSON.stringify({
+        type: 'github_pat_connect_response',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-github-pat-1',
+        nodeId: 'node-1',
+        result: { outcome: 'failure', reason: 'invalid_or_revoked', message: 'bad credentials' },
       }),
     );
     const response = await nextMessage(clientSocket);

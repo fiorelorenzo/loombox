@@ -156,6 +156,8 @@ import {
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
+  type GithubPatConnectOutcome,
+  type GithubPatConnectRequest,
   type GitHunkActionRequest,
   type GitHunkActionRequestPayloadV1,
   type GitHunkActionResponsePayloadV1,
@@ -347,7 +349,11 @@ import {
 } from './custom-agent';
 import { renderPromptTextWithMentions, type PromptMentionRef } from './prompt-mentions';
 import { GithubDeviceFlowError } from './github-device-flow';
-import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
+import {
+  GithubConnectService,
+  GithubPatConnectError,
+  resolveGithubConnectClientId,
+} from './github-connect';
 import { GithubCliImportService } from './github-cli-import';
 import { JiraConnectService } from './jira-connect';
 
@@ -1415,6 +1421,15 @@ interface SessionRouting {
 /** Maps a `GithubConnectService.connect` rejection to `github_connect_result`'s failure outcome — `GithubDeviceFlowError`'s own named `reason` (`'expired_token'` / `'access_denied'` / `'cancelled'`) passes straight through; anything else (no client id, `GithubIdentityError`, a network failure) becomes `'error'`. */
 function githubConnectFailureFromError(error: unknown): GithubConnectOutcome {
   if (error instanceof GithubDeviceFlowError) {
+    return { outcome: 'failure', reason: error.reason, message: error.message };
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return { outcome: 'failure', reason: 'error', message: detail };
+}
+
+/** Maps a `GithubConnectService.connectWithToken` rejection to `github_pat_connect_response`'s failure outcome — `GithubPatConnectError`'s own named `reason` (`'invalid_or_revoked'` / `'insufficient_access'` / `'error'`) passes straight through; anything else (should not happen — `connectWithToken`'s own contract is to only ever throw that one error type) also becomes `'error'` rather than propagating an unlabeled failure. */
+function githubPatConnectFailureFromError(error: unknown): GithubPatConnectOutcome {
+  if (error instanceof GithubPatConnectError) {
     return { outcome: 'failure', reason: error.reason, message: error.message };
   }
   const detail = error instanceof Error ? error.message : String(error);
@@ -4587,6 +4602,9 @@ export class NodeDaemon extends EventEmitter {
       case 'github_cli_import_request':
         this.handleGithubCliImportRequest(message);
         return;
+      case 'github_pat_connect_request':
+        this.handleGithubPatConnectRequest(message);
+        return;
       case 'connected_account_disconnect_request':
         this.handleConnectedAccountDisconnectRequest(message);
         return;
@@ -7198,6 +7216,53 @@ export class NodeDaemon extends EventEmitter {
   private sendJiraConnectResponse(requestId: string, result: JiraConnectOutcome): void {
     this.relay.send({
       type: 'jira_connect_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to run SPEC §7.26's
+   * fine-grained PAT paste path (issue #224) against `token` the operator
+   * just typed — the fallback for orgs whose OAuth App access
+   * restrictions block `github_connect_start_request`'s device flow
+   * outright. Goes through the SAME `this.githubConnectService` instance
+   * the device flow above already uses (`GithubConnectService.
+   * connectWithToken`, reusing its identity resolution/keyring/
+   * capabilities plumbing rather than a second service), so this handler
+   * is exactly as thin as `handleJiraConnectRequest` — one round trip,
+   * success announces the account (`connected_account_announce`, issue
+   * #221) before replying, never the token either way.
+   */
+  private handleGithubPatConnectRequest(message: GithubPatConnectRequest): void {
+    this.githubConnectService
+      .connectWithToken({ token: message.token, host: message.host })
+      .then(({ account, accessibleRepositories, accessibleRepositoriesTruncated }) => {
+        this.relay.send({
+          type: 'connected_account_announce',
+          protocolVersion: PROTOCOL_V1,
+          account,
+        });
+        this.sendGithubPatConnectResponse(message.requestId, {
+          outcome: 'success',
+          account,
+          accessibleRepositories,
+          accessibleRepositoriesTruncated,
+        });
+      })
+      .catch((error: unknown) => {
+        this.sendGithubPatConnectResponse(
+          message.requestId,
+          githubPatConnectFailureFromError(error),
+        );
+      });
+  }
+
+  private sendGithubPatConnectResponse(requestId: string, result: GithubPatConnectOutcome): void {
+    this.relay.send({
+      type: 'github_pat_connect_response',
       protocolVersion: PROTOCOL_V1,
       requestId,
       nodeId: this.nodeId,

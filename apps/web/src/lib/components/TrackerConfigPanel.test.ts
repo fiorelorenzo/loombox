@@ -254,6 +254,7 @@ describe('TrackerConfigPanel (issue #220)', () => {
               cancel: () => {},
               result: Promise.withResolvers<GithubConnectOutcome>().promise,
             })),
+            connectGithubPat: vi.fn(),
             connectJiraAccount: vi.fn(),
           },
           refreshConnectedAccounts: vi.fn(),
@@ -293,7 +294,7 @@ describe('TrackerConfigPanel (issue #220)', () => {
         connectedAccounts: [],
         accountConnect: {
           nodeId: 'node-1',
-          client: { startGithubConnect: vi.fn(), connectJiraAccount },
+          client: { startGithubConnect: vi.fn(), connectGithubPat: vi.fn(), connectJiraAccount },
           refreshConnectedAccounts,
         },
       },

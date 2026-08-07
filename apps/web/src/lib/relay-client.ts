@@ -141,6 +141,7 @@ import {
   type GitGraphResponsePayloadV1,
   type GithubConnectDeviceCode,
   type GithubConnectOutcome,
+  type GithubPatConnectOutcome,
   type GitHunkActionRequestPayloadV1,
   type GitHunkActionResponse,
   type GitHunkActionResponsePayloadV1,
@@ -312,6 +313,7 @@ export type {
   ConnectedAccountDisconnectResponse,
   GithubConnectDeviceCode,
   GithubConnectOutcome,
+  GithubPatConnectOutcome,
   JiraConnectOutcome,
 } from '@loombox/protocol';
 export type { CustomAgentProbeResultV1, CustomAgentRecordV1 } from '@loombox/protocol';
@@ -1454,6 +1456,11 @@ export class RelayClient {
   private readonly pendingJiraConnectRequests = new Map<
     string,
     { resolve: (outcome: JiraConnectOutcome) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending `connectGithubPat` call it belongs to (issue #224) — one round trip, no progress step, same shape as {@link pendingJiraConnectRequests} above. */
+  private readonly pendingGithubPatConnectRequests = new Map<
+    string,
+    { resolve: (outcome: GithubPatConnectOutcome) => void; reject: (error: Error) => void }
   >();
   /** requestId -> the pending `disconnectAccount` call it belongs to (SPEC §7.26, issue #230). */
   private readonly pendingDisconnectRequests = new Map<
@@ -2761,6 +2768,52 @@ export class RelayClient {
         siteUrl: credentials.siteUrl,
         email: credentials.email,
         apiToken: credentials.apiToken,
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to run SPEC §7.26's fine-grained PAT paste path (issue
+   * #224's flow) against `credentials.token` the operator just pasted —
+   * the fallback for orgs whose OAuth App access restrictions block
+   * {@link startGithubConnect}'s device flow outright. One round trip,
+   * same shape as {@link connectJiraAccount} (resolves with
+   * `outcome: 'failure'` for a bad/too-narrow token, never a rejection —
+   * only a genuinely unusable call rejects).
+   */
+  connectGithubPat(
+    nodeId: string,
+    credentials: { token: string; host?: string },
+    timeoutMs = 20_000,
+  ): Promise<GithubPatConnectOutcome> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot connect a GitHub account, no open connection'),
+      );
+    }
+    const requestId = generateId('githubpatconnect');
+    return new Promise<GithubPatConnectOutcome>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGithubPatConnectRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for github_pat_connect_response'));
+      }, timeoutMs);
+      this.pendingGithubPatConnectRequests.set(requestId, {
+        resolve: (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'github_pat_connect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        token: credentials.token,
+        host: credentials.host,
       });
     });
   }
@@ -6780,6 +6833,13 @@ export class RelayClient {
         const pending = this.pendingJiraConnectRequests.get(message.requestId);
         if (!pending) return;
         this.pendingJiraConnectRequests.delete(message.requestId);
+        pending.resolve(message.result);
+        return;
+      }
+      case 'github_pat_connect_response': {
+        const pending = this.pendingGithubPatConnectRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingGithubPatConnectRequests.delete(message.requestId);
         pending.resolve(message.result);
         return;
       }
