@@ -51,6 +51,11 @@
     clearTranscriptSearchHighlights,
   } from '$lib/transcript/search-highlight';
   import {
+    findDisplayIndexForItemId,
+    groupToolCallBursts,
+    type TranscriptDisplayItem,
+  } from '$lib/transcript/tool-call-bursts';
+  import {
     computeToolCallNesting,
     type PendingPermissionRequest,
     type ToolCallNesting,
@@ -66,6 +71,7 @@
   } from '$lib/transcript/windowing.svelte';
   import Icon from './icons/Icon.svelte';
   import MessageItem from './MessageItem.svelte';
+  import ToolCallBurstGroup from './ToolCallBurstGroup.svelte';
   import ToolCallRow from './ToolCallRow.svelte';
   import TranscriptGap from './TranscriptGap.svelte';
 
@@ -125,8 +131,36 @@
   let containerEl = $state<HTMLElement | undefined>(undefined);
   let following = $state(true);
 
+  /**
+   * Subagent/nested-tool-call tree rendering (issue #200; SPEC.md §7.24).
+   * Computed ONCE per `items` reference from the FULL transcript, never
+   * from `visibleItems` — a windowed transcript (#755) can easily mount a
+   * child without its parent's own row also being mounted (they can be far
+   * apart in a long session), and this must still resolve the same nesting
+   * either way. Each mounted tool-call row below does an O(1) `.get(item.id)`
+   * against this map rather than re-walking its own chain.
+   */
+  const toolCallNesting = $derived(computeToolCallNesting(items));
+
+  /**
+   * Tier-3 tool-call burst/group summary card (issue #202; SPEC.md §7.24's
+   * own tier-3 bullet). `groupToolCallBursts` runs BEFORE windowing, not
+   * after: it folds a long run of sibling tool calls into one synthetic
+   * `tool_call_group` entry in THIS array, so `win`/`visibleItems` above
+   * mount that group as a single atomic item exactly like a message or a
+   * tool call — the window's `[start, end]` range can include or exclude
+   * it whole, never a slice through the middle of its own real calls
+   * (`$lib/transcript/tool-call-bursts.ts`'s own doc comment has the full
+   * grouping rule and its streaming-stability argument). Depends on
+   * `toolCallNesting` above for the same reason `computeToolCallNesting`
+   * itself depends on the FULL transcript: a burst's scope (root, or a
+   * specific subagent's own children) has to be resolved from the whole
+   * history, not from whatever a windowed transcript currently mounts.
+   */
+  const displayItems = $derived(groupToolCallBursts(items, toolCallNesting));
+
   $effect(() => {
-    win.items = items as readonly TranscriptWindowItem[];
+    win.items = displayItems as readonly TranscriptWindowItem[];
   });
 
   $effect(() => {
@@ -144,7 +178,7 @@
   });
 
   const visibleItems = $derived(
-    win.range.start >= 0 ? items.slice(win.range.start, win.range.end + 1) : [],
+    win.range.start >= 0 ? displayItems.slice(win.range.start, win.range.end + 1) : [],
   );
 
   /**
@@ -170,17 +204,6 @@
   });
 
   /**
-   * Subagent/nested-tool-call tree rendering (issue #200; SPEC.md §7.24).
-   * Computed ONCE per `items` reference from the FULL transcript, never
-   * from `visibleItems` — a windowed transcript (#755) can easily mount a
-   * child without its parent's own row also being mounted (they can be far
-   * apart in a long session), and this must still resolve the same nesting
-   * either way. Each mounted tool-call row below does an O(1) `.get(item.id)`
-   * against this map rather than re-walking its own chain.
-   */
-  const toolCallNesting = $derived(computeToolCallNesting(items));
-
-  /**
    * Visual indent is capped, unlike the real (unbounded) `depth` this reads
    * from `toolCallNesting` — a genuinely deep chain (issue #200's "depth
    * greater than two" acceptance bullet) still needs SOME defined behavior
@@ -192,8 +215,12 @@
    */
   const MAX_NESTING_INDENT = 3;
 
-  function nesting(item: TranscriptItem): ToolCallNesting | undefined {
-    return item.type === 'tool_call' ? toolCallNesting.get(item.id) : undefined;
+  /** `toolCallNesting` carries no entry for a synthetic group's own synthetic id — a group already recorded its (shared, by construction — see `tool-call-bursts.ts`) `depth`/`parentTitle` once at grouping time, so this reads those fields straight off the group instead of a second map lookup. */
+  function nesting(item: TranscriptDisplayItem): ToolCallNesting | undefined {
+    if (item.type === 'tool_call') return toolCallNesting.get(item.id);
+    if (item.type === 'tool_call_group')
+      return { depth: item.depth, parentTitle: item.parentTitle };
+    return undefined;
   }
 
   function distanceFromBottom(el: HTMLElement): number {
@@ -239,20 +266,28 @@
 
   /**
    * Handles a `jumpTarget` request (issue #740's turn-review "jump to this
-   * file's diff"). `id` is very likely NOT currently mounted — that's the
-   * whole reason this exists rather than a caller just calling
-   * `scrollIntoView` itself — so this is a three-step version of
-   * `jumpToLatest` above: detach from following, force the window to
-   * include the target row (`TranscriptWindow.focusIndex`, which only
-   * needs the row's INDEX, not its real DOM), flush so that row actually
-   * mounts, then scroll the now-real element into view. A target id this
-   * transcript doesn't contain (a stale click racing a session switch) is
-   * silently ignored, same as `win.focusIndex`'s own out-of-range guard.
+   * file's diff"; also #262/#263's off-window search match). `id` is very
+   * likely NOT currently mounted — that's the whole reason this exists
+   * rather than a caller just calling `scrollIntoView` itself — so this is
+   * a three-step version of `jumpToLatest` above: detach from following,
+   * force the window to include the target row (`TranscriptWindow.
+   * focusIndex`, which only needs the row's INDEX, not its real DOM), flush
+   * so that row actually mounts, then scroll the now-real element into
+   * view. `findDisplayIndexForItemId` resolves `target.id` against
+   * `displayItems` rather than raw `items`: a target call folded into a
+   * tier-3 burst group (issue #202) has no row of its own to index into —
+   * the group's OWN index is what `focusIndex` needs, and
+   * `ToolCallBurstGroup`'s `forceExpandItemId` prop (wired from `jumpTarget`
+   * in the template below) is what actually mounts that specific call's
+   * real row inside it, carrying the same `data-item-id` this effect's own
+   * `jumpItemEl` looks up. A target id this transcript doesn't contain (a
+   * stale click racing a session switch) is silently ignored, same as
+   * `win.focusIndex`'s own out-of-range guard.
    */
   $effect(() => {
     const target = jumpTarget;
     if (!target) return;
-    const index = items.findIndex((item) => item.id === target.id);
+    const index = findDisplayIndexForItemId(displayItems, target.id);
     if (index === -1) return;
     following = false;
     win.focusIndex(index);
@@ -356,7 +391,7 @@
     <li
       use:measureRow={item.id}
       class:tool-call-compact={isCompactToolRow(
-        items as readonly TranscriptWindowItem[],
+        displayItems as readonly TranscriptWindowItem[],
         itemIndex,
       )}
       class:tool-call-nested={itemNesting !== undefined && itemNesting.depth > 0}
@@ -387,16 +422,25 @@
             <span>nested in {itemNesting.parentTitle ?? 'a subagent call'}</span>
           </div>
         {/if}
-        <ToolCallRow
-          {item}
-          awaitingPermission={permissionHead !== undefined &&
-            permissionHead.toolCall.id === item.id}
-          {onOpenFile}
-        />
+        {#if item.type === 'tool_call_group'}
+          <ToolCallBurstGroup
+            group={item}
+            awaitingPermissionId={permissionHead?.toolCall.id}
+            forceExpandItemId={jumpTarget?.id}
+            {onOpenFile}
+          />
+        {:else}
+          <ToolCallRow
+            {item}
+            awaitingPermission={permissionHead !== undefined &&
+              permissionHead.toolCall.id === item.id}
+            {onOpenFile}
+          />
+        {/if}
       {/if}
     </li>
   {/each}
-  {#if win.range.end >= 0 && win.range.end < items.length - 1}
+  {#if win.range.end >= 0 && win.range.end < displayItems.length - 1}
     <li class="items-spacer" aria-hidden="true" style={`height: ${win.range.tailPx}px`}></li>
   {/if}
 </ol>
