@@ -1784,7 +1784,6 @@ export class RelayClient {
   /** See `RelayClientOptions.sessionResumeRetryMs`'s doc comment (issue #730). */
   private readonly sessionResumeRetryMs: number;
 
-
   /** requestId -> the pending {@link requestBranches} call it belongs to (SPEC §7.6; issue #234) — same shape as {@link pendingGitDiffRequests}, no envelope on the request. */
   private readonly pendingGitBranchListRequests = new Map<
     string,
