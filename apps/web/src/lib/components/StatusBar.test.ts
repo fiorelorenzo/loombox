@@ -185,7 +185,7 @@ describe('StatusBar: session state (right zone, issue #736 acceptance)', () => {
     expect(screen.getByTestId('status-bar-session').textContent).toContain('No session selected');
   });
 
-  it('renders every one of the eight SessionStatusV1 values distinctly', () => {
+  it('renders every one of the nine SessionStatusV1 values distinctly', () => {
     const seen = new Set<string>();
     for (const status of ALL_SESSION_STATUSES) {
       const { unmount } = render(StatusBar, {
