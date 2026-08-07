@@ -67,6 +67,11 @@
     /** This account's relay's own build identity (issue #655) — forwarded straight to `TargetStatusView`, whose own doc comment explains the "behind" flag it drives. */
     relayBuildIdentity?: BuildIdentityV1;
     onRefresh: () => void;
+    /** Uninstalls the local resident node behind a `TargetStatusView` row's Uninstall action (issue #814) — forwarded straight through, `undefined` outside the desktop shell mirroring `TargetStatusView`'s own gate. */
+    onUninstallLocalNode?: (request: {
+      nodeId: string;
+      keepData?: boolean;
+    }) => Promise<{ ok: boolean; deviceRevoked: boolean; message: string }>;
     /** Opens the zero-touch provision-and-pair wizard (`AddTargetWizard`); moved onto this section from the old `NodesPage`'s own page actions. */
     onAddTarget: () => void;
     onConnectNode: () => void;
@@ -96,6 +101,7 @@
     focusTarget,
     relayBuildIdentity,
     onRefresh,
+    onUninstallLocalNode,
     onAddTarget,
     onConnectNode,
     client,
@@ -237,6 +243,7 @@
             {focusTarget}
             {onRefresh}
             {relayBuildIdentity}
+            {onUninstallLocalNode}
           />
         </section>
       {:else if activeSection === 'accounts' && client}

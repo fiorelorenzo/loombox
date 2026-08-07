@@ -11,6 +11,8 @@ import {
   type SpawnLocalNodeRequest,
   type SpawnLocalNodeResult,
   type StopLocalNodeResult,
+  type UninstallLocalNodeRequest,
+  type UninstallLocalNodeResult,
 } from '../../shared/bridge';
 import type { LocalNodeBridge } from '../local-node/bridge';
 import type { AppVersionSource } from '../status';
@@ -26,6 +28,11 @@ import {
   runProvisionLocalNode,
   type ProvisionLocalNodeDeps,
 } from '../provisioning/provision-local-node-bridge';
+import {
+  resolveUninstallLocalNodeDeps,
+  runUninstallLocalNode,
+  type UninstallLocalNodeDeps,
+} from '../provisioning/uninstall-local-node-bridge';
 import { listSshHostCandidates } from '../ssh-candidates';
 
 /**
@@ -52,6 +59,8 @@ export interface BridgeHandlerDeps {
   provisionTargetDeps?: ProvisionTargetDeps;
   /** Overrides `resolveProvisionLocalNodeDeps()`'s own real resolution; tests inject a fake `SupervisorBackend`/`fetchArchive` instead of touching this machine's real `~/.loombox/releases` or launchd. */
   provisionLocalNodeDeps?: ProvisionLocalNodeDeps;
+  /** Overrides `resolveUninstallLocalNodeDeps()`'s own real resolution; tests inject a fake `SupervisorBackend` instead of touching this machine's real launchd. */
+  uninstallLocalNodeDeps?: UninstallLocalNodeDeps;
   /**
    * Overrides `../ssh-candidates.ts`'s real discovery. Production leaves it
    * unset. Tests MUST set it: the real implementation reads the developer's
@@ -104,6 +113,14 @@ export function registerBridgeHandlers(ipcMain: IpcMainLike, deps: BridgeHandler
     async (_event, request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult> => {
       const provisionDeps = deps.provisionLocalNodeDeps ?? (await resolveProvisionLocalNodeDeps());
       return runProvisionLocalNode(request, provisionDeps);
+    },
+  );
+
+  ipcMain.handle(
+    BRIDGE_CHANNELS.uninstallLocalNode,
+    async (_event, request: UninstallLocalNodeRequest): Promise<UninstallLocalNodeResult> => {
+      const uninstallDeps = deps.uninstallLocalNodeDeps ?? (await resolveUninstallLocalNodeDeps());
+      return runUninstallLocalNode(request, uninstallDeps);
     },
   );
 

@@ -397,3 +397,20 @@ export type {
   LocalProvisionStepStatus,
 } from './local/provision-local-node';
 export { provisionLocalNode } from './local/provision-local-node';
+
+// v1: uninstall on the supervisor-backend seam (issue #814, decision
+// E1-3) — the missing caller-level counterpart to `provisionLocalNode`
+// just above: revokes this node's own device on the relay, delegates
+// local teardown to the caller's own `SupervisorBackend`, and (unless
+// `keepData`) forgets this identity's OS-native keyring entry too.
+export type {
+  DeviceRevokeOutcome,
+  NodeUninstallOptions,
+  NodeUninstallRelayOptions,
+  NodeUninstallResult,
+} from './node-uninstall';
+export {
+  resolveNodeUninstallRelayOptions,
+  revokeNodeDeviceOnRelay,
+  uninstallNode,
+} from './node-uninstall';

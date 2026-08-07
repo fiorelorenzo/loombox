@@ -722,7 +722,7 @@ describe.skipIf(!dockerAvailable)('provision (Dockerized sshd fixture, issue #40
     const decommissionResult = await decommission(target, {
       transportFactory: fixtureTransportFactory,
       store,
-      supervisorBaseDir: supervisorStep.plan.baseDir,
+      legacySupervisorBaseDir: supervisorStep.plan.baseDir,
       removeFiles: true,
     });
     expect(decommissionResult.filesRemoved).toBe(true);
