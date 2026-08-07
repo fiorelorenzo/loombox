@@ -179,7 +179,8 @@ export function createSystemdLocalSupervisorBackend(
         message:
           (action === 'noop'
             ? `${unitName} is already running version ${config.version}.`
-            : `${unitName} is now running version ${config.version} (${plan.message})`) + lingerNote,
+            : `${unitName} is now running version ${config.version} (${plan.message})`) +
+          lingerNote,
       };
     },
 

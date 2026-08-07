@@ -64,6 +64,33 @@ class RealFileFakeSystemctlTransport implements RemoteTransport {
   }
 }
 
+/**
+ * Wraps a real `LocalProcessTransport`, executing every command for real
+ * (no interception, no faked output — unlike `RealFileFakeSystemctlTransport`
+ * above) but recording each one, so a test against the box's genuine
+ * `systemctl --user` session can still assert on exactly which commands
+ * this backend issued (e.g. "never ran `loginctl enable-linger`") without
+ * depending on this account's own pre-existing linger state, which this
+ * devbox already has enabled for its real resident node.
+ */
+class RecordingLocalTransport implements RemoteTransport {
+  readonly commands: string[] = [];
+  private readonly inner = new LocalProcessTransport();
+
+  async connect(): Promise<void> {
+    await this.inner.connect();
+  }
+
+  async exec(command: string, options?: RemoteExecOptions): Promise<RemoteExecResult> {
+    this.commands.push(command);
+    return this.inner.exec(command, options);
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+}
+
 describe('createSystemdLocalSupervisorBackend (issue #658, real file I/O)', () => {
   let homeDir: string;
   let baseDir: string;
@@ -82,7 +109,10 @@ describe('createSystemdLocalSupervisorBackend (issue #658, real file I/O)', () =
   });
 
   function makeBackend(transport: RemoteTransport, enableLinger: boolean): SupervisorBackend {
-    return createSystemdLocalSupervisorBackend({ baseDir, unitDir, stateDir, enableLinger }, transport);
+    return createSystemdLocalSupervisorBackend(
+      { baseDir, unitDir, stateDir, enableLinger },
+      transport,
+    );
   }
 
   it('stages, activates, and starts a fresh install for real, then reports noop on an identical re-install', async () => {
@@ -162,9 +192,9 @@ describe('createSystemdLocalSupervisorBackend (issue #658, real file I/O)', () =
         'systemctl --user daemon-reload',
         `systemctl --user enable --now '${DEFAULT_UNIT_NAME}'`,
       ]);
-      expect(transport.interceptedCommands.some((c) => c.startsWith('loginctl enable-linger'))).toBe(
-        false,
-      );
+      expect(
+        transport.interceptedCommands.some((c) => c.startsWith('loginctl enable-linger')),
+      ).toBe(false);
       const unitContent = await readFile(join(unitDir, DEFAULT_UNIT_NAME), 'utf8');
       expect(unitContent).toContain('ExecStart=/usr/bin/node');
     } finally {
@@ -269,7 +299,11 @@ describe('createSystemdLocalSupervisorBackend (issue #658, decision logic agains
     });
     await transport.connect();
     const backend = createSystemdLocalSupervisorBackend(
-      { baseDir: '/home/loombox/.loombox', unitDir: '/home/loombox/.config/systemd/user', enableLinger: true },
+      {
+        baseDir: '/home/loombox/.loombox',
+        unitDir: '/home/loombox/.config/systemd/user',
+        enableLinger: true,
+      },
       transport,
     );
 
@@ -290,7 +324,11 @@ describe('createSystemdLocalSupervisorBackend (issue #658, decision logic agains
     });
     await transport.connect();
     const backend = createSystemdLocalSupervisorBackend(
-      { baseDir: '/home/loombox/.loombox', unitDir: '/home/loombox/.config/systemd/user', enableLinger: false },
+      {
+        baseDir: '/home/loombox/.loombox',
+        unitDir: '/home/loombox/.config/systemd/user',
+        enableLinger: false,
+      },
       transport,
     );
 
@@ -328,7 +366,11 @@ describe('createSystemdLocalSupervisorBackend (issue #658, decision logic agains
     // real, live state — survivesReboot() never trusts what install() was
     // told, only what systemctl/loginctl say right now.
     const backend = createSystemdLocalSupervisorBackend(
-      { baseDir: '/home/loombox/.loombox', unitDir: '/home/loombox/.config/systemd/user', enableLinger: false },
+      {
+        baseDir: '/home/loombox/.loombox',
+        unitDir: '/home/loombox/.config/systemd/user',
+        enableLinger: false,
+      },
       transport,
     );
 
@@ -350,7 +392,11 @@ describe('createSystemdLocalSupervisorBackend (issue #658, decision logic agains
     });
     await transport.connect();
     const backend = createSystemdLocalSupervisorBackend(
-      { baseDir: '/home/loombox/.loombox', unitDir: '/home/loombox/.config/systemd/user', enableLinger: true },
+      {
+        baseDir: '/home/loombox/.loombox',
+        unitDir: '/home/loombox/.config/systemd/user',
+        enableLinger: true,
+      },
       transport,
     );
 
@@ -383,15 +429,19 @@ describe.skipIf(!systemdUserSessionAvailable())(
     let homeDir: string;
     let baseDir: string;
     let stateDir: string;
+    let transport: RecordingLocalTransport;
     const realUnitDir = join(homedir(), '.config', 'systemd', 'user');
 
     beforeEach(async () => {
       homeDir = await mkdtemp(join(tmpdir(), 'loombox-systemd-local-backend-real-'));
       baseDir = join(homeDir, '.loombox');
       stateDir = join(homeDir, '.loombox', 'node');
+      transport = new RecordingLocalTransport();
+      await transport.connect();
     });
 
     afterEach(async () => {
+      await transport.close();
       await execFileAsync('systemctl', ['--user', 'disable', '--now', unitName]).catch(() => {});
       await rm(join(realUnitDir, unitName), { force: true });
       await execFileAsync('systemctl', ['--user', 'daemon-reload']).catch(() => {});
@@ -399,13 +449,16 @@ describe.skipIf(!systemdUserSessionAvailable())(
     });
 
     it('installs a real unit that stays running, restarts it for real, and preserves state-dir contents; uninstall leaves nothing behind', async () => {
-      const backend = createSystemdLocalSupervisorBackend({
-        unitName,
-        baseDir,
-        unitDir: realUnitDir,
-        stateDir,
-        enableLinger: false,
-      });
+      const backend = createSystemdLocalSupervisorBackend(
+        {
+          unitName,
+          baseDir,
+          unitDir: realUnitDir,
+          stateDir,
+          enableLinger: false,
+        },
+        transport,
+      );
 
       await mkdir(stateDir, { recursive: true });
       await writeFile(join(stateDir, 'identity.json'), JSON.stringify({ nodeId: 'scratch-node' }));
@@ -439,12 +492,23 @@ describe.skipIf(!systemdUserSessionAvailable())(
       const identityAfterRestart = await readFile(join(stateDir, 'identity.json'), 'utf8');
       expect(JSON.parse(identityAfterRestart)).toEqual({ nodeId: 'scratch-node' });
 
-      // Declined linger: never asked for, and honestly not enabled.
-      expect(await backend.survivesReboot()).toBe(false);
-      const linger = await execFileAsync('loginctl', ['show-user', `${process.getuid?.()}`, '-p', 'Linger']).catch(
-        () => undefined,
-      );
-      void linger; // this user's own linger state is pre-existing account state, not asserted on here — see this module's own doc comment: uninstall/decline never touch it.
+      // Declined linger: this backend never even issued the command, which
+      // is what "never run it silently" actually guarantees — this box's
+      // own account-wide linger state (already on, for the real resident
+      // node) is pre-existing and out of scope to assert on or touch.
+      expect(transport.commands.some((c) => c.startsWith('loginctl enable-linger'))).toBe(false);
+      // survivesReboot() reports whatever the real, live state actually is
+      // (this account's pre-existing linger setting), never a value derived
+      // from what install() was told — proven independently and
+      // deterministically by the FakeTransport-based
+      // "survivesReboot() is false when ... linger is off" test above.
+      const realLinger = await execFileAsync('loginctl', [
+        'show-user',
+        `${process.getuid?.() ?? ''}`,
+        '-p',
+        'Linger',
+      ]).catch(() => ({ stdout: 'Linger=no' }));
+      expect(await backend.survivesReboot()).toBe(realLinger.stdout.trim() === 'Linger=yes');
 
       const uninstall = await backend.uninstall();
       expect(uninstall.ok).toBe(true);

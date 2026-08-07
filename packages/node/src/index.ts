@@ -386,9 +386,7 @@ export { createLaunchdSupervisorBackend } from './launchd/launchd-supervisor-bac
 // third `SupervisorBackend` implementation, wrapping `./ssh/systemd-
 // provisioning.ts` unchanged (same generator the ssh backend above uses)
 // over `./ssh/local-process-transport.ts` instead of a real ssh: host.
-export type {
-  SystemdLocalSupervisorBackendOptions,
-} from './local/systemd-local-supervisor-backend';
+export type { SystemdLocalSupervisorBackendOptions } from './local/systemd-local-supervisor-backend';
 export { createSystemdLocalSupervisorBackend } from './local/systemd-local-supervisor-backend';
 
 // v2: the local-node provisioning orchestrator (issue #654) — the shared
