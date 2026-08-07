@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { buildIdentityV1, PROTOCOL_V1 } from './handshake';
+import { nodeSelfUpdateSummaryV1 } from './node-self-update';
 
 /** The two execution-target kinds v1 supports (SPEC §5.2): run on the node's own machine, or over SSH. */
 export const targetKind = z.enum(['local', 'ssh']);
@@ -182,6 +183,16 @@ export const targetListEntry = z.object({
   maxConcurrentSessionsSource: z.enum(['configured', 'default']).optional(),
   health: targetHealth.optional(),
   build: buildIdentityV1.optional(),
+  /**
+   * The OWNING NODE's latest self-update check (issue #656), mirrored here
+   * exactly like `build` immediately above and for the same reason: it
+   * isn't a per-target property (every target a node announces shares one
+   * node), so it lives at the same live-connection lifecycle as `build`/
+   * `reachable` rather than in `TargetStore`. Absent when the owning node
+   * has no live connection, or has never completed a self-update check
+   * (an older node, or one still on its first check since connecting).
+   */
+  nodeSelfUpdate: nodeSelfUpdateSummaryV1.optional(),
 });
 export type TargetListEntry = z.infer<typeof targetListEntry>;
 

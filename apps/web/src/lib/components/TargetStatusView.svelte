@@ -91,6 +91,7 @@
     buildIdentityMismatch,
     type BuildIdentityV1,
     type DecommissionTargetResponse,
+    type NodeSelfUpdateApplyResponse,
     type TargetHealth,
     type TargetListEntry,
     type TargetUpdateResponse,
@@ -110,7 +111,7 @@
   } from './AddTargetWizard.svelte';
   import { SvelteSet } from 'svelte/reactivity';
 
-  /** `TargetStatusView`'s own action surface on top of `AddTargetWizard`'s add/edit contract (issue #476) — `decommissionTarget`/`updateTarget` are required here (unlike `AddTargetClient`'s optional `decommissionTarget`), since every action this view offers besides Edit needs them the moment a `client` is passed at all. */
+  /** `TargetStatusView`'s own action surface on top of `AddTargetWizard`'s add/edit contract (issue #476) — `decommissionTarget`/`updateTarget` are required here (unlike `AddTargetClient`'s optional `decommissionTarget`), since every action this view offers besides Edit needs them the moment a `client` is passed at all. `applyNodeSelfUpdate` (issue #656) is the node's OWN update, distinct from `updateTarget`'s per-`ssh:`-target supervisor update — see that method's own doc comment on `RelayClient`. */
   export interface TargetActionsClient extends AddTargetClient {
     decommissionTarget: (
       options: { nodeId: string; targetId: string; removeFiles?: boolean },
@@ -120,6 +121,10 @@
       options: { nodeId: string; targetId: string },
       timeoutMs?: number,
     ) => Promise<TargetUpdateResponse>;
+    applyNodeSelfUpdate: (
+      options: { nodeId: string },
+      timeoutMs?: number,
+    ) => Promise<NodeSelfUpdateApplyResponse>;
   }
 
   export interface FocusTarget {
@@ -304,6 +309,21 @@
     return buildIdentityMismatch(relayBuildIdentity, target.build);
   }
 
+  /**
+   * Whether the OWNING NODE has an unapplied self-update ready (issue
+   * #656) — `target.nodeSelfUpdate` is mirrored onto every target row
+   * that node owns (`packages/relay/src/relay.ts`'s own doc comment on
+   * that field), so this reads the same for every row sharing a
+   * `nodeId`, exactly like `isBehind` reads the same `build` value for
+   * them. `undefined` (an older node, or before its first check
+   * completes) and `'current'`/`'unknown'` all render as "nothing to
+   * offer" — only a definite `'update_available'` shows anything, never
+   * a guess.
+   */
+  function isNodeUpdateAvailable(target: TargetListEntry): boolean {
+    return target.nodeSelfUpdate?.status === 'update_available';
+  }
+
   /** Terse relative age for the row header (e.g. "28s", "5m") — the dense row's own compact echo of {@link formatAbsoluteSampledAt}, which the expansion carries in full (v5 design spec §3 moves the absolute time behind the disclosure). */
   function formatRelativeAge(health: TargetHealth): string {
     const ageMs = Date.now() - health.sampledAt;
@@ -343,6 +363,36 @@
         nodeId: target.nodeId,
         targetId: target.targetId,
       });
+      actionMessages = { ...actionMessages, [key]: response.message };
+      if (response.ok) onRefresh();
+    } catch (error) {
+      actionMessages = {
+        ...actionMessages,
+        [key]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      busyKeys.delete(key);
+    }
+  }
+
+  /**
+   * The "Update" one-tap action for the NODE's own self-update (issue
+   * #656) — distinct from `runUpdate` above, which re-provisions the
+   * supervisor on one `ssh:` target. Applies to the whole node that owns
+   * `target`, never just this one row, exactly like `isNodeUpdateAvailable`
+   * reads the same shared `nodeSelfUpdate` value across every row that
+   * node owns. No separate confirm step: this click IS the explicit
+   * consent the epic requires (#653's "out of scope: auto-updating
+   * without consent") — the mechanism itself (stage, verify, activate,
+   * roll back on failure) is what makes it safe to apply directly, the
+   * same posture `runUpdate` already takes for a target update.
+   */
+  async function runNodeSelfUpdate(target: TargetListEntry): Promise<void> {
+    if (!client) return;
+    const key = rowKey(target);
+    busyKeys.add(key);
+    try {
+      const response = await client.applyNodeSelfUpdate({ nodeId: target.nodeId });
       actionMessages = { ...actionMessages, [key]: response.message };
       if (response.ok) onRefresh();
     } catch (error) {
@@ -439,6 +489,7 @@
         {@const expanded = expandedKeys.has(key)}
         {@const identity = targetIdentity(target.health)}
         {@const behind = isBehind(target)}
+        {@const nodeUpdateAvailable = isNodeUpdateAvailable(target)}
         <li class="target-row" data-testid="target-status-row">
           <div
             data-testid={`target-status-row-${key}`}
@@ -482,6 +533,14 @@
                   size="sm"
                   class="behind-badge"
                   dataTestId={`target-behind-${key}`}>Behind</Badge
+                >
+              {/if}
+              {#if nodeUpdateAvailable}
+                <Badge
+                  tone="warning"
+                  size="sm"
+                  class="node-update-available-badge"
+                  dataTestId={`target-node-update-available-${key}`}>Update available</Badge
                 >
               {/if}
               <span class="target-metrics">
@@ -606,6 +665,18 @@
                     >
                       Reconnect
                     </Button>
+                    {#if nodeUpdateAvailable}
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={busyKeys.has(key)}
+                        disabled={busyKeys.has(key)}
+                        onclick={() => runNodeSelfUpdate(target)}
+                        dataTestId={`target-action-node-self-update-${key}`}
+                      >
+                        Update node
+                      </Button>
+                    {/if}
                     {#if target.kind === 'ssh'}
                       <Button
                         size="sm"

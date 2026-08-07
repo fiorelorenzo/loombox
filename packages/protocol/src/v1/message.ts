@@ -98,6 +98,11 @@ import {
   targetUpdateResponse,
 } from './target-lifecycle';
 import {
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
+  nodeSelfUpdateStatusAnnounce,
+} from './node-self-update';
+import {
   sessionArchiveRequest,
   sessionArchiveResponse,
   sessionForkRequest,
@@ -374,6 +379,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   runStatus,
   ping,
   pong,
+  nodeSelfUpdateStatusAnnounce,
+  nodeSelfUpdateApplyRequest,
+  nodeSelfUpdateApplyResponse,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

@@ -4,6 +4,7 @@ import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   DecommissionTargetResponse,
+  NodeSelfUpdateApplyResponse,
   ProvisionTargetResult,
   TargetListEntry,
   TargetUpdateResponse,
@@ -447,6 +448,22 @@ function updateResponse(overrides: Partial<TargetUpdateResponse> = {}): TargetUp
   };
 }
 
+function nodeSelfUpdateApplyResponse(
+  overrides: Partial<NodeSelfUpdateApplyResponse> = {},
+): NodeSelfUpdateApplyResponse {
+  return {
+    type: 'node_self_update_apply_response',
+    protocolVersion: 1,
+    requestId: 'req-4',
+    nodeId: 'node_1',
+    ok: true,
+    fromVersion: '1.0.0',
+    toVersion: '2.0.0',
+    message: 'updated 1.0.0 -> 2.0.0; restarting to apply',
+    ...overrides,
+  };
+}
+
 function provisionResult(overrides: Partial<ProvisionTargetResult> = {}): ProvisionTargetResult {
   return {
     type: 'provision_target_result',
@@ -472,6 +489,7 @@ function fakeActionsClient(overrides: Partial<TargetActionsClient> = {}): Target
     }),
     decommissionTarget: vi.fn().mockResolvedValue(decommissionResponse()),
     updateTarget: vi.fn().mockResolvedValue(updateResponse()),
+    applyNodeSelfUpdate: vi.fn().mockResolvedValue(nodeSelfUpdateApplyResponse()),
     ...overrides,
   };
 }
@@ -718,6 +736,137 @@ describe('TargetStatusView build identity (issue #655)', () => {
       props: { targets: BUILD_TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
     expect(screen.queryByTestId('target-behind-node_drifted:local')).toBeNull();
+  });
+});
+
+describe('TargetStatusView node self-update (issue #656)', () => {
+  const SELF_UPDATE_TARGETS: TargetListEntry[] = [
+    {
+      nodeId: 'node_current',
+      targetId: 'local',
+      label: 'Up to date node',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      nodeSelfUpdate: {
+        status: 'current',
+        currentVersion: '2.0.0',
+        checkedAt: Date.UTC(2026, 6, 23, 12, 0, 0),
+      },
+    },
+    {
+      nodeId: 'node_stale',
+      targetId: 'local',
+      label: 'Stale node',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      nodeSelfUpdate: {
+        status: 'update_available',
+        currentVersion: '1.0.0',
+        latestVersion: '2.0.0',
+        checkedAt: Date.UTC(2026, 6, 23, 12, 0, 0),
+      },
+    },
+    {
+      nodeId: 'node_no_check',
+      targetId: 'local',
+      label: 'Never checked',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      // No `nodeSelfUpdate` at all — an older node, or one whose first
+      // check hasn't completed yet.
+    },
+  ];
+
+  it('shows an "Update available" badge only for a node whose self-update check found something newer', () => {
+    render(TargetStatusView, {
+      props: { targets: SELF_UPDATE_TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+    expect(screen.queryByTestId('target-node-update-available-node_current:local')).toBeNull();
+    expect(
+      screen.getByTestId('target-node-update-available-node_stale:local').textContent?.trim(),
+    ).toBe('Update available');
+    expect(screen.queryByTestId('target-node-update-available-node_no_check:local')).toBeNull();
+  });
+
+  it('renders no "Update node" action when no client is passed, even with an update available', () => {
+    render(TargetStatusView, {
+      props: { targets: SELF_UPDATE_TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+    expect(screen.queryAllByTestId('target-actions')).toHaveLength(0);
+  });
+
+  it('shows "Update node" only for the node with an update available, never for one already current', async () => {
+    render(TargetStatusView, {
+      props: {
+        targets: SELF_UPDATE_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        client: fakeActionsClient(),
+      },
+    });
+
+    await expandRow('node_current:local');
+    await expandRow('node_stale:local');
+
+    expect(screen.queryByTestId('target-action-node-self-update-node_current:local')).toBeNull();
+    expect(screen.getByTestId('target-action-node-self-update-node_stale:local')).toBeTruthy();
+  });
+
+  it('Update node calls client.applyNodeSelfUpdate with the owning nodeId, refreshes on success, and shows the outcome message', async () => {
+    const onRefresh = vi.fn();
+    const applyNodeSelfUpdate = vi.fn().mockResolvedValue(nodeSelfUpdateApplyResponse());
+    render(TargetStatusView, {
+      props: {
+        targets: SELF_UPDATE_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh,
+        client: fakeActionsClient({ applyNodeSelfUpdate }),
+      },
+    });
+
+    await expandRow('node_stale:local');
+    await fireEvent.click(screen.getByTestId('target-action-node-self-update-node_stale:local'));
+    expect(applyNodeSelfUpdate).toHaveBeenCalledWith({ nodeId: 'node_stale' });
+
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('target-action-message-node_stale:local').textContent).toContain(
+      'updated 1.0.0 -> 2.0.0',
+    );
+  });
+
+  it('a failed apply never refreshes, and shows the failure message on the row instead', async () => {
+    const onRefresh = vi.fn();
+    const applyNodeSelfUpdate = vi.fn().mockResolvedValue(
+      nodeSelfUpdateApplyResponse({
+        ok: false,
+        toVersion: undefined,
+        message: 'a session is actively working on a turn; wait for it to finish before updating',
+      }),
+    );
+    render(TargetStatusView, {
+      props: {
+        targets: SELF_UPDATE_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh,
+        client: fakeActionsClient({ applyNodeSelfUpdate }),
+      },
+    });
+
+    await expandRow('node_stale:local');
+    await fireEvent.click(screen.getByTestId('target-action-node-self-update-node_stale:local'));
+    await waitFor(() =>
+      expect(screen.getByTestId('target-action-message-node_stale:local')).toBeTruthy(),
+    );
+    expect(screen.getByTestId('target-action-message-node_stale:local').textContent).toContain(
+      'actively working on a turn',
+    );
+    expect(onRefresh).not.toHaveBeenCalled();
   });
 });
 

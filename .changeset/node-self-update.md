@@ -1,0 +1,10 @@
+---
+'@loombox/node': minor
+'@loombox/protocol': minor
+'@loombox/relay': minor
+'@loombox/web': minor
+---
+
+The node can now update itself in place (issue #656, epic #653), building on #817's versioned bundle layout (`~/.loombox/versions/<version>/` + a `current` symlink). `NodeSelfUpdateMonitor` periodically checks a configured `NodeUpdateSource` (`createGithubReleaseNodeUpdateSource` reads the real `node-<version>-<os>-<arch>.tar.gz` release assets) and pushes `node_self_update_status` (protocol's `node_self_update.ts`) on every completed check, unprompted — detecting a newer version needs no consent. The relay stores it per node connection and mirrors it onto every `target_list_request` entry that node owns (`TargetListEntry.nodeSelfUpdate`), and also broadcasts it live to every client on the account so the node row (`TargetStatusView`'s new "Update available" badge) doesn't wait on the next poll.
+
+Applying an update is the one gated action: `node_self_update_apply_request` (routed straight to the node, no `targetVersion` field — a client can only ever act on what the node itself already announced) runs `applyNodeSelfUpdate`, which fetches, optionally verifies a signature, stages the bundle beside the running one, and — before ever flipping the `current` symlink — spawns the staged build's own `--version` and confirms it starts and reports the expected `BuildIdentityV1` (issue #655). Only then does it activate and hand off to the service manager's own restart (`Restart=always`/`KeepAlive`); the client learns the outcome from inside the restart callback, before the socket actually drops. A staged build that fails verification, or an `activateVersion` that fails for a real filesystem reason, never goes live: the former never touches `current` at all, the latter rolls back to the prior version via the same `install-layout.ts` verbs. A request arriving while any session is mid-turn is refused outright (drain-first, never interrupts). `apps/web`'s `TargetStatusView` gets a matching "Update node" action next to the badge, calling `RelayClient.applyNodeSelfUpdate`.
