@@ -6,7 +6,16 @@ import { cleanup, render, screen } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createInMemoryNotificationPreferencesStorage } from '$lib/notification-preferences';
-import type { TargetListEntry } from '$lib/relay-client';
+import type {
+  DecommissionTargetResponse,
+  NodeSelfUpdateApplyResponse,
+  ProvisionTargetResult,
+  TargetListEntry,
+  TargetUpdateResponse,
+} from '$lib/relay-client';
+import type { ConnectedAccountsClient } from '../ConnectedAccountsSection.svelte';
+import type { KeymapClient } from '../KeymapPanel.svelte';
+import type { TargetActionsClient } from '../TargetStatusView.svelte';
 import SettingsPage from './SettingsPage.svelte';
 
 afterEach(() => cleanup());
@@ -169,6 +178,22 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
     expect(screen.queryByRole('heading', { name: 'Appearance', level: 2 })).toBeNull();
   });
 
+  it(
+    'forwards `client` into TargetStatusView so Reconnect/Update/Remove/Edit and Update node are ' +
+      'actually reachable here (issue #862: this mount site used to drop the prop, so those four ' +
+      "actions never rendered no matter what TargetStatusView's own tests proved)",
+    async () => {
+      render(SettingsPage, {
+        props: { ...baseProps(), section: 'nodes' as const, client: fakeAccountsClient() },
+      });
+
+      await fireEvent.click(screen.getByTestId('target-row-toggle-node_1:local'));
+
+      expect(screen.getByTestId('target-actions')).toBeTruthy();
+      expect(screen.getByTestId('target-action-reconnect-node_1:local')).toBeTruthy();
+    },
+  );
+
   it("wires the Nodes section's own setup actions through to the callbacks passed in", async () => {
     const onAddTarget = vi.fn();
     const onConnectNode = vi.fn();
@@ -212,7 +237,8 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
   // rather than rendering dead controls.
   // -----------------------------------------------------------------
 
-  function fakeAccountsClient() {
+  /** Satisfies `TargetStatusView`'s `TargetActionsClient` alongside `ConnectedAccountsClient`/`KeymapClient` (issues #476/#656) — `SettingsPage`'s `client` prop is one real `RelayClient` widened over all three narrowed interfaces (its own doc comment explains why), so this single fake stands in for it everywhere a test needs "a client exists", nodes-section actions included. */
+  function fakeAccountsClient(): ConnectedAccountsClient & KeymapClient & TargetActionsClient {
     return {
       startGithubConnect: vi.fn(() => ({
         requestId: 'r',
@@ -227,6 +253,60 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
       resolveAccountPin: vi.fn(),
       refreshConnectedAccounts: vi.fn(),
       setKeymap: vi.fn(async (candidate: Record<string, string>) => candidate),
+      listTargets: vi.fn().mockResolvedValue(TARGETS),
+      provisionTarget: vi.fn().mockResolvedValue({
+        type: 'provision_target_result',
+        protocolVersion: 1,
+        requestId: 'req-3',
+        nodeId: 'node_1',
+        targetId: 'ssh:devbox-replacement',
+        ok: true,
+        message: 'paired',
+      } satisfies ProvisionTargetResult),
+      discoverSshHosts: vi.fn().mockResolvedValue({
+        outcome: 'ok',
+        candidates: [],
+        agent: { available: false, identities: [] },
+        requiresManualEntry: true,
+      }),
+      decommissionTarget: vi.fn().mockResolvedValue({
+        type: 'decommission_target_response',
+        protocolVersion: 1,
+        requestId: 'req-1',
+        nodeId: 'node_1',
+        targetId: 'local',
+        ok: true,
+        result: {
+          unitWasInstalled: true,
+          unitStopped: true,
+          unitDisabled: true,
+          deviceKeyRevoked: true,
+          filesRemoved: false,
+        },
+        message: 'decommissioned "local"',
+      } satisfies DecommissionTargetResponse),
+      updateTarget: vi.fn().mockResolvedValue({
+        type: 'target_update_response',
+        protocolVersion: 1,
+        requestId: 'req-2',
+        nodeId: 'node_1',
+        targetId: 'local',
+        ok: true,
+        status: 'current',
+        remoteVersion: '2.0.0',
+        installedVersion: '2.0.0',
+        message: '"local" is now at 2.0.0',
+      } satisfies TargetUpdateResponse),
+      applyNodeSelfUpdate: vi.fn().mockResolvedValue({
+        type: 'node_self_update_apply_response',
+        protocolVersion: 1,
+        requestId: 'req-4',
+        nodeId: 'node_1',
+        ok: true,
+        fromVersion: '1.0.0',
+        toVersion: '2.0.0',
+        message: 'updated 1.0.0 -> 2.0.0; restarting to apply',
+      } satisfies NodeSelfUpdateApplyResponse),
     };
   }
 
