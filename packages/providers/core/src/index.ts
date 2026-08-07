@@ -33,6 +33,7 @@ export {
   ancestorChainForToolCall,
   computeToolCallNesting,
   CONTEXT_NEAR_LIMIT_THRESHOLD,
+  contextFillPercent,
   createTranscriptState,
   reduceResyncGap,
   reduceSessionEvent,

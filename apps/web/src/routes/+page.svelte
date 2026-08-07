@@ -136,6 +136,7 @@
   import CommandPalette, { type CommandPaletteAction } from '$lib/components/CommandPalette.svelte';
   import CommitDialog from '$lib/components/CommitDialog.svelte';
   import ConfigBar from '$lib/components/ConfigBar.svelte';
+  import ContextLimitWarning from '$lib/components/ContextLimitWarning.svelte';
   import DiscardHunkDialog from '$lib/components/DiscardHunkDialog.svelte';
   import FileTreePanel from '$lib/components/FileTreePanel.svelte';
   import FileViewer from '$lib/components/FileViewer.svelte';
@@ -4718,6 +4719,14 @@
                   onJumpToFile={jumpToTranscriptItem}
                   onReviewChanges={openReviewChanges}
                 />
+
+                <!-- Issue #250: a distinct, dismissable near-context-limit
+                   warning, separate from `StatusBar`'s own subtle meter
+                   colour shift — right above the composer, the exact point
+                   a user is about to decide "keep going or wrap up". Same
+                   `transcript?.usage` this session's `StatusBar` meter
+                   already reads (below), never a second subscription. -->
+                <ContextLimitWarning usage={transcript?.usage} />
 
                 <form class="composer" onsubmit={submitPrompt}>
                   <!-- Design spec v6 §3.4 (issue #575): the composer is the

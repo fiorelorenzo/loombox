@@ -11657,3 +11657,228 @@ describe('RelayClient.mergePr (SPEC §7.14; issue #240)', () => {
     await expect(conflictPromise).resolves.toEqual(conflictResult);
   });
 });
+
+describe('RelayClient: attention inbox context_limit class (SPEC §7.9/§7.13; issue #250)', () => {
+  it('raises exactly one context_limit item once a real usage_update crosses the threshold, carrying the exact figures it crossed at, and clears it the moment a later usage_update reports fewer tokens in context', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-context';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-context',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_context_a', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Long research turn', projectPath: '/proj-context' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-context' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const transcript = client.transcriptFor(session.id);
+
+    const sendUsage = async (seq: number, tokensUsed: number, contextWindow: number) => {
+      const envelope = await nodeSeal(
+        session.id,
+        { kind: 'usage_update', sessionId: session.id, tokensUsed, contextWindow },
+        key,
+      );
+      node!.send({
+        type: 'session_update',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        seq,
+        envelope,
+      });
+    };
+
+    // Below the threshold — no item at all yet.
+    await sendUsage(1, 40_000, 200_000);
+    await waitForStore(transcript, (value) => value.usage?.tokensUsed === 40_000);
+    expect(get(inbox)).toEqual([]);
+
+    // Crosses the threshold: a genuine `usage_update` at 85%.
+    await sendUsage(2, 170_000, 200_000);
+    const afterCrossing = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterCrossing[0]).toMatchObject({
+      kind: 'context_limit',
+      sessionId: session.id,
+      sessionTitle: 'Long research turn',
+      projectPath: '/proj-context',
+      nodeId: session.nodeId,
+      contextPercent: 85,
+      tokensUsed: 170_000,
+      contextWindow: 200_000,
+    });
+
+    // Clears: a LATER, real usage_update (e.g. after the agent's own
+    // auto-compaction) reports far fewer tokens in context — never a
+    // client-side heuristic, just the agent's own next reported figure
+    // (`reduceUsage` never freezes these two fields outside a
+    // subagent-attributed update).
+    await sendUsage(3, 10_000, 200_000);
+    await waitForStore(inbox, (value) => value.length === 0);
+  });
+
+  it('never raises an item for a session whose provider reports no usable context data — a usage_update that carries cost but no tokensUsed/contextWindow at all', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-context-absent';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-context-absent',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_context_absent', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Provider without usage reporting', projectPath: '/proj-context-absent' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-context-absent',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const transcript = client.transcriptFor(session.id);
+
+    // A `usage_update` that carries only `cost` (`{amount, currency}`),
+    // never `size`/`used` — a real, allowed ACP payload shape (`cost` is
+    // the only genuinely optional field on the real `UsageUpdate`; this is
+    // the honest shape of a provider that never reports context usage at
+    // all, not a malformed one).
+    const costOnlyEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'usage_update', sessionId: session.id, costUsd: 0.42 },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: costOnlyEnvelope,
+    });
+
+    await waitForStore(transcript, (value) => value.cumulativeCostUsd === 0.42);
+    expect(get(inbox)).toEqual([]);
+  });
+
+  it("does not fire from a subagent-attributed usage_update — the nested tool call's own smaller context window never creates or moves the item, exactly the exclusion rule SPEC §7.9 names", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-context-subagent';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-context-subagent',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_context_subagent', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Delegates to a subagent', projectPath: '/proj-context-subagent' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-context-subagent',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const transcript = client.transcriptFor(session.id);
+
+    const send = async (seq: number, payload: Record<string, unknown>) => {
+      const envelope = await nodeSeal(session.id, payload, key);
+      node!.send({
+        type: 'session_update',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        seq,
+        envelope,
+      });
+    };
+
+    // Parent-turn usage crosses the threshold — the item appears.
+    await send(1, {
+      kind: 'usage_update',
+      sessionId: session.id,
+      tokensUsed: 170_000,
+      contextWindow: 200_000,
+    });
+    const afterParent = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterParent[0]).toMatchObject({ contextPercent: 85 });
+
+    // A subagent tool call starts, then reports its own tiny usage_update.
+    await send(2, {
+      kind: 'tool_call',
+      id: 'sub1',
+      parentToolCallId: 'root1',
+      status: 'in_progress',
+    });
+    await send(3, {
+      kind: 'usage_update',
+      sessionId: session.id,
+      tokensUsed: 500,
+      contextWindow: 8_000,
+    });
+
+    await waitForStore(transcript, (value) => value.usage?.attributedToSubagent === true);
+    // Still exactly the parent's frozen figures — the subagent's own
+    // numbers never leaked in, and the item never disappeared either.
+    expect(get(inbox)).toMatchObject([
+      { kind: 'context_limit', contextPercent: 85, tokensUsed: 170_000, contextWindow: 200_000 },
+    ]);
+  });
+});

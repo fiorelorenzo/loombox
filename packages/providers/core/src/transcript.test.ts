@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ancestorChainForToolCall,
   computeToolCallNesting,
+  CONTEXT_NEAR_LIMIT_THRESHOLD,
+  contextFillPercent,
   createTranscriptState,
   reduceResyncGap,
   reduceSessionEvent,
@@ -590,6 +592,138 @@ describe('reduceTranscript: usage_update', () => {
     // Monotonic across the whole sequence: 25 -> 25 (frozen, not bounced) -> 31.
     expect([percentAfterParent1, percentDuringSubagent, percentAfterParent2]).toEqual([25, 25, 31]);
     expect(state.cumulativeCostUsd).toBeCloseTo(0.13);
+  });
+});
+
+describe('contextFillPercent (issue #250)', () => {
+  it('is undefined when no usage_update has ever arrived for this session — a provider that never reports context usage, not an estimate', () => {
+    expect(contextFillPercent(undefined)).toBeUndefined();
+  });
+
+  it("is undefined when `tokensUsed` is missing — ACP's `used` was absent on the wire", () => {
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: undefined,
+        contextWindow: 200_000,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("is undefined when `contextWindow` is missing or `0` — ACP's `size` was absent (or a genuinely empty denominator), never divided against as if it were real", () => {
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 1000,
+        contextWindow: undefined,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 1000,
+        contextWindow: 0,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rounds to the nearest percent and clamps at 100 even if a provider reports used > size', () => {
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 50_000,
+        contextWindow: 200_000,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBe(25);
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 250_000,
+        contextWindow: 200_000,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBe(100);
+  });
+
+  it('sits exactly at CONTEXT_NEAR_LIMIT_THRESHOLD at the boundary, and one token below it does not cross', () => {
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 160_000,
+        contextWindow: 200_000,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBe(CONTEXT_NEAR_LIMIT_THRESHOLD);
+    expect(
+      contextFillPercent({
+        sessionId: 'sess1',
+        tokensUsed: 158_000,
+        contextWindow: 200_000,
+        costUsd: undefined,
+        attributedToSubagent: false,
+      }),
+    ).toBeLessThan(CONTEXT_NEAR_LIMIT_THRESHOLD);
+  });
+
+  it("clears back below the threshold on a real, later usage_update reporting fewer tokens in context (e.g. after the agent's own auto-compaction) — not a client-side heuristic, the agent's own next reported figure", () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 180_000,
+      contextWindow: 200_000,
+    });
+    expect(contextFillPercent(state.usage)).toBeGreaterThanOrEqual(CONTEXT_NEAR_LIMIT_THRESHOLD);
+
+    // A later report — same session, same window, far fewer tokens in
+    // context — is exactly what a real compaction/summarisation event
+    // looks like on the wire: `reduceUsage` never freezes these two
+    // fields outside a subagent-attributed update, so this is simply the
+    // latest real number.
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 20_000,
+      contextWindow: 200_000,
+    });
+    expect(contextFillPercent(state.usage)).toBeLessThan(CONTEXT_NEAR_LIMIT_THRESHOLD);
+  });
+
+  it('a subagent-attributed update never moves this figure — it inherits the frozen parent record, per issue #248 acceptance', () => {
+    let state = createTranscriptState();
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 170_000,
+      contextWindow: 200_000,
+    });
+    const parentPercent = contextFillPercent(state.usage);
+    expect(parentPercent).toBeGreaterThanOrEqual(CONTEXT_NEAR_LIMIT_THRESHOLD);
+
+    state = reduceTranscript(state, {
+      kind: 'tool_call',
+      id: 'sub1',
+      parentToolCallId: 'root',
+      status: 'in_progress',
+    });
+    state = reduceTranscript(state, {
+      kind: 'usage_update',
+      sessionId: 'sess1',
+      tokensUsed: 500,
+      contextWindow: 8_000,
+    });
+    expect(state.usage?.attributedToSubagent).toBe(true);
+    expect(contextFillPercent(state.usage)).toBe(parentPercent);
   });
 });
 
