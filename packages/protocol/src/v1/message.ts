@@ -144,6 +144,11 @@ import {
   agentProfileSessionResult,
   agentProfileSessionSet,
 } from './agent-profile';
+import {
+  sessionTemplateListGet,
+  sessionTemplateListResult,
+  sessionTemplateListSet,
+} from './session-template';
 import { spendCapGet, spendCapResult, spendCapSet, sessionSpendCapResume } from './spend-cap';
 import { spendReportRequest, spendReportResponse } from './spend-report';
 import {
@@ -292,6 +297,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   agentProfileSessionGet,
   agentProfileSessionSet,
   agentProfileSessionResult,
+  sessionTemplateListGet,
+  sessionTemplateListSet,
+  sessionTemplateListResult,
   spendCapGet,
   spendCapSet,
   spendCapResult,

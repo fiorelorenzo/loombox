@@ -59,6 +59,7 @@ import {
   parseConnectedAccountId,
   parseCustomAgentProbeRequestPayloadV1,
   parseSessionPrivateMetaV1,
+  parseSessionTemplateListSetPayloadV1,
   PROTOCOL_V1,
   type AccountPinGetRequest,
   type AccountPinMapV1,
@@ -199,6 +200,10 @@ import {
   type SessionRewindPreviewResultPayloadV1,
   type SessionRewindResultPayloadV1,
   type SessionSpendCapResume,
+  type SessionTemplateListGet,
+  type SessionTemplateListResultPayloadV1,
+  type SessionTemplateListSet,
+  type SessionTemplateListSetPayloadV1,
   type SessionStatusV1,
   type SpendCapGet,
   type SpendCapResultPayloadV1,
@@ -318,6 +323,7 @@ import {
   type AgentProfile,
 } from './agent-profile';
 import { AgentProfileStore } from './agent-profile-store';
+import { SessionTemplateStore } from './session-template-store';
 import {
   PolicyEnforcedExecutionTarget,
   resolveRealBasename,
@@ -741,6 +747,14 @@ export interface NodeDaemonOptions {
    * Injectable for tests; defaults to a fresh `AgentProfileStore({ stateDir })`.
    */
   agentProfileStore?: AgentProfileStore;
+  /**
+   * This node's named session-template catalog (issue #259, epic #29):
+   * the account-scoped sibling of `agentProfileStore` above, same one
+   * flat catalog/no scoping key shape — see `./session-template-store.ts`'s
+   * doc comment. Injectable for tests; defaults to a fresh
+   * `SessionTemplateStore({ stateDir })`.
+   */
+  sessionTemplateStore?: SessionTemplateStore;
   /**
    * This node's per-project test/lint/build command config store (SPEC
    * §7.15; issue #245): what `test_runner_config_get`/`_set`/`_detect`
@@ -1530,6 +1544,8 @@ export class NodeDaemon extends EventEmitter {
    * reloaded-`'disconnected'` session has nothing stale to read.
    */
   private readonly sessionProfiles = new Map<string, string | undefined>();
+  /** Issue #259, epic #29 — see `NodeDaemonOptions.sessionTemplateStore`'s doc comment. */
+  private readonly sessionTemplateStore: SessionTemplateStore;
   /** SPEC §7.15; issue #245 — see `NodeDaemonOptions.testRunnerConfigStore`'s doc comment. */
   private readonly testRunnerConfigStore: TestRunnerConfigStore;
   /** SPEC §7.10; issue #212 — see `NodeDaemonOptions.nativeTrackerStore`'s doc comment. */
@@ -1691,6 +1707,8 @@ export class NodeDaemon extends EventEmitter {
       options.spendLedgerStore ?? new SpendLedgerStore({ stateDir: options.stateDir });
     this.agentProfileStore =
       options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
+    this.sessionTemplateStore =
+      options.sessionTemplateStore ?? new SessionTemplateStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
       options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
     this.nativeTrackerStore =
@@ -4117,6 +4135,12 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'custom_agent_probe_request':
         this.handleCustomAgentProbeRequest(message);
+        return;
+      case 'session_template_list_get':
+        this.handleSessionTemplateListGet(message);
+        return;
+      case 'session_template_list_set':
+        this.handleSessionTemplateListSet(message);
         return;
       case 'ssh_discovery_request':
         this.handleSshDiscoveryRequest(message);
@@ -9754,6 +9778,91 @@ export class NodeDaemon extends EventEmitter {
       type: 'agent_instructions_set_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to list its account's saved
+   * session-template catalog (issue #259, epic #29) —
+   * `handleTargetFsListRequest`'s account-scoped sibling: routed directly
+   * by `nodeId`+`targetId` (see `@loombox/protocol`'s `session-template.ts`
+   * doc comment for why — `NewSessionDialog` loads this catalog before
+   * ever creating a session, often the project's very first, so there is
+   * no existing `sessionId` to route an `agent_profile_list_get`-style
+   * request through). Ignored if `targetId` isn't one of this node's own
+   * targets, mirroring `handleTargetFsListRequest`'s identical guard.
+   */
+  private handleSessionTemplateListGet(message: SessionTemplateListGet): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(
+        `NodeDaemon: session_template_list_get for unknown target "${message.targetId}"`,
+      );
+      return;
+    }
+    this.sendSessionTemplateListResult(message.targetId, message.requestId, {
+      templates: this.sessionTemplateStore.list(),
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send session_template_list_result for target ${message.targetId}: ${detail}`,
+      );
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to save (fully replace) its
+   * account's saved session-template catalog (issue #259) — mirrors
+   * `handleAgentProfileListSet`'s "whole value, never a partial patch"
+   * contract, but decrypted under the per-target key
+   * `handleCustomAgentProbeRequest` uses, since there is no session yet
+   * to derive a session key from. Replies with the same
+   * `session_template_list_result` {@link handleSessionTemplateListGet}
+   * does.
+   */
+  private handleSessionTemplateListSet(message: SessionTemplateListSet): void {
+    if (!this.targets.some((target) => target.id === message.targetId)) {
+      console.warn(
+        `NodeDaemon: session_template_list_set for unknown target "${message.targetId}"`,
+      );
+      return;
+    }
+
+    this.decryptSessionTemplateListSet(message)
+      .then((payload) => {
+        this.sessionTemplateStore.saveAll(payload.templates);
+        return this.sendSessionTemplateListResult(message.targetId, message.requestId, {
+          templates: this.sessionTemplateStore.list(),
+        });
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle session_template_list_set for target ${message.targetId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptSessionTemplateListSet(
+    message: SessionTemplateListSet,
+  ): Promise<SessionTemplateListSetPayloadV1> {
+    const key = await this.getTargetKey(message.targetId);
+    const raw = await openJson<unknown>(message.targetId, message.envelope, key);
+    return parseSessionTemplateListSetPayloadV1(raw);
+  }
+
+  private async sendSessionTemplateListResult(
+    targetId: string,
+    requestId: string,
+    payload: SessionTemplateListResultPayloadV1,
+  ): Promise<void> {
+    const key = await this.getTargetKey(targetId);
+    const envelope = await sealJson(targetId, payload, key);
+    this.relay.send({
+      type: 'session_template_list_result',
+      protocolVersion: PROTOCOL_V1,
+      targetId,
       requestId,
       envelope,
     });

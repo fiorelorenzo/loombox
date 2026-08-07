@@ -967,6 +967,24 @@ export {
   agentProfileSessionErrorPayloadV1,
 } from './agent-profile';
 export type {
+  SessionTemplateV1,
+  SessionTemplateListResultPayloadV1,
+  SessionTemplateListSetPayloadV1,
+  SessionTemplateListGet,
+  SessionTemplateListSet,
+  SessionTemplateListResult,
+} from './session-template';
+export {
+  sessionTemplateV1,
+  parseSessionTemplateListResultPayloadV1,
+  safeParseSessionTemplateListResultPayloadV1,
+  parseSessionTemplateListSetPayloadV1,
+  safeParseSessionTemplateListSetPayloadV1,
+  sessionTemplateListGet,
+  sessionTemplateListSet,
+  sessionTemplateListResult,
+} from './session-template';
+export type {
   AccountPinErrorType,
   AccountPinGetRequest,
   AccountPinMapV1,
@@ -1361,6 +1379,12 @@ import {
   agentProfileSessionErrorPayloadV1,
 } from './agent-profile';
 import {
+  sessionTemplateV1,
+  sessionTemplateListGet,
+  sessionTemplateListSet,
+  sessionTemplateListResult,
+} from './session-template';
+import {
   spendCapSetPayloadV1,
   spendCapResultPayloadV1,
   spendCapGet,
@@ -1630,6 +1654,10 @@ export const schemasV1 = {
   agentProfileSessionSet,
   agentProfileSessionResult,
   agentProfileSessionErrorPayloadV1,
+  sessionTemplateV1,
+  sessionTemplateListGet,
+  sessionTemplateListSet,
+  sessionTemplateListResult,
   spendCapSetPayloadV1,
   spendCapResultPayloadV1,
   spendCapGet,

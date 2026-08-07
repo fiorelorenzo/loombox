@@ -45,6 +45,7 @@ import {
   newDeviceBootstrapResponse,
   parseAgentProfileListResultPayloadV1,
   parseAgentProfileSessionPayloadV1,
+  parseSessionTemplateListResultPayloadV1,
   parseCheckpointListResultPayloadV1,
   parseCheckpointRestorePreviewResultPayloadV1,
   parseCheckpointRestoreResultPayloadV1,
@@ -179,6 +180,9 @@ import {
   type SessionListV1,
   type SessionMetaPublic,
   type SessionPrivateMetaV1,
+  type SessionTemplateListResult,
+  type SessionTemplateListSetPayloadV1,
+  type SessionTemplateV1,
   type SessionUpdateEnvelopeV1,
   type SpendReportResponse,
   type SpendReportRowV1,
@@ -236,6 +240,7 @@ export type {
   PermissionRuleSetV1,
   ToolRefusalReasonV1,
   AgentProfileV1,
+  SessionTemplateV1,
 } from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
@@ -6194,6 +6199,9 @@ export class RelayClient {
       case 'custom_agent_probe_response':
         this.handleCustomAgentProbeResponse(message);
         return;
+      case 'session_template_list_result':
+        this.handleSessionTemplateListResult(message);
+        return;
       case 'provision_progress':
         this.handleProvisionProgress(message);
         return;
@@ -8493,6 +8501,158 @@ export class RelayClient {
         message.envelope,
       )
       .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  // -----------------------------------------------------------------------
+  // Session templates (issue #259, epic #29) — kept as one contiguous block
+  // rather than interleaved among the methods above, on purpose: this
+  // class already grew several near-identical `handleX`/`sendX` method
+  // families in one evening, and a three-way git merge cannot always tell
+  // them apart. See `@loombox/protocol`'s `session-template.ts` doc
+  // comment for why this is routed by `nodeId`+`targetId` directly
+  // (mirrors `browseDirectory`/`probeCustomAgent` immediately below in
+  // spirit, not literally adjacent) rather than through an existing
+  // session's `sessionId` the way `listAgentProfiles`/`saveAgentProfiles`
+  // are: `NewSessionDialog` calls this before ever creating a session.
+  // -----------------------------------------------------------------------
+
+  /**
+   * requestId -> the pending {@link listSessionTemplates}/
+   * {@link saveSessionTemplates} call it belongs to (issue #259) — the
+   * session-template counterpart of {@link pendingCustomAgentProbeRequests},
+   * same shape and same reason: one caller, one answer, resolved directly
+   * rather than through a reactive store, keyed by `targetId` for the
+   * eventual reply's `'target'`-keyed decrypt.
+   */
+  private readonly pendingSessionTemplateListRequests = new Map<
+    string,
+    {
+      targetId: string;
+      resolve: (templates: SessionTemplateV1[]) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  /**
+   * Reads this account's saved session-template catalog from the owning
+   * node (issue #259) — `[]` for a node with nothing saved yet. Mirrors
+   * {@link probeCustomAgent} exactly: `nodeId`+`targetId` routing (no
+   * session exists yet to derive a key from — `NewSessionDialog` calls
+   * this before ever creating one), sealed under the same per-target key
+   * family, one-shot promise, loud rejection on a closed connection or a
+   * timeout.
+   */
+  listSessionTemplates(
+    options: { nodeId: string; targetId: string },
+    timeoutMs = 10_000,
+  ): Promise<SessionTemplateV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot list session templates, no open connection'),
+      );
+    }
+    const { nodeId, targetId } = options;
+    const requestId = generateId('sessiontemplates');
+    return new Promise<SessionTemplateV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSessionTemplateListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_template_list_result'));
+      }, timeoutMs);
+      this.pendingSessionTemplateListRequests.set(requestId, {
+        targetId,
+        resolve: (templates) => {
+          clearTimeout(timer);
+          resolve(templates);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'session_template_list_get',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        targetId,
+        requestId,
+      });
+    });
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch) this account's
+   * session-template catalog (issue #259). Resolves with the saved
+   * catalog, mirroring {@link saveAgentProfiles}; routed exactly like
+   * {@link listSessionTemplates} above.
+   */
+  saveSessionTemplates(
+    options: { nodeId: string; targetId: string },
+    templates: SessionTemplateV1[],
+    timeoutMs = 10_000,
+  ): Promise<SessionTemplateV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot save session templates, no open connection'),
+      );
+    }
+    const { nodeId, targetId } = options;
+    const requestId = generateId('sessiontemplates');
+    return new Promise<SessionTemplateV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSessionTemplateListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for session_template_list_result'));
+      }, timeoutMs);
+      this.pendingSessionTemplateListRequests.set(requestId, {
+        targetId,
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: SessionTemplateListSetPayloadV1 = { templates };
+      this.envelopeCrypto
+        .seal('target', targetId, targetId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'session_template_list_set',
+            protocolVersion: PROTOCOL_V1,
+            nodeId,
+            targetId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingSessionTemplateListRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(errorMessage(error)));
+        });
+    });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own
+   * {@link listSessionTemplates}/{@link saveSessionTemplates} calls (issue
+   * #259). Mirrors {@link handleCustomAgentProbeResponse} exactly: answers
+   * a single client's own request (the "requestId not pending means it
+   * isn't mine" guard), decrypted under the request's own per-target key.
+   */
+  private handleSessionTemplateListResult(message: SessionTemplateListResult): void {
+    const pending = this.pendingSessionTemplateListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSessionTemplateListRequests.delete(message.requestId);
+    this.envelopeCrypto
+      .open<unknown>('target', pending.targetId, pending.targetId, message.envelope)
+      .then((decrypted) =>
+        pending.resolve(parseSessionTemplateListResultPayloadV1(decrypted).templates),
+      )
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
       });
