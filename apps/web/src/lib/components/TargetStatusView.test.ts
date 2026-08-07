@@ -720,3 +720,114 @@ describe('TargetStatusView build identity (issue #655)', () => {
     expect(screen.queryByTestId('target-behind-node_drifted:local')).toBeNull();
   });
 });
+
+describe('TargetStatusView concurrency (issue #255)', () => {
+  const LOCAL_KEY = 'node_1:local';
+
+  it('shows the running/cap slot count and the cap\u2019s honest source for a target that reports a limit', () => {
+    const targets: TargetListEntry[] = [
+      {
+        nodeId: 'node_1',
+        targetId: 'local',
+        label: 'This machine',
+        kind: 'local',
+        reachable: true,
+        providers: ['claude'],
+        maxConcurrentSessions: 4,
+        maxConcurrentSessionsSource: 'default',
+      },
+    ];
+    render(TargetStatusView, {
+      props: {
+        targets,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        concurrency: new Map([[LOCAL_KEY, { running: 2, queued: 0 }]]),
+      },
+    });
+
+    const cap = screen.getByTestId(`target-concurrency-cap-${LOCAL_KEY}`);
+    expect(cap.textContent).toBe('2/4');
+    const source = screen.getByTestId(`target-concurrency-source-${LOCAL_KEY}`);
+    expect(source.textContent).toBe('default');
+    expect(screen.queryByTestId(`target-concurrency-queued-${LOCAL_KEY}`)).toBeNull();
+  });
+
+  it('reads "configured" instead of "default" once an operator has set the cap explicitly', () => {
+    const targets: TargetListEntry[] = [
+      {
+        nodeId: 'node_1',
+        targetId: 'local',
+        label: 'This machine',
+        kind: 'local',
+        reachable: true,
+        providers: ['claude'],
+        maxConcurrentSessions: 8,
+        maxConcurrentSessionsSource: 'configured',
+      },
+    ];
+    render(TargetStatusView, {
+      props: { targets, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    expect(screen.getByTestId(`target-concurrency-source-${LOCAL_KEY}`).textContent).toBe(
+      'configured',
+    );
+  });
+
+  it('surfaces a distinct queued badge, with the waiting count, whenever a target has a nonzero queue', () => {
+    const targets: TargetListEntry[] = [
+      {
+        nodeId: 'node_1',
+        targetId: 'local',
+        label: 'This machine',
+        kind: 'local',
+        reachable: true,
+        providers: ['claude'],
+        maxConcurrentSessions: 2,
+        maxConcurrentSessionsSource: 'default',
+      },
+    ];
+    render(TargetStatusView, {
+      props: {
+        targets,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+        concurrency: new Map([[LOCAL_KEY, { running: 2, queued: 3 }]]),
+      },
+    });
+
+    const badge = screen.getByTestId(`target-concurrency-queued-${LOCAL_KEY}`);
+    expect(badge.textContent?.trim()).toBe('3 queued');
+  });
+
+  it('renders no cap/slots reading at all for a target from a node that predates issue #255 (no invented number)', () => {
+    render(TargetStatusView, {
+      props: { targets: TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    expect(screen.queryByTestId(`target-concurrency-cap-${LOCAL_KEY}`)).toBeNull();
+  });
+
+  it('with no concurrency map passed at all, a target that does report a cap still renders at 0/cap rather than throwing', () => {
+    const targets: TargetListEntry[] = [
+      {
+        nodeId: 'node_1',
+        targetId: 'local',
+        label: 'This machine',
+        kind: 'local',
+        reachable: true,
+        providers: ['claude'],
+        maxConcurrentSessions: 4,
+        maxConcurrentSessionsSource: 'default',
+      },
+    ];
+    render(TargetStatusView, {
+      props: { targets, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    expect(screen.getByTestId(`target-concurrency-cap-${LOCAL_KEY}`).textContent).toBe('0/4');
+  });
+});

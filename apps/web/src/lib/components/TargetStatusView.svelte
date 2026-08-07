@@ -95,6 +95,7 @@
     type TargetListEntry,
     type TargetUpdateResponse,
   } from '$lib/relay-client';
+  import type { TargetConcurrencySnapshot } from '$lib/target-concurrency';
   import WovenLoader from './WovenLoader.svelte';
   import Badge from './ui/Badge.svelte';
   import { type StatusTone } from './ui/StatusDot.svelte';
@@ -145,10 +146,29 @@
      * baseline (`buildIdentityMismatch`'s own contract).
      */
     relayBuildIdentity?: BuildIdentityV1;
+    /**
+     * Per-target best-effort running/queued session counts (issue #255),
+     * keyed by {@link rowKey} — `+page.svelte`'s own
+     * `target-concurrency.ts#summarizeTargetConcurrency`, read alongside
+     * `TargetListEntry.maxConcurrentSessions`/`maxConcurrentSessionsSource`
+     * (wire-sent, always current) to render "N/cap, source" next to a
+     * queued badge. Defaults to an empty map — a caller with no session
+     * data yet just shows every target at `0/cap`, never a hole in the
+     * row.
+     */
+    concurrency?: Map<string, TargetConcurrencySnapshot>;
   }
 
-  const { targets, loading, error, onRefresh, focusTarget, client, relayBuildIdentity }: Props =
-    $props();
+  const {
+    targets,
+    loading,
+    error,
+    onRefresh,
+    focusTarget,
+    client,
+    relayBuildIdentity,
+    concurrency = new Map<string, TargetConcurrencySnapshot>(),
+  }: Props = $props();
 
   /** In-flight Update/Remove calls, keyed by {@link rowKey} — disables that row's own buttons and drives `Button`'s `loading` state without a page-wide spinner. `SvelteSet` (not a plain `Set` wrapped in `$state`, mirrors `FileTreePanel.svelte`'s own `expandedPaths`) so `.add`/`.delete` are reactive in place, no reassignment needed. */
   const busyKeys = new SvelteSet<string>();
@@ -465,6 +485,32 @@
                 >
               {/if}
               <span class="target-metrics">
+                {#if target.maxConcurrentSessions !== undefined}
+                  {@const snapshot = concurrency.get(key) ?? { running: 0, queued: 0 }}
+                  <span class="metric" data-testid={`target-concurrency-${key}`}>
+                    <span class="metric-label">Slots</span>
+                    <span class="metric-value font-mono" data-testid={`target-concurrency-cap-${key}`}
+                      >{snapshot.running}/{target.maxConcurrentSessions}</span
+                    >
+                    <span
+                      class="concurrency-source"
+                      data-testid={`target-concurrency-source-${key}`}
+                      >{target.maxConcurrentSessionsSource === 'configured'
+                        ? 'configured'
+                        : 'default'}</span
+                    >
+                  </span>
+                  {#if snapshot.queued > 0}
+                    <Badge
+                      tone="warning"
+                      size="sm"
+                      class="concurrency-queued-badge"
+                      dataTestId={`target-concurrency-queued-${key}`}
+                    >
+                      {snapshot.queued} queued
+                    </Badge>
+                  {/if}
+                {/if}
                 {#if target.health}
                   {@const health = target.health}
                   <span class="metric" data-testid="metric-load">
@@ -814,6 +860,14 @@
 
   .metric-value {
     color: var(--color-text-secondary);
+  }
+
+  /* The cap's honesty marker (issue #255) — parenthetical-weight text, not
+     a badge: it modifies the "Slots" reading right next to it rather than
+     standing as its own state the way the queued count's `Badge` does. */
+  .concurrency-source {
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
   .target-age {

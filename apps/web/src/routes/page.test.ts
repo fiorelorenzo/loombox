@@ -160,6 +160,8 @@ interface FakeClientScenario {
   sessionStatuses?: Record<string, SessionStatusV1>;
   /** Parallels `sessionStatuses` (issue #730) — the reason behind a scenario session's 'error' status, when it has one. */
   sessionStatusReasons?: Record<string, string>;
+  /** Parallels `sessionStatuses` (issue #255's queued-session position) — the ISO timestamp a scenario session's current status transitioned at; only ever read for a `'queued'` session. */
+  sessionStatusUpdatedAt?: Record<string, string>;
   /** Per-session transcript state, keyed by session id — omitted sessions get `transcriptFor`'s existing `undefined` default. */
   transcripts?: Record<string, TranscriptState>;
   /** Per-session permission-queue state, keyed by session id — omitted sessions get the existing empty-queue default. */
@@ -256,6 +258,8 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
       ),
     statusReasonFor: (id: string) =>
       makeStore<string | undefined>(scenario.sessionStatusReasons?.[id]),
+    statusUpdatedAtFor: (id: string) =>
+      makeStore<string | undefined>(scenario.sessionStatusUpdatedAt?.[id]),
     transcriptFor: (id: string) =>
       makeStore<TranscriptState | undefined>(scenario.transcripts?.[id]),
     permissionQueueFor: (id: string) =>
@@ -1075,6 +1079,73 @@ describe('a session with no live agent behind it (issue #730)', () => {
     const composer = await screen.findByTestId('composer-input');
     expect((composer as HTMLTextAreaElement).disabled).toBe(false);
     expect(screen.queryByTestId('session-agentless-notice')).toBeNull();
+  });
+});
+
+describe('queued session: distinct from running, wait made visible (issue #255)', () => {
+  it("a queued session's row title reads distinctly from a working one's — not merely a differently-worded status, but one that names the wait", async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1', title: 'Waiting on a slot' })],
+      sessionStatuses: { sess_1: 'queued' },
+      sessionStatusUpdatedAt: { sess_1: '2026-08-07T00:00:00.000Z' },
+    });
+
+    const row = await screen.findByTestId('session-row-item');
+    const button = row.querySelector('button.session');
+    expect(button?.getAttribute('title')).toContain('Queued: waiting for a slot');
+    expect(button?.getAttribute('title')).not.toContain('Working');
+    expect(button?.getAttribute('title')).not.toContain('Starting');
+  });
+
+  it('two sessions queued on the same target read their own position, oldest first — never the bare "Queued" a slow-but-running session could be confused for', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_newer', title: 'Queued later' }),
+        makeSession({ id: 'sess_older', title: 'Queued first' }),
+      ],
+      sessionStatuses: { sess_newer: 'queued', sess_older: 'queued' },
+      sessionStatusUpdatedAt: {
+        sess_newer: '2026-08-07T00:01:00.000Z',
+        sess_older: '2026-08-07T00:00:00.000Z',
+      },
+    });
+
+    const rows = await screen.findAllByTestId('session-row-item');
+    expect(rows).toHaveLength(2);
+    const titleFor = (title: string) =>
+      rows.find((row) => row.textContent?.includes(title))?.querySelector('button.session');
+    expect(titleFor('Queued first')?.getAttribute('title')).toContain(
+      'Queued: position 1 of 2 waiting for a slot',
+    );
+    expect(titleFor('Queued later')?.getAttribute('title')).toContain(
+      'Queued: position 2 of 2 waiting for a slot',
+    );
+  });
+
+  it('a queued session on a DIFFERENT target than another queued session never borrows its position — each target keeps its own count', async () => {
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_a', title: 'On local', targetId: 'local' }),
+        makeSession({ id: 'sess_b', title: 'On devbox', targetId: 'ssh_devbox' }),
+      ],
+      targets: [
+        { nodeId: 'node_1', targetId: 'local', label: 'Local', kind: 'local', reachable: true, providers: ['claude'] },
+        { nodeId: 'node_1', targetId: 'ssh_devbox', label: 'Devbox', kind: 'ssh', reachable: true, providers: ['claude'] },
+      ],
+      sessionStatuses: { sess_a: 'queued', sess_b: 'queued' },
+      sessionStatusUpdatedAt: {
+        sess_a: '2026-08-07T00:00:00.000Z',
+        sess_b: '2026-08-07T00:00:00.000Z',
+      },
+    });
+
+    const rows = await screen.findAllByTestId('session-row-item');
+    const titleFor = (title: string) =>
+      rows
+        .find((row) => row.textContent?.includes(title))
+        ?.querySelector('button.session');
+    expect(titleFor('On local')?.getAttribute('title')).toContain('Queued: waiting for a slot');
+    expect(titleFor('On devbox')?.getAttribute('title')).toContain('Queued: waiting for a slot');
   });
 });
 
