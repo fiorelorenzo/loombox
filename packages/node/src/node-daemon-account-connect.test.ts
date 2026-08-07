@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AccountPinResolveResponse,
   AccountPinResponse,
+  AccountPinScanResponse,
   ConnectedAccount,
   ConnectedAccountDisconnectResponse,
   GithubConnectResult,
@@ -136,6 +137,10 @@ function isPinResponse(m: WireMessageV1): m is AccountPinResponse {
 
 function isResolveResponse(m: WireMessageV1): m is AccountPinResolveResponse {
   return m.type === 'account_pin_resolve_response';
+}
+
+function isScanResponse(m: WireMessageV1): m is AccountPinScanResponse {
+  return m.type === 'account_pin_scan_response';
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -632,6 +637,135 @@ describe('account_pin_resolve_request / _response (SPEC §7.26/#227, #230)', () 
     expect(response.result.outcome).toBe('error');
     if (response.result.outcome === 'error') {
       expect(response.result.errorType).toBe('AccountPinMalformedError');
+    }
+  });
+});
+
+describe('account_pin_scan_request / _response (SPEC §7.26 pre-disconnect scan-and-warn, issue #229)', () => {
+  it('affected is [] for an account nothing is pinned to', async () => {
+    const accountId = 'acct-scan-empty';
+    node = buildNode({ nodeId: 'node-scan-1', accountId });
+    phone = await connectPhone(accountId);
+
+    phone.send({
+      type: 'account_pin_scan_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-1',
+      nodeId: 'node-scan-1',
+      accountId: 'github:github.com:9999999',
+    });
+    const response = await phone.waitFor(isScanResponse);
+    expect(response.affected).toEqual([]);
+  });
+
+  it('names every real project/capability still pinned to the target account, across a store with several mixed pins', async () => {
+    const accountId = 'acct-scan-named';
+    const targetAccountId = 'github:github.com:1234567';
+    const pinStore = new AccountPinStore({ stateDir: nodeStateDir });
+    pinStore.setPin('/home/dev/loombox', 'github', targetAccountId);
+    pinStore.setPin('/home/dev/side-project', 'github', targetAccountId);
+    pinStore.setPin('/home/dev/other-repo', 'github', 'github:github.com:7654321');
+    pinStore.setPin('/home/dev/loombox', 'jira', 'jira:myteam.atlassian.net:5b10ac8d');
+    pinStore.setPin('/home/dev/opted-out', 'github', null);
+    node = buildNode({ nodeId: 'node-scan-2', accountId, accountPinStore: pinStore });
+    phone = await connectPhone(accountId);
+
+    phone.send({
+      type: 'account_pin_scan_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-2',
+      nodeId: 'node-scan-2',
+      accountId: targetAccountId,
+    });
+    const response = await phone.waitFor(isScanResponse);
+    expect(response.affected).toEqual([
+      { projectPath: '/home/dev/loombox', capability: 'github' },
+      { projectPath: '/home/dev/side-project', capability: 'github' },
+    ]);
+  });
+
+  it('a pin found by the scan is left dangling (not cleared) after disconnect, and the next resolve through it fails honestly instead of falling back to a different account', async () => {
+    const accountId = 'acct-scan-then-disconnect';
+    const projectPath = '/home/dev/loombox';
+    const githubService = new GithubConnectService({
+      stateDir: nodeStateDir,
+      osKeyringBackendFactory: async () => undefined,
+    });
+    const account = await githubService.connect({
+      clientId: 'client-id',
+      fetchImpl: stubGithubFetch(),
+      sleep: async () => {},
+    });
+    const pinStore = new AccountPinStore({ stateDir: nodeStateDir });
+    pinStore.setPin(projectPath, 'github', account.id);
+    node = buildNode({
+      nodeId: 'node-scan-3',
+      accountId,
+      githubConnectService: githubService,
+      accountPinStore: pinStore,
+    });
+    phone = await connectPhone(accountId);
+    const p = phone;
+
+    // Before disconnect: the scan names this exact project/capability —
+    // this is what a real confirm dialog would show the operator.
+    p.send({
+      type: 'account_pin_scan_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-3a',
+      nodeId: 'node-scan-3',
+      accountId: account.id,
+    });
+    const preScan = await p.waitFor(isScanResponse);
+    expect(preScan.affected).toEqual([{ projectPath, capability: 'github' }]);
+
+    // Disconnect the account the operator was warned about.
+    p.send({
+      type: 'connected_account_disconnect_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-3b',
+      nodeId: 'node-scan-3',
+      accountId: account.id,
+    });
+    const disconnectResponse = await p.waitFor(isDisconnectResponse);
+    expect(disconnectResponse.outcome).toBe('ok');
+
+    // The pin itself is untouched (orphaned, not cleared or blocked) — a
+    // rescan still names the same project/capability, so the operator can
+    // find and fix it.
+    p.send({
+      type: 'account_pin_scan_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-3c',
+      nodeId: 'node-scan-3',
+      accountId: account.id,
+    });
+    await p.waitFor(() => p.messages.filter(isScanResponse).length >= 2);
+    expect(p.messages.filter(isScanResponse)[1]?.affected).toEqual([
+      { projectPath, capability: 'github' },
+    ]);
+
+    // A resolve that used to go through the now-disconnected account fails
+    // honestly — `accounts` here is the client's own post-disconnect
+    // `connected_account_list` snapshot, which no longer includes it —
+    // never a silent fallback to some other connected account.
+    p.send({
+      type: 'account_pin_resolve_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-scan-3d',
+      nodeId: 'node-scan-3',
+      projectPath,
+      capability: 'github',
+      mode: 'write',
+      target: { provider: 'github', host: 'github.com' },
+      accounts: [],
+    });
+    const resolveResponse = await p.waitFor(isResolveResponse);
+    expect(resolveResponse.result.outcome).toBe('error');
+    if (resolveResponse.result.outcome === 'error') {
+      expect(resolveResponse.result.errorType).toBe('AccountPinDanglingError');
+      expect(resolveResponse.result.pinnedAccountId).toBe(account.id);
+      expect(resolveResponse.result.capability).toBe('github');
     }
   });
 });

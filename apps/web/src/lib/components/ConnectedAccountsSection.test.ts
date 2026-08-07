@@ -56,6 +56,7 @@ function noopClient(): ConnectedAccountsClient {
       result: Promise.withResolvers<GithubConnectOutcome>().promise,
     })),
     connectJiraAccount: vi.fn(),
+    scanAccountPins: vi.fn(async () => []),
     disconnectAccount: vi.fn(),
     getAccountPins: vi.fn(async () => ({})),
     setAccountPin: vi.fn(),

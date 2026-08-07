@@ -3335,6 +3335,247 @@ describe('NodeDaemon git-commit (commit workflow with AI-generated commit messag
   });
 });
 
+/**
+ * This suite's own seam for spying on `bridge.agentSession.prompt`
+ * directly — `explainGitDiffForBridge`/`explainDiffViaAgent` call it
+ * straight off the live `SessionBridge`, not through
+ * `NodeDaemon.promptSession`, so the `vi.spyOn(node, 'promptSession')`
+ * technique this file's CI-auto-iterate sibling suites use can't observe
+ * this call. Named distinctly from the generic `internals()` helper those
+ * other suites define (each in its own file) since this main
+ * node-daemon.test.ts file has several concurrent siblings landing in the
+ * same wave — see this suite's own doc comment.
+ */
+interface DiffExplainDaemonInternals {
+  bridges: Map<string, { agentSession: { prompt(text: string): Promise<void> } }>;
+}
+function diffExplainInternals(node: NodeDaemon): DiffExplainDaemonInternals {
+  return node as unknown as DiffExplainDaemonInternals;
+}
+
+describe('NodeDaemon git-diff-explain (AI diff-explain assist, issue #236)', () => {
+  it("explains a single unstaged hunk by prompting the session's own live agent over git_diff_explain_request/git_diff_explain_response — the real prompt sent names the hunk's own scope and carries its real patch text", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-hunk';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-1',
+      deviceId: 'device-node-git-diff-explain-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // echoProvider() always replies "Hello world" regardless of the
+      // prompt text (the fixture's own doc comment) — proof enough that
+      // the EXPLANATION reaches the client verbatim from a real agent
+      // turn. The prompt's own SHAPE is asserted separately below via a
+      // spy on the real `bridge.agentSession.prompt` call, not by
+      // inspecting the fixture's fixed reply.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'hunk.txt'), 'one\ntwo\nthree\n');
+    await git(session.worktreePath, ['add', 'hunk.txt']);
+    await git(session.worktreePath, ['commit', '-q', '-m', 'seed hunk.txt']);
+    await fsWriteFile(pathJoin(session.worktreePath, 'hunk.txt'), 'one\nEDITED\nthree\n');
+
+    const bridge = diffExplainInternals(node).bridges.get(session.id);
+    if (!bridge) throw new Error('expected a live bridge right after createSession');
+    const promptSpy = vi.spyOn(bridge.agentSession, 'prompt');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'hunk', path: 'hunk.txt', side: 'unstaged', hunkIndex: 0 } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-hunk',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-hunk',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['Hello world', 'hunk.txt', 'EDITED', session.worktreePath]);
+    const payload = await phoneOpen<{ outcome: string; explanation?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', explanation: 'Hello world' });
+
+    expect(promptSpy).toHaveBeenCalledTimes(1);
+    const [promptText] = promptSpy.mock.calls[0] as [string];
+    expect(promptText).toContain('one unstaged hunk of "hunk.txt"');
+    expect(promptText).toContain('-two');
+    expect(promptText).toContain('+EDITED');
+    expect(promptText).toMatch(/ONLY the explanation/i);
+  });
+
+  it("explains a whole file's current diff (staged AND unstaged hunks together) — a scope distinct from, and carrying more than, a single hunk", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-file';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-2',
+      deviceId: 'device-node-git-diff-explain-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'file.txt'), 'one\ntwo\n');
+    await git(session.worktreePath, ['add', 'file.txt']);
+    await git(session.worktreePath, ['commit', '-q', '-m', 'seed file.txt']);
+    await fsWriteFile(pathJoin(session.worktreePath, 'file.txt'), 'one\nSTAGED-EDIT\n');
+    await git(session.worktreePath, ['add', 'file.txt']);
+    await fsWriteFile(
+      pathJoin(session.worktreePath, 'file.txt'),
+      'one\nSTAGED-EDIT\nUNSTAGED-APPEND\n',
+    );
+
+    const bridge = diffExplainInternals(node).bridges.get(session.id);
+    if (!bridge) throw new Error('expected a live bridge right after createSession');
+    const promptSpy = vi.spyOn(bridge.agentSession, 'prompt');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'file', path: 'file.txt' } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-file',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-file',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; explanation?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload).toEqual({ outcome: 'ok', explanation: 'Hello world' });
+
+    expect(promptSpy).toHaveBeenCalledTimes(1);
+    const [promptText] = promptSpy.mock.calls[0] as [string];
+    expect(promptText).toContain('the whole current diff of "file.txt"');
+    expect(promptText).toContain('+STAGED-EDIT');
+    expect(promptText).toContain('+UNSTAGED-APPEND');
+  });
+
+  it("reports outcome: error honestly instead of hanging when a session has no live agent (disconnected since a restart) — the same contract git_commit_draft_request's draft path has", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-diff-explain-no-agent';
+
+    const beforeRestart = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-3',
+      deviceId: 'device-node-git-diff-explain-3-before',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    const session = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    await fsWriteFile(pathJoin(session.worktreePath, 'orphan.txt'), 'content\n');
+    // "The restart": tears every bridge down, never touching the on-disk
+    // session record — mirrors the #702 reattach describe block's own
+    // `beforeRestart.close()` exactly.
+    beforeRestart.close();
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-git-diff-explain-3',
+      deviceId: 'device-node-git-diff-explain-3-after',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+    await waitForConnected(node);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-git-diff-explain-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const requestEnvelope = await phoneSeal(
+      session.id,
+      { scope: { kind: 'file', path: 'orphan.txt' } },
+      key,
+    );
+    phone.send({
+      type: 'git_diff_explain_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-explain-no-agent',
+      envelope: requestEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'git_diff_explain_response' &&
+        (m as { requestId?: string }).requestId === 'req-explain-no-agent',
+    )) as { type: 'git_diff_explain_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('error');
+    expect(payload.message).toMatch(/no live agent/i);
+  });
+});
+
 describe('NodeDaemon target-fs (directory picker, SPEC §7.25; issue #474)', () => {
   it("lists a local target's directory over the encrypted target_fs_list_request/target_fs_list_response pair, dirs first, sealed under a per-target key (not the session key)", async () => {
     const amk = generateAmk();
@@ -6861,5 +7102,162 @@ describe('NodeDaemon: session fork (design spec `2026-08-05-zed-parity-decisions
     phone.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
     const after = (await phone.waitFor((m) => m.type === 'session_list')) as SessionListV1;
     expect(after.sessions.length).toBe(before.sessions.length);
+  });
+  it('forks a PAST session — no live agent behind it anymore, e.g. after this node restarted — straight from its persisted on-disk transcript (issue #264)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-past-session';
+
+    const beforeRestart = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-past',
+      deviceId: 'device-node-fork-past-before',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      // Explicit stateDir (unlike this suite's other tests, which lean on
+      // AgentSupervisor's real-homedir default): the whole point of this
+      // test is that a LATER supervisor instance, after "the restart"
+      // below, reads the exact on-disk transcript THIS one wrote — same
+      // convention `nodeStateDir` itself already gives `sessions.json`.
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+
+    const source = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
+    const sourceKey = await derivePhoneSessionKey(amk, accountId, source.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-past',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: source.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await beforeRestart.promptSession(source.id, 'first turn');
+    const [turn1Chunk] = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      1,
+    );
+    const turn1Id = turn1Chunk!.turnId!;
+
+    // "The restart" (same idiom as the #702 reattach suite above): tears
+    // down every bridge/agent process this instance held, never touching
+    // `sessions.json` or the on-disk transcript log — exactly like a real
+    // process exit. The source session's own record survives on disk;
+    // nothing in THIS process remembers a live agent for it anymore.
+    beforeRestart.close();
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-past', // same node identity as before the restart
+      deviceId: 'device-node-fork-past-after',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+    await waitForConnected(node);
+
+    // Forking has nothing live to read from — `source` reloaded
+    // 'disconnected' (issue #515), no bridge exists for it in this fresh
+    // process — yet it succeeds by reading the source's persisted
+    // transcript straight off disk via its recorded `acpSessionId`, the
+    // exact fallback `forkSessionInternal` takes when `this.bridges` has
+    // nothing for the source.
+    const fork = await node.forkSession(source.id, turn1Id);
+
+    expect(fork.id).not.toBe(source.id);
+    expect(fork.worktreePath).not.toBe(source.worktreePath);
+    expect(fork.target).toBe('local');
+    expect(fork.provider).toBe(source.provider);
+
+    const forkKey = await derivePhoneSessionKey(amk, accountId, fork.id);
+    phone.send({
+      type: 'resync_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: fork.id,
+      sinceSeq: 0,
+    });
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: fork.id });
+    await phone.waitFor(
+      (m) => m.type === 'session_announce' && (m as SessionAnnounceV1).session.id === fork.id,
+    );
+
+    // The fork's starting context matches what the fork promised: exactly
+    // turn 1's own output, read back off the SAME on-disk transcript this
+    // process never lived through as a live turn.
+    const forkChunks = await waitForDecryptedKinds(
+      phone,
+      fork.id,
+      forkKey,
+      ['agent_message_chunk'],
+      2,
+    );
+    expect(forkChunks.every((chunk) => chunk.turnId === turn1Id)).toBe(true);
+    expect(forkChunks.map((chunk) => chunk.text).join('')).toBe('Hello world');
+
+    // The fork behaves like any other session from here: promptable
+    // immediately, diverging with genuinely new output.
+    await node.promptSession(fork.id, 'diverge from here');
+    const [forkTurnEnded] = await waitForDecryptedKinds(phone, fork.id, forkKey, ['turn_ended'], 1);
+    expect(forkTurnEnded!.stopReason).toBe('end_turn');
+  });
+
+  it('refuses to fork a past session whose worktree no longer exists on disk, with the reason named rather than a raw git failure (issue #264)', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fork-past-worktree-gone';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fork-worktree-gone',
+      deviceId: 'device-node-fork-worktree-gone',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()], stateDir: nodeStateDir }),
+    });
+
+    const source = await node.createSession({ projectPath, provider: 'test-echo' });
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fork-worktree-gone',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: source.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    await node.promptSession(source.id, 'only turn');
+    const sourceKey = await derivePhoneSessionKey(amk, accountId, source.id);
+    const [turn1Chunk] = await waitForDecryptedKinds(
+      phone,
+      source.id,
+      sourceKey,
+      ['agent_message_chunk'],
+      1,
+    );
+    const turn1Id = turn1Chunk!.turnId!;
+
+    // Simulates a user manually cleaning up `.loombox/worktrees/*` while
+    // the session's own record (and its persisted transcript) is still
+    // around — the source's agent has already exited on its own by the
+    // time this test forks it, matching the "past session" case even
+    // without a node restart.
+    await rm(source.worktreePath, { recursive: true, force: true });
+
+    await expect(node.forkSession(source.id, turn1Id)).rejects.toThrow(
+      /worktree no longer exists/i,
+    );
   });
 });
