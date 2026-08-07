@@ -73,6 +73,7 @@
     sessionStatusLabelWithReason,
   } from '$lib/session-status';
   import { queuePositionReasons, summarizeTargetConcurrency } from '$lib/target-concurrency';
+  import { diagnoseSessionStall } from '$lib/session-stall-diagnosis';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import {
     fileMention,
@@ -2717,6 +2718,46 @@
       (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
     ),
   );
+  /**
+   * Issue #271's own stall diagnosis, client-computed exactly like #255's
+   * `sessionQueueReasons` above (same "no new wire message needed" trick
+   * — every input here is data `sessionStatuses`/`sessionStatusReasons`/
+   * `sessionQueueReasons`/`targetStatusEntries` already track), keyed by
+   * session id. Reuses `classifyTargetHealth` for "is this session's
+   * target unreachable" rather than re-deriving it from `TargetHealth`'s
+   * raw fields a second time — the exact classification the status bar's
+   * own target dots and `TargetStatusView.svelte`'s `healthState` already
+   * use, so this can't quietly disagree with either.
+   *
+   * The THIRD, and last, tier of each label call site's own
+   * `sessionStatusReasons.get(id) ?? sessionQueueReasons.get(id) ??
+   * sessionStallReasons.get(id)` fallback: only ever reached once the
+   * first two have nothing to say for a session, and only ever holds a
+   * REAL diagnosis — `diagnoseSessionStall`'s own `'unknown'` cause is
+   * filtered out right here, never turned into visible text (see that
+   * module's own doc comment for why inventing a reason for it would be
+   * exactly the "we cannot tell" issue #271 exists to stop; a session
+   * with nothing distinguishing to say keeps reading as a plain
+   * `'Working'`/etc., same as before this feature existed).
+   */
+  const sessionStallReasons = $derived.by(() => {
+    const targetsByKey = new SvelteMap(
+      targetStatusEntries.map((target) => [`${target.nodeId}:${target.targetId}`, target]),
+    );
+    const reasons = new SvelteMap<string, string>();
+    for (const session of sessions) {
+      const target = targetsByKey.get(`${session.nodeId}:${session.targetId}`);
+      const diagnosis = diagnoseSessionStall({
+        status: sessionStatuses.get(session.id) as SessionStatusV1 | undefined,
+        statusReason: sessionStatusReasons.get(session.id),
+        queueReason: sessionQueueReasons.get(session.id),
+        targetUnreachable: target ? classifyTargetHealth(target) === 'unreachable' : undefined,
+        targetHealthSampledAt: target?.health?.sampledAt,
+      });
+      if (diagnosis.cause !== 'unknown') reasons.set(session.id, diagnosis.message);
+    }
+    return reasons;
+  });
 
   /**
    * Sessions clustered under their target/node (redesign brief §1/§4, issue
@@ -3552,7 +3593,9 @@
       {@const needsAttention = sessionsNeedingAttention.has(session.id)}
       {@const statusLabel = sessionStatusLabelWithReason(
         sessionStatus,
-        sessionStatusReasons.get(session.id) ?? sessionQueueReasons.get(session.id),
+        sessionStatusReasons.get(session.id) ??
+          sessionQueueReasons.get(session.id) ??
+          sessionStallReasons.get(session.id),
       )}
       {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
@@ -3722,7 +3765,9 @@
       {@const sessionStatus = sessionStatuses.get(session.id)}
       {@const statusLabel = sessionStatusLabelWithReason(
         sessionStatus,
-        sessionStatusReasons.get(session.id) ?? sessionQueueReasons.get(session.id),
+        sessionStatusReasons.get(session.id) ??
+          sessionQueueReasons.get(session.id) ??
+          sessionStallReasons.get(session.id),
       )}
       <li>
         <button
@@ -5043,7 +5088,8 @@
       {selectedSessionStatus}
       selectedSessionStatusReason={selectedSessionId
         ? (sessionStatusReasons.get(selectedSessionId) ??
-          sessionQueueReasons.get(selectedSessionId))
+          sessionQueueReasons.get(selectedSessionId) ??
+          sessionStallReasons.get(selectedSessionId))
         : undefined}
       {queuedSessionCount}
       usage={transcript?.usage}

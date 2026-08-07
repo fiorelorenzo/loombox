@@ -279,6 +279,7 @@ import {
 } from './account-pin';
 import { readAgentInstructionsFiles, writeAgentInstructionsFile } from './agent-instructions';
 import { AccountPinStore } from './account-pin-store';
+import { reasonForAttentionState } from './attention-reason';
 import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachments';
 import {
   abortMerge,
@@ -3190,10 +3191,19 @@ export class NodeDaemon extends EventEmitter {
     // issues #126/#128/#149) — additive to the transcript_update path above,
     // riding the exact same session_update envelope + sendQueue ordering.
     bridge.agentSession.on('attention', (state: AttentionState) => {
+      // Issue #271: a mid-session crash/exit's own `detail` (exit code,
+      // error message) used to be dropped on the floor here — the one
+      // signal that lets a stalled-looking session distinguish "the agent
+      // process is genuinely gone" from every other cause. See
+      // `reasonForAttentionState`'s own doc comment for why this is the
+      // ONE thing it never had until now, unlike the pre-spawn `'error'`
+      // path issue #730 already covered via `sendSessionStatus`.
+      const reason = reasonForAttentionState(state);
       this.forwardSessionEvent(bridge.session.id, {
         kind: 'session_status',
         status: state.status,
         updatedAt: state.updatedAt,
+        ...(reason === undefined ? {} : { reason }),
       });
       if (state.status === 'permission_required') {
         // #373: this class's OWN dedicated relay-visible trigger — the real
