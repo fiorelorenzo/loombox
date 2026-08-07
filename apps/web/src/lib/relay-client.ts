@@ -56,6 +56,7 @@ import {
   parsePrOpenResultPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
+  parseTrackerConnectivityStatusPayloadV1,
   PROTOCOL_V1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
@@ -204,6 +205,8 @@ import {
   type TestRunnerConfigSetPayloadV1,
   type TestRunnerKindV1,
   type TrackerBackendResolutionErrorV1,
+  type TrackerConnectivityStateV1,
+  type TrackerConnectivityStatus,
   type TrackerMode,
   type TrackerRecordV1,
   type TrackerRoleV1,
@@ -567,26 +570,35 @@ export interface RunClientState {
  *   `ci_check_status` (`packages/node/src/ci-check-watcher.ts`, issue #239)
  *   aggregates to `'failing'`; see `prUrl`/`prNumber`/`failingChecks`
  *   (issue #243).
+ * - `'tracker_failure'` — a session whose project's live tracker
+ *   (GitHub/Jira) is unreachable or its credential was rejected
+ *   (`packages/node/src/tracker-connectivity-watcher.ts`, issue #219); see
+ *   `trackerProvider`/`trackerConnectivityState`.
  * - `'review_request'` — declared here as an extension point ONLY: SPEC
  *   §7.14 says a review request lands in this same inbox too, but it has
- *   no live event source in this client yet (that needs the tracker
- *   integration work, v2). `RelayClient` never constructs one of these in
- *   v1; it exists in the union (and `AttentionInbox.svelte` already
- *   renders it distinctly) purely so wiring a real source later is
- *   additive, not a rendering/type rework.
+ *   no live event source in this client yet. `RelayClient` never
+ *   constructs one of these in v1; it exists in the union (and
+ *   `AttentionInbox.svelte` already renders it distinctly) purely so
+ *   wiring a real source later is additive, not a rendering/type rework.
  *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'` are
- * the four "needs the user now" classes this client actually wires to live
- * data. See {@link RelayClient.attentionInbox}'s doc comment for why a
- * session with a queue of several pending requests only ever contributes
- * its head as one item, why a session contributes at most one of
- * `awaiting_input`/`session_outcome` (its live status is one or the other,
- * never both), and why `ci_failure` is independent of both (a session can
- * be idle/finished AND have a failing check on its open PR at once).
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'`/
+ * `'tracker_failure'` are the five "needs the user now" classes this
+ * client actually wires to live data. See {@link RelayClient.attentionInbox}'s
+ * doc comment for why a session with a queue of several pending requests
+ * only ever contributes its head as one item, why a session contributes
+ * at most one of `awaiting_input`/`session_outcome` (its live status is
+ * one or the other, never both), and why `ci_failure`/`tracker_failure`
+ * are independent of both (a session can be idle/finished AND have a
+ * failing check on its open PR, or a broken project tracker, at once).
  */
 export interface AttentionInboxItem {
   readonly kind:
-    'permission' | 'awaiting_input' | 'session_outcome' | 'ci_failure' | 'review_request';
+    | 'permission'
+    | 'awaiting_input'
+    | 'session_outcome'
+    | 'ci_failure'
+    | 'tracker_failure'
+    | 'review_request';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
@@ -630,6 +642,17 @@ export interface AttentionInboxItem {
    * that exact set (issue #243).
    */
   readonly failingChecks?: readonly string[];
+  /**
+   * Set only for a `'tracker_failure'` item: which live tracker provider
+   * this session's project uses, and which of the two failure states
+   * `TrackerConnectivityWatcher` observed (SPEC §7.10; issue #219) —
+   * `'unreachable'` (transient, nothing to reconfigure) or `'authFailed'`
+   * (the credential was rejected; reconnect the account). Never
+   * `'reachable'`: a healthy tracker never raises an inbox item at all,
+   * see {@link recomputeAttentionInbox}.
+   */
+  readonly trackerProvider?: 'github' | 'jira';
+  readonly trackerConnectivityState?: 'unreachable' | 'authFailed';
 }
 
 /**
@@ -1421,6 +1444,11 @@ export class RelayClient {
   private readonly inboxTrackedSessions = new Set<string>();
   /** `sessionId` -> this session's latest known CI check state (SPEC §7.14; issue #243) — backs the attention inbox's `'ci_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleCiCheckStatus}. `undefined` (no entry yet) until the node's first `ci_check_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. */
   private readonly ciCheckStatuses = new Map<string, Writable<CiCheckStateV1 | undefined>>();
+  /** `sessionId` -> this session's project's latest known live-tracker connectivity reading (SPEC §7.10; issue #219) — backs the attention inbox's `'tracker_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleTrackerConnectivityStatus}. `undefined` (no entry yet) until the node's first `tracker_connectivity_status` push for a session arrives: a native-mode project, or a live-mode one whose watcher hasn't completed its first poll yet. Mirrors {@link ciCheckStatuses} exactly. */
+  private readonly trackerConnectivityStatuses = new Map<
+    string,
+    Writable<TrackerConnectivityStateV1 | undefined>
+  >();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -5819,6 +5847,9 @@ export class RelayClient {
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.trackerConnectivityStatusStoreFor(sessionId).subscribe(() =>
+      this.recomputeAttentionInbox(),
+    );
   }
 
   /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
@@ -5896,6 +5927,20 @@ export class RelayClient {
             .map((run) => run.name),
         });
       }
+
+      const trackerConnectivity = get(this.trackerConnectivityStatusStoreFor(session.id));
+      if (trackerConnectivity && trackerConnectivity.state !== 'reachable') {
+        items.push({
+          kind: 'tracker_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: trackerConnectivity.updatedAt,
+          trackerProvider: trackerConnectivity.provider,
+          trackerConnectivityState: trackerConnectivity.state,
+        });
+      }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
     this.attentionInboxStore.set(items);
@@ -5916,6 +5961,18 @@ export class RelayClient {
     if (!store) {
       store = writable<CiCheckStateV1 | undefined>(undefined);
       this.ciCheckStatuses.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /** `sessionId` -> {@link trackerConnectivityStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
+  private trackerConnectivityStatusStoreFor(
+    sessionId: string,
+  ): Writable<TrackerConnectivityStateV1 | undefined> {
+    let store = this.trackerConnectivityStatuses.get(sessionId);
+    if (!store) {
+      store = writable<TrackerConnectivityStateV1 | undefined>(undefined);
+      this.trackerConnectivityStatuses.set(sessionId, store);
     }
     return store;
   }
@@ -6261,6 +6318,9 @@ export class RelayClient {
       }
       case 'ci_check_status':
         this.handleCiCheckStatus(message);
+        return;
+      case 'tracker_connectivity_status':
+        this.handleTrackerConnectivityStatus(message);
         return;
       default:
         return;
@@ -7069,6 +7129,33 @@ export class RelayClient {
       .catch((error: unknown) => {
         console.warn(
           `RelayClient: failed to decrypt ci_check_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /**
+   * The owning node's latest live-tracker connectivity reading for this
+   * session's project (SPEC §7.10; issue #219) — pushed on a fixed
+   * interval whatever the resulting state, exactly like
+   * {@link handleCiCheckStatus} above; no pending-request bookkeeping,
+   * since nothing on this client ever asks for it. Decrypts straight into
+   * {@link trackerConnectivityStatusStoreFor}, which
+   * {@link recomputeAttentionInbox} reads to build (or clear) this
+   * session's `'tracker_failure'` inbox item — a genuine decrypt failure
+   * is logged and otherwise swallowed, the same "best-effort push, never
+   * crash the client" contract {@link handleCiCheckStatus} follows.
+   */
+  private handleTrackerConnectivityStatus(message: TrackerConnectivityStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.trackerConnectivityStatusStoreFor(message.sessionId).set(
+          parseTrackerConnectivityStatusPayloadV1(decrypted).status,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt tracker_connectivity_status for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
   }

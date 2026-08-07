@@ -4,7 +4,7 @@
    * #167/#168/#169): one list of every item across every project/node that
    * needs the user now, sorted oldest-waiting first
    * (`RelayClient.attentionInbox()`'s own sort, not re-sorted here). Renders
-   * all four classes SPEC §7.13 names, each visually distinguishable via its
+   * all five classes SPEC §7.13 names, each visually distinguishable via its
    * `data-kind` attribute and a `.kind-badge` label:
    * - `'permission'` — an actionable pending tool-call approval.
    * - `'awaiting_input'` — a session waiting on the user's next message.
@@ -13,12 +13,16 @@
    * - `'ci_failure'` — a session whose watched PR's latest CI check state
    *   aggregates to failing (`RelayClient.attentionInbox()`, issue #243);
    *   shows which check(s) failed and a link to the PR.
+   * - `'tracker_failure'` — a session whose project's live tracker
+   *   (GitHub/Jira) is unreachable or its credential was rejected
+   *   (`TrackerConnectivityWatcher`, SPEC §7.10, issue #219); wording
+   *   distinguishes the two, since the corrective action differs (retry
+   *   later vs. reconnect the account).
    * - `'review_request'` — modeled and rendered here so the inbox already
    *   has a distinct look for it, but `RelayClient` never produces one in
-   *   v1: it has no live event source in this client yet (that needs the
-   *   tracker integration work, SPEC §7.10, v2). This is a forward-looking
-   *   extension point, not a fake stub — no item of this kind is ever
-   *   synthesized.
+   *   v1: it has no live event source in this client yet. This is a
+   *   forward-looking extension point, not a fake stub — no item of this
+   *   kind is ever synthesized.
    *
    * Every item has an Open action (`onOpenSession`) that jumps to its
    * originating session. A `'permission'` item is additionally actionable
@@ -187,6 +191,12 @@
         return item.failingChecks && item.failingChecks.length > 0
           ? `CI check failed: ${item.failingChecks.join(', ')}`
           : 'CI check failed';
+      case 'tracker_failure': {
+        const provider = item.trackerProvider === 'jira' ? 'Jira' : 'GitHub';
+        return item.trackerConnectivityState === 'authFailed'
+          ? `${provider} tracker credential expired or was revoked — reconnect the account`
+          : `${provider} tracker unreachable — retrying`;
+      }
       case 'review_request':
         return 'Review requested';
     }
@@ -199,7 +209,7 @@
    * truncated. Falls back to the old derived `needLabel` when there is no
    * agent message yet (a permission request on a session's very first
    * turn) or for a kind that never carries one (`session_outcome`/
-   * `ci_failure`/`review_request` keep their own short label).
+   * `ci_failure`/`tracker_failure`/`review_request` keep their own short label).
    */
   function messageSource(item: AttentionInboxItem): string {
     if ((item.kind === 'permission' || item.kind === 'awaiting_input') && item.agentMessage) {
@@ -213,10 +223,11 @@
    * vocabulary (`$lib/session-status.ts`) wherever it genuinely
    * corresponds to one of `AcpSessionStatus`'s five states — the same
    * "one wording, never re-derived" rule the sidebar and command palette
-   * follow (redesign v3 design spec §3.6). `ci_failure`/`review_request`
-   * have no `AcpSessionStatus` equivalent at all (a PR's CI state and a
-   * review request are properties of the PR, not the session's own live
-   * status), so those two keep a short label of their own rather than
+   * follow (redesign v3 design spec §3.6). `ci_failure`/`tracker_failure`/
+   * `review_request` have no `AcpSessionStatus` equivalent at all (a PR's
+   * CI state, a tracker's connectivity, and a review request are none of
+   * them the session's own live status), so those three keep a short
+   * label of their own rather than
    */
   function itemStatus(item: AttentionInboxItem): { tone: StatusTone; label: string } {
     switch (item.kind) {
@@ -236,6 +247,11 @@
           : { tone: SESSION_STATUS_TONES.exited, label: SESSION_STATUS_LABELS.exited };
       case 'ci_failure':
         return { tone: 'danger', label: 'CI' };
+      case 'tracker_failure':
+        return {
+          tone: 'danger',
+          label: item.trackerConnectivityState === 'authFailed' ? 'Tracker auth' : 'Tracker',
+        };
       case 'review_request':
         return { tone: 'info', label: 'Review' };
     }
