@@ -256,14 +256,26 @@ const GITHUB_TRANSITIONS: Record<
   reopen: { state: 'open', stateReason: 'reopened' },
 };
 
-/** Which of `GITHUB_TRANSITIONS` are actually available given an issue's *current* `state` — a closed issue can only reopen, an open one can only close (one way or the other), never all three at once. */
+/** Which of `GITHUB_TRANSITIONS` are actually available given an issue's *current* `state` — a closed issue can only reopen, an open one can only close (one way or the other), never all three at once. `targetCategory` (issue #696) is `deriveGithubWorkflowCategory` applied to each entry's own `GITHUB_TRANSITIONS[id]` — the identical function a read already runs — so a board move matches a transition by CATEGORY, never a hand-duplicated id/category table that could drift from the read-side mapping. */
 function transitionsForState(state: string): TrackerTransition[] {
+  const targetCategory = (id: string): WorkflowCategoryV1 => {
+    const move = GITHUB_TRANSITIONS[id]!;
+    return deriveGithubWorkflowCategory(move.state, move.stateReason);
+  };
   if (state === 'closed') {
-    return [{ id: 'reopen', name: 'Reopen' }];
+    return [{ id: 'reopen', name: 'Reopen', targetCategory: targetCategory('reopen') }];
   }
   return [
-    { id: 'close_completed', name: 'Close as completed' },
-    { id: 'close_not_planned', name: 'Close as not planned' },
+    {
+      id: 'close_completed',
+      name: 'Close as completed',
+      targetCategory: targetCategory('close_completed'),
+    },
+    {
+      id: 'close_not_planned',
+      name: 'Close as not planned',
+      targetCategory: targetCategory('close_not_planned'),
+    },
   ];
 }
 

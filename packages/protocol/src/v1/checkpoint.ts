@@ -138,11 +138,12 @@ export const restoreResultV1 = z.object({
 });
 export type RestoreResultV1 = z.infer<typeof restoreResultV1>;
 
-/** Every named reason a checkpoint/restore operation can fail — one member per `GitCheckpointStore`-thrown error class, plus two this wiring adds of its own: `checkpoint_not_found` mirrors `CheckpointNotFoundError` (`checkpoint_restore_preview`/`checkpoint_restore` only); `not_git_worktree`/`detached_head`/`dirty_submodule` mirror `NotAGitWorktreeError`/`DetachedHeadError`/`DirtySubmoduleError` (any of the four messages, via `assertUsable()`); `unsupported_target` is this node's own refusal for an `ssh:`-target session (this file's own doc comment); `turn_in_progress` is `checkpoint_restore`'s own refusal while the session's agent is actively mid-turn, so a restore is never immediately raced by an in-flight write; `unknown` covers anything else (a real git failure this store's own error classes don't name). */
+/** Every named reason a checkpoint/restore operation can fail — one member per `GitCheckpointStore`/`FsSnapshotCheckpointStore`-thrown error class, plus three this wiring adds of its own: `checkpoint_not_found` mirrors `CheckpointNotFoundError` (`checkpoint_restore_preview`/`checkpoint_restore` only); `not_git_worktree`/`detached_head`/`dirty_submodule` mirror `NotAGitWorktreeError`/`DetachedHeadError`/`DirtySubmoduleError` (any of the four messages, via `assertUsable()`); `snapshot_too_large` mirrors `FsSnapshotCheckpointStore`'s own `SnapshotTooLargeError` (`checkpoint_create` only — issue #267's cost bound: a non-git working set past `MAX_FS_SNAPSHOT_FILES`/`MAX_FS_SNAPSHOT_BYTES` refuses rather than silently taking minutes); `unsupported_target` is this node's own refusal for an `ssh:`-target session (this file's own doc comment); `turn_in_progress` is `checkpoint_restore`'s own refusal while the session's agent is actively mid-turn, so a restore is never immediately raced by an in-flight write; `unknown` covers anything else (a real git/filesystem failure neither store's own error classes name). */
 export const checkpointErrorTypeV1 = z.enum([
   'not_git_worktree',
   'detached_head',
   'dirty_submodule',
+  'snapshot_too_large',
   'checkpoint_not_found',
   'unsupported_target',
   'turn_in_progress',

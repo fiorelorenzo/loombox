@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+
+import { generateCheckpointId } from './checkpoint-id';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,8 +17,16 @@ const execFileAsync = promisify(execFile);
  * wiring a session to this store, and the protocol surface a client would
  * need to trigger it, is deliberately left to a follow-up (see the PR that
  * introduced this file for which issue). The non-git filesystem-snapshot
- * path for projects without a `.git` (§6, "Project... does not have to be a
- * git repository") is issue #267, not this one.
+ * path for projects without a `.git` (§6, "Project... does not have to be
+ * a git repository") is `./fs-snapshot-checkpoint-store.ts`'s
+ * `FsSnapshotCheckpointStore` (issue #267) — a structurally identical
+ * engine (same `checkpoint`/`listCheckpoints`/`previewRestore`/`restore`/
+ * `deleteCheckpoint`/`filesAffectedByRestore` surface, same
+ * `GitCheckpoint`/`RestorePreview`/`RestoreResult`/`RestoreFileChange`
+ * return shapes) built on content-hashed files instead of git objects, so
+ * `NodeDaemon.getCheckpointStore` can hand a session either one and every
+ * caller above it — including the wire protocol and the client — stays
+ * unaware which kind it got.
  *
  * ## Mechanism: a hidden ref over a `git stash`-shaped commit graph
  *
@@ -152,6 +161,34 @@ export class NotAGitWorktreeError extends Error {
   constructor(readonly worktreePath: string) {
     super(`not a git working tree: ${worktreePath} (checkpoint/restore needs a real git repo)`);
     this.name = 'NotAGitWorktreeError';
+  }
+}
+
+/**
+ * True when `worktreePath` is (inside) a real git work tree — the exact
+ * probe {@link GitCheckpointStore.assertUsable} runs first (`git -C
+ * worktreePath rev-parse --is-inside-work-tree`), pulled out to a
+ * standalone export so `@loombox/node`'s `NodeDaemon.getCheckpointStore`
+ * (issue #267) can make the same "which engine does this session get"
+ * decision — this store, or `./fs-snapshot-checkpoint-store.ts`'s
+ * `FsSnapshotCheckpointStore` — without spawning `git` a second time to
+ * ask the identical question, and without duplicating the invocation
+ * itself (a bare failed spawn, e.g. no `git` on `PATH`, means "not a git
+ * worktree" here exactly like it does inside {@link
+ * GitCheckpointStore.assertUsable}, never a thrown error). Never throws.
+ */
+export async function isGitWorktree(worktreePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', worktreePath, 'rev-parse', '--is-inside-work-tree'],
+      {
+        env: process.env,
+      },
+    );
+    return stdout.trim() === 'true';
+  } catch {
+    return false;
   }
 }
 
@@ -323,13 +360,7 @@ export class GitCheckpointStore {
    * mutates the repo, worktree, or index.
    */
   private async assertUsable(): Promise<void> {
-    let isWorkTree: string;
-    try {
-      isWorkTree = await this.git(['rev-parse', '--is-inside-work-tree']);
-    } catch {
-      throw new NotAGitWorktreeError(this.worktreePath);
-    }
-    if (isWorkTree !== 'true') {
+    if (!(await isGitWorktree(this.worktreePath))) {
       throw new NotAGitWorktreeError(this.worktreePath);
     }
 
@@ -417,13 +448,10 @@ export class GitCheckpointStore {
     await this.assertUsable();
 
     // A monotonic, nanosecond-resolution prefix so checkpoints sort by
-    // creation order via a plain lexicographic `--sort=refname` — git commit
-    // timestamps only have 1-second resolution, which is not enough to
-    // order two checkpoints taken in the same test run (or the same second
-    // in general) correctly.
-    const id =
-      options.id ??
-      `${process.hrtime.bigint().toString().padStart(20, '0')}-${randomUUID().slice(0, 8)}`;
+    // creation order via a plain lexicographic `--sort=refname` — see
+    // `./checkpoint-id.ts`'s own doc comment for why git commit
+    // timestamps alone aren't enough.
+    const id = options.id ?? generateCheckpointId();
 
     // Four independent reads over the worktree's CURRENT state — none
     // depends on any other's result, so they run concurrently rather than

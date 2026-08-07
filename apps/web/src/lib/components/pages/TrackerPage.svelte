@@ -93,14 +93,13 @@
   import type { GithubConnectClient } from '../GithubConnectFlow.svelte';
   import type { JiraConnectClient } from '../JiraConnectForm.svelte';
   import Button from '../ui/Button.svelte';
-  import EmptyState from '../ui/EmptyState.svelte';
-  import ErrorNotice from '../ui/ErrorNotice.svelte';
   import Badge from '../ui/Badge.svelte';
-  import WovenLoader from '../WovenLoader.svelte';
+  import AsyncPanel from '../ui/AsyncPanel.svelte';
   import TrackerBoard from '../TrackerBoard.svelte';
   import TrackerConfigPanel, { type AccountConnectCapability } from '../TrackerConfigPanel.svelte';
   import TrackerListView from '../TrackerListView.svelte';
   import TrackerRecordDialog, { type TrackerRecordClient } from '../TrackerRecordDialog.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
   import TrackerManageTypesDialog, {
     type TrackerTypeClient,
   } from '../TrackerManageTypesDialog.svelte';
@@ -220,6 +219,29 @@
   function retryTrackerMode(): void {
     trackerModeStorage?.reload();
   }
+
+  /**
+   * One tagged value, not the three independent flags above (issue #650)
+   * — `data` carries `trackerMode` itself (`undefined` included), never
+   * a separate `'empty'` status: "no mode chosen yet" renders a full
+   * setup FORM (`TrackerConfigPanel` plus its own intro paragraph), not
+   * `AsyncPanel`'s fixed `EmptyState` shape, so that check stays inside
+   * `content` — same reasoning `DirectoryPicker`/`SpendReportPanel` used
+   * to keep their own non-`EmptyState` empty rendering out of `AsyncPanel`'s
+   * built-in `empty` branch (see that component's own doc comment).
+   */
+  const trackerModeState = $derived<AsyncPanelState<TrackerMode | undefined>>(
+    trackerModeStatus === 'loading'
+      ? { status: 'loading' }
+      : trackerModeStatus === 'error'
+        ? {
+            status: 'error',
+            message:
+              trackerModeError ?? "Could not reach this project's node to load its tracker mode.",
+            retryable: true,
+          }
+        : { status: 'loaded', data: trackerMode },
+  );
 
   const accountConnect = $derived<AccountConnectCapability>({
     nodeId,
@@ -345,6 +367,35 @@
     client.reloadTrackerSnapshot(nodeId, projectPath);
   }
 
+  /**
+   * One tagged value, not the three independent flags above (issue #650)
+   * — unlike `trackerModeState`'s own "no mode" case, a zero-record
+   * snapshot already rendered through the real `EmptyState` primitive
+   * (with its own "New record" `cta`), so this one genuinely folds into
+   * `AsyncPanel`'s built-in `empty` branch rather than staying inline.
+   * `newRecordCta` below is a plain top-level snippet, referenced here
+   * from `<script>` the same way any other hoisted declaration is.
+   */
+  const snapshotState = $derived<AsyncPanelState<TrackerRecordV1[]>>(
+    snapshot.status === 'error' || timedOut
+      ? {
+          status: 'error',
+          message: timedOut
+            ? "This project's tracker didn't answer in time. The node isn't reachable right now, or this relay predates project-scoped tracker requests (issue #697)."
+            : (snapshot.error ?? 'Failed to load the tracker.'),
+          retryable: true,
+        }
+      : snapshot.status === 'loading'
+        ? { status: 'loading' }
+        : snapshot.records.length === 0
+          ? {
+              status: 'empty',
+              message: 'This project has no tracker records yet.',
+              cta: newRecordCta,
+            }
+          : { status: 'loaded', data: snapshot.records },
+  );
+
   const registry = $derived(buildTrackerTypeRegistryV1(snapshot.types));
 
   /**
@@ -418,97 +469,92 @@
   {/if}
 {/snippet}
 
-<PageLayout title="Tracker" testid="tracker-page" {actions}>
-  {#if trackerModeStatus === 'loading'}
-    <p class="tracker-page-loading" data-testid="tracker-mode-loading">
-      <WovenLoader size="sm" label="Loading tracker mode" />
-      Loading…
-    </p>
-  {:else if trackerModeStatus === 'error'}
-    <ErrorNotice
-      message={trackerModeError ?? "Could not reach this project's node to load its tracker mode."}
-      retryable
-      onRetry={retryTrackerMode}
-    />
-  {:else if trackerMode === undefined}
-    <div class="tracker-setup" data-testid="tracker-setup">
-      <p class="tracker-setup-intro">
-        This project has no tracker set up yet. Connect a GitHub or Jira project, or use loombox's
-        own local tracker — chosen right here.
-      </p>
-      <TrackerConfigPanel
-        {projectPath}
-        storage={trackerModeStorage}
-        {connectedAccounts}
-        {accountConnect}
-        onChange={handleModeChange}
-      />
-    </div>
-  {:else if snapshot.status === 'error' || timedOut}
-    <div class="tracker-snapshot-error" data-testid="tracker-snapshot-error">
-      {#if !timedOut && snapshot.errorReason}
-        <Badge tone="danger" size="sm" dataTestId="tracker-snapshot-error-badge">
-          {RESOLUTION_ERROR_BADGE[snapshot.errorReason.kind]}
-        </Badge>
-      {/if}
-      <ErrorNotice
-        message={timedOut
-          ? "This project's tracker didn't answer in time. The node isn't reachable right now, or this relay predates project-scoped tracker requests (issue #697)."
-          : (snapshot.error ?? 'Failed to load the tracker.')}
-        retryable
-        onRetry={retry}
-      />
-    </div>
-  {:else if snapshot.status === 'loading'}
-    <p class="tracker-page-loading" data-testid="tracker-page-loading">
-      <WovenLoader size="sm" label="Loading tracker" />
-      Loading…
-    </p>
-  {:else}
-    {#if snapshot.records.length === 0}
-      <EmptyState message="This project has no tracker records yet.">
-        {#snippet cta()}
-          <Button variant="primary" onclick={openCreateDialog}>New record</Button>
-        {/snippet}
-      </EmptyState>
-    {:else}
-      <div
-        class="tracker-page-view-tabs"
-        role="radiogroup"
-        aria-label="Tracker view"
-        bind:this={viewTabsEl}
-      >
-        {#each VIEWS as view (view.id)}
-          <Button
-            variant="ghost"
-            size="sm"
-            class={`tracker-page-view-tab ${viewMode === view.id ? 'selected' : ''}`.trim()}
-            role="radio"
-            ariaChecked={viewMode === view.id}
-            tabindex={viewMode === view.id ? 0 : -1}
-            ariaLabel={view.label}
-            onclick={() => (viewMode = view.id)}
-            onkeydown={handleViewKeydown}
-            dataTestId={`tracker-view-${view.id}`}
-          >
-            <Icon name={view.icon} />
-            {view.label}
-          </Button>
-        {/each}
-      </div>
+{#snippet newRecordCta()}
+  <Button variant="primary" onclick={openCreateDialog}>New record</Button>
+{/snippet}
 
-      {#if viewMode === 'kanban'}
-        <TrackerBoard
-          records={snapshot.records}
-          types={registry}
-          onMove={handleMove}
-          onOpen={openEditDialog}
-        />
-      {:else}
-        <TrackerListView records={snapshot.records} types={registry} onOpen={openEditDialog} />
-      {/if}
-    {/if}
+{#snippet snapshotErrorExtra()}
+  {#if !timedOut && snapshot.errorReason}
+    <Badge tone="danger" size="sm" dataTestId="tracker-snapshot-error-badge">
+      {RESOLUTION_ERROR_BADGE[snapshot.errorReason.kind]}
+    </Badge>
   {/if}
+{/snippet}
+
+<PageLayout title="Tracker" testid="tracker-page" {actions}>
+  <AsyncPanel
+    state={trackerModeState}
+    loadingLabel="Loading tracker mode"
+    loadingTestId="tracker-mode-loading"
+    loadingText="Loading…"
+    onRetry={retryTrackerMode}
+  >
+    {#snippet content(mode)}
+      {#if mode === undefined}
+        <div class="tracker-setup" data-testid="tracker-setup">
+          <p class="tracker-setup-intro">
+            This project has no tracker set up yet. Connect a GitHub or Jira project, or use
+            loombox's own local tracker — chosen right here.
+          </p>
+          <TrackerConfigPanel
+            {projectPath}
+            storage={trackerModeStorage}
+            {connectedAccounts}
+            {accountConnect}
+            onChange={handleModeChange}
+          />
+        </div>
+      {:else}
+        <AsyncPanel
+          state={snapshotState}
+          loadingLabel="Loading tracker"
+          loadingTestId="tracker-page-loading"
+          loadingText="Loading…"
+          errorExtra={snapshotErrorExtra}
+          errorTestId="tracker-snapshot-error"
+          onRetry={retry}
+        >
+          {#snippet content(records)}
+            <div
+              class="tracker-page-view-tabs"
+              role="radiogroup"
+              aria-label="Tracker view"
+              bind:this={viewTabsEl}
+            >
+              {#each VIEWS as view (view.id)}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class={`tracker-page-view-tab ${viewMode === view.id ? 'selected' : ''}`.trim()}
+                  role="radio"
+                  ariaChecked={viewMode === view.id}
+                  tabindex={viewMode === view.id ? 0 : -1}
+                  ariaLabel={view.label}
+                  onclick={() => (viewMode = view.id)}
+                  onkeydown={handleViewKeydown}
+                  dataTestId={`tracker-view-${view.id}`}
+                >
+                  <Icon name={view.icon} />
+                  {view.label}
+                </Button>
+              {/each}
+            </div>
+
+            {#if viewMode === 'kanban'}
+              <TrackerBoard
+                {records}
+                types={registry}
+                onMove={handleMove}
+                onOpen={openEditDialog}
+              />
+            {:else}
+              <TrackerListView {records} types={registry} onOpen={openEditDialog} />
+            {/if}
+          {/snippet}
+        </AsyncPanel>
+      {/if}
+    {/snippet}
+  </AsyncPanel>
 </PageLayout>
 
 <TrackerRecordDialog
@@ -529,9 +575,15 @@
 />
 
 <style>
-  .tracker-page-loading {
-    display: flex;
-    align-items: center;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center;margin:0;font-size:small`; this
+     restates only the two deltas this page's own loading rows always
+     had (a wider gap, secondary rather than muted text) — scoped by
+     testid, not class, since both loading rows now render inside
+     `AsyncPanel.svelte`'s own template. Shared by the tracker-mode load
+     and the snapshot load below, same as the error rule further down. */
+  :global([data-testid='tracker-mode-loading']),
+  :global([data-testid='tracker-page-loading']) {
     gap: var(--space-sm);
     color: var(--color-text-secondary);
   }
@@ -548,7 +600,11 @@
     color: var(--color-text-secondary);
   }
 
-  .tracker-snapshot-error {
+  /* `AsyncPanel` gives its own error wrapper no layout at all beyond a
+     bare `data-testid`'d `div`; this restates the whole rule, scoped by
+     testid, not class, since the element now renders inside
+     `AsyncPanel.svelte`'s own template. */
+  :global([data-testid='tracker-snapshot-error']) {
     display: flex;
     flex-direction: column;
     align-items: flex-start;

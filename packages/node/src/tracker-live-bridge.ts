@@ -38,12 +38,14 @@
  * is a real, scoped follow-up, not a gap swallowed here.
  * --------------------------------------------------------------------- */
 
-import type {
-  TrackerBackendResolutionErrorV1,
-  TrackerRecordV1,
-  TrackerTypeDefinitionV1,
+import {
+  WORKFLOW_CATEGORIES_V1,
+  type TrackerBackendResolutionErrorV1,
+  type TrackerRecordV1,
+  type TrackerTypeDefinitionV1,
+  type WorkflowCategoryV1,
 } from '@loombox/protocol';
-import type { TrackerItemLive } from '@loombox/shared';
+import type { TrackerBackend, TrackerBinding, TrackerItemLive } from '@loombox/shared';
 
 import type { TrackerBackendResolutionError } from './tracker-backend-composition';
 
@@ -119,6 +121,119 @@ export function liveItemToTrackerRecord(
       comments: [],
     },
   };
+}
+
+/**
+ * Raised by {@link applyLiveTrackerCategoryMove} when a board move (or any
+ * write that sets `fields.workflowCategory`) asks for a workflow category
+ * this item's *currently discovered* transitions cannot reach (issue
+ * #696) — e.g. GitHub's fixed two-state model has no path to
+ * `indeterminate` at all (`github-tracker-backend.ts`'s own
+ * `deriveGithubWorkflowCategory` doc comment: "a board fed only by
+ * GitHub items is therefore expected to show an empty `indeterminate`
+ * column"), or a Jira project's real workflow simply has no direct edge
+ * from the item's current status to the requested one. Never silently
+ * dropped: `NodeDaemon.applyLiveTrackerWrite`'s own catch turns this into
+ * a `tracker_write_response` `outcome: 'error'`, exactly like any other
+ * live-backend failure, rather than reporting success while the board's
+ * own optimistic move never actually lands.
+ */
+export class LiveTrackerCategoryMoveError extends Error {
+  constructor(
+    desired: WorkflowCategoryV1,
+    current: WorkflowCategoryV1,
+    reachable: readonly WorkflowCategoryV1[],
+  ) {
+    super(
+      `cannot move this item to workflow category "${desired}" from "${current}": no discovered transition leads there` +
+        (reachable.length > 0
+          ? ` (reachable from here: ${reachable.join(', ')})`
+          : ' (no transitions are available from its current status at all)'),
+    );
+    this.name = 'LiveTrackerCategoryMoveError';
+  }
+}
+
+/** A real TypeScript type guard (not a tiny wrapper — the `value is WorkflowCategoryV1` predicate is what lets both call sites below narrow `unknown` directly, rather than each re-deriving the same three-id check). */
+function isWorkflowCategory(value: unknown): value is WorkflowCategoryV1 {
+  return typeof value === 'string' && (WORKFLOW_CATEGORIES_V1 as readonly string[]).includes(value);
+}
+
+/**
+ * The live half of a board move (issue #696; SPEC §7.10's `TrackerBoard`
+ * drag-to-move / `TrackerCard`'s "Move to" select, both wired through
+ * `NodeDaemon.applyLiveTrackerWrite`'s `update` op). `fields.workflowCategory`
+ * IS the moved-to column's id — `liveTrackerTypeDefinition`'s own
+ * `roles.workflowStatus: 'workflowCategory'` mapping above — never a raw
+ * provider status a caller could set directly, so landing a record on
+ * that category has to go through the provider's own discovered
+ * transitions (Jira's real per-project workflow; GitHub's fixed
+ * open/closed pair) rather than a plain field PATCH.
+ *
+ * Every non-move field edit (title, body, ...) round-trips through here
+ * too, since `TrackerBoard`/`TrackerRecordDialog` both submit through the
+ * identical `updateTrackerRecord` call, `fields` always seeded from
+ * `record.fields` — so this reads the item's CURRENT category first
+ * (`backend.get`) rather than assuming `fields.workflowCategory` differs
+ * from it, and skips the transition call entirely when it doesn't: an
+ * unrelated field edit resubmitting the unchanged category must never
+ * also attempt, and possibly fail, a same-category "move".
+ *
+ * Once a transition actually runs, `fields` still carries the
+ * PRE-transition `workflowCategory`/`state`/`stateReason` (every caller
+ * spreads `record.fields` — its own last READ — into the submitted
+ * `fields`), so the closing `update` call below (still owed for any
+ * OTHER field in the same submit — title, body, ...) strips exactly
+ * those three stale keys first; re-sending them verbatim would silently
+ * revert the transition by re-PATCHing GitHub's now-stale `state`. A
+ * plain field edit that never touches the category, or one that
+ * resubmits the SAME category unchanged, never runs a transition and so
+ * forwards `fields` exactly as given — `GithubTrackerBackend.update`'s
+ * own lower-level "`state`/`state_reason` as a direct field PATCH"
+ * capability (`ISSUE_WRITE_FIELDS`'s own doc comment) still works
+ * unmodified for a caller that wants it.
+ *
+ * A capability-less backend (`listTransitions`/`transition` either
+ * absent — `TrackerBackend`'s own methods are optional, though neither
+ * currently-shipped backend omits them) falls back to the plain field
+ * patch unchanged, exactly the behavior before this function existed.
+ */
+export async function applyLiveTrackerCategoryMove(
+  backend: TrackerBackend,
+  binding: TrackerBinding,
+  externalId: string,
+  fields: Record<string, unknown>,
+): Promise<TrackerItemLive> {
+  const desired = isWorkflowCategory(fields.workflowCategory) ? fields.workflowCategory : undefined;
+  if (desired === undefined || !backend.listTransitions || !backend.transition) {
+    return backend.update(binding, externalId, fields);
+  }
+
+  const current = await backend.get(binding, externalId);
+  const currentCategory = isWorkflowCategory(current.fields.workflowCategory)
+    ? current.fields.workflowCategory
+    : 'new';
+  if (currentCategory === desired) {
+    return backend.update(binding, externalId, fields);
+  }
+
+  const transitions = await backend.listTransitions(binding, externalId);
+  const match = transitions.find((transition) => transition.targetCategory === desired);
+  if (!match) {
+    const reachable = transitions
+      .map((transition) => transition.targetCategory)
+      .filter((category): category is WorkflowCategoryV1 => category !== undefined);
+    throw new LiveTrackerCategoryMoveError(desired, currentCategory, reachable);
+  }
+  await backend.transition(binding, externalId, match.id);
+
+  const {
+    workflowCategory: _workflowCategory,
+    state: _state,
+    stateReason: _stateReason,
+    ...fieldsWithoutStaleCategory
+  } = fields;
+  return backend.update(binding, externalId, fieldsWithoutStaleCategory);
 }
 
 /** Human-readable text for every `TrackerBackendResolutionError` kind (SPEC §7.10's "explicit connectivity-error state") — carried as `tracker_snapshot_response`/`tracker_write_response`'s plain `message`, alongside the structured `reason` {@link trackerBackendResolutionErrorToWireV1} builds, so a client with no per-kind UI of its own still has real, specific text rather than a generic "failed to load". */
