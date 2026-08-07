@@ -179,6 +179,8 @@ import {
 import { prOpenPreviewRequest, prOpenPreviewResult, prOpenRequest, prOpenResult } from './pr';
 import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
 import { ciCheckStatus } from './ci-check';
+import { reviewCommentStatus } from './review-comment';
+import { prMergeRequest, prMergeResult } from './pr-merge';
 import { ciAutoIterateStatus, ciAutoIterateStop } from './ci-auto-iterate';
 import { runStatus } from './run-status';
 import { trackerConnectivityStatus } from './tracker-connectivity';
@@ -359,6 +361,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitGraphRequest,
   gitGraphResponse,
   ciCheckStatus,
+  reviewCommentStatus,
+  prMergeRequest,
+  prMergeResult,
   trackerConnectivityStatus,
   agentInstructionsGetRequest,
   agentInstructionsGetResponse,
