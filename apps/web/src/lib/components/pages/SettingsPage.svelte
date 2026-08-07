@@ -40,7 +40,10 @@
   import KeymapPanel, { type KeymapClient } from '../KeymapPanel.svelte';
   import NotificationPreferences from '../NotificationPreferences.svelte';
   import PushNotificationToggle from '../PushNotificationToggle.svelte';
-  import TargetStatusView, { type FocusTarget } from '../TargetStatusView.svelte';
+  import TargetStatusView, {
+    type FocusTarget,
+    type TargetActionsClient,
+  } from '../TargetStatusView.svelte';
   import Button from '../ui/Button.svelte';
   import Card from '../ui/Card.svelte';
   import PageLayout from './PageLayout.svelte';
@@ -70,8 +73,8 @@
     /** Opens the zero-touch provision-and-pair wizard (`AddTargetWizard`); moved onto this section from the old `NodesPage`'s own page actions. */
     onAddTarget: () => void;
     onConnectNode: () => void;
-    /** SPEC §7.26's connected-accounts write path (issue #230) plus F3-3's keymap write path (issue #760) — `undefined` before `+page.svelte`'s `RelayClient` is constructed, mirroring `deviceId`'s own "gate the whole section on prerequisite readiness" pattern. Widened to both narrowed interfaces rather than accepting two separate client props, since `RelayClient` satisfies both structurally and every caller only ever has the one real instance anyway. */
-    client?: ConnectedAccountsClient & KeymapClient;
+    /** SPEC §7.26's connected-accounts write path (issue #230) plus F3-3's keymap write path (issue #760), plus #476/#656's per-target Reconnect/Update/Remove/Edit and node self-update actions on `TargetStatusView` — `undefined` before `+page.svelte`'s `RelayClient` is constructed, mirroring `deviceId`'s own "gate the whole section on prerequisite readiness" pattern. Widened to all three narrowed interfaces rather than accepting separate client props, since `RelayClient` satisfies them all structurally and every caller only ever has the one real instance anyway. */
+    client?: ConnectedAccountsClient & KeymapClient & TargetActionsClient;
     /** `RelayClient.connectedAccounts`'s latest snapshot — always an array (empty before the first sync), never gates the section on its own. */
     connectedAccounts?: ConnectedAccount[];
     /** `RelayClient.keymap`'s latest snapshot (issue #760) — `{}` (nothing remapped) until the first `keymap_result` lands, same "always current, never gates the section" contract `connectedAccounts` already follows. */
@@ -237,6 +240,7 @@
             {focusTarget}
             {onRefresh}
             {relayBuildIdentity}
+            {client}
           />
         </section>
       {:else if activeSection === 'accounts' && client}
