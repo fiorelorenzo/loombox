@@ -6,7 +6,10 @@ import {
 } from './tracker-connectivity-watcher';
 import { GithubTrackerRequestError } from './github-tracker-backend';
 
-const binding: TrackerBinding = { connectionId: 'github:github.com:1', target: { owner: 'o', repo: 'r' } };
+const binding: TrackerBinding = {
+  connectionId: 'github:github.com:1',
+  target: { owner: 'o', repo: 'r' },
+};
 
 function fakeBackend(list: (binding: TrackerBinding) => Promise<TrackerListPage>): TrackerBackend {
   return {
@@ -144,8 +147,7 @@ describe('TrackerConnectivityWatcher (issue #219) — no real network, every bac
   });
 
   it('unwatch forgets the last reading and stops firing onUpdate for a project mid-poll', async () => {
-    const { promise: pollPromise, resolve: resolvePoll } =
-      Promise.withResolvers<TrackerListPage>();
+    const { promise: pollPromise, resolve: resolvePoll } = Promise.withResolvers<TrackerListPage>();
     const target: TrackerConnectivityTarget = {
       ok: true,
       provider: 'github',

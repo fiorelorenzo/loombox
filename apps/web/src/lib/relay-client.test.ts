@@ -9395,7 +9395,11 @@ describe('RelayClient: attention inbox tracker_failure class (SPEC §7.10/§7.13
     });
 
     // Recovers: the item clears, not lingering stale.
-    await sendTrackerConnectivityStatus({ state: 'reachable', provider: 'github', updatedAt: 4000 });
+    await sendTrackerConnectivityStatus({
+      state: 'reachable',
+      provider: 'github',
+      updatedAt: 4000,
+    });
     await waitForStore(inbox, (value) => value.length === 0);
   });
 

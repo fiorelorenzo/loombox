@@ -56,9 +56,7 @@ export type TrackerConnectivityStateV1 = z.infer<typeof trackerConnectivityState
 export const trackerConnectivityStatusPayloadV1 = z.object({
   status: trackerConnectivityStateV1,
 });
-export type TrackerConnectivityStatusPayloadV1 = z.infer<
-  typeof trackerConnectivityStatusPayloadV1
->;
+export type TrackerConnectivityStatusPayloadV1 = z.infer<typeof trackerConnectivityStatusPayloadV1>;
 
 /** Parses and validates a decrypted `tracker_connectivity_status` payload, throwing on an invalid one. */
 export function parseTrackerConnectivityStatusPayloadV1(

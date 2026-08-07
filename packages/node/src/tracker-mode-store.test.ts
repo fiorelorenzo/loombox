@@ -83,9 +83,7 @@ describe('TrackerModeStore', () => {
       store.set('/proj-a', githubMode);
       store.set('/proj-b', jiraMode);
       store.set('/proj-c', nativeMode);
-      expect(
-        [...store.list()].sort((a, b) => a.projectPath.localeCompare(b.projectPath)),
-      ).toEqual([
+      expect([...store.list()].sort((a, b) => a.projectPath.localeCompare(b.projectPath))).toEqual([
         { projectPath: '/proj-a', mode: githubMode },
         { projectPath: '/proj-b', mode: jiraMode },
         { projectPath: '/proj-c', mode: nativeMode },

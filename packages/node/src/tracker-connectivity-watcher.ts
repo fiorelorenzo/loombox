@@ -44,7 +44,12 @@ export interface TrackerConnectivityWatcherOptions {
 
 /** {@link TrackerConnectivityWatcherOptions.resolveTarget}'s result — see that field's own doc comment for the `ok: false` -> `'authFailed'` reasoning. */
 export type TrackerConnectivityTarget =
-  | { readonly ok: true; readonly provider: 'github' | 'jira'; readonly backend: TrackerBackend; readonly binding: TrackerBinding }
+  | {
+      readonly ok: true;
+      readonly provider: 'github' | 'jira';
+      readonly backend: TrackerBackend;
+      readonly binding: TrackerBinding;
+    }
   | { readonly ok: false; readonly provider: 'github' | 'jira' };
 
 export class TrackerConnectivityWatcher {
@@ -53,7 +58,8 @@ export class TrackerConnectivityWatcher {
   private readonly intervalMs: number;
   private readonly now: () => number;
   private readonly resolveTarget: (projectPath: string) => Promise<TrackerConnectivityTarget>;
-  private readonly onUpdate: ((projectPath: string, state: TrackerConnectivityStateV1) => void) | undefined;
+  private readonly onUpdate:
+    ((projectPath: string, state: TrackerConnectivityStateV1) => void) | undefined;
   private timer?: ReturnType<typeof setInterval>;
   /** Guards against a slow pass overlapping the next tick, same convention as `CiCheckWatcher.inFlight`. */
   private inFlight: Promise<void> = Promise.resolve();
@@ -90,7 +96,9 @@ export class TrackerConnectivityWatcher {
   }
 
   private async runPass(): Promise<void> {
-    await Promise.all(Array.from(this.projectPaths).map((projectPath) => this.pollOne(projectPath)));
+    await Promise.all(
+      Array.from(this.projectPaths).map((projectPath) => this.pollOne(projectPath)),
+    );
   }
 
   private async pollOne(projectPath: string): Promise<void> {
