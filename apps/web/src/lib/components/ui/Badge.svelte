@@ -34,6 +34,8 @@
     dot?: boolean;
     /** The composed dot's accessible name. Required when `dot` is true. */
     dotLabel?: string;
+    /** Forwarded to the composed `StatusDot`'s own `pulse` — a badge whose dot marks an ongoing/live state (issue #652's `PermissionQueueBar` adoption, where more than one item pending is worth a continuous pulse, not just a static dot). */
+    dotPulse?: boolean;
     size?: BadgeSize;
     /** Additional class name(s) merged onto the root element. */
     class?: string;
@@ -47,6 +49,7 @@
     tone = 'neutral',
     dot = false,
     dotLabel,
+    dotPulse = false,
     size = 'sm',
     class: className = '',
     dataTestId = 'ui-badge',
@@ -62,7 +65,7 @@
   data-tone={tone}
 >
   {#if dot}
-    <StatusDot {tone} label={dotLabel ?? ''} size="sm" />
+    <StatusDot {tone} label={dotLabel ?? ''} pulse={dotPulse} size="sm" />
   {/if}
   {@render children()}
 </span>

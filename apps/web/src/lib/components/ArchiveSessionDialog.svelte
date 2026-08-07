@@ -26,6 +26,7 @@
    * already follow.
    */
   import type { ClientSessionMeta } from '$lib/relay-client';
+  import { writeErrorMessage } from '$lib/async-panel';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
@@ -88,10 +89,7 @@
       // are shown verbatim; only the transport timeout gets rephrased. The
       // real message still reaches a developer via `console.warn`.
       console.warn('ArchiveSessionDialog: archiveSession failed', error);
-      const raw = error instanceof Error ? error.message : String(error);
-      archiveError = raw.includes('timed out waiting')
-        ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay. Nothing was archived.'
-        : raw;
+      archiveError = writeErrorMessage('archived', error);
     } finally {
       archiving = false;
     }

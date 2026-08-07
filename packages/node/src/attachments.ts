@@ -1,12 +1,8 @@
 import type { webcrypto } from 'node:crypto';
 
 import { decryptEnvelope, envelopeFromWire } from '@loombox/crypto';
-import {
-  PROTOCOL_V1,
-  type BlobDownload,
-  type EncryptedEnvelope,
-  type WireMessageV1,
-} from '@loombox/protocol';
+import { PROTOCOL_V1, type BlobDownload, type EncryptedEnvelope } from '@loombox/protocol';
+import { awaitRelayMessage, NO_MATCH, type RelayLike } from './relay-request';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -21,18 +17,8 @@ export interface BlobSource {
   downloadBlob(sessionId: string, ref: string): Promise<EncryptedEnvelope>;
 }
 
-/**
- * The minimal surface `RelayBlobSource` needs off this node's *existing*
- * relay connection — never a new one (issue #156's acceptance criterion).
- * `RelayConnection` (this package's real production connection) already
- * satisfies this shape; a test can substitute a tiny fake with no
- * WebSocket/network involved at all.
- */
-export interface RelayLike {
-  send(message: WireMessageV1): void;
-  on(event: 'message', listener: (message: WireMessageV1) => void): void;
-  off(event: 'message', listener: (message: WireMessageV1) => void): void;
-}
+/** Re-exported for existing `import { type RelayLike } from './attachments'` call sites — see `relay-request.ts`'s own doc comment for what it is and why it lives there now. */
+export type { RelayLike };
 
 export interface RelayBlobSourceOptions {
   /** How long to wait for the matching `blob_download_response` before rejecting (default 10s). */
@@ -70,40 +56,26 @@ export class RelayBlobSource implements BlobSource {
   }
 
   downloadBlob(sessionId: string, ref: string): Promise<EncryptedEnvelope> {
-    return new Promise((resolve, reject) => {
-      // `onMessage` closes over `timer`, declared just below — safe despite
-      // the forward reference: `onMessage` only ever runs later, as an event
-      // listener callback, by which point `timer` is already initialized.
-      const onMessage = (message: WireMessageV1): void => {
-        if (
-          message.type === 'blob_download_response' &&
-          message.sessionId === sessionId &&
-          message.ref === ref
-        ) {
-          clearTimeout(timer);
-          this.relay.off('message', onMessage);
-          resolve(message.envelope);
-        }
-      };
-
-      this.relay.on('message', onMessage);
-      const timer = setTimeout(() => {
-        this.relay.off('message', onMessage);
-        reject(
-          new Error(
-            `RelayBlobSource: timed out waiting for blob_download_response (session ${sessionId}, ref ${ref})`,
-          ),
-        );
-      }, this.timeoutMs);
-
-      const request: BlobDownload = {
-        type: 'blob_download',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        ref,
-      };
-      this.relay.send(request);
-    });
+    return awaitRelayMessage(
+      this.relay,
+      (message) =>
+        message.type === 'blob_download_response' &&
+        message.sessionId === sessionId &&
+        message.ref === ref
+          ? message.envelope
+          : NO_MATCH,
+      () => {
+        const request: BlobDownload = {
+          type: 'blob_download',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          ref,
+        };
+        this.relay.send(request);
+      },
+      this.timeoutMs,
+      `RelayBlobSource: timed out waiting for blob_download_response (session ${sessionId}, ref ${ref})`,
+    );
   }
 }
 

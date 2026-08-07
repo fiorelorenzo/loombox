@@ -24,6 +24,7 @@
    * `CheckpointRestoreDialog`'s preview line already give.
    */
   import type { GitHunkActionResponsePayloadV1, GitHunkV1 } from '@loombox/protocol';
+  import { writeErrorMessage } from '$lib/async-panel';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
@@ -97,10 +98,7 @@
       // `ArchiveSessionDialog` documents; the real message still reaches a
       // developer via `console.warn`.
       console.warn('DiscardHunkDialog: applyGitHunkAction failed', error);
-      const raw = error instanceof Error ? error.message : String(error);
-      discardError = raw.includes('timed out waiting')
-        ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay. Nothing was discarded.'
-        : raw;
+      discardError = writeErrorMessage('discarded', error);
     } finally {
       discarding = false;
     }
