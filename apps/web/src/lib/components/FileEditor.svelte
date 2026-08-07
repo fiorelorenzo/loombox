@@ -63,10 +63,11 @@
   import type { FileTabViewerState } from '$lib/tabs.svelte';
   import type { FsWriteResponsePayloadV1 } from '@loombox/protocol';
   import CopyButton from './CopyButton.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import TextArea from './ui/TextArea.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
 
   interface Props {
     path: string;
@@ -205,6 +206,24 @@
     conflict = undefined;
     onRetry();
   }
+
+  /**
+   * One tagged value, not two independent flags — issue #650. `data`
+   * carries the whole `'loaded'` variant of `viewer` (not just its
+   * `content`) so `content(loaded)` below gets `.content`/`.truncated`/
+   * `.hash` back TS-narrowed, rather than re-deriving `viewer.status ===
+   * 'loaded'` a second time inside the snippet the way `CommitGraphViewer`
+   * re-reads `viewer.nextOffset` from its own outer prop. No `'empty'`
+   * member here — an empty FILE (0 bytes) is still `'loaded'` content,
+   * never a "nothing to show" state.
+   */
+  const fileState = $derived<AsyncPanelState<Extract<FileTabViewerState, { status: 'loaded' }>>>(
+    viewer.status === 'loading'
+      ? { status: 'loading' }
+      : viewer.status === 'error'
+        ? { status: 'error', message: viewer.message, retryable: true }
+        : { status: 'loaded', data: viewer },
+  );
 </script>
 
 <div class="file-editor" data-testid="file-editor">
@@ -220,72 +239,80 @@
     {/if}
   </div>
 
-  {#if viewer.status === 'loading'}
-    <div class="file-editor-loading" data-testid="file-editor-loading">
-      <WovenLoader size="md" label={`Loading ${name}`} />
-    </div>
-  {:else if viewer.status === 'error'}
-    <div class="file-editor-error">
-      <ErrorNotice message={viewer.message} retryable {onRetry} />
-    </div>
-  {:else if mode === 'view'}
-    {#if viewer.truncated}
-      <p class="file-editor-truncated" data-testid="file-editor-truncated">
-        Truncated — this file is larger than the viewer shows, so it can't be edited here.
-      </p>
-    {/if}
-    <!-- `rendered` is our own $lib/markdown pipeline's sanitised output
-       (rehype-sanitize + the fixed rehype-highlight/target-blank plugin
-       chain — see that module's doc comment), never raw file text. -->
-    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-    <div class="file-editor-body md-body" data-testid="file-editor-body">{@html rendered}</div>
-  {:else}
-    {#if stale}
-      <ErrorNotice
-        message={`${name} changed since you opened it. Saving may report a conflict — reload first if you want the latest content.`}
-      />
-    {/if}
-    {#if conflict !== undefined}
-      <ErrorNotice
-        message={conflict === null
-          ? `${name} was deleted on disk since you started editing — your draft below was NOT saved.`
-          : `${name} changed on disk since you started editing — your draft below was NOT saved.`}
-      />
-      <Button variant="secondary" size="sm" onclick={reloadLatest} dataTestId="file-editor-reload">
-        Reload latest version
-      </Button>
-    {/if}
-    {#if saveError}
-      <ErrorNotice message={`Could not save ${name}: ${saveError}`} />
-    {/if}
-    <TextArea
-      bind:value={draft}
-      monospace
-      rows={16}
-      ariaLabel={`Edit ${name}`}
-      dataTestId="file-editor-textarea"
-    />
-    <div class="file-editor-actions">
-      <Button
-        size="sm"
-        loading={saving}
-        disabled={saving}
-        onclick={() => void handleSave()}
-        dataTestId="file-editor-save"
-      >
-        Save
-      </Button>
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={saving}
-        onclick={cancelEdit}
-        dataTestId="file-editor-cancel"
-      >
-        Cancel
-      </Button>
-    </div>
-  {/if}
+  <AsyncPanel
+    state={fileState}
+    loadingLabel={`Loading ${name}`}
+    loadingTestId="file-editor-loading"
+    loadingSize="md"
+    errorTestId="file-editor-error"
+    {onRetry}
+  >
+    {#snippet content(loaded)}
+      {#if mode === 'view'}
+        {#if loaded.truncated}
+          <p class="file-editor-truncated" data-testid="file-editor-truncated">
+            Truncated — this file is larger than the viewer shows, so it can't be edited here.
+          </p>
+        {/if}
+        <!-- `rendered` is our own $lib/markdown pipeline's sanitised output
+           (rehype-sanitize + the fixed rehype-highlight/target-blank plugin
+           chain — see that module's doc comment), never raw file text. -->
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+        <div class="file-editor-body md-body" data-testid="file-editor-body">{@html rendered}</div>
+      {:else}
+        {#if stale}
+          <ErrorNotice
+            message={`${name} changed since you opened it. Saving may report a conflict — reload first if you want the latest content.`}
+          />
+        {/if}
+        {#if conflict !== undefined}
+          <ErrorNotice
+            message={conflict === null
+              ? `${name} was deleted on disk since you started editing — your draft below was NOT saved.`
+              : `${name} changed on disk since you started editing — your draft below was NOT saved.`}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onclick={reloadLatest}
+            dataTestId="file-editor-reload"
+          >
+            Reload latest version
+          </Button>
+        {/if}
+        {#if saveError}
+          <ErrorNotice message={`Could not save ${name}: ${saveError}`} />
+        {/if}
+        <TextArea
+          bind:value={draft}
+          monospace
+          rows={16}
+          ariaLabel={`Edit ${name}`}
+          dataTestId="file-editor-textarea"
+        />
+        <div class="file-editor-actions">
+          <Button
+            size="sm"
+            loading={saving}
+            disabled={saving}
+            onclick={() => void handleSave()}
+            dataTestId="file-editor-save"
+          >
+            Save
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={saving}
+            onclick={cancelEdit}
+            dataTestId="file-editor-cancel"
+          >
+            Cancel
+          </Button>
+        </div>
+      {/if}
+    {/snippet}
+  </AsyncPanel>
 </div>
 
 <style>
@@ -315,14 +342,18 @@
     color: var(--color-text-secondary);
   }
 
-  .file-editor-loading {
-    display: flex;
-    align-items: center;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center;gap:xs`; this restates only the two
+     deltas this panel's own full-panel `size="md"` load always had (a
+     centered spinner, wider vertical breathing room) — scoped by testid,
+     not class, since the element now renders inside `AsyncPanel.svelte`'s
+     own template. */
+  :global([data-testid='file-editor-loading']) {
     justify-content: center;
     padding: var(--space-2xl) 0;
   }
 
-  .file-editor-error {
+  :global([data-testid='file-editor-error']) {
     padding: var(--space-sm) 0;
   }
 
