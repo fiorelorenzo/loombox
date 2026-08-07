@@ -238,6 +238,18 @@ export interface NewSessionOptions {
 }
 
 /**
+ * Options accepted by `AcpClient.resumeSession` (issue #843). Same shape as
+ * {@link NewSessionOptions}: real ACP v1's `ResumeSessionRequest` takes an
+ * optional `mcpServers`, and its `session/load` fallback (see
+ * `resumeSession`'s own doc comment) *requires* one — sending `[]` when a
+ * caller configures none is correct for both.
+ */
+export interface ResumeSessionOptions {
+  /** The effective, enabled MCP server set to reconnect this session to. Defaults to `[]`. */
+  mcpServers?: AcpMcpServerConfig[];
+}
+
+/**
  * Every `stdio` env var / `http`/`sse` header across a configured MCP server
  * set must have a resolved (non-`undefined`) value before this client will
  * open a session with it (see `McpServerSecretMissingError`).
@@ -675,25 +687,74 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
-   * ACP `session/resume`: reopens a previously-created session. The agent is
-   * expected to stream that session's history back as ordinary
-   * `session/update` notifications (the same wire mechanism a live turn
-   * uses) before or while responding — so it runs through the exact same
-   * reducer path as a live stream (SPEC.md §7.24: "The same reducer runs
-   * identically for a live stream and for replayed history on reconnect").
+   * ACP `session/resume`: reopens a previously-created session — or, when
+   * the connected agent doesn't advertise `sessionCapabilities.resume` at
+   * all, falls back to the older `session/load` method if it advertises
+   * `loadSession` instead (issue #843). Gemini CLI's real handshake is
+   * exactly this shape: `loadSession: true`, no `sessionCapabilities`
+   * object whatsoever — live-verified against the real `gemini --acp`
+   * binary, `docs/research/gemini-acp-completeness.md`. Real ACP v1 makes
+   * the fallback safe: `LoadSessionRequest`/`ResumeSessionRequest`
+   * (`agentclientprotocol.com/protocol/v1/schema`) both take `sessionId`+
+   * `cwd` (`session/load`'s `mcpServers` is required where `session/resume`'s
+   * is optional — sent either way, defaulting to `[]`), and `session/load`
+   * is documented to "stream the entire conversation history back to the
+   * client via notifications" exactly like `session/resume` does — the same
+   * ordinary `session/update` wire mechanism a live turn uses, so this
+   * fallback runs through the exact same reducer path either way (SPEC.md
+   * §7.24: "The same reducer runs identically for a live stream and for
+   * replayed history on reconnect"). No separate client-side handling
+   * needed for the fallback beyond which RPC method gets sent.
+   *
+   * This is a core-level fallback, not a per-provider one (the #272 spike's
+   * own finding; SPEC.md §5.5): any agent that advertises `loadSession` but
+   * not `sessionCapabilities.resume` gets it, Gemini today and any future
+   * ACP agent that hasn't migrated off the older method yet.
+   * `getFeatureFlags().supportsResume` reports true in exactly the cases
+   * this method can actually succeed (issue #843's `capabilities.ts`
+   * change) — an agent advertising neither is refused up front with an
+   * actionable error rather than let through to reach the agent's own
+   * `-32601 "Method not found"`.
+   *
    * Also (re-)seeds this session's config-option state from the cached
-   * `initialize` catalog, just like `newSession` does.
+   * `initialize` catalog, just like `newSession` does, on either path.
    */
-  async resumeSession(sessionId: string, cwd: string): Promise<string> {
+  async resumeSession(
+    sessionId: string,
+    cwd: string,
+    opts: ResumeSessionOptions = {},
+  ): Promise<string> {
     const session = this.ensureSession(sessionId);
     session.currentTurnId = `resume:${++session.turnCounter}`;
     this.configOptionStore.setAll(sessionId, this.lastConfigCatalog, { unprompted: false });
 
-    const result = await this.sendRequest<{ sessionId?: string }>('session/resume', {
-      sessionId,
-      cwd,
-    });
-    return result.sessionId ?? sessionId;
+    const mcpServers = opts.mcpServers ?? [];
+    assertMcpServersResolved(mcpServers);
+
+    if (this.lastAgentCapabilities?.sessionCapabilities?.resume != null) {
+      const result = await this.sendRequest<{ sessionId?: string }>('session/resume', {
+        sessionId,
+        cwd,
+      });
+      return result.sessionId ?? sessionId;
+    }
+
+    if (this.lastAgentCapabilities?.loadSession === true) {
+      // LoadSessionResponse's real fields are configOptions/modes, never
+      // sessionId (agentclientprotocol.com/protocol/v1/schema's
+      // LoadSessionResponse) -- the caller-supplied sessionId is
+      // authoritative on this path regardless of what comes back.
+      await this.sendRequest<{ configOptions?: unknown; modes?: unknown }>('session/load', {
+        sessionId,
+        cwd,
+        mcpServers,
+      });
+      return sessionId;
+    }
+
+    throw new Error(
+      `AcpClient.resumeSession: agent advertises neither sessionCapabilities.resume nor loadSession -- session "${sessionId}" cannot be resumed through any ACP v1 method this agent implements.`,
+    );
   }
 
   /** ACP `session/list`: every session this agent process still holds. */
