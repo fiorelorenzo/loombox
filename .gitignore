@@ -22,6 +22,12 @@ deploy/relay/backups/
 # `pnpm package:node-release` output (issue #817) — built per-run by CI, never committed.
 /release/
 
+# `apps/desktop`'s electron-builder output (issue #866: now per-environment,
+# `apps/desktop/release/{production,preview}/`) — built per-run locally or in
+# CI, never committed. Pre-existing gap the above root-anchored `/release/`
+# never covered, since it only matches the repo root.
+apps/desktop/release/
+
 # Ephemeral agent/orchestration worktrees (Workflow tool, emdash)
 .claude/worktrees/
 .emdash/worktrees/
