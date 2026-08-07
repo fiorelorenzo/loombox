@@ -5,14 +5,20 @@ import {
   fsListResponse,
   fsReadRequest,
   fsReadResponse,
+  fsWriteRequest,
+  fsWriteResponse,
   parseFsListRequestPayloadV1,
   parseFsListResponsePayloadV1,
   parseFsReadRequestPayloadV1,
   parseFsReadResponsePayloadV1,
+  parseFsWriteRequestPayloadV1,
+  parseFsWriteResponsePayloadV1,
   safeParseFsListRequestPayloadV1,
   safeParseFsListResponsePayloadV1,
   safeParseFsReadRequestPayloadV1,
   safeParseFsReadResponsePayloadV1,
+  safeParseFsWriteRequestPayloadV1,
+  safeParseFsWriteResponsePayloadV1,
 } from './fs';
 
 const envelope = {
@@ -164,18 +170,20 @@ describe('fsReadRequestPayloadV1', () => {
 });
 
 describe('fsReadResponsePayloadV1', () => {
-  it('parses the ok outcome with content and truncated', () => {
+  it('parses the ok outcome with content, truncated, and hash', () => {
     const result = parseFsReadResponsePayloadV1({
       outcome: 'ok',
       path: 'src/foo.ts',
       content: 'export {};\n',
       truncated: false,
+      hash: 'abc123',
     });
     expect(result).toEqual({
       outcome: 'ok',
       path: 'src/foo.ts',
       content: 'export {};\n',
       truncated: false,
+      hash: 'abc123',
     });
   });
 
@@ -195,6 +203,17 @@ describe('fsReadResponsePayloadV1', () => {
   it('rejects ok without content or truncated', () => {
     expect(
       safeParseFsReadResponsePayloadV1({ outcome: 'ok', path: '', content: 'x' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects ok without a hash', () => {
+    expect(
+      safeParseFsReadResponsePayloadV1({
+        outcome: 'ok',
+        path: 'src/foo.ts',
+        content: 'x',
+        truncated: false,
+      }).success,
     ).toBe(false);
   });
 });
@@ -232,6 +251,120 @@ describe('fsReadRequest / fsReadResponse (the top-level wire messages)', () => {
   it('fsReadResponse carries only sessionId/requestId plus the opaque envelope', () => {
     const result = fsReadResponse.safeParse({
       type: 'fs_read_response',
+      protocolVersion: 1,
+      sessionId: 'session-1',
+      requestId: 'req-1',
+      envelope,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('fsWriteRequestPayloadV1', () => {
+  it('accepts a relative path, new content, and a baseHash', () => {
+    expect(
+      parseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x', baseHash: 'abc123' }),
+    ).toEqual({ path: 'src/foo.ts', content: 'x', baseHash: 'abc123' });
+  });
+
+  it('accepts a null baseHash', () => {
+    expect(
+      parseFsWriteRequestPayloadV1({ path: 'src/new.ts', content: 'x', baseHash: null }),
+    ).toEqual({ path: 'src/new.ts', content: 'x', baseHash: null });
+  });
+
+  it('safeParse never throws on garbage input', () => {
+    expect(safeParseFsWriteRequestPayloadV1(null).success).toBe(false);
+    expect(
+      safeParseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x' }).success,
+    ).toBe(false);
+    expect(
+      safeParseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x', baseHash: '' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('fsWriteResponsePayloadV1', () => {
+  it('parses the ok outcome with path and the new hash', () => {
+    const result = parseFsWriteResponsePayloadV1({
+      outcome: 'ok',
+      path: 'src/foo.ts',
+      hash: 'def456',
+    });
+    expect(result).toEqual({ outcome: 'ok', path: 'src/foo.ts', hash: 'def456' });
+  });
+
+  it('parses the conflict outcome with the real on-disk current state', () => {
+    const result = parseFsWriteResponsePayloadV1({
+      outcome: 'conflict',
+      path: 'src/foo.ts',
+      current: { content: 'changed underneath', hash: 'ghi789', truncated: false },
+    });
+    expect(result).toEqual({
+      outcome: 'conflict',
+      path: 'src/foo.ts',
+      current: { content: 'changed underneath', hash: 'ghi789', truncated: false },
+    });
+  });
+
+  it('parses the conflict outcome with current: null when the file was deleted underneath', () => {
+    const result = parseFsWriteResponsePayloadV1({
+      outcome: 'conflict',
+      path: 'src/foo.ts',
+      current: null,
+    });
+    expect(result).toEqual({ outcome: 'conflict', path: 'src/foo.ts', current: null });
+  });
+
+  it('parses the error outcome', () => {
+    const result = parseFsWriteResponsePayloadV1({
+      outcome: 'error',
+      path: 'src/foo.ts',
+      message: 'permission denied',
+    });
+    expect(result).toEqual({ outcome: 'error', path: 'src/foo.ts', message: 'permission denied' });
+  });
+
+  it('rejects an outcome outside the three known variants', () => {
+    expect(safeParseFsWriteResponsePayloadV1({ outcome: 'pending', path: '' }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('fsWriteRequest / fsWriteResponse (the top-level wire messages)', () => {
+  it('fsWriteRequest carries only clear routing metadata plus the opaque envelope — never path/content fields', () => {
+    const message = {
+      type: 'fs_write_request' as const,
+      protocolVersion: 1 as const,
+      sessionId: 'session-1',
+      targetId: 'local',
+      requestId: 'req-1',
+      envelope,
+    };
+    const result = fsWriteRequest.safeParse(message);
+    expect(result.success).toBe(true);
+    expect(Object.keys(message).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+  });
+
+  it('rejects a request missing requestId/targetId/sessionId', () => {
+    expect(
+      fsWriteRequest.safeParse({
+        type: 'fs_write_request',
+        protocolVersion: 1,
+        sessionId: '',
+        targetId: 'local',
+        requestId: 'req-1',
+        envelope,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('fsWriteResponse carries only sessionId/requestId plus the opaque envelope', () => {
+    const result = fsWriteResponse.safeParse({
+      type: 'fs_write_response',
       protocolVersion: 1,
       sessionId: 'session-1',
       requestId: 'req-1',

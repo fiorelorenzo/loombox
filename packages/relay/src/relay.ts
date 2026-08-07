@@ -1511,6 +1511,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       case 'mcp_prompt_get_response':
       case 'fs_read_response':
+      case 'fs_write_response':
       case 'git_diff_response':
       case 'git_graph_response':
       case 'git_hunk_diff_response':
@@ -2519,6 +2520,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'fs_list_request':
       case 'mcp_prompt_get_request':
       case 'fs_read_request':
+      case 'fs_write_request':
       case 'git_hunk_action_request':
       case 'agent_instructions_set_request':
       case 'git_commit_request':
