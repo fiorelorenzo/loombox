@@ -109,6 +109,9 @@ import {
   type FsReadRequestPayloadV1,
   type FsReadResponse,
   type FsReadResponsePayloadV1,
+  type FsWriteRequestPayloadV1,
+  type FsWriteResponse,
+  type FsWriteResponsePayloadV1,
   type GitBranchCreateRequestPayloadV1,
   type GitBranchCreateResponse,
   type GitBranchCreateResponsePayloadV1,
@@ -1563,6 +1566,19 @@ export class RelayClient {
   private readonly pendingFsReadRequests = new Map<
     string,
     { resolve: (payload: FsReadResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /**
+   * requestId -> the pending {@link writeFile} call it belongs to
+   * (issue #205's integrated editor) — the exact same shape as {@link
+   * pendingFsReadRequests} above, for the same "caller needs the
+   * outcome directly" reason. `fs_write_response` is fanned out to
+   * every client subscribed to the session exactly like
+   * `fs_read_response`, so a requestId not in this map means the reply
+   * belongs to a sibling device's own request, not this one.
+   */
+  private readonly pendingFsWriteRequests = new Map<
+    string,
+    { resolve: (payload: FsWriteResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
   /**
    * requestId -> the pending {@link requestWorktreeDiff} call it belongs
@@ -4750,6 +4766,63 @@ export class RelayClient {
   }
 
   /**
+   * Saves (fully replaces) one file's content inside a session's project
+   * (SPEC §7.4's "light quick-edit"; issue #205's integrated editor) —
+   * {@link readFile}'s write-side sibling, `@loombox/protocol`'s `fs.ts`
+   * `fs_write_request`/`fs_write_response` pair. `params.baseHash` must
+   * be the exact `hash` a prior {@link readFile}/{@link writeFile} call
+   * last reported for `params.path` — see that schema's own doc comment
+   * for the full optimistic-concurrency contract. A stale `baseHash`
+   * never overwrites: the node replies with `outcome: 'conflict'` (this
+   * method resolves normally, it does not reject) carrying what's
+   * actually on disk right now. Resolves with the node's own
+   * `ok`/`conflict`/`error` outcome either way; only REJECTS for a
+   * genuinely unusable call — no open connection, an unknown session,
+   * or a timeout with no response at all — mirroring {@link readFile}'s
+   * identical contract.
+   */
+  async writeFile(
+    sessionId: string,
+    params: FsWriteRequestPayloadV1,
+    timeoutMs = 10_000,
+  ): Promise<FsWriteResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save a file, no open connection'));
+    }
+    const targetId = get(this.sessionsStore).find((session) => session.id === sessionId)?.targetId;
+    if (!targetId) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
+    const requestId = generateId('fswrite');
+    return new Promise<FsWriteResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingFsWriteRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for fs_write_response'));
+      }, timeoutMs);
+      this.pendingFsWriteRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        targetId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /**
    * The session's current working-tree diff (SPEC §7.4; issue #206's diff
    * viewer) — `@loombox/protocol`'s `git-diff.ts` `git_diff_request`/
    * `git_diff_response` pair, {@link readFile}'s own sibling: a one-shot
@@ -6336,6 +6409,9 @@ export class RelayClient {
       case 'fs_read_response':
         this.handleFsReadResponse(message);
         return;
+      case 'fs_write_response':
+        this.handleFsWriteResponse(message);
+        return;
       case 'git_diff_response':
         this.handleGitDiffResponse(message);
         return;
@@ -6829,6 +6905,30 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<FsReadResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * writeFile} calls (issue #205's integrated editor) — exactly like
+   * {@link handleFsReadResponse} above, sibling-device awareness
+   * included.
+   */
+  private handleFsWriteResponse(message: FsWriteResponse): void {
+    const pending = this.pendingFsWriteRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingFsWriteRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<FsWriteResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

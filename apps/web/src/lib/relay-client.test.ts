@@ -3419,7 +3419,13 @@ describe('RelayClient: file viewer (issue #737)', () => {
 
     const responseEnvelope = await nodeSeal(
       session.id,
-      { outcome: 'ok', path: 'src/index.ts', content: 'export {};\n', truncated: false },
+      {
+        outcome: 'ok',
+        path: 'src/index.ts',
+        content: 'export {};\n',
+        truncated: false,
+        hash: 'abc123',
+      },
       key,
     );
     node.send({
@@ -3435,6 +3441,7 @@ describe('RelayClient: file viewer (issue #737)', () => {
       path: 'src/index.ts',
       content: 'export {};\n',
       truncated: false,
+      hash: 'abc123',
     });
   });
 
@@ -3512,7 +3519,7 @@ describe('RelayClient: file viewer (issue #737)', () => {
 
     const foreignEnvelope = await nodeSeal(
       session.id,
-      { outcome: 'ok', path: 'other-file.ts', content: 'x', truncated: false },
+      { outcome: 'ok', path: 'other-file.ts', content: 'x', truncated: false, hash: 'h1' },
       key,
     );
     node.send({
@@ -3533,7 +3540,7 @@ describe('RelayClient: file viewer (issue #737)', () => {
     };
     const realEnvelope = await nodeSeal(
       session.id,
-      { outcome: 'ok', path: 'src/index.ts', content: 'x', truncated: false },
+      { outcome: 'ok', path: 'src/index.ts', content: 'x', truncated: false, hash: 'h2' },
       key,
     );
     node.send({
@@ -3562,6 +3569,265 @@ describe('RelayClient: file viewer (issue #737)', () => {
     await waitForStore(client.status, (status) => status === 'open');
 
     await expect(client.readFile('sess_does_not_exist', 'x.ts')).rejects.toThrow(/unknown session/);
+  });
+});
+
+describe('RelayClient: integrated editor save (issue #205)', () => {
+  it('writeFile resolves an ok outcome, decrypting a real fs_write_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-write-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_write_ok', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-write-1' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.writeFile(session.id, {
+      path: 'src/index.ts',
+      content: 'export const x = 1;\n',
+      baseHash: 'base-hash-1',
+    });
+
+    const request = (await node.waitFor((m) => m.type === 'fs_write_request')) as {
+      type: 'fs_write_request';
+      sessionId: string;
+      targetId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(request.targetId).toBe('local');
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{ path: string; content: string; baseHash: string }>(
+      session.id,
+      request.envelope,
+      key,
+    );
+    expect(requestPayload).toEqual({
+      path: 'src/index.ts',
+      content: 'export const x = 1;\n',
+      baseHash: 'base-hash-1',
+    });
+
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'src/index.ts', hash: 'base-hash-2' },
+      key,
+    );
+    node.send({
+      type: 'fs_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'ok',
+      path: 'src/index.ts',
+      hash: 'base-hash-2',
+    });
+  });
+
+  it('writeFile resolves (not rejects) a conflict outcome carrying what is actually on disk now — the caller decides how to show it, never a silent overwrite', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-conflict';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-write-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_write_conflict', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-write-2' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.writeFile(session.id, {
+      path: 'src/index.ts',
+      content: 'my stale edit\n',
+      baseHash: 'stale-hash',
+    });
+    const request = (await node.waitFor((m) => m.type === 'fs_write_request')) as {
+      requestId: string;
+    };
+    const conflictEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'conflict',
+        path: 'src/index.ts',
+        current: { content: 'changed underneath\n', hash: 'real-hash', truncated: false },
+      },
+      key,
+    );
+    node.send({
+      type: 'fs_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: conflictEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'conflict',
+      path: 'src/index.ts',
+      current: { content: 'changed underneath\n', hash: 'real-hash', truncated: false },
+    });
+  });
+
+  it('writeFile resolves (not rejects) an error outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-write-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_write_error', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-write-3' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.writeFile(session.id, {
+      path: '../escape.ts',
+      content: 'x',
+      baseHash: null,
+    });
+    const request = (await node.waitFor((m) => m.type === 'fs_write_request')) as {
+      requestId: string;
+    };
+    const errorEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', path: '../escape.ts', message: 'path escapes the project root' },
+      key,
+    );
+    node.send({
+      type: 'fs_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: errorEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'error',
+      path: '../escape.ts',
+      message: 'path escapes the project root',
+    });
+  });
+
+  it("a client ignores an fs_write_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-write-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_fs_write_sibling', accountId, targetId: 'local' });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-write-4' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    let settled = false;
+    const resultPromise = client
+      .writeFile(session.id, { path: 'src/index.ts', content: 'x', baseHash: null })
+      .finally(() => {
+        settled = true;
+      });
+    await node.waitFor((m) => m.type === 'fs_write_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'other-file.ts', hash: 'h1' },
+      key,
+    );
+    node.send({
+      type: 'fs_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    // Clean up the still-pending promise so the test doesn't leak an
+    // unresolved timer — answer it for real, addressed this time.
+    const realRequest = node.messages.find((m) => m.type === 'fs_write_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'ok', path: 'src/index.ts', hash: 'h2' },
+      key,
+    );
+    node.send({
+      type: 'fs_write_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+
+  it('rejects for an unknown session instead of hanging', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-unknown';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-fs-write-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-fs-write-5' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    await expect(
+      client.writeFile('sess_does_not_exist', { path: 'x.ts', content: 'x', baseHash: null }),
+    ).rejects.toThrow(/unknown session/);
   });
 });
 
