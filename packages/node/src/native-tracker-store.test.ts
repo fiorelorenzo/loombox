@@ -12,7 +12,11 @@ import {
   type TrackerTypeDefinition,
 } from '@loombox/shared';
 
-import { NativeTrackerStore, NativeTrackerStoreError } from './native-tracker-store';
+import {
+  NativeTrackerStore,
+  NativeTrackerStoreError,
+  upsertPullRequestRef,
+} from './native-tracker-store';
 
 let stateDir: string;
 
@@ -213,8 +217,80 @@ describe('NativeTrackerStore', () => {
         'pull_request_linked',
       ]);
     });
+
+    it('re-linking the exact same PR ref is a no-op: no duplicate entry, no extra activity', () => {
+      const store = new NativeTrackerStore({ stateDir });
+      const created = store.create(PROJECT, { primaryType: 'task', fields: {}, authorId: 'a' });
+
+      store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/loombox#42');
+      const final = store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/loombox#42');
+
+      expect(final.system.linkedPullRequests).toEqual(['fiorelorenzo/loombox#42']);
+      expect(final.system.activity.map((entry) => entry.kind)).toEqual([
+        'created',
+        'pull_request_linked',
+      ]);
+    });
+
+    it('linking a different PR number on the same repo replaces the prior link instead of duplicating it', () => {
+      const store = new NativeTrackerStore({ stateDir });
+      const created = store.create(PROJECT, { primaryType: 'task', fields: {}, authorId: 'a' });
+
+      store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/loombox#42');
+      const final = store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/loombox#43');
+
+      expect(final.system.linkedPullRequests).toEqual(['fiorelorenzo/loombox#43']);
+      expect(final.system.activity.map((entry) => entry.kind)).toEqual([
+        'created',
+        'pull_request_linked',
+        'pull_request_linked',
+      ]);
+    });
+
+    it('linking a PR on a different repo is a genuinely new link, kept alongside the existing one', () => {
+      const store = new NativeTrackerStore({ stateDir });
+      const created = store.create(PROJECT, { primaryType: 'task', fields: {}, authorId: 'a' });
+
+      store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/loombox#42');
+      const final = store.linkPullRequest(PROJECT, created.id, 'fiorelorenzo/other-repo#1');
+
+      expect(final.system.linkedPullRequests).toEqual([
+        'fiorelorenzo/loombox#42',
+        'fiorelorenzo/other-repo#1',
+      ]);
+    });
   });
 
+  describe('upsertPullRequestRef()', () => {
+    it('appends a ref unrelated to every existing entry', () => {
+      expect(upsertPullRequestRef([], 'fiorelorenzo/loombox#42')).toEqual([
+        'fiorelorenzo/loombox#42',
+      ]);
+      expect(upsertPullRequestRef(['fiorelorenzo/loombox#42'], 'fiorelorenzo/other#1')).toEqual([
+        'fiorelorenzo/loombox#42',
+        'fiorelorenzo/other#1',
+      ]);
+    });
+
+    it('is a no-op for an exact repeat of an already-linked ref', () => {
+      expect(upsertPullRequestRef(['fiorelorenzo/loombox#42'], 'fiorelorenzo/loombox#42')).toEqual([
+        'fiorelorenzo/loombox#42',
+      ]);
+    });
+
+    it('replaces the existing entry for the same owner/repo when the PR number differs', () => {
+      expect(upsertPullRequestRef(['fiorelorenzo/loombox#42'], 'fiorelorenzo/loombox#43')).toEqual([
+        'fiorelorenzo/loombox#43',
+      ]);
+    });
+
+    it('treats a ref with no parseable "owner/repo#number" shape as unrelated to everything, always appended', () => {
+      expect(upsertPullRequestRef(['fiorelorenzo/loombox#42'], 'not-a-ref')).toEqual([
+        'fiorelorenzo/loombox#42',
+        'not-a-ref',
+      ]);
+    });
+  });
   describe('list()', () => {
     it('excludes archived records by default and includes them with includeArchived: true', () => {
       const store = new NativeTrackerStore({ stateDir });
