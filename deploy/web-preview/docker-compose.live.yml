@@ -1,0 +1,18 @@
+# prodbox PREVIEW overlay - bind-mount a versioned release directory over
+# the image's baked-in apps/web/build, exactly like ../web/docker-compose.
+# live.yml does for production. Read that file's own header for the full
+# releases/<sha> + `current`-symlink reasoning (why the indirection exists,
+# why --force-recreate rather than a plain `restart`); nothing here differs
+# except the path being preview's own releases tree under
+# /opt/apps/loombox-preview, never production's under /opt/apps/loombox.
+#
+# Usage, from /opt/apps/loombox-preview/deploy/web-preview
+# (scripts/deploy-preview.sh already does this for you):
+#   docker compose -f docker-compose.yml -f docker-compose.live.yml \
+#     up -d --force-recreate --no-build --no-deps web
+services:
+  web:
+    volumes:
+      # read-only: this container only ever serves a release, never writes
+      # into one.
+      - ../../releases/current:/app/apps/web/build:ro

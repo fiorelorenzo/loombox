@@ -8,6 +8,26 @@ import { RemoteProcessRunner } from './remote-process-runner';
 import type { RemoteTransport } from './remote-transport';
 
 /**
+ * Set once, by a genuine node entry point, before it constructs anything
+ * that might fall back to {@link defaultNodeStateDir} — `main.ts`'s
+ * `start()`, the local-node provisioning/uninstall/guided-setup flows the
+ * desktop app drives directly (`provisionLocalNode`, `uninstallNode`,
+ * `resolveNodeUninstallRelayOptions`, `runLocalGuidedSetup`). Nothing else
+ * calls this, on purpose: a one-off `tsx` script poking at `NodeIdentityStore`
+ * (or any other store below) never does, so `defaultNodeStateDir()` refuses
+ * instead of silently landing on the operator's live `~/.loombox/node` —
+ * issue #876, where exactly that omission (`{ stateDir2 }` typo'd instead of
+ * `{ stateDir: stateDir2 }`) overwrote a running node's identity keypair.
+ * Sticky for the life of the process; a real entry point only ever needs to
+ * call it once, right at the top.
+ */
+let liveNodeStateDirAllowed = false;
+
+export function allowLiveNodeStateDir(): void {
+  liveNodeStateDirAllowed = true;
+}
+
+/**
  * Where a node persists verified `ssh:` targets, its identity, its MCP config
  * and (since #515) its session records, when no `stateDir` is injected.
  * Mirrors `@loombox/supervisor`'s `defaultStateDir()` convention, under this
@@ -22,12 +42,36 @@ import type { RemoteTransport } from './remote-transport';
  * suite share one mutable file across test files. Throwing here turns that
  * class of mistake from silent corruption into a failure at the first write,
  * for every future store as well as today's.
+ *
+ * **Refuses outside a node entry point too (issue #876).** A production
+ * identity keypair got overwritten by a plain `tsx` script that fell back
+ * into this exact function — `NODE_ENV=test`/`VITEST` never fires for that
+ * shape. Anything that hasn't called {@link allowLiveNodeStateDir} gets a
+ * refusal instead of `~/.loombox/node`, naming `LOOMBOX_NODE_STATE_DIR` as
+ * the explicit, deliberate way out: set it to wherever you actually mean
+ * (a scratch `mkdtemp` dir when in doubt) and this function honors it
+ * regardless of entry-point status, exactly like `main.ts`'s own config
+ * loading already does for a real node.
  */
 export function defaultNodeStateDir(): string {
   if (process.env.VITEST) {
     throw new Error(
       'defaultNodeStateDir(): refusing to use the real node state directory from a test. ' +
         'Pass an explicit `stateDir` (see any `mkdtemp` in packages/node/src/*.test.ts).',
+    );
+  }
+  const stateDirOverride = process.env.LOOMBOX_NODE_STATE_DIR;
+  if (stateDirOverride && stateDirOverride.trim() !== '') {
+    return stateDirOverride;
+  }
+  if (!liveNodeStateDirAllowed) {
+    throw new Error(
+      'defaultNodeStateDir(): refusing to default into the live node state directory ' +
+        "(~/.loombox/node) outside the node's own entry point (issue #876 — a typo'd " +
+        "`stateDir` option once let a one-off script overwrite a running node's identity " +
+        'this way). Pass an explicit `stateDir` to whatever you are constructing, or set ' +
+        '`LOOMBOX_NODE_STATE_DIR` to the directory you actually mean. If this genuinely is ' +
+        'a node entry point, call `allowLiveNodeStateDir()` once, first.',
     );
   }
   const xdgStateHome = process.env.XDG_STATE_HOME;

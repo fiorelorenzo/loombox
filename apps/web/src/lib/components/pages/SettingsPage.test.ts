@@ -62,6 +62,13 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
     expect(screen.getByTestId('theme-option-system')).toBeTruthy();
   });
 
+  it('shows the served build version (issue #865) so a human can tell what commit this is without SSHing to the box', () => {
+    render(SettingsPage, { props: baseProps() });
+
+    const buildLine = screen.getByTestId('web-build-version');
+    expect(buildLine.textContent?.trim()).toMatch(/^Build \S+$/);
+  });
+
   it('has no close button: a page is left by navigating elsewhere, not by dismissing it', () => {
     render(SettingsPage, { props: baseProps() });
 

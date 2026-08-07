@@ -7,6 +7,7 @@ import type { SshTargetConfig } from '../target';
 import { FakeTransport } from './fake-transport';
 import { LocalProcessTransport } from './local-process-transport';
 import {
+  allowLiveNodeStateDir,
   classifyConnectError,
   defaultNodeStateDir,
   SshTargetStore,
@@ -44,18 +45,44 @@ describe('defaultNodeStateDir', () => {
     expect(() => defaultNodeStateDir()).toThrow(/refusing to use the real node state directory/);
   });
 
-  it('resolves normally outside a test run, honouring XDG_STATE_HOME', () => {
+  it('refuses to default into the live directory outside a node entry point, honours LOOMBOX_NODE_STATE_DIR as an explicit override regardless, then resolves once a genuine entry point opts in (issue #876)', () => {
     const vitest = process.env.VITEST;
     const xdg = process.env.XDG_STATE_HOME;
+    const override = process.env.LOOMBOX_NODE_STATE_DIR;
     delete process.env.VITEST;
-    process.env.XDG_STATE_HOME = '/tmp/xdg-probe';
+    delete process.env.XDG_STATE_HOME;
+    delete process.env.LOOMBOX_NODE_STATE_DIR;
     try {
+      // Nothing in this process has opted in yet — the exact shape of the
+      // `tsx`-script-with-a-typo'd-stateDir accident this issue closes.
+      expect(() => defaultNodeStateDir()).toThrow(
+        /refusing to default into the live node state directory/,
+      );
+
+      // The named override is honoured regardless of opt-in status — the
+      // "obvious in the moment" fix the refusal itself points at.
+      process.env.LOOMBOX_NODE_STATE_DIR = '/tmp/loombox-state-dir-override-probe';
+      expect(defaultNodeStateDir()).toBe('/tmp/loombox-state-dir-override-probe');
+      delete process.env.LOOMBOX_NODE_STATE_DIR;
+
+      // Still refuses with the override gone again and no opt-in on record.
+      expect(() => defaultNodeStateDir()).toThrow(
+        /refusing to default into the live node state directory/,
+      );
+
+      // A genuine entry point (`main.ts`'s `start()`, `provisionLocalNode()`,
+      // `uninstallNode()`, `runLocalGuidedSetup()`) opts in once, then this
+      // resolves exactly like it always did.
+      allowLiveNodeStateDir();
+      process.env.XDG_STATE_HOME = '/tmp/xdg-probe';
       expect(defaultNodeStateDir()).toBe(path.join('/tmp/xdg-probe', 'loombox', 'node'));
     } finally {
       if (vitest === undefined) delete process.env.VITEST;
       else process.env.VITEST = vitest;
       if (xdg === undefined) delete process.env.XDG_STATE_HOME;
       else process.env.XDG_STATE_HOME = xdg;
+      if (override === undefined) delete process.env.LOOMBOX_NODE_STATE_DIR;
+      else process.env.LOOMBOX_NODE_STATE_DIR = override;
     }
   });
 });

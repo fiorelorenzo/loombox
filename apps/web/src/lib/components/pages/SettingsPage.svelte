@@ -25,6 +25,7 @@
    * there), so it stays the single source of truth rather than mirroring it
    * into local component state.
    */
+  import { version as webBuildVersion } from '$app/environment';
   import type {
     NotificationPreferences as NotificationPreferencesData,
     NotificationPreferencesStorage,
@@ -154,6 +155,27 @@
   function selectSection(id: SettingsSection): void {
     onSectionChange?.(id);
   }
+
+  /**
+   * Issue #865: what commit THIS served bundle actually is, not only
+   * discoverable by SSHing to prodbox and reading `DEPLOYED.json` — a
+   * preview whose contents are a mystery is a trap. `webBuildVersion` is
+   * `$app/environment`'s `version` export, i.e. `svelte.config.js`'s
+   * `kit.version.name` — the exact same string `scripts/deploy-prod.sh`
+   * and `scripts/deploy-preview.sh`'s health gates already compare against
+   * `client/_app/version.json` to prove "the served build is the one just
+   * deployed", so what's on screen here and what the health gate checked
+   * are provably the same value, never a second independently-tracked one.
+   * A real git commit is 40 hex chars; sliced to 12 to match
+   * `main.ts`'s own `buildIdentity.commit.slice(0, 12)` convention for the
+   * relay's build log line. The `vite dev`/local-build fallback (a plain
+   * millisecond timestamp, SvelteKit's own default when
+   * `LOOMBOX_BUILD_COMMIT` is unset) is shorter than 12 chars and passes
+   * through unsliced — still a real, honest answer to "what build is this".
+   */
+  function formatBuildVersion(v: string): string {
+    return v.length > 12 ? v.slice(0, 12) : v;
+  }
 </script>
 
 {#snippet nodesActions()}
@@ -213,6 +235,9 @@
         <section class="settings-section">
           <h2>Appearance</h2>
           <AppearanceSettings />
+          <p class="build-version font-mono" data-testid="web-build-version">
+            Build {formatBuildVersion(webBuildVersion)}
+          </p>
         </section>
       {:else if activeSection === 'notifications' && notificationPreferencesStorage}
         <section class="settings-section">
@@ -377,6 +402,17 @@
   .settings-section h2 {
     margin: 0 0 var(--space-sm);
     font-size: var(--text-body-size);
+  }
+
+  /* Issue #865: a quiet, always-there answer to "what commit is this" —
+     muted/small like a caption, but plain body case rather than the
+     uppercase-tracked `--text-caption-size` look, since this is a value
+     to read, not a field label. `.font-mono` (typography.css) supplies the
+     monospace stack — a git sha reads like the code identifier it is. */
+  .build-version {
+    margin: var(--space-lg) 0 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-small-size);
   }
 
   /* Below `--bp-tablet` (768px): the left sub-nav gives way to the
